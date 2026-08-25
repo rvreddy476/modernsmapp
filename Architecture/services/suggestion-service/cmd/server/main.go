@@ -150,6 +150,25 @@ func main() {
 
 	// 10. Service
 	suggSvc := service.New(suggStore, rdb)
+
+	// Module 3 SR-7 — block safety on suggestions.
+	//
+	// This service filtered NOTHING for blocks: the exclusion set was built
+	// from friends and self only, and the cache-hit path returned before any
+	// filtering could run. The platform would recommend that you follow
+	// someone you had blocked.
+	//
+	// Unconfigured is not a degraded mode — filterBlocked returns an empty
+	// list rather than an unfiltered one, so a missing URL is a visible,
+	// cosmetic outage instead of a silent safety failure.
+	if graphURL := env("GRAPH_SERVICE_URL", ""); graphURL != "" {
+		suggSvc.WithBlockLookup(service.NewGraphBlockLookup(graphURL, os.Getenv("INTERNAL_SERVICE_KEY")))
+		slog.Info("suggestion-service: block safety enabled", "graph_service_url", graphURL)
+	} else {
+		slog.Error("suggestion-service: GRAPH_SERVICE_URL not set — block safety cannot " +
+			"run, so every suggestion surface will return EMPTY rather than recommend " +
+			"accounts the viewer has blocked. Set it.")
+	}
 	if scyllaStore != nil {
 		suggSvc.SetScyllaStore(scyllaStore)
 	}

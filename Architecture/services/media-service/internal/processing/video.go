@@ -71,11 +71,11 @@ func GenerateHLSVariants(ctx context.Context, inputPath, outputDir string) (mast
 
 // TranscodeOutput holds the result of a single transcode operation.
 type TranscodeOutput struct {
-	Name      string
-	FilePath  string
-	Width     int
-	Height    int
-	Mime      string
+	Name     string
+	FilePath string
+	Width    int
+	Height   int
+	Mime     string
 }
 
 // VideoMeta holds extracted video metadata.
@@ -91,9 +91,11 @@ type VideoMeta struct {
 }
 
 // ExtractThumbnail generates a JPEG thumbnail from a video at the given timestamp.
-func ExtractThumbnail(ctx context.Context, inputPath, outputPath string, atSecond int, size int) error {
+// A fractional timestamp is required for short clips: rounding a one-second
+// upload to second 1 seeks to EOF and produces no thumbnail.
+func ExtractThumbnail(ctx context.Context, inputPath, outputPath string, atSecond float64, size int) error {
 	args := []string{
-		"-y", "-ss", fmt.Sprintf("%d", atSecond),
+		"-y", "-ss", fmt.Sprintf("%.3f", atSecond),
 		"-i", inputPath,
 		"-vframes", "1",
 		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2", size, size, size, size),
@@ -103,6 +105,15 @@ func ExtractThumbnail(ctx context.Context, inputPath, outputPath string, atSecon
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func thumbnailTimestamp(durationSeconds float64) float64 {
+	if durationSeconds <= 0 {
+		return 0
+	}
+	// A quarter of the precise duration is always within the media, including
+	// sub-second clips, and avoids an often-black first frame.
+	return durationSeconds * 0.25
 }
 
 // TranscodeToMP4 transcodes a video to a specific resolution.
@@ -245,10 +256,7 @@ func TranscodeReel(ctx context.Context, inputPath, tmpDir string) ([]TranscodeOu
 	var outputs []TranscodeOutput
 
 	// 1. Thumbnail at 25% of duration
-	thumbAt := meta.DurationSeconds / 4
-	if thumbAt < 1 {
-		thumbAt = 1
-	}
+	thumbAt := thumbnailTimestamp(meta.DurationFloat)
 	thumbPath := filepath.Join(tmpDir, "thumb_150.jpg")
 	if err := ExtractThumbnail(ctx, inputPath, thumbPath, thumbAt, 150); err == nil {
 		outputs = append(outputs, TranscodeOutput{
@@ -304,10 +312,7 @@ func TranscodeVideo(ctx context.Context, inputPath, tmpDir string) ([]TranscodeO
 	var outputs []TranscodeOutput
 
 	// 1. Thumbnail at 25% of duration
-	thumbAt := meta.DurationSeconds / 4
-	if thumbAt < 1 {
-		thumbAt = 1
-	}
+	thumbAt := thumbnailTimestamp(meta.DurationFloat)
 	thumbPath := filepath.Join(tmpDir, "thumb_150.jpg")
 	if err := ExtractThumbnail(ctx, inputPath, thumbPath, thumbAt, 150); err == nil {
 		outputs = append(outputs, TranscodeOutput{

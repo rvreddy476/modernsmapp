@@ -9,8 +9,8 @@ import (
 
 	"github.com/atpost/reviewer-service/database"
 	"github.com/atpost/reviewer-service/internal/clients"
-	"github.com/atpost/reviewer-service/internal/prefilter"
 	reviewerhttp "github.com/atpost/reviewer-service/internal/http"
+	"github.com/atpost/reviewer-service/internal/prefilter"
 	"github.com/atpost/reviewer-service/internal/service"
 	"github.com/atpost/reviewer-service/internal/store/postgres"
 	"github.com/atpost/shared/health"
@@ -89,7 +89,7 @@ func main() {
 	// Phase 4 ML pre-filter: auto-resolve clearly-bad / clearly-OK flagged content
 	// so only the ambiguous middle reaches a human. Heuristic baseline (spam-score
 	// bands); the Classifier interface lets a real model (ai-service) swap in later.
-	if env("REVIEWER_PREFILTER_ENABLED", "true") == "true" {
+	if env("REVIEWER_PREFILTER_ENABLED", "false") == "true" {
 		svc.SetPrefilter(prefilter.NewHeuristic(
 			envFloat("REVIEWER_PREFILTER_REJECT_AT", 0.9),
 			envFloat("REVIEWER_PREFILTER_APPROVE_BELOW", 0.72),
@@ -101,7 +101,8 @@ func main() {
 		Interval:   time.Duration(envInt("REVIEWER_PROMOTE_INTERVAL_MIN", 10)) * time.Minute,
 		BatchLimit: envInt("REVIEWER_PROMOTE_BATCH", 100),
 	})
-	handler := reviewerhttp.New(svc)
+	handler := reviewerhttp.New(svc).
+		WithPublicEnabled(env("REVIEWER_PUBLIC_ENABLED", "false") == "true")
 
 	go svc.RunExpirySweeper(ctx)
 	go svc.RunGradingWorker(ctx)

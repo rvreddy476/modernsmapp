@@ -15,6 +15,7 @@ type MessengerExtrasStore interface {
 	// Conversation settings
 	UpsertConversationSettings(ctx context.Context, settings *postgres.ConversationSettings) error
 	GetConversationSettings(ctx context.Context, convID, userID uuid.UUID) (*postgres.ConversationSettings, error)
+	GetSettingsForConversations(ctx context.Context, userID uuid.UUID, convIDs []uuid.UUID) (map[uuid.UUID]postgres.ConversationSettings, error)
 	ListConversationsByLabel(ctx context.Context, userID uuid.UUID, label string, limit, offset int) ([]postgres.ConversationSettings, error)
 	// Folders
 	CreateChatFolder(ctx context.Context, f *postgres.ChatFolder) (*postgres.ChatFolder, error)
@@ -47,6 +48,7 @@ type MessengerExtrasStore interface {
 	CancelScheduledMessage(ctx context.Context, id, senderID uuid.UUID) error
 	GetPendingScheduledMessages(ctx context.Context, before time.Time, limit int) ([]postgres.ScheduledMessage, error)
 	MarkScheduledMessageSent(ctx context.Context, id uuid.UUID) error
+	RecordScheduledMessageFailure(ctx context.Context, id uuid.UUID, failure string, maxAttempts int) error
 	ListScheduledMessages(ctx context.Context, conversationID, senderID uuid.UUID) ([]postgres.ScheduledMessage, error)
 	// Translations
 	UpsertMessageTranslation(ctx context.Context, t *postgres.MessageTranslation) error
@@ -295,6 +297,86 @@ func (s *Service) ListRequests(ctx context.Context, userID uuid.UUID, limit, off
 	return s.extrasStore().ListMessageRequests(ctx, userID, limit, offset)
 }
 
+// BlockRequest is the recipient's strongest refusal (directive §3.3): the
+// request is marked blocked, BOTH memberships are severed so neither side can
+// read or send, and the event stream carries the block so the graph-side
+// symmetric block (which the client also files through the social block API)
+// can reconcile. Idempotent — re-blocking an already-blocked request succeeds.
+func (s *Service) BlockRequest(ctx context.Context, userID, convID uuid.UUID) error {
+	mr, err := s.convStore.GetMessageRequestByConversation(ctx, convID)
+	if err != nil {
+		return err
+	}
+	if mr == nil {
+		return errors.New("no message request for this conversation")
+	}
+	if mr.ReceiverID != userID {
+		return errors.New("only the recipient can block this request")
+	}
+	if mr.Status == "blocked" {
+		return nil // idempotent — status flips only after sever+revocation succeeded
+	}
+	// Sever both memberships THROUGH the revocation protocol, BEFORE the
+	// status flip (final-verification P0-4): the legacy order swallowed
+	// sever failures and the idempotent early-return above then acknowledged
+	// a block whose memberships still carried live room subscriptions and
+	// tokens. Errors propagate; the client retries the idempotent block.
+	if err := s.severMemberWithRevocation(ctx, convID, mr.SenderID); err != nil {
+		return err
+	}
+	if err := s.severMemberWithRevocation(ctx, convID, mr.ReceiverID); err != nil {
+		return err
+	}
+	if err := s.convStore.UpdateMessageRequestStatus(ctx, convID, "blocked"); err != nil {
+		return err
+	}
+	_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageRequestBlocked, sharedEvents.MessageRequestPayload{
+		ConversationID: convID.String(),
+		SenderID:       mr.SenderID.String(),
+		ReceiverID:     mr.ReceiverID.String(),
+		OccurredAt:     time.Now(),
+	})
+	return nil
+}
+
+// ReportRequest marks the request reported (and severed like a block) and
+// emits the moderation event. The report itself carries only ids — the
+// preview is already stored server-side for the moderation pipeline.
+func (s *Service) ReportRequest(ctx context.Context, userID, convID uuid.UUID) error {
+	mr, err := s.convStore.GetMessageRequestByConversation(ctx, convID)
+	if err != nil {
+		return err
+	}
+	if mr == nil {
+		return errors.New("no message request for this conversation")
+	}
+	if mr.ReceiverID != userID {
+		return errors.New("only the recipient can report this request")
+	}
+	if mr.Status == "reported" {
+		return nil // idempotent — status flips only after sever+revocation succeeded
+	}
+	// Same order and rationale as BlockRequest: sever through the revocation
+	// protocol first, propagate failures, flip the status only afterwards.
+	if err := s.severMemberWithRevocation(ctx, convID, mr.SenderID); err != nil {
+		return err
+	}
+	if err := s.severMemberWithRevocation(ctx, convID, mr.ReceiverID); err != nil {
+		return err
+	}
+	if err := s.convStore.UpdateMessageRequestStatus(ctx, convID, "reported"); err != nil {
+		return err
+	}
+	_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageRequestReported, sharedEvents.MessageRequestPayload{
+		ConversationID: convID.String(),
+		SenderID:       mr.SenderID.String(),
+		ReceiverID:     mr.ReceiverID.String(),
+		Preview:        mr.Preview,
+		OccurredAt:     time.Now(),
+	})
+	return nil
+}
+
 // --- Starred Messages ---
 
 func (s *Service) StarMessageSvc(ctx context.Context, userID, convID, messageID uuid.UUID, preview *string) (*postgres.StarredMessage, error) {
@@ -376,8 +458,19 @@ func (s *Service) ListScheduledMessagesSvc(ctx context.Context, userID, convID u
 
 // --- Translations ---
 
-func (s *Service) GetTranslation(ctx context.Context, messageID uuid.UUID, targetLang string) (*postgres.MessageTranslation, error) {
-	return s.extrasStore().GetMessageTranslation(ctx, messageID, targetLang)
+func (s *Service) GetTranslation(ctx context.Context, userID, messageID uuid.UUID, targetLang string) (*postgres.MessageTranslation, error) {
+	translation, err := s.extrasStore().GetMessageTranslation(ctx, messageID, targetLang)
+	if err != nil || translation == nil {
+		return translation, err
+	}
+	member, err := s.convStore.CheckMembership(ctx, translation.ConversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
+	return translation, nil
 }
 
 func (s *Service) CreateTranslation(ctx context.Context, t *postgres.MessageTranslation) error {
@@ -386,14 +479,35 @@ func (s *Service) CreateTranslation(ctx context.Context, t *postgres.MessageTran
 
 // --- Threads ---
 
-func (s *Service) GetOrCreateThreadSvc(ctx context.Context, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+func (s *Service) GetOrCreateThreadSvc(ctx context.Context, userID, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+	member, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
 	return s.extrasStore().GetOrCreateThread(ctx, convID, parentMessageID)
 }
 
-func (s *Service) GetThreadSvc(ctx context.Context, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+func (s *Service) GetThreadSvc(ctx context.Context, userID, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+	member, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
 	return s.extrasStore().GetThread(ctx, convID, parentMessageID)
 }
 
-func (s *Service) ListThreadsSvc(ctx context.Context, convID uuid.UUID) ([]postgres.MessageThread, error) {
+func (s *Service) ListThreadsSvc(ctx context.Context, userID, convID uuid.UUID) ([]postgres.MessageThread, error) {
+	member, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
 	return s.extrasStore().ListConversationThreads(ctx, convID)
 }

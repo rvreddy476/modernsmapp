@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/chat-call-service/internal/service"
 	"github.com/atpost/chat-call-service/internal/sfu"
 	"github.com/atpost/chat-call-service/internal/store/postgres"
+	"github.com/atpost/chat-shared/accessauth"
 	"github.com/atpost/chat-shared/logging"
 	"github.com/atpost/chat-shared/transport"
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	authKeys, authPolicy, err := accessauth.LoadFromEnv()
+	if err != nil {
+		logger.Error("refusing to start with unsafe access-token policy", "err", err)
+		os.Exit(1)
+	}
+	if err := cfg.ValidateCallEnablement(); err != nil {
+		logger.Error("refusing to enable calls with unsafe configuration", "err", err)
+		os.Exit(1)
+	}
 
 	// 1. Postgres (call_db)
 	poolCfg, err := pgxpool.ParseConfig(cfg.PostgresDSN)
@@ -148,9 +159,9 @@ func main() {
 	// Audit C2: gate direct calls on the social graph. GRAPH_SERVICE_URL
 	// must be set in production for this to do anything; empty means
 	// the policy is a no-op (used for tests + isolated dev rigs).
-	callPolicy := service.NewCallPolicy(os.Getenv("GRAPH_SERVICE_URL"))
+	callPolicy := service.NewCallPolicy(cfg.GraphServiceURL, cfg.InternalServiceKey)
 	svc := service.New(store, sfuProvider, rateLimiter, callPolicy, rdb, logger, cfg.ReconnectGraceSeconds)
-	handler := callhttp.New(svc, logger)
+	handler := callhttp.New(svc, logger).WithCallsEnabled(cfg.CallsEnabled)
 
 	// 6. Outbox Relay (background)
 	outboxRelay := service.NewOutboxRelay(store, lifecycleWriter, notificationWriter, analyticsWriter, logger, cfg.OutboxPollInterval)
@@ -171,6 +182,8 @@ func main() {
 		ActiveSecret:   cfg.JWTSecret,
 		PreviousKID:    cfg.JWTKIDPrevious,
 		PreviousSecret: cfg.JWTSecretPrevious,
+		AccessKeys:     authKeys,
+		Policy:         authPolicy,
 	}, logger))
 
 	proxies := cfg.TrustedProxies

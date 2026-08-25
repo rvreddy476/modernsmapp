@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,13 +13,13 @@ import (
 
 // CrosspostLink represents an active cross-post between modules.
 type CrosspostLink struct {
-	ID            uuid.UUID  `json:"id"`
-	SourceModule  string     `json:"source_module"`
-	SourcePostID  uuid.UUID  `json:"source_post_id"`
-	TargetModule  string     `json:"target_module"`
-	TargetPostID  uuid.UUID  `json:"target_post_id"`
-	CreatedAt     time.Time  `json:"created_at"`
-	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	ID           uuid.UUID  `json:"id"`
+	SourceModule string     `json:"source_module"`
+	SourcePostID uuid.UUID  `json:"source_post_id"`
+	TargetModule string     `json:"target_module"`
+	TargetPostID uuid.UUID  `json:"target_post_id"`
+	CreatedAt    time.Time  `json:"created_at"`
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
 }
 
 const crosspostLinkCols = `id, source_module, source_post_id, target_module, target_post_id, created_at, deleted_at`
@@ -190,12 +191,18 @@ func (s *Store) SoftDeleteCrosspostLink(ctx context.Context, id uuid.UUID) error
 	}
 
 	// Soft-delete the target embed post
-	_, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE posts SET deleted_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND deleted_at IS NULL
 	`, targetPostID)
 	if err != nil {
 		return err
+	}
+	// M2-P0-2: removal from public search, atomic with the delete.
+	if tag.RowsAffected() > 0 {
+		if err := BumpSearchRevAndEmitTx(ctx, tx, targetPostID); err != nil {
+			return fmt.Errorf("emit search eligibility on crosspost delete: %w", err)
+		}
 	}
 
 	return tx.Commit(ctx)

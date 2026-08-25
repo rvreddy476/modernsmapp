@@ -13,26 +13,34 @@ import (
 )
 
 type Handler struct {
-	svc *service.Service
+	svc           *service.Service
+	publicEnabled bool
 }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+func (h *Handler) WithPublicEnabled(enabled bool) *Handler {
+	h.publicEnabled = enabled
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	g := r.Group("/v1/reviewer")
 	{
-		g.POST("/opt-in", h.OptIn)
-		g.GET("/me", h.Me)
-		g.GET("/me/stats", h.MyDashboard)
-		g.POST("/verify-kyc", h.VerifyKYC)
-		g.POST("/online", h.SetOnline)
-		g.GET("/queue", h.GetQueue)
-		g.GET("/assignments/next", h.NextAssignment)
-		g.POST("/assignments/:id/heartbeat", h.Heartbeat)
-		g.POST("/assignments/:id/decision", h.Decide)
+		public := g.Group("")
+		public.Use(h.requirePublicReviewer)
+		public.POST("/opt-in", h.OptIn)
+		public.GET("/me", h.Me)
+		public.GET("/me/stats", h.MyDashboard)
+		public.POST("/verify-kyc", h.VerifyKYC)
+		public.POST("/online", h.SetOnline)
+		public.GET("/queue", h.GetQueue)
+		public.GET("/assignments/next", h.NextAssignment)
+		public.POST("/assignments/:id/heartbeat", h.Heartbeat)
+		public.POST("/assignments/:id/decision", h.Decide)
 		// Creator-facing: the latest review feedback for the creator's own content
 		// (the "needs changes" comments to act on).
-		g.GET("/content/:contentId/feedback", h.CreatorFeedback)
+		public.GET("/content/:contentId/feedback", h.CreatorFeedback)
 		// Super-admin escalation queue (scope-guarded in the handlers).
 		g.GET("/admin/stats", h.AdminStats)
 		g.GET("/admin/escalations", h.ListEscalations)
@@ -41,6 +49,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// that needs human review (review_status='flagged'/ambiguous).
 		g.POST("/internal/enqueue", h.Enqueue)
 	}
+}
+
+func (h *Handler) requirePublicReviewer(c *gin.Context) {
+	if h.publicEnabled {
+		c.Next()
+		return
+	}
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+		"REVIEWER_PROGRAM_UNAVAILABLE", "The community reviewer program is not available at launch", nil)
+	c.Abort()
 }
 
 // isAdmin reports whether the caller carries an admin/superadmin scope (set by

@@ -33,7 +33,8 @@ class MonetizationState {
 }
 
 /// Production-ready Monetization Notifier.
-class MonetizationNotifier extends StateNotifier<AsyncValue<MonetizationState>> {
+class MonetizationNotifier
+    extends StateNotifier<AsyncValue<MonetizationState>> {
   final MonetizationRepository _repo;
 
   MonetizationNotifier(this._repo) : super(const AsyncValue.loading()) {
@@ -45,15 +46,25 @@ class MonetizationNotifier extends StateNotifier<AsyncValue<MonetizationState>> 
     try {
       final results = await Future.wait([
         ErrorHandler.retry(() => _repo.getEarningsSummary()),
-        ErrorHandler.retry(() => _repo.getPayouts()),
-        ErrorHandler.retry(() => _repo.getEarningsHistory()),
+        ErrorHandler.retry(() => _repo.getCreatorAnalytics(period: '30d')),
       ]);
 
-      state = AsyncValue.data(MonetizationState(
-        earnings: results[0] as EarningsSummary,
-        payouts: results[1] as List<PayoutRecord>,
-        history: results[2] as List<Map<String, dynamic>>,
-      ));
+      final analytics = results[1] as CreatorAnalytics;
+
+      state = AsyncValue.data(
+        MonetizationState(
+          earnings: results[0] as EarningsSummary,
+          payouts: const [],
+          history: analytics.dailyStats
+              .map(
+                (row) => <String, dynamic>{
+                  'date': row.date,
+                  'views': row.views,
+                },
+              )
+              .toList(),
+        ),
+      );
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
@@ -61,23 +72,11 @@ class MonetizationNotifier extends StateNotifier<AsyncValue<MonetizationState>> 
 }
 
 /// Provider for creator analytics.
-final creatorAnalyticsProvider =
-    FutureProvider.family.autoDispose<CreatorAnalytics, String>(
-  (ref, period) async {
-    final repo = ref.watch(monetizationRepositoryProvider);
-    final summary = await repo.getEarningsSummary();
-    // In a real app, this would be a specific analytics call.
-    return CreatorAnalytics(
-      views: (summary.thisMonth * 100).toInt(),
-      likes: (summary.thisMonth * 10).toInt(),
-      comments: (summary.thisMonth).toInt(),
-      shares: (summary.thisMonth / 2).toInt(),
-      followersGained: summary.totalSubscribers,
-      dailyStats: [],
-      topPosts: [],
-    );
-  },
-);
+final creatorAnalyticsProvider = FutureProvider.family
+    .autoDispose<CreatorAnalytics, String>((ref, period) async {
+      final repo = ref.watch(monetizationRepositoryProvider);
+      return repo.getCreatorAnalytics(period: period);
+    });
 
 /// Provider for subscription tiers.
 final myTiersProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
@@ -85,19 +84,27 @@ final myTiersProvider = FutureProvider.autoDispose<List<dynamic>>((ref) async {
   return [];
 });
 
-final monetizationProvider = StateNotifierProvider.autoDispose<MonetizationNotifier, AsyncValue<MonetizationState>>((ref) {
-  return MonetizationNotifier(ref.watch(monetizationRepositoryProvider));
-});
+final monetizationProvider =
+    StateNotifierProvider.autoDispose<
+      MonetizationNotifier,
+      AsyncValue<MonetizationState>
+    >((ref) {
+      return MonetizationNotifier(ref.watch(monetizationRepositoryProvider));
+    });
 
 // --- Legacy Compatibility Providers ---
-final earningsSummaryProvider = Provider.autoDispose<AsyncValue<EarningsSummary>>((ref) {
-  return ref.watch(monetizationProvider).whenData((s) => s.earnings);
-});
+final earningsSummaryProvider =
+    Provider.autoDispose<AsyncValue<EarningsSummary>>((ref) {
+      return ref.watch(monetizationProvider).whenData((s) => s.earnings);
+    });
 
-final payoutsProvider = Provider.autoDispose<AsyncValue<List<PayoutRecord>>>((ref) {
+final payoutsProvider = Provider.autoDispose<AsyncValue<List<PayoutRecord>>>((
+  ref,
+) {
   return ref.watch(monetizationProvider).whenData((s) => s.payouts);
 });
 
-final earningsHistoryProvider = Provider.autoDispose<AsyncValue<List<Map<String, dynamic>>>>((ref) {
-  return ref.watch(monetizationProvider).whenData((s) => s.history);
-});
+final earningsHistoryProvider =
+    Provider.autoDispose<AsyncValue<List<Map<String, dynamic>>>>((ref) {
+      return ref.watch(monetizationProvider).whenData((s) => s.history);
+    });

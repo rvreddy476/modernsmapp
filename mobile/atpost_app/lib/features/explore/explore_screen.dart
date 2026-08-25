@@ -292,8 +292,8 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
       ),
       const _ExploreAction(
         icon: Icons.savings_rounded,
-        title: 'Monetize',
-        subtitle: 'Creator tools',
+        title: 'Creator Studio',
+        subtitle: 'Insights & recorded earnings',
         route: '/monetization',
         gradient: LinearGradient(
           colors: [AppColors.postgramPrimary, AppColors.postbookPrimary],
@@ -957,8 +957,9 @@ class _ServicesRail extends StatelessWidget {
                     height: 56,
                     decoration: BoxDecoration(
                       color: app.accentColor.withValues(alpha: 0.18),
-                      borderRadius:
-                          BorderRadius.circular(AppSpacing.radiusLarge),
+                      borderRadius: BorderRadius.circular(
+                        AppSpacing.radiusLarge,
+                      ),
                       border: Border.all(
                         color: app.accentColor.withValues(alpha: 0.4),
                       ),

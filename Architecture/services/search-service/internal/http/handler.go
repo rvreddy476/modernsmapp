@@ -88,7 +88,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
 
-	v1 := r.Group("/v1/search")
+	// M2-P0-4: resolve the viewer's two-way block set for every read
+	// surface, and fail closed if it cannot be resolved. Applied at the
+	// group so no individual surface can be missed.
+	v1 := r.Group("/v1/search", h.resolveBlockScope())
 	{
 		v1.GET("", h.UniversalSearch)
 		v1.GET("/users", h.SearchUsers)
@@ -113,7 +116,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/internal/reindex/users", h.ReindexUsers)
 	}
 
-	discover := r.Group("/v1/discover")
+	discover := r.Group("/v1/discover", h.resolveBlockScope())
 	{
 		discover.GET("/trending", h.GetTrending)
 		discover.GET("/suggested", h.GetSuggested)

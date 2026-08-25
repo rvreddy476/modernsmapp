@@ -1,7 +1,12 @@
+import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/core/utils/validators.dart';
+import 'package:atpost_app/core/widgets/app_toast.dart';
 import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_app/shared/widgets/v_input_field.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -14,9 +19,11 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+
+  String? _emailError;
+  String? _passwordError;
 
   bool _loading = false;
   bool _obscurePassword = true;
@@ -28,63 +35,57 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
-  Future<void> _submit() async {
-    final email = _emailController.text.trim();
-    final password = _passwordController.text;
+  bool _validate() {
+    setState(() {
+      _emailError = Validators.required(_emailController.text, 'Email');
+      _passwordError = Validators.required(_passwordController.text, 'Password');
+    });
+    return _emailError == null && _passwordError == null;
+  }
 
-    if (email.isEmpty || password.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter your email and password.')),
-      );
-      return;
-    }
+  Future<void> _submit() async {
+    if (!_validate()) return;
 
     setState(() => _loading = true);
 
     try {
       final auth = ref.read(authServiceProvider);
-      final result = await auth.login(email, password);
+      final result = await auth.login(
+        _emailController.text.trim(),
+        _passwordController.text,
+      );
 
       if (!mounted) return;
 
       if (result.success) {
+        AppToast.success(context, 'Welcome back!');
         context.go('/');
       } else if (result.requiresStepUp) {
-        // A13 anomaly enforcement. Hand the pending token + allowed
-        // methods to the dedicated screen; user proves they're really
-        // themselves via email-OTP or 2FA, then we land at /.
         final methods = result.stepUpMethods.join(',');
         context.push(
           '/auth/step-up?token=${Uri.encodeQueryComponent(result.pendingToken ?? '')}'
           '&methods=${Uri.encodeQueryComponent(methods)}',
         );
       } else if (result.requires2fa) {
-        // Existing 2FA path. The dedicated screen isn't shipped on
-        // mobile yet (pre-existing gap), so surface a clear message
-        // until the parity screen lands.
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Two-factor authentication is required. Please sign in on the web for now.',
-            ),
-          ),
+        AppToast.error(
+          context,
+          'Two-factor authentication is required. Please sign in on the web for now.',
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              result.error?.isNotEmpty == true
-                  ? 'Login failed: ${result.error}'
-                  : 'Login failed. Check credentials and try again.',
-            ),
-          ),
-        );
+        // Map specific login failures
+        final error = result.error ?? '';
+        if (error.contains('password') || error.contains('credentials')) {
+          setState(() => _passwordError = 'Incorrect email or password');
+        } else {
+          AppToast.error(context, error.isNotEmpty ? error : 'Login failed');
+        }
       }
+    } on DioException catch (e) {
+      if (!mounted) return;
+      AppToast.error(context, ErrorHandler.userMessageFor(e));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
+      AppToast.error(context, 'An unexpected error occurred');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -94,237 +95,193 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        automaticallyImplyLeading: false,
-      ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: AppSpacing.pagePadding.copyWith(top: 8, bottom: 32),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const SizedBox(height: 24),
-
-                // Gradient logo
-                Center(
-                  child: ShaderMask(
-                    shaderCallback: (bounds) =>
-                        AppColors.postbookGradient.createShader(bounds),
-                    blendMode: BlendMode.srcIn,
-                    child: Text('VChat', style: AppTextStyles.logo.copyWith(fontSize: 36)),
+          padding: AppSpacing.pagePadding.copyWith(top: 48, bottom: 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Gradient logo
+              Center(
+                child: ShaderMask(
+                  shaderCallback: (bounds) =>
+                      AppColors.postbookGradient.createShader(bounds),
+                  blendMode: BlendMode.srcIn,
+                  child: Text(
+                    'VChat',
+                    style: AppTextStyles.logo.copyWith(fontSize: 42),
                   ),
                 ),
+              ),
 
-                const SizedBox(height: 40),
+              const SizedBox(height: 48),
 
-                // Heading
-                Text(
-                  'Welcome back',
-                  style: AppTextStyles.h1,
-                  textAlign: TextAlign.center,
+              Text(
+                'Welcome back',
+                style: AppTextStyles.h1,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Sign in to continue to your account',
+                style: AppTextStyles.body.copyWith(color: AppColors.textTertiary),
+                textAlign: TextAlign.center,
+              ),
+
+              const SizedBox(height: 48),
+
+              // Email field
+              VInputField(
+                label: 'Email or phone',
+                hint: 'you@example.com',
+                controller: _emailController,
+                errorText: _emailError,
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+                onChanged: (_) => setState(() => _emailError = null),
+              ),
+
+              const SizedBox(height: 24),
+
+              // Password field
+              VInputField(
+                label: 'Password',
+                hint: 'Your password',
+                controller: _passwordController,
+                errorText: _passwordError,
+                obscureText: _obscurePassword,
+                textInputAction: TextInputAction.done,
+                onChanged: (_) => setState(() => _passwordError = null),
+                onSubmitted: (_) => _submit(),
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscurePassword ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                    color: AppColors.textMuted,
+                    size: 20,
+                  ),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Sign in to continue',
-                  style: AppTextStyles.body.copyWith(color: AppColors.textTertiary),
-                  textAlign: TextAlign.center,
-                ),
+              ),
 
-                const SizedBox(height: 36),
-
-                // Email field
-                _buildLabel('Email or phone'),
-                const SizedBox(height: 6),
-                _buildTextField(
-                  controller: _emailController,
-                  hint: 'you@example.com',
-                  keyboardType: TextInputType.emailAddress,
-                  textInputAction: TextInputAction.next,
-                ),
-
-                const SizedBox(height: 18),
-
-                // Password field
-                _buildLabel('Password'),
-                const SizedBox(height: 6),
-                _buildTextField(
-                  controller: _passwordController,
-                  hint: 'Your password',
-                  obscureText: _obscurePassword,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => _submit(),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                      color: AppColors.textMuted,
-                      size: 20,
+              // Forgot password
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => context.push('/forgot-password'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.postbookPrimary,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: Text(
+                    'Forgot Password?',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.postbookPrimary,
+                      fontWeight: FontWeight.w600,
                     ),
-                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                   ),
                 ),
+              ),
 
-                const SizedBox(height: 8),
+              const SizedBox(height: 12),
 
-                // Forgot password
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => context.push('/forgot-password'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: AppColors.postbookPrimary,
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              // Log In button
+              _GradientButton(
+                label: 'Log In',
+                loading: _loading,
+                onTap: _loading ? null : _submit,
+              ),
+
+              const SizedBox(height: 40),
+
+              // Divider
+              Row(
+                children: [
+                  Expanded(child: Divider(color: AppColors.borderSubtle)),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'OR',
+                      style: AppTextStyles.label.copyWith(color: AppColors.textDim),
                     ),
-                    child: Text('Forgot Password?', style: AppTextStyles.bodySmall.copyWith(color: AppColors.postbookPrimary)),
                   ),
-                ),
+                  Expanded(child: Divider(color: AppColors.borderSubtle)),
+                ],
+              ),
 
-                const SizedBox(height: 28),
+              const SizedBox(height: 32),
 
-                // Log In button
-                _GradientButton(
-                  label: 'Log In',
-                  loading: _loading,
-                  onTap: _loading ? null : _submit,
-                ),
-
-                const SizedBox(height: 28),
-
-                // Divider
-                Row(
-                  children: [
-                    Expanded(
-                      child: Divider(color: AppColors.borderSubtle, thickness: 1),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Text('or', style: AppTextStyles.bodySmall.copyWith(color: AppColors.textDim)),
-                    ),
-                    Expanded(
-                      child: Divider(color: AppColors.borderSubtle, thickness: 1),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 24),
-
-                // Register link
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text("Don't have an account?", style: AppTextStyles.bodySmall),
-                    TextButton(
-                      onPressed: () => context.push('/register'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: AppColors.postbookPrimary,
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              // Register link
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    "Don't have an account?",
+                    style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+                  ),
+                  TextButton(
+                    onPressed: () => context.push('/register'),
+                    child: Text(
+                      'Register Now',
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: AppColors.postbookPrimary,
+                        fontWeight: FontWeight.bold,
                       ),
-                      child: Text(
-                        'Register',
-                        style: AppTextStyles.bodySmall.copyWith(
-                          color: AppColors.postbookPrimary,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
                     ),
-                  ],
-                ),
-              ],
-            ),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLabel(String text) {
-    return Text(text, style: AppTextStyles.label.copyWith(color: AppColors.textSecondary));
-  }
-
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required String hint,
-    bool obscureText = false,
-    TextInputType keyboardType = TextInputType.text,
-    TextInputAction textInputAction = TextInputAction.next,
-    Widget? suffixIcon,
-    void Function(String)? onSubmitted,
-  }) {
-    return TextField(
-      controller: controller,
-      obscureText: obscureText,
-      keyboardType: keyboardType,
-      textInputAction: textInputAction,
-      onSubmitted: onSubmitted,
-      style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: AppTextStyles.body.copyWith(color: AppColors.textDim),
-        filled: true,
-        fillColor: AppColors.bgCard,
-        suffixIcon: suffixIcon,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          borderSide: BorderSide(color: AppColors.borderSubtle),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          borderSide: BorderSide(color: AppColors.borderSubtle),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          borderSide: const BorderSide(color: AppColors.postbookPrimary, width: 1.5),
         ),
       ),
     );
   }
 }
 
-/// Reusable full-width gradient button.
 class _GradientButton extends StatelessWidget {
   final String label;
   final bool loading;
   final VoidCallback? onTap;
 
-  const _GradientButton({
-    required this.label,
-    this.loading = false,
-    this.onTap,
-  });
+  const _GradientButton({required this.label, this.loading = false, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 52,
+      height: 56,
       decoration: BoxDecoration(
-        gradient: onTap != null ? AppColors.postbookGradient : null,
-        color: onTap == null ? AppColors.textDim : null,
-        borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+        gradient: onTap != null ? AppColors.ctaGradient : null,
+        color: onTap == null ? AppColors.textDim.withOpacity(0.3) : null,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: onTap != null ? [
+          BoxShadow(
+            color: AppColors.postbookPrimary.withOpacity(0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          )
+        ] : null,
       ),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+          borderRadius: BorderRadius.circular(16),
           child: Center(
             child: loading
                 ? const SizedBox(
-                    width: 22,
-                    height: 22,
+                    width: 24,
+                    height: 24,
                     child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
+                      strokeWidth: 2,
                       valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                     ),
                   )
                 : Text(
                     label,
-                    style: AppTextStyles.h3.copyWith(color: Colors.white, letterSpacing: 0.4),
+                    style: AppTextStyles.h3.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
           ),
         ),

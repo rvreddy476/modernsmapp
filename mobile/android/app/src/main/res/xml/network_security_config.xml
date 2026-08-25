@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default policy: cleartext is DENIED everywhere.
+
+  This is the file staging and prod builds get. The dev flavor overrides it
+  (app/src/dev/res/xml/) to permit cleartext to loopback only, so a local
+  docker stack is reachable without ever loosening the shipped app.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

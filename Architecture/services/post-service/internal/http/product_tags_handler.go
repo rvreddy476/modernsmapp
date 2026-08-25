@@ -214,9 +214,10 @@ func (h *Handler) RecordProductTagClick(c *gin.Context) {
 // event (the gateway flood gate is the upstream guard).
 //
 // Precedence:
-//   X-Real-IP (the gateway already sets this for the proxied request)
-//   X-Forwarded-For first hop
-//   c.ClientIP() (gin's helper, ultimately RemoteAddr)
+//
+//	X-Real-IP (the gateway already sets this for the proxied request)
+//	X-Forwarded-For first hop
+//	c.ClientIP() (gin's helper, ultimately RemoteAddr)
 func hashClientIP(c *gin.Context) string {
 	ip := strings.TrimSpace(c.GetHeader("X-Real-IP"))
 	if ip == "" {

@@ -3,7 +3,6 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/monetization.dart';
 import 'package:atpost_app/providers/monetization_provider.dart';
-import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -26,8 +25,11 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.bgPrimary,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new,
-              color: AppColors.textPrimary, size: 20),
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            color: AppColors.textPrimary,
+            size: 20,
+          ),
           onPressed: () => context.pop(),
         ),
         title: Text('Payouts', style: AppTextStyles.h2),
@@ -46,8 +48,7 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
                     height: 100,
                     decoration: BoxDecoration(
                       color: AppColors.bgCard,
-                      borderRadius:
-                          BorderRadius.circular(AppSpacing.radiusXL),
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
                       border: Border.all(color: AppColors.borderSubtle),
                     ),
                     child: const Center(child: CircularProgressIndicator()),
@@ -56,19 +57,17 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
                       color: AppColors.bgCard,
-                      borderRadius:
-                          BorderRadius.circular(AppSpacing.radiusXL),
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
                       border: Border.all(color: AppColors.borderSubtle),
                     ),
-                    child: Text('Could not load balance.',
-                        style: AppTextStyles.bodySmall),
+                    child: Text(
+                      'Could not load balance.',
+                      style: AppTextStyles.bodySmall,
+                    ),
                   ),
                   data: (earnings) {
-                    final balance = earnings.pendingPayout.toString();
-                    return _BalanceCard(
-                      balance: balance,
-                      onWithdraw: () => _showWithdrawDialog(context),
-                    );
+                    final balance = earnings.formattedAvailable;
+                    return _BalanceCard(balance: balance);
                   },
                 ),
               ),
@@ -93,22 +92,30 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
                   padding: AppSpacing.pagePadding,
                   child: Column(
                     children: [
-                      Text('Could not load payouts.',
-                          style: AppTextStyles.bodySmall),
+                      Text(
+                        'Could not load payouts.',
+                        style: AppTextStyles.bodySmall,
+                      ),
                       const SizedBox(height: 12),
                       GestureDetector(
                         onTap: () => ref.invalidate(payoutsProvider),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 8),
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
                           decoration: BoxDecoration(
                             gradient: AppColors.posttubeGradient,
                             borderRadius: BorderRadius.circular(
-                                AppSpacing.radiusLarge),
+                              AppSpacing.radiusLarge,
+                            ),
                           ),
-                          child: Text('Retry',
-                              style: AppTextStyles.label
-                                  .copyWith(color: Colors.white)),
+                          child: Text(
+                            'Retry',
+                            style: AppTextStyles.label.copyWith(
+                              color: Colors.white,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -122,11 +129,13 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
                       padding: AppSpacing.pagePadding.copyWith(top: 40),
                       child: Column(
                         children: [
-                          const Icon(Icons.receipt_long_outlined,
-                              color: AppColors.textMuted, size: 48),
+                          const Icon(
+                            Icons.receipt_long_outlined,
+                            color: AppColors.textMuted,
+                            size: 48,
+                          ),
                           const SizedBox(height: 16),
-                          Text('No payouts yet',
-                              style: AppTextStyles.h3),
+                          Text('No payouts yet', style: AppTextStyles.h3),
                           const SizedBox(height: 4),
                           Text(
                             'Your payout history will appear here.',
@@ -138,12 +147,10 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
                   );
                 }
                 return SliverPadding(
-                  padding:
-                      AppSpacing.pagePadding.copyWith(top: 0, bottom: 32),
+                  padding: AppSpacing.pagePadding.copyWith(top: 0, bottom: 32),
                   sliver: SliverList(
                     delegate: SliverChildBuilderDelegate(
-                      (context, index) =>
-                          _PayoutRow(payout: payouts[index]),
+                      (context, index) => _PayoutRow(payout: payouts[index]),
                       childCount: payouts.length,
                     ),
                   ),
@@ -155,111 +162,12 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
       ),
     );
   }
-
-  void _showWithdrawDialog(BuildContext context) {
-    final amountCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.bgSecondary,
-        title: Text('Withdraw Funds', style: AppTextStyles.h3),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Enter the amount you wish to withdraw.',
-              style: AppTextStyles.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: amountCtrl,
-              keyboardType: TextInputType.number,
-              style: AppTextStyles.body
-                  .copyWith(color: AppColors.textPrimary),
-              decoration: InputDecoration(
-                hintText: 'Amount (₹)',
-                hintStyle: AppTextStyles.bodySmall,
-                prefixText: '₹ ',
-                prefixStyle: AppTextStyles.label
-                    .copyWith(color: AppColors.posttubePrimary),
-                filled: true,
-                fillColor: AppColors.bgCard,
-                contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 12),
-                border: OutlineInputBorder(
-                  borderRadius:
-                      BorderRadius.circular(AppSpacing.radiusMedium),
-                  borderSide:
-                      BorderSide(color: AppColors.borderSubtle),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius:
-                      BorderRadius.circular(AppSpacing.radiusMedium),
-                  borderSide:
-                      BorderSide(color: AppColors.borderSubtle),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius:
-                      BorderRadius.circular(AppSpacing.radiusMedium),
-                  borderSide: const BorderSide(
-                      color: AppColors.posttubePrimary),
-                ),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text('Cancel', style: AppTextStyles.label),
-          ),
-          TextButton(
-            onPressed: () async {
-              final amount = amountCtrl.text.trim();
-              if (amount.isEmpty) return;
-              Navigator.of(ctx).pop();
-              final messenger = ScaffoldMessenger.of(context);
-              try {
-                final api = ref.read(apiClientProvider);
-                await api.post(
-                  '/v1/monetization/payouts/withdraw',
-                  data: {'amount': amount},
-                );
-                ref.invalidate(payoutsProvider);
-                ref.invalidate(earningsSummaryProvider);
-                if (mounted) {
-                  messenger.showSnackBar(
-                    const SnackBar(
-                        content: Text('Withdrawal request submitted.')),
-                  );
-                }
-              } catch (_) {
-                if (mounted) {
-                  messenger.showSnackBar(
-                    const SnackBar(
-                        content: Text('Withdrawal failed. Please try again.')),
-                  );
-                }
-              }
-            },
-            child: Text(
-              'Withdraw',
-              style: AppTextStyles.label
-                  .copyWith(color: AppColors.posttubePrimary),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _BalanceCard extends StatelessWidget {
   final String balance;
-  final VoidCallback onWithdraw;
 
-  const _BalanceCard({required this.balance, required this.onWithdraw});
+  const _BalanceCard({required this.balance});
 
   @override
   Widget build(BuildContext context) {
@@ -283,29 +191,15 @@ class _BalanceCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '\u20b9$balance',
+                  balance,
                   style: AppTextStyles.h1.copyWith(color: Colors.white),
                 ),
               ],
             ),
           ),
-          GestureDetector(
-            onTap: onWithdraw,
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.2),
-                borderRadius:
-                    BorderRadius.circular(AppSpacing.radiusLarge),
-                border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.3)),
-              ),
-              child: Text(
-                'Withdraw',
-                style: AppTextStyles.label.copyWith(color: Colors.white),
-              ),
-            ),
+          Text(
+            'Read-only beta',
+            style: AppTextStyles.labelSmall.copyWith(color: Colors.white70),
           ),
         ],
       ),
@@ -351,8 +245,7 @@ class _PayoutRow extends StatelessWidget {
             height: 40,
             decoration: BoxDecoration(
               color: AppColors.bgSecondary,
-              borderRadius:
-                  BorderRadius.circular(AppSpacing.radiusMedium),
+              borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
             ),
             child: const Icon(
               Icons.account_balance_wallet_outlined,
@@ -366,23 +259,19 @@ class _PayoutRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('\u20b9$amount', style: AppTextStyles.label),
-                if (date.isNotEmpty)
-                  Text(date, style: AppTextStyles.labelTiny),
+                if (date.isNotEmpty) Text(date, style: AppTextStyles.labelTiny),
               ],
             ),
           ),
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               color: statusColor.withValues(alpha: 0.15),
-              borderRadius:
-                  BorderRadius.circular(AppSpacing.radiusFull),
+              borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
             ),
             child: Text(
               status,
-              style: AppTextStyles.labelTiny
-                  .copyWith(color: statusColor),
+              style: AppTextStyles.labelTiny.copyWith(color: statusColor),
             ),
           ),
         ],

@@ -79,6 +79,10 @@ type ScheduledMessage struct {
 	MediaID        *uuid.UUID `json:"media_id,omitempty"`
 	SendAt         time.Time  `json:"send_at"`
 	Status         string     `json:"status"`
+	AttemptCount   int        `json:"attempt_count"`
+	NextAttemptAt  *time.Time `json:"next_attempt_at,omitempty"`
+	LastError      *string    `json:"last_error,omitempty"`
+	FailedAt       *time.Time `json:"failed_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
@@ -147,6 +151,37 @@ func (s *ConversationStore) GetConversationSettings(ctx context.Context, convID,
 		return nil, err
 	}
 	return &cs, nil
+}
+
+// GetSettingsForConversations is the ONE-QUERY page lookup the inbox uses for
+// pinned/muted flags — never a per-row settings fetch. Conversations without
+// a row simply have no entry (defaults apply).
+func (s *ConversationStore) GetSettingsForConversations(ctx context.Context, userID uuid.UUID, convIDs []uuid.UUID) (map[uuid.UUID]ConversationSettings, error) {
+	if len(convIDs) == 0 {
+		return map[uuid.UUID]ConversationSettings{}, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,
+		       read_receipts_enabled, theme, is_pinned, pinned_at
+		FROM chat.conversation_settings
+		WHERE user_id = $1 AND conversation_id = ANY($2::uuid[])
+	`, userID, convIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[uuid.UUID]ConversationSettings, len(convIDs))
+	for rows.Next() {
+		var cs ConversationSettings
+		if err := rows.Scan(
+			&cs.ConversationID, &cs.UserID, &cs.Label, &cs.IsMuted, &cs.MuteUntil,
+			&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt,
+		); err != nil {
+			return nil, err
+		}
+		out[cs.ConversationID] = cs
+	}
+	return out, rows.Err()
 }
 
 func (s *ConversationStore) ListConversationsByLabel(ctx context.Context, userID uuid.UUID, label string, limit, offset int) ([]ConversationSettings, error) {
@@ -578,9 +613,11 @@ func (s *ConversationStore) CreateScheduledMessage(ctx context.Context, m *Sched
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO chat.scheduled_messages (conversation_id, sender_id, type, content, media_id, send_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, conversation_id, sender_id, type, content, media_id, send_at, status, created_at
+		RETURNING id, conversation_id, sender_id, type, content, media_id, send_at, status,
+		          attempt_count, next_attempt_at, last_error, failed_at, created_at
 	`, m.ConversationID, m.SenderID, m.Type, m.Content, m.MediaID, m.SendAt).Scan(
-		&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status, &m.CreatedAt,
+		&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status,
+		&m.AttemptCount, &m.NextAttemptAt, &m.LastError, &m.FailedAt, &m.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -599,10 +636,11 @@ func (s *ConversationStore) CancelScheduledMessage(ctx context.Context, id, send
 
 func (s *ConversationStore) GetPendingScheduledMessages(ctx context.Context, before time.Time, limit int) ([]ScheduledMessage, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, conversation_id, sender_id, type, content, media_id, send_at, status, created_at
+		SELECT id, conversation_id, sender_id, type, content, media_id, send_at, status,
+		       attempt_count, next_attempt_at, last_error, failed_at, created_at
 		FROM chat.scheduled_messages
-		WHERE status = 'pending' AND send_at <= $1
-		ORDER BY send_at ASC
+		WHERE status = 'pending' AND COALESCE(next_attempt_at, send_at) <= $1
+		ORDER BY COALESCE(next_attempt_at, send_at) ASC
 		LIMIT $2
 	`, before, limit)
 	if err != nil {
@@ -613,7 +651,8 @@ func (s *ConversationStore) GetPendingScheduledMessages(ctx context.Context, bef
 	var out []ScheduledMessage
 	for rows.Next() {
 		var m ScheduledMessage
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status,
+			&m.AttemptCount, &m.NextAttemptAt, &m.LastError, &m.FailedAt, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -623,16 +662,41 @@ func (s *ConversationStore) GetPendingScheduledMessages(ctx context.Context, bef
 
 func (s *ConversationStore) MarkScheduledMessageSent(ctx context.Context, id uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE chat.scheduled_messages SET status = 'sent' WHERE id = $1
+		UPDATE chat.scheduled_messages
+		SET status = 'sent', last_error = NULL, next_attempt_at = NULL
+		WHERE id = $1 AND status = 'pending'
 	`, id)
+	return err
+}
+
+func (s *ConversationStore) RecordScheduledMessageFailure(ctx context.Context, id uuid.UUID, failure string, maxAttempts int) error {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if len(failure) > 1000 {
+		failure = failure[:1000]
+	}
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.scheduled_messages
+		SET attempt_count = attempt_count + 1,
+		    last_error = $2,
+		    status = CASE WHEN attempt_count + 1 >= $3 THEN 'failed' ELSE 'pending' END,
+		    failed_at = CASE WHEN attempt_count + 1 >= $3 THEN NOW() ELSE NULL END,
+		    next_attempt_at = CASE
+		        WHEN attempt_count + 1 >= $3 THEN NULL
+		        ELSE NOW() + LEAST(INTERVAL '5 minutes', INTERVAL '15 seconds' * power(2, attempt_count)::int)
+		    END
+		WHERE id = $1 AND status = 'pending'
+	`, id, failure, maxAttempts)
 	return err
 }
 
 func (s *ConversationStore) ListScheduledMessages(ctx context.Context, conversationID, senderID uuid.UUID) ([]ScheduledMessage, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, conversation_id, sender_id, type, content, media_id, send_at, status, created_at
+		SELECT id, conversation_id, sender_id, type, content, media_id, send_at, status,
+		       attempt_count, next_attempt_at, last_error, failed_at, created_at
 		FROM chat.scheduled_messages
-		WHERE conversation_id = $1 AND sender_id = $2 AND status = 'pending'
+		WHERE conversation_id = $1 AND sender_id = $2 AND status IN ('pending','failed')
 		ORDER BY send_at ASC
 	`, conversationID, senderID)
 	if err != nil {
@@ -643,7 +707,8 @@ func (s *ConversationStore) ListScheduledMessages(ctx context.Context, conversat
 	var out []ScheduledMessage
 	for rows.Next() {
 		var m ScheduledMessage
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status,
+			&m.AttemptCount, &m.NextAttemptAt, &m.LastError, &m.FailedAt, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

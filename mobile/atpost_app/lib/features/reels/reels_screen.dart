@@ -15,6 +15,7 @@ import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/providers/autoplay_provider.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
+import 'package:atpost_app/shared/widgets/provenance_badge.dart';
 import 'package:atpost_app/features/reels/product_tag_composer_button.dart';
 import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
 import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
@@ -160,16 +161,18 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
 
     _viewedReelIds.add(post.id);
     unawaited(
-      ref.read(analyticsRepositoryProvider).recordVideoView(
-        contentId: post.id,
-        creatorId: post.authorId,
-        // Canonical short type is 'flick' (matches post content_type, RPM rates &
-        // creator-fund settlement). 'reel' records a view but never earns.
-        contentType: post.contentType == 'video' ? 'long_video' : 'flick',
-        watchedMs: watchedMs,
-        durationMs: (post.durationSeconds ?? 30) * 1000,
-        surface: 'reels_feed',
-      ),
+      ref
+          .read(analyticsRepositoryProvider)
+          .recordVideoView(
+            contentId: post.id,
+            creatorId: post.authorId,
+            // Canonical short type is 'flick' (matches post content_type, RPM rates &
+            // creator-fund settlement). 'reel' records a view but never earns.
+            contentType: post.contentType == 'video' ? 'long_video' : 'flick',
+            watchedMs: watchedMs,
+            durationMs: (post.durationSeconds ?? 30) * 1000,
+            surface: 'reels_feed',
+          ),
     );
   }
 
@@ -361,9 +364,9 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     const reasons = <String, String>{
       'spam': 'Spam or misleading',
       'harassment': 'Harassment or bullying',
-      'hate_speech': 'Hate speech',
-      'violence': 'Violence or dangerous acts',
-      'nudity': 'Nudity or sexual content',
+      'hate_abuse': 'Hate speech',
+      'violence_threat': 'Violence or dangerous acts',
+      'sexual_content': 'Nudity or sexual content',
       'misinformation': 'Misinformation',
       'other': 'Something else',
     };
@@ -381,13 +384,22 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
               padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Report this video',
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                child: Text(
+                  'Report this video',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             ),
             for (final entry in reasons.entries)
               ListTile(
-                title: Text(entry.value, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                title: Text(
+                  entry.value,
+                  style: const TextStyle(color: Colors.white, fontSize: 15),
+                ),
                 onTap: () => Navigator.of(sheetCtx).pop(entry.key),
               ),
             const SizedBox(height: 8),
@@ -397,19 +409,23 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     );
     if (reason == null) return;
     try {
-      await ref.read(postRepositoryProvider).submitReport(
-            targetType: 'post',
-            targetId: post.id,
-            reason: reason,
-          );
+      await ref
+          .read(postRepositoryProvider)
+          .submitReport(targetType: 'post', targetId: post.id, reason: reason);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Report submitted — thanks for keeping the community safe.')),
+        const SnackBar(
+          content: Text(
+            'Report submitted — thanks for keeping the community safe.',
+          ),
+        ),
       );
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not submit report. Please try again.')),
+        const SnackBar(
+          content: Text('Could not submit report. Please try again.'),
+        ),
       );
     }
   }
@@ -469,9 +485,9 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     } catch (_) {
       if (!mounted) return;
       setState(() => _followedAuthors[authorId] = wasFollowing);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update follow.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not update follow.')));
     } finally {
       if (mounted) {
         setState(() => _followInFlight.remove(authorId));
@@ -797,7 +813,8 @@ class _ReelPageState extends State<_ReelPage> {
     // `isActive=false` means we're rendered off-screen inside the
     // shell IndexedStack — never autoplay, never even mount the
     // VideoPlayerWidget (handled below by ANDing into `shouldAutoplay`).
-    final shouldAutoplay = widget.isActive &&
+    final shouldAutoplay =
+        widget.isActive &&
         ((widget.autoplay && !widget.dataSaver) || _userTappedPlay);
 
     // Gradient background placeholder (used behind video or as fallback).
@@ -1013,6 +1030,12 @@ class _ReelPageState extends State<_ReelPage> {
             onMore: widget.onMore,
           ),
         ),
+        if (widget.post.alteredContent)
+          Positioned(
+            left: 12,
+            top: MediaQuery.paddingOf(context).top + 68,
+            child: const ProvenanceBadge(),
+          ),
         // Bottom info.
         Positioned(
           left: 12,
@@ -1101,11 +1124,7 @@ class _ActionRail extends StatelessWidget {
           onTap: onComment,
         ),
         const SizedBox(height: 18),
-        _RailButton(
-          icon: Icons.reply_rounded,
-          label: 'Share',
-          onTap: onShare,
-        ),
+        _RailButton(icon: Icons.reply_rounded, label: 'Share', onTap: onShare),
         const SizedBox(height: 18),
         _RailButton(
           icon: saved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
@@ -1131,9 +1150,16 @@ class _ActionRail extends StatelessWidget {
               end: Alignment.bottomRight,
               colors: [Color(0xFF3A3A3C), Color(0xFF1C1C1E)],
             ),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.7), width: 2),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.7),
+              width: 2,
+            ),
           ),
-          child: const Icon(Icons.music_note_rounded, color: Colors.white, size: 18),
+          child: const Icon(
+            Icons.music_note_rounded,
+            color: Colors.white,
+            size: 18,
+          ),
         ),
       ],
     );
@@ -1373,11 +1399,7 @@ class _BottomInfo extends StatelessWidget {
         // Sound Info style
         Row(
           children: [
-            const Icon(
-              Icons.music_note_rounded,
-              color: Colors.white,
-              size: 16,
-            ),
+            const Icon(Icons.music_note_rounded, color: Colors.white, size: 16),
             const SizedBox(width: 6),
             Expanded(
               child: Text(

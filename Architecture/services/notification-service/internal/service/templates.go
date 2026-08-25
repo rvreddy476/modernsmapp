@@ -5,11 +5,11 @@ import "time"
 // NotificationTemplate defines the rendering and behavior rules for a notification type.
 type NotificationTemplate struct {
 	EventType       string
-	TitleTemplate   string        // "{actor} liked your post"
-	BodyTemplate    string        // "{post_preview}"
-	AggregateTitle  string        // "{count} people liked your post" — empty = never aggregate
-	Icon            string        // spark, supernova, comment, echo, mention, group, channel, community, system
-	Priority        string        // low | medium | high | critical
+	TitleTemplate   string // "{actor} liked your post"
+	BodyTemplate    string // "{post_preview}"
+	AggregateTitle  string // "{count} people liked your post" — empty = never aggregate
+	Icon            string // spark, supernova, comment, echo, mention, group, channel, community, system
+	Priority        string // low | medium | high | critical
 	PushEligible    bool
 	CanAggregate    bool
 	AggregateWindow time.Duration
@@ -58,7 +58,7 @@ var Templates = map[string]NotificationTemplate{
 	"user.followed": {
 		EventType: "user.followed", TitleTemplate: "{actor} followed you",
 		AggregateTitle: "{count} new followers",
-		Icon: "follow", Priority: "medium", PushEligible: true,
+		Icon:           "follow", Priority: "medium", PushEligible: true,
 		CanAggregate: true, AggregateWindow: 30 * time.Minute,
 	},
 	"user.friend_request": {
@@ -74,13 +74,13 @@ var Templates = map[string]NotificationTemplate{
 	"group.post.published": {
 		EventType: "group.post.published", TitleTemplate: "New post in {group}: {preview}",
 		AggregateTitle: "{count} new posts in {group}",
-		Icon: "group", Priority: "medium", PushEligible: true,
+		Icon:           "group", Priority: "medium", PushEligible: true,
 		CanAggregate: true, AggregateWindow: 15 * time.Minute,
 	},
 	"group.post.submitted": {
 		EventType: "group.post.submitted", TitleTemplate: "{actor} submitted a post for approval",
 		AggregateTitle: "{count} posts pending in {group}",
-		Icon: "group", Priority: "medium", PushEligible: true,
+		Icon:           "group", Priority: "medium", PushEligible: true,
 		CanAggregate: true, AggregateWindow: 10 * time.Minute,
 	},
 	"group.post.approved": {
@@ -99,7 +99,7 @@ var Templates = map[string]NotificationTemplate{
 	"group.member.joined": {
 		EventType: "group.member.joined", TitleTemplate: "{actor} joined {group}",
 		AggregateTitle: "{count} new members in {group}",
-		Icon: "group", Priority: "low", PushEligible: false,
+		Icon:           "group", Priority: "low", PushEligible: false,
 		CanAggregate: true, AggregateWindow: 60 * time.Minute,
 	},
 	"group.invite.received": {
@@ -109,7 +109,7 @@ var Templates = map[string]NotificationTemplate{
 	"group.join_request": {
 		EventType: "group.join_request", TitleTemplate: "{actor} wants to join {group}",
 		AggregateTitle: "{count} pending requests in {group}",
-		Icon: "group", Priority: "medium", PushEligible: true,
+		Icon:           "group", Priority: "medium", PushEligible: true,
 		CanAggregate: true, AggregateWindow: 10 * time.Minute,
 	},
 	"group.join_approved": {
@@ -133,7 +133,7 @@ var Templates = map[string]NotificationTemplate{
 	"channel.update.published": {
 		EventType: "channel.update.published", TitleTemplate: "{channel} posted: {title}",
 		AggregateTitle: "{count} new updates from {channel}",
-		Icon: "channel", Priority: "medium", PushEligible: true,
+		Icon:           "channel", Priority: "medium", PushEligible: true,
 		CanAggregate: true, AggregateWindow: 30 * time.Minute,
 	},
 	"channel.urgent.info": {
@@ -162,7 +162,7 @@ var Templates = map[string]NotificationTemplate{
 	"community.post.published": {
 		EventType: "community.post.published", TitleTemplate: "{actor} posted in {space} · {community}",
 		AggregateTitle: "{count} new in {space}",
-		Icon: "community", Priority: "medium", PushEligible: true,
+		Icon:           "community", Priority: "medium", PushEligible: true,
 		CanAggregate: true, AggregateWindow: 15 * time.Minute,
 	},
 	"community.announcement": {
@@ -211,37 +211,37 @@ var Templates = map[string]NotificationTemplate{
 	"commerce.order.created": {
 		EventType: "commerce.order.created", TitleTemplate: "Order {order_number} placed",
 		BodyTemplate: "We've received your order. Total: ₹{amount}.",
-		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 	"commerce.order.paid": {
 		EventType: "commerce.order.paid", TitleTemplate: "Payment received for order {order_number}",
 		BodyTemplate: "Your payment of ₹{amount} was successful.",
-		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 	"commerce.order.shipped": {
 		EventType: "commerce.order.shipped", TitleTemplate: "Order {order_number} is on its way",
 		BodyTemplate: "Tracking: {tracking_number} via {courier}.",
-		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 	"commerce.order.delivered": {
 		EventType: "commerce.order.delivered", TitleTemplate: "Order {order_number} delivered",
 		BodyTemplate: "Enjoy! Tap to review.",
-		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 	"commerce.invoice.issued": {
 		EventType: "commerce.invoice.issued", TitleTemplate: "Invoice {invoice_number} issued",
 		BodyTemplate: "Your invoice for order {order_number} is ready.",
-		Icon: "system", Priority: "medium", PushEligible: false, CanAggregate: false,
+		Icon:         "system", Priority: "medium", PushEligible: false, CanAggregate: false,
 	},
 	"commerce.seller.new_order": {
 		EventType: "commerce.seller.new_order", TitleTemplate: "New order {order_number}",
 		BodyTemplate: "You have a new order worth ₹{amount}. Start packing!",
-		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+		Icon:         "system", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 	"commerce.return.requested": {
 		EventType: "commerce.return.requested", TitleTemplate: "Return requested for order {order_number}",
 		BodyTemplate: "Reason: {reason}",
-		Icon: "system", Priority: "medium", PushEligible: true, CanAggregate: false,
+		Icon:         "system", Priority: "medium", PushEligible: true, CanAggregate: false,
 	},
 }
 
@@ -251,9 +251,9 @@ func GetTemplate(eventType string) NotificationTemplate {
 		return t
 	}
 	return NotificationTemplate{
-		EventType:    eventType,
+		EventType:     eventType,
 		TitleTemplate: "New notification",
-		Priority:     "low",
-		PushEligible: false,
+		Priority:      "low",
+		PushEligible:  false,
 	}
 }

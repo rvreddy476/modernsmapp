@@ -15,10 +15,10 @@ import (
 // the MFA check (via the user's TwoFactorEnabled) and observe audit writes.
 type roleTestStore struct {
 	*fakeAnomalyStore
-	roles    map[uuid.UUID][]string
-	twoFA    map[uuid.UUID]bool
-	grants   int
-	audits   []string // "action:allowed"
+	roles  map[uuid.UUID][]string
+	twoFA  map[uuid.UUID]bool
+	grants int
+	audits []string // "action:allowed"
 }
 
 func (r *roleTestStore) RolesForUser(_ context.Context, uid uuid.UUID) ([]string, error) {

@@ -4,10 +4,14 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/features/create/providers/creation_provider.dart';
 import 'package:atpost_app/features/create/widgets/mention_field.dart';
+import 'package:atpost_app/features/create/widgets/voice_recorder_sheet.dart';
 import 'package:atpost_app/features/create/widgets/trending_hashtag_strip.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/data/models/user.dart';
 import 'package:flutter/material.dart';
+import 'package:skeletonizer/skeletonizer.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -207,6 +211,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                         if (_showBackgroundPicker)
                           _buildBackgroundPicker(state),
                         if (state.files.isNotEmpty) _buildMediaGrid(state),
+                        _buildProvenanceDisclosure(state),
                         const SizedBox(height: 120), // Space for toolbar
                       ],
                     ),
@@ -231,6 +236,33 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [Color(0xFF0F111A), Color(0xFF090A11), Color(0xFF141726)],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProvenanceDisclosure(CreationState state) {
+    return Container(
+      margin: const EdgeInsets.only(top: 18),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: SwitchListTile(
+        value: state.alteredContent,
+        onChanged: (value) =>
+            ref.read(creationProvider.notifier).setAlteredContent(value),
+        secondary: const Icon(Icons.auto_awesome_outlined, color: Colors.amber),
+        title: Text(
+          'AI-generated or significantly altered',
+          style: AppTextStyles.body,
+        ),
+        subtitle: Text(
+          'Adds a visible disclosure for viewers. It does not reduce reach.',
+          style: AppTextStyles.bodySmall.copyWith(
+            color: AppColors.textSecondary,
           ),
         ),
       ),
@@ -269,7 +301,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                         await ref
                             .read(homeFeedProvider.notifier)
                             .fetchFirstPage();
-                      } catch (_) {/* non-fatal */}
+                      } catch (_) {
+                        /* non-fatal */
+                      }
                     }
                     if (success && mounted) context.pop();
                     if (!success && mounted) {
@@ -312,23 +346,37 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     );
   }
 
-  Widget _buildComposerArea(CreationState state, dynamic user) {
+  Widget _buildComposerArea(CreationState state, User? user) {
     return Column(
       children: [
         Row(
           children: [
-            CircleAvatar(
-              radius: 22,
-              backgroundColor: Colors.white10,
-              backgroundImage: user?.avatarUrl != null
-                  ? NetworkImage(user!.avatarUrl)
-                  : null,
+            Skeletonizer(
+              enabled: user == null,
+              child: CircleAvatar(
+                radius: 22,
+                backgroundColor: Colors.white10,
+                backgroundImage: user?.hasAvatar == true
+                    ? NetworkImage(user!.avatarUrl)
+                    : null,
+                child: user == null
+                    ? null
+                    : (!user.hasAvatar
+                        ? const Icon(Icons.person, color: Colors.white24)
+                        : null),
+              ),
             ),
             const SizedBox(width: 12),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(user?.displayName ?? 'Anonymous', style: AppTextStyles.h3),
+                Skeletonizer(
+                  enabled: user == null,
+                  child: Text(
+                    user?.displayName ?? 'Loading Profile...',
+                    style: AppTextStyles.h3,
+                  ),
+                ),
                 _buildVisibilityBadge(state),
               ],
             ),
@@ -458,6 +506,110 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     );
   }
 
+  /// P0-6: record a voice post. The recorder owns permission, pause,
+  /// cancel, retry and background states; on success the clip becomes the
+  /// post's single media attachment and the post type flips to voice.
+  Future<void> _recordVoice() async {
+    final path = await showVoiceRecorderSheet(context);
+    if (path == null || !mounted) return;
+    final notifier = ref.read(creationProvider.notifier);
+    // Voice posts are voice-only (mixed voice carousels are deferred), so
+    // the recording replaces any staged media rather than joining it.
+    final existing = ref.read(creationProvider).files.length;
+    for (var i = existing - 1; i >= 0; i--) {
+      notifier.removeFile(i);
+    }
+    notifier.setType(PostType.voice);
+    notifier.addFiles([XFile(path)]);
+  }
+
+  /// P0-7: per-image description editor. Offers an explicit "decorative"
+  /// marker so an author can say "this image carries no information"
+  /// rather than being nagged forever or leaving it ambiguous.
+  Future<void> _editAltText(int index, CreationState state) async {
+    final controller = TextEditingController(text: state.altTexts[index] ?? '');
+    var decorative = state.decorativeMedia.contains(index);
+
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bgSecondary,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 16,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Describe this image', style: AppTextStyles.h3),
+              const SizedBox(height: 6),
+              Text(
+                'Helps people using screen readers understand your post.',
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textDim,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                enabled: !decorative,
+                maxLines: 3,
+                maxLength: 400,
+                autofocus: !decorative,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  hintText: 'e.g. A street vendor making chai at dawn',
+                ),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: decorative,
+                onChanged: (v) => setSheetState(() {
+                  decorative = v ?? false;
+                  if (decorative) controller.clear();
+                }),
+                title: Text(
+                  'This image is decorative',
+                  style: AppTextStyles.bodyMedium,
+                ),
+                subtitle: Text(
+                  'Screen readers will skip it.',
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.textDim,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Save'),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (saved == true) {
+      final notifier = ref.read(creationProvider.notifier);
+      notifier.setDecorative(index, decorative);
+      if (!decorative) notifier.setAltText(index, controller.text);
+    }
+    controller.dispose();
+  }
+
   Widget _buildMediaGrid(CreationState state) {
     return Container(
       margin: const EdgeInsets.only(top: 24),
@@ -470,35 +622,81 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
           crossAxisSpacing: 10,
           mainAxisSpacing: 10,
         ),
-        itemBuilder: (context, index) => Stack(
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: Image.file(
-                File(state.files[index].path),
-                fit: BoxFit.cover,
-                width: double.infinity,
-                height: double.infinity,
-              ),
-            ),
-            Positioned(
-              right: 8,
-              top: 8,
-              child: GestureDetector(
-                onTap: () =>
-                    ref.read(creationProvider.notifier).removeFile(index),
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(
-                    color: Colors.black54,
-                    shape: BoxShape.circle,
+        itemBuilder: (context, index) {
+          final described = state.altTexts.containsKey(index);
+          final decorative = state.decorativeMedia.contains(index);
+          return Stack(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Semantics(
+                  // P0-7: mirror the published semantics in the composer
+                  // so the author can hear what a screen reader will say.
+                  image: true,
+                  label: described ? state.altTexts[index] : null,
+                  excludeSemantics: decorative,
+                  child: Image.file(
+                    File(state.files[index].path),
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    height: double.infinity,
                   ),
-                  child: const Icon(Icons.close, size: 14, color: Colors.white),
                 ),
               ),
-            ),
-          ],
-        ),
+              Positioned(
+                right: 8,
+                top: 8,
+                child: GestureDetector(
+                  onTap: () =>
+                      ref.read(creationProvider.notifier).removeFile(index),
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.black54,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close,
+                      size: 14,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+              // ALT badge — the standard affordance for adding an image
+              // description. Highlighted once a description exists.
+              Positioned(
+                left: 8,
+                bottom: 8,
+                child: GestureDetector(
+                  onTap: () => _editAltText(index, state),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: described || decorative
+                          ? AppColors.posttubePrimary
+                          : Colors.black54,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      decorative ? 'DECORATIVE' : 'ALT',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: described || decorative
+                            ? Colors.black
+                            : Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     ).animate().fadeIn().slideY(begin: 0.1, end: 0);
   }
@@ -554,7 +752,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               padding: const EdgeInsets.only(top: 6, left: 4),
               child: Text(
                 qErr,
-                style: AppTextStyles.labelSmall.copyWith(color: Colors.redAccent),
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: Colors.redAccent,
+                ),
               ),
             ),
           const SizedBox(height: 16),
@@ -563,73 +763,74 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             style: AppTextStyles.label.copyWith(color: Colors.white70),
           ),
           const SizedBox(height: 8),
-          ...state.pollOptions.asMap().entries.map(
-            (e) {
-              final err = state.pollOptionErrors[e.key];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      onChanged: (v) {
-                        ref
-                            .read(creationProvider.notifier)
-                            .updatePollOption(e.key, v);
-                        // Clear inline errors as the user fixes them.
-                        ref.read(creationProvider.notifier).clearPollErrors();
-                      },
-                      style: AppTextStyles.body,
-                      decoration: InputDecoration(
-                        hintText: 'Option ${e.key + 1}',
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.05),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: err != null
-                              ? const BorderSide(color: Colors.redAccent)
-                              : BorderSide.none,
+          ...state.pollOptions.asMap().entries.map((e) {
+            final err = state.pollOptionErrors[e.key];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    onChanged: (v) {
+                      ref
+                          .read(creationProvider.notifier)
+                          .updatePollOption(e.key, v);
+                      // Clear inline errors as the user fixes them.
+                      ref.read(creationProvider.notifier).clearPollErrors();
+                    },
+                    style: AppTextStyles.body,
+                    decoration: InputDecoration(
+                      hintText: 'Option ${e.key + 1}',
+                      filled: true,
+                      fillColor: Colors.white.withValues(alpha: 0.05),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: err != null
+                            ? const BorderSide(color: Colors.redAccent)
+                            : BorderSide.none,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: err != null
+                            ? const BorderSide(color: Colors.redAccent)
+                            : BorderSide.none,
+                      ),
+                      suffixIcon: state.pollOptions.length > 2
+                          ? IconButton(
+                              icon: const Icon(
+                                Icons.remove_circle_outline,
+                                color: Colors.redAccent,
+                                size: 20,
+                              ),
+                              onPressed: () => ref
+                                  .read(creationProvider.notifier)
+                                  .removePollOption(e.key),
+                            )
+                          : null,
+                    ),
+                  ),
+                  if (err != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4, left: 4),
+                      child: Text(
+                        err,
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: Colors.redAccent,
                         ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: err != null
-                              ? const BorderSide(color: Colors.redAccent)
-                              : BorderSide.none,
-                        ),
-                        suffixIcon: state.pollOptions.length > 2
-                            ? IconButton(
-                                icon: const Icon(
-                                  Icons.remove_circle_outline,
-                                  color: Colors.redAccent,
-                                  size: 20,
-                                ),
-                                onPressed: () => ref
-                                    .read(creationProvider.notifier)
-                                    .removePollOption(e.key),
-                              )
-                            : null,
                       ),
                     ),
-                    if (err != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4, left: 4),
-                        child: Text(
-                          err,
-                          style: AppTextStyles.labelSmall
-                              .copyWith(color: Colors.redAccent),
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            },
-          ),
+                ],
+              ),
+            );
+          }),
           if (state.pollQuestionError != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 8, left: 4),
               child: Text(
                 state.pollQuestionError!,
-                style: AppTextStyles.labelSmall.copyWith(color: Colors.redAccent),
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: Colors.redAccent,
+                ),
               ),
             ),
           if (state.pollOptions.length < 5)
@@ -684,6 +885,14 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               Colors.purpleAccent,
               () => ref.read(creationProvider.notifier).setType(PostType.poll),
             ),
+            // Module 1 P0-6: voice post. India-first — speaking is faster
+            // than typing for a large share of users.
+            _ToolbarIcon(
+              Icons.mic_none_outlined,
+              'Voice',
+              Colors.tealAccent,
+              _recordVoice,
+            ),
             _ToolbarIcon(
               Icons.tag,
               'Tags',
@@ -694,7 +903,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               Icons.palette_outlined,
               'Design',
               Colors.amberAccent,
-              () => setState(() => _showBackgroundPicker = !_showBackgroundPicker),
+              () => setState(
+                () => _showBackgroundPicker = !_showBackgroundPicker,
+              ),
             ),
             _ToolbarIcon(
               Icons.movie_edit,
@@ -782,24 +993,28 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               spacing: 6,
               runSpacing: 6,
               children: state.tags
-                  .map((t) => Chip(
-                        label: Text(
-                          '#$t',
-                          style: AppTextStyles.labelSmall.copyWith(
-                            color: Colors.lightBlueAccent,
-                          ),
+                  .map(
+                    (t) => Chip(
+                      label: Text(
+                        '#$t',
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: Colors.lightBlueAccent,
                         ),
-                        backgroundColor: Colors.lightBlueAccent.withValues(alpha: 0.1),
-                        side: BorderSide(
-                          color: Colors.lightBlueAccent.withValues(alpha: 0.3),
-                        ),
-                        deleteIcon: const Icon(Icons.close, size: 14),
-                        deleteIconColor: Colors.lightBlueAccent,
-                        onDeleted: () =>
-                            ref.read(creationProvider.notifier).removeTag(t),
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
-                      ))
+                      ),
+                      backgroundColor: Colors.lightBlueAccent.withValues(
+                        alpha: 0.1,
+                      ),
+                      side: BorderSide(
+                        color: Colors.lightBlueAccent.withValues(alpha: 0.3),
+                      ),
+                      deleteIcon: const Icon(Icons.close, size: 14),
+                      deleteIconColor: Colors.lightBlueAccent,
+                      onDeleted: () =>
+                          ref.read(creationProvider.notifier).removeTag(t),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  )
                   .toList(),
             ),
           ],
@@ -837,7 +1052,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.palette_outlined, color: Colors.amberAccent, size: 16),
+              const Icon(
+                Icons.palette_outlined,
+                color: Colors.amberAccent,
+                size: 16,
+              ),
               const SizedBox(width: 6),
               Text(
                 'Background',
@@ -864,8 +1083,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 icon: const Icon(Icons.close, size: 18, color: Colors.white54),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
-                onPressed: () =>
-                    setState(() => _showBackgroundPicker = false),
+                onPressed: () => setState(() => _showBackgroundPicker = false),
               ),
             ],
           ),
@@ -898,7 +1116,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                         radius: radius,
                         start: start,
                         arcSpan: arcSpan,
-                        selected: state.backgroundColor?.toUpperCase() ==
+                        selected:
+                            state.backgroundColor?.toUpperCase() ==
                             swatches[i].hex.toUpperCase(),
                         disabled: disabled,
                       ),
@@ -907,7 +1126,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                       left: arcWidth / 2 - 16,
                       top: arcHeight - 4,
                       child: _swatchButton(
-                        const _Swatch(hex: 'transparent', label: 'No background'),
+                        const _Swatch(
+                          hex: 'transparent',
+                          label: 'No background',
+                        ),
                         selected: state.backgroundColor == null,
                         disabled: disabled,
                       ),
@@ -958,7 +1180,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     return value == null ? Colors.white12 : Color(value);
   }
 
-  Widget _swatchButton(_Swatch swatch, {required bool selected, required bool disabled}) {
+  Widget _swatchButton(
+    _Swatch swatch, {
+    required bool selected,
+    required bool disabled,
+  }) {
     final isNone = swatch.hex == 'transparent';
     return GestureDetector(
       onTap: disabled

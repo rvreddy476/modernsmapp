@@ -1,3 +1,4 @@
+import 'package:atpost_app/data/models/conversation.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/user.dart';
@@ -486,7 +487,7 @@ class _FriendStripItem extends StatelessWidget {
 }
 
 class _ConversationTile extends StatelessWidget {
-  final dynamic convo;
+  final Conversation convo;
   final String displayName;
   final VoidCallback onTap;
   const _ConversationTile({

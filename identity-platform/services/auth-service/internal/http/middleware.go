@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/atpost/identity-shared/api"
+	identitymiddleware "github.com/atpost/identity-shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -102,15 +102,6 @@ func RecoveryMiddleware(log *slog.Logger) gin.HandlerFunc {
 	}
 }
 
-func isSafeMethod(method string) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return true
-	default:
-		return false
-	}
-}
-
 func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 	return AuthMiddlewareWithRevoke(jwtSecret, nil)
 }
@@ -166,19 +157,7 @@ func AuthMiddlewareWithRevoke(jwtSecret string, rdb *redis.Client) gin.HandlerFu
 
 func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var tokenStr string
-
-		// Try Authorization header first
-		if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-			tokenStr = strings.TrimPrefix(auth, "Bearer ")
-		}
-
-		// Fallback to cookie
-		if tokenStr == "" {
-			if cookie, err := c.Cookie("access_token"); err == nil {
-				tokenStr = cookie
-			}
-		}
+		tokenStr, credentialSource := identitymiddleware.ReadAccessToken(c, accessTokenCookieName)
 
 		if tokenStr == "" {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing access token", nil, nil)
@@ -242,26 +221,13 @@ func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
 		}
 
 		c.Request.Header.Set("X-User-Id", claims.Subject)
+		identitymiddleware.MarkAuthenticatedCredential(c, credentialSource)
 		c.Next()
 	}
 }
 
 func RequireCSRFMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if isSafeMethod(c.Request.Method) {
-			c.Next()
-			return
-		}
-
-		headerToken := c.GetHeader("X-CSRF-Token")
-		cookieToken, err := c.Cookie("csrf_token")
-		if err != nil || headerToken == "" || headerToken != cookieToken {
-			api.Error(c.Writer, http.StatusForbidden, "CSRF_FAILED", "CSRF token mismatch", nil, nil)
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
+	return identitymiddleware.RequireCSRF(csrfCookieName, "X-CSRF-Token")
 }
 
 func CORSMiddleware() gin.HandlerFunc {

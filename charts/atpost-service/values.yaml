@@ -6,6 +6,11 @@
 # instead of producing a malformed manifest.
 
 # Service identity.
+global:
+  # Deployment supplies the real 12-digit AWS account ID. Values files use
+  # this in tpl expressions so checked-in manifests never carry a fake ARN.
+  awsAccountId: ""
+
 service:
   name: ""          # REQUIRED. lower-kebab name e.g. "post-service"
   port: 0           # REQUIRED. e.g. 8084 for post-service
@@ -114,3 +119,63 @@ readinessProbe:
 pdb:
   enabled: true
   minAvailable: 2   # tighten to maxUnavailable: 25% for large services
+
+# Module 4 M4-P0-3 — optional background worker.
+#
+# DISABLED BY DEFAULT AND THAT IS THE CONTRACT: with worker.enabled=false the
+# chart renders exactly what it rendered before this block existed. Only
+# media-service turns it on. A render regression test asserts the no-op for an
+# ordinary service.
+worker:
+  enabled: false
+  replicaCount: 2
+  image:
+    # Deliberately NOT defaulted to image.repository. The worker is a different
+    # image: the server image contains neither ffmpeg nor the worker binary, so
+    # silently inheriting the server repository would deploy a workload that
+    # cannot do the job and would look healthy doing it.
+    repository: ""
+    tag: latest
+    pullPolicy: IfNotPresent
+  env: {}
+  podAnnotations: {}
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      # ffmpeg is CPU-bound and user-amplifiable; the ceiling is what stops one
+      # pathological upload consuming a whole node.
+      cpu: "2"
+      memory: 2Gi
+  # Bounded scratch for ffmpeg intermediates. Mounted at /tmp; the root
+  # filesystem is read-only.
+  scratchSizeLimit: 20Gi
+  # Long enough for an in-flight transcode to finish and commit its offset
+  # rather than being killed mid-job and redelivered.
+  terminationGracePeriodSeconds: 300
+  livenessProbe: {}
+  nodeSelector: {}
+  tolerations: []
+
+# Cross-service schema ordering (release-gate finding, Module 7 verification).
+#
+# Tables this service's migrations reference but ANOTHER service owns. When
+# non-empty, an init container waits for each to exist before the app starts.
+#
+# EMPTY BY DEFAULT: a service with no cross-service dependency renders exactly
+# what it rendered before this block existed. Only the two tier-2 services
+# declare anything.
+#
+#   tier 1 (owners, no dependencies): user-service, media-service, feed-service
+#   tier 2 (declare below):           post-service, graph-service
+#
+# Verified on a virgin database: tier 1 then tier 2 bootstraps in a single pass
+# with no retries. Previously post-service failed six identical times.
+schemaDependencies: []
+# Image providing psql. Pinned rather than :latest so the gate cannot change
+# under a redeploy.
+schemaDependencyImage: postgres:16-alpine
+# Bounded wait. Long enough for a cold environment where the owner is still
+# migrating, short enough that a genuinely missing owner fails visibly.
+schemaDependencyTimeoutSeconds: 300

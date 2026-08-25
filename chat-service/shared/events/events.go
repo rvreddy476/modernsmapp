@@ -18,6 +18,20 @@ const (
 	MessageRequestCreated  = "MessageRequestCreated"
 	MessageRequestAccepted = "MessageRequestAccepted"
 	MessageRequestIgnored  = "MessageRequestIgnored"
+	MessageRequestBlocked  = "MessageRequestBlocked"
+	MessageRequestReported = "MessageRequestReported"
+
+	// Group governance (production chat pass, directive §3.4).
+	MemberRoleChanged    = "MemberRoleChanged"
+	OwnershipTransferred = "OwnershipTransferred"
+	MemberLeft           = "MemberLeft"
+	GroupInfoUpdated     = "GroupInfoUpdated"
+	GroupInviteCreated   = "GroupInviteCreated"
+	GroupInviteAccepted  = "GroupInviteAccepted"
+	GroupInviteDeclined  = "GroupInviteDeclined"
+	GroupInviteRevoked   = "GroupInviteRevoked"
+	ConversationRead     = "ConversationRead"
+	SubscriptionRevoked  = "SubscriptionRevoked"
 
 	// Dating-specific outbox event — emitted on every send into a
 	// source_app='dating' conversation. notification-service consumes it
@@ -36,6 +50,53 @@ type ChatDatingMessageNewPayload struct {
 	RecipientID    string    `json:"recipient_id"`
 	MessagePreview string    `json:"message_preview,omitempty"`
 	SentAt         time.Time `json:"sent_at"`
+}
+
+// Group-governance payloads (production chat pass).
+
+type MemberRoleChangedPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	UserID         string    `json:"user_id"`
+	OldRole        string    `json:"old_role"`
+	NewRole        string    `json:"new_role"`
+	ChangedBy      string    `json:"changed_by"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+type OwnershipTransferredPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	FromUserID     string    `json:"from_user_id"`
+	ToUserID       string    `json:"to_user_id"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+type MemberLeftPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	UserID         string    `json:"user_id"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+type GroupInfoUpdatedPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	UpdatedBy      string    `json:"updated_by"`
+	Title          string    `json:"title,omitempty"`
+	AvatarMediaID  string    `json:"avatar_media_id,omitempty"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+type GroupInvitePayload struct {
+	InvitationID   string    `json:"invitation_id"`
+	ConversationID string    `json:"conversation_id"`
+	InviterID      string    `json:"inviter_id"`
+	InviteeID      string    `json:"invitee_id"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+type ConversationReadPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	UserID         string    `json:"user_id"`
+	MessageID      string    `json:"message_id"`
+	OccurredAt     time.Time `json:"occurred_at"`
 }
 
 // Event type constants for call-service domain events.
@@ -73,10 +134,10 @@ type ConversationCreatedPayload struct {
 }
 
 type MessageCreatedPayload struct {
-	MessageID      string    `json:"message_id"`
-	ConversationID string    `json:"conversation_id"`
-	SenderID       string    `json:"sender_id"`
-	Type           string    `json:"type"`
+	MessageID      string `json:"message_id"`
+	ConversationID string `json:"conversation_id"`
+	SenderID       string `json:"sender_id"`
+	Type           string `json:"type"`
 	// RecipientIDs lists every conversation member except the sender so that
 	// notification-service can fan out without re-querying chat-service.
 	RecipientIDs []string  `json:"recipient_ids"`
@@ -148,16 +209,16 @@ type CallInvitedPayload struct {
 }
 
 type CallAcceptedPayload struct {
-	CallID   string    `json:"call_id"`
-	InviteID string    `json:"invite_id"`
-	UserID   string    `json:"user_id"`
+	CallID     string    `json:"call_id"`
+	InviteID   string    `json:"invite_id"`
+	UserID     string    `json:"user_id"`
 	AcceptedAt time.Time `json:"accepted_at"`
 }
 
 type CallDeclinedPayload struct {
-	CallID   string    `json:"call_id"`
-	InviteID string    `json:"invite_id"`
-	UserID   string    `json:"user_id"`
+	CallID     string    `json:"call_id"`
+	InviteID   string    `json:"invite_id"`
+	UserID     string    `json:"user_id"`
 	DeclinedAt time.Time `json:"declined_at"`
 }
 

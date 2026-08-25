@@ -5,7 +5,7 @@ service:
   port: 8084
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/post-service
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/post-service'
   tag: latest # CI overrides via `--set image.tag=<sha>`
 
 # HPA on for prod — base 6 replicas, can grow to 24 on CPU pressure.
@@ -25,7 +25,7 @@ resources:
     memory: 2Gi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-prod-post-service-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-post-service-irsa'
 
 externalSecret:
   enabled: true
@@ -41,6 +41,10 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    - { secretKey: STORY_MODERATION_HMAC_KEY, remoteRef: story_moderation_hmac_key }
+    - { secretKey: STORY_MODERATION_HMAC_KEY_PREVIOUS, remoteRef: story_moderation_hmac_key_previous }
+    - { secretKey: POST_MODERATION_HMAC_KEY, remoteRef: post_moderation_hmac_key }
+    - { secretKey: POST_MODERATION_HMAC_KEY_PREVIOUS, remoteRef: post_moderation_hmac_key_previous }
 
 env:
   ENV: prod
@@ -57,3 +61,12 @@ ingress:
 pdb:
   enabled: true
   minAvailable: 4 # tolerate one AZ loss without unfreezing the cluster
+
+# post-service migrations reference tables owned by other services:
+#   media_assets     -> media-service   (003_content_type_reel_video.sql)
+#   user_preferences -> feed-service    (009_crosspost_v2.sql)
+#   users            -> user-service    (010_postbook_features.sql)
+schemaDependencies:
+  - media_assets
+  - user_preferences
+  - users

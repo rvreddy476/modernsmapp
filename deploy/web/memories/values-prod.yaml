@@ -3,7 +3,7 @@ service:
   name: web-memories
   port: 3000            # Next standalone listens on 3000
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/web-memories
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/web-memories'
   tag: latest           # CI overrides with the commit SHA
 replicaCount: 3
 hpa:

@@ -20,9 +20,9 @@ func (s *Service) SaveWatchProgress(ctx context.Context, wp *postgres.WatchProgr
 	// Mirror to Redis hash for fast reads.
 	key := fmt.Sprintf("watch_progress:%s:%s", wp.UserID, wp.PostID)
 	fields := map[string]interface{}{
-		"position_ms":    wp.PositionMs,
+		"position_ms":     wp.PositionMs,
 		"last_watched_at": time.Now().UTC().Format(time.RFC3339),
-		"completed":      wp.Completed,
+		"completed":       wp.Completed,
 	}
 	pipe := s.rdb.Pipeline()
 	pipe.HSet(ctx, key, fields)

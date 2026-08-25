@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/atpost/shared/api"
 	"github.com/atpost/trust-safety-service/internal/service"
+	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -88,7 +90,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 }
 
 type FileReportRequest struct {
-	EntityType string `json:"entity_type" binding:"required,oneof=user post comment"`
+	// reel and video remain accepted only as wire-compatibility aliases. The
+	// service normalizes both to post before validation or persistence.
+	EntityType string `json:"entity_type" binding:"required,oneof=user post comment reel video"`
 	EntityID   string `json:"entity_id" binding:"required"`
 	Reason     string `json:"reason" binding:"required"`
 	Details    string `json:"details"`
@@ -116,6 +120,10 @@ func (h *Handler) FileReport(c *gin.Context) {
 
 	report, err := h.svc.FileReport(c.Request.Context(), userID, entityID, req.EntityType, req.Reason, req.Details)
 	if err != nil {
+		if errors.Is(err, postgres.ErrActiveReportExists) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ACTIVE_REPORT_EXISTS", "You already have an active report for this content", nil)
+			return
+		}
 		slog.Error("FileReport error", "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to file report", nil)
 		return
@@ -125,12 +133,40 @@ func (h *Handler) FileReport(c *gin.Context) {
 }
 
 func (h *Handler) ListReports(c *gin.Context) {
+	limit, offset := reportPagination(c)
+	if c.Query("mine") == "true" {
+		userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+			return
+		}
+		reports, err := h.svc.ListOwnReports(c.Request.Context(), userID, limit, offset)
+		if err != nil {
+			slog.Error("ListOwnReports error", "error", err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": reports}, nil)
+		return
+	}
+
 	scopes := c.GetHeader("X-Scopes")
 	if !hasScope(scopes, "admin") {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 
+	reports, err := h.svc.ListReports(c.Request.Context(), limit, offset)
+	if err != nil {
+		slog.Error("ListReports error", "error", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": reports}, nil)
+}
+
+func reportPagination(c *gin.Context) (int, int) {
 	limit := 20
 	if l := c.Query("limit"); l != "" {
 		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
@@ -145,14 +181,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 		}
 	}
 
-	reports, err := h.svc.ListReports(c.Request.Context(), limit, offset)
-	if err != nil {
-		slog.Error("ListReports error", "error", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": reports}, nil)
+	return limit, offset
 }
 
 func (h *Handler) GetReport(c *gin.Context) {

@@ -108,6 +108,7 @@ class MultiEntitySearchController
       case SearchEntity.channels:
         return r.channels.nextCursor;
     }
+    return null;
   }
 
   MultiEntitySearchResults _mergeBucket(

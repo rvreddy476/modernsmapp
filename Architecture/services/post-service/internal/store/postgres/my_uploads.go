@@ -48,28 +48,9 @@ func (s *Store) GetUploadsByContentTypes(ctx context.Context, authorID uuid.UUID
 	}
 
 	// Batch-fetch media
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil
@@ -93,6 +74,11 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 	`, postID, authorID).Scan(&deletedID)
 	if err != nil {
 		return 0, fmt.Errorf("post not found or not owned by user")
+	}
+	// M2-P0-2: deletion removes the post from public search. Emitted in
+	// this same transaction so the removal cannot be lost.
+	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
+		return 0, fmt.Errorf("emit search eligibility on delete: %w", err)
 	}
 
 	// Cascade-delete crosspost links (table may not exist yet — use savepoint)
@@ -130,6 +116,12 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 			`, targetPostIDs)
 			if err == nil {
 				cascadeCount = int(tag.RowsAffected())
+				// M2-P0-2: each cascaded delete must leave public search.
+				for _, tid := range targetPostIDs {
+					if emitErr := BumpSearchRevAndEmitTx(ctx, tx, tid); emitErr != nil {
+						return 0, fmt.Errorf("emit search eligibility on cascade delete: %w", emitErr)
+					}
+				}
 			}
 		}
 		_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT crosspost_cascade")

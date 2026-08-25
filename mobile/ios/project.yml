@@ -1,0 +1,285 @@
+name: Us
+options:
+  bundleIdPrefix: com.us.social
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "15.0"
+
+packages:
+  UsCore:
+    path: Packages/UsCore
+  UsFeatures:
+    path: Packages/UsFeatures
+
+targets:
+  Us:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: App/Sources
+      - path: App/Resources
+    dependencies:
+      - package: UsCore
+        product: UsModel
+      - package: UsCore
+        product: UsDesignSystem
+      - package: UsCore
+        product: UsNetwork
+      - package: UsCore
+        product: UsMedia
+      - package: UsFeatures
+        product: FeatureFeed
+      - package: UsFeatures
+        product: FeatureReels
+      - package: UsFeatures
+        product: FeaturePost
+      - package: UsFeatures
+        product: FeatureAuth
+      - package: UsFeatures
+        product: FeatureProfile
+      - package: UsFeatures
+        product: FeatureExplore
+      - package: UsFeatures
+        product: FeatureChat
+      - package: UsFeatures
+        product: FeatureCreate
+      - package: UsFeatures
+        product: FeatureStory
+      - package: UsFeatures
+        product: FeatureNotifications
+      - package: UsFeatures
+        product: FeatureSettings
+      - package: UsFeatures
+        product: FeatureWatch
+      - package: UsFeatures
+        product: FeatureLive
+      - package: UsFeatures
+        product: FeatureAudio
+      - package: UsFeatures
+        product: FeatureWallet
+      - package: UsFeatures
+        product: FeatureCommerce
+      - package: UsFeatures
+        product: FeatureDating
+      - package: UsFeatures
+        product: FeatureServicesHub
+      - package: UsFeatures
+        product: FeatureFood
+      - package: UsFeatures
+        product: FeatureRides
+      - package: UsFeatures
+        product: FeatureBillPay
+      - package: UsFeatures
+        product: FeatureCreatorStudio
+      - package: UsFeatures
+        product: FeatureCommunities
+      - package: UsFeatures
+        product: FeatureCalling
+      - package: UsFeatures
+        product: FeatureSafety
+      - package: UsFeatures
+        product: FeatureMemories
+      - package: UsFeatures
+        product: FeatureAI
+      - package: UsFeatures
+        product: FeatureQA
+      - package: UsFeatures
+        product: FeatureAudioSpaces
+      - package: UsFeatures
+        product: FeatureMediaEditor
+      - package: UsFeatures
+        product: FeatureQRCode
+      - package: UsFeatures
+        product: FeatureRewards
+      - package: UsFeatures
+        product: FeatureLiveCommerce
+      - package: UsFeatures
+        product: FeatureBroadcastChannels
+      - package: UsFeatures
+        product: FeatureSlambook
+      - package: UsFeatures
+        product: FeatureSecurity
+      - package: UsFeatures
+        product: FeatureSplitBill
+      - package: UsFeatures
+        product: FeatureSubscriptions
+      - package: UsFeatures
+        product: FeatureRadar
+      - package: UsFeatures
+        product: FeatureARCamera
+      - package: UsFeatures
+        product: FeatureEvents
+      - package: UsFeatures
+        product: FeatureGifting
+      - package: UsFeatures
+        product: FeatureStoryStickers
+      - package: UsFeatures
+        product: FeatureMultiLive
+      - package: UsFeatures
+        product: FeatureVideoScrubber
+      - package: UsFeatures
+        product: FeatureSoundboard
+      - package: UsFeatures
+        product: FeatureThemes
+      - package: UsFeatures
+        product: FeatureBadges
+      - package: UsFeatures
+        product: FeaturePIP
+      - package: UsFeatures
+        product: FeatureRemix
+      - package: UsFeatures
+        product: FeatureMiniGames
+      - package: UsFeatures
+        product: FeatureCollabs
+      - package: UsFeatures
+        product: FeatureLiveLocation
+      - package: UsFeatures
+        product: FeatureMusicStickers
+      - package: UsFeatures
+        product: FeatureDisappearingMedia
+      - package: UsFeatures
+        product: FeatureAccountSwitcher
+      - package: UsFeatures
+        product: FeatureTipJar
+      - package: UsFeatures
+        product: FeatureAppShortcuts
+      - package: UsFeatures
+        product: FeaturePolls
+      - package: UsFeatures
+        product: FeatureStage
+      - package: UsFeatures
+        product: FeatureClassifieds
+      - package: UsFeatures
+        product: FeatureDigitalGold
+      - package: UsFeatures
+        product: FeatureTranslator
+      - package: UsFeatures
+        product: FeatureAMA
+      - package: UsFeatures
+        product: FeatureStorefront
+      - package: UsFeatures
+        product: FeatureCloseFriends
+      - package: UsFeatures
+        product: FeatureEncryption
+      - package: UsFeatures
+        product: FeatureTrivia
+      - package: UsFeatures
+        product: FeatureCountdown
+      - package: UsFeatures
+        product: FeatureVoiceFX
+      - package: UsFeatures
+        product: FeatureMetro
+      - package: UsFeatures
+        product: FeatureSettlements
+      - package: UsFeatures
+        product: FeatureChatPolls
+      - package: UsFeatures
+        product: FeatureStoryQuiz
+      - package: UsFeatures
+        product: FeatureOfflineVault
+      - package: UsFeatures
+        product: FeatureParking
+      - package: UsFeatures
+        product: FeatureBrandCollabs
+      - package: UsFeatures
+        product: FeatureWatchParty
+      - package: UsFeatures
+        product: FeatureMentions
+      - package: UsFeatures
+        product: FeatureScheduledDMs
+      - package: UsFeatures
+        product: FeaturePharmacy
+      - package: UsFeatures
+        product: FeatureCourses
+      - package: UsFeatures
+        product: FeatureChatHuddles
+      - package: UsFeatures
+        product: FeatureLinkSticker
+      - package: UsFeatures
+        product: FeatureSecretChat
+      - package: UsFeatures
+        product: FeatureEVCharging
+      - package: UsFeatures
+        product: FeatureMembershipClub
+      - package: UsFeatures
+        product: FeatureGroupExpenses
+      - package: UsFeatures
+        product: FeatureAddYours
+      - package: UsFeatures
+        product: FeatureCampus
+      - package: UsFeatures
+        product: FeatureLaundry
+      - package: UsFeatures
+        product: FeaturePodcasts
+      - package: UsFeatures
+        product: FeatureSharedMedia
+      - package: UsFeatures
+        product: FeatureReactionSlider
+      - package: UsFeatures
+        product: FeatureFanClubs
+      - package: UsFeatures
+        product: FeatureFitness
+      - package: UsFeatures
+        product: FeatureHomeServices
+      - package: UsFeatures
+        product: FeatureVoiceTranscripts
+      - package: UsFeatures
+        product: FeatureAvatarReactions
+      - package: UsFeatures
+        product: FeaturePetCare
+      - package: UsFeatures
+        product: FeatureFanLeaderboard
+      - package: UsFeatures
+        product: FeatureBookExchange
+      - package: UsFeatures
+        product: FeatureChatGames
+      - package: UsFeatures
+        product: FeatureLiveActivities
+      - package: UsFeatures
+        product: FeatureWidgets
+      - package: UsFeatures
+        product: FeatureNFC
+      - package: UsFeatures
+        product: FeatureSharePlay
+      - package: UsFeatures
+        product: FeatureAppIntents
+      - package: UsFeatures
+        product: FeatureCarPlay
+      - package: UsFeatures
+        product: FeatureWatchCompanion
+      - package: UsFeatures
+        product: FeatureSports
+      - package: UsFeatures
+        product: FeatureMediaKit
+      - package: UsFeatures
+        product: FeatureStoryGame
+      - package: UsFeatures
+        product: FeatureWeatherSticker
+      - package: UsFeatures
+        product: FeatureMovies
+      - package: UsFeatures
+        product: FeatureCarpool
+      - package: UsFeatures
+        product: FeatureCollectibles
+      - package: UsFeatures
+        product: FeatureLyrics
+      - package: UsFeatures
+        product: FeatureStoryHeatmap
+      - package: UsFeatures
+        product: FeatureCoworking
+      - package: UsFeatures
+        product: FeatureAudioClipper
+      - package: UsFeatures
+        product: FeatureTransitStatus
+      - package: UsFeatures
+        product: FeatureConfessions
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.us.social.app
+        INFOPLIST_FILE: App/Resources/Info.plist
+        SWIFT_VERSION: "5.9"
+        ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+        DEVELOPMENT_TEAM: ""

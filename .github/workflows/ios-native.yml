@@ -1,0 +1,50 @@
+name: iOS Native CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/ios/**'
+      - '.github/workflows/ios-native.yml'
+  pull_request:
+    paths:
+      - 'mobile/ios/**'
+      - '.github/workflows/ios-native.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ios-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-packages:
+    name: Swift Test (Core & Features) & App Build
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 15.4
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Run UsCore Tests
+        run: |
+          cd mobile/ios/Packages/UsCore
+          swift test
+
+      - name: Run UsFeatures Tests
+        run: |
+          cd mobile/ios/Packages/UsFeatures
+          swift test
+
+      - name: Validate XcodeGen Project Generation
+        run: |
+          brew install xcodegen
+          cd mobile/ios
+          xcodegen generate
+
+      - name: Build iOS App Target
+        run: |
+          cd mobile/ios
+          xcodebuild -project Us.xcodeproj -scheme Us -destination 'generic/platform=iOS Simulator' CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO clean build

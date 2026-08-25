@@ -1,0 +1,86 @@
+# Detekt configuration. buildUponDefaultConfig = true, so this file carries
+# only the deltas from detekt's defaults.
+#
+# detekt-formatting supplies the ktlint rule set, which is why there is no
+# separate ktlint-gradle plugin in this build.
+
+build:
+  maxIssues: 0
+
+formatting:
+  active: true
+  android: true
+  MaximumLineLength:
+    active: true
+    maxLineLength: 120
+  # Compose @Composable functions are PascalCase by convention, which the
+  # default function-naming rule rejects.
+  FunctionNaming:
+    active: false
+
+complexity:
+  LongParameterList:
+    # Composables legitimately take many parameters (slots, modifiers,
+    # callbacks). Constructors are held to a tighter limit.
+    functionThreshold: 8
+    constructorThreshold: 7
+    ignoreDefaultParameters: true
+  TooManyFunctions:
+    thresholdInFiles: 20
+    thresholdInClasses: 20
+    ignorePrivate: true
+    ignoreOverridden: true
+  LongMethod:
+    threshold: 80
+
+style:
+  ReturnCount:
+    # Guard clauses are the clearest way to write an OkHttp Interceptor or
+    # Authenticator: a flat list of "not my case, pass through" checks beats
+    # a pyramid of nested ifs. The rule still catches genuinely tangled
+    # control flow.
+    # 5 covers a validation cascade — one early return per rule, plus the
+    # success path. Writing those as nested ifs to satisfy a counter would be
+    # strictly harder to read.
+    max: 5
+    excludeGuardClauses: true
+  MagicNumber:
+    # Design-system files are literally definitions of numbers.
+    excludes:
+      - '**/core/designsystem/**'
+      - '**/test/**'
+      - '**/androidTest/**'
+  MaxLineLength:
+    maxLineLength: 120
+    excludeCommentStatements: true
+  UnusedPrivateMember:
+    # @Preview functions are private and never called from Kotlin.
+    ignoreAnnotated: ['Preview', 'Composable']
+  ForbiddenComment:
+    active: true
+    # TODO is allowed: several are deliberate, tagged with a blocker id.
+    comments:
+      - reason: 'FIXME marks work that was left broken.'
+        value: 'FIXME:'
+      - reason: 'STOPSHIP must never reach a release build.'
+        value: 'STOPSHIP:'
+
+naming:
+  FunctionNaming:
+    # @Composable functions are PascalCase.
+    ignoreAnnotated: ['Composable']
+  TopLevelPropertyNaming:
+    constantPattern: '[A-Z][_A-Za-z0-9]*'
+
+exceptions:
+  TooGenericExceptionCaught:
+    active: true
+  SwallowedException:
+    active: true
+
+comments:
+  active: true
+  UndocumentedPublicClass:
+    active: false
+  UndocumentedPublicFunction:
+    active: false

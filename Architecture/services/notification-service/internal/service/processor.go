@@ -20,9 +20,9 @@ type NotificationEvent struct {
 	ActorID     string            `json:"actor_id"`
 	ActorName   string            `json:"actor_name"`
 	TargetID    string            `json:"target_id"`   // post_id, group_id, etc.
-	TargetType  string            `json:"target_type"`  // post, group, channel, community
+	TargetType  string            `json:"target_type"` // post, group, channel, community
 	DeepLink    string            `json:"deep_link"`
-	Vars        map[string]string `json:"vars"`         // template variables (actor, post_preview, group, etc.)
+	Vars        map[string]string `json:"vars"` // template variables (actor, post_preview, group, etc.)
 	Timestamp   time.Time         `json:"timestamp"`
 }
 

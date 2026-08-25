@@ -9,17 +9,17 @@ import (
 
 // ContentReport represents a user-submitted report for content (post, comment, reel, video).
 type ContentReport struct {
-	ID           uuid.UUID `json:"id"`
-	ReporterID   uuid.UUID `json:"reporter_id"`
-	TargetType   string    `json:"target_type"`   // "post", "comment", "reel", "video"
-	TargetID     uuid.UUID `json:"target_id"`
-	Reason       string    `json:"reason"`        // "spam", "harassment", "hate_speech", "violence", "nudity", "misinformation", "other"
-	Description  string    `json:"description"`
-	Status       string    `json:"status"`        // "pending", "reviewed", "resolved", "dismissed"
-	ReviewerID   *string   `json:"reviewer_id,omitempty"`
-	ReviewNote   *string   `json:"review_note,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
+	ID          uuid.UUID  `json:"id"`
+	ReporterID  uuid.UUID  `json:"reporter_id"`
+	TargetType  string     `json:"target_type"` // "post", "comment", "reel", "video"
+	TargetID    uuid.UUID  `json:"target_id"`
+	Reason      string     `json:"reason"` // "spam", "harassment", "hate_speech", "violence", "nudity", "misinformation", "other"
+	Description string     `json:"description"`
+	Status      string     `json:"status"` // "pending", "reviewed", "resolved", "dismissed"
+	ReviewerID  *string    `json:"reviewer_id,omitempty"`
+	ReviewNote  *string    `json:"review_note,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ReviewedAt  *time.Time `json:"reviewed_at,omitempty"`
 }
 
 // InsertContentReport inserts a new content report.

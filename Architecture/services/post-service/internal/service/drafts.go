@@ -19,39 +19,39 @@ type CreateDraftInput struct {
 
 // UpdateDraftInput holds the fields that can be patched on a draft.
 type UpdateDraftInput struct {
-	Title              *string   `json:"title"`
-	Caption            *string   `json:"caption"`
-	Hashtags           []string  `json:"hashtags"`
-	Tags               []string  `json:"tags"`
-	Visibility         *string   `json:"visibility"`
-	TopicID            *int      `json:"topic_id"`
-	Category           *string   `json:"category"`
-	Language           *string   `json:"language"`
-	SEOTitle           *string   `json:"seo_title"`
-	CrossPostPostbook  *bool     `json:"cross_post_postbook"`
-	CrossPostPosttube  *bool     `json:"cross_post_posttube"`
-	PublishToFeed      *bool     `json:"publish_to_feed"`
-	IsMadeForKids      *bool     `json:"is_made_for_kids"`
-	PaidPromotion      *bool     `json:"paid_promotion"`
-	AlteredContent     *bool     `json:"altered_content"`
-	AutoChapters       *bool     `json:"auto_chapters"`
-	FeaturedPlaces     *bool     `json:"featured_places"`
-	AutoConcepts       *bool     `json:"auto_concepts"`
-	License            *string   `json:"license"`
-	AllowEmbedding     *bool     `json:"allow_embedding"`
-	RemixSetting       *string   `json:"remix_setting"`
-	LikesEnabled       *bool     `json:"likes_enabled"`
-	CommentsEnabled    *bool     `json:"comments_enabled"`
-	CommentModeration  *string   `json:"comment_moderation"`
-	CommentAccess      *string   `json:"comment_access"`
-	RecordingDate      *string   `json:"recording_date"`
-	RecordingLocation  *string   `json:"recording_location"`
-	AudioTrackID       *string   `json:"audio_track_id"`
-	AudioStartMs       *int      `json:"audio_start_ms"`
-	OriginalAudioVol   *float32  `json:"original_audio_volume"`
-	OverlayAudioVol    *float32  `json:"overlay_audio_volume"`
-	CoverMediaID       *string   `json:"cover_media_id"`
-	ScheduleAt         *string   `json:"schedule_at"`
+	Title             *string  `json:"title"`
+	Caption           *string  `json:"caption"`
+	Hashtags          []string `json:"hashtags"`
+	Tags              []string `json:"tags"`
+	Visibility        *string  `json:"visibility"`
+	TopicID           *int     `json:"topic_id"`
+	Category          *string  `json:"category"`
+	Language          *string  `json:"language"`
+	SEOTitle          *string  `json:"seo_title"`
+	CrossPostPostbook *bool    `json:"cross_post_postbook"`
+	CrossPostPosttube *bool    `json:"cross_post_posttube"`
+	PublishToFeed     *bool    `json:"publish_to_feed"`
+	IsMadeForKids     *bool    `json:"is_made_for_kids"`
+	PaidPromotion     *bool    `json:"paid_promotion"`
+	AlteredContent    *bool    `json:"altered_content"`
+	AutoChapters      *bool    `json:"auto_chapters"`
+	FeaturedPlaces    *bool    `json:"featured_places"`
+	AutoConcepts      *bool    `json:"auto_concepts"`
+	License           *string  `json:"license"`
+	AllowEmbedding    *bool    `json:"allow_embedding"`
+	RemixSetting      *string  `json:"remix_setting"`
+	LikesEnabled      *bool    `json:"likes_enabled"`
+	CommentsEnabled   *bool    `json:"comments_enabled"`
+	CommentModeration *string  `json:"comment_moderation"`
+	CommentAccess     *string  `json:"comment_access"`
+	RecordingDate     *string  `json:"recording_date"`
+	RecordingLocation *string  `json:"recording_location"`
+	AudioTrackID      *string  `json:"audio_track_id"`
+	AudioStartMs      *int     `json:"audio_start_ms"`
+	OriginalAudioVol  *float32 `json:"original_audio_volume"`
+	OverlayAudioVol   *float32 `json:"overlay_audio_volume"`
+	CoverMediaID      *string  `json:"cover_media_id"`
+	ScheduleAt        *string  `json:"schedule_at"`
 }
 
 // CreateDraft creates a new reel draft.
@@ -276,7 +276,12 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 		mediaIDs = []uuid.UUID{*draft.MediaID}
 	}
 
+	// P0-5 idempotency: the draft id becomes the post id, so a crash-retry
+	// (or a concurrent worker that stole a stale claim) hits the posts PK
+	// instead of creating a second post.
+	publishPostID := draft.ID
 	input := &CreatePostInput{
+		PostID:            &publishPostID,
 		AuthorID:          authorID,
 		Text:              draft.Caption,
 		Visibility:        draft.Visibility,
@@ -307,6 +312,13 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 
 	post, err := s.CreatePost(ctx, input)
 	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			// Already published by a previous attempt — resolve to it.
+			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
+				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
+				return existing, nil
+			}
+		}
 		return nil, fmt.Errorf("publish draft as post: %w", err)
 	}
 
@@ -318,20 +330,85 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 	return post, nil
 }
 
-// PublishScheduledDrafts finds drafts past their schedule_at and publishes them.
+// PublishScheduledDrafts claims due reel drafts (SKIP LOCKED — safe with
+// multiple worker replicas) and publishes each. Transient failures release
+// the claim for the next tick; the draft-id-as-post-id idempotency makes
+// crash retries produce exactly one post.
 func (s *Service) PublishScheduledDrafts(ctx context.Context) (int, error) {
-	drafts, err := s.pgStore.GetScheduledDrafts(ctx, time.Now().UTC(), 50)
+	drafts, err := s.pgStore.ClaimDueReelDrafts(ctx, time.Now().UTC(), staleClaimAfter, 50)
 	if err != nil {
-		return 0, fmt.Errorf("get scheduled drafts: %w", err)
+		return 0, fmt.Errorf("claim scheduled reel drafts: %w", err)
 	}
 
 	published := 0
 	for _, draft := range drafts {
-		_, pubErr := s.PublishDraft(ctx, draft.ID, draft.AuthorID, nil)
+		_, pubErr := s.publishClaimedReelDraft(ctx, draft.ID, draft.AuthorID)
 		if pubErr != nil {
+			s.pgStore.ReleaseReelDraftClaim(ctx, draft.ID) //nolint:errcheck
 			continue
 		}
 		published++
 	}
 	return published, nil
+}
+
+// publishClaimedReelDraft publishes a draft this worker has already
+// claimed (status publishing_pending — PublishDraft's editable-status
+// guard doesn't apply to a claimed row).
+func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID uuid.UUID) (*postgres.Post, error) {
+	draft, err := s.GetDraft(ctx, draftID, authorID)
+	if err != nil {
+		return nil, err
+	}
+	if draft.Status == "published" || draft.Status == "deleted" {
+		return nil, fmt.Errorf("draft no longer publishable (status %s)", draft.Status)
+	}
+	var mediaIDs []uuid.UUID
+	if draft.MediaID != nil {
+		mediaIDs = []uuid.UUID{*draft.MediaID}
+	}
+	publishPostID := draft.ID
+	input := &CreatePostInput{
+		PostID:            &publishPostID,
+		AuthorID:          authorID,
+		Text:              draft.Caption,
+		Visibility:        draft.Visibility,
+		ContentType:       "flick",
+		MediaIDs:          mediaIDs,
+		CoverMediaID:      draft.CoverMediaID,
+		NoComments:        !draft.CommentsEnabled,
+		NoLikes:           !draft.LikesEnabled,
+		PostType:          "video",
+		AppOrigin:         "posttube",
+		PublishToFeed:     draft.PublishToFeed,
+		ShareToPostbook:   draft.CrossPostPostbook,
+		Title:             draft.Title,
+		Tags:              draft.Tags,
+		Category:          draft.Category,
+		Language:          draft.Language,
+		PaidPromotion:     draft.PaidPromotion,
+		AlteredContent:    draft.AlteredContent,
+		IsMadeForKids:     draft.IsMadeForKids,
+		License:           draft.License,
+		AllowEmbedding:    draft.AllowEmbedding,
+		RemixSetting:      draft.RemixSetting,
+		CommentModeration: draft.CommentModeration,
+		CommentAccess:     draft.CommentAccess,
+		OriginalAudioVol:  draft.OriginalAudioVol,
+		OverlayAudioVol:   draft.OverlayAudioVol,
+	}
+	post, err := s.CreatePost(ctx, input)
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
+				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
+				return existing, nil
+			}
+		}
+		return nil, fmt.Errorf("publish claimed draft: %w", err)
+	}
+	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
+		// Non-fatal: idempotency resolves this on the stale-claim retry.
+	}
+	return post, nil
 }

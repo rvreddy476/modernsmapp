@@ -28,15 +28,15 @@ type Group struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	// V2 fields
-	Handle       string     `json:"handle,omitempty"`
-	Category     string     `json:"category,omitempty"`
-	PrivacyLevel string     `json:"privacy_level"`
-	JoinMode     string     `json:"join_mode"`
-	WhoCanPost   string     `json:"who_can_post"`
-	WhoCanInvite string     `json:"who_can_invite"`
-	Location     string     `json:"location,omitempty"`
-	Language     string     `json:"language,omitempty"`
-	Status       string     `json:"status"`
+	Handle              string     `json:"handle,omitempty"`
+	Category            string     `json:"category,omitempty"`
+	PrivacyLevel        string     `json:"privacy_level"`
+	JoinMode            string     `json:"join_mode"`
+	WhoCanPost          string     `json:"who_can_post"`
+	WhoCanInvite        string     `json:"who_can_invite"`
+	Location            string     `json:"location,omitempty"`
+	Language            string     `json:"language,omitempty"`
+	Status              string     `json:"status"`
 	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
 	PendingRequestCount int        `json:"pending_request_count"`
 	// GCC Phase 1 fields
@@ -212,12 +212,27 @@ func scanGroups(rows pgx.Rows) ([]Group, error) {
 // --- Groups ---
 
 // CreateGroup inserts a new group and adds the creator as an admin member.
-func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
+func (s *Store) CreateGroup(ctx context.Context, g *Group, idempotencyKey string) (*uuid.UUID, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, g.CreatorID.String()+":"+idempotencyKey); err != nil {
+		return nil, err
+	}
+	var existingID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT group_id FROM group_creation_requests
+		WHERE creator_id=$1 AND idempotency_key=$2
+	`, g.CreatorID, idempotencyKey).Scan(&existingID)
+	if err == nil {
+		return &existingID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
 
 	err = tx.QueryRow(ctx, `
 		INSERT INTO groups (name, description, creator_id, visibility, handle, category,
@@ -236,7 +251,7 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 		&g.ID, &g.MemberCount, &g.PostCount, &g.IsArchived, &g.CreatedAt, &g.UpdatedAt,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -244,18 +259,24 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 		VALUES ($1, $2, 'admin', 'active')
 	`, g.ID, g.CreatorID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	_, err = tx.Exec(ctx, `
 		UPDATE groups SET member_count = 1 WHERE id = $1
 	`, g.ID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_creation_requests (creator_id, idempotency_key, group_id)
+		VALUES ($1,$2,$3)
+	`, g.CreatorID, idempotencyKey, g.ID); err != nil {
+		return nil, err
 	}
 
 	g.MemberCount = 1
-	return tx.Commit(ctx)
+	return nil, tx.Commit(ctx)
 }
 
 // GetGroupByID returns a group by its primary key, or nil if not found.

@@ -22,6 +22,7 @@ import (
 	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/moderationcap"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
@@ -42,6 +43,29 @@ func main() {
 	redisAddr := os.Getenv("REDIS_ADDR")
 	scyllaHosts := env("SCYLLA_HOSTS", "localhost")
 	kafkaBrokers := env("KAFKA_BROKERS", "kafka:9092")
+	internalServiceKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	if (strings.EqualFold(os.Getenv("ENV"), "prod") || strings.EqualFold(os.Getenv("APP_ENV"), "production")) && strings.TrimSpace(internalServiceKey) == "" {
+		slog.Error("INTERNAL_SERVICE_KEY is required in production")
+		os.Exit(1)
+	}
+	storyVerifier, err := moderationcap.NewVerifier(
+		[]byte(os.Getenv("STORY_MODERATION_HMAC_KEY")),
+		[]byte(os.Getenv("STORY_MODERATION_HMAC_KEY_PREVIOUS")),
+		"trust-safety-service", "story_moderation", time.Hour,
+	)
+	if err != nil {
+		slog.Error("story moderation capability configuration", "error", err)
+		os.Exit(1)
+	}
+	postModerationVerifier, err := moderationcap.NewVerifier(
+		[]byte(os.Getenv("POST_MODERATION_HMAC_KEY")),
+		[]byte(os.Getenv("POST_MODERATION_HMAC_KEY_PREVIOUS")),
+		"trust-safety-service", "post_moderation", time.Hour,
+	)
+	if err != nil {
+		slog.Error("post moderation capability configuration", "error", err)
+		os.Exit(1)
+	}
 
 	// 3. Database (Postgres)
 	ctx := context.Background()
@@ -120,9 +144,27 @@ func main() {
 	postSvc := service.New(pgStore, scyllaInteractionStore, rdb)
 	postSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
-	postSvc.SetReviewerServiceURL(env("REVIEWER_SERVICE_URL", "http://reviewer-service:8120"))
+	// Community review is parked at launch; an explicit URL is required to
+	// enqueue into that future system. Empty disables the best-effort call.
+	postSvc.SetReviewerServiceURL(env("REVIEWER_SERVICE_URL", ""))
+	postSvc.SetTrustSafetyURL(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8118"))
+	// Default ON: a scheduled post never publishes while author standing
+	// is unverifiable. Set DRAFT_REQUIRE_STANDING_CHECK=false only in dev.
+	postSvc.SetRequireStandingCheck(env("DRAFT_REQUIRE_STANDING_CHECK", "true") != "false")
 	postSvc.SetReviewAllVideos(env("REVIEW_ALL_VIDEOS", "false") == "true")
-	postSvc.SetInternalServiceKey(os.Getenv("INTERNAL_SERVICE_KEY"))
+	postSvc.SetInternalServiceKey(internalServiceKey)
+
+	// M4-P0-1: the server-derived story audience. Without this the story
+	// surfaces answer 503 rather than serving an unfiltered feed — the seam
+	// fails closed on purpose, so a missing wire-up is a visible outage instead
+	// of a silent privacy leak.
+	postSvc.WithStoryAudience(service.NewStoryAudience(
+		service.NewHTTPGraphRelationships(
+			env("GRAPH_SERVICE_URL", "http://graph-service:8083"),
+			os.Getenv("INTERNAL_SERVICE_KEY"),
+			nil,
+		),
+	))
 
 	// 7. Kafka producers
 	brokers := strings.Split(kafkaBrokers, ",")
@@ -298,7 +340,12 @@ func main() {
 	entitlementConsumer := mediaConsumers.NewEntitlementChangedConsumer(postSvc, brokers, rdb, consumerMetrics)
 	go entitlementConsumer.Start(consumerCtx)
 
-	slog.Info("engagement consumers + media + entitlement consumers started")
+	storyModerationApplier := mediaConsumers.NewStoryModerationApplier(
+		brokers, engTopic, pgStore, storyVerifier, consumerMetrics,
+	)
+	go storyModerationApplier.Start(consumerCtx)
+
+	slog.Info("engagement, media, entitlement, and authenticated story moderation consumers started")
 
 	// Real-time trending leaderboard. Single goroutine per replica;
 	// only the leader-locked instance actually publishes, so adding
@@ -341,6 +388,20 @@ func main() {
 				return
 			case <-ticker.C:
 				engagement.CleanupEventLog(consumerCtx, dbPool, 48*time.Hour)
+				// P1-4: release media referenced only by long-deleted
+				// drafts BEFORE the rows are hard-deleted (the reference
+				// table is what identifies them).
+				if n, err := postSvc.CleanupOrphanDraftMedia(consumerCtx, 30*24*time.Hour, 200); err != nil {
+					slog.Error("orphan draft media cleanup error", "error", err)
+				} else if n > 0 {
+					slog.Info("released orphan draft media", "count", n)
+				}
+				// P0-5 retention: hard-delete drafts soft-deleted >30 days ago.
+				if n, err := pgStore.CleanupDeletedPostDrafts(consumerCtx, 30*24*time.Hour); err != nil {
+					slog.Error("post draft retention cleanup error", "error", err)
+				} else if n > 0 {
+					slog.Info("cleaned up deleted post drafts", "count", n)
+				}
 			}
 		}
 	}()
@@ -359,7 +420,10 @@ func main() {
 	// O(distinct channels) instead. See internal/streamhub.
 	sseHub := streamhub.New(rdb, slog.Default())
 
-	postHandler := http.New(postSvc, rdb).WithStreamHub(sseHub)
+	postHandler := http.New(postSvc, rdb).
+		WithStreamHub(sseHub).
+		WithInternalKey(internalServiceKey).
+		WithModerationVerifier(postModerationVerifier)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -372,6 +436,7 @@ func main() {
 	r.GET("/metrics", metrics.Handler())
 	postHandler.RegisterRoutes(r)
 	postHandler.RegisterDraftRoutes(r)
+	postHandler.RegisterPostDraftRoutes(r)
 	postHandler.RegisterReelDiscoveryRoutes(r)
 	postHandler.RegisterReelEngagementRoutes(r)
 	postHandler.RegisterReelFeedRoutes(r)
@@ -397,9 +462,18 @@ func main() {
 			case <-ticker.C:
 				n, err := postSvc.PublishScheduledDrafts(consumerCtx)
 				if err != nil {
-					slog.Error("scheduled draft publish error", "error", err)
+					slog.Error("scheduled reel draft publish error", "error", err)
 				} else if n > 0 {
-					slog.Info("published scheduled drafts", "count", n)
+					slog.Info("published scheduled reel drafts", "count", n)
+				}
+				// Module 1 P0-5: generalized composer drafts share the tick.
+				// Both claim with FOR UPDATE SKIP LOCKED — safe to run in
+				// every replica.
+				n, err = postSvc.PublishScheduledPostDrafts(consumerCtx)
+				if err != nil {
+					slog.Error("scheduled post draft publish error", "error", err)
+				} else if n > 0 {
+					slog.Info("published scheduled post drafts", "count", n)
 				}
 			}
 		}
@@ -411,6 +485,7 @@ func main() {
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
 			consumerCancel()
+			_ = storyModerationApplier.Close()
 			legacyProducer.Close()
 			engProducer.Close()
 			rdb.Close()
@@ -518,6 +593,21 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_app_feedback_user ON app_feedback (user_id, created_at DESC)`,
+
+		// Durable comment idempotency. See migrations/034_comment_idempotency.sql
+		// — duplicated here for the same schema-drift reason as app_feedback.
+		// Redis is a concurrency gate; this table is the exactly-once authority,
+		// because the comment commits before any Redis result is written.
+		`CREATE TABLE IF NOT EXISTS comment_idempotency (
+			actor_id    UUID        NOT NULL,
+			post_id     UUID        NOT NULL,
+			client_key  TEXT        NOT NULL,
+			fingerprint TEXT        NOT NULL,
+			comment_id  UUID        NOT NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (actor_id, post_id, client_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_comment_idempotency_age ON comment_idempotency (created_at)`,
 	}
 
 	for _, stmt := range ddl {

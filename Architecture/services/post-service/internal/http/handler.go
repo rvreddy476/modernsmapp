@@ -16,16 +16,18 @@ import (
 	"github.com/atpost/post-service/internal/streamhub"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/moderationcap"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
-	svc         *service.Service
-	rdb         *redis.Client
-	hub         *streamhub.Hub
-	internalKey string
+	svc                *service.Service
+	rdb                *redis.Client
+	hub                *streamhub.Hub
+	internalKey        string
+	moderationVerifier *moderationcap.Verifier
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
@@ -45,6 +47,11 @@ func (h *Handler) WithStreamHub(hub *streamhub.Hub) *Handler {
 // service-to-service requests via the X-Internal-Service-Key header.
 func (h *Handler) WithInternalKey(key string) *Handler {
 	h.internalKey = key
+	return h
+}
+
+func (h *Handler) WithModerationVerifier(verifier *moderationcap.Verifier) *Handler {
+	h.moderationVerifier = verifier
 	return h
 }
 
@@ -80,9 +87,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:postId/comments", idempotent, h.AddComment)
 		v1.GET("/:postId/comments", h.ListComments)
 		v1.GET("/:postId/comments/around/:commentId", h.ListCommentsAround)
-		v1.POST("/:postId/bookmark", h.ToggleBookmark)
+		// PUT-like semantics on POST for mobile retries: repeated calls keep the
+		// bookmark set. DELETE is the inverse. The former toggle made a network
+		// retry silently undo the user's first successful tap.
+		v1.POST("/:postId/bookmark", h.AddBookmark)
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
 		v1.POST("/:postId/resubmit", h.Resubmit)
+		v1.POST("/:postId/moderation", h.ModeratePost)
 		v1.GET("/:postId/poll", h.GetPoll)
 		v1.POST("/:postId/vote", h.CastVote)
 
@@ -94,12 +105,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:postId/tune", h.CreateTune)
 		v1.DELETE("/:postId/tune", h.DeleteTune)
 		v1.GET("/:postId/tune/me", h.GetTune)
+
+		// Distribution policy (Module 1 P0-1) — owner-only.
+		v1.PATCH("/:postId/distribution", h.UpdateDistribution)
+
+		// Threads (Module 1 P0-8).
+		v1.POST("/thread", h.CreateThread)
+		v1.GET("/:postId/thread", h.GetThread)
 	}
 
 	// Internal: reviewer-service ML pre-filter auto-resolves flagged content.
 	// Gateway blocks /internal/ from non-admins; direct service calls carry the key.
 	r.POST("/v1/posts/internal/review-status", h.SetReviewStatusInternal)
 	r.POST("/v1/posts/internal/visibility", h.SetVisibilityInternal)
+	r.GET("/v1/posts/internal/moderation-subject/:postId", h.GetModerationSubjectInternal)
+	r.POST("/v1/posts/internal/moderation", h.ModeratePostInternal)
 
 	// Events
 	r.POST("/v1/events", h.CreateEvent)
@@ -107,11 +127,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/events/:eventId/rsvp", h.RSVPEvent)
 	r.GET("/v1/events/:eventId/rsvps", h.GetEventRSVPs)
 
+	// M4-P0-5 — the content-authority answer for byte delivery.
+	//
+	// Registered outside the /v1/stories group on purpose: it is not a story
+	// surface (the story route inventory would otherwise demand a viewer
+	// policy for it), and media-service is its only intended caller. The
+	// internal-key middleware applied to all /v1 routes above is what gates it.
+	r.POST("/v1/internal/media-access", h.MediaAccess)
+	r.POST("/v1/internal/media-access/batch", h.MediaAccessBatch)
+
 	// Stories
 	stories := r.Group("/v1/stories")
 	{
 		stories.POST("", h.CreateStory)
 		stories.GET("/feed", h.GetStoriesFeed)
+		// Owner-only truthful state. Registered before /:storyId so "mine" is
+		// not captured as a story id.
+		stories.GET("/mine", h.GetMyStoryStatus)
 		stories.GET("/author/:authorId", h.GetStoriesByAuthor)
 		stories.GET("/:storyId", h.GetStory)
 		stories.DELETE("/:storyId", h.DeleteStory)
@@ -254,48 +286,121 @@ type CreatePostRequest struct {
 		AllowUsers []string `json:"allow_users,omitempty"`
 		DenyUsers  []string `json:"deny_users,omitempty"`
 	} `json:"visibility_policy,omitempty"`
-	ContentType     string             `json:"content_type"`
-	MediaIDs        []string           `json:"media_ids"`
-	Feeling         *string            `json:"feeling"`
-	Activity        *string            `json:"activity"`
-	ActivityDetail  *string            `json:"activity_detail"`
-	RichText        json.RawMessage    `json:"rich_text"`
-	Poll            *CreatePollRequest `json:"poll"`
-	NoComments      bool               `json:"no_comments"`
-	NoLikes         bool               `json:"no_likes"`
-	LocationName    *string            `json:"location_name"`
-	LocationLat     *float64           `json:"location_lat"`
-	LocationLng     *float64           `json:"location_lng"`
-	PostType        string             `json:"post_type"`
-	AppOrigin       string             `json:"app_origin"`
-	ShareToPostbook bool               `json:"share_to_postbook"`
+	ContentType    string             `json:"content_type"`
+	MediaIDs       []string           `json:"media_ids"`
+	Feeling        *string            `json:"feeling"`
+	Activity       *string            `json:"activity"`
+	ActivityDetail *string            `json:"activity_detail"`
+	RichText       json.RawMessage    `json:"rich_text"`
+	Poll           *CreatePollRequest `json:"poll"`
+	NoComments     bool               `json:"no_comments"`
+	NoLikes        bool               `json:"no_likes"`
+	LocationName   *string            `json:"location_name"`
+	LocationLat    *float64           `json:"location_lat"`
+	LocationLng    *float64           `json:"location_lng"`
+	PostType       string             `json:"post_type"`
+	AppOrigin      string             `json:"app_origin"`
+	// Presence-aware (fixes-v2 / Codex P1-1): a pointer distinguishes an
+	// omitted field from an explicit `false`, so an old client's explicit
+	// opt-out is honored. JSON compatibility is unchanged — the stored
+	// column stays a plain bool, defaulting to true when omitted, which
+	// matches the schema default.
+	ShareToPostbook *bool `json:"share_to_postbook"`
 	// Reel metadata
-	Title             string   `json:"title"`
+	Title string `json:"title"`
 	// M5: cap tags array to bound payload memory. 20 tags × 50 chars
 	// is the upper bound for legitimate use cases (most reels carry
 	// 3-5 tags); larger arrays are either spam or accidents.
-	Tags              []string `json:"tags" binding:"max=20,dive,max=50"`
-	Category          string   `json:"category"`
-	Language          string   `json:"language"`
-	SEOTitle          string   `json:"seo_title"`
-	PaidPromotion     bool     `json:"paid_promotion"`
-	AlteredContent    bool     `json:"altered_content"`
-	IsMadeForKids     bool     `json:"is_made_for_kids"`
-	License           string   `json:"license"`
-	AllowEmbedding    *bool    `json:"allow_embedding"`
-	PublishToFeed     *bool    `json:"publish_to_feed"`
-	RemixSetting      string   `json:"remix_setting"`
-	CommentModeration string   `json:"comment_moderation"`
-	CommentAccess     string   `json:"comment_access"`
-	RecordingDate     *string  `json:"recording_date"`
-	RecordingLocation string   `json:"recording_location"`
-	CoverMediaID      *string  `json:"cover_media_id"`
-	OriginalAudioVol  float32  `json:"original_audio_volume"`
-	OverlayAudioVol   float32  `json:"overlay_audio_volume"`
+	Tags           []string `json:"tags" binding:"max=20,dive,max=50"`
+	Category       string   `json:"category"`
+	Language       string   `json:"language"`
+	SEOTitle       string   `json:"seo_title"`
+	PaidPromotion  bool     `json:"paid_promotion"`
+	AlteredContent bool     `json:"altered_content"`
+	IsMadeForKids  bool     `json:"is_made_for_kids"`
+	License        string   `json:"license"`
+	AllowEmbedding *bool    `json:"allow_embedding"`
+	// PublishToFeed / ShareToPostbook are the pre-policy distribution
+	// fields. Pointers so an EXPLICIT false from an old client is
+	// distinguishable from "absent" and is honored (Codex P1-1).
+	PublishToFeed     *bool   `json:"publish_to_feed"`
+	RemixSetting      string  `json:"remix_setting"`
+	CommentModeration string  `json:"comment_moderation"`
+	CommentAccess     string  `json:"comment_access"`
+	RecordingDate     *string `json:"recording_date"`
+	RecordingLocation string  `json:"recording_location"`
+	CoverMediaID      *string `json:"cover_media_id"`
+	OriginalAudioVol  float32 `json:"original_audio_volume"`
+	OverlayAudioVol   float32 `json:"overlay_audio_volume"`
 	// AudioTrackID attaches a track from /v1/audio/tracks to the post on
 	// create. Used by the Flicks composer's audio browser. Optional —
 	// posts without background audio leave this empty.
 	AudioTrackID *string `json:"audio_track_id"`
+	// Distribution is the typed, versioned scalar policy (Module 1 P0-1):
+	// {"version":1,"main_feed":bool,"notify_subscribers":bool,
+	//  "create_reel_preview":bool}. Omitted = legacy behavior. Unknown
+	// fields, wrong version, or unsupported true flags → 400.
+	Distribution json.RawMessage `json:"distribution"`
+}
+
+// writeDistributionError maps distribution policy errors to their typed
+// HTTP responses; returns false when err is not a distribution error.
+// maxCreatePostBodyBytes caps a create-post body before JSON binding.
+//
+// 256 KiB. The largest legal Slice C payload is ~20 KiB (5,000 code points at
+// up to 4 bytes each, plus one media UUID, the distribution object and field
+// names), so this leaves an order of magnitude of headroom for the richer
+// fields the shared route still serves, while staying small enough that a flood
+// of over-limit requests cannot pressure memory.
+//
+// Deliberately NOT the middleware's 8 KiB comment cap, which is sized for a
+// comment body and would reject a legitimate long post.
+const maxCreatePostBodyBytes = 256 * 1024
+
+// writeCreateGuardError maps the Slice C create guards onto stable HTTP codes.
+//
+// Every one of these is a 4xx: they are all statements about the request, and
+// returning 500 for a rejected attachment would tell the client to retry
+// something that can never succeed (C-LB-1.3, C-LB-4.2).
+func writeCreateGuardError(c *gin.Context, err error) bool {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrEmptyPost):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "EMPTY_POST", err.Error(), nil)
+	case errors.Is(err, service.ErrTextTooLong):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TEXT_TOO_LONG", err.Error(), nil)
+	case errors.Is(err, service.ErrCreateKeyReused):
+		// 409, not 400: the request is well-formed, it conflicts with an
+		// earlier one. The client must mint a new key, not fix a field.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaNotOwned):
+		// 403 and a message that discloses nothing about the asset.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "MEDIA_NOT_OWNED",
+			"You cannot attach this media", nil)
+	case errors.Is(err, service.ErrMediaNotReady):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_READY", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaTypeMismatch):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_TYPE_MISMATCH", err.Error(), nil)
+	default:
+		return false
+	}
+	return true
+}
+
+func writeDistributionError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, service.ErrUnsupportedDistribution):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"UNSUPPORTED_DISTRIBUTION", err.Error(), nil)
+		return true
+	case errors.Is(err, service.ErrInvalidDistribution):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_DISTRIBUTION", err.Error(), nil)
+		return true
+	}
+	return false
 }
 
 func (h *Handler) CreatePost(c *gin.Context) {
@@ -313,8 +418,46 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		return
 	}
 
+	// DURABLE CREATION KEY (C-LB-3.1).
+	//
+	// Required and must parse as a UUID. Required, because a create without one
+	// cannot be made exactly-once and "server committed, response lost" is the
+	// normal outcome of publishing from a phone. A UUID specifically, because an
+	// attacker-chosen or colliding key is a way to read back or clobber another
+	// intent, and because it gives the client no reason to invent a scheme.
+	createKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if createKey == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"MISSING_IDEMPOTENCY_KEY", "Idempotency-Key header is required", nil)
+		return
+	}
+	if _, err := uuid.Parse(createKey); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be a UUID", nil)
+		return
+	}
+
+	// BODY CAP BEFORE BIND (C-LB-1.4).
+	//
+	// `MaxBytesReader` wraps the body itself, so the limit is enforced as the
+	// JSON decoder reads. A `Content-Length` pre-check is not equivalent: a
+	// chunked request carries no length, and a hostile one can simply lie.
+	// Capping the reader means an over-limit body is cut off mid-decode and
+	// nothing is ever written.
+	//
+	// The ceiling is far above the largest legal P0 payload (5,000 code points
+	// of text, at most 4 bytes each, plus one media UUID and a small policy
+	// object) and far below anything that could pressure memory.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxCreatePostBodyBytes)
+
 	var req CreatePostRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge,
+				"PAYLOAD_TOO_LARGE", "Request body exceeds the maximum size", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
@@ -326,12 +469,22 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	}
 
 	var mediaIDs []uuid.UUID
+	seenMedia := make(map[uuid.UUID]struct{}, len(req.MediaIDs))
 	for _, idStr := range req.MediaIDs {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid media ID: "+idStr, nil)
 			return
 		}
+		// Reject duplicates BEFORE the insert. `post_media` is keyed on
+		// (post_id, media_id), so a repeated id would be silently collapsed and
+		// a three-image carousel would publish as two with no error returned to
+		// anyone. Creator Studio P0-A, freeze-v3 2.3.
+		if _, dup := seenMedia[id]; dup {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "DUPLICATE_MEDIA", "Media ID repeated in one post: "+idStr, nil)
+			return
+		}
+		seenMedia[id] = struct{}{}
 		mediaIDs = append(mediaIDs, id)
 	}
 
@@ -360,6 +513,22 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	if req.PublishToFeed != nil {
 		publishToFeed = *req.PublishToFeed
 	}
+	// share_to_postbook column default is TRUE; an omitted field keeps it.
+	shareToPostbook := true
+	if req.ShareToPostbook != nil {
+		shareToPostbook = *req.ShareToPostbook
+	}
+
+	// The fingerprint is taken over the WHOLE accepted request (C-P0-5).
+	// Computed before anything is written: a request whose canonical form
+	// cannot be produced cannot be safely bound to an idempotency key, and
+	// guessing one would let a different body replay an earlier post.
+	fingerprint, err := createFingerprint(req)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_REQUEST", err.Error(), nil)
+		return
+	}
 
 	input := &service.CreatePostInput{
 		AuthorID:          authorID,
@@ -378,7 +547,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		LocationLng:       req.LocationLng,
 		PostType:          req.PostType,
 		AppOrigin:         req.AppOrigin,
-		ShareToPostbook:   req.ShareToPostbook,
+		ShareToPostbook:   shareToPostbook,
 		Title:             req.Title,
 		Tags:              req.Tags,
 		Category:          req.Category,
@@ -398,6 +567,21 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		CoverMediaID:      coverMediaID,
 		OriginalAudioVol:  req.OriginalAudioVol,
 		OverlayAudioVol:   req.OverlayAudioVol,
+		Distribution:      req.Distribution,
+		// P1-1: forward the explicit legacy intent so an old client's
+		// `publish_to_feed:false` is honored instead of silently
+		// overridden by the canonical default.
+		LegacyDistribution: service.LegacyDistributionFields{
+			PublishToFeed:   req.PublishToFeed,
+			ShareToPostbook: req.ShareToPostbook,
+		},
+		// `visibility` is binding:"required" on this route, so anything that
+		// reaches here chose its audience deliberately. That is what stops the
+		// after-hours rule silently rewriting an explicit Public to `trusted`
+		// (C-LB-2.3).
+		VisibilityExplicit: true,
+		CreateKey:          createKey,
+		CreateFingerprint:  fingerprint,
 	}
 
 	if req.Poll != nil {
@@ -411,6 +595,12 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	p, err := h.svc.CreatePost(c.Request.Context(), input)
 	if err != nil {
+		if writeCreateGuardError(c, err) {
+			return
+		}
+		if writeDistributionError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -432,6 +622,42 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
+}
+
+// UpdateDistribution replaces a post's distribution policy (P0-1).
+// PATCH /v1/posts/:postId/distribution  body: {"version":1,...}
+// Owner-only. The row update + rev bump + outbox event are atomic.
+func (h *Handler) UpdateDistribution(c *gin.Context) {
+	actorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	raw, err := c.GetRawData()
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "unreadable body", nil)
+		return
+	}
+
+	p, err := h.svc.UpdateDistribution(c.Request.Context(), postID, actorID, raw)
+	if err != nil {
+		switch {
+		case writeDistributionError(c, err):
+		case errors.Is(err, service.ErrPostNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
+		case errors.Is(err, service.ErrNotPostAuthor):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not the post author", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, p, nil)
 }
 
 func (h *Handler) GetPost(c *gin.Context) {
@@ -690,10 +916,27 @@ func (h *Handler) AddComment(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
+	if strings.TrimSpace(req.Text) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "comment text cannot be blank", nil)
+		return
+	}
 
-	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text)
+	// The client key and a fingerprint of the NORMALIZED text make the insert
+	// durably idempotent in PostgreSQL. The Redis middleware in front of this
+	// handler is a fast concurrency gate; it cannot be the authority, because
+	// the comment commits before it records anything.
+	//
+	// The fingerprint covers the text rather than the raw body so that
+	// insignificant encoding differences between two attempts at the same
+	// intent do not read as a changed payload.
+	clientKey := c.GetHeader("Idempotency-Key")
+	fingerprint := middleware.CommentFingerprint(postID.String(), req.Text)
+
+	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text, clientKey, fingerprint)
 	if err != nil {
 		switch {
+		case errors.Is(err, postgres.ErrIdempotencyKeyReused):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was already used for a different comment.", nil)
 		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comments, please slow down", nil)
 		case errors.Is(err, service.ErrCommentsDisabled):
@@ -929,7 +1172,7 @@ func (h *Handler) AddBookmark(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "bookmarked"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"bookmarked": true}, nil)
 }
 
 func (h *Handler) RemoveBookmark(c *gin.Context) {
@@ -952,7 +1195,7 @@ func (h *Handler) RemoveBookmark(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unbookmarked"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"bookmarked": false}, nil)
 }
 
 func (h *Handler) GetBookmarks(c *gin.Context) {
@@ -1330,138 +1573,6 @@ func (h *Handler) BatchGetPosts(c *gin.Context) {
 // Story Handlers
 // ============================================================
 
-type CreateStoryRequest struct {
-	MediaURL       string  `json:"media_url" binding:"required"`
-	MediaType      string  `json:"media_type" binding:"required,oneof=image video"`
-	Caption        string  `json:"caption"`
-	Visibility     string  `json:"visibility" binding:"required,oneof=public followers close_friends"`
-	IsHighlight    bool    `json:"is_highlight"`
-	HighlightGroup *string `json:"highlight_group"`
-}
-
-func (h *Handler) CreateStory(c *gin.Context) {
-	authorIDStr := c.GetHeader("X-User-Id")
-	authorID, err := uuid.Parse(authorIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var req CreateStoryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	story, err := h.svc.CreateStory(c.Request.Context(), &service.CreateStoryInput{
-		AuthorID:       authorID,
-		MediaURL:       req.MediaURL,
-		MediaType:      req.MediaType,
-		Caption:        req.Caption,
-		Visibility:     req.Visibility,
-		IsHighlight:    req.IsHighlight,
-		HighlightGroup: req.HighlightGroup,
-	})
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusCreated, story, nil)
-}
-
-func (h *Handler) GetStory(c *gin.Context) {
-	storyIDStr := c.Param("storyId")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil)
-		return
-	}
-
-	story, err := h.svc.GetStory(c.Request.Context(), storyID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if story == nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, story, nil)
-}
-
-func (h *Handler) GetStoriesFeed(c *gin.Context) {
-	// The followed user IDs come as a comma-separated query param set by the API gateway
-	// or the client passes them explicitly.
-	followedStr := c.DefaultQuery("followed_ids", "")
-	if followedStr == "" {
-		userIDStr := c.GetHeader("X-User-Id")
-		if userIDStr == "" {
-			api.JSON(c.Writer, http.StatusOK, []postgres.Story{}, nil)
-			return
-		}
-
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-			return
-		}
-
-		stories, err := h.svc.GetStoriesFeedForUser(c.Request.Context(), userID)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-			return
-		}
-		if stories == nil {
-			stories = []postgres.Story{}
-		}
-
-		api.JSON(c.Writer, http.StatusOK, stories, nil)
-		return
-	}
-
-	parts := strings.Split(followedStr, ",")
-	var followedIDs []uuid.UUID
-	for _, p := range parts {
-		id, err := uuid.Parse(strings.TrimSpace(p))
-		if err != nil {
-			continue
-		}
-		followedIDs = append(followedIDs, id)
-	}
-
-	stories, err := h.svc.GetStoriesFeed(c.Request.Context(), followedIDs)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if stories == nil {
-		stories = []postgres.Story{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, stories, nil)
-}
-
-func (h *Handler) GetStoriesByAuthor(c *gin.Context) {
-	authorID, err := uuid.Parse(c.Param("authorId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil)
-		return
-	}
-
-	stories, err := h.svc.GetStoriesByAuthor(c.Request.Context(), authorID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if stories == nil {
-		stories = []postgres.Story{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, stories, nil)
-}
-
 func (h *Handler) DeleteStory(c *gin.Context) {
 	authorIDStr := c.GetHeader("X-User-Id")
 	authorID, err := uuid.Parse(authorIDStr)
@@ -1487,22 +1598,6 @@ func (h *Handler) DeleteStory(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
-}
-
-func (h *Handler) ViewStory(c *gin.Context) {
-	storyIDStr := c.Param("storyId")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil)
-		return
-	}
-
-	if err := h.svc.ViewStory(c.Request.Context(), storyID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "viewed"}, nil)
 }
 
 // ============================================================

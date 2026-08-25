@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Debug-only host for the C-CLB-2 Compose journey test. Declared here
+          because an activity that is not in a manifest cannot be launched, and
+          the Compose test manifest only contributes a plain ComponentActivity
+          which Hilt cannot inject into.
+        -->
+        <activity
+            android:name="com.us.android.feature.post.testing.HiltTestActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
+</manifest>

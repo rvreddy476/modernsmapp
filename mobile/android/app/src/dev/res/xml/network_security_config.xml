@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEV FLAVOR ONLY. Overrides the strict policy in src/main/res/xml/.
+
+  Cleartext is permitted for loopback, the emulator host alias, and private
+  LAN ranges — and nothing else. Everything not listed still falls under the
+  strict base-config, so a dev build cannot silently send cleartext to a real
+  host on the internet.
+
+  ## WHY THE PRIVATE RANGES ARE HERE
+
+  `10.0.2.2` is the EMULATOR's alias for the host machine and is unroutable on
+  a physical handset. Testing on a real phone means reaching the workstation by
+  its LAN address instead, which changes with the network — so the address
+  cannot be a fixed entry.
+
+  RFC 1918 ranges cover every address a home or office router hands out. They
+  are private by definition: an attacker cannot occupy 192.168.x.x from the
+  internet, and this file never reaches a staging or production build.
+
+  Build a device APK with:
+    ./gradlew.bat assembleDevDebug -PdevHost=192.168.1.3
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Physical device via `adb reverse tcp:8080 tcp:8080`. -->
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <!-- Host loopback as seen from an Android emulator. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <!-- RFC 1918: the workstation's LAN address, over WiFi. -->
+        <domain includeSubdomains="true">192.168.0.0</domain>
+        <domain includeSubdomains="true">10.0.0.0</domain>
+        <domain includeSubdomains="true">172.16.0.0</domain>
+    </domain-config>
+</network-security-config>

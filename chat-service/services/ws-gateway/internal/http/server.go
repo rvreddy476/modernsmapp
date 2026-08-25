@@ -3,29 +3,55 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	nethttp "net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atpost/chat-shared/callauth"
 	"github.com/atpost/chat-shared/presence"
+	"github.com/atpost/chat-shared/roomauth"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 )
 
 type ServerOptions struct {
-	JWTSecret      string
+	JWTSecret string
 	// JWTKeys (C7) — optional. When ActiveSecret is set, takes precedence
 	// over JWTSecret and enables kid-aware verification (including the
 	// previous secret during rotation). When unset, JWTSecret is used as
 	// the only active secret with no kid binding.
-	JWTKeys        JWTKeySet
-	AllowedOrigins []string
+	JWTKeys         JWTKeySet
+	AllowedOrigins  []string
 	AllowQueryToken bool
+
+	// EnableScopedRooms is reserved for the future owner-issued room
+	// entitlement protocol. It MUST remain false until every client-selected
+	// post/call/live/group channel is checked against its owning service.
+	// Public beta deliberately exposes only chat:<authenticated-user-id>.
+	//
+	// NOTE (production chat pass): conversation-room subscriptions do NOT
+	// ride this flag. They are gated by EntitlementSecret below, because an
+	// entitled subscribe is exactly the owner-checked design this flag was
+	// waiting for — message-service validates membership and signs the room
+	// token; this gateway only verifies it.
+	EnableScopedRooms bool
+
+	// EntitlementSecret verifies owner-issued conversation-room tokens
+	// (chat-shared/roomauth). Empty disables `conversation.subscribe`.
+	EntitlementSecret string
+
+	// SubscriptionReconcileInterval is how often each connection re-checks
+	// its live conversation-room subscriptions against token expiry and the
+	// revocation markers (re-verification P0-4: a lost subscription_revoked
+	// frame must not leave a removed member subscribed until disconnect).
+	// Zero means the 30s default.
+	SubscriptionReconcileInterval time.Duration
 
 	// AllowAllOriginsForDev opts into the "no policy" mode where any
 	// browser origin is accepted. Audit H10: the previous default
@@ -182,16 +208,12 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if err := s.pres.SetUserOnline(ctx, userID.String()); err != nil {
 		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
 	}
-	// Broadcast online status to the presence channel so other connected users can react.
-	s.rdb.Publish(ctx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":true}`, userID.String()))
-
 	// Clear presence when the connection closes.
 	defer func() {
 		delCtx := context.Background()
 		if err := s.pres.ClearUserOnline(delCtx, userID.String()); err != nil {
 			s.log.Warn("failed to clear presence on disconnect", "err", err, "user_id", userID)
 		}
-		s.rdb.Publish(delCtx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":false}`, userID.String()))
 	}()
 
 	// Subscribe to chat messages, new posts, post interaction updates,
@@ -201,7 +223,11 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// (notification-service /v1/notifications/stream) per README §1
 	// and §17. Keeping the subscription here would burn Redis fan-out
 	// bandwidth per connected client with no consumer.
-	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update", "presence:updates")
+	// Privacy boundary: the public-beta gateway subscribes only to the
+	// authenticated user's personal channel. Global feed/presence channels and
+	// client-selected rooms previously let any connected account observe data
+	// unrelated to its feed, block, visibility, or membership policy.
+	pubsub := s.rdb.Subscribe(ctx, chatChannel)
 	defer func() {
 		_ = pubsub.Close()
 	}()
@@ -215,6 +241,40 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	s.serveConnection(ctx, cancel, conn, pubsub, userID)
 }
 
+// roomSubscriptions tracks one connection's entitled conversation-room
+// subscriptions together with the claims that authorized each, so the
+// reconcile loop can re-validate them against expiry and revocation markers.
+type roomSubscriptions struct {
+	mu     sync.Mutex
+	claims map[string]*roomauth.Claims // conversationID -> authorizing claims
+}
+
+func newRoomSubscriptions() *roomSubscriptions {
+	return &roomSubscriptions{claims: map[string]*roomauth.Claims{}}
+}
+
+func (r *roomSubscriptions) set(conversationID string, claims *roomauth.Claims) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.claims[conversationID] = claims
+}
+
+func (r *roomSubscriptions) delete(conversationID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.claims, conversationID)
+}
+
+func (r *roomSubscriptions) snapshot() map[string]*roomauth.Claims {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]*roomauth.Claims, len(r.claims))
+	for k, v := range r.claims {
+		out[k] = v
+	}
+	return out
+}
+
 func (s *Server) serveConnection(
 	ctx context.Context,
 	cancel context.CancelFunc,
@@ -223,13 +283,60 @@ func (s *Server) serveConnection(
 	userID uuid.UUID,
 ) {
 	outbound := make(chan []byte, 256)
+	subs := newRoomSubscriptions()
 
-	go s.readLoop(ctx, cancel, conn, pubsub, userID)
-	go s.redisLoop(ctx, cancel, pubsub, outbound, userID)
+	go s.readLoop(ctx, cancel, conn, pubsub, userID, subs)
+	go s.redisLoop(ctx, cancel, pubsub, outbound, userID, subs)
+	go s.reconcileRoomSubscriptions(ctx, pubsub, userID, subs)
 	s.writeLoop(ctx, cancel, conn, outbound, userID)
 
 	_ = conn.Close()
 	s.log.Info("websocket disconnected", "user_id", userID)
+}
+
+// reconcileRoomSubscriptions periodically re-validates every entitled room
+// subscription on this connection (re-verification P0-4): the eager
+// subscription_revoked frame is best-effort, so a lost publish previously
+// left a removed member subscribed until disconnect. Each sweep drops a
+// subscription whose token has expired, whose revocation marker outranks its
+// membership generation, or whose marker cannot be checked — fail closed.
+func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, userID uuid.UUID, subs *roomSubscriptions) {
+	interval := s.opts.SubscriptionReconcileInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for convID, claims := range subs.snapshot() {
+				if s.roomSubscriptionStillValid(ctx, convID, claims) {
+					continue
+				}
+				s.log.Info("room subscription dropped by reconciliation",
+					"user_id", userID, "conversation_id", convID)
+				_ = pubsub.Unsubscribe(ctx, "convroom:"+convID)
+				subs.delete(convID)
+			}
+		}
+	}
+}
+
+func (s *Server) roomSubscriptionStillValid(ctx context.Context, convID string, claims *roomauth.Claims) bool {
+	if time.Now().Unix() >= claims.ExpiresAt {
+		return false
+	}
+	marker, err := s.rdb.Get(ctx, roomauth.DenyKey(convID, claims.Subject)).Result()
+	if errors.Is(err, redis.Nil) {
+		return true
+	}
+	if err != nil {
+		return false // cannot prove the subscription is still allowed
+	}
+	return !roomauth.DeniedByMarker(marker, claims.Gen)
 }
 
 // directSignalingTypes are P2P call signaling types relayed to a specific target user.
@@ -269,7 +376,7 @@ var roomSignalingTypes = map[string]bool{
 	"call_recording_stopped":   true,
 }
 
-func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, userID uuid.UUID) {
+func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, userID uuid.UUID, subs *roomSubscriptions) {
 	defer cancel()
 
 	conn.SetReadLimit(s.opts.MaxMessageSize)
@@ -301,6 +408,70 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		}
 		msgType, _ := envelope["type"].(string)
+
+		// Owner-issued conversation-room subscription (production chat pass
+		// §5.3). Handled BEFORE the scoped-room rejection: the entitlement IS
+		// the owner check that rejection exists to demand. The client never
+		// names a raw room — it presents a token message-service signed after
+		// validating ACTIVE membership; this gateway verifies signature,
+		// audience, version, expiry, and that the token's subject is the
+		// connection's own authenticated user.
+		switch msgType {
+		case "conversation.subscribe":
+			if s.opts.EntitlementSecret == "" {
+				s.log.Warn("conversation.subscribe rejected: no entitlement secret", "user_id", userID)
+				continue
+			}
+			token, _ := envelope["entitlement"].(string)
+			claims, err := roomauth.Verify(token, s.opts.EntitlementSecret, time.Now())
+			if err != nil {
+				s.log.Warn("conversation.subscribe rejected", "err", err, "user_id", userID)
+				continue
+			}
+			if claims.Subject != userID.String() {
+				s.log.Warn("conversation.subscribe rejected: subject mismatch",
+					"user_id", userID, "subject", claims.Subject)
+				continue
+			}
+			// P0-4: a still-valid token presented after removal. The issuer
+			// ratchets a sever-generation marker when it severs the member;
+			// the token's membership generation must OUTRANK the marker.
+			// A marker it cannot check, or cannot parse, rejects — fail
+			// closed. There is no marker clearing on rejoin: a rejoined
+			// member's fresh token simply carries a newer generation.
+			marker, err := s.rdb.Get(ctx, roomauth.DenyKey(claims.ConversationID, claims.Subject)).Result()
+			if err != nil && !errors.Is(err, redis.Nil) {
+				s.log.Warn("conversation.subscribe rejected: deny-check failed",
+					"err", err, "user_id", userID, "conversation_id", claims.ConversationID)
+				continue
+			}
+			if err == nil && roomauth.DeniedByMarker(marker, claims.Gen) {
+				s.log.Warn("conversation.subscribe rejected: revoked",
+					"user_id", userID, "conversation_id", claims.ConversationID)
+				continue
+			}
+			channel := "convroom:" + claims.ConversationID
+			if err := pubsub.Subscribe(ctx, channel); err != nil {
+				s.log.Warn("conversation room subscribe failed", "err", err,
+					"user_id", userID, "conversation_id", claims.ConversationID)
+				continue
+			}
+			subs.set(claims.ConversationID, claims)
+			continue
+		case "conversation.unsubscribe":
+			convID, _ := envelope["conversation_id"].(string)
+			if convID != "" {
+				_ = pubsub.Unsubscribe(ctx, "convroom:"+convID)
+				subs.delete(convID)
+			}
+			continue
+		}
+
+		if !s.opts.EnableScopedRooms && isScopedRoomFrame(msgType) {
+			s.log.Warn("realtime client-selected room frame rejected",
+				"user_id", userID, "type", msgType)
+			continue
+		}
 
 		// Handle room subscriptions (dynamic per-post and per-call channels)
 		switch msgType {
@@ -523,12 +694,25 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 	}
 }
 
+func isScopedRoomFrame(msgType string) bool {
+	switch msgType {
+	case "conversation.enter", "conversation.heartbeat", "conversation.leave",
+		"typing.start", "typing.started", "subscribe_post", "unsubscribe_post",
+		"subscribe_call", "unsubscribe_call", "subscribe_live_stream",
+		"unsubscribe_live_stream", "subscribe_update", "unsubscribe_update",
+		"subscribe_group_post", "unsubscribe_group_post", "group_post_typing":
+		return true
+	}
+	return directSignalingTypes[msgType] || roomSignalingTypes[msgType]
+}
+
 func (s *Server) redisLoop(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	pubsub *redis.PubSub,
 	outbound chan<- []byte,
 	userID uuid.UUID,
+	subs *roomSubscriptions,
 ) {
 	defer cancel()
 	uid := userID.String()
@@ -540,6 +724,24 @@ func (s *Server) redisLoop(
 		case msg, ok := <-ch:
 			if !ok {
 				return
+			}
+			// Prompt revocation (production chat pass §5.3): message-service
+			// publishes subscription_revoked to the REMOVED member's personal
+			// channel on removal/leave. Drop the room here so the removed
+			// device stops receiving the very next frame, then forward the
+			// control frame so the client reconciles its own state. The
+			// entitlement's 5-minute expiry remains the backstop for a lost
+			// control frame.
+			if strings.HasPrefix(msg.Channel, "chat:") {
+				var control struct {
+					Type           string `json:"type"`
+					ConversationID string `json:"conversation_id"`
+				}
+				if json.Unmarshal([]byte(msg.Payload), &control) == nil &&
+					control.Type == "subscription_revoked" && control.ConversationID != "" {
+					_ = pubsub.Unsubscribe(ctx, "convroom:"+control.ConversationID)
+					subs.delete(control.ConversationID)
+				}
 			}
 			// Presence updates: wrap with type field and skip own presence
 			if msg.Channel == "presence:updates" {

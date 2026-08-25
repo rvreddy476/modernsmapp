@@ -10,7 +10,7 @@ service:
   port: 8081
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/identity-auth-service
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/identity-auth-service'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 2
@@ -24,7 +24,7 @@ resources:
     memory: 512Mi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-identity-auth-service-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-identity-auth-service-irsa'
 
 externalSecret:
   enabled: true
@@ -43,6 +43,36 @@ externalSecret:
 env:
   ENV: staging
   LOG_LEVEL: info
+  # ── Module 3 SR-6: email delivery via SES ───────────────────────────────
+  # auth-service previously generated verification and password-reset codes
+  # and sent NOTHING — there was no delivery mechanism at all, so "Forgot
+  # password" returned 200 and no code ever arrived. In production the
+  # service now REFUSES TO START without these: a no-op sender returns nil
+  # from every send, so a misconfigured deployment would look healthy while
+  # dropping every recovery email.
+  #
+  # Credentials come from the SDK default chain, which resolves the IRSA web
+  # identity token from serviceAccount.irsaRoleArn above. No static AWS
+  # access key is read, accepted or stored anywhere — the SES role needs
+  # ses:SendEmail on the verified identity.
+  #
+  # SES_FROM_ADDRESS must belong to a VERIFIED SES identity or every send
+  # fails. SES_CONFIGURATION_SET routes bounce and complaint events; without
+  # it, deliverability degrades invisibly until SES throttles the account and
+  # nobody receives a recovery email.
+  AWS_REGION: ap-south-1
+  SES_FROM_ADDRESS: no-reply-staging@cleestudio.com
+  SES_CONFIGURATION_SET: atpost-staging-transactional
+  # ── Module 3 SR-1: access-token minting identity ─────────────────────────
+  # These MUST match api-gateway's JWT_ISSUER / JWT_AUDIENCE exactly. The
+  # gateway pins both and rejects any token that does not carry them, so a
+  # mismatch here is a total authentication outage rather than a degraded
+  # mode. In production the service REFUSES TO START without them and without
+  # JWT_PRIVATE_KEY_PEM — HS256 in production would mean every verifier that
+  # holds the shared secret can mint platform identities.
+  APP_ENV: "staging"
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: "atpost-api-staging"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1
   # RBAC bootstrap — set the staging superadmin UUID(s) to exercise /admin/access.
@@ -50,6 +80,7 @@ env:
   ADMIN_USER_IDS: ""
   MODERATOR_USER_IDS: ""
   REQUIRE_MFA_FOR_PRIVILEGED: "false"  # staging convenience; on in prod
+  OAUTH_NEW_ACCOUNT_ENABLED: "false"
 
 # Internal-only — api-gateway is the external surface.
 ingress:

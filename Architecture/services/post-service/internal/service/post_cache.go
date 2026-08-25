@@ -49,6 +49,19 @@ func (s *Service) getCachedPostBody(ctx context.Context, id uuid.UUID) (*postgre
 		if raw, err := s.rdb.Get(ctx, key).Bytes(); err == nil {
 			var p postgres.Post
 			if jsonErr := json.Unmarshal(raw, &p); jsonErr == nil {
+				// A moderation/deletion transaction may commit while Redis is
+				// unavailable, leaving an approved body in cache. Revalidate the
+				// minimal revocable state against the canonical database before
+				// returning any cache hit. Failure is fail-closed, never stale-read.
+				state, stateErr := s.pgStore.GetPostAccessState(ctx, id)
+				if stateErr != nil {
+					return nil, stateErr
+				}
+				if state == nil || state.Deleted {
+					_ = s.rdb.Del(ctx, key).Err()
+					return nil, nil
+				}
+				p.ReviewStatus = state.ReviewStatus
 				return &p, nil
 			}
 			// Corrupt entry: drop it so the next read repopulates.

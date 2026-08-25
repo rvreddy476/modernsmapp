@@ -66,7 +66,7 @@ class Conversation {
   factory Conversation.fromJson(Map<String, dynamic> json) {
     try {
       final members = (json['members'] as List? ?? [])
-          .map((m) => ConversationMember.fromJson(Map<String, dynamic>.from(m)))
+          .map((m) => ConversationMember.fromJson(Map<String, dynamic>.from(m as Map)))
           .toList();
 
       final participantIds = (json['participant_ids'] as List? ?? [])

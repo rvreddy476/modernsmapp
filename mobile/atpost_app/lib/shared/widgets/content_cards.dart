@@ -11,9 +11,11 @@ import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/following_provider.dart';
 import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
+import 'package:atpost_app/shared/widgets/provenance_badge.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/shared/widgets/clickable_hashtag_text.dart';
 import 'package:atpost_app/shared/widgets/echo_sheet.dart';
+import 'package:skeletonizer/skeletonizer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -114,15 +116,15 @@ class _PostCardState extends ConsumerState<PostCard> {
       try {
         await ref.read(postRepositoryProvider).undoEcho(post.id);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Echo removed.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Echo removed.')));
       } catch (_) {
         if (!mounted) return;
         setState(() => _echoed = true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not remove Echo.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Could not remove Echo.')));
       } finally {
         if (mounted) setState(() => _echoPending = false);
       }
@@ -137,9 +139,9 @@ class _PostCardState extends ConsumerState<PostCard> {
     );
     if (!mounted || created != true) return;
     setState(() => _echoed = true);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Echoed to your followers.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Echoed to your followers.')));
   }
 
   Future<void> _sharePost() async {
@@ -168,9 +170,9 @@ class _PostCardState extends ConsumerState<PostCard> {
           children: const [
             _ReportReasonTile(label: 'Spam', value: 'spam'),
             _ReportReasonTile(label: 'Harassment', value: 'harassment'),
-            _ReportReasonTile(label: 'Hate speech', value: 'hate_speech'),
-            _ReportReasonTile(label: 'Violence', value: 'violence'),
-            _ReportReasonTile(label: 'Nudity', value: 'nudity'),
+            _ReportReasonTile(label: 'Hate speech', value: 'hate_abuse'),
+            _ReportReasonTile(label: 'Violence', value: 'violence_threat'),
+            _ReportReasonTile(label: 'Nudity', value: 'sexual_content'),
             _ReportReasonTile(label: 'Misinformation', value: 'misinformation'),
             _ReportReasonTile(label: 'Other', value: 'other'),
           ],
@@ -183,9 +185,10 @@ class _PostCardState extends ConsumerState<PostCard> {
       await ref
           .read(postRepositoryProvider)
           .submitReport(
-            targetType: post.isReel
-                ? 'reel'
-                : (post.isVideo ? 'video' : 'post'),
+            // Reels and PostTube videos are canonical post records. The
+            // safety API accepts the owner entity, not the presentation
+            // surface through which the user encountered it.
+            targetType: 'post',
             targetId: post.id,
             reason: reason,
           );
@@ -244,24 +247,7 @@ class _PostCardState extends ConsumerState<PostCard> {
     }
   }
 
-  // Pick a deterministic gradient for text-only posts based on the author id
-  // so each user's text posts get a stable, recognisable colour.
-  LinearGradient _textPostGradient() {
-    const palette = <List<Color>>[
-      [AppColors.postbookPrimary, AppColors.postgramPrimary],
-      [AppColors.posttubePrimary, AppColors.accentPurple],
-      [AppColors.accentPurple, AppColors.postgramPrimary],
-      [AppColors.postbookPrimary, AppColors.postbookSecondary],
-      [AppColors.postgramSecondary, AppColors.postgramPrimary],
-    ];
-    final seed = (post.authorId.isNotEmpty ? post.authorId : post.id).hashCode;
-    final colours = palette[seed.abs() % palette.length];
-    return LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: colours,
-    );
-  }
+  // Removed _textPostGradient for simpler card design.
 
   @override
   Widget build(BuildContext context) {
@@ -289,6 +275,12 @@ class _PostCardState extends ConsumerState<PostCard> {
               child: _buildHeader(context),
             ),
 
+            if (post.alteredContent)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
+                child: ProvenanceBadge(),
+              ),
+
             if (post.bodyRedacted)
               // Tier 3c: backend stripped the body for this caller —
               // render the paywall preview in place of text/media.
@@ -297,7 +289,9 @@ class _PostCardState extends ConsumerState<PostCard> {
                 creatorName: post.authorName,
               )
             else if (isTextOnly)
-              _buildTextPostBody()
+              (Skeletonizer.maybeOf(context)?.enabled ?? false)
+                ? _buildSkeletonTextBody()
+                : _buildTextPostBody()
             else if (hasMedia) ...[
               if (hasContent)
                 Padding(
@@ -340,12 +334,11 @@ class _PostCardState extends ConsumerState<PostCard> {
   Widget _buildTextPostBody() {
     final body = post.content.trim();
     final isShort = body.length <= 140;
-    final base = AppTextStyles.h2.copyWith(
-      color: Colors.white,
-      fontSize: isShort ? 22 : 17,
-      height: 1.35,
-      fontWeight: FontWeight.w600,
-    );
+
+    if (Skeletonizer.maybeOf(context)?.enabled ?? false) {
+      return _buildSkeletonTextBody();
+    }
+
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       padding: EdgeInsets.symmetric(
@@ -353,18 +346,43 @@ class _PostCardState extends ConsumerState<PostCard> {
         vertical: isShort ? 28 : 22,
       ),
       decoration: BoxDecoration(
-        gradient: _textPostGradient(),
+        color: AppColors.bgTertiary,
         borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        border: Border.all(color: AppColors.borderSubtle),
       ),
       child: ClickableHashtagText(
         text: body,
-        normalStyle: base,
-        hashtagStyle: base.copyWith(
-          // Bright but readable on the gradient backgrounds.
-          color: const Color(0xFFFFE9CC),
-          fontWeight: FontWeight.w800,
+        normalStyle: AppTextStyles.body.copyWith(
+          fontSize: isShort ? 18 : 15,
+          fontWeight: FontWeight.w500,
+          color: Colors.white,
+        ),
+        hashtagStyle: AppTextStyles.body.copyWith(
+          fontSize: isShort ? 18 : 15,
+          color: AppColors.postbookPrimary,
+          fontWeight: FontWeight.w700,
         ),
         onHashtagTap: _onHashtagTap,
+      ),
+    );
+  }
+
+  Widget _buildSkeletonTextBody() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+      decoration: BoxDecoration(
+        color: AppColors.bgTertiary,
+        borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(height: 16, width: double.infinity, color: Colors.white),
+          const SizedBox(height: 8),
+          Container(height: 16, width: 200, color: Colors.white),
+        ],
       ),
     );
   }
@@ -377,9 +395,7 @@ class _PostCardState extends ConsumerState<PostCard> {
     if (cleaned.isEmpty) return;
     try {
       ref.read(homeFeedTabProvider.notifier).state = 2;
-      ref
-          .read(hashtagFeedProvider.notifier)
-          .selectHashtagByName(cleaned);
+      ref.read(hashtagFeedProvider.notifier).selectHashtagByName(cleaned);
     } catch (_) {
       context.push('/hashtag/${Uri.encodeComponent(cleaned)}');
     }
@@ -461,7 +477,7 @@ class _PostCardState extends ConsumerState<PostCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                authorName.isNotEmpty ? authorName : 'Anonymous',
+                authorName.isNotEmpty ? authorName : 'VChat User',
                 style: AppTextStyles.h3,
               ),
               Text(
@@ -502,16 +518,16 @@ class _PostCardState extends ConsumerState<PostCard> {
           captionsEnabled: false,
           onToggleSave: () {
             ref.read(postRepositoryProvider).toggleBookmark(post.id);
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Saved.')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('Saved.')));
           },
           onToggleCaptions: () {},
           onShare: () {
             Clipboard.setData(ClipboardData(text: _postLink));
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Post link copied.')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('Post link copied.')));
           },
           onReport: _reportPost,
         ),
@@ -656,8 +672,9 @@ class _FollowButtonState extends ConsumerState<_FollowButton> {
   bool _busy = false;
 
   bool get _following =>
-      (ref.watch(followingProvider).valueOrNull ?? <String>{})
-          .contains(widget.authorId);
+      (ref.watch(followingProvider).valueOrNull ?? <String>{}).contains(
+        widget.authorId,
+      );
 
   Future<void> _toggle() async {
     if (_busy) return;
@@ -793,7 +810,10 @@ class ReelCard extends StatelessWidget {
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black.withValues(alpha: 0.8)],
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.8),
+                  ],
                 ),
               ),
             ),

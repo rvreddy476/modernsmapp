@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:dio/dio.dart';
 import 'dart:io';
 
 import 'package:atpost_app/core/theme/app_colors.dart';
@@ -20,6 +21,18 @@ class CreateStoryScreen extends ConsumerStatefulWidget {
 class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
   final ImagePicker _picker = ImagePicker();
   XFile? _picked;
+
+  /// Who this story goes to. Defaults to followers, not everyone.
+  ///
+  /// The old client hardcoded 'public' and showed no chooser at all, so every
+  /// story was published to everyone whatever the creator assumed. Defaulting
+  /// to the narrower audience means an unmade choice under-shares rather than
+  /// over-shares.
+  StoryAudience _audience = StoryAudience.followers;
+
+  /// Stable across retries of one share, so a retry after a network failure
+  /// returns the same story instead of creating a second one.
+  final String _idempotencyKey = DateTime.now().microsecondsSinceEpoch.toString();
   bool _isVideo = false;
   bool _uploading = false;
   final TextEditingController _textController = TextEditingController();
@@ -65,18 +78,31 @@ class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
         await storiesRepo.createStory(
           mediaId: mediaId,
           mediaType: _isVideo ? 'video' : 'image',
+          audience: _audience,
           text: text.isEmpty ? null : text,
+          idempotencyKey: _idempotencyKey,
         );
       } catch (_) {
         unawaited(api.tryDeleteMedia(mediaId));
         rethrow;
       }
-      if (mounted) context.pop();
+      if (mounted) {
+        // The story is accepted, NOT published. Saying "shared" here would be
+        // the false-success state: the story sits in review and the creator
+        // would go looking for it on their profile and not find it.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Story sent for review. It goes live once it is approved.',
+            ),
+          ),
+        );
+        context.pop();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Failed to share story. Please try again.')),
+          SnackBar(content: Text(_shareFailureMessage(e))),
         );
       }
     } finally {
@@ -126,6 +152,41 @@ class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
       ),
       body: Column(
         children: [
+          // Audience chooser. The creator has to be able to see and change who
+          // a story goes to before sharing it — the previous screen offered no
+          // control at all and always published to everyone.
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.group_outlined,
+                    size: 18, color: AppColors.textMuted),
+                const SizedBox(width: 8),
+                Text('Share with', style: AppTextStyles.label),
+                const Spacer(),
+                DropdownButton<StoryAudience>(
+                  value: _audience,
+                  underline: const SizedBox.shrink(),
+                  dropdownColor: AppColors.bgSecondary,
+                  onChanged: _uploading
+                      ? null
+                      : (value) {
+                          if (value != null) {
+                            setState(() => _audience = value);
+                          }
+                        },
+                  items: StoryAudience.values
+                      .map(
+                        (a) => DropdownMenuItem<StoryAudience>(
+                          value: a,
+                          child: Text(a.label, style: AppTextStyles.body),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
+            ),
+          ),
           // Media preview area
           Expanded(
             child: hasPicked
@@ -253,5 +314,25 @@ class _ToolbarButton extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Maps a share failure onto something a creator can act on.
+///
+/// The previous screen showed one generic message for every failure, so a
+/// signed-out session, a rejected upload and a transient outage were
+/// indistinguishable — and the only advice was "try again", which is wrong for
+/// two of the three.
+String _shareFailureMessage(Object error) {
+  final status = error is DioException ? error.response?.statusCode : null;
+  switch (status) {
+    case 401:
+      return 'Please sign in again to share a story.';
+    case 400:
+      return 'That media cannot be used for a story. Try picking it again.';
+    case 503:
+      return 'We could not check who this story is for. Please retry shortly.';
+    default:
+      return 'Failed to share story. Please try again.';
   }
 }

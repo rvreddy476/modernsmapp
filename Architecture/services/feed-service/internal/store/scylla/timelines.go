@@ -23,6 +23,7 @@ type FeedItem struct {
 	AuthorID    uuid.UUID
 	CreatedAt   time.Time
 	ContentType string // "post", "reel", "video", or "" for legacy rows
+	CursorToken string // exact Scylla timeuuid; internal pagination only
 }
 
 const maxTimelineBucketLookback = 12
@@ -251,6 +252,13 @@ func (s *TimelineStore) GetHomeTimelineByContentType(ctx context.Context, userID
 // content_types. Over-fetches and filters in Go since content_type is not a
 // clustering key. The partition scan is bounded by (user_id, bucket).
 func (s *TimelineStore) GetHomeTimelineByContentTypes(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int) ([]FeedItem, error) {
+	return s.GetHomeTimelineByContentTypesBefore(ctx, userID, contentTypes, "", limit)
+}
+
+// GetHomeTimelineByContentTypesBefore is the keyset-paginated form used by
+// ranked media surfaces. The watermark is the canonical timeline timestamp,
+// so new posts inserted above it cannot shift or duplicate later pages.
+func (s *TimelineStore) GetHomeTimelineByContentTypesBefore(ctx context.Context, userID uuid.UUID, contentTypes []string, beforeToken string, limit int) ([]FeedItem, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -262,7 +270,18 @@ func (s *TimelineStore) GetHomeTimelineByContentTypes(ctx context.Context, userI
 		}
 	}
 
-	current := monthStart(time.Now().UTC())
+	start := time.Now().UTC()
+	var beforeUUID *gocql.UUID
+	if beforeToken != "" {
+		parsed, err := gocql.ParseUUID(beforeToken)
+		if err != nil {
+			return nil, err
+		}
+		beforeUUID = &parsed
+		start = parsed.Time().UTC()
+	}
+	current := monthStart(start)
+	firstBefore := beforeUUID
 	items := make([]FeedItem, 0, limit)
 	for i := 0; i < maxTimelineBucketLookback && len(items) < limit; i++ {
 		fetchLimit := (limit - len(items)) * 5
@@ -270,7 +289,7 @@ func (s *TimelineStore) GetHomeTimelineByContentTypes(ctx context.Context, userI
 			fetchLimit = 1000
 		}
 
-		batch, err := s.queryHomeTimelineBucket(ctx, userID, bucket(current), nil, fetchLimit)
+		batch, err := s.queryHomeTimelineBucketCursor(ctx, userID, bucket(current), firstBefore, fetchLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -286,6 +305,7 @@ func (s *TimelineStore) GetHomeTimelineByContentTypes(ctx context.Context, userI
 		}
 
 		current = current.AddDate(0, -1, 0)
+		firstBefore = nil
 	}
 
 	return items, nil
@@ -314,21 +334,30 @@ func (s *TimelineStore) collectHomeTimeline(ctx context.Context, userID uuid.UUI
 }
 
 func (s *TimelineStore) queryHomeTimelineBucket(ctx context.Context, userID uuid.UUID, bucketID int, before *time.Time, limit int) ([]FeedItem, error) {
+	var beforeUUID *gocql.UUID
+	if before != nil && bucket(before.UTC()) == bucketID {
+		parsed := gocql.UUIDFromTime(before.UTC())
+		beforeUUID = &parsed
+	}
+	return s.queryHomeTimelineBucketCursor(ctx, userID, bucketID, beforeUUID, limit)
+}
+
+func (s *TimelineStore) queryHomeTimelineBucketCursor(ctx context.Context, userID uuid.UUID, bucketID int, before *gocql.UUID, limit int) ([]FeedItem, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 
 	var iter *gocql.Iter
-	if before != nil && bucket(before.UTC()) == bucketID {
+	if before != nil && bucket(before.Time().UTC()) == bucketID {
 		iter = s.session.Query(`
-			SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
+			SELECT ts, post_id, author_id, created_at, content_type FROM home_timeline_by_user
 			WHERE user_id = ? AND bucket = ? AND ts < ?
 			ORDER BY ts DESC
 			LIMIT ?
-		`, toGocql(userID), bucketID, gocql.UUIDFromTime(before.UTC()), limit).WithContext(ctx).Iter()
+		`, toGocql(userID), bucketID, *before, limit).WithContext(ctx).Iter()
 	} else {
 		iter = s.session.Query(`
-			SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
+			SELECT ts, post_id, author_id, created_at, content_type FROM home_timeline_by_user
 			WHERE user_id = ? AND bucket = ?
 			ORDER BY ts DESC
 			LIMIT ?
@@ -336,10 +365,10 @@ func (s *TimelineStore) queryHomeTimelineBucket(ctx context.Context, userID uuid
 	}
 
 	var items []FeedItem
-	var pid, aid gocql.UUID
+	var ts, pid, aid gocql.UUID
 	var createdAt time.Time
 	var contentType *string
-	for iter.Scan(&pid, &aid, &createdAt, &contentType) {
+	for iter.Scan(&ts, &pid, &aid, &createdAt, &contentType) {
 		ct := "post"
 		if contentType != nil && *contentType != "" {
 			ct = *contentType
@@ -349,6 +378,7 @@ func (s *TimelineStore) queryHomeTimelineBucket(ctx context.Context, userID uuid
 			AuthorID:    uuid.UUID(aid),
 			CreatedAt:   createdAt,
 			ContentType: ct,
+			CursorToken: ts.String(),
 		})
 	}
 	if err := iter.Close(); err != nil {

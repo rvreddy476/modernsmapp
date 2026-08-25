@@ -28,14 +28,15 @@ var ErrInsufficientFunds = errors.New("insufficient funds")
 // code should reference `CreatorLedgerEntry`. The `Wallet` alias will
 // be removed after 2026-10-30.
 type Wallet struct {
-	UserID               uuid.UUID `json:"user_id"`
-	BalancePaise         int64     `json:"balance_paise"`
-	LifetimeEarningsPaise int64    `json:"lifetime_earnings_paise"`
-	PendingPayoutPaise   int64     `json:"pending_payout_paise"`
-	Currency             string    `json:"currency"`
-	IsFrozen             bool      `json:"is_frozen"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	UserID                uuid.UUID `json:"user_id"`
+	BalancePaise          int64     `json:"balance_paise"`
+	LifetimeEarningsPaise int64     `json:"lifetime_earnings_paise"`
+	PendingPayoutPaise    int64     `json:"pending_payout_paise"`
+	Currency              string    `json:"currency"`
+	IsFrozen              bool      `json:"is_frozen"`
+	HasActivity           bool      `json:"has_activity"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // CreatorLedgerEntry is the canonical name for a creator-earnings
@@ -187,6 +188,7 @@ func (s *Store) GetWallet(ctx context.Context, userID uuid.UUID) (*Wallet, error
 		}
 		return nil, err
 	}
+	w.HasActivity = true
 	return &w, nil
 }
 

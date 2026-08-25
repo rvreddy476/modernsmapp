@@ -73,7 +73,7 @@ func TestParseAndValidateJWTRotationWindow(t *testing.T) {
 func TestParseAndValidateJWTRejectsExpired(t *testing.T) {
 	keys := JWTKeySet{ActiveKID: "v1", ActiveSecret: "secret"}
 	tok := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"},
-		map[string]any{"sub": uuid.New().String(), "exp": time.Now().Add(-time.Minute).Unix()},
+		map[string]any{"sub": uuid.New().String(), "exp": time.Now().Add(-2 * time.Minute).Unix()},
 		keys.ActiveSecret)
 	if _, _, err := parseAndValidateJWTWithKeys(tok, keys); err == nil {
 		t.Fatal("expired token should be rejected")

@@ -2,12 +2,14 @@ package http
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/feed-service/internal/service"
@@ -65,6 +67,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/videos", h.GetLongVideoFeed)
 		v1.GET("/watch", h.GetVideoFeed)
 		v1.POST("/preference", h.SetPreference)
+		v1.GET("/preference", h.GetPreference)
 		v1.POST("/signal", h.PostSignal)
 		// MF9 — /internal/debug requires an admin scope at the
 		// gateway (requireAdminForInternalPaths). The legacy /debug
@@ -176,16 +179,13 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
-	feedItems, err := h.svc.GetReelFeed(c.Request.Context(), userID, limit)
+	feedItems, next, err := h.svc.GetReelFeedPage(c.Request.Context(), userID, limit, before)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -193,14 +193,19 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 
 	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
 	if err != nil {
-		log.Printf("Warning: reel feed hydration failed: %v", err)
-		c.Writer.Header().Set("X-Feed-Surface", "reels")
-		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		// M2-P0-6: NEVER fall back to raw FeedItems. They carry post_id
+		// and author_id with none of the hydration-time checks applied,
+		// so this path returned identifiers for content the viewer may
+		// have no right to see — a blocked author's post ids included.
+		// A failed hydration is an error, not a degraded success.
+		log.Printf("reel feed hydration failed: %v", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+			"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
 		return
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "reels")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
 }
 
 func (h *Handler) GetFlickFeed(c *gin.Context) {
@@ -211,16 +216,13 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
-	feedItems, err := h.svc.GetFlickFeed(c.Request.Context(), userID, limit)
+	feedItems, next, err := h.svc.GetFlickFeedPage(c.Request.Context(), userID, limit, before)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -228,14 +230,16 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 
 	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
 	if err != nil {
-		log.Printf("Warning: flick feed hydration failed: %v", err)
-		c.Writer.Header().Set("X-Feed-Surface", "flicks")
-		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		// M2-P0-6: see the reel handler — raw identifiers are not a safe
+		// degradation for a surface that returns other people's content.
+		log.Printf("flick feed hydration failed: %v", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+			"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
 		return
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "flicks")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
 }
 
 func (h *Handler) GetLongVideoFeed(c *gin.Context) {
@@ -246,16 +250,13 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
-	feedItems, err := h.svc.GetLongVideoFeed(c.Request.Context(), userID, limit)
+	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -263,14 +264,16 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 
 	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
 	if err != nil {
-		log.Printf("Warning: long video feed hydration failed: %v", err)
-		c.Writer.Header().Set("X-Feed-Surface", "videos")
-		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		// M2-P0-6: see the reel handler — raw identifiers are not a safe
+		// degradation for a surface that returns other people's content.
+		log.Printf("long video feed hydration failed: %v", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+			"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
 		return
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "videos")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
 }
 
 func (h *Handler) GetVideoFeed(c *gin.Context) {
@@ -281,17 +284,14 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
-	feedItems, err := h.svc.GetVideoFeed(c.Request.Context(), userID, limit, followingOnly)
+	feedItems, next, err := h.svc.GetVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -299,18 +299,65 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 
 	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
 	if err != nil {
-		log.Printf("Warning: video feed hydration failed: %v", err)
-		c.Writer.Header().Set("X-Feed-Surface", "watch")
-		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		// M2-P0-4 (re-review): /v1/feed/watch was the fourth active route
+		// with this fallback and it was missed when the other three were
+		// fixed — the previous handover claimed all four were safe. Raw
+		// FeedItems carry post_id and author_id with no hydration-time
+		// checks, so a degraded response leaked identifiers for content
+		// the viewer may have no right to see.
+		log.Printf("watch feed hydration failed: %v", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+			"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
 		return
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "watch")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+}
+
+// Ranked-surface cursors are opaque base64 tokens containing the exact Scylla
+// timeline timeuuid. New posts inserted above the watermark do not shift later
+// pages, equal timestamps do not collide, and earlier pages are not re-scanned.
+func rankedPageParams(c *gin.Context) (limit int, before string, err error) {
+	limit, err = strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	raw := c.Query("cursor")
+	if raw == "" {
+		return limit, "", nil
+	}
+	decoded, decodeErr := base64.RawURLEncoding.DecodeString(raw)
+	if decodeErr != nil {
+		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+	}
+	version, token, ok := strings.Cut(string(decoded), ":")
+	if !ok || version != "v1" {
+		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+	}
+	parsed, parseErr := uuid.Parse(token)
+	if parseErr != nil || parsed.Version() != 1 {
+		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+	}
+	return limit, parsed.String(), nil
+}
+
+func rankedPageMeta(next string) *api.Meta {
+	if next == "" {
+		return nil
+	}
+	token := base64.RawURLEncoding.EncodeToString([]byte("v1:" + next))
+	return &api.Meta{NextCursor: token}
 }
 
 type preferenceRequest struct {
-	FeedMode string `json:"feed_mode" binding:"required"`
+	// Both fields optional; at least one must be present. Old clients that
+	// send only feed_mode keep working unchanged.
+	FeedMode           string `json:"feed_mode"`
+	LongVideoFrequency string `json:"long_video_frequency"`
 }
 
 func (h *Handler) SetPreference(c *gin.Context) {
@@ -326,17 +373,50 @@ func (h *Handler) SetPreference(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-	if req.FeedMode != "ranked" && req.FeedMode != "chronological" {
+	if req.FeedMode == "" && req.LongVideoFrequency == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "feed_mode or long_video_frequency is required", nil)
+		return
+	}
+	if req.FeedMode != "" && req.FeedMode != "ranked" && req.FeedMode != "chronological" {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "feed_mode must be 'ranked' or 'chronological'", nil)
 		return
 	}
-
-	if err := h.svc.SetUserFeedMode(c.Request.Context(), userID, req.FeedMode); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	if req.LongVideoFrequency != "" && !service.ValidLongVideoFrequency(req.LongVideoFrequency) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "long_video_frequency must be 'hidden', 'reduced', 'balanced', or 'preferred'", nil)
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"feed_mode": req.FeedMode}, nil)
+	if req.FeedMode != "" {
+		if err := h.svc.SetUserFeedMode(c.Request.Context(), userID, req.FeedMode); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			return
+		}
+	}
+	if req.LongVideoFrequency != "" {
+		if err := h.svc.SetLongVideoFrequency(c.Request.Context(), userID, req.LongVideoFrequency); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			return
+		}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{
+		"feed_mode":            h.svc.GetUserFeedMode(c.Request.Context(), userID),
+		"long_video_frequency": h.svc.GetLongVideoFrequency(c.Request.Context(), userID),
+	}, nil)
+}
+
+// GetPreference returns the viewer's current feed preferences (P0-4:
+// preference must persist across login — the settings UI reads it here).
+func (h *Handler) GetPreference(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{
+		"feed_mode":            h.svc.GetUserFeedMode(c.Request.Context(), userID),
+		"long_video_frequency": h.svc.GetLongVideoFrequency(c.Request.Context(), userID),
+	}, nil)
 }
 
 type signalRequest struct {

@@ -2,7 +2,9 @@ package scylla
 
 import (
 	"context"
+	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -80,6 +82,53 @@ func (s *InteractionStore) GetReaction(ctx context.Context, postID, userID uuid.
 	return reaction, nil
 }
 
+const hydrationReadConcurrency = 16
+
+// BatchGetReactions reads independent post partitions with bounded
+// concurrency. Scylla has no efficient cross-partition join for this schema;
+// bounding the fan-out avoids both serial N-round-trip latency and an
+// unbounded goroutine/query burst.
+func (s *InteractionStore) BatchGetReactions(ctx context.Context, postIDs []uuid.UUID, userID uuid.UUID) (map[uuid.UUID]string, error) {
+	result := make(map[uuid.UUID]string, len(postIDs))
+	if len(postIDs) == 0 {
+		return result, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, hydrationReadConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	for _, postID := range postIDs {
+		postID := postID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			reaction, err := s.GetReaction(ctx, postID, userID)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("post %s: %w", postID, err)
+					cancel()
+				}
+				return
+			}
+			if reaction != "" {
+				result[postID] = reaction
+			}
+		}()
+	}
+	wg.Wait()
+	return result, firstErr
+}
+
 // currentBucket returns the current YYYYMM bucket as an int.
 func currentBucket() int {
 	b, _ := strconv.Atoi(time.Now().UTC().Format("200601"))
@@ -150,4 +199,44 @@ func (s *InteractionStore) GetCounts(ctx context.Context, postID uuid.UUID) (*Co
 		return nil, err
 	}
 	return &c, nil
+}
+
+// BatchGetCounts is the counter companion to BatchGetReactions.
+func (s *InteractionStore) BatchGetCounts(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*Counts, error) {
+	result := make(map[uuid.UUID]*Counts, len(postIDs))
+	if len(postIDs) == 0 {
+		return result, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, hydrationReadConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	for _, postID := range postIDs {
+		postID := postID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			counts, err := s.GetCounts(ctx, postID)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("post %s: %w", postID, err)
+					cancel()
+				}
+				return
+			}
+			result[postID] = counts
+		}()
+	}
+	wg.Wait()
+	return result, firstErr
 }

@@ -19,29 +19,37 @@ func New(db *pgxpool.Pool) *MediaAssetStore {
 }
 
 type MediaAsset struct {
-	ID               uuid.UUID      `json:"id"`
-	UploaderID       uuid.UUID      `json:"uploader_id"`
-	FileType         string         `json:"file_type"`
-	MediaSubtype     string         `json:"media_subtype"`
-	MimeType         string         `json:"mime_type"`
-	FileSizeBytes    int64          `json:"file_size_bytes"`
-	StorageBucket    string         `json:"storage_bucket"`
-	StorageKey       string         `json:"storage_key"`
-	ProcessingStatus string         `json:"processing_status"`
-	ModerationStatus string         `json:"moderation_status"`
-	Width            *int           `json:"width,omitempty"`
-	Height           *int           `json:"height,omitempty"`
-	DurationSeconds  *int           `json:"duration_seconds,omitempty"`
-	Blurhash         *string        `json:"blurhash,omitempty"`
-	AltText          string         `json:"alt_text"`
-	OriginalURL      *string        `json:"original_url,omitempty"`
-	CdnURL           *string        `json:"cdn_url,omitempty"`
-	ThumbnailURL     *string        `json:"thumbnail_url,omitempty"`
-	HLSMasterKey     string         `json:"hls_master_key,omitempty"`
-	IsVertical       bool           `json:"is_vertical"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	Variants         []MediaVariant `json:"variants,omitempty"`
+	ID               uuid.UUID `json:"id"`
+	UploaderID       uuid.UUID `json:"uploader_id"`
+	FileType         string    `json:"file_type"`
+	MediaSubtype     string    `json:"media_subtype"`
+	MimeType         string    `json:"mime_type"`
+	FileSizeBytes    int64     `json:"file_size_bytes"`
+	StorageBucket    string    `json:"storage_bucket"`
+	StorageKey       string    `json:"storage_key"`
+	ProcessingStatus string    `json:"processing_status"`
+	ModerationStatus string    `json:"moderation_status"`
+	Width            *int      `json:"width,omitempty"`
+	Height           *int      `json:"height,omitempty"`
+	DurationSeconds  *int      `json:"duration_seconds,omitempty"`
+	Blurhash         *string   `json:"blurhash,omitempty"`
+	AltText          string    `json:"alt_text"`
+	// AltDecorative marks media the author explicitly declared decorative
+	// — distinct from "not described yet" (Codex P1-7). Hydrated media
+	// carries it so every referencing surface can skip it correctly.
+	AltDecorative bool `json:"alt_decorative"`
+	// UploadPurpose is the composer lease that scopes confirmed-media
+	// reclamation (Slice C, C-P0-4). Empty for every other surface, which is
+	// exactly what keeps those assets permanently out of the sweep.
+	UploadPurpose string         `json:"upload_purpose,omitempty"`
+	OriginalURL   *string        `json:"original_url,omitempty"`
+	CdnURL        *string        `json:"cdn_url,omitempty"`
+	ThumbnailURL  *string        `json:"thumbnail_url,omitempty"`
+	HLSMasterKey  string         `json:"hls_master_key,omitempty"`
+	IsVertical    bool           `json:"is_vertical"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	Variants      []MediaVariant `json:"variants,omitempty"`
 }
 
 type MediaVariant struct {
@@ -58,9 +66,9 @@ type MediaVariant struct {
 // CreateMedia inserts a new media asset record.
 func (s *MediaAssetStore) CreateMedia(ctx context.Context, m *MediaAsset) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO media_assets (id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, alt_text, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
-	`, m.ID, m.UploaderID, m.FileType, m.MediaSubtype, m.MimeType, m.FileSizeBytes, m.StorageBucket, m.StorageKey, m.ProcessingStatus, m.AltText, m.CreatedAt)
+		INSERT INTO media_assets (id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, alt_text, alt_decorative, upload_purpose, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($12, ''), $13, $13)
+	`, m.ID, m.UploaderID, m.FileType, m.MediaSubtype, m.MimeType, m.FileSizeBytes, m.StorageBucket, m.StorageKey, m.ProcessingStatus, m.AltText, m.AltDecorative, m.UploadPurpose, m.CreatedAt)
 	return err
 }
 
@@ -103,12 +111,12 @@ func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAss
 	var m MediaAsset
 	err := s.db.QueryRow(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
+		       width, height, duration_seconds, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
 		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
-		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 		&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
@@ -195,7 +203,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
+		       width, height, duration_seconds, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = ANY($1)
 	`, ids)
@@ -204,19 +212,19 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 	}
 	defer rows.Close()
 
-	mediaMap := make(map[uuid.UUID]*MediaAsset)
+	mediaMap := make(map[uuid.UUID]int, len(ids))
 	var result []MediaAsset
 	for rows.Next() {
 		var m MediaAsset
 		if err := rows.Scan(
 			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
-			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 			&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		result = append(result, m)
-		mediaMap[m.ID] = &result[len(result)-1]
+		mediaMap[m.ID] = len(result) - 1
 	}
 
 	// Batch-load variants
@@ -235,8 +243,8 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 		if err := vRows.Scan(&v.MediaAssetID, &v.Name, &v.Width, &v.Height, &v.SizeBytes, &v.Mime, &v.ObjectKey, &v.CreatedAt); err != nil {
 			continue
 		}
-		if m, ok := mediaMap[v.MediaAssetID]; ok {
-			m.Variants = append(m.Variants, v)
+		if idx, ok := mediaMap[v.MediaAssetID]; ok {
+			result[idx].Variants = append(result[idx].Variants, v)
 		}
 	}
 
@@ -372,6 +380,74 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	return objectKeys, nil
 }
 
+// ListReclaimableMedia returns reclamation candidates — Slice C, C-CLB-1.
+//
+// # ONLY `pending_upload`, AND WHY THAT IS A RETREAT ON PURPOSE
+//
+// An earlier version of this query also returned CONFIRMED assets carrying the
+// composer lease, so an abandoned-but-uploaded composer photo could be swept.
+// The lease scoping was right as far as it went — it stopped the sweep being a
+// global collector for every old ready asset — but scoping decides WHICH
+// confirmed assets are eligible, and the unsafe part was reclaiming a confirmed
+// asset at all.
+//
+// The review proved it against live PostgreSQL. A reclaim transaction locked a
+// ready, composer-leased media row, saw no reference, and held the lock; a
+// concurrent writer set `users.avatar_media_id` to that asset and committed in
+// 304 ms, unblocked, because a plain UUID column takes no lock on the media
+// row. The reclaim then deleted the asset and committed. Final state: media row
+// gone, avatar reference still pointing at it. No error anywhere.
+//
+// So confirmed reclamation is OFF until every live-reference writer joins a
+// claim protocol. See ErrMediaConfirmed for the full reasoning and the cost.
+//
+// `pending_upload` reclamation — the original audit-H9 case — is untouched and
+// still runs. Nothing can reference an asset whose bytes never arrived.
+//
+// # THE LIVE-REFERENCE PREDICATE IS STILL APPLIED
+//
+// Kept, even though a `pending_upload` asset should never have a live claim.
+// It is a cheap contradiction check: if one of these ever DOES carry a
+// reference, something upstream is wrong in a way that should stop the delete,
+// not proceed with it. It also fails closed on an unclassified media-referencing
+// column, so a new claim added by another team makes this sweep do nothing
+// rather than delete something nobody has classified.
+//
+// Selection here is only a candidate list — DeleteOrphanMediaAtomic re-checks
+// age, status and references under a row lock before anything is removed.
+func (s *MediaAssetStore) ListReclaimableMedia(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+
+	refs, resolveErr := ResolveLiveReferences(ctx, s.db)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+
+	query := `
+		SELECT id FROM media_assets m
+		WHERE m.created_at < $1
+		  AND m.processing_status = $3
+		  AND NOT (` + liveReferenceSQL(refs, "m.id") + `)
+		ORDER BY m.created_at ASC
+		LIMIT $2`
+	rows, err := s.db.Query(ctx, query, olderThan, limit, ProcessingStatusPendingUpload)
+	if err != nil {
+		return nil, fmt.Errorf("list reclaimable media: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // ListOrphanedPendingUploads returns the IDs of media assets stuck
 // in `pending_upload` past the cutoff time — audit H9. The 3-step
 // upload flow has a window where a client crashes between
@@ -432,10 +508,23 @@ func (s *MediaAssetStore) UpdateMediaURLs(ctx context.Context, id uuid.UUID, ori
 // UpdateAltText sets the alt_text field for a media asset owned by uploaderID.
 // Returns pgx.ErrNoRows if the asset does not exist or is not owned by uploaderID.
 func (s *MediaAssetStore) UpdateAltText(ctx context.Context, id uuid.UUID, uploaderID uuid.UUID, altText string) error {
+	return s.UpdateAltTextWithDecorative(ctx, id, uploaderID, altText, false)
+}
+
+// UpdateAltTextWithDecorative sets the description and the decorative
+// marker together (Module 1 fixes-v1 / Codex P1-7). The two are mutually
+// exclusive: marking decorative clears any description, and supplying a
+// description clears the decorative marker — so "described" and
+// "intentionally undescribed" stay distinguishable after publish.
+func (s *MediaAssetStore) UpdateAltTextWithDecorative(ctx context.Context, id uuid.UUID, uploaderID uuid.UUID, altText string, decorative bool) error {
+	if decorative {
+		altText = ""
+	}
 	tag, err := s.db.Exec(ctx, `
-		UPDATE media_assets SET alt_text = $1, updated_at = NOW()
+		UPDATE media_assets
+		SET alt_text = $1, alt_decorative = $4, updated_at = NOW()
 		WHERE id = $2 AND uploader_id = $3
-	`, altText, id, uploaderID)
+	`, altText, id, uploaderID, decorative)
 	if err != nil {
 		return err
 	}

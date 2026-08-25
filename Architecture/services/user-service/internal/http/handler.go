@@ -162,6 +162,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal.POST("/dlq/:id/replay", h.ReplayDLQ)
 	// Projection health: master vs. local counts, reconcile + DLQ status.
 	internal.GET("/projection/health", h.ProjectionHealth)
+	// Module 1 P0-3: subscriber fan-out contract (internal-only —
+	// subscriber identities never reach a public route).
+	internal.GET("/channels/by-owner/:userId", h.GetChannelByOwner)
+	internal.GET("/channels/:channelId/subscriber-ids", h.ListSubscriberIDs)
+	internal.GET("/users/:userId/subscribed-owner-ids", h.ListSubscribedOwners)
 
 	v1 := r.Group("/v1/users")
 	{
@@ -169,7 +174,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:userId", h.GetUser)
 		v1.GET("/:userId/channels", h.GetUserChannels)
 		v1.GET("/:userId/links", h.GetUserLinks)
-		v1.PUT("/me", h.UpdateMe)
+		// SR-3: RETIRED — profile-service is the canonical writer for these
+		// fields. See retired_profile_routes.go. The GET stays: a read is a
+		// projection, and only the write created the divergence.
+		v1.PUT("/me", retiredProfileWrite)
 		v1.GET("/me", h.GetMe)
 		v1.PUT("/me/links", h.UpdateMyLinks)
 		v1.GET("/me/settings", h.GetMySettings)
@@ -439,44 +447,14 @@ func (h *Handler) UpdateMyLinks(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, links, nil)
 }
 
-func (h *Handler) GetMySettings(c *gin.Context) {
-	userIDStr := c.GetHeader("X-User-Id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
+// GetMySettings and UpdateMySettings are RETIRED. See settings_moved.go.
+//
+// Both used to read and write this service's three-column privacy record.
+// That record is not the one anything enforces, so a client that wrote to it
+// was told 200 and protected by nothing.
+func (h *Handler) GetMySettings(c *gin.Context) { settingsMoved(c) }
 
-	s, err := h.svc.GetSettings(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, s, nil)
-}
-
-func (h *Handler) UpdateMySettings(c *gin.Context) {
-	userIDStr := c.GetHeader("X-User-Id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var req store.UserSettings
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	req.UserID = userID
-
-	s, err := h.svc.UpdateSettings(c.Request.Context(), &req)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, s, nil)
-}
+func (h *Handler) UpdateMySettings(c *gin.Context) { settingsMoved(c) }
 
 // --- About ---
 

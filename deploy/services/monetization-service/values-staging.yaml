@@ -10,7 +10,7 @@ service:
   port: 8099
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/monetization-service
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/monetization-service'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 2
@@ -24,20 +24,20 @@ resources:
     memory: 512Mi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-monetization-service-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-monetization-service-irsa'
 
 externalSecret:
   enabled: true
   remoteKey: atpost/staging/monetization-service
   data:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
-    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
-    - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
-    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
 
 env:
   ENV: staging
+  MONETIZATION_WRITES_ENABLED: "false"
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # Add per-service inter-service URLs here. Common ones:

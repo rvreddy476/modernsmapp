@@ -1,0 +1,125 @@
+name: Android Native CI
+
+# Phase 0 CI for the native Android app under mobile/android/.
+# Deliberately scoped by path so it never runs for backend or Flutter changes.
+#
+# Jobs 1-7 correspond to PHASE_0_1_PLAN.md §E. Instrumented tests, the
+# macrobenchmark gate, and Paparazzi screenshots are intentionally absent —
+# they arrive in Phases 2 and 4. The `benchmark` job name is reserved below
+# so wiring it later is a one-line change.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/android/**'
+      - '.github/workflows/android-native.yml'
+  pull_request:
+    paths:
+      - 'mobile/android/**'
+      - '.github/workflows/android-native.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: android-native-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: mobile/android
+
+env:
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.welcome=never
+
+jobs:
+  build:
+    name: Assemble, test and analyse
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 21 runs the Gradle daemon; modules still emit Java 17 bytecode
+      # (source/targetCompatibility 17). See README "Toolchain".
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # ── Job 6: module graph rules (fast, fails early) ─────────────────
+      - name: Module graph check
+        run: ./gradlew moduleGraphCheck
+
+      # Firebase config. Deliberately NOT in the repo (see mobile/android/
+      # .gitignore): it carries a project API key that is package-restricted
+      # but still an identifier this repo should not publish. The google-services
+      # Gradle plugin fails the build without it, so CI materialises it from a
+      # secret holding the base64 of the file downloaded from the Firebase
+      # console. Set GOOGLE_SERVICES_JSON in repository secrets.
+      - name: Write google-services.json
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "GOOGLE_SERVICES_JSON secret is not set — the Android build cannot run." >&2
+            exit 1
+          fi
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > mobile/android/app/google-services.json
+          echo "clients:"
+          grep -o '"package_name": "[^"]*"' mobile/android/app/google-services.json | cut -d'"' -f4
+
+      # ── Job 1: assemble ───────────────────────────────────────────────
+      - name: Assemble devDebug
+        run: ./gradlew assembleDevDebug
+
+      # ── Job 2: unit tests ─────────────────────────────────────────────
+      # Two task names on purpose. Library modules have no product flavors,
+      # so their task is `testDebugUnitTest`; only :app is flavored and has
+      # `testDevDebugUnitTest`. Running just the latter silently skips every
+      # library module's tests.
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest :app:testDevDebugUnitTest
+
+      # ── Job 4: static analysis (detekt + ktlint via detekt-formatting) ─
+      - name: Detekt
+        run: ./gradlew detekt
+
+      # ── Job 3: Android lint ───────────────────────────────────────────
+      - name: Lint
+        run: ./gradlew lintDevDebug
+
+      # ── Job 7: release build (unsigned) ───────────────────────────────
+      # Catches R8, manifest merge, and resource-shrink breakage early,
+      # long before there is a signing config (blocker B6).
+      - name: Assemble prodRelease (unsigned)
+        run: ./gradlew assembleProdRelease
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            mobile/android/**/build/reports/**
+            mobile/android/**/build/test-results/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Reserved. Enabled in Phase 4, when the macrobenchmark module exists and
+  # jank / startup numbers become merge gates (parent plan §7).
+  benchmark:
+    name: Macrobenchmark (Phase 4)
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Enabled in Phase 4."

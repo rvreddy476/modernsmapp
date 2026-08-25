@@ -173,7 +173,7 @@ class FeedRepository {
       items: rawData
           .map((e) => Post.fromJson(e as Map<String, dynamic>))
           .toList(),
-      nextCursor: response.data['meta']?['next_cursor'],
+      nextCursor: response.data['meta']?['next_cursor'] as String?,
     );
   }
 
@@ -193,7 +193,7 @@ class FeedRepository {
       items: rawData
           .map((e) => Post.fromJson(e as Map<String, dynamic>))
           .toList(),
-      nextCursor: response.data['meta']?['next_cursor'],
+      nextCursor: response.data['meta']?['next_cursor'] as String?,
     );
   }
 }

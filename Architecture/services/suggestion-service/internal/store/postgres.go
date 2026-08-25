@@ -121,7 +121,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		PRIMARY KEY (viewer_id, candidate_id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_cooldowns_expiry ON suggestion_cooldowns (cooldown_until) WHERE cooldown_until IS NOT NULL;
-	`
+	` + ConsumerInboxDDL
 	_, err := s.appDB.Exec(ctx, ddl)
 	return err
 }

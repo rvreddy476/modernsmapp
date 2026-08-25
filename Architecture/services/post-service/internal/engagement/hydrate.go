@@ -25,7 +25,7 @@ type ViewerState struct {
 
 // HydratedPost bundles engagement counts, viewer state, and recent likers.
 type HydratedPost struct {
-	PostID       uuid.UUID   `json:"post_id"`
+	PostID       uuid.UUID      `json:"post_id"`
 	Engagement   PostEngagement `json:"engagement"`
 	ViewerState  ViewerState    `json:"viewer_state"`
 	RecentLikers []string       `json:"recent_likers"`

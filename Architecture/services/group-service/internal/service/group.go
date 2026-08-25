@@ -3,9 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,18 +19,19 @@ import (
 )
 
 type Service struct {
-	store             *store.Store
-	rdb               *redis.Client
-	messageServiceURL string
-	postServiceURL    string
-	userServiceURL    string
-	jwtSecret         string
-	chatClient        *http.Client
-	postClient        *http.Client
-	notifyClient      *http.Client
-	userClient        *http.Client
-	producer          *groupevents.Producer
-	rateLimiter       *RateLimiter
+	store              *store.Store
+	rdb                *redis.Client
+	messageServiceURL  string
+	postServiceURL     string
+	userServiceURL     string
+	jwtSecret          string
+	internalServiceKey string
+	chatClient         *http.Client
+	postClient         *http.Client
+	notifyClient       *http.Client
+	userClient         *http.Client
+	producer           *groupevents.Producer
+	rateLimiter        *RateLimiter
 }
 
 func New(s *store.Store, rdb *redis.Client, msgURL, postURL, userURL, jwtSecret string) *Service {
@@ -58,6 +56,10 @@ func (s *Service) SetProducer(p *groupevents.Producer) {
 	s.producer = p
 }
 
+func (s *Service) SetInternalServiceKey(key string) {
+	s.internalServiceKey = strings.TrimSpace(key)
+}
+
 func (s *Service) publishEvent(fn func() error) {
 	if s.producer == nil {
 		return
@@ -65,18 +67,6 @@ func (s *Service) publishEvent(fn func() error) {
 	if err := fn(); err != nil {
 		slog.Warn("failed to publish event", "error", err)
 	}
-}
-
-// signServiceToken creates a short-lived JWT for service-to-service calls.
-func (s *Service) signServiceToken(userID string) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payload := fmt.Sprintf(`{"sub":"%s","user_id":"%s","exp":%d}`, userID, userID, time.Now().Add(5*time.Minute).Unix())
-	payloadEnc := base64.RawURLEncoding.EncodeToString([]byte(payload))
-	signingInput := header + "." + payloadEnc
-	mac := hmac.New(sha256.New, []byte(s.jwtSecret))
-	mac.Write([]byte(signingInput))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return signingInput + "." + sig
 }
 
 // --- Groups ---
@@ -142,18 +132,6 @@ func (s *Service) CreateGroup(ctx context.Context, actorID uuid.UUID, req Create
 		// Cross-check with user-service
 		if taken := s.checkHandleInUserService(handle); taken {
 			return nil, fmt.Errorf("handle '%s' is already taken by a user", handle)
-		}
-	}
-
-	// Idempotency
-	if req.IdempotencyKey != "" {
-		cacheKey := fmt.Sprintf("group:idempotency:%s:%s", actorID, req.IdempotencyKey)
-		val, err := s.rdb.Get(ctx, cacheKey).Result()
-		if err == nil && val != "" {
-			groupID, _ := uuid.Parse(val)
-			if groupID != uuid.Nil {
-				return s.store.GetGroupByID(ctx, groupID)
-			}
 		}
 	}
 
@@ -224,33 +202,26 @@ func (s *Service) CreateGroup(ctx context.Context, actorID uuid.UUID, req Create
 		IsMature:          req.IsMature,
 	}
 
-	if err := s.store.CreateGroup(ctx, g); err != nil {
+	existingID, err := s.store.CreateGroup(ctx, g, req.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	if existingID != nil {
+		g, err = s.store.GetGroupByID(ctx, *existingID)
+		if err != nil || g == nil {
+			return g, err
+		}
+	}
+	if err := s.ensureGroupChat(ctx, g); err != nil {
 		return nil, err
 	}
 
-	// Store idempotency key
-	if req.IdempotencyKey != "" {
-		cacheKey := fmt.Sprintf("group:idempotency:%s:%s", actorID, req.IdempotencyKey)
-		s.rdb.Set(ctx, cacheKey, g.ID.String(), 24*time.Hour)
-	}
-
 	// Publish event
-	s.publishEvent(func() error {
-		return s.producer.PublishGroupCreated(ctx, g.ID, actorID, g.Name, g.Visibility)
-	})
-
-	// Create group chat (fire-and-forget)
-	go func() {
-		convID, err := s.createGroupChat(actorID, g.ID, g.Name)
-		if err != nil {
-			slog.Warn("failed to create group chat", "group_id", g.ID, "error", err)
-			return
-		}
-		if err := s.store.SetChatConversationID(context.Background(), g.ID, convID); err != nil {
-			slog.Warn("failed to store chat conversation ID", "group_id", g.ID, "error", err)
-		}
-		s.invalidateGroupCache(context.Background(), g.ID)
-	}()
+	if existingID == nil {
+		s.publishEvent(func() error {
+			return s.producer.PublishGroupCreated(ctx, g.ID, actorID, g.Name, g.Visibility)
+		})
+	}
 
 	return g, nil
 }
@@ -586,7 +557,9 @@ func (s *Service) JoinGroup(ctx context.Context, actorID, groupID uuid.UUID) (st
 			return "", err
 		}
 		if g.ChatConversationID != nil {
-			s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, true)
+			if err := s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, true); err != nil {
+				return "", err
+			}
 		}
 		s.publishEvent(func() error {
 			return s.producer.PublishGroupMemberJoined(ctx, groupID, actorID, "member")
@@ -632,7 +605,9 @@ func (s *Service) JoinGroup(ctx context.Context, actorID, groupID uuid.UUID) (st
 			return "", err
 		}
 		if g.ChatConversationID != nil {
-			s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, true)
+			if err := s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, true); err != nil {
+				return "", err
+			}
 		}
 		s.publishEvent(func() error {
 			return s.producer.PublishGroupMemberJoined(ctx, groupID, actorID, "member")
@@ -674,12 +649,14 @@ func (s *Service) LeaveGroup(ctx context.Context, actorID, groupID uuid.UUID) er
 		return err
 	}
 
-	if err := s.store.RemoveMember(ctx, groupID, actorID); err != nil {
-		return err
+	if g != nil && g.ChatConversationID != nil {
+		if err := s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, false); err != nil {
+			return err
+		}
 	}
 
-	if g != nil && g.ChatConversationID != nil {
-		s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, false)
+	if err := s.store.RemoveMember(ctx, groupID, actorID); err != nil {
+		return err
 	}
 
 	s.publishEvent(func() error {
@@ -778,12 +755,14 @@ func (s *Service) RemoveMember(ctx context.Context, actorID, groupID, targetID u
 		return err
 	}
 
-	if err := s.store.KickMember(ctx, groupID, targetID, actorID); err != nil {
-		return err
+	if g != nil && g.ChatConversationID != nil {
+		if err := s.syncMemberToChat(ctx, *g.ChatConversationID, targetID, false); err != nil {
+			return err
+		}
 	}
 
-	if g != nil && g.ChatConversationID != nil {
-		s.syncMemberToChat(ctx, *g.ChatConversationID, targetID, false)
+	if err := s.store.KickMember(ctx, groupID, targetID, actorID); err != nil {
+		return err
 	}
 
 	s.publishEvent(func() error {
@@ -825,6 +804,12 @@ func (s *Service) BanMember(ctx context.Context, actorID, groupID, targetID uuid
 		return err
 	}
 
+	if g != nil && g.ChatConversationID != nil {
+		if err := s.syncMemberToChat(ctx, *g.ChatConversationID, targetID, false); err != nil {
+			return err
+		}
+	}
+
 	if reason != "" {
 		if err := s.store.BanMemberWithReason(ctx, groupID, targetID, actorID, reason); err != nil {
 			return err
@@ -833,10 +818,6 @@ func (s *Service) BanMember(ctx context.Context, actorID, groupID, targetID uuid
 		if err := s.store.BanMember(ctx, groupID, targetID, actorID); err != nil {
 			return err
 		}
-	}
-
-	if g != nil && g.ChatConversationID != nil {
-		s.syncMemberToChat(ctx, *g.ChatConversationID, targetID, false)
 	}
 
 	s.publishEvent(func() error {
@@ -988,7 +969,9 @@ func (s *Service) AcceptInvite(ctx context.Context, actorID uuid.UUID, inviteID 
 		return err
 	}
 	if g != nil && g.ChatConversationID != nil {
-		s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, true)
+		if err := s.syncMemberToChat(ctx, *g.ChatConversationID, actorID, true); err != nil {
+			return err
+		}
 	}
 
 	s.publishEvent(func() error {
@@ -1146,7 +1129,9 @@ func (s *Service) ApproveJoinRequest(ctx context.Context, actorID uuid.UUID, req
 		return err
 	}
 	if g != nil && g.ChatConversationID != nil {
-		s.syncMemberToChat(ctx, *g.ChatConversationID, jr.UserID, true)
+		if err := s.syncMemberToChat(ctx, *g.ChatConversationID, jr.UserID, true); err != nil {
+			return err
+		}
 	}
 
 	s.publishEvent(func() error {
@@ -1610,19 +1595,36 @@ func (s *Service) checkHandleInUserService(handle string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func (s *Service) createGroupChat(creatorID uuid.UUID, groupID uuid.UUID, groupName string) (uuid.UUID, error) {
-	url := fmt.Sprintf("%s/v1/chat/conversations/group", s.messageServiceURL)
+func (s *Service) ensureGroupChat(ctx context.Context, group *store.Group) error {
+	if group.ChatConversationID != nil {
+		return nil
+	}
+	conversationID, err := s.createGroupChat(ctx, group.CreatorID, group.ID, group.Name)
+	if err != nil {
+		return fmt.Errorf("provision group chat: %w", err)
+	}
+	if err := s.store.SetChatConversationID(ctx, group.ID, conversationID); err != nil {
+		return fmt.Errorf("persist group chat identity: %w", err)
+	}
+	group.ChatConversationID = &conversationID
+	s.invalidateGroupCache(ctx, group.ID)
+	return nil
+}
+
+func (s *Service) createGroupChat(ctx context.Context, creatorID uuid.UUID, groupID uuid.UUID, groupName string) (uuid.UUID, error) {
+	url := fmt.Sprintf("%s/internal/v1/chat/groups/conversations", s.messageServiceURL)
 	body, _ := json.Marshal(map[string]interface{}{
-		"title":      groupName,
-		"member_ids": []string{creatorID.String()},
+		"title":           groupName,
+		"creator_user_id": creatorID.String(),
+		"group_id":        groupID.String(),
 	})
 
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return uuid.Nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.signServiceToken(creatorID.String()))
+	req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
 
 	resp, err := s.chatClient.Do(req)
 	if err != nil {
@@ -1647,42 +1649,35 @@ func (s *Service) createGroupChat(creatorID uuid.UUID, groupID uuid.UUID, groupN
 	return uuid.Parse(convResp.Data.ID)
 }
 
-func (s *Service) syncMemberToChat(ctx context.Context, conversationID, userID uuid.UUID, add bool) {
-	go func() {
-		var method string
-		var url string
-		var bodyReader io.Reader
-
-		if add {
-			method = http.MethodPost
-			url = fmt.Sprintf("%s/v1/chat/conversations/%s/members", s.messageServiceURL, conversationID)
-			body, _ := json.Marshal(map[string]string{"user_id": userID.String()})
-			bodyReader = bytes.NewReader(body)
-		} else {
-			method = http.MethodDelete
-			url = fmt.Sprintf("%s/v1/chat/conversations/%s/members/%s", s.messageServiceURL, conversationID, userID)
-			bodyReader = nil
-		}
-
-		req, err := http.NewRequest(method, url, bodyReader)
-		if err != nil {
-			slog.Warn("failed to create chat sync request", "error", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+s.signServiceToken(userID.String()))
-
-		resp, err := s.notifyClient.Do(req)
-		if err != nil {
-			slog.Warn("failed to sync member to chat", "error", err)
-			return
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			slog.Warn("chat sync returned error", "status", resp.StatusCode, "conversation_id", conversationID, "user_id", userID)
-		}
-	}()
+func (s *Service) syncMemberToChat(ctx context.Context, conversationID, userID uuid.UUID, add bool) error {
+	var method string
+	var url string
+	var bodyReader io.Reader
+	if add {
+		method = http.MethodPost
+		url = fmt.Sprintf("%s/internal/v1/chat/groups/conversations/%s/members", s.messageServiceURL, conversationID)
+		body, _ := json.Marshal(map[string]string{"user_id": userID.String()})
+		bodyReader = bytes.NewReader(body)
+	} else {
+		method = http.MethodDelete
+		url = fmt.Sprintf("%s/internal/v1/chat/groups/conversations/%s/members/%s", s.messageServiceURL, conversationID, userID)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	resp, err := s.chatClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("sync chat membership: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("chat sync returned %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	return nil
 }
 
 // ── Word Blocklist ───────────────────────────────────────────

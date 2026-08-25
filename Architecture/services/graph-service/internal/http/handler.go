@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,19 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// SR-3: when true, a mutating request from an unrecognised caller is
+	// refused rather than logged. See canonical_guard.go.
+	strictWriteSource bool
+	warn              func(string, ...any)
+}
+
+// WithCanonicalWriteSource enables the source guard on mutating routes.
+// strict=false is a rollout aid only — it logs unknown callers and lets them
+// through, which means the duplicate-writer hole is still open.
+func (h *Handler) WithCanonicalWriteSource(strict bool, warn func(string, ...any)) *Handler {
+	h.strictWriteSource = strict
+	h.warn = warn
+	return h
 }
 
 func New(svc *service.Service) *Handler {
@@ -39,6 +53,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 
 	v1 := r.Group("/v1/graph")
+	// SR-3: attribute every mutating graph write to a named caller. The
+	// internal key authenticates but is shared, so it cannot tell one service
+	// from another — this is what makes a second, unreviewed graph writer
+	// visible instead of silent.
+	v1.Use(RequireCanonicalWriteSource(h.strictWriteSource, h.warn))
 	{
 		v1.POST("/follow", h.Follow)
 		v1.POST("/unfollow", h.Unfollow)
@@ -58,7 +77,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Mute
 		v1.POST("/mute", h.Mute)
 		v1.DELETE("/mute", h.Unmute)
-		// Internal: blocked + muted union
+		// Viewer-scoped public contract. Internal callers that need to name a
+		// subject use /v1/internal/graph below, which the gateway does not proxy.
 		v1.GET("/blocked-and-muted", h.GetBlockedAndMuted)
 		// Batch relationship lookup
 		v1.POST("/relationships/batch", h.GetRelationshipBatch)
@@ -105,6 +125,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		favsGroup.DELETE("/:userId", h.RemoveFavorite)
 	}
 
+	internal := r.Group("/v1/internal/graph")
+	internal.GET("/blocked-and-muted", h.GetBlockedAndMutedInternal)
+	internal.POST("/blocked-any", h.BlockedAnyInternal)
+
 	// Permission check API (spec §9.8). Single source of truth for
 	// "can actor do X to target" — used by clients to render buttons
 	// and by other services (chat) to gate actions.
@@ -116,8 +140,19 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 }
 
 // permissionTTLSeconds is the freshness budget callers may cache a decision
-// for — it matches the privacy-settings cache TTL (spec §6.2).
-const permissionTTLSeconds = 60
+// for.
+//
+// It is DERIVED from the server's own privacy cache rather than written down
+// separately. It used to be a hard-coded 60 while the cache was also 60; when
+// the cache dropped to 3 seconds to close the privacy hole in B-LB-2, a
+// literal here would have kept telling every client it may hold a decision for
+// a minute — so a user who set themselves to `no_one` would still be
+// messageable by any client that believed the advertised budget, no matter how
+// fresh the server had become.
+//
+// A number a client caches against must never be larger than the number the
+// server refreshes at.
+var permissionTTLSeconds = int(service.PrivacyCacheTTL.Seconds())
 
 // CheckPermission resolves one actor→target tuple for the requested actions.
 // The actor is the X-User-Id caller; target_user_id and a comma-separated
@@ -784,13 +819,68 @@ func (h *Handler) Unmute(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// GetBlockedAndMuted returns the user IDs whose content must be withheld
+// from the given viewer: blocks in BOTH directions, plus the viewer's own
+// outgoing mutes. Reverse mutes are never included.
+//
+// There is deliberately no parameter to select a narrower set. An earlier
+// revision offered `include=blocks`, which search used in order to keep
+// muted accounts findable by name. That reversed the approved contract,
+// and — worse — it made "return fewer suppressions than the caller
+// probably needs" a one-word opt-in. Both callers now get the full set.
 func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
-	userIDStr := c.Query("user_id")
-	userID, err := uuid.Parse(userIDStr)
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	if requested := c.Query("user_id"); requested != "" && requested != userID.String() {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"VIEWER_BOUND", "user_id cannot name another viewer", nil)
+		return
+	}
+	h.writeBlockedAndMuted(c, userID, true)
+}
+
+func (h *Handler) GetBlockedAndMutedInternal(c *gin.Context) {
+	userID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
 		return
 	}
+	h.writeBlockedAndMuted(c, userID, false)
+}
+
+// BlockedAnyInternal answers chat's group-roster gate (P0-5): which of the
+// named candidates hold a block with user_id in either direction. Bounded to
+// the group cap; only the matching subset of caller-supplied ids is returned,
+// never the adjacency itself.
+func (h *Handler) BlockedAnyInternal(c *gin.Context) {
+	var req struct {
+		UserID       uuid.UUID   `json:"user_id" binding:"required"`
+		CandidateIDs []uuid.UUID `json:"candidate_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	const candidateCap = 1024
+	if len(req.CandidateIDs) > candidateCap {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"too many candidate ids", nil)
+		return
+	}
+	blocked, err := h.svc.BlockedWithAny(c.Request.Context(), req.UserID, req.CandidateIDs)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if blocked == nil {
+		blocked = []uuid.UUID{}
+	}
+	c.JSON(http.StatusOK, gin.H{"blocked_user_ids": blocked})
+}
+
+func (h *Handler) writeBlockedAndMuted(c *gin.Context, userID uuid.UUID, envelope bool) {
 	ids, err := h.svc.GetBlockedAndMuted(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -798,6 +888,10 @@ func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
 	}
 	if ids == nil {
 		ids = []uuid.UUID{}
+	}
+	if envelope {
+		api.JSON(c.Writer, http.StatusOK, gin.H{"user_ids": ids}, nil)
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user_ids": ids})
 }
@@ -1157,11 +1251,24 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
 		return
 	}
+	// M4-P0-1: an unparseable target used to be skipped silently. The caller
+	// then received a map with no entry for it, which every existing consumer
+	// reads as "no relationship" — i.e. no block, no restriction. A malformed
+	// identifier must fail the request, not quietly widen an audience.
+	if len(req.TargetIDs) > store.MaxRelationshipBatch {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BATCH_TOO_LARGE",
+			fmt.Sprintf("at most %d target_ids per call", store.MaxRelationshipBatch), nil)
+		return
+	}
 	targetIDs := make([]uuid.UUID, 0, len(req.TargetIDs))
 	for _, id := range req.TargetIDs {
-		if uid, err := uuid.Parse(id); err == nil {
-			targetIDs = append(targetIDs, uid)
+		uid, err := uuid.Parse(id)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID",
+				"Invalid target_id", nil)
+			return
 		}
+		targetIDs = append(targetIDs, uid)
 	}
 	result, err := h.svc.GetRelationshipBatch(c.Request.Context(), viewerID, targetIDs)
 	if err != nil {

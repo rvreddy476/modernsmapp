@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"crypto/rsa"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/atpost/media-service/database"
+	"github.com/atpost/media-service/internal/config"
+	"github.com/atpost/media-service/internal/delivery"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	mediaHttp "github.com/atpost/media-service/internal/http"
+	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
@@ -82,13 +86,15 @@ func main() {
 	}
 	slog.Info("media schema ready")
 
-	// 4. Blob Store (MinIO)
-	blobStore, err := blob.NewWithPublicEndpoint(minioEndpoint, minioAccessKey, minioSecretKey, minioBucket, minioUseSSL, minioPublicEndpoint)
+	// 4. Blob store. Production is AWS-only and accepts IRSA web identity;
+	// MinIO/static credentials remain a local-development path only.
+	blobStore, err := buildBlobStore(minioEndpoint, minioAccessKey, minioSecretKey,
+		minioBucket, minioUseSSL, minioPublicEndpoint)
 	if err != nil {
-		slog.Error("failed to connect to minio", "error", err)
+		slog.Error("failed to configure blob store", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("connected to minio")
+	slog.Info("connected to blob store")
 
 	// 4b. Redis (for upload rate limiting)
 	redisAddr := env("REDIS_ADDR", "redis:6379")
@@ -112,9 +118,38 @@ func main() {
 
 	// 5. Dependencies
 	pgStore := postgres.New(dbPool)
-	mediaSvc := service.New(pgStore, blobStore)
+	mediaCfg := config.Load()
+	mediaScanner, err := buildMediaScanner(ctx)
+	if err != nil {
+		slog.Error("failed to configure image scanner", "error", err)
+		os.Exit(1)
+	}
+	mediaSvc := service.NewWithConfig(pgStore, blobStore, mediaCfg, mediaScanner)
 	if rdb != nil {
 		mediaSvc.SetRedis(rdb)
+	}
+
+	// M4-P0-5 — byte-delivery authorization.
+	//
+	// The gate signs protected media with a bounded TTL after asking
+	// post-service whether this viewer may have it. If it cannot be built the
+	// service starts WITHOUT it, and every protected read then fails closed
+	// with 503 rather than falling back to the stable CDN URL this item exists
+	// to remove. In production that is a boot failure instead (below), because
+	// a production media service that cannot serve protected media is broken
+	// and should say so loudly rather than 503 every story image.
+	if gate, gerr := buildDeliveryGate(blobStore); gerr != nil {
+		if isProductionEnv() {
+			slog.Error("delivery gate could not be configured; refusing to start in production",
+				"err", gerr)
+			os.Exit(1)
+		}
+		slog.Warn("delivery gate not configured — ALL protected media reads will fail closed. "+
+			"Set MEDIA_CDN_BASE_URL, MEDIA_CLOUDFRONT_KEY_PAIR_ID, MEDIA_CLOUDFRONT_PRIVATE_KEY "+
+			"and POST_SERVICE_URL to enable protected delivery.", "err", gerr)
+	} else {
+		mediaSvc.WithDeliveryGate(gate)
+		slog.Info("delivery gate configured", "cdn", env("MEDIA_CDN_BASE_URL", ""))
 	}
 
 	// Audit H9: sweep media_assets stuck at `pending_upload` past
@@ -129,7 +164,18 @@ func main() {
 	producer := mediaEvents.NewProducerWithDialer(brokers, "media.events", kafkaDialer)
 	defer producer.Close()
 	mediaSvc.SetProducer(producer)
+	mediaSvc.StartMediaEventOutboxRelay(ctx)
 	slog.Info("kafka producer initialized")
+
+	// Module 1 fixes-v1: durable caption worker. Claims media_caption_jobs
+	// with FOR UPDATE SKIP LOCKED (safe in every replica), persists the
+	// transcript to media_subtitles, and releases the voice safety gate on
+	// completion (or routes to manual review on terminal failure).
+	mediaSvc.StartCaptionWorker(ctx)
+
+	// LB-1 requirement 7: retry blob deletions whose object keys were
+	// durably recorded before the media rows were removed.
+	mediaSvc.StartBlobReclaimWorker(ctx)
 
 	// 7. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("media-service")
@@ -161,7 +207,27 @@ func main() {
 	}
 	authMW := mediaHttp.AuthMiddlewareWithKeys(jwtKeys)
 	optionalAuthMW := mediaHttp.OptionalAuthMiddlewareWithKeys(jwtKeys)
-	mediaHandler := mediaHttp.New(mediaSvc)
+	// Module 1 fixes-v3 / LB-1: wire the internal service key.
+	//
+	// This was declared on the handler but never called, so the internal
+	// orphan-delete route was registered with NO authentication at all —
+	// an unauthenticated destructive endpoint. Startup now refuses in
+	// production when the key is absent, rather than silently running
+	// without service-to-service authentication.
+	//
+	// Local development / tests: leaving INTERNAL_SERVICE_KEY empty is
+	// permitted OUTSIDE production, and in that case the destructive
+	// internal route is not registered at all (see RegisterRoutes). An
+	// empty credential therefore never produces a permissive endpoint.
+	internalServiceKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	if internalServiceKey == "" {
+		if env("DEPLOY_ENV", "") == "production" {
+			slog.Error("media-service: INTERNAL_SERVICE_KEY is required in production (service-to-service authentication for destructive internal routes)")
+			os.Exit(1)
+		}
+		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — internal routes disabled (non-production only)")
+	}
+	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -223,4 +289,111 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 			})
 		}
 	}
+}
+
+// buildDeliveryGate assembles protected-media delivery from the environment.
+//
+// M4-P0-5. The private key comes from MEDIA_CLOUDFRONT_PRIVATE_KEY, which is
+// populated from Secrets Manager through the pod's IRSA identity — never from
+// a manifest. There is deliberately no default and no fallback: a signer that
+// degrades to unsigned delivery when misconfigured reintroduces the exact hole
+// this replaces.
+func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, error) {
+	postURL := env("POST_SERVICE_URL", "")
+	if postURL == "" {
+		// Without a content authority there is nobody to ask, and "nobody to
+		// ask" must not mean "yes".
+		return nil, fmt.Errorf("POST_SERVICE_URL is required: protected media " +
+			"cannot be authorized without its content authority")
+	}
+	chatURL := env("CHAT_MESSAGE_SERVICE_URL", "")
+	if chatURL == "" {
+		return nil, fmt.Errorf("CHAT_MESSAGE_SERVICE_URL is required: protected chat media cannot be authorized")
+	}
+	profileURL := env("PROFILE_SERVICE_URL", "")
+	if profileURL == "" {
+		return nil, fmt.Errorf("PROFILE_SERVICE_URL is required: profile media privacy cannot be authorized")
+	}
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	authz := delivery.AnyContentAuthorizer{
+		delivery.NewHTTPContentAuthorizer(postURL, internalKey, nil),
+		delivery.NewHTTPChatAuthorizer(chatURL, internalKey, nil),
+		delivery.NewHTTPProfileAuthorizer(profileURL, internalKey, nil),
+	}
+
+	var signer delivery.URLSigner
+	if isProductionEnv() || os.Getenv("MEDIA_CLOUDFRONT_KEY_PAIR_ID") != "" || os.Getenv("MEDIA_CLOUDFRONT_PRIVATE_KEY") != "" {
+		cloudFrontSigner, err := delivery.NewSigner(delivery.Config{
+			CDNBaseURL:    env("MEDIA_CDN_BASE_URL", ""),
+			KeyPairID:     env("MEDIA_CLOUDFRONT_KEY_PAIR_ID", ""),
+			PrivateKeyPEM: []byte(os.Getenv("MEDIA_CLOUDFRONT_PRIVATE_KEY")),
+		})
+		if err != nil {
+			return nil, err
+		}
+		signer = cloudFrontSigner
+	} else {
+		// Local Docker has no CloudFront key pair. It still uses the exact same
+		// content-authorization gate, then issues bounded MinIO signatures.
+		// Production cannot select this branch.
+		signer = localBlobSigner{store: blobStore}
+	}
+	return delivery.NewGate(signer, authz), nil
+}
+
+type localBlobSigner struct{ store *blob.Store }
+
+func (s localBlobSigner) PublicURL(key string) (string, error) {
+	return s.store.ObjectURL(context.Background(), key, delivery.MaxProtectedTTL)
+}
+
+func (s localBlobSigner) SignProtected(key string, ttl time.Duration, _ time.Time) (string, error) {
+	u, err := s.store.GeneratePresignedGetURL(context.Background(), key, ttl)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
+// isProductionEnv mirrors the production detection used elsewhere in this
+// service, so the delivery gate's start-up strictness matches the rest of the
+// service's fail-closed configuration checks.
+func isProductionEnv() bool {
+	for _, key := range []string{"DEPLOY_ENV", "APP_ENV", "ENVIRONMENT", "ENV"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+		case "production", "prod":
+			return true
+		}
+	}
+	return false
+}
+
+func buildBlobStore(endpoint, accessKey, secretKey, bucket string, useSSL bool, publicEndpoint string) (*blob.Store, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("MEDIA_STORAGE_BACKEND")))
+	if backend == "s3" {
+		return blob.NewS3IRSA(os.Getenv("AWS_REGION"), os.Getenv("S3_BUCKET"))
+	}
+	if isProductionEnv() {
+		return nil, fmt.Errorf("production requires MEDIA_STORAGE_BACKEND=s3 with IRSA; MinIO/static credentials are not allowed")
+	}
+	return blob.NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket, useSSL, publicEndpoint)
+}
+
+func buildMediaScanner(ctx context.Context) (processing.Scanner, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("MEDIA_SCANNER_BACKEND")))
+	if backend == "rekognition" {
+		if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+			return nil, fmt.Errorf("static AWS credentials are forbidden; use IRSA")
+		}
+		if isProductionEnv() && (os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") == "" || os.Getenv("AWS_ROLE_ARN") == "") {
+			return nil, fmt.Errorf("production Rekognition requires AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; node-role fallback is forbidden")
+		}
+		return processing.NewRekognitionScanner(ctx, os.Getenv("AWS_REGION"), processing.RekognitionConfig{
+			MinConfidence: 80,
+		})
+	}
+	if isProductionEnv() {
+		return nil, fmt.Errorf("production requires MEDIA_SCANNER_BACKEND=rekognition")
+	}
+	return &processing.StubScanner{}, nil
 }

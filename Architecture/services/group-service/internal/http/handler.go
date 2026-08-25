@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/group-service/internal/service"
 	"github.com/atpost/group-service/internal/store"
@@ -170,13 +171,13 @@ type UpdateGroupRequest struct {
 	AvatarMediaID *string `json:"avatar_media_id"`
 	CoverMediaID  *string `json:"cover_media_id"`
 	// GCC Phase 1 fields
-	GroupType         *string          `json:"group_type"`
-	MaxMembers        *int             `json:"max_members"`
-	JoinQuestions     json.RawMessage  `json:"join_questions"`
-	TopicTags         []string         `json:"topic_tags"`
-	CommentPermission *string          `json:"comment_permission"`
-	MemberListVisible *bool            `json:"member_list_visible"`
-	LinkSharing       *bool            `json:"link_sharing"`
+	GroupType         *string         `json:"group_type"`
+	MaxMembers        *int            `json:"max_members"`
+	JoinQuestions     json.RawMessage `json:"join_questions"`
+	TopicTags         []string        `json:"topic_tags"`
+	CommentPermission *string         `json:"comment_permission"`
+	MemberListVisible *bool           `json:"member_list_visible"`
+	LinkSharing       *bool           `json:"link_sharing"`
 }
 
 type InviteRequest struct {
@@ -275,6 +276,10 @@ func (h *Handler) CreateGroup(c *gin.Context) {
 	var req CreateGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "idempotency_key is required", nil)
 		return
 	}
 

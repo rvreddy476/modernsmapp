@@ -1,6 +1,8 @@
 package http
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -26,9 +28,13 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.HandlerFunc) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Module 1 fixes-v3 / LB-1.
+	//
+	// The internal-key middleware is deliberately NOT installed with
+	// r.Use(...). Doing so would demand the service key on every public
+	// read and every user-authenticated write in this service — breaking
+	// ordinary clients. It is attached to the internal route group only,
+	// below.
 	v1 := r.Group("/v1/media")
 	{
 		// Write endpoints — require authentication
@@ -41,7 +47,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		// Cover frame extraction
 		v1.POST("/:mediaId/extract-frame", authMW, h.ExtractFrame)
 
-		// Read endpoints — public (media URLs need to be accessible for rendering)
+		// (The internal orphan-delete route is registered separately
+		// below, under its own authenticated group.)
+
+		// Read endpoints.
+		//
+		// M4-P0-5: these were registered as PUBLIC with the note that "media
+		// URLs need to be accessible for rendering". They still are, for public
+		// media — but every response now goes through the delivery Gate, which
+		// authorizes protected assets against the content that references them
+		// and returns a bounded signed URL. No authMW here is deliberate: an
+		// anonymous caller may render a public avatar and fails the Gate for
+		// anything else.
 		v1.POST("/batch", h.BatchMediaURLs)
 		v1.GET("/:mediaId", h.GetMedia)
 		v1.GET("/:mediaId/status", h.GetMediaStatus)
@@ -49,7 +66,59 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.GET("/:mediaId/url/:variant", h.GetMediaVariantURL)
 		v1.GET("/:mediaId/serve", h.ServeMedia)
 		v1.GET("/:mediaId/serve/:variant", h.ServeMediaVariant)
+		v1.GET("/:mediaId/hls/:playlist", h.ServeHLSPlaylist)
 	}
+
+	// Module 1 fixes-v3 / LB-1 — service-to-service only.
+	//
+	// Registered ONLY when an internal key is configured. An empty
+	// credential must never yield a permissive destructive endpoint, so
+	// the route simply does not exist in that case (and main.go refuses
+	// to start in production when the key is missing — see cmd/server).
+	// A request to an unregistered path returns 404 without revealing
+	// whether the media exists, which also satisfies the
+	// "do not reveal media existence" requirement.
+	if h.internalKey != "" {
+		internal := r.Group("/v1/media/internal")
+		internal.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+		{
+			internal.DELETE("/orphan/:mediaId", h.DeleteOrphanMedia)
+			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
+			internal.GET("/:mediaId/profile-authority", h.GetProfileMediaAuthority)
+		}
+	} else {
+		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — the internal orphan-delete route is NOT registered; draft-media reclamation is disabled")
+	}
+}
+
+type reserveChatAttachmentRequest struct {
+	ReferenceID string `json:"reference_id" binding:"required"`
+	UploaderID  string `json:"uploader_id" binding:"required"`
+	MediaID     string `json:"media_id" binding:"required"`
+}
+
+func (h *Handler) ReserveChatAttachment(c *gin.Context) {
+	var body reserveChatAttachmentRequest
+	if c.ShouldBindJSON(&body) != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	referenceID, referenceErr := uuid.Parse(body.ReferenceID)
+	uploaderID, uploaderErr := uuid.Parse(body.UploaderID)
+	mediaID, mediaErr := uuid.Parse(body.MediaID)
+	if referenceErr != nil || uploaderErr != nil || mediaErr != nil {
+		c.Status(http.StatusForbidden)
+		return
+	}
+	if err := h.svc.ReserveChatAttachment(c.Request.Context(), referenceID, uploaderID, mediaID); err != nil {
+		if errors.Is(err, service.ErrChatAttachmentDenied) {
+			c.Status(http.StatusForbidden)
+			return
+		}
+		c.Status(http.StatusServiceUnavailable)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) HealthCheck(c *gin.Context) {
@@ -62,6 +131,14 @@ type InitUploadRequest struct {
 	MimeType      string `json:"mime_type" binding:"required"`
 	FileSizeBytes int64  `json:"file_size_bytes" binding:"required,min=1"`
 	AltText       string `json:"alt_text"`
+	// Decorative marks the upload as carrying no information (P1-7).
+	Decorative bool `json:"decorative"`
+	// UploadPurpose is an optional lease naming the surface that created this
+	// upload (Slice C, C-P0-4). Only `composer` is meaningful today, and only
+	// leased assets are ever candidates for CONFIRMED-media reclamation. An
+	// omitted value leaves the column NULL, which is what keeps every existing
+	// asset and every other surface permanently out of the sweep.
+	UploadPurpose string `json:"upload_purpose"`
 }
 
 func (h *Handler) InitUpload(c *gin.Context) {
@@ -83,7 +160,7 @@ func (h *Handler) InitUpload(c *gin.Context) {
 		subtype = "general"
 	}
 
-	res, err := h.svc.InitUpload(c.Request.Context(), userID, req.FileType, subtype, req.MimeType, req.FileSizeBytes, req.AltText)
+	res, err := h.svc.InitUpload(c.Request.Context(), userID, req.FileType, subtype, req.MimeType, req.FileSizeBytes, req.AltText, req.Decorative, req.UploadPurpose)
 	if err != nil {
 		msg := err.Error()
 		switch {
@@ -128,11 +205,20 @@ func (h *Handler) ConfirmUpload(c *gin.Context) {
 
 	res, err := h.svc.ConfirmUpload(c.Request.Context(), mediaID, userID)
 	if err != nil {
-		if err.Error() == "forbidden: you do not own this media" {
+		switch {
+		case errors.Is(err, service.ErrUploadForbidden):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
-			return
+		case errors.Is(err, service.ErrUploadObjectAbsent):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_OBJECT_MISSING", err.Error(), nil)
+		case errors.Is(err, service.ErrUploadSizeMismatch):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "UPLOAD_SIZE_MISMATCH", err.Error(), nil)
+		case errors.Is(err, service.ErrUploadState):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_STATE_CONFLICT", err.Error(), nil)
+		case errors.Is(err, service.ErrUploadIntegrity):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_INTEGRITY_ERROR", err.Error(), nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -164,9 +250,9 @@ func (h *Handler) GetMediaURL(c *gin.Context) {
 		return
 	}
 
-	res, err := h.svc.GetMediaURL(c.Request.Context(), mediaID)
+	res, err := h.svc.GetMediaURL(c.Request.Context(), deliveryViewer(c), mediaID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -182,9 +268,9 @@ func (h *Handler) GetMediaVariantURL(c *gin.Context) {
 	}
 
 	variant := c.Param("variant")
-	url, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, variant)
+	url, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, variant)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -212,9 +298,9 @@ func (h *Handler) BatchMediaURLs(c *gin.Context) {
 		ids = append(ids, id)
 	}
 
-	res, err := h.svc.BatchMediaURLs(c.Request.Context(), ids)
+	res, err := h.svc.BatchMediaURLs(c.Request.Context(), deliveryViewer(c), ids)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -267,6 +353,33 @@ func (h *Handler) GetMediaStatus(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, res, nil)
 }
 
+// GetProfileMediaAuthority is an internal, fail-closed attachment check.  The
+// internal route-group middleware authenticates the caller; owner_id is
+// still explicit because profile-service is checking a proposed reference on
+// behalf of that owner, not asking about the gateway's own identity.
+func (h *Handler) GetProfileMediaAuthority(c *gin.Context) {
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	ownerID, err := uuid.Parse(c.Query("owner_id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid owner_id", nil)
+		return
+	}
+	result, err := h.svc.CheckProfileMediaAuthority(c.Request.Context(), mediaID, ownerID, c.Query("subtype"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		return
+	}
+	if !result.Attachable {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "MEDIA_NOT_ATTACHABLE", "Media is not an owned, ready and approved profile image", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, result, nil)
+}
+
 // ServeMedia redirects to the presigned URL of the original file.
 // Use this as <img src="/v1/media/:id/serve"> for direct image rendering.
 func (h *Handler) ServeMedia(c *gin.Context) {
@@ -276,9 +389,9 @@ func (h *Handler) ServeMedia(c *gin.Context) {
 		return
 	}
 
-	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, "original")
+	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, "original")
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -294,17 +407,75 @@ func (h *Handler) ServeMediaVariant(c *gin.Context) {
 	}
 
 	variant := c.Param("variant")
-	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, variant)
+	if variant == "hls" {
+		h.serveHLSPlaylist(c, mediaID, "master.m3u8")
+		return
+	}
+	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, variant)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
 	c.Redirect(http.StatusTemporaryRedirect, imgURL)
 }
 
+// ServeHLSPlaylist returns a small authorized playlist through the API. The
+// master points to child playlists on this route; child playlists point to
+// bounded, signed segment URLs, so Media3 can actually follow the full HLS
+// graph without leaking bearer tokens to object storage or proxying video
+// bytes through the API service.
+func (h *Handler) ServeHLSPlaylist(c *gin.Context) {
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	h.serveHLSPlaylist(c, mediaID, c.Param("playlist"))
+}
+
+func (h *Handler) serveHLSPlaylist(c *gin.Context, mediaID uuid.UUID, playlist string) {
+	body, err := h.svc.GetHLSPlaylist(c.Request.Context(), deliveryViewer(c), mediaID, playlist)
+	if err != nil {
+		writeDeliveryError(c, err)
+		return
+	}
+	c.Header("Content-Type", "application/vnd.apple.mpegurl")
+	c.Header("Cache-Control", "private, no-store")
+	c.Data(http.StatusOK, "application/vnd.apple.mpegurl", body)
+}
+
+// DeleteOrphanMedia — DELETE /v1/media/internal/orphan/:mediaId
+//
+// Service-to-service only. Deletes an asset that is genuinely orphaned:
+// media-service re-verifies here that the asset is not attached to any
+// post and is old enough to be reclaimable, so a compromised or buggy
+// caller cannot use this to delete live media.
+func (h *Handler) DeleteOrphanMedia(c *gin.Context) {
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	if err := h.svc.DeleteOrphanMedia(c.Request.Context(), mediaID); err != nil {
+		if errors.Is(err, service.ErrMediaNotOrphaned) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict,
+				"NOT_ORPHANED", err.Error(), nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
+}
+
 type UpdateAltTextRequest struct {
-	AltText string `json:"alt_text" binding:"required"`
+	// Not `required` any more: marking an image decorative is expressed
+	// as an empty description plus decorative=true (Codex P1-7).
+	AltText string `json:"alt_text"`
+	// Decorative marks the image as carrying no information, so screen
+	// readers skip it. Mutually exclusive with a non-empty alt_text.
+	Decorative bool `json:"decorative"`
 }
 
 func (h *Handler) UpdateAltText(c *gin.Context) {
@@ -326,7 +497,13 @@ func (h *Handler) UpdateAltText(c *gin.Context) {
 		return
 	}
 
-	err = h.svc.UpdateAltText(c.Request.Context(), mediaID, userID, req.AltText)
+	if req.AltText == "" && !req.Decorative {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST",
+			"provide alt_text, or set decorative=true to mark the image as decorative", nil)
+		return
+	}
+
+	err = h.svc.UpdateAltTextWithDecorative(c.Request.Context(), mediaID, userID, req.AltText, req.Decorative)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found or not owned by user", nil)

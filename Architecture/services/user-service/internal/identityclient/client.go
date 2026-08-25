@@ -113,7 +113,7 @@ func (c *Client) ListChangedProfiles(ctx context.Context, since time.Time, limit
 		return nil, ErrNotConfigured
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/v1/profiles/changes", c.baseURL), nil)
+		fmt.Sprintf("%s/v1/profiles/internal/changes", c.baseURL), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -10,7 +10,7 @@ service:
   port: 8093
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/chat-ws-gateway
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/chat-ws-gateway'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 2
@@ -24,7 +24,7 @@ resources:
     memory: 512Mi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-chat-ws-gateway-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-chat-ws-gateway-irsa'
 
 externalSecret:
   enabled: true
@@ -35,10 +35,18 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     # RS256 verification (public key); HS256 stays accepted in parallel.
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    # Owner-issued conversation-room entitlements (shared HMAC with
+    # chat-message-service; the gateway verifies, never mints).
+    - { secretKey: CHAT_ENTITLEMENT_SECRET, remoteRef: chat_entitlement_secret }
     # Add remaining per-service secrets here (REDIS_ADDR, KAFKA_BROKERS, etc.).
 
 env:
   ENV: staging
+  APP_ENV: staging
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: atpost-api-staging
+  WS_ALLOW_QUERY_TOKEN: "false"
+  ALLOWED_ORIGINS: https://staging.cleestudio.com
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1

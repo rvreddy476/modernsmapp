@@ -455,11 +455,11 @@ func (c *Consumer) handleRiderPartnerFraudFlagged(ctx context.Context, raw json.
 
 // rider.daily.revenue_report → email digest to ops.
 type riderDailyRevenueReportPayload struct {
-	Date                       string    `json:"date"`
-	SubscriptionsCount         int       `json:"subscriptions_count"`
-	SubscriptionsRevenuePaise  int64     `json:"subscriptions_revenue_paise"`
-	RidesCount                 int       `json:"rides_count"`
-	OccurredAt                 time.Time `json:"occurred_at"`
+	Date                      string    `json:"date"`
+	SubscriptionsCount        int       `json:"subscriptions_count"`
+	SubscriptionsRevenuePaise int64     `json:"subscriptions_revenue_paise"`
+	RidesCount                int       `json:"rides_count"`
+	OccurredAt                time.Time `json:"occurred_at"`
 }
 
 func (c *Consumer) handleRiderDailyRevenueReport(ctx context.Context, raw json.RawMessage) error {
@@ -479,12 +479,12 @@ func (c *Consumer) handleRiderDailyRevenueReport(ctx context.Context, raw json.R
 
 // rider.admin.queue_summary → email digest to ops.
 type riderAdminQueueSummaryPayload struct {
-	PendingKYCCount         int       `json:"pending_kyc_count"`
-	PendingVehicleCount     int       `json:"pending_vehicle_count"`
-	PendingPaymentCount     int       `json:"pending_payment_count"`
-	OpenComplaintsCount     int       `json:"open_complaints_count"`
-	OpenSafetyIncidentsCount int      `json:"open_safety_incidents_count"`
-	OccurredAt              time.Time `json:"occurred_at"`
+	PendingKYCCount          int       `json:"pending_kyc_count"`
+	PendingVehicleCount      int       `json:"pending_vehicle_count"`
+	PendingPaymentCount      int       `json:"pending_payment_count"`
+	OpenComplaintsCount      int       `json:"open_complaints_count"`
+	OpenSafetyIncidentsCount int       `json:"open_safety_incidents_count"`
+	OccurredAt               time.Time `json:"occurred_at"`
 }
 
 func (c *Consumer) handleRiderAdminQueueSummary(ctx context.Context, raw json.RawMessage) error {

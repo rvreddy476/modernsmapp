@@ -47,7 +47,9 @@ type friendReqEntry struct {
 type Consumer struct {
 	reader  *kafka.Reader
 	service *service.Service
-	graph   *graph.Client // optional — fan-out for upload notifications
+	graph   *graph.Client // optional — follower fan-out for live-started
+	// fanout is the durable subscriber upload pipeline (Module 1 P0-3).
+	fanout *service.SubscriberFanout
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -156,18 +158,15 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		return c.service.CreateNotification(ctx, followeeID, followerID, "follow", "user", followerID, deepLink, e.CreatedAt)
 
 	case events.PostCreated:
-		// Fan out a notification to every follower of the author whenever
-		// they upload a video or flick. Skip text/poll posts — those flow
-		// through the regular feed and shouldn't push-spam followers.
+		// Module 1 P0-3: upload notifications go to CHANNEL SUBSCRIBERS,
+		// never followers, and only for video/flick uploads. The work is
+		// enqueued durably here (synchronously, before the offset commits)
+		// and drained by the resumable fan-out worker.
 		var e events.PostCreatedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return err
 		}
-		// Audit CR2: dispatch fanout asynchronously so the consumer
-		// goroutine isn't pinned on a 5k-follower upload for tens of
-		// seconds.
-		c.FanOutCreatorUploadAsync(e)
-		return nil
+		return c.enqueueSubscriberFanout(ctx, e)
 
 	case events.PostReacted:
 		var e events.PostReactedPayload
@@ -577,133 +576,6 @@ func (c *Consumer) flushFriendRequest(key string) {
 func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 	b, _ := json.Marshal(raw)
 	return json.Unmarshal(b, v)
-}
-
-// fanOutCreatorUpload pages through the author's follower list and creates
-// one notification row per follower for the new video/flick. Best-effort:
-// failures on individual followers are logged and skipped so one bad row
-// can't poison the whole batch.
-//
-// Filters:
-//   - Only video/flick content_types push (text/poll posts go via the feed).
-//   - Public + followers visibility only — private posts don't notify.
-//   - Author themselves is excluded by graph-service (followers != self).
-//
-// Page size 200, capped at 5,000 followers per upload to bound the cost.
-// Audit CR2: this used to run synchronously inside processMessage, so
-// a celeb upload pinned the consumer goroutine for tens of seconds
-// (5,000 sequential Scylla writes + 25 graph paginations). Now the
-// caller dispatches via FanOutCreatorUploadAsync, and within this
-// function the per-recipient CreateNotification calls run on a
-// per-event sub-pool of 16 workers so even one event's fan-out
-// doesn't sit waiting on serial Scylla latency.
-func (c *Consumer) fanOutCreatorUpload(ctx context.Context, e events.PostCreatedPayload) error {
-	// Skip private/unlisted posts — followers shouldn't be pinged on
-	// posts they can't see.
-	if e.Visibility == "private" || e.Visibility == "unlisted" {
-		return nil
-	}
-	if c.graph == nil {
-		// No graph client wired (dev?); silently skip rather than failing.
-		return nil
-	}
-
-	authorID, err := uuid.Parse(e.AuthorID)
-	if err != nil {
-		return nil // bad payload, don't retry
-	}
-	postID, err := uuid.Parse(e.PostID)
-	if err != nil {
-		return nil
-	}
-
-	const pageSize = 200
-	const maxFollowers = 5000
-
-	// Deep link + notification type depend on what was posted.
-	// Text/photo/poll → /post/:id with a generic "new_post" type.
-	// Video/long_video → /posttube/watch/:id, "creator_uploaded_video".
-	// Flick/reel → /reels/:id, "creator_uploaded_flick".
-	var deepLink, notifType string
-	switch e.ContentType {
-	case "flick", "reel":
-		deepLink = fmt.Sprintf("/reels/%s", e.PostID)
-		notifType = "creator_uploaded_flick"
-	case "video", "long_video":
-		deepLink = fmt.Sprintf("/posttube/watch/%s", e.PostID)
-		notifType = "creator_uploaded_video"
-	default:
-		// post, poll, photo, anything else — generic post notification.
-		deepLink = fmt.Sprintf("/post/%s", e.PostID)
-		notifType = "new_post"
-	}
-
-	// Per-event sub-pool: parallelize the Scylla writes for one
-	// upload so a 5,000-follower fanout finishes in ~5k/16/ratePerWorker
-	// instead of serial.
-	const fanoutWorkers = 16
-	jobs := make(chan uuid.UUID, fanoutWorkers*2)
-	var wg sync.WaitGroup
-	var deliveredMu sync.Mutex
-	delivered := 0
-	for w := 0; w < fanoutWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for fid := range jobs {
-				if err := c.service.CreateNotification(
-					ctx, fid, authorID, notifType, "post", postID, deepLink, e.CreatedAt,
-				); err != nil {
-					slog.Warn("creator upload fan-out: notify failed",
-						"follower", fid, "post_id", postID, "error", err)
-					continue
-				}
-				deliveredMu.Lock()
-				delivered++
-				deliveredMu.Unlock()
-			}
-		}()
-	}
-
-	for offset := 0; offset < maxFollowers; offset += pageSize {
-		followers, err := c.graph.GetFollowers(ctx, authorID, pageSize, offset)
-		if err != nil {
-			slog.Warn("creator upload fan-out: followers fetch failed",
-				"author_id", authorID, "offset", offset, "error", err)
-			break
-		}
-		if len(followers) == 0 {
-			break
-		}
-		for _, fid := range followers {
-			jobs <- fid
-		}
-		if len(followers) < pageSize {
-			break
-		}
-	}
-	close(jobs)
-	wg.Wait()
-	slog.Info("creator upload fan-out complete",
-		"author_id", authorID, "post_id", postID,
-		"content_type", e.ContentType, "delivered", delivered)
-	return nil
-}
-
-// FanOutCreatorUploadAsync wraps fanOutCreatorUpload in a goroutine so
-// the consumer loop never blocks on it. Audit CR2: a single celeb
-// upload (5k followers, ~25 graph paginations) previously paused the
-// consumer for tens of seconds and starved every other event behind it.
-// Now the consumer continues immediately; fanout runs on a fresh
-// background context so request-cancel doesn't stop the delivery.
-func (c *Consumer) FanOutCreatorUploadAsync(e events.PostCreatedPayload) {
-	go func() {
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		if err := c.fanOutCreatorUpload(bg, e); err != nil {
-			slog.Warn("async creator upload fan-out failed", "post_id", e.PostID, "error", err)
-		}
-	}()
 }
 
 // fanOutLiveStarted pages through the creator's followers and pushes a

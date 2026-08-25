@@ -12,6 +12,7 @@
 // standalone module surface. Telemetry tags every tap with the module key.
 
 import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/mopedu.dart';
@@ -91,9 +92,7 @@ class _ProfileHeader extends ConsumerWidget {
             backgroundImage: me.hasAvatar ? NetworkImage(me.avatarUrl) : null,
             child: !me.hasAvatar
                 ? Text(
-                    (me.displayName.isNotEmpty
-                            ? me.displayName[0]
-                            : '?')
+                    (me.displayName.isNotEmpty ? me.displayName[0] : '?')
                         .toUpperCase(),
                     style: AppTextStyles.h2,
                   )
@@ -106,10 +105,7 @@ class _ProfileHeader extends ConsumerWidget {
               children: [
                 Text(me.displayName, style: AppTextStyles.h2),
                 const SizedBox(height: 2),
-                Text(
-                  '@${me.username}',
-                  style: AppTextStyles.bodySmall,
-                ),
+                Text('@${me.username}', style: AppTextStyles.bodySmall),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -409,8 +405,7 @@ class _LauncherGrid extends ConsumerWidget {
             GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              gridDelegate:
-                  const SliverGridDelegateWithFixedCrossAxisCount(
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 4,
                 crossAxisSpacing: 8,
                 mainAxisSpacing: 8,
@@ -482,14 +477,15 @@ class _LauncherGrid extends ConsumerWidget {
                     context.push('/apps');
                   },
                 ),
-                _MoreTile(
-                  label: 'Review videos',
-                  icon: Icons.rate_review_outlined,
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    context.push('/reviewer/dashboard');
-                  },
-                ),
+                if (Environment.reviewerPublicEnabled)
+                  _MoreTile(
+                    label: 'Review videos',
+                    icon: Icons.rate_review_outlined,
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      context.push('/reviewer/dashboard');
+                    },
+                  ),
               ],
             ),
           ),
@@ -574,10 +570,7 @@ class _MoreTile extends StatelessWidget {
         child: Icon(icon, color: AppColors.textPrimary),
       ),
       title: Text(label, style: AppTextStyles.label),
-      trailing: const Icon(
-        Icons.chevron_right,
-        color: AppColors.textTertiary,
-      ),
+      trailing: const Icon(Icons.chevron_right, color: AppColors.textTertiary),
       onTap: onTap,
     );
   }
@@ -590,11 +583,7 @@ class _QuickLinks extends StatelessWidget {
 
   static const _links = <_LinkRow>[
     _LinkRow(label: 'Saved items', icon: Icons.bookmark, route: '/bookmarks'),
-    _LinkRow(
-      label: 'Watch later',
-      icon: Icons.watch_later,
-      route: '/posttube',
-    ),
+    _LinkRow(label: 'Watch later', icon: Icons.watch_later, route: '/posttube'),
     _LinkRow(label: 'Liked posts', icon: Icons.favorite, route: '/profile/me'),
     _LinkRow(
       label: 'Order history',
@@ -659,10 +648,7 @@ class _LinkTile extends StatelessWidget {
     return ListTile(
       leading: Icon(link.icon, color: AppColors.textTertiary),
       title: Text(link.label, style: AppTextStyles.label),
-      trailing: const Icon(
-        Icons.chevron_right,
-        color: AppColors.textTertiary,
-      ),
+      trailing: const Icon(Icons.chevron_right, color: AppColors.textTertiary),
       onTap: () => context.push(link.route),
     );
   }
@@ -720,10 +706,7 @@ class _PartnerModeSection extends ConsumerWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Become a Mopedu Partner',
-                      style: AppTextStyles.h3,
-                    ),
+                    Text('Become a Mopedu Partner', style: AppTextStyles.h3),
                     const SizedBox(height: 2),
                     Text(
                       'Drive on your own terms. No commission.',
@@ -732,10 +715,7 @@ class _PartnerModeSection extends ConsumerWidget {
                   ],
                 ),
               ),
-              const Icon(
-                Icons.chevron_right,
-                color: AppColors.textTertiary,
-              ),
+              const Icon(Icons.chevron_right, color: AppColors.textTertiary),
             ],
           ),
         ),
@@ -766,10 +746,7 @@ class _PartnerModeSection extends ConsumerWidget {
                   style: AppTextStyles.label,
                 ),
               ),
-              const Icon(
-                Icons.chevron_right,
-                color: AppColors.textTertiary,
-              ),
+              const Icon(Icons.chevron_right, color: AppColors.textTertiary),
             ],
           ),
         ),
@@ -792,10 +769,7 @@ class _PartnerModeSection extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Waiting for verification',
-                  style: AppTextStyles.h3,
-                ),
+                Text('Waiting for verification', style: AppTextStyles.h3),
                 Text(
                   'Step $stepsDone of 5 done',
                   style: AppTextStyles.bodySmall,
@@ -858,10 +832,7 @@ class _SettingsSection extends ConsumerWidget {
               endIndent: 16,
             ),
             ListTile(
-              leading: const Icon(
-                Icons.logout,
-                color: AppColors.statusError,
-              ),
+              leading: const Icon(Icons.logout, color: AppColors.statusError),
               title: Text(
                 'Sign out',
                 style: AppTextStyles.label.copyWith(

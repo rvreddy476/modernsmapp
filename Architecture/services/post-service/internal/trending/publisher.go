@@ -45,12 +45,12 @@ const (
 )
 
 type Publisher struct {
-	rdb       *redis.Client
-	log       *slog.Logger
-	interval  time.Duration
-	topN      int
-	leaderID  string // unique per process so we can recover our own lock on contention
-	lastSnap  []Entry
+	rdb      *redis.Client
+	log      *slog.Logger
+	interval time.Duration
+	topN     int
+	leaderID string // unique per process so we can recover our own lock on contention
+	lastSnap []Entry
 }
 
 // Entry is one row of the published top-N list. Field names match the
@@ -64,8 +64,8 @@ type Entry struct {
 }
 
 type Snapshot struct {
-	Tags       []Entry   `json:"hashtags"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Tags      []Entry   `json:"hashtags"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func New(rdb *redis.Client, log *slog.Logger) *Publisher {

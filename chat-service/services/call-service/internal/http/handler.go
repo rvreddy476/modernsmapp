@@ -13,21 +13,35 @@ import (
 
 // Handler handles HTTP requests for the call service.
 type Handler struct {
-	svc *service.Service
-	log *slog.Logger
+	svc          *service.Service
+	log          *slog.Logger
+	callsEnabled bool
 }
 
 func New(svc *service.Service, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{svc: svc, log: log}
+	return &Handler{svc: svc, log: log, callsEnabled: false}
+}
+
+func (h *Handler) WithCallsEnabled(enabled bool) *Handler {
+	h.callsEnabled = enabled
+	return h
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/health", h.Health)
 
 	v1 := r.Group("/v1/calls")
+	v1.Use(func(c *gin.Context) {
+		if !h.callsEnabled {
+			api.Error(c.Writer, http.StatusServiceUnavailable, "CALLS_DISABLED", "Calls are not available in this release", nil, nil)
+			c.Abort()
+			return
+		}
+		c.Next()
+	})
 	{
 		v1.POST("", h.CreateCall)
 		v1.GET("/history", h.GetCallHistory)

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -67,7 +68,17 @@ func (w *OrphanGCWorker) run(ctx context.Context) {
 
 func (w *OrphanGCWorker) sweep(ctx context.Context) {
 	cutoff := time.Now().Add(-w.maxAge)
-	ids, err := w.svc.pgStore.ListOrphanedPendingUploads(ctx, cutoff, w.batch)
+	// Slice C / C-CLB-1: candidates are `pending_upload` ONLY.
+	//
+	// An earlier version also swept CONFIRMED composer-leased assets, so an
+	// uploaded-but-never-posted photo was collected. That had to be withdrawn:
+	// a confirmed asset can be claimed by writers that never lock the media row
+	// (`users.avatar_media_id` and every other plain UUID column), so the
+	// reclaim transaction cannot see the claim coming. See ErrMediaConfirmed.
+	//
+	// The consequence is honest and bounded: an abandoned composer photo is
+	// retained rather than swept. The alternative was deleting live avatars.
+	ids, err := w.svc.pgStore.ListReclaimableMedia(ctx, cutoff, w.batch)
 	if err != nil {
 		w.log.Warn("orphan media list failed", "err", err)
 		return
@@ -89,20 +100,37 @@ func (w *OrphanGCWorker) sweep(ctx context.Context) {
 	w.log.Info("orphan media sweep done", "purged", purged, "failed", failed)
 }
 
-// purgeOne deletes the row + blob objects for a single orphan. Best-
-// effort on the blob side: if MinIO rejects an object we still return
-// the DB delete success — the row is gone and the row owns no
-// further references, so leaving a stray blob is preferable to
-// retrying the DB delete forever.
+// purgeOne reclaims a single orphan through the DURABLE protocol.
+//
+// Slice C / C-LB-5.7. This used to call DeleteMedia and then delete blobs
+// best-effort, which had two defects the newer protocol already solved for the
+// on-demand path:
+//
+//  1. THE ROW WENT FIRST. Once the database row was gone, a transient
+//     object-store failure left an untracked blob — nothing recorded that the
+//     object still existed, so no later sweep could ever find it. "Storage grows
+//     without bound" was the exact problem the GC was written to fix, and this
+//     reintroduced it one failed DeleteObject at a time.
+//  2. NO ROW LOCK. DeleteMedia does not serialize against a concurrent attach,
+//     so a post being created at that moment could reference an asset already
+//     being deleted.
+//
+// DeleteOrphanMedia does both correctly: it re-checks eligibility under
+// SELECT … FOR UPDATE (so an in-flight attach blocks and then wins or loses
+// cleanly), records every object key in `media_blob_reclaim` BEFORE removing
+// rows, and leaves the reclaim row behind for the blob worker when an object
+// deletion fails.
+//
+// It re-checks age and references itself, so a candidate that gained a
+// reference between the scan and now is refused rather than deleted — which is
+// why ErrMediaNotOrphaned is a normal, non-alarming outcome here.
 func (w *OrphanGCWorker) purgeOne(ctx context.Context, id uuid.UUID) error {
-	keys, err := w.svc.pgStore.DeleteMedia(ctx, id)
-	if err != nil {
-		return err
+	err := w.svc.DeleteOrphanMedia(ctx, id)
+	if errors.Is(err, ErrMediaNotOrphaned) {
+		// Raced with an attach, or is younger than the reclaim window under
+		// the service's own clock. Correct outcome; not a failure.
+		w.log.Info("orphan media skipped: no longer eligible", "media_id", id)
+		return nil
 	}
-	for _, key := range keys {
-		if err := w.svc.blobStore.DeleteObject(ctx, key); err != nil {
-			w.log.Warn("orphan blob delete failed", "media_id", id, "key", key, "err", err)
-		}
-	}
-	return nil
+	return err
 }

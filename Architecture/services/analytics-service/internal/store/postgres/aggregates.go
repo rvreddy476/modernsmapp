@@ -16,6 +16,16 @@ func NewAggregateStore(db *pgxpool.Pool) *AggregateStore {
 	return &AggregateStore{db: db}
 }
 
+func (s *AggregateStore) OwnsContent(ctx context.Context, creatorID, contentID uuid.UUID) (bool, error) {
+	var owns bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM analytics.content_ownership
+			WHERE content_id = $1 AND creator_id = $2
+		)`, contentID, creatorID).Scan(&owns)
+	return owns, err
+}
+
 type CreatorOverview struct {
 	TotalViews       int64   `json:"total_views"`
 	TotalWatchTimeMS int64   `json:"total_watch_time_ms"`
@@ -59,8 +69,8 @@ func (s *AggregateStore) GetCreatorOverview(ctx context.Context, creatorID uuid.
 			COALESCE(AVG(content_quality_score), 0),
 			COALESCE(SUM(likes), 0),
 			COALESCE(SUM(shares), 0)
-		FROM analytics.content_daily_summary
-		WHERE creator_id = $1 AND day_bucket >= $2`,
+		FROM analytics.content_hourly_agg
+		WHERE creator_id = $1 AND hour_bucket >= $2`,
 		creatorID, since,
 	).Scan(&overview.TotalViews, &overview.TotalWatchTimeMS, &overview.AvgCQS,
 		&overview.TotalLikes, &overview.TotalShares)
@@ -72,11 +82,12 @@ func (s *AggregateStore) GetCreatorOverview(ctx context.Context, creatorID uuid.
 
 func (s *AggregateStore) GetCreatorDailyTrend(ctx context.Context, creatorID uuid.UUID, since time.Time) ([]DailySummaryRow, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT day_bucket, SUM(views_display), SUM(watch_time_total_ms),
+		SELECT date_trunc('day', hour_bucket) AS day_bucket,
+		       SUM(views_display), SUM(watch_time_total_ms),
 		       AVG(content_quality_score)
-		FROM analytics.content_daily_summary
-		WHERE creator_id = $1 AND day_bucket >= $2
-		GROUP BY day_bucket
+		FROM analytics.content_hourly_agg
+		WHERE creator_id = $1 AND hour_bucket >= $2
+		GROUP BY date_trunc('day', hour_bucket)
 		ORDER BY day_bucket ASC`,
 		creatorID, since,
 	)
@@ -97,12 +108,12 @@ func (s *AggregateStore) GetCreatorDailyTrend(ctx context.Context, creatorID uui
 }
 
 func (s *AggregateStore) GetContentList(ctx context.Context, creatorID uuid.UUID, limit int, cursor time.Time, sortBy string) ([]ContentSummary, error) {
-	orderCol := "views_display"
+	orderCol := "SUM(views_display)"
 	switch sortBy {
 	case "cqs":
-		orderCol = "content_quality_score"
+		orderCol = "AVG(content_quality_score)"
 	case "watch_time":
-		orderCol = "watch_time_total_ms"
+		orderCol = "SUM(watch_time_total_ms)"
 	}
 
 	rows, err := s.db.Query(ctx, `
@@ -239,8 +250,8 @@ func (s *AggregateStore) GetCreatorAggStats(ctx context.Context, creatorID uuid.
 			COALESCE(SUM(likes), 0),
 			COALESCE(SUM(comments), 0),
 			COALESCE(SUM(shares), 0)
-		FROM analytics.content_daily_summary
-		WHERE creator_id = $1 AND day_bucket >= $2
+		FROM analytics.content_hourly_agg
+		WHERE creator_id = $1 AND hour_bucket >= $2
 	`, creatorID, since).Scan(
 		&stats.TotalViews, &stats.TotalLikes, &stats.TotalComments, &stats.TotalShares,
 	)

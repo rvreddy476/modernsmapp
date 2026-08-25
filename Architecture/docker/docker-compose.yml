@@ -237,6 +237,18 @@ services:
       OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    # OpenSearch needs 30-60s before it serves, and the container reports
+    # "started" almost immediately. Consumers that only wait for service_started
+    # therefore race it. search-service fails CLOSED when its safety indices are
+    # unreachable ("safety index unavailable; refusing to start"), which is the
+    # correct behaviour — so without a real readiness probe it simply exits 1 on
+    # every cold boot of the stack.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -253,6 +265,14 @@ services:
       context: ..
       dockerfile: services/api-gateway/Dockerfile
     environment:
+      # Per-environment capacity tuning. Unset means the production values.
+      #
+      # Added during C-CLB-PROOF-1 on the assumption that the gateway limiter
+      # was rejecting most of a 50-concurrent same-key burst. It was not — 50
+      # fits under 100/60; post-service's MAX_POSTS_PER_HOUR was the blocker.
+      # Leave these UNSET in production until bounds and alerting exist.
+      RATE_LIMIT_IP_PER_SEC: "${RATE_LIMIT_IP_PER_SEC:-100}"
+      RATE_LIMIT_USER_PER_SEC: "${RATE_LIMIT_USER_PER_SEC:-60}"
       HTTP_PORT: "8080"
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens
@@ -263,6 +283,17 @@ services:
       CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
       AUTH_SERVICE_URL: http://identity-auth:8081
       CALL_SERVICE_URL: http://call-service:8097
+      # The gateway's built-in default is http://ws-gateway:8093, but the
+      # compose service is named chat-ws-gateway, so /v1/ws resolved to a
+      # non-existent host and every socket upgrade returned 502. Chat sockets
+      # are routed here, never to notification-service.
+      WS_GATEWAY_URL: http://chat-ws-gateway:8093
+      # Privacy settings only. `/v1/users/me/settings` is routed to the
+      # IDENTITY user-service because that is the service that owns
+      # who_can_message and the one graph-service reads when it decides
+      # whether a direct message is allowed. Everything else under /v1/users
+      # still goes to the Architecture user-service on the next line.
+      IDENTITY_USER_SERVICE_URL: http://identity-user:8110
       USER_SERVICE_URL: http://user-service:8082
       GRAPH_SERVICE_URL: http://graph-service:8083
       POST_SERVICE_URL: http://post-service:8084
@@ -276,7 +307,7 @@ services:
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       ANALYTICS_SERVICE_URL: http://analytics-service:8094
       AI_SERVICE_URL: http://ai-service:8117
-      FLAGS_SERVICE_URL: http://feature-flag-service:8095
+      FLAGS_SERVICE_URL: http://feature-flag-service:8117
       GROUP_SERVICE_URL: http://group-service:8090
       ADMIN_SERVICE_URL: http://admin-service:8096
       PROFILE_SERVICE_URL: http://identity-profile:8098
@@ -323,9 +354,24 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       RATE_LIMIT_ENABLED: "false"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16
+      # auth-service does not migrate its own database: schema is owned by the
+      # deployment pipeline, and the service VERIFIES its preconditions at boot
+      # (identity-shared/store/schemaguard) and refuses to start when the
+      # pipeline has not run. See internal/store/requirements.go for the list
+      # and prompt/audit-...-scale-readiness.md D11 for why. identity-user and
+      # identity-profile do the same.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
-      # Dev: tokens never expire — no more surprise logouts
-      ACCESS_TOKEN_TTL: "8760h"
+      # Encrypts stored TOTP (2FA) secrets. Must be exactly 64 hex chars
+      # (32 bytes, AES-256) — see identity-platform/shared/crypto/secret_box.go.
+      # Unset, the service logs "2FA secrets stored in plaintext" and carries on,
+      # which is tolerable on a laptop and not tolerable once the stack is
+      # reachable from the internet. Generate with: openssl rand -hex 32
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      # Dev default is a year so laptop sessions don't expire mid-work. Override
+      # it in .env (e.g. ACCESS_TOKEN_TTL=24h) whenever this stack is exposed
+      # publicly — a leaked year-long token is a year-long compromise.
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-8760h}
       REFRESH_TOKEN_TTL: "87600h"
       # Authorization scopes are now resolved SERVER-SIDE from these allowlists
       # and stamped into the signed access token. The gateway authorizes admin /
@@ -346,6 +392,20 @@ services:
       REQUIRE_MFA_FOR_PRIVILEGED: ${REQUIRE_MFA_FOR_PRIVILEGED:-false}
     ports:
       - "8081:8081"
+    # identity-auth provisions the shared identity base tables (auth.*, plus
+    # profile.profiles and usr.* — see services/auth-service/database/setup.sql).
+    # identity-user and identity-profile assert those objects at boot and refuse
+    # to start without them, so they wait on this healthcheck rather than racing
+    # it on a fresh database.
+    healthcheck:
+      # /v1/auth/health, not /health — the route is registered inside the
+      # versioned group. Bare /health answers 404 on this service, and a
+      # healthcheck that can never pass would deadlock everything waiting on it.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/v1/auth/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -378,12 +438,22 @@ services:
       # Gates /v1/users/* (incl. the privacy-settings endpoint the graph
       # permission resolver reads). The api-gateway injects this key.
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16 this
+      # service does not migrate its own database: it applies its own additive
+      # schema file (services/*/database/setup.sql) and then VERIFIES its
+      # preconditions via identity-shared/store/schemaguard, refusing to start
+      # when an object it depends on is absent. Schema changes that need a
+      # decision about existing data belong in the deployment pipeline.
     ports:
       - "8110:8110"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Waits for auth-service, which provisions the shared identity base
+      # tables this service asserts at boot and refuses to start without.
+      identity-auth:
         condition: service_healthy
     deploy:
       resources:
@@ -405,12 +475,44 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # Required for authenticated profile reads to return anything at all.
+      #
+      # profile-service enforces blocks by asking graph-service, and it fails
+      # CLOSED when it cannot: with this unset, filterBlockedProfileMap drops
+      # every entry and POST /v1/profiles/batch answers `{}` to any caller that
+      # sends X-User-Id — including the viewer's own profile. That behaviour is
+      # correct (SR-4: a caller must not probe by bisection); the defect was
+      # that this variable was never wired here.
+      #
+      # Found on 2026-08-17 by the feed-hydration evidence pass: every feed
+      # item rendered `author.display_name = "Deleted account"` because the
+      # batch it depends on was silently returning nothing. The service logged
+      # the cause at startup as an ERROR and nothing consumed it until now.
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      # Avatar/cover writes fail closed unless media-service proves that the
+      # asset is owned by the profile owner, ready, approved and the right
+      # subtype.
+      MEDIA_SERVICE_URL: http://media-service:8087
+      # Anonymous profile-photo policy is read directly; authenticated viewers
+      # are resolved by graph-service's permission matrix.
+      USER_SERVICE_URL: http://identity-user:8110
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16 this
+      # service does not migrate its own database: it applies its own additive
+      # schema file (services/*/database/setup.sql) and then VERIFIES its
+      # preconditions via identity-shared/store/schemaguard, refusing to start
+      # when an object it depends on is absent. Schema changes that need a
+      # decision about existing data belong in the deployment pipeline.
     ports:
       - "8098:8098"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Waits for auth-service, which provisions the shared identity base
+      # tables this service asserts at boot and refuses to start without.
+      identity-auth:
         condition: service_healthy
     deploy:
       resources:
@@ -472,6 +574,18 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8083:8083"
+    # Cross-service schema ordering, compose edition.
+    #
+    # graph-service migration 004 references public.users, which user-service
+    # owns. depends_on only waits for the CONTAINER, not for that service's
+    # migrations, so on a fresh volume graph-service can reach postgres before
+    # `users` exists and exits 1 with SQLSTATE 42P01.
+    #
+    # Kubernetes already handles this: deploy/services/graph-service/values-*.yaml
+    # declares `schemaDependencies: [users]`, and the chart's init container
+    # blocks until the table appears. Compose has no init container, so retrying
+    # is how it converges here — noisier than the Helm gate, same end state.
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
@@ -525,6 +639,11 @@ services:
       context: ..
       dockerfile: services/post-service/Dockerfile
     environment:
+      # C-CLB-PROOF-1: the 50-way same-key durability proof needs the
+      # frequency cap out of the way so requests reach the idempotency gate.
+      # Unset means the production values (20/hour, 50/day).
+      MAX_POSTS_PER_HOUR: "${MAX_POSTS_PER_HOUR:-20}"
+      MAX_POSTS_PER_DAY: "${MAX_POSTS_PER_DAY:-50}"
       <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8084"
       POSTGRES_DSN: *app_postgres_dsn
@@ -533,8 +652,36 @@ services:
       KAFKA_BROKERS: redpanda:9092
       USER_SERVICE_URL: http://identity-user:8110
       REVIEWER_SERVICE_URL: http://reviewer-service:8120
-      REVIEW_ALL_VIDEOS: "true"
+      # Local media uses the non-production stub scanner and has no human
+      # reviewer deployment. Production AWS manifests may opt into review-all;
+      # the local contract stack must allow already-scanned fixtures to flow.
+      REVIEW_ALL_VIDEOS: ${REVIEW_ALL_VIDEOS:-false}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Required for the internal media-access authority to answer at all.
+      #
+      # Story visibility is a relationship question, so story_policy.go needs a
+      # graph client. Without one it returns ErrStoryPolicyUnresolved — an
+      # honest "I could not decide", which the handler surfaces as 503 so the
+      # caller retries rather than caching a denial produced by an outage.
+      #
+      # Found on 2026-08-17 by the feed-hydration evidence pass: media-service
+      # asks this route to authorize a page of media, so an unresolvable answer
+      # here made every ranked feed surface (reels, videos, watch) return
+      # 503 FEED_UNAVAILABLE. The fail-closed chain behaved correctly; the
+      # defect was that this variable was never wired here.
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      # Moderation capability HMAC keys.
+      #
+      # trust-safety-service ISSUES these capabilities and post-service VERIFIES
+      # them, so the two services must hold byte-identical keys or every
+      # capability fails verification. Both blocks reference the same variable
+      # with the same default, so they cannot drift apart.
+      #
+      # The services refuse to start below 32 bytes (correctly — a short HMAC key
+      # is forgeable). Without these set, post-service and trust-safety-service
+      # exit 1 on boot and the local stack has no moderation path at all.
+      STORY_MODERATION_HMAC_KEY: ${STORY_MODERATION_HMAC_KEY:-local_dev_story_moderation_hmac_key_change_me}
+      POST_MODERATION_HMAC_KEY: ${POST_MODERATION_HMAC_KEY:-local_dev_post_moderation_hmac_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       # Migration runner baseline knob — leave default ("false") so new migration
       # files added to database/migrations/ get applied on next boot. Set to
@@ -544,6 +691,11 @@ services:
       SCHEMA_MIGRATIONS_BASELINE: ${SCHEMA_MIGRATIONS_BASELINE:-false}
     ports:
       - "8084:8084"
+    # Same cross-service schema ordering as graph-service, and a longer list:
+    # deploy/services/post-service/values-*.yaml declares schemaDependencies
+    # [media_assets, user_preferences, users], owned by media-service,
+    # feed-service and user-service respectively. Retry until they exist.
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
@@ -574,6 +726,9 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       GRAPH_SERVICE_URL: http://graph-service:8083
+      POST_SERVICE_URL: http://post-service:8084
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+      MEDIA_SERVICE_URL: http://media-service:8087
       # Reads tc_close_friends_posts to gate close-friends ("trusted") fanout.
       USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
@@ -611,13 +766,18 @@ services:
       JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
       JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       MINIO_ENDPOINT: minio:9000
-      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://cleestudio.com}
+      # Presigned URLs must name the host used by the local Android client.
+      # Production uses S3/CloudFront and never consumes this MinIO default.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       MINIO_ACCESS_KEY: *minio_access_key
       MINIO_SECRET_KEY: *minio_secret_key
       MINIO_BUCKET: media
       KAFKA_BROKERS: redpanda:9092
       MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      POST_SERVICE_URL: http://post-service:8084
+      CHAT_MESSAGE_SERVICE_URL: http://chat-message-service:8092
+      PROFILE_SERVICE_URL: http://identity-profile:8098
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       REDIS_ADDR: redis:6379
     ports:
@@ -700,6 +860,7 @@ services:
       SCYLLA_HOSTS: scylla
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      POSTGRES_DSN: *app_postgres_dsn
       # FCM push (Firebase HTTP v1) — leave blank to disable push in dev
       FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
       FCM_SERVICE_ACCOUNT_KEY: ${FCM_SERVICE_ACCOUNT_KEY:-}
@@ -721,13 +882,22 @@ services:
     ports:
       - "8088:8088"
     volumes:
-      # Mount the Firebase service-account JSON as a read-only file.
-      # main.go's FCM wiring detects path-shaped FCM_SERVICE_ACCOUNT_KEY
-      # values and reads the file at startup. The host file is in
-      # .secrets/ which is gitignored. Missing on the host = container
-      # mount fails to start, which is the safe behavior.
-      - ../../.secrets/firebase-cleestudio-2b06d.json:/run/secrets/firebase-key.json:ro
+      # The Firebase service-account JSON, read-only.
+      #
+      # main.go reads this only when FCM_SERVICE_ACCOUNT_KEY holds a path;
+      # that variable defaults to blank, so dev runs with push DISABLED and
+      # the file is merely present.
+      #
+      # The filename must match a real file. It previously named
+      # `firebase-cleestudio-2b06d.json`, which does not exist here — Docker
+      # then silently created an empty DIRECTORY at that path and the service
+      # never started at all. That is why no notification has ever been
+      # delivered: the whole service was absent from the running stack while
+      # the gateway happily answered /v1/notifications with 502.
+      - ../../.secrets/fcm-service-account.json:/run/secrets/firebase-key.json:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       scylla-init:
         condition: service_completed_successfully
       redis:
@@ -761,11 +931,14 @@ services:
       IDENTITY_KAFKA_TOPIC: identity.events.v1
     ports:
       - "8089:8089"
+    # Wait for OpenSearch to actually serve, not merely to have started —
+    # search-service refuses to boot without its safety indices.
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
       opensearch:
-        condition: service_started
+        condition: service_healthy
       redpanda:
         condition: service_started
     deploy:
@@ -787,6 +960,10 @@ services:
       POSTGRES_DSN: *app_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Must stay byte-identical to post-service's keys — this service issues the
+      # capabilities that post-service verifies. See the note in post-service.
+      STORY_MODERATION_HMAC_KEY: ${STORY_MODERATION_HMAC_KEY:-local_dev_story_moderation_hmac_key_change_me}
+      POST_MODERATION_HMAC_KEY: ${POST_MODERATION_HMAC_KEY:-local_dev_post_moderation_hmac_key_change_me}
     ports:
       - "8091:8091"
     depends_on:
@@ -847,10 +1024,17 @@ services:
       KAFKA_TOPIC: chat.events.v1
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       USER_SERVICE_URL: http://user-service:8082
+      # Settings/privacy authority (usr.user_settings) — NOT the legacy user
+      # directory above; the chat policy projection refreshes from here.
+      IDENTITY_USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       IDENTITY_KAFKA_TOPIC: identity.events.v1
       IDENTITY_KAFKA_GROUP_ID: chat-service-identity
       GRAPH_SERVICE_URL: http://graph-service:8083
+      MEDIA_SERVICE_URL: http://media-service:8087
+      # Production chat pass: owner-issued conversation-room entitlements
+      # (shared HMAC with chat-ws-gateway).
+      CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}
     ports:
       - "8092:8092"
     depends_on:
@@ -884,6 +1068,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
       WS_ALLOW_QUERY_TOKEN: ${WS_ALLOW_QUERY_TOKEN:-true}
+      CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}
     ports:
       - "8093:8093"
     depends_on:

@@ -1,4 +1,5 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/conversation.dart';
@@ -39,9 +40,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
       // outbound pings to once per 3s.
       if (_composerController.text.trim().isNotEmpty) {
         ref
-            .read(
-              conversationPresenceControllerProvider(widget.conversationId),
-            )
+            .read(conversationPresenceControllerProvider(widget.conversationId))
             .onTyping();
       }
       setState(() {});
@@ -51,9 +50,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     // first `build()` to read the provider.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        ref.read(
-          conversationPresenceControllerProvider(widget.conversationId),
-        );
+        ref.read(conversationPresenceControllerProvider(widget.conversationId));
       }
     });
   }
@@ -90,10 +87,12 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     ref.listen(chatMessagesProvider(widget.conversationId), (previous, next) {
       if (next.messages.length > (previous?.messages.length ?? 0)) {
         // Only scroll if we were already at the bottom or if it's our own message.
-        final wasAtBottom = !_scrollController.hasClients ||
+        final wasAtBottom =
+            !_scrollController.hasClients ||
             _scrollController.position.pixels >=
                 _scrollController.position.maxScrollExtent - 100;
-        final isMine = next.messages.isNotEmpty &&
+        final isMine =
+            next.messages.isNotEmpty &&
             next.messages.last.senderId == ref.read(authServiceProvider).userId;
 
         if (wasAtBottom || isMine) {
@@ -212,27 +211,29 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
               ],
             ),
           ),
-          GlassIconButton(
-            icon: Icons.call_outlined,
-            tooltip: 'Audio',
-            onPressed: () => _startCall(
-              context,
-              peerId: peerId,
-              title: title,
-              type: CallType.audio,
+          if (Environment.callsEnabled) ...[
+            GlassIconButton(
+              icon: Icons.call_outlined,
+              tooltip: 'Audio',
+              onPressed: () => _startCall(
+                context,
+                peerId: peerId,
+                title: title,
+                type: CallType.audio,
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          GlassIconButton(
-            icon: Icons.videocam_outlined,
-            tooltip: 'Video',
-            onPressed: () => _startCall(
-              context,
-              peerId: peerId,
-              title: title,
-              type: CallType.video,
+            const SizedBox(width: 8),
+            GlassIconButton(
+              icon: Icons.videocam_outlined,
+              tooltip: 'Video',
+              onPressed: () => _startCall(
+                context,
+                peerId: peerId,
+                title: title,
+                type: CallType.video,
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -258,7 +259,9 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   }
 
   Widget _buildRealtimeNotice() {
-    final connectionState = ref.watch(rt.realtimeServiceProvider.select((s) => s.state));
+    final connectionState = ref.watch(
+      rt.realtimeServiceProvider.select((s) => s.state),
+    );
 
     if (connectionState == rt.ConnectionState.connected) {
       return const SizedBox.shrink();
@@ -303,10 +306,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
-          Text(
-            message,
-            style: AppTextStyles.labelSmall.copyWith(color: color),
-          ),
+          Text(message, style: AppTextStyles.labelSmall.copyWith(color: color)),
         ],
       ),
     );
@@ -550,8 +550,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
         .where((id) => id != currentUserId)
         .toList();
     final realtimeTyping = typingUserIds.where((id) => id != currentUserId);
-    final remoteTyping =
-        pollTyping.isNotEmpty || realtimeTyping.isNotEmpty;
+    final remoteTyping = pollTyping.isNotEmpty || realtimeTyping.isNotEmpty;
     if (remoteTyping) {
       return 'Typing...';
     }

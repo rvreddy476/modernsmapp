@@ -18,6 +18,7 @@ const (
 	ActionAddToGroup      Action = "add_to_group"
 	ActionSeeOnlineStatus Action = "see_online_status"
 	ActionSeeReadReceipts Action = "see_read_receipts"
+	ActionSeeLastSeen     Action = "see_last_seen"
 	ActionViewProfile     Action = "view_profile"
 )
 
@@ -29,6 +30,11 @@ type Facts struct {
 	IsConnection       bool
 	ActorFollowsTarget bool
 	TargetFollowsActor bool
+	// SecondDegree is true when actor and target share at least one active
+	// accepted connection (friends-of-friends, chat directive §3.1). Computed
+	// by the graph store as a bounded EXISTS — adjacency lists never leave
+	// the service.
+	SecondDegree bool
 }
 
 func (f Facts) mutualFollow() bool { return f.ActorFollowsTarget && f.TargetFollowsActor }
@@ -41,8 +47,17 @@ type Privacy struct {
 	WhoCanSendConnectionRequest string
 	WhoCanSeeOnlineStatus       string
 	WhoCanSeeReadReceipts       string
+	WhoCanSeeLastSeen           string
 	WhoCanSeeProfilePhoto       string
+	// ChatAvailability 'paused' is stronger than any who_can_message value:
+	// it denies new conversations, requests and group adds toward the target
+	// and suppresses the target's presence/receipt disclosures (chat
+	// directive §3.2). Empty means 'enabled' (older snapshots).
+	ChatAvailability string
 }
+
+// chatPaused reports whether the target has paused chat entirely.
+func (p Privacy) chatPaused() bool { return p.ChatAvailability == "paused" }
 
 // Decision is the resolved outcome for one action. Fallback names an
 // alternative path when the direct action is denied — e.g. message_direct is
@@ -73,9 +88,11 @@ func Resolve(action Action, f Facts, p Privacy) Decision {
 	case ActionAddToGroup:
 		return resolveAddToGroup(f, p)
 	case ActionSeeOnlineStatus:
-		return resolveVisibility(f, p.WhoCanSeeOnlineStatus)
+		return resolvePausableVisibility(f, p, p.WhoCanSeeOnlineStatus)
 	case ActionSeeReadReceipts:
-		return resolveVisibility(f, p.WhoCanSeeReadReceipts)
+		return resolvePausableVisibility(f, p, p.WhoCanSeeReadReceipts)
+	case ActionSeeLastSeen:
+		return resolvePausableVisibility(f, p, p.WhoCanSeeLastSeen)
 	case ActionViewProfile:
 		// Gate on the profile-photo visibility setting — H3 fix. A private-
 		// account user (WhoCanSeeProfilePhoto != "everyone") should not have
@@ -99,6 +116,12 @@ func ResolveAll(actions []Action, f Facts, p Privacy) map[Action]Decision {
 // who is denied a direct DM may still be offered the Message Request channel
 // (Fallback = "message_request").
 func resolveMessage(f Facts, p Privacy) Decision {
+	// Chat pause is stronger than every who_can_message value and has NO
+	// request fallback (directive §3.2/§3.3): a paused account receives no
+	// new conversations, requests or messages until it unpauses.
+	if p.chatPaused() {
+		return Decision{Allowed: false, Reason: "chat_paused"}
+	}
 	// no_one is stricter than connections_only — even connections cannot
 	// message, so it is checked before the connection shortcut.
 	if p.WhoCanMessage == "no_one" {
@@ -115,6 +138,13 @@ func resolveMessage(f Facts, p Privacy) Decision {
 		return Decision{Allowed: false, Reason: "not_connected"}
 	case "followers_message_requests":
 		if f.ActorFollowsTarget {
+			return Decision{Allowed: false, Fallback: "message_request", Reason: "not_connected"}
+		}
+		return Decision{Allowed: false, Reason: "privacy_disallows"}
+	case "friends_of_friends_requests":
+		// Directive §3.1/§3.3: a shared accepted connection earns a MESSAGE
+		// REQUEST, never a direct thread.
+		if f.SecondDegree {
 			return Decision{Allowed: false, Fallback: "message_request", Reason: "not_connected"}
 		}
 		return Decision{Allowed: false, Reason: "privacy_disallows"}
@@ -154,12 +184,32 @@ func resolveConnect(f Facts, p Privacy) Decision {
 	return Decision{Allowed: true}
 }
 
+// resolveAddToGroup implements the group-add row (chat directive §3.4).
+//
+// Allowed=true means a DIRECT add is permitted (the target consented in
+// advance via their setting). Fallback="group_invitation" means the actor may
+// create an invitation the target must accept — consent is required and
+// membership must NOT be created until the target accepts.
 func resolveAddToGroup(f Facts, p Privacy) Decision {
+	if p.chatPaused() {
+		return Decision{Allowed: false, Reason: "chat_paused"}
+	}
 	switch p.WhoCanAddToGroups {
 	case "no_one":
 		return Decision{Allowed: false, Reason: "privacy_no_one"}
 	case "everyone_with_approval":
-		return Decision{Allowed: true}
+		// "With approval" IS the consent requirement: never a silent add.
+		// (This previously resolved Allowed=true; no consumer existed, so no
+		// behaviour shipped on the old value.)
+		return Decision{Allowed: false, Fallback: "group_invitation", Reason: "consent_required"}
+	case "friends_of_friends_invites":
+		if f.IsConnection {
+			return Decision{Allowed: true}
+		}
+		if f.SecondDegree {
+			return Decision{Allowed: false, Fallback: "group_invitation", Reason: "consent_required"}
+		}
+		return Decision{Allowed: false, Reason: "privacy_disallows"}
 	case "connections_only", "connections_and_contacts":
 		if f.IsConnection {
 			return Decision{Allowed: true}
@@ -168,6 +218,15 @@ func resolveAddToGroup(f Facts, p Privacy) Decision {
 	default:
 		return Decision{Allowed: false, Reason: "privacy_disallows"}
 	}
+}
+
+// resolvePausableVisibility gates presence-style disclosures. A paused target
+// discloses nothing regardless of the per-field setting.
+func resolvePausableVisibility(f Facts, p Privacy, setting string) Decision {
+	if p.chatPaused() {
+		return Decision{Allowed: false, Reason: "chat_paused"}
+	}
+	return resolveVisibility(f, setting)
 }
 
 func resolveVisibility(f Facts, setting string) Decision {
@@ -194,6 +253,7 @@ func ParseActions(names []string) []Action {
 		"add_to_group":      ActionAddToGroup,
 		"see_online_status": ActionSeeOnlineStatus,
 		"see_read_receipts": ActionSeeReadReceipts,
+		"see_last_seen":     ActionSeeLastSeen,
 		"view_profile":      ActionViewProfile,
 	}
 	out := make([]Action, 0, len(names))

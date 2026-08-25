@@ -1,11 +1,13 @@
 package http
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/atpost/shared/api"
+	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -14,9 +16,8 @@ import (
 // ─── Appeals ──────────────────────────────────────────────────────────────────
 
 type submitAppealRequest struct {
-	ContentType string `json:"content_type" binding:"required"`
-	ContentID   string `json:"content_id" binding:"required"`
-	ActionTaken string `json:"action_taken" binding:"required"`
+	ContentType  string `json:"content_type" binding:"required"`
+	ContentID    string `json:"content_id" binding:"required"`
 	AppealReason string `json:"appeal_reason" binding:"required"`
 }
 
@@ -32,16 +33,38 @@ func (h *Handler) SubmitAppeal(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	appeal, err := h.svc.SubmitAppeal(c.Request.Context(), userID, req.ContentType, req.ContentID, req.ActionTaken, req.AppealReason)
+	appeal, err := h.svc.SubmitAppeal(c.Request.Context(), userID, req.ContentType, req.ContentID, req.AppealReason)
 	if err != nil {
 		slog.Error("SubmitAppeal", "err", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		if errors.Is(err, postgres.ErrActiveAppealExists) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ACTIVE_APPEAL_EXISTS", "An active appeal already exists", nil)
+			return
+		}
+		if errors.Is(err, service.ErrAppealNotEligible) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "NOT_APPEALABLE", "Content is not eligible for appeal", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "APPEALS_UNAVAILABLE", "Appeals are temporarily unavailable", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, appeal, nil)
 }
 
 func (h *Handler) AdminListAppeals(c *gin.Context) {
+	if c.Query("mine") == "true" {
+		userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+			return
+		}
+		appeals, err := h.svc.ListUserAppeals(c.Request.Context(), userID)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "APPEALS_UNAVAILABLE", "Appeals are temporarily unavailable", nil)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": appeals}, nil)
+		return
+	}
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
@@ -161,12 +184,12 @@ func (h *Handler) GetKeywordFilters(c *gin.Context) {
 // ─── Teen accounts ────────────────────────────────────────────────────────────
 
 type upsertTeenAccountRequest struct {
-	GuardianID     *string `json:"guardian_id,omitempty"`
-	DailyLimitMins int     `json:"daily_limit_mins"`
-	ContentFilter  string  `json:"content_filter"`
-	DMRestricted   bool    `json:"dm_restricted"`
-	FollowerApproval bool  `json:"follower_approval"`
-	LocationHidden bool    `json:"location_hidden"`
+	GuardianID       *string `json:"guardian_id,omitempty"`
+	DailyLimitMins   int     `json:"daily_limit_mins"`
+	ContentFilter    string  `json:"content_filter"`
+	DMRestricted     bool    `json:"dm_restricted"`
+	FollowerApproval bool    `json:"follower_approval"`
+	LocationHidden   bool    `json:"location_hidden"`
 }
 
 func (h *Handler) UpsertTeenAccount(c *gin.Context) {

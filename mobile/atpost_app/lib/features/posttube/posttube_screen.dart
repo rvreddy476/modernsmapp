@@ -13,6 +13,7 @@ import 'package:atpost_app/providers/comments_provider.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
+import 'package:atpost_app/shared/widgets/provenance_badge.dart';
 import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/services.dart';
@@ -68,15 +69,20 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     final watchedMs = DateTime.now().difference(startedAt).inMilliseconds;
     if (watchedMs <= 1000) return;
     unawaited(
-      ref.read(analyticsRepositoryProvider).recordVideoView(
-        contentId: post.id,
-        creatorId: post.authorId,
-        // Short content earns only as 'flick' (settlement ignores 'reel').
-        contentType: (post.contentType == 'reel' || post.contentType == 'flick') ? 'flick' : 'long_video',
-        watchedMs: watchedMs,
-        durationMs: (post.durationSeconds ?? 0) * 1000,
-        surface: 'posttube_watch',
-      ),
+      ref
+          .read(analyticsRepositoryProvider)
+          .recordVideoView(
+            contentId: post.id,
+            creatorId: post.authorId,
+            // Short content earns only as 'flick' (settlement ignores 'reel').
+            contentType:
+                (post.contentType == 'reel' || post.contentType == 'flick')
+                ? 'flick'
+                : 'long_video',
+            watchedMs: watchedMs,
+            durationMs: (post.durationSeconds ?? 0) * 1000,
+            surface: 'posttube_watch',
+          ),
     );
   }
 
@@ -125,9 +131,9 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     } catch (_) {
       if (!mounted) return;
       setState(() => eng.restoreFrom(prev));
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update like.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not update like.')));
     }
   }
 
@@ -140,9 +146,9 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     } catch (_) {
       if (!mounted) return;
       setState(() => eng.saved = prev);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update save.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not update save.')));
     }
   }
 
@@ -183,9 +189,9 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     const reasons = <String, String>{
       'spam': 'Spam or misleading',
       'harassment': 'Harassment or bullying',
-      'hate_speech': 'Hate speech',
-      'violence': 'Violence or dangerous acts',
-      'nudity': 'Nudity or sexual content',
+      'hate_abuse': 'Hate speech',
+      'violence_threat': 'Violence or dangerous acts',
+      'sexual_content': 'Nudity or sexual content',
       'misinformation': 'Misinformation',
       'other': 'Something else',
     };
@@ -203,13 +209,22 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
               padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Report this video',
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                child: Text(
+                  'Report this video',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             ),
             for (final entry in reasons.entries)
               ListTile(
-                title: Text(entry.value, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                title: Text(
+                  entry.value,
+                  style: const TextStyle(color: Colors.white, fontSize: 15),
+                ),
                 onTap: () => Navigator.of(sheetCtx).pop(entry.key),
               ),
             const SizedBox(height: 8),
@@ -219,19 +234,23 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     );
     if (reason == null) return;
     try {
-      await ref.read(postRepositoryProvider).submitReport(
-            targetType: 'post',
-            targetId: post.id,
-            reason: reason,
-          );
+      await ref
+          .read(postRepositoryProvider)
+          .submitReport(targetType: 'post', targetId: post.id, reason: reason);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Report submitted — thanks for keeping the community safe.')),
+        const SnackBar(
+          content: Text(
+            'Report submitted — thanks for keeping the community safe.',
+          ),
+        ),
       );
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not submit report. Please try again.')),
+        const SnackBar(
+          content: Text('Could not submit report. Please try again.'),
+        ),
       );
     }
   }
@@ -363,7 +382,8 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                           _DiscoveryPill(
                             icon: Icons.subscriptions_outlined,
                             label: 'Subscriptions',
-                            onTap: () => context.push('/posttube/subscriptions'),
+                            onTap: () =>
+                                context.push('/posttube/subscriptions'),
                           ),
                           const SizedBox(width: 8),
                           _DiscoveryPill(
@@ -392,6 +412,13 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                       currentVideo?.content ?? '',
                       style: AppTextStyles.h2.copyWith(fontSize: 19),
                     ),
+                    if (currentVideo?.alteredContent == true) ...[
+                      const SizedBox(height: 8),
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: ProvenanceBadge(),
+                      ),
+                    ],
                     const SizedBox(height: 6),
                     Text(
                       currentVideo != null
@@ -451,8 +478,7 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                                 if (currentVideo.mediaIds.isNotEmpty)
                                   CaptionToggle(
                                     mediaId: currentVideo.mediaIds.first,
-                                    enabled:
-                                        _captionsEnabled(currentVideo.id),
+                                    enabled: _captionsEnabled(currentVideo.id),
                                     onToggle: () =>
                                         _toggleCaptions(currentVideo.id),
                                   ),
@@ -1092,7 +1118,8 @@ class _CommentsSection extends ConsumerWidget {
 String _initialsFor(String name) {
   final parts = name.trim().split(RegExp(r'\s+'));
   if (parts.isEmpty) return '??';
-  if (parts.length == 1) return parts[0].substring(0, math.min(2, parts[0].length)).toUpperCase();
+  if (parts.length == 1)
+    return parts[0].substring(0, math.min(2, parts[0].length)).toUpperCase();
   return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
 }
 
@@ -1304,7 +1331,9 @@ class ActionPillButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final iconColor = active ? AppColors.posttubePrimary : AppColors.textPrimary;
+    final iconColor = active
+        ? AppColors.posttubePrimary
+        : AppColors.textPrimary;
     final borderColor = active
         ? AppColors.posttubePrimary.withValues(alpha: 0.5)
         : AppColors.borderSubtle;
@@ -1369,14 +1398,14 @@ class _PosttubeEngagement {
   // copy / restoreFrom let callers snapshot before optimistic mutation and
   // roll back on API failure without writing the field list out twice.
   _PosttubeEngagement copy() => _PosttubeEngagement(
-        likeCount: likeCount,
-        dislikeCount: dislikeCount,
-        commentCount: commentCount,
-        shareCount: shareCount,
-        liked: liked,
-        disliked: disliked,
-        saved: saved,
-      );
+    likeCount: likeCount,
+    dislikeCount: dislikeCount,
+    commentCount: commentCount,
+    shareCount: shareCount,
+    liked: liked,
+    disliked: disliked,
+    saved: saved,
+  );
 
   void restoreFrom(_PosttubeEngagement other) {
     likeCount = other.likeCount;

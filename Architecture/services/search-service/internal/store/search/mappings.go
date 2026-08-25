@@ -114,6 +114,10 @@ func (s *Store) initEntityIndices() {
 	ctx := newBgCtx()
 	settings := opensearchSettingsJSON()
 
+	// M2-P0-7: the author-erasure fence index must exist before the
+	// consumer can consult it, or every fence check would fail.
+	s.ensureAuthorFenceIndex(ctx)
+
 	// Extend users_v1 / posts_v1 / products_v1 with engagement_score
 	// and (for posts) created_at — these are idempotent put_mapping
 	// calls so re-runs are safe. The original CreateIndex bodies in

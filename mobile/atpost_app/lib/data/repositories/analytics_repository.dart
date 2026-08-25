@@ -22,7 +22,7 @@ class AnalyticsRepository {
       '/v1/analytics/creator/me',
       queryParameters: {'period': period},
     );
-    return Map<String, dynamic>.from(response.data);
+    return Map<String, dynamic>.from(response.data as Map);
   }
 
   /// Records a finished video view as a `play_end` analytics event.
@@ -41,8 +41,9 @@ class AnalyticsRepository {
     // Mirror the web client's >1s floor — anything shorter is a scroll-by.
     if (contentId.isEmpty || watchedMs <= 1000) return;
 
-    final percentViewed =
-        durationMs > 0 ? (watchedMs / durationMs * 100).clamp(0.0, 100.0) : 0.0;
+    final percentViewed = durationMs > 0
+        ? (watchedMs / durationMs * 100).clamp(0.0, 100.0)
+        : 0.0;
     final completed = durationMs > 0 && watchedMs >= durationMs * 0.95;
 
     try {
@@ -51,6 +52,7 @@ class AnalyticsRepository {
         data: {
           'events': [
             {
+              'event_id': _uuidV4(),
               'type': 'play_end',
               'timestamp': DateTime.now().toUtc().toIso8601String(),
               'payload': {

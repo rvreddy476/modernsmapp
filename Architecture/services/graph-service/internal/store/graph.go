@@ -35,10 +35,30 @@ type Relationship struct {
 	Follows    bool `json:"follows"`
 	FollowedBy bool `json:"followed_by"`
 	Blocked    bool `json:"blocked"`
-	IsMuted    bool `json:"is_muted"`
+	// BlockedBy: the TARGET blocked the viewer.
+	//
+	// Module 4 M4-P0-1 — the batch contract omitted this, so a caller asking
+	// "may this viewer see that author" got "not blocked" for a viewer the
+	// author had blocked. Every block rule on this platform is symmetric; a
+	// contract that reports only one direction cannot express it, and the
+	// omission reads as permission.
+	BlockedBy bool `json:"blocked_by"`
+	IsMuted   bool `json:"is_muted"`
 	// IsConnection: viewer and target are friends (a connections row in
 	// either direction). Drives friend-aware CTAs on the client.
 	IsConnection bool `json:"is_connection"`
+	// IsCloseFriend: the VIEWER has the target on the viewer's own close
+	// friends list. Parity with the single-relationship contract.
+	IsCloseFriend bool `json:"is_close_friend"`
+	// ViewerIsCloseFriendOfTarget: the TARGET has the viewer on the TARGET's
+	// close friends list.
+	//
+	// This is the direction an audience check needs, and it is NOT the same
+	// fact as IsCloseFriend. A close-friends story belongs to its author, so
+	// the question is always "did the author put this viewer on their list".
+	// Answering it with IsCloseFriend would let anyone walk into someone
+	// else's close-friends audience by adding that person to their own list.
+	ViewerIsCloseFriendOfTarget bool `json:"viewer_is_close_friend_of_target"`
 }
 
 type Block struct {
@@ -113,6 +133,36 @@ func (s *Store) CheckBlock(ctx context.Context, blockerID, blockedID uuid.UUID) 
 		SELECT EXISTS(SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2)
 	`, blockerID, blockedID).Scan(&exists)
 	return exists, err
+}
+
+// BlockedWithAny returns the subset of candidates that have a block with
+// userID in EITHER direction — one bounded query, so chat's group-roster
+// check (P0-5: blocked pairs never co-added) does not fan out into N calls.
+// The adjacency itself never leaves this service: only the matching subset of
+// the ids the caller already named is returned.
+func (s *Store) BlockedWithAny(ctx context.Context, userID uuid.UUID, candidates []uuid.UUID) ([]uuid.UUID, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT CASE WHEN blocker_id = $1 THEN blocked_id ELSE blocker_id END
+		FROM blocks
+		WHERE (blocker_id = $1 AND blocked_id = ANY($2))
+		   OR (blocked_id = $1 AND blocker_id = ANY($2))
+	`, userID, candidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // CreateFollow adds a follow relationship. Returns (inserted, err)
@@ -638,6 +688,32 @@ func (s *Store) CheckConnection(ctx context.Context, userA, userB uuid.UUID) (bo
 	return exists, err
 }
 
+// CheckSecondDegree reports whether actor and target share at least one
+// accepted connection (friends-of-friends, chat directive §3.1).
+//
+// A bounded EXISTS over the two users' connection rows — the permission
+// answer leaves this service as ONE boolean; adjacency lists never do. Both
+// sides are resolved through the normalized (user_a < user_b) pair encoding,
+// and the shared neighbour must be a third party (never actor or target
+// themselves, which would otherwise make any directly-connected pair also
+// "second degree" through each other).
+func (s *Store) CheckSecondDegree(ctx context.Context, actorID, targetID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM connections c1
+			JOIN connections c2
+			  ON (CASE WHEN c1.user_a = $1 THEN c1.user_b ELSE c1.user_a END) =
+			     (CASE WHEN c2.user_a = $2 THEN c2.user_b ELSE c2.user_a END)
+			WHERE (c1.user_a = $1 OR c1.user_b = $1)
+			  AND (c2.user_a = $2 OR c2.user_b = $2)
+			  AND (CASE WHEN c1.user_a = $1 THEN c1.user_b ELSE c1.user_a END) NOT IN ($1, $2)
+		)
+	`, actorID, targetID).Scan(&exists)
+	return exists, err
+}
+
 // GetConnectionRequestStatus returns the request status between actor and
 // target: "none", "pending_sent", "pending_received", or a terminal status.
 func (s *Store) GetConnectionRequestStatus(ctx context.Context, actorID, targetID uuid.UUID) (string, error) {
@@ -837,11 +913,18 @@ func (s *Store) CheckMute(ctx context.Context, muterID, mutedID uuid.UUID) (bool
 // by GetRelationshipFull. It carries everything service.GetRelationship
 // needs in a single DB round trip.
 type RelationshipFull struct {
-	Follows                  bool
-	FollowedBy               bool
-	Blocked                  bool
-	IsMuted                  bool
-	IsConnection             bool
+	Follows    bool
+	FollowedBy bool
+	// Blocked: the TARGET has blocked the actor.
+	Blocked bool
+	// BlockedBy: the ACTOR has blocked the target. Both directions must be
+	// consulted before granting access (fixes-v2 / Codex P1-6).
+	BlockedBy    bool
+	IsMuted      bool
+	IsConnection bool
+	// IsCloseFriend: the actor is in the TARGET's close-friends list —
+	// the exact audience for `trusted` / `close_friends` visibility.
+	IsCloseFriend             bool
 	ConnectionRequestSent     bool // actor → target row exists with status='pending'
 	ConnectionRequestReceived bool // target → actor row exists with status='pending'
 }
@@ -853,13 +936,24 @@ type RelationshipFull struct {
 // which is the dominant cost of the feed-hydration profile bar.
 func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.UUID) (*RelationshipFull, error) {
 	connA, connB := normalizePair(actorID, targetID)
+	// Module 1 fixes-v2 / Codex P1-6:
+	//   * `Blocked` only reported target→actor. Callers (thread reads,
+	//     notification eligibility) documented "either direction" but got
+	//     one, so content could reach someone the viewer had blocked.
+	//     `BlockedBy` adds the actor→target direction.
+	//   * `IsCloseFriend` gives EXACT trusted/close-friends audience
+	//     membership. Callers previously approximated it with
+	//     `IsConnection`, which is a strictly broader relation and leaked
+	//     restricted threads to connected-but-not-trusted users.
 	row := s.db.QueryRow(ctx, `
 		SELECT
 			EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = $2),
 			EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1),
 			EXISTS(SELECT 1 FROM blocks  WHERE blocker_id  = $2 AND blocked_id  = $1),
+			EXISTS(SELECT 1 FROM blocks  WHERE blocker_id  = $1 AND blocked_id  = $2),
 			EXISTS(SELECT 1 FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2),
 			EXISTS(SELECT 1 FROM connections WHERE user_a = $3 AND user_b = $4),
+			EXISTS(SELECT 1 FROM close_friends WHERE user_id = $2 AND friend_id = $1),
 			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'),
 			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $2 AND receiver_id = $1 AND status = 'pending')
 	`, actorID, targetID, connA, connB)
@@ -869,8 +963,10 @@ func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.
 		&r.Follows,
 		&r.FollowedBy,
 		&r.Blocked,
+		&r.BlockedBy,
 		&r.IsMuted,
 		&r.IsConnection,
+		&r.IsCloseFriend,
 		&r.ConnectionRequestSent,
 		&r.ConnectionRequestReceived,
 	); err != nil {
@@ -879,10 +975,27 @@ func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.
 	return &r, nil
 }
 
-// GetBlockedAndMuted returns all user IDs that the given user has blocked OR muted
+// GetBlockedAndMuted returns every user ID whose content must be withheld
+// from the given viewer: users the viewer blocked, users who blocked the
+// viewer, and users the viewer muted.
+//
+// Module 2 M2-P0-3 — blocking is SYMMETRIC for content visibility. This
+// previously returned only the viewer's outgoing edges (blocked_id where
+// blocker_id = viewer), so if B blocked A, B's posts still reached A
+// through the feed and every search surface. The person who blocked got
+// no protection from the person they blocked, which is precisely
+// backwards: the block exists to stop unwanted contact, and the blocked
+// party is the one it must constrain.
+//
+// Muting stays deliberately one-way. A mute is a personal preference
+// about one's own timeline, not a statement about the other person, and
+// making it symmetric would let anyone silently remove themselves from
+// someone else's feed.
 func (s *Store) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT blocked_id FROM blocks WHERE blocker_id = $1
+		UNION
+		SELECT blocker_id FROM blocks WHERE blocked_id = $1
 		UNION
 		SELECT muted_id FROM graph.mutes WHERE muter_id = $1
 	`, userID)
@@ -894,96 +1007,160 @@ func (s *Store) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uui
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
-			continue
+			// A partial list is an under-filtered list, which silently
+			// shows blocked content. Fail the call so callers can fail
+			// closed rather than filtering with a truncated set.
+			return nil, fmt.Errorf("scan blocked-and-muted id: %w", err)
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocked-and-muted: %w", err)
 	}
 	return ids, nil
 }
 
-// GetRelationshipBatch returns relationships from viewerID to each of targetIDs (up to 100)
+// GetBlockedBothWays returns every user ID in a block relationship with
+// the given user, in either direction, excluding mutes.
+//
+// NOTE: this is NOT the set any viewer-facing surface should use. Search
+// and the feed both need the blocks+mutes union from GetBlockedAndMuted;
+// filtering by blocks alone drops the viewer's own mute suppression,
+// which the approved Module 2 contract requires. This is kept only as a
+// building block for callers that genuinely need block state on its own
+// (relationship display, moderation tooling).
+func (s *Store) GetBlockedBothWays(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT blocked_id FROM blocks WHERE blocker_id = $1
+		UNION
+		SELECT blocker_id FROM blocks WHERE blocked_id = $1
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan blocked id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocked ids: %w", err)
+	}
+	return ids, nil
+}
+
+// MaxRelationshipBatch is the largest number of targets one batch call may
+// carry. The caller chunks; this store never silently truncates.
+const MaxRelationshipBatch = 100
+
+// GetRelationshipBatch returns the relationship from viewerID to each target.
+//
+// Module 4 M4-P0-1 — this function previously discarded every error it could
+// produce. `rows, _ := s.db.Query(...)` dropped query failures and
+// `rows.Scan(&id)` dropped scan failures, so a database outage, a permission
+// error, or a renamed column returned a map of zero-valued relationships with
+// a nil error. To every caller that reads as an authoritative "this viewer is
+// not blocked, not muted, follows nobody" — uncertainty rendered as
+// permission, which is the exact inversion a safety contract must never make.
+//
+// It now reports errors, and it answers both block directions and both close
+// friend directions so an audience decision can be made from one call.
 func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]Relationship, error) {
+	if len(targetIDs) > MaxRelationshipBatch {
+		// Truncating here would answer a question the caller did not ask and
+		// return "no relationship" for everyone past the cap.
+		return nil, fmt.Errorf("relationship batch of %d exceeds max %d; caller must chunk",
+			len(targetIDs), MaxRelationshipBatch)
+	}
 	result := make(map[uuid.UUID]Relationship, len(targetIDs))
 	for _, id := range targetIDs {
 		result[id] = Relationship{}
 	}
-
-	// Follows: viewer → targets
-	rows, _ := s.db.Query(ctx,
-		`SELECT followee_id FROM follows WHERE follower_id = $1 AND followee_id = ANY($2)`,
-		viewerID, targetIDs)
-	if rows != nil {
-		for rows.Next() {
-			var id uuid.UUID
-			rows.Scan(&id)
-			r := result[id]
-			r.Follows = true
-			result[id] = r
-		}
-		rows.Close()
+	if len(targetIDs) == 0 {
+		return result, nil
 	}
 
-	// Followed by: targets → viewer
-	rows, _ = s.db.Query(ctx,
-		`SELECT follower_id FROM follows WHERE followee_id = $1 AND follower_id = ANY($2)`,
-		viewerID, targetIDs)
-	if rows != nil {
-		for rows.Next() {
-			var id uuid.UUID
-			rows.Scan(&id)
-			r := result[id]
-			r.FollowedBy = true
-			result[id] = r
-		}
-		rows.Close()
+	// Each entry marks one fact about the viewer→target pair. Splitting the
+	// scan loop out means a new fact cannot be added with the error handling
+	// accidentally left off, which is how the previous version drifted.
+	facts := []struct {
+		name  string
+		query string
+		set   func(*Relationship)
+	}{
+		{
+			"follows",
+			`SELECT followee_id FROM follows WHERE follower_id = $1 AND followee_id = ANY($2)`,
+			func(r *Relationship) { r.Follows = true },
+		},
+		{
+			"followed_by",
+			`SELECT follower_id FROM follows WHERE followee_id = $1 AND follower_id = ANY($2)`,
+			func(r *Relationship) { r.FollowedBy = true },
+		},
+		{
+			"blocked",
+			`SELECT blocked_id FROM blocks WHERE blocker_id = $1 AND blocked_id = ANY($2)`,
+			func(r *Relationship) { r.Blocked = true },
+		},
+		{
+			// The direction the old contract omitted entirely.
+			"blocked_by",
+			`SELECT blocker_id FROM blocks WHERE blocked_id = $1 AND blocker_id = ANY($2)`,
+			func(r *Relationship) { r.BlockedBy = true },
+		},
+		{
+			"muted",
+			`SELECT muted_id FROM graph.mutes WHERE muter_id = $1 AND muted_id = ANY($2)`,
+			func(r *Relationship) { r.IsMuted = true },
+		},
+		{
+			// Connections are stored once in either column order.
+			"connection",
+			`SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END
+			 FROM connections
+			 WHERE (user_a = $1 AND user_b = ANY($2)) OR (user_b = $1 AND user_a = ANY($2))`,
+			func(r *Relationship) { r.IsConnection = true },
+		},
+		{
+			"close_friend",
+			`SELECT friend_id FROM close_friends WHERE user_id = $1 AND friend_id = ANY($2)`,
+			func(r *Relationship) { r.IsCloseFriend = true },
+		},
+		{
+			// Target-owned membership: the author decides who is on their
+			// close friends list. See ViewerIsCloseFriendOfTarget.
+			"viewer_is_close_friend_of_target",
+			`SELECT user_id FROM close_friends WHERE friend_id = $1 AND user_id = ANY($2)`,
+			func(r *Relationship) { r.ViewerIsCloseFriendOfTarget = true },
+		},
 	}
 
-	// Blocks: viewer → targets
-	rows, _ = s.db.Query(ctx,
-		`SELECT blocked_id FROM blocks WHERE blocker_id = $1 AND blocked_id = ANY($2)`,
-		viewerID, targetIDs)
-	if rows != nil {
-		for rows.Next() {
-			var id uuid.UUID
-			rows.Scan(&id)
-			r := result[id]
-			r.Blocked = true
-			result[id] = r
+	for _, f := range facts {
+		rows, err := s.db.Query(ctx, f.query, viewerID, targetIDs)
+		if err != nil {
+			return nil, fmt.Errorf("relationship batch %s: %w", f.name, err)
 		}
-		rows.Close()
-	}
-
-	// Mutes: viewer → targets
-	rows, _ = s.db.Query(ctx,
-		`SELECT muted_id FROM graph.mutes WHERE muter_id = $1 AND muted_id = ANY($2)`,
-		viewerID, targetIDs)
-	if rows != nil {
-		for rows.Next() {
-			var id uuid.UUID
-			rows.Scan(&id)
-			r := result[id]
-			r.IsMuted = true
-			result[id] = r
+		err = func() error {
+			defer rows.Close()
+			for rows.Next() {
+				var id uuid.UUID
+				if err := rows.Scan(&id); err != nil {
+					return fmt.Errorf("relationship batch %s scan: %w", f.name, err)
+				}
+				r := result[id]
+				f.set(&r)
+				result[id] = r
+			}
+			return rows.Err()
+		}()
+		if err != nil {
+			return nil, err
 		}
-		rows.Close()
-	}
-
-	// Connections (friendship): rows are stored once in either column
-	// order, so match both directions.
-	rows, _ = s.db.Query(ctx,
-		`SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END
-		 FROM connections
-		 WHERE (user_a = $1 AND user_b = ANY($2)) OR (user_b = $1 AND user_a = ANY($2))`,
-		viewerID, targetIDs)
-	if rows != nil {
-		for rows.Next() {
-			var id uuid.UUID
-			rows.Scan(&id)
-			r := result[id]
-			r.IsConnection = true
-			result[id] = r
-		}
-		rows.Close()
 	}
 
 	return result, nil

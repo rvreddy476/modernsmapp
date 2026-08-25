@@ -5,18 +5,44 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/atpost/identity-profile-service/internal/store"
 	"github.com/atpost/identity-shared/api"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type Handler struct {
 	svc         ProfileService
 	log         *slog.Logger
 	internalKey string
+	// SR-4: block enforcement on profile surfaces. profile-service no longer
+	// has its own block table (that copy was enforced by nobody), so this
+	// asks graph-service, which is canonical. Nil means NOT CONFIGURED —
+	// see blockedFromViewer, which refuses rather than serving unprotected.
+	blocks BlockChecker
+	// Canonical media ownership/readiness/moderation check for avatar and cover
+	// references. Nil is fail-closed on those writes.
+	media  ProfileMediaAuthority
+	photos ProfilePhotoAccessChecker
+}
+
+// WithBlockChecker wires block denial on every profile read surface.
+func (h *Handler) WithBlockChecker(b BlockChecker) *Handler {
+	h.blocks = b
+	return h
+}
+
+func (h *Handler) WithMediaAuthority(m ProfileMediaAuthority) *Handler {
+	h.media = m
+	return h
+}
+
+func (h *Handler) WithProfilePhotoAccess(checker ProfilePhotoAccessChecker) *Handler {
+	h.photos = checker
+	return h
 }
 
 // WithInternalKey enables the X-Internal-Service-Key gate on every
@@ -50,6 +76,7 @@ type ProfileService interface {
 	// Avatar/Cover
 	UpdateAvatar(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error
 	UpdateCover(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error
+	FindProfileMediaOwner(ctx context.Context, mediaID uuid.UUID) (uuid.UUID, string, bool, error)
 	// Follow
 	FollowUser(ctx context.Context, followerID, followingID uuid.UUID) (*store.Follow, error)
 	UnfollowUser(ctx context.Context, followerID, followingID uuid.UUID) error
@@ -96,20 +123,27 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 	v1 := r.Group("/v1/profiles")
 	{
 		v1.GET("/health", h.Health)
+		// Internal static routes must be registered before the public :userId
+		// wildcard so a framework upgrade cannot reinterpret "internal" as a
+		// public profile identifier.
+		if h.internalKey != "" {
+			v1.GET("/internal/changes", h.ListProfileChanges)
+			v1.POST("/internal/media-access", h.ProfileMediaAccess)
+		}
 		v1.GET("/discover", h.DiscoverProfiles)
-		v1.GET("/changes", h.ListProfileChanges)
 		v1.GET("/by-username/:username", h.GetProfileByUsername)
 		v1.POST("/batch", h.GetProfilesBatch)
 		v1.GET("/:userId", h.GetProfile)
 		v1.GET("/:userId/links", h.GetUserLinks)
 		v1.GET("/:userId/about", h.GetAllAbout)
 		v1.GET("/:userId/about/:section", h.GetAboutBySection)
-		// Public social lists
-		v1.GET("/:userId/followers", h.ListFollowers)
-		v1.GET("/:userId/following", h.ListFollowing)
+		// SR-3: the social graph is owned by graph-service. These read the
+		// shadow `profile.follows` / `profile.blocks` tables, which disagree
+		// with the canonical graph — see retired_graph_routes.go.
+		v1.GET("/:userId/followers", retiredGraphRoute("GET /v1/graph/users/:userId/followers"))
+		v1.GET("/:userId/following", retiredGraphRoute("GET /v1/graph/users/:userId/following"))
 		// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
-		// Relationship (public GET — viewer ID from X-User-Id header, set by gateway or forwarded by BFF)
-		v1.GET("/:userId/relationship", h.GetRelationship)
+		v1.GET("/:userId/relationship", retiredGraphRoute("GET /v1/graph/relationship/:userId"))
 		// Profile Stats
 		v1.GET("/:userId/stats", h.GetProfileStats)
 	}
@@ -119,6 +153,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 	{
 		protected.GET("/me", h.GetMe)
 		protected.PUT("/me", csrf, h.UpdateMe)
+		// Owner projection: unlike /:userId/about this includes non-public rows.
+		protected.GET("/me/about", h.GetMyAbout)
 		// Legacy links (bulk PUT)
 		protected.PUT("/me/links", csrf, h.UpdateMyLinks)
 		// New profile links (individual CRUD)
@@ -132,15 +168,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// About
 		protected.PUT("/me/about/:section", csrf, h.UpsertMyAboutItem)
 		protected.DELETE("/me/about/:section/:itemId", csrf, h.DeleteMyAboutItem)
-		// Follow
-		protected.POST("/:username/follow", csrf, h.FollowUser)
-		protected.DELETE("/:username/follow", csrf, h.UnfollowUser)
-		// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
-		// Social lists (own data)
-		protected.GET("/me/blocks", h.ListBlocks)
-		// Block / Unblock
-		protected.POST("/:username/block", csrf, h.BlockUser)
-		protected.DELETE("/:username/block", csrf, h.UnblockUser)
+		// SR-3: RETIRED. A block written here landed in `profile.blocks`,
+		// which feed, search, chat and notifications never read — the user
+		// was told they were protected and was not. graph-service owns the
+		// graph; see retired_graph_routes.go.
+		protected.POST("/:username/follow", csrf, retiredGraphRoute("POST /v1/graph/follow"))
+		protected.DELETE("/:username/follow", csrf, retiredGraphRoute("DELETE /v1/graph/follow"))
+		protected.GET("/me/blocks", retiredGraphRoute("GET /v1/graph/blocks"))
+		protected.POST("/:username/block", csrf, retiredGraphRoute("POST /v1/graph/block"))
+		protected.DELETE("/:username/block", csrf, retiredGraphRoute("DELETE /v1/graph/block"))
 		// Module Profiles
 		protected.GET("/me/modules", h.GetMyModuleProfiles)
 		protected.GET("/me/modules/:module", h.GetMyModuleProfile)
@@ -188,8 +224,11 @@ func (h *Handler) DiscoverProfiles(c *gin.Context) {
 		profiles = []store.Profile{}
 	}
 
+	// SR-4: discovery must not surface an account the viewer blocked, and
+	// must not publish private fields to an unauthenticated browser.
+	publicProfiles := h.filterBlockedProfiles(c, ToPublicProfiles(profiles))
 	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"items": profiles,
+		"items": h.applyProfilePhotoPrivacyList(c, publicProfiles),
 		"meta": paginationMeta{
 			Limit:   limit,
 			Offset:  offset,
@@ -269,11 +308,18 @@ func (h *Handler) GetProfile(c *gin.Context) {
 		return
 	}
 	if p == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Profile not found", nil, nil)
+		writeProfileNotFound(c)
+		return
+	}
+	// SR-4: a blocked viewer gets the same answer as a missing profile.
+	if h.deniedByBlock(c, p.UserID) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, p, nil)
+	// SR-4: never serialise store.Profile to a viewer. This route is
+	// UNAUTHENTICATED and that struct carries the exact date of birth,
+	// gender and timezone.
+	api.JSON(c.Writer, http.StatusOK, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p)), nil)
 }
 
 func (h *Handler) GetProfileByUsername(c *gin.Context) {
@@ -290,13 +336,21 @@ func (h *Handler) GetProfileByUsername(c *gin.Context) {
 		return
 	}
 	if p == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Profile not found", nil, nil)
+		writeProfileNotFound(c)
+		return
+	}
+	// SR-4: username lookup is the surface a harasser reaches for first —
+	// they know the handle, not the UUID. Same denial, same DTO.
+	if h.deniedByBlock(c, p.UserID) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, p, nil)
+	api.JSON(c.Writer, http.StatusOK, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p)), nil)
 }
 
+// GetMe returns the caller's OWN profile, in full. The private fields are
+// withheld from other viewers, not from their owner — a user must be able to
+// see and correct their own date of birth.
 func (h *Handler) GetMe(c *gin.Context) {
 	userID, err := parseUserHeader(c)
 	if err != nil {
@@ -315,17 +369,26 @@ func (h *Handler) GetMe(c *gin.Context) {
 }
 
 type UpdateProfileRequest struct {
-	DisplayName       string     `json:"display_name"`
-	Bio               string     `json:"bio"`
-	AvatarMediaID     *uuid.UUID `json:"avatar_media_id"`
-	CoverMediaID      *uuid.UUID `json:"cover_media_id"`
-	FirstName         *string    `json:"first_name"`
-	LastName          *string    `json:"last_name"`
-	PreferredName     *string    `json:"preferred_name"`
-	Pronouns          *string    `json:"pronouns"`
-	Gender            *string    `json:"gender"`
-	DoB               *time.Time `json:"dob"`
-	Username          *string    `json:"username"`
+	DisplayName   string     `json:"display_name"`
+	Bio           string     `json:"bio"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id"`
+	CoverMediaID  *uuid.UUID `json:"cover_media_id"`
+	FirstName     *string    `json:"first_name"`
+	LastName      *string    `json:"last_name"`
+	PreferredName *string    `json:"preferred_name"`
+	Pronouns      *string    `json:"pronouns"`
+	Gender        *string    `json:"gender"`
+	DoB           *time.Time `json:"dob"`
+	// SR-4: `username` is NOT settable here.
+	//
+	// A handle is an identity claim, not a display preference. Changing it
+	// through the general profile update bypassed the dedicated
+	// PUT /me/handle path and with it every protection that path carries:
+	// the cooldown, the handle-history record, and the reservation of the
+	// old handle. Without those, an account can rename itself repeatedly to
+	// shed reputation, or take a handle someone else just released, and
+	// nothing records that it happened. The field is deliberately absent
+	// rather than ignored — a silently dropped value looks like a success.
 	Category          string     `json:"category"`
 	Profession        string     `json:"profession"`
 	Website           string     `json:"website"`
@@ -356,6 +419,20 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if req.AvatarMediaID != nil || req.CoverMediaID != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "DEDICATED_MEDIA_ROUTE_REQUIRED",
+			"Use /v1/profiles/me/avatar or /v1/profiles/me/cover so media ownership and safety can be verified", nil, nil)
+		return
+	}
+	if problems := validateProfileUpdate(req); len(problems) != 0 {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE", "Profile details are invalid", problems, nil)
+		return
+	}
+	req.Website = normalizeProfileURL(req.Website)
+	if req.CTAURL != nil && strings.TrimSpace(*req.CTAURL) != "" {
+		normalized := normalizeProfileURL(*req.CTAURL)
+		req.CTAURL = &normalized
+	}
 
 	themeColor := req.ProfileThemeColor
 	if themeColor == "" {
@@ -363,17 +440,19 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 	}
 
 	params := store.UpdateProfileParams{
-		DisplayName:       req.DisplayName,
-		Bio:               req.Bio,
-		AvatarMediaID:     req.AvatarMediaID,
-		CoverMediaID:      req.CoverMediaID,
-		FirstName:         req.FirstName,
-		LastName:          req.LastName,
-		PreferredName:     req.PreferredName,
-		Pronouns:          req.Pronouns,
-		Gender:            req.Gender,
-		DoB:               req.DoB,
-		Username:          req.Username,
+		DisplayName:   req.DisplayName,
+		Bio:           req.Bio,
+		AvatarMediaID: req.AvatarMediaID,
+		CoverMediaID:  req.CoverMediaID,
+		FirstName:     req.FirstName,
+		LastName:      req.LastName,
+		PreferredName: req.PreferredName,
+		Pronouns:      req.Pronouns,
+		Gender:        req.Gender,
+		DoB:           req.DoB,
+		// SR-4: Username is intentionally not carried here — PUT /me/handle is
+		// the only path that may change a handle. Passing nil leaves it unchanged.
+		Username:          nil,
 		Category:          req.Category,
 		Profession:        req.Profession,
 		Website:           req.Website,
@@ -420,6 +499,15 @@ func (h *Handler) UpdateMyAvatar(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if h.media == nil {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MEDIA_AUTHORITY_UNAVAILABLE", "Profile image verification is unavailable", nil, nil)
+		return
+	}
+	if err := h.media.RequireAttachable(c.Request.Context(), userID, req.MediaID, "avatar"); err != nil {
+		h.log.Warn("avatar media authority refused reference", "err", err, "user_id", userID, "media_id", req.MediaID)
+		api.Error(c.Writer, http.StatusConflict, "MEDIA_NOT_ATTACHABLE", "Choose an owned, ready and approved avatar image", nil, nil)
+		return
+	}
 
 	if err := h.svc.UpdateAvatar(c.Request.Context(), userID, req.MediaID); err != nil {
 		h.log.Error("failed to update avatar", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
@@ -442,6 +530,15 @@ func (h *Handler) UpdateMyCover(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if h.media == nil {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MEDIA_AUTHORITY_UNAVAILABLE", "Profile image verification is unavailable", nil, nil)
+		return
+	}
+	if err := h.media.RequireAttachable(c.Request.Context(), userID, req.MediaID, "cover"); err != nil {
+		h.log.Warn("cover media authority refused reference", "err", err, "user_id", userID, "media_id", req.MediaID)
+		api.Error(c.Writer, http.StatusConflict, "MEDIA_NOT_ATTACHABLE", "Choose an owned, ready and approved cover image", nil, nil)
+		return
+	}
 
 	if err := h.svc.UpdateCover(c.Request.Context(), userID, req.MediaID); err != nil {
 		h.log.Error("failed to update cover", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
@@ -457,9 +554,11 @@ func (h *Handler) UpdateMyCover(c *gin.Context) {
 // ---------------------------------------------------------------
 
 func (h *Handler) GetUserLinks(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("userId"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+	// LB-4: this is a PUBLIC per-user surface. It served unconditionally, so a
+	// blocked account could read the links of the person who blocked them even
+	// though the profile page itself was denied.
+	userID, ok := h.publicTargetOrDeny(c)
+	if !ok {
 		return
 	}
 
@@ -470,7 +569,9 @@ func (h *Handler) GetUserLinks(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, links, nil)
+	// Links are user-supplied URLs that other people click. Unsafe schemes are
+	// dropped rather than published — see SafePublicURL.
+	api.JSON(c.Writer, http.StatusOK, PublicUserLinks(links), nil)
 }
 
 type UpdateLinksRequest struct {
@@ -521,10 +622,28 @@ func (h *Handler) UpdateMyLinks(c *gin.Context) {
 // User About
 // ---------------------------------------------------------------
 
-func (h *Handler) GetAllAbout(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("userId"))
+func (h *Handler) GetMyAbout(c *gin.Context) {
+	userID, err := parseUserHeader(c)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	items, err := h.svc.GetAllAbout(c.Request.Context(), userID)
+	if err != nil {
+		h.log.Error("failed to fetch owner about items", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if items == nil {
+		items = []store.AboutItem{}
+	}
+	api.JSON(c.Writer, http.StatusOK, items, nil)
+}
+
+func (h *Handler) GetAllAbout(c *gin.Context) {
+	// LB-4: public per-user surface — block denial applies.
+	userID, ok := h.publicTargetOrDeny(c)
+	if !ok {
 		return
 	}
 
@@ -535,9 +654,12 @@ func (h *Handler) GetAllAbout(c *gin.Context) {
 		return
 	}
 
-	// Group by section for the response
-	grouped := make(map[string][]store.AboutItem)
-	for _, item := range items {
+	// LB-4: this returned EVERY row regardless of `visibility`. About items
+	// carry that column precisely because some of them are not public —
+	// employer, education, relationship status, birthday — and all of them
+	// were being published to anonymous callers.
+	grouped := make(map[string][]PublicAboutItem)
+	for _, item := range PublicAboutItems(items) {
 		grouped[item.Section] = append(grouped[item.Section], item)
 	}
 
@@ -545,9 +667,11 @@ func (h *Handler) GetAllAbout(c *gin.Context) {
 }
 
 func (h *Handler) GetAboutBySection(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("userId"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+	// LB-4: public per-user surface — block denial applies. This is also the
+	// route that makes a per-section leak worst: a caller who knows which
+	// section holds the sensitive field can request just that one.
+	userID, ok := h.publicTargetOrDeny(c)
+	if !ok {
 		return
 	}
 
@@ -559,7 +683,7 @@ func (h *Handler) GetAboutBySection(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, items, nil)
+	api.JSON(c.Writer, http.StatusOK, PublicAboutItems(items), nil)
 }
 
 type UpsertAboutItemRequest struct {
@@ -580,6 +704,10 @@ func (h *Handler) UpsertMyAboutItem(c *gin.Context) {
 	var req UpsertAboutItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := validateAboutItem(section, req.Data, req.Visibility); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ABOUT_ITEM", err.Error(), nil, nil)
 		return
 	}
 
@@ -678,6 +806,11 @@ func (h *Handler) CreateMyProfileLink(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if err := validateProfileLink(req.Title, req.URL, req.Visibility); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE_LINK", err.Error(), nil, nil)
+		return
+	}
+	req.URL = normalizeProfileURL(req.URL)
 
 	visibility := req.Visibility
 	if visibility == "" {
@@ -733,6 +866,11 @@ func (h *Handler) UpdateMyProfileLink(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if err := validateProfileLink(req.Title, req.URL, req.Visibility); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE_LINK", err.Error(), nil, nil)
+		return
+	}
+	req.URL = normalizeProfileURL(req.URL)
 
 	visibility := req.Visibility
 	if visibility == "" {
@@ -1178,7 +1316,12 @@ func (h *Handler) GetProfilesBatch(c *gin.Context) {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
 	}
-	c.JSON(http.StatusOK, profiles)
+	// SR-4: batch lookup was the widest leak of all — a caller could post 100
+	// user IDs and receive 100 full dates of birth in one response. Blocked
+	// entries are omitted rather than refused: denying the whole request
+	// because one entry is blocked lets a caller probe by bisection.
+	publicProfiles := h.filterBlockedProfileMap(c, ToPublicProfileMap(profiles))
+	c.JSON(http.StatusOK, h.applyProfilePhotoPrivacyMap(c, publicProfiles))
 }
 
 // ---------------------------------------------------------------
@@ -1265,9 +1408,12 @@ func (h *Handler) DeleteMyModuleProfile(c *gin.Context) {
 }
 
 func (h *Handler) GetUserModuleProfile(c *gin.Context) {
-	targetID, err := uuid.Parse(c.Param("userId"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid user ID", nil, nil)
+	// LB-4: public per-user surface — block denial applies. A module profile
+	// (dating, commerce, …) is often MORE personal than the main profile, so
+	// serving it to a blocked viewer while denying the profile page is the
+	// worst version of a partial block.
+	targetID, ok := h.publicTargetOrDeny(c)
+	if !ok {
 		return
 	}
 	module := c.Param("module")
@@ -1317,6 +1463,22 @@ func (h *Handler) ChangeHandle(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, profile, nil)
 }
 
+// ResolveHandle answers "this old handle now belongs to whom?".
+//
+// Module 3 CLB-2 — this is a target-resolving public surface and it was not
+// block-gated.
+//
+// Every other public profile surface denies a blocked viewer, but this one
+// took an OLD username and handed back the account's CURRENT username and its
+// user id. That is worse than reading a profile: a harasser whose target
+// renamed to escape them only needs the handle they already know, and this
+// route tells them the new one. From there every gated surface is reachable
+// with the identifier it just supplied.
+//
+// It was invisible to the route-completeness test because that test selected
+// only patterns containing :userId, and this route resolves a username. The
+// inventory in public_surface_test.go now classifies every public route by
+// what it resolves, not by how its path happens to be spelled.
 func (h *Handler) ResolveHandle(c *gin.Context) {
 	username := c.Param("username")
 	if username == "" {
@@ -1331,7 +1493,17 @@ func (h *Handler) ResolveHandle(c *gin.Context) {
 		return
 	}
 	if userID == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "No redirect found for this handle", nil, nil)
+		// The SAME body a blocked viewer gets below. A distinguishable
+		// "no redirect found" message would rebuild the oracle: a harasser
+		// could tell "this handle was never used" from "this handle belongs
+		// to someone who blocked me", which is the fact the block hides.
+		writeProfileNotFound(c)
+		return
+	}
+
+	// Symmetric block gate, applied BEFORE either identifier is emitted, and
+	// fail-closed when the graph cannot be reached.
+	if h.deniedByBlock(c, *userID) {
 		return
 	}
 
@@ -1366,9 +1538,10 @@ func (h *Handler) GetHandleHistory(c *gin.Context) {
 // ---------------------------------------------------------------
 
 func (h *Handler) GetProfileStats(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("userId"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+	// LB-4: public per-user surface — block denial applies. Follower and post
+	// counts are exactly the signal a blocked person uses to keep watching.
+	userID, ok := h.publicTargetOrDeny(c)
+	if !ok {
 		return
 	}
 

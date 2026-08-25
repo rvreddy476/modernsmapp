@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Phase 0 declares only what the scaffold actually uses.
+
+      Permissions are added in the phase that needs them, never speculatively:
+        POST_NOTIFICATIONS                      -> Phase 8 (push)
+        CAMERA / RECORD_AUDIO                   -> Phase 5 (capture)
+        FOREGROUND_SERVICE*  / WAKE_LOCK        -> Phase 10 (calling, finding F3)
+      Declaring them early costs install-time trust for no benefit.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      POST_NOTIFICATIONS — Slice D.
+
+      Required from API 33 to display anything at all. Declaring it does NOT
+      show a prompt; the runtime request is a separate, deliberate act made
+      when the user has a reason to say yes, not on first launch. Without the
+      declaration the runtime request cannot even be made and every push is
+      silently dropped by the system.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+
+    <application
+        android:name=".UsApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Us.Splash"
+        android:enableOnBackInvokedCallback="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|keyboard|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Us.Splash">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+              App Links (profile / post / reel / chat / share tokens) arrive in
+              Phase 9 together with assetlinks.json. Finding F4.
+            -->
+        </activity>
+
+
+        <!--
+          FCM entry point — Slice D.
+
+          Its absence is why push has never worked: UsMessagingService existed,
+          was @AndroidEntryPoint, and was never declared, so FCM had nothing to
+          dispatch to. No token was ever stored, PushTokenRegistrar was never
+          called, and every notification stopped at the database.
+
+          exported="false" with the MESSAGING_EVENT filter is the standard
+          declaration: only Google Play services may bind it.
+        -->
+        <service
+            android:name="com.us.android.core.notifications.UsMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <!-- Hilt WorkManager: the default androidx.startup initializer would
+             build WorkManager with the STOCK factory before our
+             Configuration.Provider is ever consulted, and every @HiltWorker
+             then fails with "Could not create Worker". On-demand
+             initialization requires removing that initializer here. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+        <!--
+          Create-hub camera capture target. TakePicture/CaptureVideo hand this
+          URI to the SYSTEM camera app, which needs a grantable content URI —
+          no CAMERA permission is required for delegated capture.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/create_capture_paths" />
+        </provider>
+    </application>
+
+</manifest>

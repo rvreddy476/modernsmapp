@@ -1,0 +1,235 @@
+#
+# Single source of truth for every dependency version in this build.
+#
+# Rules:
+#   - No module may declare an inline version string. Everything resolves here.
+#   - No dynamic versions ("+", "latest.release"). Renovate raises upgrade PRs.
+#   - All versions below were resolved against the live repositories on
+#     2026-08-16, not copied from a template.
+#
+# ── TOOLCHAIN: read this before changing any version below ─────────────
+#
+# AGP 9.3.1 / Gradle 9.7 / Kotlin 2.4.10 / KSP 2.3.11 / Hilt 2.60.1,
+# with android.newDsl=false and android.builtInKotlin=false.
+#
+# Those two flags are deliberate, not leftovers. The constraint chain,
+# established empirically while scaffolding Phase 0:
+#
+#   1. AGP 9 enables `newDsl` and built-in Kotlin by default.
+#   2. KSP does not support AGP's built-in Kotlin:
+#        "KSP is not compatible with Android Gradle Plugin's built-in Kotlin."
+#      This app needs KSP for Hilt now and Room in Phase 1, so built-in
+#      Kotlin is off and org.jetbrains.kotlin.android is applied instead.
+#   3. That plugin then refuses to load against AGP 9's new DSL, and AGP's
+#      own remedy is `android.newDsl=false`.
+#
+# Staying on AGP 8.13.2 was tried and is worse: current AndroidX
+# (core-ktx 1.19, lifecycle 2.11) hard-requires AGP >= 9.1.0, so AGP 8
+# means pinning the entire AndroidX stack backwards, not just one plugin.
+# One documented compatibility flag pair beats a frozen library graph.
+#
+# NOTE: the compile-time DSL is the AGP 9 shape regardless of newDsl —
+# `CommonExtension` is non-generic in gradle-api 9.x — so build-logic uses
+# property access, not the old nested-lambda DSL.
+#
+# UPGRADE TRIGGER: when KSP supports AGP built-in Kotlin, drop both flags
+# and remove the kotlin.android apply from the convention plugins. Re-check
+# AGP + Kotlin + KSP + Hilt together. Do not upgrade piecemeal.
+#
+[versions]
+# ── Build toolchain ────────────────────────────────────────────────────
+agp                       = "9.3.1"
+kotlin                    = "2.4.10"
+ksp                       = "2.3.11"         # independent versioning since KSP 2.3.0
+javaTarget                = "17"
+
+# ── AndroidX / Compose ─────────────────────────────────────────────────
+composeBom                = "2026.08.00"
+coreKtx                   = "1.19.0"
+lifecycle                 = "2.11.0"
+activityCompose           = "1.13.0"
+navigationCompose         = "2.9.8"
+splashscreen              = "1.2.0"
+
+# ── Dependency injection ───────────────────────────────────────────────
+# Hilt 2.59+ requires AGP >= 9.0.0 (2.58 requires only 8.4.0). Verified by
+# reading the version-check constant out of each plugin jar, not by guessing.
+hilt                      = "2.60.1"
+hiltNavigationCompose     = "1.4.0"
+
+# ── Async ──────────────────────────────────────────────────────────────
+coroutines                = "1.11.0"
+
+# ── Observability ──────────────────────────────────────────────────────
+# OTel Java SDK, wired explicitly rather than via io.opentelemetry.android's
+# auto-instrumentation agent: the agent's startup cost and implicit spans are
+# the wrong trade for an app whose flagship surface is scroll performance.
+opentelemetry             = "1.65.0"
+# Required by the OTel SDK: it uses java.time and other APIs beyond minSdk 26.
+desugarJdkLibs            = "2.1.5"
+
+# ── Static analysis ────────────────────────────────────────────────────
+detekt                    = "1.23.8"
+
+# ── Push ───────────────────────────────────────────────────────────────
+# Firebase Cloud Messaging. Android push physically routes through FCM, so
+# this is not a vendor preference — see the migration plan §5.2 for why it is
+# used directly rather than behind AWS SNS.
+firebaseBom               = "34.4.0"
+googleServices            = "4.4.4"
+
+# ── Test ───────────────────────────────────────────────────────────────
+junit                     = "4.13.2"
+truth                     = "1.4.5"
+turbine                   = "1.2.1"
+mockk                     = "1.14.11"
+robolectric               = "4.16.1"
+androidxTestExtJunit      = "1.3.0"
+androidxTestRunner        = "1.7.0"
+
+# ── Phase 1 (declared now, wired when Phase 1 starts) ───────────────────
+okhttp                    = "5.4.0"
+retrofit                  = "3.0.0"
+kotlinxSerialization      = "1.11.0"
+room                      = "2.8.4"
+# Paging 3. Feed, reels, chat and search all page; one library, one set of
+# load/error/retry semantics, rather than a hand-rolled load-more per screen.
+paging                    = "3.4.0"
+workManager               = "2.10.0"
+reorderable               = "3.1.0"
+# Media3 / ExoPlayer. The reels surface is the reason this project chose native
+# over Flutter, and HLS + a recycled player pool is the whole performance story.
+media3                    = "1.9.0"
+
+# Coil 3. Chosen over Glide because it shares OUR OkHttp client, which is the
+# load-bearing detail: feed images are authorized gateway URLs, so a loader
+# with its own HTTP stack would 401 on every one of them.
+coil                      = "3.4.0"
+datastore                 = "1.2.1"
+securityCrypto            = "1.1.0"
+biometric                 = "1.1.0"
+# Argon2id for the chat-lock PIN verifier (P0-7): the platform ships no
+# memory-hard KDF, and the directive requires a reviewed one, not home-made.
+bouncycastle              = "1.78.1"
+
+[libraries]
+# ── AndroidX core ──────────────────────────────────────────────────────
+androidx-core-ktx                  = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-core-splashscreen         = { module = "androidx.core:core-splashscreen", version.ref = "splashscreen" }
+androidx-activity-compose          = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-navigation-compose        = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
+
+# ── Lifecycle ──────────────────────────────────────────────────────────
+androidx-lifecycle-runtime-ktx     = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-process         = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+
+# ── Compose (versions come from the BOM) ───────────────────────────────
+compose-bom                        = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui                         = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics                = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling                 = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview         = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-ui-test-junit4             = { module = "androidx.compose.ui:ui-test-junit4" }
+compose-ui-test-manifest           = { module = "androidx.compose.ui:ui-test-manifest" }
+compose-material3                  = { module = "androidx.compose.material3:material3" }
+# Icons. CORE only, never `material-icons-extended`: extended carries several
+# thousand vectors and adds megabytes to the APK for a handful of glyphs, and
+# it is not fully removed by R8 because the icons are resolved as properties.
+# Material 3 stopped depending on this transitively, so it is declared here.
+# When the brand gets its own icon set, this is the single place it is replaced.
+compose-material-icons-core        = { module = "androidx.compose.material:material-icons-core" }
+
+# ── Push (versions come from the Firebase BOM) ─────────────────────────
+firebase-bom                       = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
+firebase-messaging                 = { module = "com.google.firebase:firebase-messaging" }
+
+# ── DI ─────────────────────────────────────────────────────────────────
+hilt-android                       = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
+hilt-compiler                      = { module = "com.google.dagger:hilt-android-compiler", version.ref = "hilt" }
+hilt-android-testing               = { module = "com.google.dagger:hilt-android-testing", version.ref = "hilt" }
+hilt-navigation-compose            = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+hilt-work                          = { module = "androidx.hilt:hilt-work", version.ref = "hiltNavigationCompose" }
+hilt-work-compiler                 = { module = "androidx.hilt:hilt-compiler", version.ref = "hiltNavigationCompose" }
+work-runtime                       = { module = "androidx.work:work-runtime-ktx", version.ref = "workManager" }
+reorderable                        = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
+
+# ── Async ──────────────────────────────────────────────────────────────
+kotlinx-coroutines-android         = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-core            = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-test            = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+
+# ── Test ───────────────────────────────────────────────────────────────
+junit                              = { module = "junit:junit", version.ref = "junit" }
+truth                              = { module = "com.google.truth:truth", version.ref = "truth" }
+turbine                            = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+mockk                              = { module = "io.mockk:mockk", version.ref = "mockk" }
+mockk-android                      = { module = "io.mockk:mockk-android", version.ref = "mockk" }
+robolectric                        = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+androidx-test-ext-junit            = { module = "androidx.test.ext:junit", version.ref = "androidxTestExtJunit" }
+androidx-test-runner               = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
+
+# ── Observability ──────────────────────────────────────────────────────
+opentelemetry-bom                  = { module = "io.opentelemetry:opentelemetry-bom", version.ref = "opentelemetry" }
+opentelemetry-api                  = { module = "io.opentelemetry:opentelemetry-api" }
+opentelemetry-sdk                  = { module = "io.opentelemetry:opentelemetry-sdk" }
+opentelemetry-exporter-otlp        = { module = "io.opentelemetry:opentelemetry-exporter-otlp" }
+desugar-jdk-libs                   = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
+
+# ── Static analysis ────────────────────────────────────────────────────
+detekt-formatting                  = { module = "io.gitlab.arturbosch.detekt:detekt-formatting", version.ref = "detekt" }
+
+# ── Plugin artifacts, referenced by build-logic's own dependencies block ─
+# (a convention-plugin build cannot use the [plugins] aliases directly)
+android-gradle-plugin              = { module = "com.android.tools.build:gradle", version.ref = "agp" }
+kotlin-gradle-plugin               = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+kotlin-compose-gradle-plugin       = { module = "org.jetbrains.kotlin:compose-compiler-gradle-plugin", version.ref = "kotlin" }
+ksp-gradle-plugin                  = { module = "com.google.devtools.ksp:symbol-processing-gradle-plugin", version.ref = "ksp" }
+hilt-gradle-plugin                 = { module = "com.google.dagger:hilt-android-gradle-plugin", version.ref = "hilt" }
+detekt-gradle-plugin               = { module = "io.gitlab.arturbosch.detekt:detekt-gradle-plugin", version.ref = "detekt" }
+
+# ── Phase 1 (not yet applied to any module) ────────────────────────────
+okhttp                             = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+okhttp-logging                     = { module = "com.squareup.okhttp3:logging-interceptor", version.ref = "okhttp" }
+okhttp-mockwebserver               = { module = "com.squareup.okhttp3:mockwebserver3-junit4", version.ref = "okhttp" }
+retrofit                           = { module = "com.squareup.retrofit2:retrofit", version.ref = "retrofit" }
+retrofit-kotlinx-serialization     = { module = "com.squareup.retrofit2:converter-kotlinx-serialization", version.ref = "retrofit" }
+kotlinx-serialization-json         = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+media3-exoplayer                   = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
+media3-exoplayer-hls               = { module = "androidx.media3:media3-exoplayer-hls", version.ref = "media3" }
+media3-ui-compose                  = { module = "androidx.media3:media3-ui-compose", version.ref = "media3" }
+media3-datasource-okhttp           = { module = "androidx.media3:media3-datasource-okhttp", version.ref = "media3" }
+coil-compose                       = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+coil-network-okhttp                = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
+paging-runtime                     = { module = "androidx.paging:paging-runtime", version.ref = "paging" }
+paging-compose                     = { module = "androidx.paging:paging-compose", version.ref = "paging" }
+paging-common                      = { module = "androidx.paging:paging-common", version.ref = "paging" }
+paging-testing                     = { module = "androidx.paging:paging-testing", version.ref = "paging" }
+room-runtime                       = { module = "androidx.room:room-runtime", version.ref = "room" }
+room-ktx                           = { module = "androidx.room:room-ktx", version.ref = "room" }
+room-compiler                      = { module = "androidx.room:room-compiler", version.ref = "room" }
+room-testing                       = { module = "androidx.room:room-testing", version.ref = "room" }
+datastore-preferences              = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+androidx-security-crypto           = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
+bouncycastle-provider              = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+androidx-biometric                 = { module = "androidx.biometric:biometric", version.ref = "biometric" }
+
+[plugins]
+android-application       = { id = "com.android.application", version.ref = "agp" }
+android-library           = { id = "com.android.library", version.ref = "agp" }
+kotlin-android            = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm                = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization      = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlin-compose            = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp                       = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+hilt                      = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+detekt                    = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
+google-services           = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+
+# ── Convention plugins defined in build-logic ──────────────────────────
+us-android-application    = { id = "us.android.application" }
+us-android-library        = { id = "us.android.library" }
+us-android-compose        = { id = "us.android.compose" }
+us-android-hilt           = { id = "us.android.hilt" }
+us-jvm-library            = { id = "us.jvm.library" }

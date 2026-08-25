@@ -62,13 +62,16 @@ func (a *HourlyAggregator) runAggregation(ctx context.Context) {
 	log.Printf("[HourlyAggregator] aggregating hour: %s", hourStart.Format(time.RFC3339))
 
 	// Query: group events_raw by content_id for this hour window
-	rows, err := a.pg.Query(ctx, `
+	rows, err := tx.Query(ctx, `
 		SELECT
 			payload->>'content_id' AS content_id,
 			payload->>'creator_id' AS creator_id,
 			payload->>'content_type' AS content_type,
 			type,
-			COUNT(*) as cnt,
+			COUNT(*) FILTER (
+				WHERE type <> 'play_end'
+				   OR COALESCE((payload->>'is_display_view')::boolean, false)
+			) as cnt,
 			COALESCE(SUM((payload->>'watched_ms_total')::bigint), 0) as total_watched_ms,
 			COALESCE(AVG((payload->>'percent_viewed')::float), 0) as avg_pct
 		FROM analytics.events_raw
@@ -121,6 +124,7 @@ func (a *HourlyAggregator) runAggregation(ctx context.Context) {
 		case "play_start":
 			ca.metrics["plays"] = cnt
 		case "play_end":
+			ca.metrics["views_display"] = cnt
 			ca.totalWatch = totalWatched
 			ca.avgPct = avgPct
 		case "like":
@@ -141,6 +145,11 @@ func (a *HourlyAggregator) runAggregation(ctx context.Context) {
 			ca.metrics["blocks"] = cnt
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[HourlyAggregator] row error: %v", err)
+		return
+	}
+	rows.Close()
 
 	// Write aggregates to content_hourly_agg
 	for contentID, ca := range aggs {
@@ -150,7 +159,7 @@ func (a *HourlyAggregator) runAggregation(ctx context.Context) {
 			avgWatchTime = ca.totalWatch / plays
 		}
 
-		_, err := a.pg.Exec(ctx, `
+		_, err := tx.Exec(ctx, `
 			INSERT INTO analytics.content_hourly_agg (
 				content_id, hour_bucket, creator_id, content_type,
 				impressions, plays, views_display,

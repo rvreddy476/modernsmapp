@@ -2,6 +2,7 @@ package scylla
 
 import (
 	"context"
+	"crypto/sha256"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -33,16 +34,97 @@ type Notification struct {
 // CQL migration (run once):
 // ALTER TABLE notifications_by_user ADD deep_link text;
 
-// CreateNotification
+// CreateNotification inserts an inbox row.
+//
+// Idempotency (Module 1 fixes-v1, Codex P0-1): the clustering key is
+// (user_id, bucket, ts). When n.TS is set, it is used verbatim, which
+// makes the INSERT an upsert on that exact key — re-running it after a
+// partial failure produces ONE row, not a duplicate. Callers that need
+// at-least-once delivery with exactly-once effect must set n.TS via
+// DeterministicTS.
+//
+// When n.TS is zero the legacy behavior applies: gocql.UUIDFromTime
+// generates random clock-sequence/node bits, so every call yields a new
+// clustering key (fine for one-shot notifications, unsafe for retries).
 func (s *NotificationStore) CreateNotification(ctx context.Context, n *Notification) error {
 	// bucket rule: YYYYMM
 	bucket := n.CreatedAt.Year()*100 + int(n.CreatedAt.Month())
 
+	ts := n.TS
+	if ts == (gocql.UUID{}) {
+		ts = gocql.UUIDFromTime(n.CreatedAt)
+	}
+
 	return s.session.Query(`
 		INSERT INTO notifications_by_user (user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, gocql.UUID(n.UserID), bucket, gocql.UUIDFromTime(n.CreatedAt), gocql.UUID(n.NotificationID), n.Type, gocql.UUID(n.ActorUserID), n.EntityType, gocql.UUID(n.EntityID), n.DeepLink, n.IsRead, n.CreatedAt).Exec()
+	`, gocql.UUID(n.UserID), bucket, ts, gocql.UUID(n.NotificationID), n.Type, gocql.UUID(n.ActorUserID), n.EntityType, gocql.UUID(n.EntityID), n.DeepLink, n.IsRead, n.CreatedAt).Exec()
 }
+
+// CreateNotificationIfNotExists inserts the inbox row ONLY when no row
+// exists at that primary key, using a Paxos lightweight transaction.
+// Returns applied=false when the row was already there.
+//
+// Module 1 fixes-v2 / Codex P0-1. A plain upsert with a deterministic key
+// gives one ROW, but it rewrites every column on each retry — including
+// `is_read`. A retry after the user had already read the notification
+// silently marked it unread again. `IF NOT EXISTS` makes the retry a true
+// no-op, so mutable read state is never clobbered, and `applied` tells the
+// caller whether this attempt is the FIRST one — which is how realtime and
+// push are kept from firing twice.
+//
+// Cost: an LWT is a Paxos round-trip (~4x a normal write). That is
+// acceptable here because this path is asynchronous batch fan-out, not a
+// user-facing request.
+func (s *NotificationStore) CreateNotificationIfNotExists(ctx context.Context, n *Notification) (bool, error) {
+	bucket := n.CreatedAt.Year()*100 + int(n.CreatedAt.Month())
+
+	ts := n.TS
+	if ts == (gocql.UUID{}) {
+		ts = gocql.UUIDFromTime(n.CreatedAt)
+	}
+
+	applied, err := s.session.Query(`
+		INSERT INTO notifications_by_user (user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		IF NOT EXISTS
+	`, gocql.UUID(n.UserID), bucket, ts, gocql.UUID(n.NotificationID), n.Type,
+		gocql.UUID(n.ActorUserID), n.EntityType, gocql.UUID(n.EntityID),
+		n.DeepLink, n.IsRead, n.CreatedAt).
+		WithContext(ctx).ScanCAS()
+	if err != nil {
+		return false, err
+	}
+	return applied, nil
+}
+
+// DeterministicTS derives a stable time-UUID clustering key from a
+// caller-supplied identity string. The time bits still come from `at`
+// (so ordering by ts remains chronological), but the clock-sequence and
+// node bytes are a hash of the identity instead of random — so the same
+// (identity, at) always maps to the same clustering key.
+//
+// This is what makes subscriber fan-out safe to retry: the identity is
+// "<post_id>:<user_id>:<type>", so a replayed event or a resumed batch
+// overwrites the same row rather than appending a second notification.
+func DeterministicTS(at time.Time, identity string) gocql.UUID {
+	u := gocql.UUIDFromTime(at) // correct time_low/mid/hi + version bits
+	sum := sha256.Sum256([]byte(identity))
+	copy(u[8:16], sum[:8])      // clock_seq (2) + node (6)
+	u[8] = (u[8] & 0x3F) | 0x80 // restore the RFC-4122 variant marker
+	return u
+}
+
+// DeterministicNotificationID derives the notification's own UUID from the
+// same identity, so a retried insert reuses the id the client may already
+// have seen.
+func DeterministicNotificationID(identity string) uuid.UUID {
+	return uuid.NewSHA1(notificationIDNamespace, []byte(identity))
+}
+
+// Stable namespace for DeterministicNotificationID. Do not change: it
+// would re-key every previously delivered notification.
+var notificationIDNamespace = uuid.MustParse("6f1a4b90-1f2d-4a3e-9c6b-0d5a6e7f8a90")
 
 // GetNotifications returns the latest notifications (no cursor).
 func (s *NotificationStore) GetNotifications(ctx context.Context, userID uuid.UUID, limit int) ([]Notification, error) {

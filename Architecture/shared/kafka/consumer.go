@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -31,6 +32,27 @@ type ConsumerConfig struct {
 	MaxRetries   int           // default 3
 	RetryBackoff time.Duration // default 1s (exponential: 1s, 2s, 4s)
 	DedupTTL     time.Duration // default 24h
+	// RetryForever is for launch-critical state transitions whose transient
+	// failure may not be converted into a parked DLQ item. Handlers must wrap
+	// genuinely unprocessable input with Permanent so poison can advance only
+	// after a durable DLQ write.
+	RetryForever bool
+}
+
+type permanentError struct{ error }
+
+// Permanent marks a handler error that redelivery cannot repair (malformed or
+// cryptographically invalid input). It is durably DLQed rather than stalling.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &permanentError{error: err}
+}
+
+func isPermanent(err error) bool {
+	var p *permanentError
+	return errors.As(err, &p)
 }
 
 // Consumer is a resilient Kafka consumer with retry, DLQ, dedup, and metrics.
@@ -137,8 +159,9 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(msg.Value, &envelope); err != nil {
 		logger.Error("unmarshal error, sending to DLQ", "error", err, "offset", msg.Offset)
-		c.sendToDLQRaw(ctx, logger, msg, err)
-		c.commitMessage(ctx, logger, msg)
+		if c.sendToDLQRawUntilDurable(ctx, logger, msg, err) {
+			c.commitMessageUntilDurable(ctx, logger, msg)
+		}
 		return
 	}
 
@@ -151,7 +174,7 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 			if c.metrics != nil {
 				c.metrics.DedupHits.WithLabelValues(c.cfg.Topic, c.cfg.GroupID).Inc()
 			}
-			c.commitMessage(ctx, logger, msg)
+			c.commitMessageUntilDurable(ctx, logger, msg)
 			return
 		}
 	}
@@ -167,9 +190,10 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 	}
 	msgCtx = logging.WithLogger(msgCtx, msgLogger)
 
-	// Retry with exponential backoff
+	// Retry with exponential backoff. Launch-critical consumers retry
+	// transient failures forever; only handler-marked poison reaches DLQ.
 	var lastErr error
-	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
+	for attempt := 0; c.cfg.RetryForever || attempt <= c.cfg.MaxRetries; attempt++ {
 		start := time.Now()
 		err := c.handler(msgCtx, &envelope)
 		duration := time.Since(start)
@@ -189,7 +213,7 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 				"partition", msg.Partition,
 				"offset", msg.Offset,
 			)
-			c.commitMessage(ctx, logger, msg)
+			c.commitMessageUntilDurable(ctx, logger, msg)
 			return
 		}
 
@@ -200,11 +224,22 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 			).Inc()
 		}
 
-		if attempt < c.cfg.MaxRetries {
-			backoff := c.cfg.RetryBackoff * (1 << attempt)
+		if isPermanent(err) {
+			if c.sendToDLQUntilDurable(ctx, msgLogger, msg, envelope, err) {
+				c.commitMessageUntilDurable(ctx, logger, msg)
+			}
+			return
+		}
+
+		if c.cfg.RetryForever || attempt < c.cfg.MaxRetries {
+			shift := attempt
+			if shift > 5 {
+				shift = 5
+			}
+			backoff := c.cfg.RetryBackoff * time.Duration(1<<shift)
 			msgLogger.Warn("retrying message",
 				"attempt", attempt+1,
-				"max_retries", c.cfg.MaxRetries,
+				"retry_forever", c.cfg.RetryForever,
 				"backoff", backoff,
 				"error", err,
 			)
@@ -221,13 +256,14 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 		"error", lastErr,
 		"retries", c.cfg.MaxRetries,
 	)
-	c.sendToDLQ(ctx, msgLogger, msg, envelope, lastErr)
-	c.commitMessage(ctx, logger, msg)
+	if c.sendToDLQUntilDurable(ctx, msgLogger, msg, envelope, lastErr) {
+		c.commitMessageUntilDurable(ctx, logger, msg)
+	}
 }
 
-func (c *Consumer) sendToDLQ(ctx context.Context, logger *slog.Logger, msg kafkago.Message, env events.EventEnvelope, lastErr error) {
+func (c *Consumer) sendToDLQ(ctx context.Context, logger *slog.Logger, msg kafkago.Message, env events.EventEnvelope, lastErr error) error {
 	if c.writer == nil {
-		return
+		return fmt.Errorf("no DLQ writer configured")
 	}
 
 	dlqHeaders := append(msg.Headers,
@@ -243,18 +279,19 @@ func (c *Consumer) sendToDLQ(ctx context.Context, logger *slog.Logger, msg kafka
 	})
 	if err != nil {
 		logger.Error("failed to write to DLQ", "error", err)
-		return
+		return err
 	}
 
 	if c.metrics != nil {
 		c.metrics.DLQMessages.WithLabelValues(c.cfg.Topic, c.cfg.GroupID, env.EventType).Inc()
 	}
 	logger.Warn("message sent to DLQ", "dlq_topic", c.cfg.DLQTopic)
+	return nil
 }
 
-func (c *Consumer) sendToDLQRaw(ctx context.Context, logger *slog.Logger, msg kafkago.Message, lastErr error) {
+func (c *Consumer) sendToDLQRaw(ctx context.Context, logger *slog.Logger, msg kafkago.Message, lastErr error) error {
 	if c.writer == nil {
-		return
+		return fmt.Errorf("no DLQ writer configured")
 	}
 
 	dlqHeaders := append(msg.Headers,
@@ -270,18 +307,52 @@ func (c *Consumer) sendToDLQRaw(ctx context.Context, logger *slog.Logger, msg ka
 	})
 	if err != nil {
 		logger.Error("failed to write to DLQ", "error", err)
-		return
+		return err
 	}
 
 	if c.metrics != nil {
 		c.metrics.DLQMessages.WithLabelValues(c.cfg.Topic, c.cfg.GroupID, "unknown").Inc()
 	}
 	logger.Warn("unparseable message sent to DLQ", "dlq_topic", c.cfg.DLQTopic)
+	return nil
 }
 
-func (c *Consumer) commitMessage(ctx context.Context, logger *slog.Logger, msg kafkago.Message) {
-	if err := c.reader.CommitMessages(ctx, msg); err != nil {
-		logger.Error("commit error", "error", err, "offset", msg.Offset)
+func (c *Consumer) sendToDLQUntilDurable(ctx context.Context, logger *slog.Logger, msg kafkago.Message, env events.EventEnvelope, cause error) bool {
+	return retryDurable(ctx, logger, "DLQ write", func() error { return c.sendToDLQ(ctx, logger, msg, env, cause) })
+}
+
+func (c *Consumer) sendToDLQRawUntilDurable(ctx context.Context, logger *slog.Logger, msg kafkago.Message, cause error) bool {
+	return retryDurable(ctx, logger, "raw DLQ write", func() error { return c.sendToDLQRaw(ctx, logger, msg, cause) })
+}
+
+func (c *Consumer) commitMessageUntilDurable(ctx context.Context, logger *slog.Logger, msg kafkago.Message) bool {
+	return retryDurable(ctx, logger, "offset commit", func() error {
+		return c.reader.CommitMessages(ctx, msg)
+	})
+}
+
+// retryDurable blocks this consumer partition at the current message until the
+// required durable action succeeds. Returning to FetchMessage after a failed
+// DLQ write/commit lets a later commit leapfrog and erase this message.
+func retryDurable(ctx context.Context, logger *slog.Logger, operation string, fn func() error) bool {
+	backoff := time.Second
+	for attempt := 1; ; attempt++ {
+		if err := fn(); err == nil {
+			return true
+		} else {
+			logger.Error(operation+" failed; partition remains blocked", "attempt", attempt, "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
 	}
 }
 

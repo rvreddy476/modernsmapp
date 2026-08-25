@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -142,6 +143,10 @@ func (h *Handler) AddReelComment(c *gin.Context) {
 	var req addReelCommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "comment text cannot be blank", nil)
 		return
 	}
 

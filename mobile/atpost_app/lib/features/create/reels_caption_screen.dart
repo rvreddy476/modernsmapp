@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:atpost_app/features/create/widgets/distribution_sheet.dart';
 import 'package:atpost_app/features/create/widgets/trending_hashtag_strip.dart';
 import 'package:atpost_app/features/hashtag_feed/data/hashtag_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
@@ -29,10 +30,15 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
   final List<String> _hashtags = [];
   _FlicksAudience _audience = _FlicksAudience.public;
   bool _isPosting = false;
+  bool _alteredContent = false;
   // Tier 2c — when non-null, the post is queued for cmd/scheduler to
   // promote at this moment. UTC-aware: we send RFC3339 to the
   // backend; the picker shows local time to the creator.
   DateTime? _scheduleAt;
+  // Module 1 P0-2. Reels are a social-feed format, so main_feed defaults
+  // ON here (PostTube defaults OFF). The audience/schedule pickers this
+  // screen already has stay the source of truth for those two fields.
+  final DistributionChoices _distribution = DistributionChoices.reelDefaults();
 
   // Debounced prefix-match against /v1/hashtags/search that drives
   // the dropdown the moment the user types ≥2 chars into _hashtagCtrl.
@@ -120,10 +126,7 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
       // Upload the first clip as video media
       String mediaId = '';
       final firstClip = editorState.clips.first;
-      mediaId = await api.uploadMedia(
-        XFile(firstClip.filePath),
-        type: 'video',
-      );
+      mediaId = await api.uploadMedia(XFile(firstClip.filePath), type: 'video');
 
       // Embed hashtags into the caption text so the backend's
       // extractHashtags() indexes them into posts.hashtags[]. Sending them in
@@ -131,7 +134,10 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
       // hashtag index → trending/hashtag-feed wouldn't see them.
       final caption = _captionCtrl.text.trim();
       final tagLine = _hashtags.join(' ');
-      final fullText = [caption, tagLine].where((s) => s.isNotEmpty).join('\n\n');
+      final fullText = [
+        caption,
+        tagLine,
+      ].where((s) => s.isNotEmpty).join('\n\n');
 
       // Create the post. Include audio_track_id when the editor selected
       // background music — post-service AttachAudioToPost links it to the
@@ -143,18 +149,37 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
         'visibility': _audience.name,
         'cover_frame_ms': editorState.coverFrameMs,
         'filter': editorState.activeFilter.name,
+        // Module 1 P0-2: reels default to appearing in the social feed
+        // (that is the format's purpose), with subscriber notification
+        // following the creator's toggle.
+        'distribution': _distribution.toPolicyJson(),
+        'altered_content': _alteredContent,
       };
       final audio = editorState.backgroundAudio;
       if (audio != null && audio.id.isNotEmpty) {
         body['audio_track_id'] = audio.id;
       }
-      // Tier 2c: when a future schedule is set, save as draft +
-      // schedule_at (the cmd/scheduler worker promotes it). When
-      // unset, publish immediately via /v1/posts.
+      // Scheduled publish (P0-5). Times are sent as UTC; the picker shows
+      // local. The server holds the draft and publishes it at the due
+      // time, re-checking standing/moderation then.
+      //
+      // Fix: this used to POST /v1/drafts — a route that does not exist
+      // (post-service serves /v1/posts/drafts and /v1/reels/drafts), so
+      // every scheduled reel silently failed. It also referenced the
+      // standalone cmd/scheduler binary, which queried columns that were
+      // never in the schema and has been removed.
       if (_scheduleAt != null && _scheduleAt!.isAfter(DateTime.now())) {
-        final draftBody = Map<String, dynamic>.from(body)
-          ..['schedule_at'] = _scheduleAt!.toUtc().toIso8601String();
-        await api.post('/v1/drafts', data: draftBody);
+        await api.post(
+          '/v1/posts/drafts',
+          data: {
+            // 'reel' so the server publishes a flick (post_type=video) and
+            // keeps cover_frame_ms / filter / audio_track_id. Sending
+            // 'post' previously dropped the reel out of its own format.
+            'post_type': 'reel',
+            'schedule_at': _scheduleAt!.toUtc().toIso8601String(),
+            'payload': body,
+          },
+        );
       } else {
         await api.post('/v1/posts', data: body);
       }
@@ -168,14 +193,16 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
       ref.invalidate(videoFeedProvider);
       try {
         await ref.read(homeFeedProvider.notifier).fetchFirstPage();
-      } catch (_) {/* non-fatal */}
+      } catch (_) {
+        /* non-fatal */
+      }
 
       if (mounted) context.go('/');
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to post: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to post: $e')));
       }
     } finally {
       if (mounted) setState(() => _isPosting = false);
@@ -213,6 +240,16 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
               _buildAudienceSelector(),
               const SizedBox(height: 20),
               _buildScheduleRow(),
+              SwitchListTile(
+                value: _alteredContent,
+                onChanged: (value) => setState(() => _alteredContent = value),
+                secondary: const Icon(
+                  Icons.auto_awesome_outlined,
+                  color: Colors.amber,
+                ),
+                title: const Text('AI-generated or significantly altered'),
+                subtitle: const Text('Adds a visible disclosure for viewers.'),
+              ),
               const SizedBox(height: 20),
               _buildCrossPostRow(),
               const SizedBox(height: 32),
@@ -231,7 +268,11 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
       children: [
         const Text(
           'Caption',
-          style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            color: Colors.white54,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 8),
         Container(
@@ -264,7 +305,11 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
       children: [
         const Text(
           'Hashtags',
-          style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            color: Colors.white54,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 8),
         // Existing hashtag chips
@@ -274,9 +319,16 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
             runSpacing: 4,
             children: _hashtags.map((tag) {
               return Chip(
-                label: Text(tag, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                label: Text(
+                  tag,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
                 backgroundColor: _brandRed.withValues(alpha: 0.25),
-                deleteIcon: const Icon(Icons.close, size: 14, color: Colors.white54),
+                deleteIcon: const Icon(
+                  Icons.close,
+                  size: 14,
+                  color: Colors.white54,
+                ),
                 onDeleted: () => _removeHashtag(tag),
                 side: BorderSide.none,
                 visualDensity: VisualDensity.compact,
@@ -301,8 +353,15 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
                     borderRadius: BorderRadius.circular(10),
                     borderSide: BorderSide.none,
                   ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  prefixIcon: const Icon(Icons.tag, color: Colors.white38, size: 18),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  prefixIcon: const Icon(
+                    Icons.tag,
+                    color: Colors.white38,
+                    size: 18,
+                  ),
                 ),
               ),
             ),
@@ -310,12 +369,22 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
             GestureDetector(
               onTap: () => _addHashtag(_hashtagCtrl.text),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
                 decoration: BoxDecoration(
                   color: _brandRed,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: const Text('Add', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13)),
+                child: const Text(
+                  'Add',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
               ),
             ),
           ],
@@ -345,7 +414,10 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
         child: SizedBox(
           height: 16,
           width: 16,
-          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: Colors.white54,
+          ),
         ),
       );
     }
@@ -385,7 +457,9 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
                     ),
                   ),
                   Text(
-                    tag.isTrending ? '🔥 ${_formatCount(tag.postCount)}' : _formatCount(tag.postCount),
+                    tag.isTrending
+                        ? '🔥 ${_formatCount(tag.postCount)}'
+                        : _formatCount(tag.postCount),
                     style: const TextStyle(color: Colors.white38, fontSize: 11),
                   ),
                 ],
@@ -420,7 +494,11 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
       children: [
         const Text(
           'Audience',
-          style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            color: Colors.white54,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 8),
         Container(
@@ -460,10 +538,48 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
               );
             }).toList(),
             onChanged: (v) {
-              if (v != null) setState(() => _audience = v);
+              if (v != null) {
+                setState(() {
+                  _audience = v;
+                  // A private reel can't also be pushed to the feed or
+                  // notify subscribers — keep the policy coherent instead
+                  // of letting the server reject it later.
+                  if (v == _FlicksAudience.private) {
+                    _distribution.mainFeed = false;
+                    _distribution.notifySubscribers = false;
+                  }
+                });
+              }
             },
           ),
         ),
+        // Module 1 P0-2: reel-applicable destinations only. No unlisted /
+        // scheduled options here — this screen has its own schedule
+        // picker, and unlisted is a PostTube concept.
+        if (_audience != _FlicksAudience.private) ...[
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: _distribution.mainFeed,
+            onChanged: (v) => setState(() => _distribution.mainFeed = v),
+            title: const Text(
+              'Show in social feed',
+              style: TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: _distribution.notifySubscribers,
+            onChanged: (v) =>
+                setState(() => _distribution.notifySubscribers = v),
+            title: const Text(
+              'Notify subscribers',
+              style: TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -488,13 +604,18 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
     if (pickedTime == null || !mounted) return;
 
     final combined = DateTime(
-      pickedDate.year, pickedDate.month, pickedDate.day,
-      pickedTime.hour, pickedTime.minute,
+      pickedDate.year,
+      pickedDate.month,
+      pickedDate.day,
+      pickedTime.hour,
+      pickedTime.minute,
     );
     if (combined.isBefore(now)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Scheduled time must be in the future.')),
+          const SnackBar(
+            content: Text('Scheduled time must be in the future.'),
+          ),
         );
       }
       return;
@@ -511,7 +632,11 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
           children: [
             const Text(
               'Schedule',
-              style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                color: Colors.white54,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const Spacer(),
             Switch(
@@ -587,8 +712,18 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Cross-post', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-                Text('Share to other feeds', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                Text(
+                  'Cross-post',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  'Share to other feeds',
+                  style: TextStyle(color: Colors.white38, fontSize: 12),
+                ),
               ],
             ),
           ),
@@ -610,7 +745,9 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: _brandRed,
           disabledBackgroundColor: _brandRed.withValues(alpha: 0.4),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
           elevation: 0,
         ),
         onPressed: _isPosting ? null : _submit,
@@ -618,7 +755,10 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
             ? const SizedBox(
                 width: 22,
                 height: 22,
-                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2,
+                ),
               )
             : const Text(
                 'Post Reel',

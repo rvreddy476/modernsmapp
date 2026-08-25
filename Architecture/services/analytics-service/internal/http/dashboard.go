@@ -56,9 +56,8 @@ func (h *DashboardHandler) RegisterRoutes(v1 *gin.RouterGroup) {
 // 503 so the studio can render a friendly "data not yet available"
 // state instead of a generic 500.
 func (h *DashboardHandler) GetContentRetention(c *gin.Context) {
-	contentID, err := uuid.Parse(c.Param("contentId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil)
+	contentID, ok := h.requireOwnedContent(c)
+	if !ok {
 		return
 	}
 	if h.watchStore == nil {
@@ -100,9 +99,8 @@ func (h *DashboardHandler) GetContentRetention(c *gin.Context) {
 //
 // Same "scylla unconfigured → 503" contract as the retention endpoint.
 func (h *DashboardHandler) GetContentDemographics(c *gin.Context) {
-	contentID, err := uuid.Parse(c.Param("contentId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil)
+	contentID, ok := h.requireOwnedContent(c)
+	if !ok {
 		return
 	}
 	if h.watchStore == nil {
@@ -153,7 +151,11 @@ func (h *DashboardHandler) GetContentList(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil)
 		return
 	}
-	creatorID, _ := uuid.Parse(userID)
+	creatorID, err := uuid.Parse(userID)
+	if err != nil || creatorID == uuid.Nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
 
 	sortBy := c.DefaultQuery("sort", "views_display")
 	limit := 20
@@ -180,9 +182,8 @@ func (h *DashboardHandler) GetContentList(c *gin.Context) {
 }
 
 func (h *DashboardHandler) GetContentDetail(c *gin.Context) {
-	contentID, err := uuid.Parse(c.Param("contentId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil)
+	contentID, ok := h.requireOwnedContent(c)
+	if !ok {
 		return
 	}
 
@@ -198,9 +199,8 @@ func (h *DashboardHandler) GetContentDetail(c *gin.Context) {
 }
 
 func (h *DashboardHandler) GetContentTrend(c *gin.Context) {
-	contentID, err := uuid.Parse(c.Param("contentId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil)
+	contentID, ok := h.requireOwnedContent(c)
+	if !ok {
 		return
 	}
 
@@ -221,7 +221,11 @@ func (h *DashboardHandler) GetCreatorTrend(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil)
 		return
 	}
-	creatorID, _ := uuid.Parse(userID)
+	creatorID, err := uuid.Parse(userID)
+	if err != nil || creatorID == uuid.Nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
 	since := parsePeriod(c.DefaultQuery("period", "7d"))
 
 	trend, err := h.aggStore.GetCreatorDailyTrend(c.Request.Context(), creatorID, since)
@@ -231,6 +235,33 @@ func (h *DashboardHandler) GetCreatorTrend(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, trend, nil)
+}
+
+func (h *DashboardHandler) requireOwnedContent(c *gin.Context) (uuid.UUID, bool) {
+	creatorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil || creatorID == uuid.Nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return uuid.Nil, false
+	}
+	contentID, err := uuid.Parse(c.Param("contentId"))
+	if err != nil || contentID == uuid.Nil {
+		writePrivateContentNotFound(c)
+		return uuid.Nil, false
+	}
+	owns, err := h.aggStore.OwnsContent(c.Request.Context(), creatorID, contentID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "ANALYTICS_UNAVAILABLE", "Analytics authorization is unavailable", nil)
+		return uuid.Nil, false
+	}
+	if !owns {
+		writePrivateContentNotFound(c)
+		return uuid.Nil, false
+	}
+	return contentID, true
+}
+
+func writePrivateContentNotFound(c *gin.Context) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Analytics content not found", nil)
 }
 
 func parsePeriod(period string) time.Time {

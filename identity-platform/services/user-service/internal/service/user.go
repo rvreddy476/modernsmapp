@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/google/uuid"
 	"github.com/atpost/identity-user-service/internal/config"
 	"github.com/atpost/identity-user-service/internal/store"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -25,6 +25,10 @@ var allowedPrivacyValues = map[string]map[string]bool{
 	"who_can_message": {
 		"no_one": true, "connections_only": true, "connections_and_mutual_followers": true,
 		"followers_message_requests": true, "everyone_message_requests": true,
+		// Production chat pass (directive §3.2): friends-of-friends may open a
+		// MESSAGE REQUEST, never a direct thread. Resolved by graph-service
+		// second-degree facts — the client never sees adjacency lists.
+		"friends_of_friends_requests": true,
 	},
 	"who_can_send_connection_request": {
 		"no_one": true, "friends_of_friends_or_contacts": true, "friends_of_friends": true,
@@ -36,6 +40,13 @@ var allowedPrivacyValues = map[string]map[string]bool{
 	"who_can_add_to_groups": {
 		"no_one": true, "connections_only": true, "connections_and_contacts": true,
 		"everyone_with_approval": true,
+		// Production chat pass: friends-of-friends may INVITE (consent
+		// required); direct add stays connections-only.
+		"friends_of_friends_invites": true,
+	},
+	// Chat availability is a master switch, not a visibility value.
+	"chat_availability": {
+		"enabled": true, "paused": true,
 	},
 	// The four visibility fields share one enum set.
 	"visibility": {
@@ -50,6 +61,7 @@ func validatePrivacySettings(s *store.UserSettings) error {
 		{"who_can_send_connection_request", s.WhoCanSendConnectionRequest},
 		{"who_can_call", s.WhoCanCall},
 		{"who_can_add_to_groups", s.WhoCanAddToGroups},
+		{"chat_availability", s.ChatAvailability},
 		{"visibility", s.WhoCanSeeOnlineStatus},
 		{"visibility", s.WhoCanSeeReadReceipts},
 		{"visibility", s.WhoCanSeeLastSeen},
@@ -83,11 +95,18 @@ func applyStrictMode(s *store.UserSettings) {
 	s.DiscoverableByPhoneToContacts = false
 }
 
+// SettingsChangedPublisher announces a committed settings write to downstream
+// permission caches. Implemented by events.Producer; nil-safe by contract.
+type SettingsChangedPublisher interface {
+	PublishSettingsChanged(ctx context.Context, userID uuid.UUID, privacyVersion int)
+}
+
 type Service struct {
-	store *store.Store
-	rdb   *redis.Client
-	cfg   *config.Config
-	log   *slog.Logger
+	store    *store.Store
+	rdb      *redis.Client
+	cfg      *config.Config
+	log      *slog.Logger
+	producer SettingsChangedPublisher
 }
 
 func New(s *store.Store, rdb *redis.Client, cfg *config.Config, logger *slog.Logger) *Service {
@@ -95,6 +114,13 @@ func New(s *store.Store, rdb *redis.Client, cfg *config.Config, logger *slog.Log
 		logger = slog.Default()
 	}
 	return &Service{store: s, rdb: rdb, cfg: cfg, log: logger}
+}
+
+// WithProducer wires the settings-changed publisher. Optional — without it,
+// downstream caches rely on their TTLs alone. Call once from cmd/server.
+func (s *Service) WithProducer(p SettingsChangedPublisher) *Service {
+	s.producer = p
+	return s
 }
 
 // CreateUser handles user creation from a UserRegistered event. under18 is
@@ -191,6 +217,14 @@ func (s *Service) UpdateSettings(ctx context.Context, settings *store.UserSettin
 	cacheKey := fmt.Sprintf("user:settings:%s", settings.UserID)
 	if err := s.rdb.Del(ctx, cacheKey).Err(); err != nil {
 		s.log.Warn("failed to delete settings cache", "err", err, "cache_key", cacheKey)
+	}
+
+	// Invalidation signal for downstream permission caches (graph privacy
+	// cache, chat policy projection). Best-effort AFTER the committed write;
+	// consumers re-fetch the snapshot, so a duplicate or late event is
+	// harmless and a lost one is bounded by their TTL fallbacks.
+	if s.producer != nil && us != nil {
+		s.producer.PublishSettingsChanged(ctx, us.UserID, us.PrivacyVersion)
 	}
 
 	return us, nil

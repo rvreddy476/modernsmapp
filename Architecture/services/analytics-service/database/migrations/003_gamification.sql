@@ -2,7 +2,9 @@
 
 -- User streaks (daily posting, login, creator uploads)
 CREATE TABLE IF NOT EXISTS user_streaks (
-    user_id       UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    -- Identity is owned by identity-platform; analytics must not require a
+    -- cross-service users table in its database. Deletion arrives by event.
+    user_id       UUID PRIMARY KEY,
     type          TEXT NOT NULL CHECK (type IN ('daily_post','daily_login','creator_upload')),
     current_count INT NOT NULL DEFAULT 0,
     longest_count INT NOT NULL DEFAULT 0,
@@ -13,7 +15,7 @@ CREATE TABLE IF NOT EXISTS user_streaks (
 -- Badges earned by users
 CREATE TABLE IF NOT EXISTS user_badges (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL,
     type       TEXT NOT NULL CHECK (type IN ('verified','creator','top_contributor','helpful_member','streak_30','streak_100','early_adopter','expert')),
     awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ,
@@ -47,7 +49,7 @@ CREATE TABLE IF NOT EXISTS mission_progress (
 
 -- Loyalty points ledger
 CREATE TABLE IF NOT EXISTS loyalty_points (
-    user_id         UUID PRIMARY KEY REFERENCES users(id),
+    user_id         UUID PRIMARY KEY,
     balance         BIGINT NOT NULL DEFAULT 0,
     lifetime_earned BIGINT NOT NULL DEFAULT 0,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -55,7 +57,7 @@ CREATE TABLE IF NOT EXISTS loyalty_points (
 
 CREATE TABLE IF NOT EXISTS point_transactions (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id    UUID NOT NULL REFERENCES users(id),
+    user_id    UUID NOT NULL,
     amount     INT NOT NULL,
     type       TEXT NOT NULL CHECK (type IN ('post_reward','streak_bonus','mission_reward','commerce_spend','referral')),
     ref_id     UUID,

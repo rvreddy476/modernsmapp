@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:atpost_app/core/errors/app_exception.dart';
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/call.dart' as models;
 import 'package:atpost_app/data/repositories/calls_repository.dart';
@@ -128,7 +129,8 @@ class CallNotifier extends StateNotifier<CallInfo?> {
   bool _localAudioEnabled = true;
   bool _localVideoEnabled = false;
 
-  CallNotifier(this._signaling, [this._callsRepo, this._userRepo]) : super(null) {
+  CallNotifier(this._signaling, [this._callsRepo, this._userRepo])
+    : super(null) {
     _signalSub = _signaling.signals.listen(_handleSignal);
   }
 
@@ -147,6 +149,9 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     String? sourceId,
     required CallType type,
   }) async {
+    if (!Environment.callsEnabled) {
+      throw StateError('Calls are disabled for this release');
+    }
     if (state != null) return;
 
     state = CallInfo(
@@ -490,7 +495,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
           senderId: '',
           targetUserId: state!.peerId,
           callId: state!.callId,
-          candidate: candidate.toMap(),
+          candidate: Map<String, dynamic>.from(candidate.toMap()),
         ),
       );
     };

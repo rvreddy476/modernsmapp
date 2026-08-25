@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"github.com/atpost/media-service/database"
-	mediaEvents "github.com/atpost/media-service/internal/events"
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
@@ -82,6 +82,25 @@ func main() {
 
 	brokers := strings.Split(kafkaBrokers, ",")
 
+	// M4-P0-3 — the content-safety scanner, resolved BEFORE any external
+	// dependency.
+	//
+	// This was unconditionally StubScanner, which returns "safe" for
+	// everything. Combined with the moderation status defaulting to "passed",
+	// the worker approved every video it ever saw while looking like it had a
+	// safety gate. Production now REFUSES TO START on the stub: a media worker
+	// that cannot scan is not a degraded worker, it is an approval machine.
+	//
+	// It is checked here, first, on purpose. A configuration refusal must not
+	// depend on PostgreSQL or the blob store being reachable — otherwise the
+	// operator sees "cannot connect to MinIO" and never learns that the safety
+	// gate was misconfigured too.
+	scanner, scannerName, err := selectScanner()
+	if err != nil {
+		log.Fatalf("Content scanner: %v", err)
+	}
+	log.Printf("Content scanner: %s", scannerName)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -110,24 +129,26 @@ func main() {
 	}
 	log.Println("Media schema ready")
 
-	// Blob Store
-	blobStore, err := blob.New(minioEndpoint, minioAccessKey, minioSecretKey, minioBucket, minioUseSSL)
-	if err != nil {
-		log.Fatalf("Unable to connect to MinIO: %v\n", err)
+	// Blob store. Production is AWS-only and requires an EKS web-identity
+	// token; MinIO remains available only for local integration tests.
+	var blobStore *blob.Store
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MEDIA_STORAGE_BACKEND")), "s3") {
+		blobStore, err = blob.NewS3IRSA(os.Getenv("AWS_REGION"), os.Getenv("S3_BUCKET"))
+	} else if isWorkerProduction() {
+		log.Fatal("Production requires MEDIA_STORAGE_BACKEND=s3 with IRSA; MinIO/static credentials are forbidden")
+	} else {
+		blobStore, err = blob.New(minioEndpoint, minioAccessKey, minioSecretKey, minioBucket, minioUseSSL)
 	}
-	log.Println("Connected to MinIO")
+	if err != nil {
+		log.Fatalf("Unable to configure blob store: %v\n", err)
+	}
+	log.Println("Connected to blob store")
 
 	pgStore := postgres.New(dbPool)
-	// Content-safety scanner for video frames. StubScanner passes
-	// everything; swap in a real Scanner (PhotoDNA / Rekognition /
-	// SafeSearch) to make the moderation gate actually enforce.
-	var scanner processing.Scanner = &processing.StubScanner{}
 	kafkaDialer, err := transport.KafkaDialerFromEnv()
 	if err != nil {
 		log.Fatalf("Failed to configure Kafka dialer: %v\n", err)
 	}
-	producer := mediaEvents.NewProducerWithDialer(brokers, "media.events", kafkaDialer)
-
 	// Kafka consumer
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
@@ -151,90 +172,267 @@ func main() {
 
 	log.Println("Media transcode worker started, waiting for messages...")
 
+	// M4-P0-3 — THE OFFSET IS COMMITTED BY THIS LOOP, AND ONLY AFTER THE
+	// DURABLE EFFECT.
+	//
+	// This used to call ReadMessage, which for a group reader commits the
+	// offset BEFORE returning the message. A transcode that then failed on a
+	// transient fault — blob store blip, database restart — was acknowledged
+	// and never retried, and the asset stayed stuck forever with no job.
+	//
+	// FetchMessage does not commit. CommitMessages below does, after
+	// CompleteTranscode has durably recorded the outcome.
 	for {
-		m, err := reader.ReadMessage(ctx)
+		m, err := reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			log.Printf("Consumer error: %v\n", err)
-			break
+			log.Printf("Fetch error: %v\n", err)
+			continue
 		}
 
-		if err := processMessage(ctx, m, pgStore, blobStore, producer, scanner); err != nil {
-			log.Printf("Failed to process message: %v\n", err)
+		if !handleUntilDurable(ctx, m, pgStore, blobStore, scanner) {
+			// Shutting down mid-message. The offset is deliberately left
+			// uncommitted so the next owner of this partition redelivers it.
+			log.Println("Context cancelled before commit; stopping without committing")
+			break
+		}
+		if err := reader.CommitMessages(ctx, m); err != nil {
+			// The effect is durable and idempotent, so the redelivery this
+			// causes is absorbed by the inbox.
+			log.Printf("Commit error (message will be redelivered): %v", err)
 		}
 	}
 
 	_ = reader.Close()
-	_ = producer.Close()
 	log.Println("Worker stopped")
 }
 
-func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, producer *mediaEvents.Producer, scanner processing.Scanner) error {
+func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
-		return fmt.Errorf("unmarshal envelope: %w", err)
+		// No redelivery will make this parse. Marked permanent so the retry
+		// loop commits past it instead of stalling the partition — every
+		// transcode queued behind one corrupt record would otherwise never run.
+		return permanentTranscode(fmt.Errorf("unmarshal envelope: %w", err))
 	}
 
 	if envelope.EventType != events.MediaTranscodeRequested {
 		return nil // skip non-transcode events
 	}
+	if envelope.EventID == "" {
+		return permanentTranscode(fmt.Errorf("transcode request has no event_id"))
+	}
 
 	var payload events.MediaTranscodeRequestedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return fmt.Errorf("unmarshal payload: %w", err)
+		return permanentTranscode(fmt.Errorf("unmarshal payload: %w", err))
 	}
 
 	mediaAssetID, err := uuid.Parse(payload.MediaAssetID)
 	if err != nil {
-		return fmt.Errorf("parse media_asset_id: %w", err)
+		return permanentTranscode(fmt.Errorf("parse media_asset_id: %w", err))
+	}
+
+	// Cheap replay check before expensive work. The guarantee is the inbox
+	// primary key inside CompleteTranscode; this only avoids re-running ffmpeg
+	// over an asset another replica already finished.
+	return pgStore.WithTranscodeEventLock(ctx, envelope.EventID, func() error {
+		return processTranscodeLocked(ctx, envelope, payload, mediaAssetID, pgStore, blobStore, scanner)
+	})
+}
+
+func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
+	payload events.MediaTranscodeRequestedPayload, mediaAssetID uuid.UUID,
+	pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
+	if done, err := pgStore.AlreadyApplied(ctx, envelope.EventID); err != nil {
+		return fmt.Errorf("inbox lookup: %w", err)
+	} else if done {
+		log.Printf("Transcode for media %s already applied; skipping", payload.MediaAssetID)
+		return nil
 	}
 
 	log.Printf("Processing video transcode for media %s", payload.MediaAssetID)
 
 	transcodeStart := time.Now()
-	if err := transcodeVideo(ctx, mediaAssetID, payload, pgStore, blobStore, scanner); err != nil {
-		transcodeTotal.WithLabelValues("failure").Inc()
-		transcodeDuration.Observe(time.Since(transcodeStart).Seconds())
-		log.Printf("Transcode failed for %s: %v", payload.MediaAssetID, err)
-		_ = pgStore.UpdateStatus(ctx, mediaAssetID, "failed")
-		_ = producer.PublishTranscodeCompleted(ctx, mediaAssetID, "failed")
-		return nil // Don't retry — mark as failed
-	}
-	transcodeTotal.WithLabelValues("success").Inc()
+	moderationResult := ""
+	transcodeErr := transcodeVideo(ctx, mediaAssetID, payload, pgStore, blobStore, scanner, &moderationResult)
 	transcodeDuration.Observe(time.Since(transcodeStart).Seconds())
 
-	// Read back the URLs we wrote during transcode so the success event can
-	// carry them. Downstream consumers (post-service.video_metadata) need the
-	// HLS master URL to point clients at adaptive bitrate playback rather
-	// than the raw MP4 fallback.
+	if transcodeErr != nil {
+		transcodeTotal.WithLabelValues("failure").Inc()
+		log.Printf("Transcode failed for %s: %v", payload.MediaAssetID, transcodeErr)
+
+		// A transient failure must NOT be recorded terminal. The old code
+		// marked every failure "failed" and returned nil — a blob-store blip
+		// or a database restart permanently killed an upload the user could
+		// not retry. Only a genuinely unprocessable input is terminal.
+		if !isPermanentTranscodeFailure(transcodeErr) {
+			return fmt.Errorf("transient transcode failure for %s: %w",
+				payload.MediaAssetID, transcodeErr)
+		}
+		// Terminal: record it durably, and record it as NOT publishable.
+		if err := pgStore.CompleteTranscode(ctx, envelope.EventID, mediaAssetID,
+			"failed", "", "manual_review", postgres.TranscodeCompletion{
+				ProcessingStatus: "failed", ModerationStatus: "manual_review",
+			}); err != nil {
+			if errors.Is(err, postgres.ErrTranscodeAlreadyApplied) {
+				return nil
+			}
+			return fmt.Errorf("record terminal failure for %s: %w", payload.MediaAssetID, err)
+		}
+		return nil
+	}
+	transcodeTotal.WithLabelValues("success").Inc()
+
+	// Read back what transcode wrote so the completion event can carry it.
 	asset, fetchErr := pgStore.GetMedia(ctx, mediaAssetID)
+	if fetchErr != nil {
+		// This used to be ignored, and the moderation status then defaulted to
+		// "passed" — so a failed read-back PUBLISHED unreviewed media. The read
+		// is now required.
+		return fmt.Errorf("read back media %s after transcode: %w", payload.MediaAssetID, fetchErr)
+	}
+	if asset == nil {
+		return fmt.Errorf("media %s vanished during transcode", payload.MediaAssetID)
+	}
+
+	// THE SAFETY DEFAULT. There is no "passed" fallback: if the scan did not
+	// produce a verdict, the asset goes to manual review. Decision 001 A1.1 —
+	// provider failure is not approval.
+	modStatus := moderationResult
+	if modStatus == "" {
+		log.Printf("media %s finished transcode with no moderation verdict; holding for review",
+			payload.MediaAssetID)
+		modStatus = "manual_review"
+	}
+
 	hlsURL, mp4URL, thumbURL := "", "", ""
-	modStatus := "passed"
-	if fetchErr == nil && asset != nil {
-		if asset.HLSMasterKey != "" {
-			hlsURL = "/" + strings.TrimPrefix(asset.HLSMasterKey, "/")
+	if asset.HLSMasterKey != "" {
+		hlsURL = "/" + strings.TrimPrefix(asset.HLSMasterKey, "/")
+	}
+	if asset.CdnURL != nil && *asset.CdnURL != "" {
+		mp4URL = *asset.CdnURL
+	}
+	if asset.ThumbnailURL != nil && *asset.ThumbnailURL != "" {
+		thumbURL = *asset.ThumbnailURL
+	}
+
+	if err := pgStore.CompleteTranscode(ctx, envelope.EventID, mediaAssetID,
+		"ready", asset.HLSMasterKey, modStatus, postgres.TranscodeCompletion{
+			ProcessingStatus: "ready",
+			HLSMasterURL:     hlsURL,
+			MP4URL:           mp4URL,
+			ThumbnailURL:     thumbURL,
+			ModerationStatus: modStatus,
+		}); err != nil {
+		if errors.Is(err, postgres.ErrTranscodeAlreadyApplied) {
+			log.Printf("Transcode for media %s completed by another replica", payload.MediaAssetID)
+			return nil
 		}
-		if asset.CdnURL != nil && *asset.CdnURL != "" {
-			mp4URL = *asset.CdnURL
-		}
-		if asset.ThumbnailURL != nil && *asset.ThumbnailURL != "" {
-			thumbURL = *asset.ThumbnailURL
-		}
-		if asset.ModerationStatus != "" {
-			modStatus = asset.ModerationStatus
+		return fmt.Errorf("record transcode completion for %s: %w", payload.MediaAssetID, err)
+	}
+	if modStatus == "passed" {
+		if err := pgStore.ActivatePendingSlot(ctx, mediaAssetID); err != nil {
+			log.Printf("Warning: failed to activate pending media slots for %s: %v", payload.MediaAssetID, err)
 		}
 	}
-	_ = producer.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, "ready", hlsURL, mp4URL, thumbURL, modStatus)
-	log.Printf("Transcode completed for media %s (hls=%t)", payload.MediaAssetID, hlsURL != "")
+	log.Printf("Transcode completed for media %s (hls=%t, moderation=%s)",
+		payload.MediaAssetID, hlsURL != "", modStatus)
 	return nil
 }
 
-func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.MediaTranscodeRequestedPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
+// permanentTranscodeError marks input that redelivery cannot repair.
+type permanentTranscodeError struct{ err error }
+
+func (e *permanentTranscodeError) Error() string { return "permanent: " + e.err.Error() }
+func (e *permanentTranscodeError) Unwrap() error { return e.err }
+
+// permanentTranscode wraps an error as unprocessable input.
+func permanentTranscode(err error) error { return &permanentTranscodeError{err: err} }
+
+// isPermanentTranscodeFailure decides retry versus terminal.
+//
+// The distinction is the whole point of the change: a corrupt upload must not
+// stall the partition forever, and a database outage must not permanently kill
+// a perfectly good video. Anything not explicitly marked unprocessable is
+// treated as transient, because the cost of an extra retry is far below the
+// cost of destroying a user's upload.
+func isPermanentTranscodeFailure(err error) bool {
+	var perm *permanentTranscodeError
+	return errors.As(err, &perm)
+}
+
+// permanentUnlessCancelled classifies deterministic media/ffmpeg failures as
+// terminal while preserving cancellation/timeouts as retryable. A corrupt
+// upload must become a durable failed result; it must not stall every later
+// upload on its Kafka partition forever.
+func permanentUnlessCancelled(ctx context.Context, err error) error {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return permanentTranscode(err)
+}
+
+// handleUntilDurable retries a message until its effect is durably recorded.
+// Reports whether the message may now be committed; false means the context was
+// cancelled first and the offset must be left where it is.
+func handleUntilDurable(
+	ctx context.Context,
+	m kafka.Message,
+	pgStore *postgres.MediaAssetStore,
+	blobStore *blob.Store,
+	scanner processing.Scanner,
+) bool {
+	backoff := 2 * time.Second
+	const maxBackoff = 2 * time.Minute
+	for attempt := 1; ; attempt++ {
+		err := processMessage(ctx, m, pgStore, blobStore, scanner)
+		if err == nil {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+
+		// Poison input: committing past a message that can never succeed is the
+		// lesser harm. The alternative blocks every transcode queued behind it
+		// on this partition forever. Logged at a level an operator can alert
+		// on rather than dropped silently.
+		if isPermanentTranscodeFailure(err) {
+			if qerr := pgStore.QuarantineTranscode(ctx, m, err); qerr != nil {
+				log.Printf("Failed to quarantine poison transcode; offset NOT committed: %v", qerr)
+				err = fmt.Errorf("durable poison quarantine: %w", qerr)
+			} else {
+				log.Printf("PERMANENTLY UNDELIVERABLE transcode message partition=%d offset=%d: %v "+
+					"(durably quarantined; committing so the partition is not stalled)", m.Partition, m.Offset, err)
+				return true
+			}
+		}
+
+		log.Printf("Transcode effect failed (attempt %d, partition=%d offset=%d), "+
+			"offset NOT committed, retrying in %s: %v", attempt, m.Partition, m.Offset, backoff, err)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.MediaTranscodeRequestedPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner, moderationResult *string) error {
 	// 1. Download original video from MinIO
 	videoData, err := blobStore.DownloadObject(ctx, payload.StorageKey)
 	if err != nil {
+		if errors.Is(err, blob.ErrObjectNotFound) {
+			return permanentTranscode(fmt.Errorf("download original: %w", err))
+		}
 		return fmt.Errorf("download original: %w", err)
 	}
 
@@ -260,7 +458,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	// Probe video to determine source resolution for job creation
 	meta, err := processing.ProbeVideo(ctx, inputPath)
 	if err != nil {
-		return fmt.Errorf("probe video: %w", err)
+		return permanentUnlessCancelled(ctx, fmt.Errorf("probe video: %w", err))
 	}
 
 	// Determine if this is a reel (short-form video)
@@ -288,10 +486,11 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 			Status:        "queued",
 		}
 		if err := pgStore.CreateTranscodingJob(ctx, job); err != nil {
-			log.Printf("Warning: failed to create job record for %s: %v", q.name, err)
-			continue
+			return fmt.Errorf("create transcode job %s: %w", q.name, err)
 		}
-		_ = pgStore.UpdateTranscodingJob(ctx, jobID, "processing", nil, nil, nil)
+		if err := pgStore.UpdateTranscodingJob(ctx, jobID, "processing", nil, nil, nil); err != nil {
+			return fmt.Errorf("mark transcode job %s processing: %w", q.name, err)
+		}
 		jobEntries = append(jobEntries, jobEntry{name: q.name, jobID: jobID})
 	}
 
@@ -308,7 +507,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 		for _, je := range jobEntries {
 			_ = pgStore.UpdateTranscodingJob(ctx, je.jobID, "failed", nil, nil, &errMsg)
 		}
-		return fmt.Errorf("transcode: %w", err)
+		return permanentUnlessCancelled(ctx, fmt.Errorf("transcode: %w", err))
 	}
 
 	// 5. Upload variants to MinIO and update job records
@@ -318,14 +517,12 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	for _, out := range outputs {
 		data, err := os.ReadFile(out.FilePath)
 		if err != nil {
-			log.Printf("Warning: failed to read output %s: %v", out.Name, err)
-			continue
+			return fmt.Errorf("read transcode output %s: %w", out.Name, err)
 		}
 
 		objectKey := fmt.Sprintf("%s/%s", baseKey, out.Name)
 		if err := blobStore.UploadObject(ctx, objectKey, data, out.Mime); err != nil {
-			log.Printf("Warning: failed to upload variant %s: %v", out.Name, err)
-			continue
+			return fmt.Errorf("upload transcode variant %s: %w", out.Name, err)
 		}
 
 		w := out.Width
@@ -344,17 +541,20 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 		// Update matching job record to completed
 		for _, je := range jobEntries {
 			if je.name == out.Name {
-				_ = pgStore.UpdateTranscodingJob(ctx, je.jobID, "completed", &objectKey, &sz, nil)
+				if err := pgStore.UpdateTranscodingJob(ctx, je.jobID, "completed", &objectKey, &sz, nil); err != nil {
+					return fmt.Errorf("mark transcode job %s complete: %w", out.Name, err)
+				}
 				break
 			}
 		}
 	}
 
 	// 6. Insert variants into DB
-	if len(variants) > 0 {
-		if err := pgStore.InsertVariants(ctx, variants); err != nil {
-			return fmt.Errorf("insert variants: %w", err)
-		}
+	if len(variants) == 0 {
+		return permanentTranscode(fmt.Errorf("transcode produced no uploadable variants"))
+	}
+	if err := pgStore.InsertVariants(ctx, variants); err != nil {
+		return fmt.Errorf("insert variants: %w", err)
 	}
 
 	// 7. Generate blurhash from video thumbnail
@@ -384,7 +584,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	// 8b. Update orientation flag
 	isVertical := meta.Height > meta.Width
 	if err := pgStore.UpdateMediaOrientation(ctx, mediaAssetID, isVertical); err != nil {
-		log.Printf("Warning: failed to update media orientation for %s: %v", mediaAssetID, err)
+		return fmt.Errorf("update media orientation for %s: %w", mediaAssetID, err)
 	}
 
 	// 9. Populate URL fields
@@ -398,79 +598,132 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 			break
 		}
 	}
-	_ = pgStore.UpdateMediaURLs(ctx, mediaAssetID, &originalURL, &cdnURL, thumbnailURL)
+	if err := pgStore.UpdateMediaURLs(ctx, mediaAssetID, &originalURL, &cdnURL, thumbnailURL); err != nil {
+		return fmt.Errorf("update media URLs: %w", err)
+	}
 
 	// 10. Generate HLS adaptive bitrate variants
 	hlsDir, err := os.MkdirTemp("", "hls-"+payload.MediaAssetID)
 	if err != nil {
-		log.Printf("Warning: failed to create HLS temp dir for %s: %v", payload.MediaAssetID, err)
-	} else {
-		defer os.RemoveAll(hlsDir)
-		masterPath, variantFiles, hlsErr := processing.GenerateHLSVariants(ctx, inputPath, hlsDir)
-		if hlsErr != nil {
-			log.Printf("Warning: HLS generation failed for %s (non-fatal): %v", payload.MediaAssetID, hlsErr)
-		} else {
-			// Upload master playlist
-			masterKey := fmt.Sprintf("%s/hls/master.m3u8", strings.TrimSuffix(payload.StorageKey, "/original"))
-			masterData, readErr := os.ReadFile(masterPath)
-			if readErr == nil {
-				if uploadErr := blobStore.UploadObject(ctx, masterKey, masterData, "application/x-mpegURL"); uploadErr != nil {
-					log.Printf("Warning: failed to upload HLS master playlist for %s: %v", payload.MediaAssetID, uploadErr)
-				} else {
-					// Upload variant playlists and segments
-					for _, f := range variantFiles {
-						rel := strings.TrimPrefix(f, hlsDir)
-						rel = strings.TrimPrefix(rel, "/")
-						rel = strings.TrimPrefix(rel, "\\")
-						key := fmt.Sprintf("%s/hls/%s", strings.TrimSuffix(payload.StorageKey, "/original"), rel)
-						contentType := "video/MP2T"
-						if strings.HasSuffix(f, ".m3u8") {
-							contentType = "application/x-mpegURL"
-						}
-						fData, fErr := os.ReadFile(f)
-						if fErr != nil {
-							log.Printf("Warning: failed to read HLS file %s: %v", f, fErr)
-							continue
-						}
-						if uploadErr := blobStore.UploadObject(ctx, key, fData, contentType); uploadErr != nil {
-							log.Printf("Warning: failed to upload HLS file %s: %v", key, uploadErr)
-						}
-					}
-					// Store master key in DB
-					if dbErr := pgStore.UpdateHLSMasterKey(ctx, mediaAssetID, masterKey); dbErr != nil {
-						log.Printf("Warning: failed to store HLS master key for %s: %v", payload.MediaAssetID, dbErr)
-					}
-					log.Printf("HLS generation completed for media %s", payload.MediaAssetID)
-				}
-			}
+		return fmt.Errorf("create HLS temp dir: %w", err)
+	}
+	defer os.RemoveAll(hlsDir)
+	masterPath, variantFiles, hlsErr := processing.GenerateHLSVariants(ctx, inputPath, hlsDir)
+	if hlsErr != nil {
+		return permanentUnlessCancelled(ctx, fmt.Errorf("generate HLS variants: %w", hlsErr))
+	}
+	masterKey := fmt.Sprintf("%s/hls/master.m3u8", strings.TrimSuffix(payload.StorageKey, "/original"))
+	masterData, err := os.ReadFile(masterPath)
+	if err != nil {
+		return fmt.Errorf("read HLS master: %w", err)
+	}
+	if err := blobStore.UploadObject(ctx, masterKey, masterData, "application/x-mpegURL"); err != nil {
+		return fmt.Errorf("upload HLS master: %w", err)
+	}
+	for _, f := range variantFiles {
+		rel := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(f, hlsDir), "/"), "\\")
+		key := fmt.Sprintf("%s/hls/%s", strings.TrimSuffix(payload.StorageKey, "/original"), rel)
+		contentType := "video/MP2T"
+		if strings.HasSuffix(f, ".m3u8") {
+			contentType = "application/x-mpegURL"
+		}
+		fData, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read HLS file %s: %w", f, err)
+		}
+		if err := blobStore.UploadObject(ctx, key, fData, contentType); err != nil {
+			return fmt.Errorf("upload HLS file %s: %w", key, err)
 		}
 	}
+	if err := pgStore.UpdateHLSMasterKey(ctx, mediaAssetID, masterKey); err != nil {
+		return fmt.Errorf("store HLS master key: %w", err)
+	}
+	log.Printf("HLS generation completed for media %s", payload.MediaAssetID)
 
 	// 10b. Content-safety scan — frame-sample the original and run each
 	// frame through the scanner. A single unsafe frame rejects the video.
 	// post-service gates the post's visibility on the verdict stored here.
-	moderationStatus := "passed"
+	// Approval has no default. Only a completed provider verdict can set
+	// "passed"; extraction/provider/store uncertainty remains retryable and
+	// never produces ready-and-publishable media.
+	moderationStatus := "manual_review"
 	if frames, frErr := processing.ExtractFrames(ctx, inputPath, tmpDir, 5); frErr != nil {
-		log.Printf("Warning: frame extraction for scan failed for %s: %v", payload.MediaAssetID, frErr)
+		return permanentUnlessCancelled(ctx, fmt.Errorf("extract frames for safety scan: %w", frErr))
 	} else if res, scanErr := processing.ScanVideoFrames(ctx, scanner, frames); scanErr != nil {
-		log.Printf("Warning: content scan failed for %s: %v", payload.MediaAssetID, scanErr)
+		return fmt.Errorf("scan video frames: %w", scanErr)
 	} else if !res.IsSafe {
 		moderationStatus = "rejected"
 		log.Printf("Content scan REJECTED media %s: %s", payload.MediaAssetID, res.Reason)
+	} else {
+		moderationStatus = "passed"
 	}
-	if err := pgStore.UpdateMediaModerationStatus(ctx, mediaAssetID, moderationStatus); err != nil {
-		log.Printf("Warning: failed to store moderation status for %s: %v", payload.MediaAssetID, err)
+	if moderationResult == nil {
+		return fmt.Errorf("moderation result destination is nil")
 	}
-
-	// 11. Set status to ready
-	if err := pgStore.UpdateStatus(ctx, mediaAssetID, "ready"); err != nil {
-		return err
-	}
-
-	// 12. Activate any pending media slots referencing this asset
-	if err := pgStore.ActivatePendingSlot(ctx, mediaAssetID); err != nil {
-		log.Printf("Warning: failed to activate pending slots for %s: %v", mediaAssetID, err)
-	}
+	*moderationResult = moderationStatus
 
 	return nil
+}
+
+// selectScanner picks the content-safety scanner and refuses unsafe defaults
+// in production.
+//
+// M4-P0-3 / Decision 001 A1.1 — provider failure is not approval, and neither
+// is provider ABSENCE. Outside production the stub is permitted so the local
+// dev loop works, and it says so loudly.
+func selectScanner() (processing.Scanner, string, error) {
+	production := isWorkerProduction()
+
+	if backend := strings.ToLower(strings.TrimSpace(os.Getenv("MEDIA_SCANNER_BACKEND"))); backend == "rekognition" {
+		region := os.Getenv("AWS_REGION")
+		if region == "" {
+			return nil, "", fmt.Errorf("MEDIA_SCANNER_BACKEND=rekognition requires AWS_REGION")
+		}
+		// Static credentials are refused outright: workload credentials come
+		// from IRSA, and a manifest-supplied key is both a policy violation and
+		// a credential that cannot be rotated.
+		if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+			return nil, "", fmt.Errorf("static AWS credentials are present; the worker uses " +
+				"IRSA only. Remove AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY")
+		}
+		if production && (os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") == "" || os.Getenv("AWS_ROLE_ARN") == "") {
+			return nil, "", fmt.Errorf("production Rekognition requires AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; node-role fallback is forbidden")
+		}
+		s, err := processing.NewRekognitionScanner(context.Background(), region,
+			processing.RekognitionConfig{
+				MinConfidence: rekognitionConfidence(),
+			})
+		if err != nil {
+			return nil, "", fmt.Errorf("configure Rekognition scanner: %w", err)
+		}
+		return s, "rekognition (fail-closed to manual review)", nil
+	}
+
+	if production {
+		return nil, "", fmt.Errorf("no real content scanner configured in production. " +
+			"Set MEDIA_SCANNER_BACKEND=rekognition. Refusing to start: the stub scanner " +
+			"approves every video, which is worse than not processing at all")
+	}
+	return &processing.StubScanner{}, "STUB — passes everything, non-production only", nil
+}
+
+func rekognitionConfidence() float32 {
+	if v := os.Getenv("MEDIA_SCANNER_MIN_CONFIDENCE"); v != "" {
+		var f float32
+		if _, err := fmt.Sscanf(v, "%f", &f); err == nil && f > 0 && f <= 100 {
+			return f
+		}
+		log.Printf("MEDIA_SCANNER_MIN_CONFIDENCE=%q is not a percentage; using default", v)
+	}
+	return 80
+}
+
+func isWorkerProduction() bool {
+	for _, key := range []string{"DEPLOY_ENV", "APP_ENV", "ENVIRONMENT", "ENV"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+		case "production", "prod":
+			return true
+		}
+	}
+	return false
 }

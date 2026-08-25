@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,14 +17,18 @@ import (
 )
 
 type stubAuthService struct {
-	requestOTPFn       func(phone, purpose string) error
-	verifyOTPFn        func(phone, code, purpose, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
-	registerWithPassFn func(phone, email, password, firstName, lastName, dob, gender string) (*service.AuthResponse, error)
-	loginWithPassFn    func(identifier, password, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
-	refreshSessionFn   func(refreshToken, ip, userAgent string) (*service.AuthResponse, error)
-	logoutFn           func(refreshToken string) error
-	issueMiniAppFn     func(appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error)
-	miniAppJWKSFn      func() (*service.JSONWebKeySet, error)
+	requestOTPFn          func(phone, purpose string) error
+	verifyOTPFn           func(phone, code, purpose, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
+	registerWithPassFn    func(phone, email, password, firstName, lastName, dob, gender string) (*service.AuthResponse, error)
+	registerWithConsentFn func(phone, email, password, firstName, lastName, dob, gender string, consent service.RegistrationConsent) (*service.AuthResponse, error)
+	// lastConsent records what the handler forwarded, so a test can prove the
+	// consent reached the service rather than being silently dropped.
+	lastConsent      service.RegistrationConsent
+	loginWithPassFn  func(identifier, password, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
+	refreshSessionFn func(refreshToken, ip, userAgent string) (*service.AuthResponse, error)
+	logoutFn         func(refreshToken string) error
+	issueMiniAppFn   func(appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error)
+	miniAppJWKSFn    func() (*service.JSONWebKeySet, error)
 }
 
 func (s *stubAuthService) RequestOTP(ctx context.Context, phone, purpose string) error {
@@ -45,6 +50,17 @@ func (s *stubAuthService) RegisterWithPassword(ctx context.Context, phone, email
 		return nil, nil
 	}
 	return s.registerWithPassFn(phone, email, password, firstName, lastName, dob, gender)
+}
+
+// SR-6: registration now carries a date of birth and an explicit, versioned
+// consent. The stub records the consent it received so a test can prove the
+// handler forwarded it rather than dropping it.
+func (s *stubAuthService) RegisterWithConsent(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string, consent service.RegistrationConsent) (*service.AuthResponse, error) {
+	s.lastConsent = consent
+	if s.registerWithConsentFn != nil {
+		return s.registerWithConsentFn(phone, email, password, firstName, lastName, dob, gender, consent)
+	}
+	return s.RegisterWithPassword(ctx, phone, email, password, firstName, lastName, dob, gender)
 }
 
 func (s *stubAuthService) LoginWithPassword(ctx context.Context, identifier, password, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error) {
@@ -125,6 +141,14 @@ func (s *stubAuthService) ResetPassword(_ context.Context, _, _, _ string) error
 // Email/Phone verification stubs
 func (s *stubAuthService) RequestEmailVerification(_ context.Context, _ uuid.UUID) error { return nil }
 func (s *stubAuthService) VerifyEmail(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
+
+// CLB-3: the public, transaction-scoped forms.
+func (s *stubAuthService) VerifyEmailWithTransaction(_ context.Context, _, _ string) error {
+	return nil
+}
+func (s *stubAuthService) ResendVerificationWithTransaction(_ context.Context, _ string) error {
+	return nil
+}
 func (s *stubAuthService) RequestPhoneVerification(_ context.Context, _ uuid.UUID) error { return nil }
 func (s *stubAuthService) VerifyPhone(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
 
@@ -179,19 +203,27 @@ func noopMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) { c.Next() }
 }
 
-func TestRequestOTPInvalidBody(t *testing.T) {
+// SR-6: this used to assert that a malformed body produced 400. The route is
+// now retired — it generated a code, stored it, and sent nothing, because
+// there is no SMS integration in this service — so the body no longer matters
+// and 410 is the correct answer to every request.
+func TestRequestOTPIsRetiredRegardlessOfBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := New(&stubAuthService{}, &config.Config{}, nil, nil)
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/request-otp", bytes.NewBufferString("{bad-json"))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
+	for _, body := range []string{"{bad-json", `{"phone":"+911234567890"}`, ""} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/auth/request-otp", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		r.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, resp.Code)
+		if resp.Code != http.StatusGone {
+			t.Fatalf("body %q: expected status %d, got %d — a 2xx here tells the user "+
+				"a code is on its way when none can be delivered",
+				body, http.StatusGone, resp.Code)
+		}
 	}
 }
 
@@ -228,7 +260,15 @@ func TestForgotPasswordMissingIdentifier(t *testing.T) {
 	}
 }
 
-func TestRegisterSetsCookies(t *testing.T) {
+// LB-5: registration must NOT set auth cookies.
+//
+// This test previously asserted the opposite — that registration issued a
+// session immediately. That was the defect: the account was created ACTIVE
+// with no verification challenge sent, so someone else's email address became
+// a working account and the real owner was never contacted. Registration now
+// creates a PENDING account and issues no credential until the emailed code is
+// verified.
+func TestRegisterIssuesNoSessionUntilVerified(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	cfg := &config.Config{
@@ -237,39 +277,60 @@ func TestRegisterSetsCookies(t *testing.T) {
 		CookieSecure:    false,
 	}
 	h := New(&stubAuthService{
-		registerWithPassFn: func(phone, email, password, firstName, lastName, dob, gender string) (*service.AuthResponse, error) {
-			return &service.AuthResponse{
-				Tokens: service.TokenPair{
-					AccessToken:  "access",
-					RefreshToken: "refresh",
-					ExpiresAt:    time.Now().Add(15 * time.Minute),
-				},
-			}, nil
+		registerWithConsentFn: func(phone, email, password, firstName, lastName, dob, gender string, consent service.RegistrationConsent) (*service.AuthResponse, error) {
+			// What the real service returns now: no tokens, pending flag set.
+			return &service.AuthResponse{RequiresVerification: true}, nil
 		},
 	}, cfg, nil, nil)
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewBufferString(`{"email":"a@b.com","password":"secret"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register",
+		bytes.NewBufferString(validRegistrationBody()))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	r.ServeHTTP(resp, req)
 
 	if resp.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d", http.StatusCreated, resp.Code)
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, resp.Code, resp.Body.String())
 	}
-	cookies := resp.Result().Cookies()
-	foundAccess := false
-	foundRefresh := false
-	for _, c := range cookies {
-		if c.Name == accessTokenCookieName {
-			foundAccess = true
-		}
-		if c.Name == refreshTokenCookieName {
-			foundRefresh = true
+	for _, c := range resp.Result().Cookies() {
+		if c.Name == accessTokenCookieName || c.Name == refreshTokenCookieName {
+			t.Fatalf("registration set %s: an UNVERIFIED account received a working "+
+				"credential, so an address can be claimed without its owner ever "+
+				"being contacted", c.Name)
 		}
 	}
-	if !foundAccess || !foundRefresh {
-		t.Fatalf("expected access and refresh cookies to be set")
+	if !strings.Contains(resp.Body.String(), "requires_verification") {
+		t.Errorf("the response does not tell the client verification is required: %s",
+			resp.Body.String())
+	}
+}
+
+// The consent the handler received must reach the service. A consent that is
+// collected and dropped is the defect LB-5 fixes on the persistence side.
+func TestRegisterForwardsConsentToTheService(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	stub := &stubAuthService{
+		registerWithConsentFn: func(_, _, _, _, _, _, _ string, _ service.RegistrationConsent) (*service.AuthResponse, error) {
+			return &service.AuthResponse{RequiresVerification: true}, nil
+		},
+	}
+	h := New(stub, &config.Config{}, nil, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register",
+		bytes.NewBufferString(validRegistrationBody()))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !stub.lastConsent.Accepted {
+		t.Error("accepted_terms did not reach the service")
+	}
+	if stub.lastConsent.Version != service.CurrentTermsVersion {
+		t.Errorf("terms_version = %q, want %q — the version is what an audit needs; "+
+			"a boolean alone cannot say WHICH text was agreed to",
+			stub.lastConsent.Version, service.CurrentTermsVersion)
 	}
 }
 

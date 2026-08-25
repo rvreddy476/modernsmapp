@@ -10,7 +10,7 @@ service:
   port: 8094
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/analytics-service
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/analytics-service'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 2
@@ -24,17 +24,16 @@ resources:
     memory: 512Mi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-analytics-service-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-analytics-service-irsa'
 
 externalSecret:
   enabled: true
   remoteKey: atpost/staging/analytics-service
   data:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
-    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
-    - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
-    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
 
 env:
   ENV: staging

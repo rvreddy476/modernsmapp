@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/monetization-service/internal/service"
@@ -16,8 +17,9 @@ import (
 )
 
 type Handler struct {
-	svc         *service.Service
-	internalKey string
+	svc           *service.Service
+	internalKey   string
+	writesEnabled bool
 }
 
 func New(svc *service.Service) *Handler {
@@ -29,11 +31,21 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 	return h
 }
 
+// WithWritesEnabled controls the financial launch boundary. It defaults to
+// false: Module 6 exposes only the authoritative creator-ledger reads. Money
+// movement is enabled later only after its separate KYC/provider/reconciliation
+// checkpoint.
+func (h *Handler) WithWritesEnabled(enabled bool) *Handler {
+	h.writesEnabled = enabled
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	if h.internalKey != "" {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
 	v1 := r.Group("/v1/monetization")
+	v1.Use(h.launchBoundary())
 	{
 		// Creator earnings ledger (canonical name as of 2026-04-30, Phase 2 §D4).
 		v1.GET("/creator-ledger", h.GetCreatorLedger)
@@ -157,6 +169,37 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 }
 
+var betaReadOnlyPaths = map[string]struct{}{
+	"/v1/monetization/creator-ledger": {},
+	"/v1/monetization/wallet":         {}, // deprecated read-only alias
+	"/v1/monetization/transactions":   {},
+	"/v1/monetization/payouts":        {},
+}
+
+// launchBoundary fails closed while financial products are not launched.
+// The allowlist is intentionally exact: adding a new GET does not
+// accidentally publish admin, tax, entitlement, or settlement data.
+func (h *Handler) launchBoundary() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if h.writesEnabled {
+			c.Next()
+			return
+		}
+		path := strings.TrimSuffix(c.Request.URL.Path, "/")
+		_, allowed := betaReadOnlyPaths[path]
+		if c.Request.Method != http.MethodGet || !allowed {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": gin.H{
+					"code":    "MONETIZATION_NOT_LAUNCHED",
+					"message": "Money actions are not available in this beta.",
+				},
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -192,8 +235,9 @@ func getUserID(c *gin.Context) (uuid.UUID, bool) {
 // Deprecation header and an inline `_deprecated_use` hint, and logs a
 // warning per request for ops visibility.
 
-// GetCreatorLedger returns the creator-earnings ledger row for the
-// caller (auto-creating it on first access).
+// GetCreatorLedger returns the caller's recorded creator-earnings ledger. A
+// creator with no activity receives a zero-value, has_activity=false view;
+// this read never creates financial state.
 func (h *Handler) GetCreatorLedger(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -206,6 +250,20 @@ func (h *Handler) GetCreatorLedger(c *gin.Context) {
 		return
 	}
 
+	if !wallet.HasActivity {
+		api.JSON(c.Writer, http.StatusOK, map[string]any{
+			"user_id":                 wallet.UserID,
+			"balance_paise":           int64(0),
+			"lifetime_earnings_paise": int64(0),
+			"pending_payout_paise":    int64(0),
+			"currency":                wallet.Currency,
+			"is_frozen":               false,
+			"has_activity":            false,
+			"created_at":              nil,
+			"updated_at":              nil,
+		}, nil)
+		return
+	}
 	api.JSON(c.Writer, http.StatusOK, wallet, nil)
 }
 
@@ -241,7 +299,7 @@ func (h *Handler) GetWalletDeprecated(c *gin.Context) {
 	// build a flat map so existing clients that read fields like
 	// `balance_paise` keep working.
 	body := map[string]interface{}{
-		"_deprecated_use": "/v1/monetization/creator-ledger",
+		"_deprecated_use":   "/v1/monetization/creator-ledger",
 		"_deprecated_since": "2026-04-30",
 		"_sunset_after":     "2026-10-30",
 	}
@@ -252,8 +310,14 @@ func (h *Handler) GetWalletDeprecated(c *gin.Context) {
 		body["pending_payout_paise"] = wallet.PendingPayoutPaise
 		body["currency"] = wallet.Currency
 		body["is_frozen"] = wallet.IsFrozen
-		body["created_at"] = wallet.CreatedAt
-		body["updated_at"] = wallet.UpdatedAt
+		body["has_activity"] = wallet.HasActivity
+		if wallet.HasActivity {
+			body["created_at"] = wallet.CreatedAt
+			body["updated_at"] = wallet.UpdatedAt
+		} else {
+			body["created_at"] = nil
+			body["updated_at"] = nil
+		}
 	}
 	api.JSON(c.Writer, http.StatusOK, body, nil)
 }

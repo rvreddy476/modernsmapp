@@ -3,12 +3,16 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var ErrActiveAppealExists = errors.New("an active appeal already exists for this content")
 
 // ─── Structs ──────────────────────────────────────────────────────────────────
 
@@ -100,6 +104,10 @@ func (s *TrustExtrasStore) CreateAppeal(ctx context.Context, appeal *ContentAppe
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, appeal.ID, appeal.UserID, appeal.ContentType, appeal.ContentID,
 		appeal.ActionTaken, appeal.AppealReason, appeal.Status, appeal.SubmittedAt)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_appeals_one_active_per_user_content" {
+		return ErrActiveAppealExists
+	}
 	return err
 }
 
@@ -181,16 +189,16 @@ func (s *TrustExtrasStore) ListUserAppeals(ctx context.Context, userID uuid.UUID
 	return appeals, nil
 }
 
-func (s *TrustExtrasStore) UpdateAppealStatus(ctx context.Context, id uuid.UUID, status, note string, reviewerID *uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+func (s *TrustExtrasStore) TransitionAppeal(ctx context.Context, id uuid.UUID, from []string, status, note string, reviewerID *uuid.UUID) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
 		UPDATE trust.content_appeals
 		SET status = $2,
 		    resolution_note = NULLIF($3, ''),
 		    reviewed_by = $4,
 		    resolved_at = CASE WHEN $2 IN ('upheld','overturned','expired') THEN NOW() ELSE resolved_at END
-		WHERE id = $1
-	`, id, status, note, reviewerID)
-	return err
+		WHERE id = $1 AND status = ANY($5)
+	`, id, status, note, reviewerID, from)
+	return tag.RowsAffected() == 1, err
 }
 
 // HasOpenAppeal checks if an open appeal already exists for the same user+content.

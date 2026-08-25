@@ -1,16 +1,13 @@
 package http
 
 import (
-	"crypto/hmac"
 	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/atpost/chat-shared/accessauth"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -26,6 +23,7 @@ type JWTKeySet struct {
 	// RSAKeys (optional) verify RS256 tokens, keyed by `kid`. HS256 stays
 	// active in parallel so pre-cutover tokens keep verifying.
 	RSAKeys map[string]*rsa.PublicKey
+	Policy  accessauth.Policy
 }
 
 func (k JWTKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) {
@@ -81,7 +79,7 @@ func authenticateUserFromJWTWithExpiry(r *http.Request, jwtSecret string, allowQ
 // rotation window construct a key set from JWT_KID / JWT_SECRET_PREVIOUS
 // / JWT_KID_PREVIOUS and pass it here.
 func authenticateUserFromJWTWithKeys(r *http.Request, keys JWTKeySet, allowQueryToken bool) (uuid.UUID, time.Time, error) {
-	if strings.TrimSpace(keys.ActiveSecret) == "" {
+	if strings.TrimSpace(keys.ActiveSecret) == "" && len(keys.RSAKeys) == 0 {
 		return uuid.Nil, time.Time{}, errors.New("jwt secret not configured")
 	}
 	token := readBearerToken(r, allowQueryToken)
@@ -130,101 +128,21 @@ func parseAndValidateJWT(token string, secret []byte) (uuid.UUID, time.Time, err
 }
 
 func parseAndValidateJWTWithKeys(token string, keys JWTKeySet) (uuid.UUID, time.Time, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return uuid.Nil, time.Time{}, errors.New("invalid token format")
+	policy := keys.Policy
+	if !policy.Production && len(policy.AllowedIssuers) == 0 && policy.RequiredAudience == "" && !policy.AllowHS256 {
+		policy = accessauth.Policy{AllowHS256: true, ClockSkew: time.Minute}
 	}
-
-	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	identity, err := accessauth.Verify(token, accessauth.KeySet{
+		ActiveKID: keys.ActiveKID, ActiveSecret: keys.ActiveSecret,
+		PreviousKID: keys.PreviousKID, PreviousSecret: keys.PreviousSecret,
+		RSAKeys: keys.RSAKeys,
+	}, policy, time.Now())
 	if err != nil {
-		return uuid.Nil, time.Time{}, errors.New("invalid token header")
+		return uuid.Nil, time.Time{}, err
 	}
-	payloadRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return uuid.Nil, time.Time{}, errors.New("invalid token payload")
-	}
-	signatureRaw, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return uuid.Nil, time.Time{}, errors.New("invalid token signature")
-	}
-
-	var header map[string]any
-	if err := json.Unmarshal(headerRaw, &header); err != nil {
-		return uuid.Nil, time.Time{}, errors.New("invalid token header json")
-	}
-	alg, _ := header["alg"].(string)
-	kid, _ := header["kid"].(string)
-	signingInput := parts[0] + "." + parts[1]
-	// Accept HS256 and RS256 only (no `none`/alg-confusion). RS256 verifies with
-	// a public key the gateway can't mint with; HS256 stays accepted in parallel
-	// so tokens minted before the cutover keep working.
-	switch alg {
-	case "HS256":
-		secret, ok := keys.secretFor(kid)
-		if !ok {
-			return uuid.Nil, time.Time{}, errors.New("unknown kid")
-		}
-		mac := hmac.New(sha256.New, secret)
-		_, _ = mac.Write([]byte(signingInput))
-		if !hmac.Equal(signatureRaw, mac.Sum(nil)) {
-			return uuid.Nil, time.Time{}, errors.New("invalid token signature")
-		}
-	case "RS256":
-		pub, ok := keys.rsaFor(kid)
-		if !ok {
-			return uuid.Nil, time.Time{}, errors.New("unknown kid")
-		}
-		if err := verifyRS256(signingInput, signatureRaw, pub); err != nil {
-			return uuid.Nil, time.Time{}, errors.New("invalid token signature")
-		}
-	default:
-		return uuid.Nil, time.Time{}, errors.New("unsupported jwt algorithm")
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
-		return uuid.Nil, time.Time{}, errors.New("invalid token payload json")
-	}
-
-	nowUnix := time.Now().Unix()
-	var expAt time.Time
-	if exp, ok := readNumericClaim(payload["exp"]); ok {
-		if nowUnix >= exp {
-			return uuid.Nil, time.Time{}, errors.New("token expired")
-		}
-		expAt = time.Unix(exp, 0)
-	}
-	if nbf, ok := readNumericClaim(payload["nbf"]); ok && nowUnix < nbf {
-		return uuid.Nil, time.Time{}, errors.New("token not active yet")
-	}
-
-	idStr, _ := payload["sub"].(string)
-	if idStr == "" {
-		idStr, _ = payload["user_id"].(string)
-	}
-	if idStr == "" {
-		return uuid.Nil, time.Time{}, errors.New("missing subject claim")
-	}
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(identity.UserID)
 	if err != nil {
 		return uuid.Nil, time.Time{}, errors.New("invalid subject claim")
 	}
-	return id, expAt, nil
-}
-
-func readNumericClaim(raw any) (int64, bool) {
-	switch v := raw.(type) {
-	case float64:
-		return int64(v), true
-	case int64:
-		return v, true
-	case json.Number:
-		n, err := v.Int64()
-		if err != nil {
-			return 0, false
-		}
-		return n, true
-	default:
-		return 0, false
-	}
+	return id, identity.ExpiresAt, nil
 }

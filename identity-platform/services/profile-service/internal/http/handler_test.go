@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/identity-profile-service/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/atpost/identity-profile-service/internal/store"
 )
 
 type stubProfileService struct{}
@@ -27,6 +27,9 @@ func (s *stubProfileService) GetProfile(ctx context.Context, userID uuid.UUID) (
 }
 func (s *stubProfileService) GetProfileByUsername(ctx context.Context, username string) (*store.Profile, error) {
 	return nil, nil
+}
+func (s *stubProfileService) FindProfileMediaOwner(context.Context, uuid.UUID) (uuid.UUID, string, bool, error) {
+	return uuid.Nil, "", false, nil
 }
 func (s *stubProfileService) UpdateProfile(ctx context.Context, userID uuid.UUID, params store.UpdateProfileParams) (*store.Profile, error) {
 	return nil, nil
@@ -76,6 +79,7 @@ func (s *stubProfileService) FollowUser(ctx context.Context, followerID, followi
 func (s *stubProfileService) UnfollowUser(ctx context.Context, followerID, followingID uuid.UUID) error {
 	return nil
 }
+
 // Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 func (s *stubProfileService) ListFollowers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error) {
 	return nil, 0, nil

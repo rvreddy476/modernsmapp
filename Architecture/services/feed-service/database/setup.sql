@@ -55,3 +55,25 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     feed_mode  TEXT NOT NULL DEFAULT 'chronological',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- migration 003 (Module 1 P0-4): explicit viewer long-video frequency for
+-- the social home feed. hidden = hard exclusion; the others are
+-- multiplier + composition-target tiers. Does not affect PostTube
+-- surfaces, subscriptions, or direct links.
+ALTER TABLE user_preferences
+    ADD COLUMN IF NOT EXISTS long_video_frequency TEXT NOT NULL DEFAULT 'balanced'
+        CHECK (long_video_frequency IN ('hidden','reduced','balanced','preferred'));
+
+-- migration 003 (Module 1 P0-1): normalized per-post main-feed distribution
+-- state, written from PostCreated/PostDistributionUpdated events. rev is
+-- the post-service monotonic distribution_rev — the upsert only applies
+-- when the incoming rev is newer, so replayed/reordered events are safe.
+-- Absence of a row = legacy post = eligible for social home.
+CREATE TABLE IF NOT EXISTS feed_distribution (
+    post_id    UUID PRIMARY KEY,
+    main_feed  BOOLEAN NOT NULL DEFAULT TRUE,
+    rev        BIGINT  NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_feed_distribution_excluded
+    ON feed_distribution (post_id) WHERE main_feed = FALSE;

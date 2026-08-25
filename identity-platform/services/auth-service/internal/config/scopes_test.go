@@ -9,10 +9,10 @@ func TestScopesForUser(t *testing.T) {
 		ScopeModeratorUserIDs:  map[string]struct{}{"mod-1": {}},
 	}
 	cases := map[string]string{
-		"super-1":   "superadmin admin moderator", // superadmin implies admin+moderator
-		"admin-1":   "admin moderator",            // admin implies moderator
-		"mod-1":     "moderator",
-		"nobody":    "", // ordinary user gets no privileged scope
+		"super-1": "superadmin admin moderator", // superadmin implies admin+moderator
+		"admin-1": "admin moderator",            // admin implies moderator
+		"mod-1":   "moderator",
+		"nobody":  "", // ordinary user gets no privileged scope
 	}
 	for userID, want := range cases {
 		if got := cfg.ScopesForUser(userID); got != want {
@@ -28,12 +28,12 @@ func TestExpandRoles(t *testing.T) {
 	}{
 		{nil, ""},
 		{[]string{"moderator"}, "moderator"},
-		{[]string{"admin"}, "admin moderator"},                       // admin implies moderator
-		{[]string{"superadmin"}, "superadmin admin moderator"},       // superadmin implies all
-		{[]string{"moderator", "admin"}, "admin moderator"},          // union, deduped
+		{[]string{"admin"}, "admin moderator"},                 // admin implies moderator
+		{[]string{"superadmin"}, "superadmin admin moderator"}, // superadmin implies all
+		{[]string{"moderator", "admin"}, "admin moderator"},    // union, deduped
 		{[]string{"admin", "superadmin"}, "superadmin admin moderator"},
-		{[]string{"bogus"}, ""},                                      // unknown role ignored
-		{[]string{"moderator", "moderator"}, "moderator"},            // dedupe
+		{[]string{"bogus"}, ""},                           // unknown role ignored
+		{[]string{"moderator", "moderator"}, "moderator"}, // dedupe
 	}
 	for _, tc := range cases {
 		if got := ExpandRoles(tc.roles); got != tc.want {

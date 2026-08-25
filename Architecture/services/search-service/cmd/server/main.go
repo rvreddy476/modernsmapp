@@ -7,14 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/search-service/database"
 	"github.com/atpost/search-service/internal/events"
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
 	"github.com/atpost/search-service/internal/reindex"
-	"github.com/atpost/search-service/database"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -22,6 +21,7 @@ import (
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -41,6 +41,17 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("connected to opensearch")
+
+	// M2 re-review v2 P0-2: index bootstrap is otherwise best-effort and
+	// log-only, which is acceptable for a search index that refills itself
+	// but NOT for author_fences_v1. Without that index every erased author
+	// looks un-erased and their content becomes indexable again. Refuse to
+	// start rather than start unsafely.
+	if err := searchStore.EnsureSafetyIndices(context.Background()); err != nil {
+		slog.Error("safety index unavailable; refusing to start", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("safety indices verified")
 
 	// 4. Redis
 	ctx := context.Background()
@@ -88,6 +99,24 @@ func main() {
 	)
 	go identityConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", identityTopic, "group", "search-service-identity-group")
+
+	// M2-P0-2: automated dead-letter replay for the social topic.
+	//
+	// Eligibility transitions carry moderation decisions. A rejection,
+	// takedown, visibility downgrade or deletion that fails to reach
+	// OpenSearch leaves unsafe or private content publicly searchable, so
+	// the DLQ cannot be a terminal state that waits for an operator. The
+	// replayer re-applies dead-lettered messages through the same
+	// idempotent handlers, and only pages once automated recovery is
+	// genuinely exhausted.
+	//
+	// Only the social topic gets a replayer: identity events are
+	// self-healing via reindex.AutoHealUsersOnStartup.
+	if replayer := events.NewDLQReplayer(brokerList, "search-service-group", socialConsumer, kafkaDialer); replayer != nil {
+		go replayer.Start(consumerCtx)
+		defer replayer.Close()
+		slog.Info("started search DLQ replayer")
+	}
 
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("search-service")

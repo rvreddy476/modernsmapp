@@ -1,0 +1,132 @@
+{{- if .Values.worker.enabled }}
+{{/*
+Module 4 M4-P0-3 — the optional worker workload.
+
+WHY THIS LIVES IN THE SHARED CHART
+
+Only media-service needs a background worker today, but a dedicated media
+chart would duplicate the ServiceAccount, ExternalSecret, labels and IRSA
+wiring that every service already shares — four copies of the identity plumbing
+that grants AWS access, which is the last thing worth duplicating.
+
+The whole file is inside `if .Values.worker.enabled`, so a service that does not
+opt in renders EXACTLY what it rendered before. That is asserted by a render
+regression test rather than assumed.
+
+WHY IT IS A SEPARATE DEPLOYMENT AND NOT A SECOND CONTAINER
+
+The worker and the server fail, scale and roll independently. A transcode
+backlog should scale the worker without adding HTTP replicas, and a crash-
+looping worker must not take the API down with it. They also run different
+images: the server image has no ffmpeg and does not contain the worker binary.
+
+NO SERVICE, NO INGRESS, NO HPA BY DEFAULT
+
+The worker takes no inbound traffic. Giving it a Service would publish an
+endpoint nothing should call.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  {{- /* Distinct name so the two Deployments cannot collide. */}}
+  name: {{ include "atpost-service.name" . }}-worker
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "atpost-service.selectorLabels" . | nindent 6 }}
+      {{- /*
+        The component label is part of the SELECTOR, not just metadata. Without
+        it both Deployments would select the same pods and each would try to
+        scale the other's replicas to its own count — a fight that looks like
+        random pod churn.
+      */}}
+      app.kubernetes.io/component: worker
+  strategy:
+    {{- /*
+      Recreate, not RollingUpdate. During a rolling update two generations of
+      worker consume the same partitions; the consumer group rebalances twice
+      and in-flight transcodes are abandoned mid-job. The worker is not
+      latency-critical, so a brief gap is cheaper than duplicated media work.
+    */}}
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "atpost-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- /* Same ServiceAccount, so the worker gets the SAME IRSA role as the
+             service it belongs to and no broader AWS permission than that. */}}
+      serviceAccountName: {{ include "atpost-service.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      {{- /*
+        ffmpeg writes multi-hundred-megabyte intermediates. The container
+        filesystem is read-only and /tmp is an explicitly sized emptyDir, so a
+        pathological input fills a bounded volume and kills one pod instead of
+        filling the node's disk and evicting everything on it.
+      */}}
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.worker.scratchSizeLimit }}
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      containers:
+        - name: {{ .Values.service.name }}-worker
+          image: "{{ tpl .Values.worker.image.repository . }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scratch
+              mountPath: /tmp
+          env:
+            - name: TMPDIR
+              value: /tmp
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.worker.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- if .Values.externalSecret.enabled }}
+          envFrom:
+            - secretRef:
+                name: {{ include "atpost-service.name" . }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- /*
+            No readiness probe: the worker serves nothing, so readiness has no
+            meaning and a probe would only add a way to be marked unready while
+            working correctly. Liveness is opt-in because a naive one restarts
+            a pod mid-transcode and guarantees the job never finishes.
+          */}}
+          {{- with .Values.worker.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

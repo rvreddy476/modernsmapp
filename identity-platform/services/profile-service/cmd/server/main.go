@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/atpost/identity-profile-service/database"
 	"github.com/atpost/identity-profile-service/internal/config"
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/http"
@@ -17,7 +17,10 @@ import (
 	"github.com/atpost/identity-shared/logging"
 	sharedmiddleware "github.com/atpost/identity-shared/middleware"
 	tracepkg "github.com/atpost/identity-shared/o11y/trace"
+	"github.com/atpost/identity-shared/store/schemabootstrap"
+	"github.com/atpost/identity-shared/store/schemaguard"
 	"github.com/atpost/identity-shared/transport"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,6 +65,37 @@ func main() {
 		logger.Error("database ping failed", "err", err)
 		os.Exit(1)
 	}
+
+	// Create the schema this service owns.
+	//
+	// profile-service had no schema file at all and relied entirely on a
+	// boot-time migration runner pointed at a directory that was disabled
+	// because its contents could not execute. The result: six of the ten
+	// tables this service queries existed in NO environment, and the service
+	// reported healthy while answering 500 on every request that touched them
+	// (/stats, /links, /about, /modules, /profile-links, /handle-history).
+	//
+	// This is strictly additive, idempotent DDL — it creates what is missing
+	// and never alters or drops. Changes that need a decision about existing
+	// data belong in the deployment pipeline.
+	if err := schemabootstrap.Apply(ctx, dbPool, database.SetupSQL); err != nil {
+		logger.Error("failed to bootstrap profile schema", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("profile schema ready")
+
+	// Verify every object this build depends on actually exists.
+	//
+	// The bootstrap above only creates what this service owns; profile.profiles
+	// comes from auth-service. Fatal on purpose: a service running against a
+	// schema it cannot rely on does not degrade, it corrupts — and "reports
+	// healthy, returns 500" is precisely the state this check ends.
+	if err := schemaguard.Verify(ctx, dbPool, "profile-service", store.SchemaRequirements); err != nil {
+		logger.Error("schema precondition failed", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("schema preconditions verified", "objects", len(store.SchemaRequirements))
+
 	logger.Info("connected to Postgres")
 
 	// 2. Redis
@@ -105,6 +139,46 @@ func main() {
 		logger.Info("profile-service: internal-service-key gate enabled")
 	} else {
 		logger.Warn("profile-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+	}
+
+	// Module 3 SR-4 — block enforcement on profile surfaces.
+	//
+	// Nothing here consulted the block graph: a blocked account could open the
+	// profile of the person who blocked them and read it, every time. SR-3
+	// removed this service's own block table (nobody enforced it), so
+	// enforcement means asking graph-service, which is canonical.
+	//
+	// Unconfigured is NOT a degraded mode — the handler refuses authenticated
+	// profile reads rather than serving them unprotected.
+	if graphURL := os.Getenv("GRAPH_SERVICE_URL"); graphURL != "" {
+		profileHandler.WithBlockChecker(
+			http.NewGraphBlockChecker(graphURL, os.Getenv("INTERNAL_SERVICE_KEY")))
+		logger.Info("profile-service: block denial enabled", "graph_service_url", graphURL)
+	} else {
+		logger.Error("profile-service: GRAPH_SERVICE_URL not set — block enforcement " +
+			"cannot run, so authenticated profile reads will be REFUSED. Set it, or " +
+			"blocked users would be able to read the profile of whoever blocked them.")
+	}
+	if mediaURL := os.Getenv("MEDIA_SERVICE_URL"); mediaURL != "" {
+		profileHandler.WithMediaAuthority(
+			http.NewMediaAuthorityClient(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")))
+		logger.Info("profile-service: media reference authority enabled", "media_service_url", mediaURL)
+	} else {
+		logger.Error("profile-service: MEDIA_SERVICE_URL not set — avatar and cover updates will be refused")
+	}
+	graphURL := os.Getenv("GRAPH_SERVICE_URL")
+	identityUserURL := os.Getenv("USER_SERVICE_URL")
+	if graphURL != "" && identityUserURL != "" {
+		profileHandler.WithProfilePhotoAccess(
+			http.NewProfilePhotoAccessChecker(
+				graphURL,
+				identityUserURL,
+				os.Getenv("INTERNAL_SERVICE_KEY"),
+			),
+		)
+		logger.Info("profile-service: profile-photo privacy authority enabled")
+	} else {
+		logger.Error("profile-service: GRAPH_SERVICE_URL and USER_SERVICE_URL are required; profile media delivery will fail closed")
 	}
 
 	// 3b. Kafka consumer (inbox-dedup enabled)

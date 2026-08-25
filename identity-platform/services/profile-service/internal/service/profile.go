@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/atpost/identity-profile-service/internal/config"
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/store"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -91,6 +91,13 @@ func (s *Service) GetProfileByUsername(ctx context.Context, username string) (*s
 
 	s.cacheProfile(cacheKey, p)
 	return p, nil
+}
+
+func (s *Service) FindProfileMediaOwner(
+	ctx context.Context,
+	mediaID uuid.UUID,
+) (uuid.UUID, string, bool, error) {
+	return s.store.FindProfileMediaOwner(ctx, mediaID)
 }
 
 // ListProfiles returns a paginated list of all profiles.
@@ -653,13 +660,13 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 
 	// Update profile username
 	params := store.UpdateProfileParams{
-		DisplayName: profile.DisplayName,
-		Bio:         profile.Bio,
-		Username:    &newUsername,
-		Category:    profile.Category,
-		Profession:  profile.Profession,
-		Website:     profile.Website,
-		Location:    profile.Location,
+		DisplayName:       profile.DisplayName,
+		Bio:               profile.Bio,
+		Username:          &newUsername,
+		Category:          profile.Category,
+		Profession:        profile.Profession,
+		Website:           profile.Website,
+		Location:          profile.Location,
 		ProfileThemeColor: profile.ProfileThemeColor,
 	}
 	updated, err := s.store.UpdateProfile(ctx, userID, params)

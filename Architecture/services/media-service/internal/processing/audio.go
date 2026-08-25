@@ -24,9 +24,9 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string) (outputPath 
 
 	args := []string{
 		"-y", "-i", inputPath,
-		"-vn",            // no video
-		"-c:a", "aac",    // AAC codec
-		"-b:a", "128k",   // 128 kbps
+		"-vn",         // no video
+		"-c:a", "aac", // AAC codec
+		"-b:a", "128k", // 128 kbps
 		"-movflags", "+faststart",
 		outputPath,
 	}
@@ -94,9 +94,9 @@ func GenerateWaveform(ctx context.Context, inputPath, outputDir string, numBins 
 	pcmPath := filepath.Join(outputDir, "waveform.pcm")
 	args := []string{
 		"-y", "-i", inputPath,
-		"-ac", "1",           // mono
-		"-ar", "8000",        // 8kHz
-		"-f", "s16le",        // 16-bit signed PCM
+		"-ac", "1", // mono
+		"-ar", "8000", // 8kHz
+		"-f", "s16le", // 16-bit signed PCM
 		"-acodec", "pcm_s16le",
 		pcmPath,
 	}
@@ -180,9 +180,9 @@ func ExtractFrames(ctx context.Context, inputPath, outputDir string, numFrames i
 		return nil, fmt.Errorf("probe video for frames: %w", err)
 	}
 
-	durationSec := float64(meta.DurationMs) / 1000.0
-	if durationSec < 1 {
-		durationSec = 1
+	durationSec := meta.DurationFloat
+	if durationSec <= 0 {
+		return nil, fmt.Errorf("video has no positive duration")
 	}
 
 	interval := durationSec / float64(numFrames+1)
@@ -255,6 +255,56 @@ func ValidateVideoMagicBytes(data []byte) (string, bool) {
 	// AVI: RIFF....AVI
 	if string(data[0:4]) == "RIFF" && string(data[8:12]) == "AVI " {
 		return "video/avi", true
+	}
+
+	return "", false
+}
+
+// ValidateAudioMagicBytes checks the first bytes of a file to verify it is
+// a real audio container (Module 1 P0-6: voice posts must not accept a
+// renamed executable/script just because the client declared audio/*).
+func ValidateAudioMagicBytes(data []byte) (string, bool) {
+	if len(data) < 12 {
+		return "", false
+	}
+
+	// M4A / AAC in MP4 container: ftyp box (same family as MP4 video —
+	// the declared MIME + server-side probe decide audio vs video).
+	if string(data[4:8]) == "ftyp" {
+		return "audio/mp4", true
+	}
+
+	// OGG / Opus
+	if string(data[0:4]) == "OggS" {
+		return "audio/ogg", true
+	}
+
+	// WAV: RIFF....WAVE
+	if string(data[0:4]) == "RIFF" && string(data[8:12]) == "WAVE" {
+		return "audio/wav", true
+	}
+
+	// FLAC
+	if string(data[0:4]) == "fLaC" {
+		return "audio/flac", true
+	}
+
+	// WebM/Matroska audio: EBML header
+	if data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
+		return "audio/webm", true
+	}
+
+	// MP3: ID3 tag or MPEG frame sync (0xFF 0xFB/0xF3/0xF2/0xFA)
+	if string(data[0:3]) == "ID3" {
+		return "audio/mpeg", true
+	}
+	if data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
+		return "audio/mpeg", true
+	}
+
+	// AMR (common on low-end Android voice recorders)
+	if len(data) >= 6 && string(data[0:6]) == "#!AMR\n" {
+		return "audio/amr", true
 	}
 
 	return "", false

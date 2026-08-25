@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +29,7 @@ import (
 //     is a known abuse window.
 type CallPolicy struct {
 	graphServiceURL string
+	internalKey     string
 	httpClient      *http.Client
 }
 
@@ -50,9 +50,10 @@ var (
 	ErrGraphUnavailable = errors.New("call-relationship lookup temporarily unavailable")
 )
 
-func NewCallPolicy(graphServiceURL string) *CallPolicy {
+func NewCallPolicy(graphServiceURL, internalKey string) *CallPolicy {
 	return &CallPolicy{
 		graphServiceURL: graphServiceURL,
+		internalKey:     internalKey,
 		httpClient:      &http.Client{Timeout: 5 * time.Second},
 	}
 }
@@ -83,8 +84,8 @@ func (p *CallPolicy) CanCall(ctx context.Context, callerID, targetID uuid.UUID) 
 	}
 	// graph-service gates /v1/graph/* behind the internal service key —
 	// without it the call 401s and CanCall fails closed on every call.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		req.Header.Set("X-Internal-Service-Key", key)
+	if p.internalKey != "" {
+		req.Header.Set("X-Internal-Service-Key", p.internalKey)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -100,39 +101,45 @@ func (p *CallPolicy) CanCall(ctx context.Context, callerID, targetID uuid.UUID) 
 
 	var body struct {
 		Data struct {
-			IsFriend   bool `json:"is_friend"`
-			Follows    bool `json:"follows"`
-			FollowedBy bool `json:"followed_by"`
-			Blocked    bool `json:"blocked"`
+			IsFriend     bool `json:"is_friend"`
+			IsConnection bool `json:"is_connection"`
+			Follows      bool `json:"follows"`
+			FollowedBy   bool `json:"followed_by"`
+			Blocked      bool `json:"blocked"`
+			BlockedBy    bool `json:"blocked_by"`
 		} `json:"data"`
 		// Legacy un-wrapped shape (some endpoints return the
 		// relationship at the top level) — tolerated.
-		IsFriend   bool `json:"is_friend"`
-		Follows    bool `json:"follows"`
-		FollowedBy bool `json:"followed_by"`
-		Blocked    bool `json:"blocked"`
+		IsFriend     bool `json:"is_friend"`
+		IsConnection bool `json:"is_connection"`
+		Follows      bool `json:"follows"`
+		FollowedBy   bool `json:"followed_by"`
+		Blocked      bool `json:"blocked"`
+		BlockedBy    bool `json:"blocked_by"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		slog.Warn("call_policy: graph response decode failed", "err", err)
 		return ErrGraphUnavailable
 	}
 	rel := body.Data
-	if !rel.IsFriend && !rel.Follows && !rel.FollowedBy && !rel.Blocked {
+	if !rel.IsFriend && !rel.IsConnection && !rel.Follows && !rel.FollowedBy && !rel.Blocked && !rel.BlockedBy {
 		// Fall back to the un-wrapped shape.
 		rel.IsFriend = body.IsFriend
+		rel.IsConnection = body.IsConnection
 		rel.Follows = body.Follows
 		rel.FollowedBy = body.FollowedBy
 		rel.Blocked = body.Blocked
+		rel.BlockedBy = body.BlockedBy
 	}
 
 	// `Blocked=true` in the graph response means: from `callerID`'s
 	// perspective, `targetID` has blocked them. Reject the call so
 	// the target's device doesn't ring.
-	if rel.Blocked {
+	if rel.Blocked || rel.BlockedBy {
 		return ErrBlockedByTarget
 	}
 	// Circle gate: same as DM policy. Friend OR mutual-follow.
-	if rel.IsFriend {
+	if rel.IsFriend || rel.IsConnection {
 		return nil
 	}
 	if rel.Follows && rel.FollowedBy {

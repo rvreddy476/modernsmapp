@@ -45,32 +45,32 @@ func TestVerifyJWT_RS256_RoundTripAndIsolation(t *testing.T) {
 		activeSecret: "hs-secret", // HS256 still configured in parallel
 		rsaKeys:      map[string]*rsa.PublicKey{"rsa-1": pub},
 	}
-	payload := map[string]any{"user_id": "u-rsa", "scopes": "admin", "exp": time.Now().Add(time.Hour).Unix()}
+	payload := map[string]any{"user_id": "33333333-3333-4333-8333-333333333333", "scopes": "admin", "exp": time.Now().Add(time.Hour).Unix()}
 
 	// Valid RS256 token verifies and carries scopes.
 	tok := signRS256(t, map[string]any{"alg": "RS256", "kid": "rsa-1"}, payload, priv)
-	uid, scopes, _, err := verifyJWT(tok, keys)
-	if err != nil || uid != "u-rsa" || scopes != "admin" {
+	uid, scopes, _, err := verifyJWT(tok, keys, devTestPolicy())
+	if err != nil || uid != "33333333-3333-4333-8333-333333333333" || scopes != "admin" {
 		t.Fatalf("RS256 verify failed: uid=%q scopes=%q err=%v", uid, scopes, err)
 	}
 
 	// Token signed by a DIFFERENT key must be rejected (no minting by others).
 	other, _ := rsa.GenerateKey(rand.Reader, 2048)
 	bad := signRS256(t, map[string]any{"alg": "RS256", "kid": "rsa-1"}, payload, other)
-	if _, _, _, err := verifyJWT(bad, keys); err == nil {
+	if _, _, _, err := verifyJWT(bad, keys, devTestPolicy()); err == nil {
 		t.Fatal("token signed by foreign key was accepted")
 	}
 
 	// HS256 still works alongside RS256 (no forced logout of old tokens).
 	hsTok := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"},
-		map[string]any{"user_id": "u-hs", "exp": time.Now().Add(time.Hour).Unix()}, "hs-secret")
-	if uid, _, _, err := verifyJWT(hsTok, keys); err != nil || uid != "u-hs" {
+		map[string]any{"user_id": "44444444-4444-4444-8444-444444444444", "exp": time.Now().Add(time.Hour).Unix()}, "hs-secret")
+	if uid, _, _, err := verifyJWT(hsTok, keys, devTestPolicy()); err != nil || uid != "44444444-4444-4444-8444-444444444444" {
 		t.Fatalf("HS256 token rejected after RS256 added: uid=%q err=%v", uid, err)
 	}
 
 	// `none`/unknown alg still rejected.
 	noneTok := signRS256(t, map[string]any{"alg": "none", "kid": "rsa-1"}, payload, priv)
-	if _, _, _, err := verifyJWT(noneTok, keys); err == nil {
+	if _, _, _, err := verifyJWT(noneTok, keys, devTestPolicy()); err == nil {
 		t.Fatal("alg=none was accepted")
 	}
 }

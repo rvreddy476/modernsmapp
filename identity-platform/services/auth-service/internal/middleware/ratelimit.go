@@ -14,7 +14,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// OTPRateLimit gates the /send-otp endpoint with three independent caps:
+// OTPRateLimit gates PHONE-keyed OTP endpoints with three independent caps.
+//
+// ⚠ SCOPE: the two strong caps below are derived from a `phone` field in the
+// request body. On any route whose payload has no `phone` — /verify-email and
+// /resend-verification carry `verification_token` and `code` — those branches
+// do not execute and the ONLY surviving cap is the per-IP one, which an
+// attacker removes by rotating source addresses.
+//
+// Those routes are therefore additionally gated inside the service, keyed on
+// the user id resolved from the verification token
+// (service.checkResendQuota). Do not attach this middleware to a new route and
+// assume it provides a per-identity limit; check that the route actually
+// carries `phone`.
+//
+// The three caps:
 //
 //   - 5 per phone per 10 min (burst protection)
 //   - 30 per phone per 24 h  (slow-drip protection — A3 hardening; the

@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,17 +44,21 @@ type HydratedPost struct {
 	CoverMediaID   *uuid.UUID      `json:"cover_media_id,omitempty"`
 	CreatedAt      string          `json:"created_at"`
 	UpdatedAt      string          `json:"updated_at"`
-	Media          json.RawMessage `json:"media,omitempty"`
+	Media          []HydratedMedia `json:"media,omitempty"`
 	Counts         json.RawMessage `json:"counts,omitempty"`
 	// ViewCount is the display view count from analytics-service's
 	// Redis counter (post:views:{id} → display). Enriched at hydration
 	// time; `counts` carries likes/comments/shares only.
-	ViewCount      int64           `json:"view_count"`
-	ViewerReaction *string         `json:"viewer_reaction,omitempty"`
-	IsBookmarked   bool            `json:"is_bookmarked"`
-	Poll           json.RawMessage `json:"poll,omitempty"`
-	Location       *string         `json:"location,omitempty"`
-	Hashtags       json.RawMessage `json:"hashtags,omitempty"`
+	ViewCount       int64           `json:"view_count"`
+	ViewerReaction  *string         `json:"viewer_reaction,omitempty"`
+	HasReacted      bool            `json:"has_reacted"`
+	IsBookmarked    bool            `json:"is_bookmarked"`
+	RepostCount     int             `json:"repost_count"`
+	HasReposted     bool            `json:"has_reposted"`
+	IsRepostable    bool            `json:"is_repostable"`
+	Poll            json.RawMessage `json:"poll,omitempty"`
+	Location        *string         `json:"location,omitempty"`
+	Hashtags        json.RawMessage `json:"hashtags,omitempty"`
 	PostType        string          `json:"post_type,omitempty"`
 	AppOrigin       string          `json:"app_origin,omitempty"`
 	ShareToPostbook bool            `json:"share_to_postbook"`
@@ -63,6 +70,55 @@ type HydratedPost struct {
 	IsRepost        bool       `json:"is_repost,omitempty"`
 	RepostedBy      *uuid.UUID `json:"reposted_by,omitempty"`
 	FeedContentType string     `json:"feed_content_type,omitempty"` // "post", "repost", "reel", etc.
+	Author          Author     `json:"author"`
+}
+
+// Author is the deliberately small, public identity needed to render a feed
+// card. It mirrors profile-service's public allowlist and cannot accidentally
+// expose private profile fields.
+type Author struct {
+	ID            uuid.UUID  `json:"id"`
+	DisplayName   string     `json:"display_name"`
+	Username      *string    `json:"username,omitempty"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
+}
+
+// HydratedMedia preserves the existing media_id/kind contract and adds the
+// authorized delivery DTO inline. Android can render a page without issuing a
+// request per row and can batch-refresh the URLs after ExpiresAt.
+//
+// AltText/AltDecorative are Slice C / C-CLB-3. They arrive already populated
+// from post-service's batch response and are NOT overwritten by the delivery
+// merge below, which only fills in the authorized-URL fields. A feed that
+// dropped them would leave every image in the main scrolling surface
+// unlabelled — the single place where it matters most.
+//
+// NOT omitempty, matching post-service. Omitting a false `alt_decorative`
+// would make the feed and the post read two different contracts for the same
+// image, and "field absent" is a third state neither renderer should have to
+// reason about.
+type HydratedMedia struct {
+	MediaID uuid.UUID `json:"media_id"`
+	Kind    string    `json:"kind"`
+
+	// Position is the zero-based carousel ordinal, decoded from post-service
+	// and re-emitted. Creator Studio P0-A, errata E-2.
+	//
+	// Always emitted, never omitempty: an absent ordinal and ordinal 0 must
+	// not be the same bytes. Renumbered after the authorization filter,
+	// because a denied middle asset would otherwise leave a gap the client is
+	// required to reject.
+	Position int `json:"position"`
+
+	AltText       string            `json:"alt_text"`
+	AltDecorative bool              `json:"alt_decorative"`
+	Status        string            `json:"status,omitempty"`
+	Width         *int              `json:"width,omitempty"`
+	Height        *int              `json:"height,omitempty"`
+	Blurhash      *string           `json:"blurhash,omitempty"`
+	Variants      map[string]string `json:"variants,omitempty"`
+	HLSURL        string            `json:"hls_url,omitempty"`
+	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
 }
 
 // HydratePosts calls post-service's batch endpoint to enrich timeline entries
@@ -109,6 +165,9 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		// Entire batch served from cache — skip the HTTP call.
 		merged := s.mergeHydratedItems(items, envelopeData, nil)
 		s.enrichViewCounts(ctx, merged)
+		if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
+			return nil, err
+		}
 		return merged, nil
 	}
 
@@ -133,7 +192,7 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.postClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post-service batch request failed: %w", err)
 	}
@@ -167,7 +226,211 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 
 	merged := s.mergeHydratedItems(items, envelopeData, nil)
 	s.enrichViewCounts(ctx, merged)
+	if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
+		return nil, err
+	}
 	return merged, nil
+}
+
+type publicProfile struct {
+	UserID        uuid.UUID  `json:"user_id"`
+	Username      *string    `json:"username,omitempty"`
+	DisplayName   string     `json:"display_name"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
+}
+
+type mediaDelivery struct {
+	MediaID   uuid.UUID         `json:"media_id"`
+	Kind      string            `json:"kind"`
+	Status    string            `json:"status"`
+	Width     *int              `json:"width,omitempty"`
+	Height    *int              `json:"height,omitempty"`
+	Blurhash  *string           `json:"blurhash,omitempty"`
+	Variants  map[string]string `json:"variants,omitempty"`
+	HLSURL    string            `json:"hls_url,omitempty"`
+	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+}
+
+// enrichRenderData resolves author identity and media delivery concurrently,
+// then applies the results only after both batch calls succeed. Delivery data
+// is intentionally fetched after the post cache: a five-minute signed URL is
+// never persisted in a five-minute cache and handed out at the expiry edge.
+func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, viewerID uuid.UUID) error {
+	if len(posts) == 0 {
+		return nil
+	}
+	authorIDs := make([]uuid.UUID, 0, len(posts))
+	mediaIDs := make([]uuid.UUID, 0, len(posts))
+	seenAuthors := make(map[uuid.UUID]bool, len(posts))
+	seenMedia := make(map[uuid.UUID]bool, len(posts))
+	for _, post := range posts {
+		if !seenAuthors[post.AuthorID] {
+			seenAuthors[post.AuthorID] = true
+			authorIDs = append(authorIDs, post.AuthorID)
+		}
+		for _, media := range post.Media {
+			if !seenMedia[media.MediaID] {
+				seenMedia[media.MediaID] = true
+				mediaIDs = append(mediaIDs, media.MediaID)
+			}
+		}
+	}
+
+	var profiles map[uuid.UUID]publicProfile
+	var deliveries map[uuid.UUID]mediaDelivery
+	var profileErr, mediaErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		profiles, profileErr = s.fetchAuthors(ctx, viewerID, authorIDs)
+	}()
+	if len(mediaIDs) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			deliveries, mediaErr = s.fetchMediaDeliveries(ctx, viewerID, mediaIDs)
+		}()
+	}
+	wg.Wait()
+	if profileErr != nil {
+		return fmt.Errorf("profile hydration failed: %w", profileErr)
+	}
+	if mediaErr != nil {
+		return fmt.Errorf("media hydration failed: %w", mediaErr)
+	}
+
+	for i := range posts {
+		profile, ok := profiles[posts[i].AuthorID]
+		posts[i].Author = Author{ID: posts[i].AuthorID, DisplayName: "Deleted account"}
+		if ok {
+			posts[i].Author.DisplayName = profile.DisplayName
+			posts[i].Author.Username = profile.Username
+			posts[i].Author.AvatarMediaID = profile.AvatarMediaID
+		}
+		authorizedMedia := make([]HydratedMedia, 0, len(posts[i].Media))
+		for _, m := range posts[i].Media {
+			delivery, ok := deliveries[m.MediaID]
+			if !ok {
+				slog.WarnContext(ctx, "feed hydration: media asset denied and omitted from post",
+					"viewer_id", viewerID,
+					"post_id", posts[i].ID,
+					"media_id", m.MediaID)
+				continue // omit denied media from the post rather than failing the whole feed page
+			}
+			m.Status = delivery.Status
+			m.Width = delivery.Width
+			m.Height = delivery.Height
+			m.Blurhash = delivery.Blurhash
+			m.Variants = delivery.Variants
+			m.HLSURL = delivery.HLSURL
+			if delivery.ExpiresAt != nil && !delivery.ExpiresAt.IsZero() {
+				expires := *delivery.ExpiresAt
+				m.ExpiresAt = &expires
+			} else {
+				m.ExpiresAt = nil
+			}
+			authorizedMedia = append(authorizedMedia, m)
+		}
+		// Renumber after filtering.
+		//
+		// post-service already returned this slice ordered and the loop above
+		// preserves that order, so index IS the ordinal. It is reassigned rather
+		// than passed through because a denied asset is omitted, and dropping
+		// position 1 from a three-image post would emit ordinals 0 and 2 - a gap
+		// the client contiguity check rejects, which would lose the whole post
+		// from the feed instead of one unviewable image.
+		for j := range authorizedMedia {
+			authorizedMedia[j].Position = j
+		}
+		posts[i].Media = authorizedMedia
+	}
+	return nil
+}
+
+func (s *Service) fetchAuthors(ctx context.Context, viewerID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]publicProfile, error) {
+	result := make(map[uuid.UUID]publicProfile, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	requestIDs := make([]string, len(ids))
+	for i, id := range ids {
+		requestIDs[i] = id.String()
+	}
+	body, err := json.Marshal(map[string]any{"user_ids": requestIDs})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(s.profileServiceURL, "/")+"/v1/profiles/batch", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Id", viewerID.String())
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
+	resp, err := s.profileClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("profile-service returned %d: %s", resp.StatusCode, string(b))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode profile batch: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) fetchMediaDeliveries(ctx context.Context, viewerID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]mediaDelivery, error) {
+	result := make(map[uuid.UUID]mediaDelivery, len(ids))
+	for start := 0; start < len(ids); start += 50 {
+		end := start + 50
+		if end > len(ids) {
+			end = len(ids)
+		}
+		requestIDs := make([]string, end-start)
+		for i, id := range ids[start:end] {
+			requestIDs[i] = id.String()
+		}
+		body, err := json.Marshal(map[string]any{"ids": requestIDs})
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			strings.TrimRight(s.mediaServiceURL, "/")+"/v1/media/batch", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-Id", viewerID.String())
+		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+			req.Header.Set("X-Internal-Service-Key", key)
+		}
+		resp, err := s.mediaClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		var envelope struct {
+			Data map[uuid.UUID]mediaDelivery `json:"data"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&envelope)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("media-service returned %d", resp.StatusCode)
+		}
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode media batch: %w", decodeErr)
+		}
+		for id, delivery := range envelope.Data {
+			result[id] = delivery
+		}
+	}
+	return result, nil
 }
 
 // enrichViewCounts fills HydratedPost.ViewCount from the shared Redis

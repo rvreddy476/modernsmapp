@@ -9,8 +9,11 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Creates the empty databases only. Schema is NOT seeded here: each
+      # service applies its own database/setup.sql on boot and then verifies
+      # its preconditions. The old ./database/schema.sql mount was a second,
+      # divergent copy of the identity schema and has been deleted.
       - ./init-databases.sql:/docker-entrypoint-initdb.d/01-init.sql
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/02-schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

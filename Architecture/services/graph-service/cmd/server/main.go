@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -92,6 +93,16 @@ func main() {
 	defer producer.Close()
 	slog.Info("kafka producer ready")
 
+	// Identity-events consumer (production chat pass, directive §5.1):
+	// user.settings_changed invalidates the privacy:<user_id> cache so a
+	// privacy change takes effect on the NEXT permission check, not after the
+	// TTL. The 3-second TTL remains the fallback for a lost event.
+	identityTopic := env("IDENTITY_KAFKA_TOPIC", "identity.events.v1")
+	identityConsumer := events.NewConsumer(strings.Split(kafkaBrokers, ","), identityTopic, kafkaDialer, dbPool, rdb)
+	defer identityConsumer.Close()
+	go identityConsumer.Start(ctx)
+	slog.Info("identity events consumer started", "topic", identityTopic)
+
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("graph-service")
 	dbMetrics := metrics.NewDBPoolMetrics("graph-service", "postgres")
@@ -113,6 +124,48 @@ func main() {
 	// Wire read-through repair of the app.users projection for close-friends.
 	graphSvc.WithUserEnsurer(userclient.New(appUserURL, internalKey))
 	graphHandler := graphHttp.New(graphSvc)
+
+	// Module 3 SR-2 — the outbox relay.
+	//
+	// Block/unblock/follow events are written to graph_outbox_events in the
+	// SAME transaction as the relationship mutation, so they can never be
+	// lost. That guarantee is only worth anything if something delivers them:
+	// without this goroutine the table simply accumulates safety events that
+	// chat, feed, search and notifications never receive, which is
+	// indistinguishable from the fire-and-forget goroutine it replaced.
+	//
+	// Multiple replicas may run this concurrently — rows are leased with
+	// FOR UPDATE SKIP LOCKED, so each row is delivered by exactly one replica.
+	go graphStore.RunRelay(ctx, events.NewOutboxPublisher(producer),
+		store.DefaultRelayConfig(), func(format string, args ...any) {
+			slog.Warn(fmt.Sprintf(format, args...))
+		})
+
+	// Module 3 SR-3 — import blocks from the retired shadow graph.
+	//
+	// profile-service kept its own `profile.blocks`, which nothing enforced.
+	// Every row there is a block a real user asked for and never received.
+	// Retiring the routes stops new divergence; this closes the gap for the
+	// people already unprotected, under an ANY-BLOCK-WINS rule that never
+	// treats an absence as an unblock.
+	//
+	// It runs periodically rather than once because a not-yet-updated client
+	// can still be writing to the legacy table, and those rows are still
+	// someone asking for protection.
+	if legacyDSN := os.Getenv("LEGACY_PROFILE_BLOCKS_DSN"); legacyDSN != "" {
+		legacyPool, lerr := pgxpool.New(ctx, legacyDSN)
+		if lerr != nil {
+			slog.Error("legacy block reconciler: cannot connect", "error", lerr)
+			os.Exit(1)
+		}
+		defer legacyPool.Close()
+		go runLegacyBlockReconciler(ctx, graphStore, store.New(legacyPool))
+		slog.Info("legacy block reconciler started")
+	} else {
+		slog.Warn("LEGACY_PROFILE_BLOCKS_DSN not set — blocks recorded in the retired " +
+			"profile.blocks table will NOT be imported. Users who blocked someone through " +
+			"the old profile route remain unprotected in feed, search and chat.")
+	}
 
 	// Expire stale connection requests hourly (spec §8.3).
 	go reconcile.NewConnectionRequestSweeper(graphStore).Start(ctx)
@@ -157,6 +210,19 @@ func main() {
 	// previously main.go never wired the env var so the gate was a
 	// no-op and every endpoint was open. Empty key keeps the dev
 	// loop unblocked but emits a loud startup warning.
+	// SR-3: attribute mutating graph writes to a named caller. Strict in
+	// production; the permissive mode exists only to roll this out without an
+	// instant outage if a legitimate caller was missed, and it leaves the
+	// duplicate-writer hole open, so it warns.
+	strictWriteSource := env("GRAPH_WRITE_SOURCE_STRICT", "true") == "true"
+	if !strictWriteSource {
+		slog.Warn("graph-service: GRAPH_WRITE_SOURCE_STRICT=false — unattributed graph writes are PERMITTED. " +
+			"A second service can create follows and blocks without review. Do not run this configuration in production.")
+	}
+	graphHandler.WithCanonicalWriteSource(strictWriteSource, func(format string, args ...any) {
+		slog.Warn(fmt.Sprintf(format, args...))
+	})
+
 	if internalKey != "" {
 		graphHandler.WithInternalKey(internalKey)
 		slog.Info("graph-service: internal-service-key gate enabled")
@@ -215,6 +281,36 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 				TotalConns:    stat.TotalConns(),
 				MaxConns:      stat.MaxConns(),
 			})
+		}
+	}
+}
+
+// runLegacyBlockReconciler imports blocks from the retired profile.blocks
+// table into the canonical graph, forever.
+//
+// SR-3. It reads through a store built on the LEGACY database pool and writes
+// through the canonical one, so the two never share a transaction — the legacy
+// database may be a different cluster entirely.
+func runLegacyBlockReconciler(ctx context.Context, canonical, legacy *store.Store) {
+	const interval = 15 * time.Minute
+	for {
+		res, err := canonical.ReconcileLegacyBlocks(ctx, store.NewPgLegacyBlockSource(legacy), 500)
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			slog.Error("legacy block reconciler pass failed", "error", err,
+				"scanned", res.Scanned, "imported", res.Imported)
+		case res.Imported > 0:
+			// Not an Info: every import here is a user who was unprotected
+			// until this moment, and the count should be visible.
+			slog.Warn("imported blocks from the retired shadow graph",
+				"imported", res.Imported, "scanned", res.Scanned)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
 		}
 	}
 }

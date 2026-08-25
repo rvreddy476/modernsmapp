@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/atpost/identity-user-service/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/atpost/identity-user-service/internal/store"
 )
 
 type stubUserService struct {

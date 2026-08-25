@@ -13,58 +13,113 @@ import (
 )
 
 type Post struct {
-	ID             uuid.UUID       `json:"id"`
-	AuthorID       uuid.UUID       `json:"author_id"`
-	Text           string          `json:"text"`
-	Visibility     string          `json:"visibility"`
-	ContentType    string          `json:"content_type"`
-	IsPinned       bool            `json:"is_pinned"`
-	Feeling        *string         `json:"feeling,omitempty"`
-	Activity       *string         `json:"activity,omitempty"`
-	ActivityDetail *string         `json:"activity_detail,omitempty"`
-	RichText       json.RawMessage `json:"rich_text,omitempty"`
-	NoComments     bool            `json:"no_comments"`
-	NoLikes        bool            `json:"no_likes"`
-	Hashtags       []string        `json:"hashtags,omitempty"`
-	Mentions       []uuid.UUID     `json:"mentions,omitempty"`
-	LocationName   *string         `json:"location_name,omitempty"`
-	LocationLat    *float64        `json:"location_lat,omitempty"`
-	LocationLng    *float64        `json:"location_lng,omitempty"`
-	PostType       string          `json:"post_type"`
-	AppOrigin       string          `json:"app_origin"`
-	ShareToPostbook bool            `json:"share_to_postbook"`
-	ReviewStatus   string          `json:"review_status"` // "approved", "flagged", "rejected"
-	Title              string      `json:"title,omitempty"`
-	Tags               []string    `json:"tags,omitempty"`
-	Category           string      `json:"category,omitempty"`
-	Language           string      `json:"language,omitempty"`
-	SEOTitle           string      `json:"seo_title,omitempty"`
-	PaidPromotion      bool        `json:"paid_promotion"`
-	AlteredContent     bool        `json:"altered_content"`
-	IsMadeForKids      bool        `json:"is_made_for_kids"`
-	License            string      `json:"license,omitempty"`
-	AllowEmbedding     bool        `json:"allow_embedding"`
-	PublishToFeed      bool        `json:"publish_to_feed"`
-	RemixSetting       string      `json:"remix_setting,omitempty"`
-	CommentModeration  string      `json:"comment_moderation,omitempty"`
-	CommentAccess      string      `json:"comment_access,omitempty"`
-	RecordingDate      *time.Time  `json:"recording_date,omitempty"`
-	RecordingLocation  string      `json:"recording_location,omitempty"`
-	CoverMediaID       *uuid.UUID  `json:"cover_media_id,omitempty"`
-	OriginalAudioVol   float32     `json:"original_audio_volume"`
-	OverlayAudioVol    float32     `json:"overlay_audio_volume"`
-	TierRequiredID     *uuid.UUID  `json:"tier_required_id,omitempty"`
-	BodyRedacted       bool        `json:"body_redacted,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	Media          []PostMedia     `json:"media,omitempty"`
-	Poll           *PollData       `json:"poll,omitempty"`
+	ID                uuid.UUID       `json:"id"`
+	AuthorID          uuid.UUID       `json:"author_id"`
+	Text              string          `json:"text"`
+	Visibility        string          `json:"visibility"`
+	ContentType       string          `json:"content_type"`
+	IsPinned          bool            `json:"is_pinned"`
+	Feeling           *string         `json:"feeling,omitempty"`
+	Activity          *string         `json:"activity,omitempty"`
+	ActivityDetail    *string         `json:"activity_detail,omitempty"`
+	RichText          json.RawMessage `json:"rich_text,omitempty"`
+	NoComments        bool            `json:"no_comments"`
+	NoLikes           bool            `json:"no_likes"`
+	Hashtags          []string        `json:"hashtags,omitempty"`
+	Mentions          []uuid.UUID     `json:"mentions,omitempty"`
+	LocationName      *string         `json:"location_name,omitempty"`
+	LocationLat       *float64        `json:"location_lat,omitempty"`
+	LocationLng       *float64        `json:"location_lng,omitempty"`
+	PostType          string          `json:"post_type"`
+	AppOrigin         string          `json:"app_origin"`
+	ShareToPostbook   bool            `json:"share_to_postbook"`
+	ReviewStatus      string          `json:"review_status"` // "approved", "flagged", "rejected"
+	Title             string          `json:"title,omitempty"`
+	Tags              []string        `json:"tags,omitempty"`
+	Category          string          `json:"category,omitempty"`
+	Language          string          `json:"language,omitempty"`
+	SEOTitle          string          `json:"seo_title,omitempty"`
+	PaidPromotion     bool            `json:"paid_promotion"`
+	AlteredContent    bool            `json:"altered_content"`
+	IsMadeForKids     bool            `json:"is_made_for_kids"`
+	License           string          `json:"license,omitempty"`
+	AllowEmbedding    bool            `json:"allow_embedding"`
+	PublishToFeed     bool            `json:"publish_to_feed"`
+	RemixSetting      string          `json:"remix_setting,omitempty"`
+	CommentModeration string          `json:"comment_moderation,omitempty"`
+	CommentAccess     string          `json:"comment_access,omitempty"`
+	RecordingDate     *time.Time      `json:"recording_date,omitempty"`
+	RecordingLocation string          `json:"recording_location,omitempty"`
+	CoverMediaID      *uuid.UUID      `json:"cover_media_id,omitempty"`
+	OriginalAudioVol  float32         `json:"original_audio_volume"`
+	OverlayAudioVol   float32         `json:"overlay_audio_volume"`
+	TierRequiredID    *uuid.UUID      `json:"tier_required_id,omitempty"`
+	BodyRedacted      bool            `json:"body_redacted,omitempty"`
+	// Distribution is the typed, versioned scalar policy (Module 1 P0-1).
+	// NULL means "no policy — legacy behavior". DistributionRev increases
+	// monotonically on every policy change so consumers can drop stale
+	// out-of-order updates.
+	Distribution    json.RawMessage `json:"distribution,omitempty"`
+	DistributionRev int64           `json:"distribution_rev"`
+	// Thread fields (Module 1 P0-8). Root posts of a thread have
+	// ThreadRootID = own id and ThreadSeq = 0; standalone posts have all
+	// three NULL/0.
+	ThreadRootID    *uuid.UUID  `json:"thread_root_id,omitempty"`
+	ThreadReplyToID *uuid.UUID  `json:"thread_reply_to_id,omitempty"`
+	ThreadSeq       int         `json:"thread_seq,omitempty"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
+	Media           []PostMedia `json:"media,omitempty"`
+	Poll            *PollData   `json:"poll,omitempty"`
 }
 
+// PostMedia is one attached asset as a READER sees it — Slice C, C-CLB-3.
+//
+// # WHY THE ACCESSIBILITY FIELDS ARE HERE AND NOT LOOKED UP LATER
+//
+// The composer REQUIRES an accessibility decision before an image post can be
+// created: either a description or an explicit decorative mark. That decision
+// was persisted on `media_assets` and then never delivered to anybody. Reads
+// returned `{media_id, kind}`, so no client could announce the description, and
+// a mandatory accessibility field was write-only — the work was demanded of the
+// author and thrown away before it reached the person it was for.
+//
+// Delivering it as part of the post read, rather than as a second call to
+// media-service, is what makes it usable: a renderer needs the description at
+// the moment it builds the image node, and a feed that resolved N descriptions
+// over N requests would simply drop them under load.
+//
+// AltDecorative is carried as its own field rather than inferred from an empty
+// AltText, because "" means two different things — "marked as carrying no
+// information" and "nobody said" — and only the first one may silently render
+// an unlabelled image.
 type PostMedia struct {
-	MediaID uuid.UUID `json:"media_id"`
-	Kind    string    `json:"kind"`
+	MediaID       uuid.UUID `json:"media_id"`
+	Kind          string    `json:"kind"`
+	AltText       string    `json:"alt_text"`
+	AltDecorative bool      `json:"alt_decorative"`
+
+	// Position is the zero-based carousel ordinal. Always emitted, never
+	// omitempty: an absent ordinal and ordinal 0 must not be the same bytes,
+	// or a client cannot tell "first" from "unknown".
+	Position int `json:"position"`
 }
+
+// The one projection every post-media read uses.
+//
+// Shared so the direct read and the batch hydrations cannot drift: the defect
+// this closes existed because eight separate queries each independently
+// selected `media_id, kind`, and there was no single place where "what a
+// reader gets" was written down.
+//
+// LEFT JOIN, not INNER: `post_media` has an ON DELETE RESTRICT foreign key so a
+// missing asset should be impossible, but if one ever is, the image must still
+// be returned without its description rather than disappearing from the post
+// entirely. COALESCE for the same reason.
+const (
+	postMediaColumns = `pm.media_id, pm.kind, COALESCE(ma.alt_text, ''), COALESCE(ma.alt_decorative, FALSE), pm.position`
+	postMediaSource  = `FROM post_media pm LEFT JOIN media_assets ma ON ma.id = pm.media_id`
+)
 
 // Poll types
 
@@ -106,11 +161,24 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
 	tier_required_id,
+	distribution, distribution_rev,
+	thread_root_id, thread_reply_to_id, thread_seq,
 	created_at, updated_at, review_status`
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
-	err := row.Scan(
+	err := row.Scan(postScanDestinations(&p)...)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// postScanDestinations is the single source of truth for postCols scan order.
+// Keeping the destinations reusable also lets joined queries append their own
+// private ordering columns without duplicating this fragile list.
+func postScanDestinations(p *Post) []any {
+	return []any{
 		&p.ID, &p.AuthorID, &p.Text, &p.Visibility, &p.ContentType, &p.IsPinned,
 		&p.Feeling, &p.Activity, &p.ActivityDetail, &p.RichText,
 		&p.NoComments, &p.NoLikes,
@@ -123,33 +191,17 @@ func scanPost(row pgx.Row) (*Post, error) {
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 		&p.TierRequiredID,
+		&p.Distribution, &p.DistributionRev,
+		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
 		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
-	)
-	if err != nil {
-		return nil, err
 	}
-	return &p, nil
 }
 
 func scanPostRows(rows pgx.Rows) ([]Post, error) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		if err := rows.Scan(
-			&p.ID, &p.AuthorID, &p.Text, &p.Visibility, &p.ContentType, &p.IsPinned,
-			&p.Feeling, &p.Activity, &p.ActivityDetail, &p.RichText,
-			&p.NoComments, &p.NoLikes,
-			&p.Hashtags, &p.Mentions, &p.LocationName, &p.LocationLat, &p.LocationLng,
-			&p.PostType, &p.AppOrigin, &p.ShareToPostbook,
-			&p.Title, &p.Tags, &p.Category, &p.Language, &p.SEOTitle,
-			&p.PaidPromotion, &p.AlteredContent, &p.IsMadeForKids,
-			&p.License, &p.AllowEmbedding, &p.PublishToFeed, &p.RemixSetting,
-			&p.CommentModeration, &p.CommentAccess,
-			&p.RecordingDate, &p.RecordingLocation,
-			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
-			&p.TierRequiredID,
-			&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
-		); err != nil {
+		if err := rows.Scan(postScanDestinations(&p)...); err != nil {
 			return nil, err
 		}
 		posts = append(posts, p)
@@ -177,6 +229,11 @@ type MediaMetadata struct {
 	DurationSeconds int
 	Width           int
 	Height          int
+	// Slice C / C-CLB-3. Carried so the CREATE response describes its image
+	// the same way a later read does; a client that renders the post it just
+	// made would otherwise show an unlabelled image until it refetched.
+	AltText       string
+	AltDecorative bool
 }
 
 // BatchGetMediaMetadata fetches file_type + duration_seconds + width
@@ -197,7 +254,9 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 		       file_type,
 		       COALESCE(duration_seconds, 0),
 		       COALESCE(width, 0),
-		       COALESCE(height, 0)
+		       COALESCE(height, 0),
+		       COALESCE(alt_text, ''),
+		       COALESCE(alt_decorative, FALSE)
 		FROM media_assets
 		WHERE id = ANY($1)
 	`, ids)
@@ -210,13 +269,103 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 			id   uuid.UUID
 			meta MediaMetadata
 		)
-		if err := rows.Scan(&id, &meta.Kind, &meta.DurationSeconds, &meta.Width, &meta.Height); err != nil {
+		if err := rows.Scan(&id, &meta.Kind, &meta.DurationSeconds, &meta.Width, &meta.Height,
+			&meta.AltText, &meta.AltDecorative); err != nil {
 			return nil, fmt.Errorf("batch media scan: %w", err)
 		}
 		if meta.Kind == "" {
 			meta.Kind = "image"
 		}
 		out[id] = meta
+	}
+	return out, rows.Err()
+}
+
+// PostIDsByMediaID returns the (non-deleted) posts that attach a given
+// media asset. Used to release a held voice post once media-service
+// publishes its safety verdict (fixes-v2 / Codex P0-2).
+func (s *Store) PostIDsByMediaID(ctx context.Context, mediaID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id
+		FROM post_media pm
+		JOIN posts p ON p.id = pm.post_id
+		WHERE pm.media_id = $1 AND p.deleted_at IS NULL`, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// PostIDsByMediaIDs is the page-sized form used by media delivery
+// authorization. It replaces one post lookup per media asset.
+func (s *Store) PostIDsByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	result := make(map[uuid.UUID][]uuid.UUID, len(mediaIDs))
+	if len(mediaIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT pm.media_id, p.id
+		FROM post_media pm
+		JOIN posts p ON p.id = pm.post_id
+		WHERE pm.media_id = ANY($1) AND p.deleted_at IS NULL
+	`, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mediaID, postID uuid.UUID
+		if err := rows.Scan(&mediaID, &postID); err != nil {
+			return nil, err
+		}
+		result[mediaID] = append(result[mediaID], postID)
+	}
+	return result, rows.Err()
+}
+
+// MediaOwnership is the ownership + readiness view needed before a post
+// may attach a media asset (Module 1 fixes-v1 / Codex P1-6).
+type MediaOwnership struct {
+	UploaderID       uuid.UUID
+	Kind             string
+	ProcessingStatus string
+	ModerationStatus string
+}
+
+// BatchGetMediaOwnership returns ownership and state for the given media
+// in one round trip. Missing rows are simply absent from the map, which
+// callers treat as "does not exist".
+func (s *Store) BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]MediaOwnership, error) {
+	out := make(map[uuid.UUID]MediaOwnership, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, uploader_id, file_type,
+		       COALESCE(processing_status,''), COALESCE(moderation_status,'')
+		FROM media_assets WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("batch media ownership: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id uuid.UUID
+			m  MediaOwnership
+		)
+		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.ProcessingStatus, &m.ModerationStatus); err != nil {
+			return nil, fmt.Errorf("batch media ownership scan: %w", err)
+		}
+		out[id] = m
 	}
 	return out, rows.Err()
 }
@@ -235,15 +384,144 @@ func (s *Store) ResolveMediaDuration(ctx context.Context, mediaID uuid.UUID) int
 	return *dur
 }
 
-
 // CreatePost inserts a post with optional media and poll in a single transaction.
 func (s *Store) CreatePost(ctx context.Context, p *Post) error {
+	return s.CreatePostWithEvent(ctx, p, "", nil)
+}
+
+// CreatePostWithEvent inserts a post (media, poll) and, when eventType is
+// non-empty, an outbox row in the SAME transaction — so the row commit and
+// its event are atomic (Codex P0-1: "policy change and event commit
+// atomically through outbox"; closes the historic dual-write window on
+// create too).
+func (s *Store) CreatePostWithEvent(ctx context.Context, p *Post, eventType string, eventPayload interface{}) error {
+	return s.CreatePostWithEventIdempotent(ctx, p, eventType, eventPayload, nil)
+}
+
+// CreateIdempotency is the durable exactly-once claim for one create intent.
+//
+// See migrations/035_post_create_idempotency.sql. `Fingerprint` binds the
+// intent to its exact payload so a retry with edited text is refused instead
+// of replaying the earlier post.
+type CreateIdempotency struct {
+	ActorID     uuid.UUID
+	ClientKey   string
+	Fingerprint string
+}
+
+// ErrCreateKeyConflict means this actor already used this client key for a
+// DIFFERENT payload. The caller maps it to 409 IDEMPOTENCY_KEY_REUSED.
+var ErrCreateKeyConflict = errors.New("idempotency key reused with different content")
+
+// ErrCreateKeyReplay means this exact intent already produced a post. The
+// embedded ID is that post; the caller replays it rather than creating another.
+type ErrCreateKeyReplay struct{ PostID uuid.UUID }
+
+func (e ErrCreateKeyReplay) Error() string {
+	return "create replayed from durable idempotency: " + e.PostID.String()
+}
+
+// CreatePostWithEventIdempotent is CreatePostWithEvent plus, when `idem` is
+// non-nil, the durable idempotency claim — written in the SAME transaction as
+// the post row and the outbox event.
+//
+// THE ORDERING IS THE WHOLE POINT (C-LB-3).
+//
+// The claim cannot be recorded after the post commits. That gap — commit, then
+// record — is exactly where the Redis middleware loses exactly-once: a crash or
+// a failed write in between leaves a committed post with no record of the
+// intent that made it, and the client's retry creates a second one. Putting the
+// INSERT inside this transaction makes "the post exists" and "we know it exists"
+// the same durable fact.
+//
+// A conflicting key is detected by the primary key rather than by a prior SELECT,
+// so two concurrent first-use requests cannot both pass a check and both insert:
+// one wins the unique index and the other is told what the winner produced.
+func (s *Store) CreatePostWithEventIdempotent(
+	ctx context.Context,
+	p *Post,
+	eventType string,
+	eventPayload interface{},
+	idem *CreateIdempotency,
+) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
+	if idem != nil {
+		// ON CONFLICT DO NOTHING + RETURNING gives zero rows when the key is
+		// already claimed. That is the concurrency gate: the loser of a race
+		// reads the winner's row below instead of inserting a second post.
+		var claimed uuid.UUID
+		err := tx.QueryRow(ctx, `
+			INSERT INTO post_create_idempotency (actor_id, client_key, fingerprint, post_id)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (actor_id, client_key) DO NOTHING
+			RETURNING post_id`,
+			idem.ActorID, idem.ClientKey, idem.Fingerprint, p.ID).Scan(&claimed)
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Someone else owns this key. Whether it is the same intent
+			// decides between a replay and a conflict.
+			var existingID uuid.UUID
+			var existingFingerprint string
+			if err := tx.QueryRow(ctx, `
+				SELECT post_id, fingerprint FROM post_create_idempotency
+				WHERE actor_id = $1 AND client_key = $2`,
+				idem.ActorID, idem.ClientKey).Scan(&existingID, &existingFingerprint); err != nil {
+				return fmt.Errorf("read existing create claim: %w", err)
+			}
+			if existingFingerprint != idem.Fingerprint {
+				return ErrCreateKeyConflict
+			}
+			return ErrCreateKeyReplay{PostID: existingID}
+		}
+		if err != nil {
+			return fmt.Errorf("claim create idempotency: %w", err)
+		}
+	}
+
+	if err := insertPostTx(ctx, tx, p); err != nil {
+		return err
+	}
+
+	// Atomic outbox event (optional).
+	if eventType != "" {
+		if err := InsertOutboxEventTx(ctx, tx, eventType, "post", p.ID, eventPayload); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// LookupCreateIdempotency returns the post a prior identical intent produced.
+//
+// A fast pre-transaction path so an ordinary retry does not redo validation,
+// media authority checks and event construction before discovering it is a
+// replay. It is an OPTIMISATION only — the authority is the unique index inside
+// CreatePostWithEventIdempotent, because between this read and that write another
+// request may claim the key.
+func (s *Store) LookupCreateIdempotency(
+	ctx context.Context, actorID uuid.UUID, clientKey string,
+) (postID uuid.UUID, fingerprint string, found bool, err error) {
+	err = s.db.QueryRow(ctx, `
+		SELECT post_id, fingerprint FROM post_create_idempotency
+		WHERE actor_id = $1 AND client_key = $2`, actorID, clientKey).Scan(&postID, &fingerprint)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, "", false, nil
+	}
+	if err != nil {
+		return uuid.Nil, "", false, fmt.Errorf("lookup create idempotency: %w", err)
+	}
+	return postID, fingerprint, true, nil
+}
+
+// insertPostTx writes one post row (+media, +poll) inside tx. Shared by
+// CreatePostWithEvent and CreateThread.
+func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 	reviewStatus := p.ReviewStatus
 	if reviewStatus == "" {
 		reviewStatus = "approved"
@@ -260,7 +538,7 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 	if p.Tags == nil {
 		p.Tags = []string{}
 	}
-	_, err = tx.Exec(ctx, `
+	_, err := tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
 			feeling, activity, activity_detail, rich_text,
 			no_comments, no_likes,
@@ -273,6 +551,8 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			recording_date, recording_location,
 			cover_media_id, original_audio_volume, overlay_audio_volume,
 			tier_required_id,
+			distribution, distribution_rev,
+			thread_root_id, thread_reply_to_id, thread_seq,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
@@ -283,7 +563,9 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			$35, $36,
 			$37, $38, $39,
 			$40,
-			$41, $41)
+			$41, $42,
+			$43, $44, $45,
+			$46, $46)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -296,17 +578,26 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 		p.RecordingDate, p.RecordingLocation,
 		p.CoverMediaID, p.OriginalAudioVol, p.OverlayAudioVol,
 		p.TierRequiredID,
+		p.Distribution, p.DistributionRev,
+		p.ThreadRootID, p.ThreadReplyToID, p.ThreadSeq,
 		p.CreatedAt)
 	if err != nil {
 		return err
 	}
 
-	// Insert media attachments
-	for _, m := range p.Media {
+	// Insert media attachments, in request order.
+	//
+	// The ordinal is the REQUEST index, assigned here inside the create
+	// transaction and never afterwards: there is no reorder endpoint in P0-A,
+	// so `position` is immutable from the moment the post exists. Duplicate
+	// media ids are rejected upstream (400 DUPLICATE_MEDIA) — without that
+	// check the (post_id, media_id) primary key would silently collapse a
+	// three-image carousel into two with no error anywhere.
+	for i, m := range p.Media {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO post_media (post_id, media_id, kind)
-			VALUES ($1, $2, $3)
-		`, p.ID, m.MediaID, m.Kind)
+			INSERT INTO post_media (post_id, media_id, kind, position)
+			VALUES ($1, $2, $3, $4)
+		`, p.ID, m.MediaID, m.Kind, i)
 		if err != nil {
 			return err
 		}
@@ -334,7 +625,118 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 		}
 	}
 
+	return nil
+}
+
+// ThreadOutboxEvent pairs an outbox event with the thread entry it
+// belongs to (CreateThread emits one PostCreated per entry).
+type ThreadOutboxEvent struct {
+	EventType string
+	PostID    uuid.UUID
+	Payload   interface{}
+}
+
+// CreateThread inserts every thread entry, the idempotency marker, and
+// all outbox events in ONE transaction (Module 1 P0-8: atomic, ordered,
+// idempotent creation — a failure leaves no partially visible thread).
+// If idemKey was already used, ErrThreadIdemReplay is returned with the
+// existing root id so callers can resolve to the original thread.
+func (s *Store) CreateThread(ctx context.Context, posts []*Post, idemKey uuid.UUID, events []ThreadOutboxEvent) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if idemKey != uuid.Nil {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO thread_idempotency (idempotency_key, root_post_id)
+			VALUES ($1, $2) ON CONFLICT (idempotency_key) DO NOTHING`,
+			idemKey, posts[0].ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			var existingRoot uuid.UUID
+			if err := tx.QueryRow(ctx,
+				`SELECT root_post_id FROM thread_idempotency WHERE idempotency_key = $1`,
+				idemKey).Scan(&existingRoot); err != nil {
+				return err
+			}
+			return &ThreadIdemReplayError{RootPostID: existingRoot}
+		}
+	}
+
+	for _, p := range posts {
+		if err := insertPostTx(ctx, tx, p); err != nil {
+			return err
+		}
+	}
+	for _, evt := range events {
+		if err := InsertOutboxEventTx(ctx, tx, evt.EventType, "post", evt.PostID, evt.Payload); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
+}
+
+// ThreadIdemReplayError signals an idempotent replay of a thread create.
+type ThreadIdemReplayError struct{ RootPostID uuid.UUID }
+
+func (e *ThreadIdemReplayError) Error() string {
+	return "thread already created: " + e.RootPostID.String()
+}
+
+// GetThreadPosts returns all visible entries of a thread ordered by
+// sequence. Same base read filters as every other post read (not
+// deleted, approved).
+func (s *Store) GetThreadPosts(ctx context.Context, rootID uuid.UUID) ([]Post, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+postCols+`
+		FROM posts
+		WHERE thread_root_id = $1 AND deleted_at IS NULL AND review_status = 'approved'
+		ORDER BY thread_seq ASC
+	`, rootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPostRows(rows)
+}
+
+// UpdateDistribution atomically replaces the distribution policy, bumps
+// distribution_rev, and writes the update event to the outbox in the same
+// transaction. Returns the new revision. ErrNoRows when the post doesn't
+// exist / is deleted / isn't owned by authorID (callers map to 404/403).
+func (s *Store) UpdateDistribution(ctx context.Context, postID, authorID uuid.UUID, policy json.RawMessage,
+	buildEvent func(rev int64) (eventType string, payload interface{})) (int64, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var rev int64
+	err = tx.QueryRow(ctx, `
+		UPDATE posts
+		SET distribution = $3,
+		    distribution_rev = distribution_rev + 1,
+		    updated_at = NOW()
+		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+		RETURNING distribution_rev
+	`, postID, authorID, policy).Scan(&rev)
+	if err != nil {
+		return 0, err
+	}
+
+	if buildEvent != nil {
+		eventType, payload := buildEvent(rev)
+		if err := InsertOutboxEventTx(ctx, tx, eventType, "post", postID, payload); err != nil {
+			return 0, err
+		}
+	}
+
+	return rev, tx.Commit(ctx)
 }
 
 func (s *Store) GetPost(ctx context.Context, id uuid.UUID) (*Post, error) {
@@ -350,19 +752,12 @@ func (s *Store) GetPost(ctx context.Context, id uuid.UUID) (*Post, error) {
 		return nil, err
 	}
 
-	// Load media
-	rows, err := s.db.Query(ctx, `SELECT media_id, kind FROM post_media WHERE post_id = $1`, id)
+	// Load media, ordered + normalized in one place; see post_media.go.
+	media, err := s.loadPostMediaForPost(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var m PostMedia
-		if err := rows.Scan(&m.MediaID, &m.Kind); err != nil {
-			return nil, err
-		}
-		p.Media = append(p.Media, m)
-	}
+	p.Media = media
 
 	return p, nil
 }
@@ -421,28 +816,9 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 	}
 
 	// Batch-fetch media for all posts
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil
@@ -498,28 +874,9 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, li
 	}
 
 	// Batch-fetch media for all posts
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil
@@ -714,10 +1071,17 @@ func (s *Store) UpdatePostCoverMedia(ctx context.Context, postID uuid.UUID, cove
 }
 
 // PublishPost sets publish status and published_at on a post.
+// M2-P0-2: changes visibility → routed through the projection.
 func (s *Store) PublishPost(ctx context.Context, postID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE posts SET visibility = 'public', updated_at = NOW() WHERE id = $1
-	`, postID)
+	_, err := s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET visibility = 'public', updated_at = NOW() WHERE id = $1
+		`, postID)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 	return err
 }
 
@@ -726,17 +1090,18 @@ func (s *Store) PublishPost(ctx context.Context, postID uuid.UUID) error {
 // AddBookmark adds a post to the user's bookmarks.
 func (s *Store) AddBookmark(ctx context.Context, userID, postID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO bookmarks (user_id, post_id, created_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (user_id, post_id) DO NOTHING
-	`, userID, postID)
+		INSERT INTO saved_items (id, user_id, target_type, target_id, collection_name, created_at)
+		VALUES ($1, $2, 'post', $3, 'All Saved', NOW())
+		ON CONFLICT (user_id, target_type, target_id) DO NOTHING
+	`, uuid.New(), userID, postID)
 	return err
 }
 
 // RemoveBookmark removes a post from the user's bookmarks.
 func (s *Store) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		DELETE FROM bookmarks WHERE user_id = $1 AND post_id = $2
+		DELETE FROM saved_items
+		WHERE user_id = $1 AND target_type = 'post' AND target_id = $2
 	`, userID, postID)
 	return err
 }
@@ -745,9 +1110,37 @@ func (s *Store) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) er
 func (s *Store) IsBookmarked(ctx context.Context, userID, postID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM bookmarks WHERE user_id = $1 AND post_id = $2)
+		SELECT EXISTS(
+			SELECT 1 FROM saved_items
+			WHERE user_id = $1 AND target_type = 'post' AND target_id = $2
+		)
 	`, userID, postID).Scan(&exists)
 	return exists, err
+}
+
+// BatchIsBookmarked returns the bookmarked subset of postIDs for one viewer.
+// One query serves an entire feed page; absent IDs are false.
+func (s *Store) BatchIsBookmarked(ctx context.Context, userID uuid.UUID, postIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	result := make(map[uuid.UUID]bool, len(postIDs))
+	if len(postIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT target_id FROM saved_items
+		WHERE user_id = $1 AND target_type = 'post' AND target_id = ANY($2)
+	`, userID, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[id] = true
+	}
+	return result, rows.Err()
 }
 
 // GetBookmarks returns paginated bookmarked posts for a user.
@@ -759,20 +1152,26 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 	var args []interface{}
 	args = append(args, userID, limit+1)
 
-	query := `SELECT ` + postCols + `
+	// The subquery deliberately exposes saved_at instead of its own id and
+	// created_at names. This keeps the shared postCols projection unambiguous.
+	query := `SELECT ` + postCols + `, b.saved_at
 		FROM posts p
-		INNER JOIN bookmarks b ON b.post_id = p.id
+		INNER JOIN (
+			SELECT user_id, target_id, created_at AS saved_at
+			FROM saved_items
+			WHERE target_type = 'post'
+		) b ON b.target_id = p.id
 		WHERE b.user_id = $1 AND p.deleted_at IS NULL`
 
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
 		if err == nil {
-			query += ` AND b.created_at < $3`
+			query += ` AND b.saved_at < $3`
 			args = append(args, cursorTime)
 		}
 	}
 
-	query += ` ORDER BY b.created_at DESC LIMIT $2`
+	query += ` ORDER BY b.saved_at DESC LIMIT $2`
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -780,14 +1179,25 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 	}
 	defer rows.Close()
 
-	posts, err := scanPostRows(rows)
-	if err != nil {
+	var posts []Post
+	var savedAt []time.Time
+	for rows.Next() {
+		var p Post
+		var saved time.Time
+		destinations := append(postScanDestinations(&p), &saved)
+		if err := rows.Scan(destinations...); err != nil {
+			return nil, "", err
+		}
+		posts = append(posts, p)
+		savedAt = append(savedAt, saved)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
 
 	var nextCursor string
 	if len(posts) > limit {
-		nextCursor = posts[limit-1].CreatedAt.Format(time.RFC3339Nano)
+		nextCursor = savedAt[limit-1].Format(time.RFC3339Nano)
 		posts = posts[:limit]
 	}
 
@@ -799,15 +1209,23 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 // the post is currently 'pending'. The media-transcode consumer uses this
 // to finalize a video post's publish gate without clobbering a manual
 // moderator decision. Returns true when a row was updated.
+//
+// Module 2 M2-P0-2: routed through WithSearchEligibilityTx so the row
+// change and the search-projection event commit atomically. Every
+// review_status / visibility mutation in this file does the same — that
+// is what makes "no direct status-changing path may bypass the
+// projection" true by construction rather than by convention.
 func (s *Store) FlipReviewStatusFromPending(ctx context.Context, postID uuid.UUID, newStatus string) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET review_status = $2, updated_at = NOW()
-		WHERE id = $1 AND review_status = 'pending'
-	`, postID, newStatus)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET review_status = $2, updated_at = NOW()
+			WHERE id = $1 AND review_status = 'pending'
+		`, postID, newStatus)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 // SetReviewStatusFromFlagged flips a FLAGGED post to a terminal status. Used by
@@ -815,41 +1233,47 @@ func (s *Store) FlipReviewStatusFromPending(ctx context.Context, postID uuid.UUI
 // human. Scoped to review_status='flagged' so it can never override a human
 // moderator's or the pending-gate's decision.
 func (s *Store) SetReviewStatusFromFlagged(ctx context.Context, postID uuid.UUID, newStatus string) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET review_status = $2, updated_at = NOW()
-		WHERE id = $1 AND review_status = 'flagged'
-	`, postID, newStatus)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET review_status = $2, updated_at = NOW()
+			WHERE id = $1 AND review_status = 'flagged'
+		`, postID, newStatus)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 // ResubmitFromNeedsChanges flips a NEEDS_CHANGES post back to 'flagged' so it
 // re-enters human review (the creator edited per the super-admin's notes).
 func (s *Store) ResubmitFromNeedsChanges(ctx context.Context, postID uuid.UUID) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET review_status = 'flagged', updated_at = NOW()
-		WHERE id = $1 AND review_status = 'needs_changes'
-	`, postID)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET review_status = 'flagged', updated_at = NOW()
+			WHERE id = $1 AND review_status = 'needs_changes'
+		`, postID)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 // SetVisibilityFromStaged promotes a STAGED post to a new visibility (e.g.
 // 'public'). Scoped to visibility='staged' so the reviewer promotion worker can
 // only finalize the test-audience rollout, never change other visibilities.
 func (s *Store) SetVisibilityFromStaged(ctx context.Context, postID uuid.UUID, newVisibility string) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET visibility = $2, updated_at = NOW()
-		WHERE id = $1 AND visibility = 'staged'
-	`, postID, newVisibility)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET visibility = $2, updated_at = NOW()
+			WHERE id = $1 AND visibility = 'staged'
+		`, postID, newVisibility)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, error) {
@@ -873,28 +1297,9 @@ func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, err
 	}
 
 	// Batch-fetch media for all posts
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, err
 	}
 
 	return posts, nil

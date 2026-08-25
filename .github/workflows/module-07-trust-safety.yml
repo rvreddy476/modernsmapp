@@ -1,0 +1,176 @@
+name: Module 7 - Trust, safety, privacy and provenance
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/services/admin-service/**'
+      - 'Architecture/services/api-gateway/**'
+      - 'Architecture/services/post-service/**'
+      - 'Architecture/services/reviewer-service/**'
+      - 'Architecture/services/trust-safety-service/**'
+      - 'Architecture/shared/moderationcap/**'
+      - 'identity-platform/services/auth-service/**'
+      - 'mobile/atpost_app/**'
+      - 'deploy/services/admin-service/**'
+      - 'deploy/services/api-gateway/**'
+      - 'deploy/services/identity-auth-service/**'
+      - 'deploy/services/post-service/**'
+      - 'deploy/services/trust-safety-service/**'
+      - '.github/workflows/module-07-trust-safety.yml'
+  push:
+    branches: [main]
+
+jobs:
+  go-launch-boundaries:
+    name: Go safety boundaries and AWS manifest contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache: false
+      - name: Build, vet and test affected services
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in admin-service api-gateway post-service reviewer-service trust-safety-service; do
+            (cd "Architecture/services/$service" && go test ./... && go vet ./... && go build ./...)
+          done
+          (cd identity-platform/services/auth-service && go test ./... && go vet ./... && go build ./...)
+      - name: Default-closed launch boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd Architecture/services/admin-service && go test -count=1 ./internal/service -run LaunchBoundary -v)
+          (cd Architecture/services/reviewer-service && go test -count=1 ./internal/http -run PublicReviewerRoutesDefaultClosed -v)
+          (cd identity-platform/services/auth-service && go test -count=1 ./internal/config ./internal/service -run OAuth -v)
+      - name: AWS-only production configuration contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for env in prod staging; do
+            grep -q 'POST_MODERATION_HMAC_KEY' "deploy/services/post-service/values-$env.yaml"
+            grep -q 'INTERNAL_SERVICE_KEY' "deploy/services/post-service/values-$env.yaml"
+            grep -q 'POST_MODERATION_HMAC_KEY' "deploy/services/trust-safety-service/values-$env.yaml"
+            grep -q 'POST_SERVICE_URL' "deploy/services/trust-safety-service/values-$env.yaml"
+            grep -q 'OAUTH_NEW_ACCOUNT_ENABLED: "false"' "deploy/services/identity-auth-service/values-$env.yaml"
+            grep -q 'REVIEWER_PUBLIC_ENABLED: "false"' "deploy/services/api-gateway/values-$env.yaml"
+          done
+
+  postgres-moderation-authority:
+    name: Canonical moderation, reports and appeals (live PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      M7_POSTGRES_ADMIN_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      M7_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m7post_codex_ci?sslmode=disable
+      M7_TRUST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m7trust_codex_ci?sslmode=disable
+      M7_REDIS_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache: false
+      - name: Create isolated proof databases through the guarded helper
+        working-directory: Architecture/services/trust-safety-service
+        run: |
+          M7_DATABASE_NAME=m7post_codex_ci go run ./cmd/m7dbsetup
+          M7_DATABASE_NAME=m7trust_codex_ci go run ./cmd/m7dbsetup
+      - name: Post moderation atomicity, idempotency and rollback
+        working-directory: Architecture/services/post-service
+        run: go test -tags integration -count=1 ./internal/store/postgres -run Moderation -v
+      - name: Stale cache cannot bypass canonical moderation
+        working-directory: Architecture/services/post-service
+        run: go test -tags integration -count=1 ./internal/service -run StaleApprovedCache -v
+      - name: Report compatibility, priority, ownership and appeal retry
+        working-directory: Architecture/services/trust-safety-service
+        run: go test -tags integration -count=1 ./internal/service -run 'TestReport|TestAppeal' -v
+
+  runtime-images:
+    name: Production image starts fail closed - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [admin-service, reviewer-service, trust-safety-service]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        run: docker build -f "Architecture/services/${{ matrix.service }}/Dockerfile" -t "atpost/m7-${{ matrix.service }}:ci" Architecture
+      - name: Missing production configuration exits nonzero
+        shell: bash
+        run: |
+          set -euo pipefail
+          if timeout 15s docker run --rm -e ENV=prod "atpost/m7-${{ matrix.service }}:ci"; then
+            echo "::error::${{ matrix.service }} started with required safety configuration missing"
+            exit 1
+          fi
+
+  mobile-safety-truth:
+    name: Mobile safety disclosure and truthful unavailable states
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: mobile/atpost_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.9'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Analyze Module 7 surfaces
+        run: |
+          flutter analyze \
+            lib/core/config/environment.dart \
+            lib/data/models/post.dart \
+            lib/data/repositories/post_repository.dart \
+            lib/features/create/create_post_screen.dart \
+            lib/features/create/providers/creation_provider.dart \
+            lib/features/create/reels_caption_screen.dart \
+            lib/features/posttube/posttube_screen.dart \
+            lib/features/posttube/posttube_upload_screen.dart \
+            lib/features/reels/reels_screen.dart \
+            lib/features/settings/privacy_settings_screen.dart \
+            lib/features/shell/me_tab.dart \
+            lib/shared/widgets/content_cards.dart \
+            lib/shared/widgets/provenance_badge.dart \
+            test/module_07_safety_truth_test.dart
+      - run: flutter test test/module_07_safety_truth_test.dart --reporter expanded
+      - name: No false export request or public reviewer default
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q '/v1/auth/me/data-export' lib/features/settings/privacy_settings_screen.dart
+          grep -q 'reviewerPublicEnabled = bool.fromEnvironment' lib/core/config/environment.dart
+          grep -q "defaultValue: false" lib/core/config/environment.dart

@@ -98,8 +98,8 @@ func (s *Service) GetRenditions(ctx context.Context, mediaID uuid.UUID) ([]postg
 
 // RenditionStatusResponse summarizes the rendition processing state for a media asset.
 type RenditionStatusResponse struct {
-	MediaID    uuid.UUID                `json:"media_id"`
-	AllReady   bool                     `json:"all_ready"`
+	MediaID    uuid.UUID                 `json:"media_id"`
+	AllReady   bool                      `json:"all_ready"`
 	Renditions []postgres.MediaRendition `json:"renditions"`
 }
 

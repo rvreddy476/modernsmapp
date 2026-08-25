@@ -33,6 +33,7 @@ class PostRepository {
     String? locationName,
     Map<String, dynamic>? poll,
     Map<String, dynamic>? richText,
+    bool alteredContent = false,
   }) async {
     final response = await _api.post(
       '/v1/posts',
@@ -48,6 +49,7 @@ class PostRepository {
         'location_name': locationName,
         'poll': poll,
         'rich_text': richText,
+        'altered_content': alteredContent,
       },
     );
     return Post.fromJson(_unwrapObjectEnvelope(response.data));

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 3,
+  "minReaderVersion": 3,
+  "profile": "reel",
+  "projectId": "01J9Z4K7QW8XN2VB3M5R7T9Y0R",
+  "revision": 7,
+  "status": "editing",
+  "createdAtMillis": 1755939600000,
+  "updatedAtMillis": 1755941000000,
+  "timeline": { "clips": [ { "clipId": "c1", "assetRef": "v1", "inMicros": 0, "outMicros": 8400000 } ] },
+  "audioTracks": [ { "trackId": "t1", "assetRef": "m1", "gainMicros": 800000 } ],
+  "postText": { "value": "unreadable by a v1 reader", "language": "en" },
+  "sourceAssets": [],
+  "proxies": [],
+  "pages": [],
+  "distribution": { "audience": "public" }
+}

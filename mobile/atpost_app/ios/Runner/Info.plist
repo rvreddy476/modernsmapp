@@ -53,5 +53,9 @@
 	<string>PostMatch uses your photo library so you can choose profile photos for onboarding.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>PostMatch may save captured media while you complete onboarding.</string>
+	<!-- Module 1 P0-6: voice posts and video/voice calls need the mic.
+	     Without this key iOS terminates the app on first mic access. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>atPost uses your microphone to record voice posts and for voice and video calls.</string>
 </dict>
 </plist>

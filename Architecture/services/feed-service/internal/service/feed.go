@@ -27,6 +27,7 @@ type Service struct {
 	graphURL          string
 	postServiceURL    string
 	profileServiceURL string
+	mediaServiceURL   string
 	userServiceURL    string
 	ranker            *ranking.Ranker
 	// Per-upstream HTTP clients with timeouts + circuit breakers. One
@@ -35,7 +36,11 @@ type Service struct {
 	graphClient   *http.Client
 	postClient    *http.Client
 	profileClient *http.Client
+	mediaClient   *http.Client
 	userClient    *http.Client
+	// lvTiers is the long-video frequency configuration (P0-4), loaded
+	// once at construction from defaults + env overrides.
+	lvTiers map[string]lvTier
 }
 
 func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client) *Service {
@@ -51,6 +56,10 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	if profileServiceURL == "" {
 		profileServiceURL = "http://identity-profile:8098"
 	}
+	mediaServiceURL := os.Getenv("MEDIA_SERVICE_URL")
+	if mediaServiceURL == "" {
+		mediaServiceURL = "http://media-service:8087"
+	}
 	userServiceURL := os.Getenv("USER_SERVICE_URL")
 	if userServiceURL == "" {
 		userServiceURL = "http://identity-user:8110"
@@ -62,11 +71,14 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		graphURL:          graphURL,
 		postServiceURL:    postServiceURL,
 		profileServiceURL: profileServiceURL,
+		mediaServiceURL:   mediaServiceURL,
 		userServiceURL:    userServiceURL,
 		graphClient:       httpclient.NewWithBreaker(5*time.Second, "feed->graph"),
 		postClient:        httpclient.NewWithBreaker(5*time.Second, "feed->post"),
 		profileClient:     httpclient.NewWithBreaker(5*time.Second, "feed->profile"),
+		mediaClient:       httpclient.NewWithBreaker(5*time.Second, "feed->media"),
 		userClient:        httpclient.NewWithBreaker(5*time.Second, "feed->user"),
+		lvTiers:           loadLVTiers(),
 	}
 }
 
@@ -82,6 +94,13 @@ type FeedItem struct {
 	CreatedAt   time.Time `json:"created_at"`
 	Score       float64   `json:"score,omitempty"`
 	ContentType string    `json:"content_type,omitempty"`
+	CursorToken string    `json:"-"`
+	// PolicyGoverned marks a candidate that could carry a distribution
+	// policy (Codex P1-2). Posts created before the policy epoch predate
+	// the `posts.distribution` column entirely, so they can never be an
+	// opt-out — which lets degraded mode keep them while dropping only
+	// genuinely uncertain candidates. Not serialized: internal only.
+	PolicyGoverned bool `json:"-"`
 }
 
 func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) ([]FeedItem, error) {
@@ -126,25 +145,24 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			AuthorID:    item.AuthorID,
 			CreatedAt:   item.CreatedAt,
 			ContentType: item.ContentType,
+			CursorToken: item.CursorToken,
 		})
 	}
 
-	// Filter out blocked/muted authors
-	var blockedSet map[uuid.UUID]struct{}
+	// Filter out blocked/muted authors.
+	//
+	// M2-P0-3: this must FAIL CLOSED. The previous code only filtered when
+	// the lookup succeeded, so any graph-service outage served an
+	// unfiltered feed — the one moment a blocked person's content reaching
+	// their target is most likely to go unnoticed, because nothing in the
+	// response says the safety filter was skipped. Returning an error
+	// costs an unavailable feed; the alternative costs a safety guarantee.
 	blockedMuted, bmErr := s.getBlockedAndMuted(ctx, userID)
-	if bmErr == nil && len(blockedMuted) > 0 {
-		blockedSet = make(map[uuid.UUID]struct{}, len(blockedMuted))
-		for _, id := range blockedMuted {
-			blockedSet[id] = struct{}{}
-		}
-		filtered := candidates[:0]
-		for _, c := range candidates {
-			if _, blocked := blockedSet[c.AuthorID]; !blocked {
-				filtered = append(filtered, c)
-			}
-		}
-		candidates = filtered
+	if bmErr != nil {
+		return nil, fmt.Errorf("feed unavailable: block/mute state could not be resolved: %w", bmErr)
 	}
+	blockedSet := blockedSetOf(blockedMuted)
+	candidates = applyBlockFilter(candidates, blockedSet)
 
 	// Filter to circle-only (friends) if requested
 	if circleOnly && len(candidates) > 0 {
@@ -200,18 +218,32 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			log.Printf("Cold-start fallback failed: %v", err)
 		} else {
 			log.Printf("Cold-start fallback returned %d posts", len(coldItems))
-			for _, item := range coldItems {
+			// M2-P0-3: cold-start candidates come from post-service's
+			// recent-public endpoint rather than the viewer's timeline, so
+			// they have never passed through any per-viewer filtering.
+			// They must go through the SAME block filter as timeline
+			// candidates — this is the path most likely to surface a
+			// stranger who blocked the viewer, because it is precisely the
+			// path used for viewers with no graph of their own.
+			for _, item := range applyBlockFilter(coldItems, blockedSet) {
 				if excludeSelf && item.AuthorID == userID {
 					continue
-				}
-				if blockedSet != nil {
-					if _, blocked := blockedSet[item.AuthorID]; blocked {
-						continue
-					}
 				}
 				candidates = append(candidates, item)
 			}
 		}
+	}
+
+	// P0-1: drop posts whose distribution policy opted out of social home.
+	// Runs after the cold-start fallback so fallback items are covered too;
+	// server-enforced on every page and mode — the client cannot opt back in.
+	candidates = s.filterMainFeedExcluded(ctx, candidates)
+
+	// P0-4: hidden tier is a hard content filter and must apply before
+	// ranking so no page or fallback path can leak a long video.
+	lvFreq := s.GetLongVideoFrequency(ctx, userID)
+	if lvFreq == "hidden" {
+		candidates = s.applyLongVideoFrequency(candidates, lvFreq, false)
 	}
 
 	// 2. Apply ranking if enabled
@@ -230,6 +262,11 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		}
 	}
 
+	// P0-4: apply the viewer's long-video tier (cold-start candidates
+	// included). The hidden tier re-applies harmlessly; reduced/balanced/
+	// preferred get the multiplier (ranked mode) + composition target.
+	candidates = s.applyLongVideoFrequency(candidates, lvFreq, feedMode == "ranked")
+
 	// 3. Trim to requested limit
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
@@ -238,35 +275,19 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	return candidates, nil
 }
 
-// GetFlickFeed returns the user's flick-only timeline (flick + legacy reel), scored by recency.
+// GetFlickFeed returns the first flick page for backward-compatible callers.
 func (s *Service) GetFlickFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"flick", "reel"}, limit*3)
-	if err != nil {
-		return nil, err
-	}
-
-	candidates := make([]FeedItem, 0, len(items))
-	for _, item := range items {
-		candidates = append(candidates, FeedItem{
-			PostID:      item.PostID,
-			AuthorID:    item.AuthorID,
-			CreatedAt:   item.CreatedAt,
-			ContentType: item.ContentType,
-		})
-	}
-
-	scored := scoreReels(candidates)
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-	return scored, nil
+	items, _, err := s.GetFlickFeedPage(ctx, userID, limit, "")
+	return items, err
 }
 
-// GetLongVideoFeed returns the user's long-video-only timeline (long_video + legacy video).
-func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"long_video", "video"}, limit*3)
+// GetFlickFeedPage returns a timestamp-keyset page. Ranking only reorders the
+// fixed chronological window, so no candidate is skipped between pages.
+func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string) ([]FeedItem, string, error) {
+	target := limit + 1
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"flick", "reel"}, before, target*3)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	candidates := make([]FeedItem, 0, len(items))
@@ -276,8 +297,54 @@ func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit 
 			AuthorID:    item.AuthorID,
 			CreatedAt:   item.CreatedAt,
 			ContentType: item.ContentType,
+			CursorToken: item.CursorToken,
 		})
 	}
+
+	// M2-P0-6: block/mute safety, fail closed. Applied before scoring so
+	// no blocked author can occupy a slot in the returned page.
+	blocked, err := s.resolveBlockedSet(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	candidates = applyBlockFilter(candidates, blocked)
+
+	window, next := keysetWindow(candidates, limit)
+	return scoreReels(window), next, nil
+}
+
+// GetLongVideoFeed returns the first long-video page for backward-compatible callers.
+func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
+	items, _, err := s.GetLongVideoFeedPage(ctx, userID, limit, "")
+	return items, err
+}
+
+// GetLongVideoFeedPage returns a ranked timestamp-keyset page.
+func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string) ([]FeedItem, string, error) {
+	target := limit + 1
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
+	if err != nil {
+		return nil, "", err
+	}
+
+	candidates := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+			CursorToken: item.CursorToken,
+		})
+	}
+
+	// M2-P0-6: block/mute safety, fail closed, before ranking.
+	blocked, err := s.resolveBlockedSet(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	candidates = applyBlockFilter(candidates, blocked)
+	candidates, next := keysetWindow(candidates, limit)
 
 	if s.ranker != nil && len(candidates) > 0 {
 		rc := feedItemsToCandidates(candidates)
@@ -289,45 +356,35 @@ func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit 
 		}
 	}
 
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-	return candidates, nil
+	return candidates, next, nil
 }
 
 // GetReelFeed returns the user's reel-only timeline, scored by recency.
 // Acts as an alias for GetFlickFeed (backward compat).
 func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"flick", "reel"}, limit*3)
-	if err != nil {
-		return nil, err
-	}
+	items, _, err := s.GetReelFeedPage(ctx, userID, limit, "")
+	return items, err
+}
 
-	candidates := make([]FeedItem, 0, len(items))
-	for _, item := range items {
-		candidates = append(candidates, FeedItem{
-			PostID:      item.PostID,
-			AuthorID:    item.AuthorID,
-			CreatedAt:   item.CreatedAt,
-			ContentType: item.ContentType,
-		})
-	}
-
-	// Reels use recency-biased scoring
-	scored := scoreReels(candidates)
-
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-	return scored, nil
+// GetReelFeedPage is the legacy /reels spelling of the Flick page.
+func (s *Service) GetReelFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string) ([]FeedItem, string, error) {
+	return s.GetFlickFeedPage(ctx, userID, limit, before)
 }
 
 // GetVideoFeed returns the user's long-video-only timeline.
 // Aliases to GetLongVideoFeed (backward compat).
 func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int, followingOnly bool) ([]FeedItem, error) {
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"long_video", "video"}, limit*3)
+	items, _, err := s.GetVideoFeedPage(ctx, userID, limit, "", followingOnly)
+	return items, err
+}
+
+// GetVideoFeedPage is the paginated watch surface. followingOnly retains its
+// legacy wire name but still means channel subscriptions only.
+func (s *Service) GetVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
+	target := limit + 1
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	candidates := make([]FeedItem, 0, len(items))
@@ -337,25 +394,42 @@ func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int,
 			AuthorID:    item.AuthorID,
 			CreatedAt:   item.CreatedAt,
 			ContentType: item.ContentType,
+			CursorToken: item.CursorToken,
 		})
 	}
 
-	// Subscriptions filter: keep only videos by creators the viewer follows.
-	// Mirrors the followingOnly path in GetHomeFeed so the subscriptions tab
-	// in the Posttube mobile shell can reuse the existing graph-service
-	// follow list.
+	// M2-P0-6: block/mute safety, fail closed. Runs before the
+	// subscriptions filter and the ranker so no later step can reintroduce
+	// a blocked author.
+	blocked, err := s.resolveBlockedSet(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	candidates = applyBlockFilter(candidates, blocked)
+
+	// Subscriptions filter (Module 1 P0-3): the PostTube Subscriptions tab
+	// is driven by real CHANNEL SUBSCRIPTIONS, not the social follow
+	// graph. Following someone does not put their long video here, and
+	// subscribing does not require following them. The parameter keeps
+	// its wire name (`following_only`) for old clients, but the meaning is
+	// now "subscriptions only" — there is no follow fallback: a viewer
+	// with zero subscriptions sees an empty tab, not their follow feed.
 	if followingOnly && len(candidates) > 0 {
-		following, err := s.fetchFollowing(ctx, userID)
+		subscribed, err := s.fetchSubscribedCreators(ctx, userID)
 		if err != nil {
-			log.Printf("video feed following_only: failed to fetch follows for %s: %v", userID, err)
-		} else if len(following) > 0 {
-			followSet := make(map[uuid.UUID]struct{}, len(following))
-			for _, fid := range following {
-				followSet[fid] = struct{}{}
+			// Fail closed: showing follow-graph videos here would
+			// silently reintroduce the exact conflation P0-3 removes.
+			log.Printf("video feed subscriptions: failed to fetch subscriptions for %s: %v", userID, err)
+			return nil, "", err
+		}
+		if len(subscribed) > 0 {
+			subSet := make(map[uuid.UUID]struct{}, len(subscribed))
+			for _, cid := range subscribed {
+				subSet[cid] = struct{}{}
 			}
 			filtered := candidates[:0]
 			for _, c := range candidates {
-				if _, ok := followSet[c.AuthorID]; ok {
+				if _, ok := subSet[c.AuthorID]; ok {
 					filtered = append(filtered, c)
 				}
 			}
@@ -364,6 +438,7 @@ func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int,
 			candidates = nil
 		}
 	}
+	candidates, next := keysetWindow(candidates, limit)
 
 	// Long-video feed uses the main ranker with full signals
 	if s.ranker != nil && len(candidates) > 0 {
@@ -376,10 +451,19 @@ func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int,
 		}
 	}
 
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
+	return candidates, next, nil
+}
+
+func keysetWindow(items []FeedItem, limit int) ([]FeedItem, string) {
+	if limit <= 0 || len(items) == 0 {
+		return []FeedItem{}, ""
 	}
-	return candidates, nil
+	if len(items) <= limit {
+		return items, ""
+	}
+	window := make([]FeedItem, limit)
+	copy(window, items[:limit])
+	return window, window[len(window)-1].CursorToken
 }
 
 // scoreReels applies a pure recency score to reel candidates.
@@ -593,9 +677,63 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	return nil
 }
 
+// resolveBlockedSet fetches the viewer's suppression set and FAILS CLOSED
+// (Module 2 M2-P0-6).
+//
+// Every feed surface that returns other people's content must call this
+// before returning anything. Only the main home feed used to: the reel,
+// flick, long-video and video tabs read the timeline and returned it with
+// no block filtering at all, so a blocked author's posts reached the very
+// person who blocked them through any of those tabs.
+//
+// Returning an error here makes the tab unavailable during a
+// graph-service outage. That is the intended trade — the alternative is
+// an unfiltered tab that looks completely normal.
+func (s *Service) resolveBlockedSet(ctx context.Context, userID uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	ids, err := s.getBlockedAndMuted(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("feed unavailable: block/mute state could not be resolved: %w", err)
+	}
+	return blockedSetOf(ids), nil
+}
+
+// blockedSetOf builds a lookup set from the graph-service response.
+// Returns nil when there is nothing to exclude.
+func blockedSetOf(ids []uuid.UUID) map[uuid.UUID]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
+// applyBlockFilter drops every item authored by a user in the block set
+// (Module 2 M2-P0-3).
+//
+// Extracted so the timeline path and the cold-start fallback provably run
+// the same filter. They used to duplicate the logic inline, which is how
+// the two paths drift: a change to one is easy to make without noticing
+// the other exists.
+func applyBlockFilter(items []FeedItem, blocked map[uuid.UUID]struct{}) []FeedItem {
+	if len(blocked) == 0 || len(items) == 0 {
+		return items
+	}
+	out := items[:0]
+	for _, it := range items {
+		if _, isBlocked := blocked[it.AuthorID]; isBlocked {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 // getBlockedAndMuted calls graph-service to get the union of blocked and muted user IDs for userID.
 func (s *Service) getBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	url := fmt.Sprintf("%s/v1/graph/blocked-and-muted?user_id=%s", s.graphURL, userID)
+	url := fmt.Sprintf("%s/v1/internal/graph/blocked-and-muted?user_id=%s", s.graphURL, userID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -611,10 +749,25 @@ func (s *Service) getBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]u
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	// M2-P0-3: the status code was previously ignored. A 401 from the
+	// internal-key gate, or a 500 from graph-service, decoded to an empty
+	// list and returned a nil error — so the caller filtered against
+	// nothing and every blocked and muted author flowed straight back
+	// into the feed, with no error anywhere to notice it by.
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("graph-service blocked-and-muted returned %d: %s",
+			resp.StatusCode, string(body))
+	}
 	var result struct {
 		UserIDs []uuid.UUID `json:"user_ids"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// A malformed body is indistinguishable from "nobody is blocked"
+		// once decoded, so it must be an error rather than an empty set.
+		return nil, fmt.Errorf("decode blocked-and-muted: %w", err)
+	}
 	return result.UserIDs, nil
 }
 

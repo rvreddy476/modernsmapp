@@ -12,9 +12,16 @@ import (
 
 // Story represents an ephemeral story (24h expiry).
 type Story struct {
-	ID             uuid.UUID  `json:"id"`
-	AuthorID       uuid.UUID  `json:"author_id"`
-	MediaURL       string     `json:"media_url"`
+	ID       uuid.UUID `json:"id"`
+	AuthorID uuid.UUID `json:"author_id"`
+	// MediaID is the canonical media asset. M4-P0-4 — this replaced a
+	// caller-supplied media_url, which meant a story pointed at whatever
+	// string the client sent rather than at an asset this platform owns,
+	// processed and is allowed to serve.
+	MediaID *uuid.UUID `json:"media_id,omitempty"`
+	// MediaURL is DERIVED at read time from MediaID by the protected-delivery
+	// path. It is never accepted as input and never persisted.
+	MediaURL       string     `json:"media_url,omitempty"`
 	MediaType      string     `json:"media_type"`
 	Caption        string     `json:"caption,omitempty"`
 	Visibility     string     `json:"visibility"`
@@ -23,18 +30,32 @@ type Story struct {
 	IsHighlight    bool       `json:"is_highlight"`
 	HighlightGroup *string    `json:"highlight_group,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
+	DeletedAt      *time.Time `json:"-"`
+
+	// Moderation state. Only ModerationState == "approved" is publishable.
+	ModerationState  string     `json:"moderation_state"`
+	ContentRevision  int64      `json:"content_revision"`
+	ModeratedAt      *time.Time `json:"moderated_at,omitempty"`
+	ModerationReason string     `json:"moderation_reason,omitempty"`
 }
 
-const storyCols = `id, author_id, media_url, media_type, caption, visibility,
-	view_count, expires_at, is_highlight, highlight_group, created_at`
+const storyCols = `id, author_id, media_id, media_type, caption, visibility,
+	view_count, expires_at, is_highlight, highlight_group, created_at,
+	deleted_at, moderation_state, content_revision, moderated_at,
+	COALESCE(moderation_reason, '')`
+
+func scanStoryInto(s *Story, scan func(...any) error) error {
+	return scan(
+		&s.ID, &s.AuthorID, &s.MediaID, &s.MediaType, &s.Caption, &s.Visibility,
+		&s.ViewCount, &s.ExpiresAt, &s.IsHighlight, &s.HighlightGroup, &s.CreatedAt,
+		&s.DeletedAt, &s.ModerationState, &s.ContentRevision, &s.ModeratedAt,
+		&s.ModerationReason,
+	)
+}
 
 func scanStory(row pgx.Row) (*Story, error) {
 	var s Story
-	err := row.Scan(
-		&s.ID, &s.AuthorID, &s.MediaURL, &s.MediaType, &s.Caption, &s.Visibility,
-		&s.ViewCount, &s.ExpiresAt, &s.IsHighlight, &s.HighlightGroup, &s.CreatedAt,
-	)
-	if err != nil {
+	if err := scanStoryInto(&s, row.Scan); err != nil {
 		return nil, err
 	}
 	return &s, nil
@@ -44,10 +65,7 @@ func scanStoryRows(rows pgx.Rows) ([]Story, error) {
 	var stories []Story
 	for rows.Next() {
 		var s Story
-		if err := rows.Scan(
-			&s.ID, &s.AuthorID, &s.MediaURL, &s.MediaType, &s.Caption, &s.Visibility,
-			&s.ViewCount, &s.ExpiresAt, &s.IsHighlight, &s.HighlightGroup, &s.CreatedAt,
-		); err != nil {
+		if err := scanStoryInto(&s, rows.Scan); err != nil {
 			return nil, err
 		}
 		stories = append(stories, s)
@@ -69,6 +87,16 @@ func (s *Store) CreateStory(ctx context.Context, story *Story) error {
 
 // GetStory returns a single story by ID.
 func (s *Store) GetStory(ctx context.Context, id uuid.UUID) (*Story, error) {
+	// M4-P0-2: this returns the row WITHOUT applying policy, and every caller
+	// must pass it through service.EvaluateStoryVisibility before returning
+	// anything to a viewer.
+	//
+	// The row is loaded unfiltered on purpose: the policy needs to distinguish
+	// expired from rejected from out-of-audience in order to log and measure
+	// denials, and the owner is entitled to see their own pending story. A
+	// query that pre-filtered would collapse those cases and force a second
+	// query for the owner path — two queries that would then be free to
+	// disagree. Filtering lives in exactly one place instead.
 	story, err := scanStory(s.db.QueryRow(ctx, `
 		SELECT `+storyCols+` FROM stories WHERE id = $1
 	`, id))
@@ -92,6 +120,8 @@ func (s *Store) GetStoriesFeed(ctx context.Context, followedUserIDs []uuid.UUID)
 		SELECT `+storyCols+`
 		FROM stories
 		WHERE author_id = ANY($1)
+			AND deleted_at IS NULL
+			AND moderation_state = 'approved'
 			AND (expires_at > NOW() OR is_highlight = TRUE)
 		ORDER BY created_at DESC
 	`, followedUserIDs)
@@ -109,6 +139,8 @@ func (s *Store) GetStoriesByAuthor(ctx context.Context, authorID uuid.UUID) ([]S
 		SELECT `+storyCols+`
 		FROM stories
 		WHERE author_id = $1
+			AND deleted_at IS NULL
+			AND moderation_state = 'approved'
 			AND (expires_at > NOW() OR is_highlight = TRUE)
 		ORDER BY created_at DESC
 	`, authorID)
@@ -163,4 +195,25 @@ func (s *Store) CleanupExpiredStories(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// GetStoriesForOwner returns every one of an author's own live stories in all
+// moderation states.
+//
+// M4-P0-4: the owner is entitled to a truthful pending/rejected view of their
+// own content. Soft-deleted rows stay hidden — the author deleted those on
+// purpose — but nothing else is filtered, because hiding a rejected story from
+// its author is how a creator concludes the app silently ate their upload.
+func (s *Store) GetStoriesForOwner(ctx context.Context, ownerID uuid.UUID) ([]Story, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+storyCols+`
+		FROM stories
+		WHERE author_id = $1 AND deleted_at IS NULL
+		ORDER BY created_at DESC
+	`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStoryRows(rows)
 }

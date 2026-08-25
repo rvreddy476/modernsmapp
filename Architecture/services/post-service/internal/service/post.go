@@ -47,7 +47,11 @@ var (
 	// engagement flags. Pushed into the service layer (was: handler-
 	// layer GetPost round trip) per audit H2 so engagement no longer
 	// double-fetches the post.
-	ErrLikesDisabled    = errors.New("likes are disabled on this post")
+	ErrLikesDisabled = errors.New("likes are disabled on this post")
+
+	// ErrCreateKeyReused: this actor already used this Idempotency-Key for a
+	// DIFFERENT payload (C-LB-3.5). Distinct from a replay, which succeeds.
+	ErrCreateKeyReused  = errors.New("idempotency key already used with different content")
 	ErrCommentsDisabled = errors.New("comments are disabled on this post")
 )
 
@@ -64,9 +68,19 @@ type Service struct {
 	graphServiceURL        string
 	monetizationServiceURL string
 	reviewerServiceURL     string
-	reviewAllVideos        bool
-	internalServiceKey     string
-	httpClient             *http.Client
+	trustSafetyURL         string
+	// requireStandingCheck makes an unreachable trust-safety service block
+	// scheduled publication instead of letting it through (Codex P2-1).
+	requireStandingCheck bool
+	reviewAllVideos      bool
+	internalServiceKey   string
+	httpClient           *http.Client
+
+	// storyAudience resolves story audiences server-side (M4-P0-1). A nil
+	// value fails closed with an unresolved error rather than degrading to an
+	// empty relationship set, so an unwired deployment denies rather than
+	// leaks.
+	storyAudience *StoryAudience
 
 	// Sharded post_engagement_counts counters. Each replaces a hot-row
 	// UPDATE on post_engagement_counts.<col> = <col> + 1 — at celebrity-
@@ -231,6 +245,18 @@ func (s *Service) AutoResolveFlagged(ctx context.Context, postID uuid.UUID, stat
 	return ok, err
 }
 
+func (s *Service) GetModerationSubject(ctx context.Context, postID uuid.UUID) (*postgres.ModerationSubject, error) {
+	return s.pgStore.GetModerationSubject(ctx, postID)
+}
+
+func (s *Service) ModeratePost(ctx context.Context, in postgres.ModeratePostInput) (*postgres.ModerationDecision, error) {
+	decision, err := s.pgStore.ModeratePost(ctx, in)
+	if err == nil && decision.Changed && s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+in.PostID.String()).Err()
+	}
+	return decision, err
+}
+
 // Resubmit lets the creator send an edited post (in 'needs_changes' after a
 // super-admin requested edits) back into human review. Owner-gated; re-enqueues
 // to reviewer-service so the loop continues.
@@ -327,14 +353,20 @@ type PostDetail struct {
 	Counts         *scylla.Counts     `json:"counts"`
 	ViewCount      int64              `json:"view_count"`
 	ViewerReaction *string            `json:"viewer_reaction,omitempty"`
+	HasReacted     bool               `json:"has_reacted"`
 	IsBookmarked   bool               `json:"is_bookmarked"`
 	RepostCount    int                `json:"repost_count"`
 	ViewerRepost   *RepostStateResult `json:"viewer_repost,omitempty"`
+	HasReposted    bool               `json:"has_reposted"`
 	IsRepostable   bool               `json:"is_repostable"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
 type CreatePostInput struct {
+	// PostID, when set, is used as the new post's id instead of a random
+	// UUID. Draft publishing passes the draft id here so a crash-retry
+	// hits the posts PK instead of double-publishing (P0-5 idempotency).
+	PostID          *uuid.UUID
 	AuthorID        uuid.UUID
 	Text            string
 	Visibility      string
@@ -373,6 +405,35 @@ type CreatePostInput struct {
 	CoverMediaID      *uuid.UUID
 	OriginalAudioVol  float32
 	OverlayAudioVol   float32
+	// Distribution is the raw policy document from the client (P0-1).
+	// nil = no policy = legacy behavior. Validated by ParseDistributionPolicy.
+	Distribution json.RawMessage
+	// LegacyDistribution carries explicitly-supplied pre-policy fields
+	// from old clients. When no typed policy is present these express the
+	// creator's real intent and are honored (Codex P1-1).
+	LegacyDistribution LegacyDistributionFields
+
+	// VisibilityExplicit records that the CALLER chose this audience, as
+	// opposed to inheriting a default (Slice C, C-LB-2).
+	//
+	// The after-hours Trusted Circle rule below could not tell the two apart:
+	// it matched on the VALUE "public", which a defaulting client and a
+	// deliberate client produce identically. Its own comment says a manually
+	// selected wider audience should win, and the implementation rewrote both.
+	// A user who explicitly published to Public at 23:00 got a trusted-circle
+	// post and was told it was public.
+	//
+	// The HTTP handler sets this because `visibility` is `binding:"required"`
+	// there — every request over the wire is an explicit choice. Internal
+	// callers that genuinely default leave it false and keep the old behaviour.
+	VisibilityExplicit bool
+
+	// CreateKey and CreateFingerprint carry the durable idempotency claim
+	// (C-LB-3). Empty CreateKey disables the claim, which is what internal
+	// callers (draft publish, thread entries) do — they have their own
+	// exactly-once mechanism through PostID.
+	CreateKey         string
+	CreateFingerprint string
 }
 
 // CreatePollInput holds poll creation data.
@@ -482,9 +543,41 @@ func DetectAndStoreMentions(ctx context.Context, postID uuid.UUID, postType stri
 const flickMaxDurationSeconds = 180
 
 // validContentTypes is the allowed set for content_type.
+// "voice" is Module 1 P0-6: a voice-only post (audio media + optional
+// text). Mixed voice carousels are deferred.
 var validContentTypes = map[string]bool{
 	"post": true, "poll": true, "reel": true, "video": true,
-	"flick": true, "long_video": true,
+	"flick": true, "long_video": true, "voice": true,
+}
+
+// isVoiceContentType reports whether a post is a voice post.
+func isVoiceContentType(ct string) bool { return ct == "voice" }
+
+// gateVoiceReviewStatus holds a voice post out of public surfaces until
+// media-service reports the baseline audio-safety pass complete
+// (Codex P0-6). A failed/unknown check holds 'pending' rather than
+// auto-approving; a rejected asset rejects the post.
+func (s *Service) gateVoiceReviewStatus(ctx context.Context, mediaID uuid.UUID) string {
+	procStatus, modStatus, err := s.getMediaModeration(ctx, mediaID)
+	if err != nil {
+		log.Printf("Warning: voice media safety check failed for %s, holding pending: %v", mediaID, err)
+		return "pending"
+	}
+	if procStatus == "rejected" || modStatus == "rejected" {
+		return "rejected"
+	}
+	if procStatus != "ready" {
+		return "pending"
+	}
+	switch modStatus {
+	case "approved":
+		return "approved"
+	case "failed":
+		// Safety pipeline failed → human review, never auto-approve.
+		return "flagged"
+	default:
+		return "pending"
+	}
 }
 
 // classifyVideoContentType returns "flick" or "long_video" based on duration and dimensions.
@@ -546,6 +639,46 @@ func normalizeLegacyContentType(contentType string) string {
 }
 
 func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*postgres.Post, error) {
+	// Non-empty and length ceiling, before anything is written (C-LB-1.3).
+	// Server-side because a hostile or older client will not enforce it.
+	if err := ValidatePostContent(input.Text, len(input.MediaIDs)); err != nil {
+		return nil, err
+	}
+
+	// DURABLE IDEMPOTENCY — fast path (C-LB-3.3).
+	//
+	// An ordinary retry is answered here without redoing validation, media
+	// authority, spam scoring and event construction. This read is only an
+	// optimisation: the authority is the unique index inside
+	// CreatePostWithEventIdempotent, because another request can claim the key
+	// between this lookup and that insert.
+	if input.CreateKey != "" {
+		postID, fingerprint, found, lookupErr := s.pgStore.LookupCreateIdempotency(
+			ctx, input.AuthorID, input.CreateKey)
+		if lookupErr != nil {
+			// Fail closed: an unreadable authority must not become "assume new".
+			return nil, lookupErr
+		}
+		if found {
+			if fingerprint != input.CreateFingerprint {
+				return nil, ErrCreateKeyReused
+			}
+			existing, getErr := s.pgStore.GetPost(ctx, postID)
+			if getErr != nil {
+				return nil, fmt.Errorf("replay created post: %w", getErr)
+			}
+			return existing, nil
+		}
+	}
+
+	// Validate the distribution policy up front so a malformed/unsupported
+	// policy fails the whole request (400) before any row is written —
+	// never silently ignored (Codex P0-1).
+	distPolicy, err := ParseDistributionPolicy(input.Distribution)
+	if err != nil {
+		return nil, err
+	}
+
 	contentType := input.ContentType
 	if contentType == "" {
 		contentType = "post"
@@ -570,12 +703,24 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// visibility. The user can always manually pick a wider audience
 	// for a specific post — this only fires when they leave the
 	// default visibility selection alone.
-	if input.Visibility == "" || input.Visibility == "public" || input.Visibility == "followers" {
-		if s.shouldRestrictToTrustedCircle(ctx, input.AuthorID, time.Now()) {
-			input.Visibility = "trusted"
-			slog.Info("post: after-hours protection applied",
-				"author_id", input.AuthorID, "visibility", input.Visibility)
-		}
+	//
+	// Slice C / C-LB-2: "leave the default alone" is now actually detected.
+	// The condition used to match on the VALUE, which a defaulting client and
+	// a deliberate one produce identically, so an explicitly Public post made
+	// at 23:00 was silently rewritten to `trusted` while the composer, the
+	// response and the author all still said Public. Consent to a narrower
+	// audience cannot be inferred from a normal publish.
+	//
+	// A future auto-audience feature needs its own request signal and its own
+	// enforced audience contract; until then an explicit choice is honoured.
+	//
+	// The toggle fetch stays INSIDE the guard: an explicit audience must not
+	// cost a cross-service call to arrive at the same answer.
+	if audienceMayBeAutoRestricted(input.VisibilityExplicit, input.Visibility) &&
+		s.shouldRestrictToTrustedCircle(ctx, input.AuthorID, time.Now()) {
+		input.Visibility = "trusted"
+		slog.Info("post: after-hours protection applied",
+			"author_id", input.AuthorID, "visibility", input.Visibility)
 	}
 
 	postType := input.PostType
@@ -627,8 +772,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		overlayVol = 1.0
 	}
 
+	newPostID := uuid.New()
+	if input.PostID != nil && *input.PostID != uuid.Nil {
+		newPostID = *input.PostID
+	}
 	p := &postgres.Post{
-		ID:                uuid.New(),
+		ID:                newPostID,
 		AuthorID:          input.AuthorID,
 		Text:              input.Text,
 		Visibility:        input.Visibility,
@@ -668,6 +817,47 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		CreatedAt:         time.Now(),
 	}
 
+	// Persist the validated policy verbatim; rev 1 marks "has a policy",
+	// rev 0 marks legacy rows that never carried one.
+	//
+	// P1-1: when there is no typed policy but the old client explicitly
+	// asked for a distribution outcome, materialize that intent into the
+	// canonical policy. Without this the row and the event would both
+	// fall back to "main_feed=true" and silently override the creator.
+	effectivePolicy := distPolicy
+	if effectivePolicy == nil {
+		effectivePolicy = PolicyFromLegacy(input.LegacyDistribution)
+	}
+	if effectivePolicy != nil {
+		stored, mErr := MarshalPolicy(effectivePolicy)
+		if mErr != nil {
+			return nil, mErr
+		}
+		p.Distribution = stored
+		p.DistributionRev = 1
+	}
+
+	// AUTHORITY BEFORE ATTACHMENT (Slice C, C-LB-4).
+	//
+	// Ordinary create-post used to look up media KIND only, and silently
+	// treated a missing row as an image. It never established that the caller
+	// uploaded the asset, that processing had finished, or that moderation had
+	// passed. Any authenticated user could therefore attach another user's
+	// media by id, or publish an asset that was still processing or had already
+	// been rejected by safety review.
+	//
+	// Thread creation already got this right (`threads.go`, Codex P1-6) using
+	// the same batched query. The ordinary path is the one people actually use.
+	//
+	// The FK added by migration 030 prevents a DANGLING row; it says nothing
+	// about who owns the media or whether it is safe to publish. Those are
+	// different questions and only this check answers them.
+	if err := s.verifyMediaAuthority(
+		ctx, input.AuthorID, input.MediaIDs, contentType, postType,
+	); err != nil {
+		return nil, err
+	}
+
 	// Attach media in a single round trip — audit H1.
 	// Previously this loop did 1 SELECT per media-id (kind), plus a
 	// second SELECT per video (duration), plus a third SELECT for
@@ -702,9 +892,20 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 				kind = "image"
 			}
 		}
+		// Slice C / C-CLB-3: the create response carries the accessibility
+		// decision the author just made. The composer navigates straight to
+		// the post it created, so without this the first render of a brand-new
+		// image post is the one render guaranteed to be unlabelled.
+		//
+		// Absent metadata leaves both zero: no description and not decorative,
+		// which is "nobody said" — the state a renderer must treat as missing
+		// rather than as an explicit decorative mark.
+		meta := mediaMeta[mediaID]
 		p.Media = append(p.Media, postgres.PostMedia{
-			MediaID: mediaID,
-			Kind:    kind,
+			MediaID:       mediaID,
+			Kind:          kind,
+			AltText:       meta.AltText,
+			AltDecorative: meta.AltDecorative,
 		})
 		if kind == "video" && dur > maxDuration {
 			maxDuration = dur
@@ -722,6 +923,19 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			hasVideo = true
 			break
 		}
+	}
+	// P0-6: locate the voice attachment (media_assets.file_type='audio'
+	// surfaces as kind "audio") and classify the post as a voice post.
+	var voiceMediaID uuid.UUID
+	for _, m := range p.Media {
+		if m.Kind == "audio" {
+			voiceMediaID = m.MediaID
+			break
+		}
+	}
+	if voiceMediaID != uuid.Nil && !hasVideo {
+		p.ContentType = "voice"
+		contentType = "voice"
 	}
 	if hasVideo {
 		if maxDuration > 0 {
@@ -798,6 +1012,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if reviewStatus == "approved" && isVideoContentType(p.ContentType) && videoMediaID != uuid.Nil {
 		reviewStatus = s.gateVideoReviewStatus(ctx, videoMediaID)
 	}
+	// P0-6: voice posts stay out of public surfaces until baseline audio
+	// safety completes. Same 'pending' mechanism as the video gate — the
+	// read filters already hide every non-approved post.
+	if reviewStatus == "approved" && isVoiceContentType(p.ContentType) && voiceMediaID != uuid.Nil {
+		reviewStatus = s.gateVoiceReviewStatus(ctx, voiceMediaID)
+	}
 	// Optional: send every video to human review, not just spam-flagged. Covers
 	// 'pending' (still transcoding) too — otherwise the transcode consumer would
 	// later flip pending→approved and publish it without review. The reviewer
@@ -808,7 +1028,74 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 	p.ReviewStatus = reviewStatus
 
-	if err := s.pgStore.CreatePost(ctx, p); err != nil {
+	// Build the PostCreated event BEFORE the insert so the outbox row
+	// commits in the same transaction as the post (Codex P0-1: event and
+	// row are atomic; closes the old commit→outbox dual-write window).
+	createEventType := ""
+	var createPayload interface{}
+	if s.producer != nil {
+		resolved := ResolveDistribution(effectivePolicy)
+		pc := events.PostCreatedPayload{
+			PostID:          p.ID.String(),
+			AuthorID:        p.AuthorID.String(),
+			Text:            p.Text,
+			Visibility:      p.Visibility,
+			ContentType:     p.ContentType,
+			DurationSeconds: maxDuration,
+			CreatedAt:       p.CreatedAt,
+			DistributionRev: p.DistributionRev,
+			// Module 2 M2-P0-1: carry the CANONICAL persisted moderation
+			// state so search can refuse to index held content. Without
+			// this, a post gated at 'pending' by the video/voice safety
+			// check was indexed and publicly findable immediately.
+			ReviewStatus: p.ReviewStatus,
+			// Creation is always revision 1; later transitions increment.
+			SearchRev: 1,
+		}
+		// Additive pointer fields: stamped whenever an intent exists —
+		// either a typed policy or explicit legacy fields (P1-1). Events
+		// for clients that expressed no opinion stay byte-compatible.
+		if effectivePolicy != nil {
+			mf, ns := resolved.MainFeed, resolved.NotifySubscribers
+			pc.MainFeed = &mf
+			pc.NotifySubscribers = &ns
+		}
+		// Subscriber fan-out key (P0-3): best-effort canonical channel
+		// lookup for video uploads. Empty on failure — the notification
+		// consumer treats a missing channel as "no subscriber fan-out".
+		if isVideoContentType(p.ContentType) {
+			pc.ChannelID = s.lookupChannelIDForUser(ctx, p.AuthorID)
+		}
+		createEventType = events.PostCreated
+		createPayload = pc
+	}
+
+	// The post, its outbox event and the durable idempotency claim commit
+	// together or not at all (C-LB-3.2).
+	var idem *postgres.CreateIdempotency
+	if input.CreateKey != "" {
+		idem = &postgres.CreateIdempotency{
+			ActorID:     input.AuthorID,
+			ClientKey:   input.CreateKey,
+			Fingerprint: input.CreateFingerprint,
+		}
+	}
+	if err := s.pgStore.CreatePostWithEventIdempotent(
+		ctx, p, createEventType, createPayload, idem,
+	); err != nil {
+		// A concurrent request won the key. Whether it was the same intent
+		// decides between replaying its post and refusing the reuse.
+		var replay postgres.ErrCreateKeyReplay
+		if errors.As(err, &replay) {
+			existing, getErr := s.pgStore.GetPost(ctx, replay.PostID)
+			if getErr != nil {
+				return nil, fmt.Errorf("replay created post: %w", getErr)
+			}
+			return existing, nil
+		}
+		if errors.Is(err, postgres.ErrCreateKeyConflict) {
+			return nil, ErrCreateKeyReused
+		}
 		return nil, err
 	}
 
@@ -878,27 +1165,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Invalidate author content counts cache
 	s.rdb.Del(ctx, fmt.Sprintf("post:author-counts:%s", input.AuthorID))
 
-	// Audit H4: route PostCreated through the outbox. The previous
-	// path was `go s.producer.PublishPostCreated(...)` — fire and
-	// forget; a crash in the goroutine window between row commit
-	// and Kafka publish silently dropped the event. Insert here
-	// synchronously so the outbox worker (StartOutboxWorker) picks
-	// it up on its next 5 s tick and PublishRaw's it to Kafka, with
-	// the unpublished row driving retry until success.
-	if s.producer != nil {
-		postCreated := events.PostCreatedPayload{
-			PostID:          p.ID.String(),
-			AuthorID:        p.AuthorID.String(),
-			Text:            p.Text,
-			Visibility:      p.Visibility,
-			ContentType:     p.ContentType,
-			DurationSeconds: maxDuration,
-			CreatedAt:       p.CreatedAt,
-		}
-		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostCreated, "post", p.ID, postCreated); err != nil {
-			log.Printf("Warning: failed to enqueue PostCreated to outbox: %v", err)
-		}
-	}
+	// PostCreated now rides the same transaction as the post row (see
+	// CreatePostWithEvent above) — the outbox worker publishes it to
+	// Kafka on its next 5s tick with retry until success.
 
 	// Fire-and-forget: ephemeral Redis pub/sub for live signaling.
 	// Not durable — clients tolerate missing one notification and
@@ -1109,17 +1378,28 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 
 	// Enrich with viewer-specific state
 	if viewerID != nil {
-		reaction, _ := s.scyllaStore.GetReaction(ctx, id, *viewerID)
+		reaction, err := s.scyllaStore.GetReaction(ctx, id, *viewerID)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer reaction: %w", err)
+		}
 		if reaction != "" {
 			detail.ViewerReaction = &reaction
+			detail.HasReacted = true
 		}
-		bookmarked, _ := s.pgStore.IsBookmarked(ctx, *viewerID, id)
+		bookmarked, err := s.pgStore.IsBookmarked(ctx, *viewerID, id)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer bookmark: %w", err)
+		}
 		detail.IsBookmarked = bookmarked
 
 		// Repost state
-		repostState, _ := s.GetRepostState(ctx, *viewerID, id)
+		repostState, err := s.GetRepostState(ctx, *viewerID, id)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer repost: %w", err)
+		}
 		if repostState != nil && repostState.HasReposted {
 			detail.ViewerRepost = repostState
+			detail.HasReposted = true
 		}
 	}
 
@@ -1184,6 +1464,42 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		return nil, err
 	}
 
+	// Page hydration must stay batch-shaped. The previous loop issued one
+	// PostgreSQL query for every bookmark and repost count/state, which merely
+	// moved the client's N+1 problem behind the gateway. PostgreSQL-owned state
+	// is loaded in a constant number of round trips for the whole page.
+	repostCounts, err := s.pgStore.BatchGetRepostCounts(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load repost counts: %w", err)
+	}
+	bookmarks := map[uuid.UUID]bool{}
+	activeReposts := map[uuid.UUID]*postgres.Repost{}
+	if viewerID != nil {
+		bookmarks, err = s.pgStore.BatchIsBookmarked(ctx, *viewerID, ids)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer bookmarks: %w", err)
+		}
+		activeReposts, err = s.pgStore.BatchGetActiveReposts(ctx, *viewerID, ids)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer reposts: %w", err)
+		}
+	}
+
+	// Scylla partitions reactions and counters by post. The store helper runs
+	// those independent point reads with bounded concurrency, so one slow
+	// partition cannot turn this into a serial page-length latency chain.
+	countsByPost, err := s.scyllaStore.BatchGetCounts(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load post counts: %w", err)
+	}
+	reactions := map[uuid.UUID]string{}
+	if viewerID != nil {
+		reactions, err = s.scyllaStore.BatchGetReactions(ctx, ids, *viewerID)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer reactions: %w", err)
+		}
+	}
+
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
@@ -1211,18 +1527,36 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 			}
 		}
 
-		counts, _ := s.scyllaStore.GetCounts(ctx, post.ID)
+		counts := countsByPost[post.ID]
+		if counts == nil {
+			counts = &scylla.Counts{}
+		}
 
-		detail := &PostDetail{Post: &post, Counts: counts}
+		detail := &PostDetail{
+			Post:         &post,
+			Counts:       counts,
+			RepostCount:  repostCounts[post.ID],
+			IsRepostable: post.Visibility != "private",
+		}
 
 		// Enrich with viewer-specific state
 		if viewerID != nil {
-			reaction, _ := s.scyllaStore.GetReaction(ctx, post.ID, *viewerID)
+			reaction := reactions[post.ID]
 			if reaction != "" {
 				detail.ViewerReaction = &reaction
+				detail.HasReacted = true
 			}
-			bookmarked, _ := s.pgStore.IsBookmarked(ctx, *viewerID, post.ID)
-			detail.IsBookmarked = bookmarked
+			detail.IsBookmarked = bookmarks[post.ID]
+			if repost := activeReposts[post.ID]; repost != nil {
+				detail.HasReposted = true
+				detail.ViewerRepost = &RepostStateResult{
+					HasReposted: true,
+					RepostID:    &repost.ID,
+					Type:        repost.RepostType,
+					QuoteText:   repost.QuoteText,
+					CreatedAt:   repost.CreatedAt.Format(time.RFC3339),
+				}
+			}
 		}
 
 		// Enrich with poll data if post is a poll
@@ -1274,6 +1608,7 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 	if err := s.scyllaStore.React(ctx, postID, userID, reaction); err != nil {
 		return err
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Audit H4: PostReacted via outbox. Synchronous insert so a
 	// process crash in the React goroutine window doesn't drop the
@@ -1320,6 +1655,7 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 	if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
 		return err
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Fire-and-forget: Redis publish in background
 	go func() {
@@ -1345,6 +1681,19 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 
 func (s *Service) GetMyReaction(ctx context.Context, postID, userID uuid.UUID) (string, error) {
 	return s.scyllaStore.GetReaction(ctx, postID, userID)
+}
+
+// invalidateFeedHydration removes the per-viewer feed cache entry after a
+// viewer mutation. Without this, a successful like/bookmark/repost could be
+// followed by five minutes of a false action bar on another device.
+func (s *Service) invalidateFeedHydration(ctx context.Context, userID, postID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	if err := s.rdb.Del(ctx, fmt.Sprintf("feed:hydrate:%s:%s", userID, postID)).Err(); err != nil {
+		slog.Warn("failed to invalidate feed hydration", "error", err,
+			"user_id", userID, "post_id", postID)
+	}
 }
 
 func (s *Service) AddComment(ctx context.Context, postID, userID uuid.UUID, text string) (uuid.UUID, error) {
@@ -1398,14 +1747,22 @@ func (s *Service) AddBookmark(ctx context.Context, userID, postID uuid.UUID) err
 	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
 		return err
 	}
-	return s.pgStore.AddBookmark(ctx, userID, postID)
+	if err := s.pgStore.AddBookmark(ctx, userID, postID); err != nil {
+		return err
+	}
+	s.invalidateFeedHydration(ctx, userID, postID)
+	return nil
 }
 
 func (s *Service) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) error {
 	// No visibility gate on remove — a user who already bookmarked
 	// must always be able to clean up their own row even if the
 	// post's visibility tightened (author switched to followers-only).
-	return s.pgStore.RemoveBookmark(ctx, userID, postID)
+	if err := s.pgStore.RemoveBookmark(ctx, userID, postID); err != nil {
+		return err
+	}
+	s.invalidateFeedHydration(ctx, userID, postID)
+	return nil
 }
 
 func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]PostDetail, string, error) {
@@ -1515,6 +1872,7 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
 		}
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Author already loaded above — no second GetPost needed.
 	authorID := post.AuthorID
@@ -1840,7 +2198,15 @@ func (s *Service) IsSharedFromRedis(ctx context.Context, userID, postID uuid.UUI
 }
 
 // CreateCommentPG creates a comment in PostgreSQL with counter update.
-func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUID, body string) (*postgres.Comment, error) {
+// CreateCommentPG creates a comment.
+//
+// clientKey/fingerprint make the insert durably idempotent (see
+// postgres.CreateCommentIdempotent). Both may be empty, in which case the
+// caller made no idempotency promise and none is enforced.
+func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUID, body, clientKey, fingerprint string) (*postgres.Comment, error) {
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("INVALID_REQUEST: comment body cannot be blank")
+	}
 	// Audit C5 + H2: one fetch covers visibility, NoComments flag,
 	// and the post-author-id used for the CommentCreated event below.
 	// Previously the handler did a GetPost just to check NoComments,
@@ -1858,9 +2224,16 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
 
-	comment, err := s.pgStore.CreateComment(ctx, postID, authorID, body)
+	comment, replayed, err := s.pgStore.CreateCommentIdempotent(ctx, postID, authorID, body, clientKey, fingerprint)
 	if err != nil {
 		return nil, err
+	}
+	if replayed {
+		// The intent was already recorded. Return the original comment and do
+		// NOT re-run any of the side effects below — bumping trending scores,
+		// counters or notifications a second time is exactly the duplication
+		// this path exists to prevent.
+		return comment, nil
 	}
 
 	// Bump trending scores for hashtags in the comment body (max 5 per design spec).
@@ -2029,52 +2402,20 @@ func (s *Service) GetCommentsAroundPG(ctx context.Context, postID, commentID uui
 
 // CreateStoryInput holds fields for creating a story.
 type CreateStoryInput struct {
-	AuthorID       uuid.UUID
-	MediaURL       string
+	AuthorID uuid.UUID
+	// MediaID is the canonical asset. M4-P0-4 removed the MediaURL field
+	// entirely rather than deprecating it: a field that still exists is a
+	// field a caller can still populate.
+	MediaID        uuid.UUID
 	MediaType      string
 	Caption        string
 	Visibility     string
 	IsHighlight    bool
 	HighlightGroup *string
+	IdempotencyKey string
 }
 
 // CreateStory creates a new ephemeral story with 24h expiry.
-func (s *Service) CreateStory(ctx context.Context, input *CreateStoryInput) (*postgres.Story, error) {
-	visibility := input.Visibility
-	if visibility == "" {
-		visibility = "followers"
-	}
-
-	story := &postgres.Story{
-		ID:             uuid.New(),
-		AuthorID:       input.AuthorID,
-		MediaURL:       input.MediaURL,
-		MediaType:      input.MediaType,
-		Caption:        input.Caption,
-		Visibility:     visibility,
-		ViewCount:      0,
-		ExpiresAt:      time.Now().Add(24 * time.Hour),
-		IsHighlight:    input.IsHighlight,
-		HighlightGroup: input.HighlightGroup,
-		CreatedAt:      time.Now(),
-	}
-
-	if err := s.pgStore.CreateStory(ctx, story); err != nil {
-		return nil, err
-	}
-
-	// Publish story created event
-	if s.producer != nil {
-		go func() {
-			bgCtx := context.Background()
-			if err := s.producer.PublishStoryCreated(bgCtx, story.ID, story.AuthorID, story.MediaType); err != nil {
-				log.Printf("Warning: failed to publish story.created event: %v", err)
-			}
-		}()
-	}
-
-	return story, nil
-}
 
 // GetStory returns a single story by ID.
 func (s *Service) GetStory(ctx context.Context, storyID uuid.UUID) (*postgres.Story, error) {
@@ -2596,6 +2937,87 @@ func (s *Service) lookupUserByUsername(ctx context.Context, username string) (st
 	return result.UserID, nil
 }
 
+// lookupChannelIDForUser resolves the author's canonical broadcast channel
+// via user-service (internal contract, P0-3). Best-effort: returns "" on
+// any failure or when the user has no channel — consumers treat "" as
+// "no subscriber fan-out possible".
+func (s *Service) lookupChannelIDForUser(ctx context.Context, userID uuid.UUID) string {
+	if s.userServiceURL == "" {
+		return ""
+	}
+	url := fmt.Sprintf("%s/internal/channels/by-owner/%s", s.userServiceURL, userID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var result struct {
+		ChannelID string `json:"channel_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
+	return result.ChannelID
+}
+
+// UpdateDistribution replaces a post's distribution policy (owner-only).
+// The row update, the monotonic rev bump, and the PostDistributionUpdated
+// outbox event commit in one transaction. Returns the updated post.
+func (s *Service) UpdateDistribution(ctx context.Context, postID, actorID uuid.UUID, raw json.RawMessage) (*postgres.Post, error) {
+	policy, err := ParseDistributionPolicy(raw)
+	if err != nil {
+		return nil, err
+	}
+	if policy == nil {
+		// Explicitly clearing a policy back to legacy behavior is not a
+		// supported operation — reject rather than silently accept.
+		return nil, fmt.Errorf("%w: policy document required", ErrInvalidDistribution)
+	}
+	stored, err := MarshalPolicy(policy)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch first for the event's content_type + existence/ownership
+	// pre-check (the UPDATE re-checks ownership atomically).
+	existing, err := s.pgStore.GetPost(ctx, postID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, ErrPostNotFound
+	}
+	if existing.AuthorID != actorID {
+		return nil, ErrNotPostAuthor
+	}
+
+	resolved := ResolveDistribution(policy)
+	_, err = s.pgStore.UpdateDistribution(ctx, postID, actorID, stored,
+		func(rev int64) (string, interface{}) {
+			return events.PostDistributionUpdated, events.PostDistributionUpdatedPayload{
+				PostID:            postID.String(),
+				AuthorID:          actorID.String(),
+				ContentType:       existing.ContentType,
+				MainFeed:          resolved.MainFeed,
+				NotifySubscribers: resolved.NotifySubscribers,
+				DistributionRev:   rev,
+				UpdatedAt:         time.Now().UTC(),
+			}
+		})
+	if err != nil {
+		return nil, err
+	}
+	return s.pgStore.GetPost(ctx, postID)
+}
+
 // shouldRestrictToTrustedCircle returns true when the author has
 // `tc_after_hours_posts = true` AND the supplied time falls in the
 // late-night window (22:00–06:00 server time). Server time is used
@@ -2613,9 +3035,7 @@ func (s *Service) shouldRestrictToTrustedCircle(ctx context.Context, authorID uu
 	if err != nil || !on {
 		return false
 	}
-	hour := now.Hour()
-	// 22:00–05:59 inclusive (06:00 is back to normal-hours).
-	return hour >= 22 || hour < 6
+	return isAfterHours(now)
 }
 
 // fetchAfterHoursToggle reads the user's settings from user-service.
@@ -2778,6 +3198,7 @@ func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*R
 			}
 		}()
 	}
+	s.invalidateFeedHydration(ctx, input.UserID, input.PostID)
 
 	return &RepostResult{
 		ID:             repost.ID,
@@ -2830,6 +3251,7 @@ func (s *Service) UndoRepost(ctx context.Context, userID, postID uuid.UUID) erro
 			}
 		}()
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	return nil
 }
@@ -2946,4 +3368,39 @@ func (s *Service) BatchGetRepostStates(ctx context.Context, userID uuid.UUID, po
 		}
 	}
 	return result, nil
+}
+
+// audienceMayBeAutoRestricted answers whether the after-hours rule is even
+// allowed to consider this post — Slice C, C-LB-2.
+//
+// # WHY THIS IS A NAMED, PURE FUNCTION
+//
+// This is the consent boundary. The rule narrows a post's audience without
+// being asked, so the one thing that must never regress is that it cannot
+// touch an audience the author chose deliberately. The condition used to match
+// on the VALUE alone — and a defaulting client and a deliberate one send the
+// identical value — so an explicitly Public post made at 23:00 was silently
+// rewritten to `trusted` while the composer, the response and the author all
+// still said Public.
+//
+// It lived inline inside a method that makes a cross-service call and reads the
+// wall clock, so it could not be tested at all. As a pure function it is a
+// table test against a fixed clock, which is what NC-C2A mutates.
+//
+// `followers` is included because it is also a value a client can arrive at
+// without a decision. An explicit `followers` is protected by the same flag.
+func audienceMayBeAutoRestricted(visibilityExplicit bool, visibility string) bool {
+	if visibilityExplicit {
+		return false
+	}
+	return visibility == "" || visibility == "public" || visibility == "followers"
+}
+
+// isAfterHours is the 22:00–05:59 window, on whatever clock it is given.
+//
+// Separated from the toggle fetch so the window itself is testable without a
+// user-service standing behind it. 06:00 is back to normal hours.
+func isAfterHours(now time.Time) bool {
+	hour := now.Hour()
+	return hour >= 22 || hour < 6
 }

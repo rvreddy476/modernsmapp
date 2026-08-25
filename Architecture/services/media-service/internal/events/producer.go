@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/atpost/shared/events"
-	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -28,64 +27,40 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 	return &Producer{writer: w}
 }
 
-func (p *Producer) PublishTranscodeRequested(ctx context.Context, mediaAssetID uuid.UUID, uploaderID uuid.UUID, storageKey, mimeType string) error {
-	payload := events.MediaTranscodeRequestedPayload{
-		MediaAssetID: mediaAssetID.String(),
-		UploaderID:   uploaderID.String(),
-		StorageKey:   storageKey,
-		MimeType:     mimeType,
-	}
-	return p.publish(ctx, events.MediaTranscodeRequested, &uploaderID, payload)
-}
-
-func (p *Producer) PublishTranscodeCompleted(ctx context.Context, mediaAssetID uuid.UUID, processingStatus string) error {
-	return p.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, processingStatus, "", "", "", "")
-}
-
-// PublishTranscodeCompletedWithURLs is the richer variant used on success —
-// downstream services (post-service.video_metadata) need the HLS master URL
-// so the watch screen can stream adaptive bitrate instead of falling back to
-// the original MP4. The plain PublishTranscodeCompleted above stays for the
-// failure path where no URLs exist yet.
-func (p *Producer) PublishTranscodeCompletedWithURLs(
-	ctx context.Context,
-	mediaAssetID uuid.UUID,
-	processingStatus string,
-	hlsMasterURL, mp4URL, thumbnailURL, moderationStatus string,
-) error {
-	payload := events.MediaTranscodeCompletedPayload{
-		MediaAssetID:     mediaAssetID.String(),
-		ProcessingStatus: processingStatus,
-		HLSMasterURL:     hlsMasterURL,
-		MP4URL:           mp4URL,
-		ThumbnailURL:     thumbnailURL,
-		ModerationStatus: moderationStatus,
-	}
-	return p.publish(ctx, events.MediaTranscodeCompleted, nil, payload)
-}
-
-func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	var actorStr *string
-	if actorID != nil {
-		s := actorID.String()
-		actorStr = &s
-	}
-
-	envelope := events.NewEnvelope(ctx, eventType, actorStr, payloadBytes)
-
+// PublishRawEvent publishes an already-marshalled payload under an
+// arbitrary event type. Used by the transcript request path (P0-9).
+func (p *Producer) PublishRawEvent(ctx context.Context, eventType, key string, payload []byte) error {
+	envelope := events.NewEnvelope(ctx, eventType, nil, payload)
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
+	if key == "" {
+		key = envelope.EventID
+	}
+	return p.writer.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(key),
+		Value: envelopeBytes,
+	})
+}
 
+// PublishEnvelope publishes an outbox-owned envelope without regenerating its
+// identity. Keeping event_id stable across retries is what lets consumers
+// collapse the unavoidable publish-before-mark duplicate window.
+func (p *Producer) PublishEnvelope(ctx context.Context, envelope events.EventEnvelope) error {
+	if p == nil || p.writer == nil {
+		return fmt.Errorf("media event producer is not configured")
+	}
+	if envelope.EventID == "" || envelope.EventType == "" {
+		return fmt.Errorf("media event envelope is missing identity")
+	}
+	b, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal media event envelope: %w", err)
+	}
 	return p.writer.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(envelope.EventID),
-		Value: envelopeBytes,
+		Value: b,
 	})
 }
 

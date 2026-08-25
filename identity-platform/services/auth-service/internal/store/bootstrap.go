@@ -2,30 +2,28 @@ package store
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
+	"github.com/atpost/identity-shared/store/schemabootstrap"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// BootstrapSchema applies the minimal auth-service schema required to run
-// against a fresh identity database.
+// BootstrapSchema applies the auth-service schema required to run against a
+// fresh identity database.
+//
+// The statement splitter that does the real work now lives in
+// identity-shared/store/schemabootstrap. It moved because profile-service and
+// user-service need exactly the same thing and could not import it from this
+// internal package — which is a large part of why profile-service ended up
+// with no schema of its own and served 500s from six tables that were never
+// created anywhere.
+//
+// Moving it also gave it the tests it never had, despite having already caused
+// an outage: it used to be `strings.Split(sql, ";")`, which cut setup.sql in
+// half at a semicolon inside a comment, so every table declared after that
+// line was silently never created. See schemabootstrap for the full account.
+//
+// This wrapper stays so callers (and the signup journey test) keep one obvious
+// entry point for "the schema this service owns".
 func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string) error {
-	if db == nil {
-		return fmt.Errorf("db pool is nil")
-	}
-	if strings.TrimSpace(schemaSQL) == "" {
-		return fmt.Errorf("schema sql is empty")
-	}
-
-	for idx, statement := range strings.Split(schemaSQL, ";") {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-		if _, err := db.Exec(ctx, statement); err != nil {
-			return fmt.Errorf("apply auth schema statement %d: %w", idx+1, err)
-		}
-	}
-	return nil
+	return schemabootstrap.Apply(ctx, db, schemaSQL)
 }

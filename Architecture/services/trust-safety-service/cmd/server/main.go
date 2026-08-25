@@ -4,10 +4,12 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/moderationcap"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
@@ -31,6 +33,22 @@ func main() {
 	port := env("HTTP_PORT", "8091")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	kafkaBrokers := env("KAFKA_BROKERS", "redpanda:9092")
+	storySigner, err := moderationcap.NewSigner(
+		[]byte(os.Getenv("STORY_MODERATION_HMAC_KEY")),
+		"trust-safety-service", "story_moderation", time.Hour,
+	)
+	if err != nil {
+		slog.Error("story moderation capability configuration", "error", err)
+		os.Exit(1)
+	}
+	postModerationSigner, err := moderationcap.NewSigner(
+		[]byte(os.Getenv("POST_MODERATION_HMAC_KEY")),
+		"trust-safety-service", "post_moderation", time.Hour,
+	)
+	if err != nil {
+		slog.Error("post moderation capability configuration", "error", err)
+		os.Exit(1)
+	}
 
 	// 3. Database
 	ctx := context.Background()
@@ -89,6 +107,13 @@ func main() {
 	// 7. Dependencies
 	store := postgres.New(dbPool)
 	svc := service.New(store, kafkaWriter)
+	svc.SetExtrasStore(postgres.NewExtrasStore(dbPool))
+	svc.SetPostModerationClient(service.NewHTTPPostModerationClient(
+		env("POST_SERVICE_URL", "http://post-service:8084"),
+		env("INTERNAL_SERVICE_KEY", ""),
+		postModerationSigner,
+		nil,
+	))
 	handler := http.New(svc)
 
 	// 7b. Trust-score recompute job (spec §8.11/§10.1/§10.2) — read-only:
@@ -120,6 +145,29 @@ func main() {
 	go socialConsumer.Start(ctx)
 	slog.Info("connection-request auto-filter consumer started", "topic", "social.events.v1")
 
+	// Module 4 LB-2: the evaluator is a real production consumer, not a
+	// package that merely compiles. Every approval it emits carries a bounded
+	// capability verified by post-service before the row may change.
+	storyEvaluator := tsevents.NewKeywordStoryEvaluator(
+		os.Getenv("STORY_MODERATION_BLOCKLIST"),
+		env("STORY_MODERATION_POLICY_VERSION", "keyword-v1"),
+	)
+	if storyEvaluator == nil && (strings.EqualFold(os.Getenv("ENV"), "prod") || strings.EqualFold(os.Getenv("DEPLOY_ENV"), "production")) {
+		slog.Error("STORY_MODERATION_BLOCKLIST is required in production; without an evaluator no story can be approved")
+		os.Exit(1)
+	}
+	storyConsumer := tsevents.NewStoryModerationConsumer(
+		[]string{kafkaBrokers},
+		"social.events.v1",
+		storyEvaluator,
+		env("STORY_MODERATION_POLICY_VERSION", "keyword-v1"),
+		kafkaWriter,
+		storySigner,
+		socialConsumerMetrics,
+	)
+	go storyConsumer.Start(ctx)
+	slog.Info("story moderation evaluator consumer started", "topic", "social.events.v1")
+
 	// 8. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -139,6 +187,7 @@ func main() {
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
 			socialConsumer.Close()
+			storyConsumer.Close()
 			kafkaWriter.Close()
 			dbPool.Close()
 			slog.Info("cleanup completed")

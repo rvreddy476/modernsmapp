@@ -1,0 +1,140 @@
+name: Module 3 — Identity edge auth
+
+# Module 3 SR-1 launch gate.
+#
+# The failure this gate exists to catch is a MISMATCH between two services
+# that each pass their own tests:
+#
+#   * api-gateway hardens its verifier in production (RS256 only, mandatory
+#     iss/aud/sid/typ);
+#   * identity-auth-service mints the tokens that verifier checks.
+#
+# Before SR-1, auth-service minted no `aud` and no `typ`, so every real token
+# would have been rejected at the edge in production — a total authentication
+# outage that no single-service test could see. And production ran DEVELOPMENT
+# token rules, because the Helm charts set `env: ENV: prod` while both services
+# only read APP_ENV/ENVIRONMENT.
+#
+# So this job runs three things that only make sense together:
+#   1. the gateway's own policy and verifier suite;
+#   2. the auth-service contract test, which mints with the REAL mint path and
+#      verifies with the REAL gateway verifier (imported across modules);
+#   3. the deployment-manifest test, which reads BOTH services' Helm values and
+#      fails on an issuer/audience/kid mismatch or a production environment
+#      that does not resolve as production.
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/services/api-gateway/**'
+      - 'identity-platform/services/auth-service/**'
+      - 'deploy/services/api-gateway/**'
+      - 'deploy/services/identity-auth-service/**'
+      - '.github/workflows/module-03-identity-edge-auth.yml'
+  push:
+    branches: [main]
+
+jobs:
+  edge-auth-contract:
+    name: Gateway ↔ auth-service token contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Gateway — build and vet
+        working-directory: Architecture/services/api-gateway
+        run: |
+          go build ./...
+          go vet ./...
+
+      # The token policy, the verifier, and the deployment-manifest checks all
+      # live in pkg/tokenpolicy. It is pkg/ rather than internal/ specifically
+      # so auth-service can import the real verifier below.
+      - name: Gateway — token policy, verifier and deployment manifests
+        working-directory: Architecture/services/api-gateway
+        run: go test -count=1 -v ./pkg/tokenpolicy/
+
+      - name: Gateway — full suite
+        working-directory: Architecture/services/api-gateway
+        run: go test -count=1 ./...
+
+      - name: auth-service — build and vet
+        working-directory: identity-platform/services/auth-service
+        run: |
+          go build ./...
+          go vet ./...
+
+      # THE ONE THAT MATTERS. Mints with generateAccessToken, verifies with
+      # tokenpolicy.Verify. If either side changes the claim set unilaterally,
+      # this fails here instead of at deploy time.
+      - name: auth-service — mint ↔ verify contract against the real gateway verifier
+        working-directory: identity-platform/services/auth-service
+        run: |
+          go test -count=1 -v ./internal/service/ \
+            -run 'RealAuthMintedToken|MintedKID|AudienceMismatch|HS256Minted|ProductionMintConfiguration'
+
+      # Both services must agree on what "production" means. When they
+      # disagree, one hardens and the other does not, and every token is
+      # rejected at the edge.
+      - name: Production detection agrees across both services
+        working-directory: identity-platform/services/auth-service
+        run: go test -count=1 -v ./internal/config/ -run 'ProductionDetection|LoadCarries|LoadDefaults'
+
+      - name: auth-service — full suite
+        working-directory: identity-platform/services/auth-service
+        run: go test -count=1 ./...
+
+      # SR-1 found the token policy living in cmd/server/, which the root
+      # .gitignore's bare `server` rule makes untracked: the code would have
+      # been missing from a clean checkout while main.go still referenced it.
+      # This is the check that the class of mistake has not returned.
+      - name: No gateway source is hidden by .gitignore
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r f; do
+            if git check-ignore -q "$f"; then
+              echo "::error file=$f::This source file is ignored by .gitignore and would be MISSING from a clean checkout."
+              missing=1
+            fi
+          done < <(find Architecture/services/api-gateway identity-platform/services/auth-service -name '*.go')
+          exit $missing
+
+  registration-eligibility:
+    name: Registration age and consent gate (SR-6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      # SR-6: the age gate was 13 and was skipped entirely when no date of
+      # birth was supplied — and `dob` was an optional field, so omitting it
+      # bypassed the check. There was no consent capture at all.
+      - name: 18+ gate, mandatory DOB, versioned consent
+        working-directory: identity-platform/services/auth-service
+        run: |
+          go test -count=1 -v ./internal/service/ \
+            -run 'MissingDOB|MalformedOrImpossibleDOB|AgeBoundary|ThirteenToSeventeen|Consent|Underage|MinimumAge|AgeOn'
+
+      # SR-6: verification and password-reset codes were generated, stored,
+      # and sent NOWHERE. Production must refuse to start rather than run with
+      # a no-op sender that reports success.
+      - name: Email delivery fails closed in production
+        working-directory: identity-platform/services/auth-service
+        run: go test -count=1 -v ./internal/email/
+
+      - name: Phone OTP routes are retired
+        working-directory: identity-platform/services/auth-service
+        run: go test -count=1 -v ./internal/http/ -run 'RequestOTPIsRetired'

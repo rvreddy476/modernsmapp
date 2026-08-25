@@ -17,6 +17,14 @@ CREATE INDEX IF NOT EXISTS idx_groups_creator ON groups(creator_id);
 CREATE INDEX IF NOT EXISTS idx_groups_visibility ON groups(visibility) WHERE is_archived = FALSE;
 CREATE INDEX IF NOT EXISTS idx_groups_name_search ON groups USING gin(to_tsvector('english', name));
 
+CREATE TABLE IF NOT EXISTS group_creation_requests (
+    creator_id UUID NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (creator_id, idempotency_key)
+);
+
 CREATE TABLE IF NOT EXISTS group_members (
     group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     user_id UUID NOT NULL,

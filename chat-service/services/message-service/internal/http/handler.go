@@ -32,11 +32,14 @@ type ChatService interface {
 	ToggleReaction(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time, emoji string) (*service.ToggleReactionResponse, error)
 	SetTyping(ctx context.Context, userID, conversationID uuid.UUID) error
 	MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error
-	GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[string]bool, error)
+	GetPresence(ctx context.Context, requesterID uuid.UUID, userIDs []uuid.UUID) (map[string]bool, error)
 	GetConversationPresence(ctx context.Context, userID, convID uuid.UUID) (*service.ConversationPresence, error)
 	// P0-3 dating-match internal entry points.
 	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*service.ConversationResponse, error)
 	CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error
+	ManagedAddGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
+	ManagedRemoveGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
+	ViewerMayAccessChatMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error)
 
 	// Conversation settings
 	GetSettings(ctx context.Context, userID, convID uuid.UUID) (*store.ConversationSettings, error)
@@ -54,7 +57,24 @@ type ChatService interface {
 	// Message requests
 	AcceptRequest(ctx context.Context, userID, convID uuid.UUID) error
 	DeclineRequest(ctx context.Context, userID, convID uuid.UUID) error
+	BlockRequest(ctx context.Context, userID, convID uuid.UUID) error
+	ReportRequest(ctx context.Context, userID, convID uuid.UUID) error
 	ListRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Conversation, error)
+
+	// Group governance (production chat pass, directive §3.4)
+	CreateGroupWithPolicy(ctx context.Context, creatorID uuid.UUID, title string, memberIDs []uuid.UUID, idempotencyKey string) (*service.CreateGroupResult, error)
+	AddMemberWithPolicy(ctx context.Context, actorID, conversationID, targetID uuid.UUID) (*service.AddOutcome, error)
+	RemoveMemberGoverned(ctx context.Context, actorID, conversationID, targetID uuid.UUID) error
+	LeaveConversation(ctx context.Context, userID, conversationID uuid.UUID) error
+	TransferOwnershipGoverned(ctx context.Context, actorID, conversationID, newOwnerID uuid.UUID) error
+	SetMemberRoleGoverned(ctx context.Context, actorID, conversationID, targetID uuid.UUID, role string) error
+	UpdateGroupInfoGoverned(ctx context.Context, actorID, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID) error
+	ListMyInvitations(ctx context.Context, userID uuid.UUID) ([]store.GroupInvitation, error)
+	AcceptGroupInvitation(ctx context.Context, userID, invitationID uuid.UUID) error
+	DeclineGroupInvitation(ctx context.Context, userID, invitationID uuid.UUID) error
+
+	// Realtime entitlements (directive §5.3)
+	IssueSubscriptionEntitlement(ctx context.Context, userID, conversationID uuid.UUID) (*service.SubscriptionEntitlement, error)
 	// Starred messages
 	StarMessageSvc(ctx context.Context, userID, convID, messageID uuid.UUID, preview *string) (*store.StarredMessage, error)
 	UnstarMessageSvc(ctx context.Context, userID, messageID uuid.UUID) error
@@ -67,10 +87,10 @@ type ChatService interface {
 	CancelScheduledMessageSvc(ctx context.Context, userID, msgID uuid.UUID) error
 	ListScheduledMessagesSvc(ctx context.Context, userID, convID uuid.UUID) ([]store.ScheduledMessage, error)
 	// Translation
-	GetTranslation(ctx context.Context, messageID uuid.UUID, targetLang string) (*store.MessageTranslation, error)
+	GetTranslation(ctx context.Context, userID, messageID uuid.UUID, targetLang string) (*store.MessageTranslation, error)
 	// Threads
-	GetOrCreateThreadSvc(ctx context.Context, convID, parentMessageID uuid.UUID) (*store.MessageThread, error)
-	ListThreadsSvc(ctx context.Context, convID uuid.UUID) ([]store.MessageThread, error)
+	GetOrCreateThreadSvc(ctx context.Context, userID, convID, parentMessageID uuid.UUID) (*store.MessageThread, error)
+	ListThreadsSvc(ctx context.Context, userID, convID uuid.UUID) ([]store.MessageThread, error)
 }
 
 type Handler struct {
@@ -99,6 +119,14 @@ func (h *Handler) WithInternalServiceKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	internal := r.Group("/internal/v1/chat")
+	internal.POST("/media-access", h.ChatMediaAccess)
+	managedGroups := internal.Group("/groups")
+	{
+		managedGroups.POST("/conversations", h.CreateManagedGroupConversation)
+		managedGroups.POST("/conversations/:id/members", h.AddManagedGroupMember)
+		managedGroups.DELETE("/conversations/:id/members/:userId", h.RemoveManagedGroupMember)
+	}
 	v1 := r.Group("/v1/chat")
 	{
 		v1.GET("/health", h.Health)
@@ -151,6 +179,19 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/requests", h.ListMessageRequests)
 		v1.POST("/conversations/:id/requests/accept", h.AcceptMessageRequest)
 		v1.POST("/conversations/:id/requests/decline", h.DeclineMessageRequest)
+		v1.POST("/conversations/:id/requests/block", h.BlockMessageRequest)
+		v1.POST("/conversations/:id/requests/report", h.ReportMessageRequest)
+
+		// Group governance (production chat pass)
+		v1.POST("/conversations/:id/leave", h.LeaveConversation)
+		v1.POST("/conversations/:id/transfer-owner", h.TransferOwnership)
+		v1.PUT("/conversations/:id/members/:userId/role", h.SetMemberRole)
+		v1.GET("/invitations", h.ListGroupInvitations)
+		v1.POST("/invitations/:invitationId/accept", h.AcceptGroupInvitation)
+		v1.POST("/invitations/:invitationId/decline", h.DeclineGroupInvitation)
+
+		// Realtime room entitlement (scoped-rooms foundation)
+		v1.POST("/conversations/:id/subscription", h.IssueSubscription)
 
 		// Starred messages
 		v1.POST("/conversations/:id/messages/:messageId/star", h.StarMessage)
@@ -173,6 +214,131 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/conversations/:id/threads/:parentMessageId", h.GetOrCreateThread)
 		v1.GET("/conversations/:id/threads", h.ListConversationThreads)
 	}
+}
+
+type chatMediaAccessRequest struct {
+	ViewerID string `json:"viewer_id" binding:"required"`
+	MediaID  string `json:"media_id" binding:"required"`
+}
+
+func (h *Handler) ChatMediaAccess(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	var body chatMediaAccessRequest
+	if c.ShouldBindJSON(&body) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"allowed": false})
+		return
+	}
+	viewerID, viewerErr := uuid.Parse(body.ViewerID)
+	mediaID, mediaErr := uuid.Parse(body.MediaID)
+	if viewerErr != nil || mediaErr != nil {
+		c.JSON(http.StatusForbidden, gin.H{"allowed": false})
+		return
+	}
+	allowed, err := h.svc.ViewerMayAccessChatMedia(c.Request.Context(), viewerID, mediaID)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"allowed": false})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"allowed": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"allowed": true})
+}
+
+type managedGroupConversationRequest struct {
+	CreatorUserID string `json:"creator_user_id" binding:"required"`
+	GroupID       string `json:"group_id" binding:"required"`
+	Title         string `json:"title" binding:"required"`
+}
+
+func (h *Handler) CreateManagedGroupConversation(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	var body managedGroupConversationRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid managed group request", nil, nil)
+		return
+	}
+	// Reparse after binding; the helper only performs the internal-key check.
+	creatorID, err := uuid.Parse(body.CreatorUserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid creator_user_id", nil, nil)
+		return
+	}
+	groupID, err := uuid.Parse(body.GroupID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid group_id", nil, nil)
+		return
+	}
+	conversation, err := h.svc.CreateGroupConversation(c.Request.Context(), creatorID, body.Title, []uuid.UUID{creatorID}, "managed-group-"+groupID.String())
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "managed group conversation failed", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, conversation, nil)
+}
+
+func (h *Handler) authorizeManagedGroup(c *gin.Context) bool {
+	if h.internalServiceKey == "" || c.GetHeader("X-Internal-Service-Key") != h.internalServiceKey {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		return false
+	}
+	return true
+}
+
+type managedMemberRequest struct {
+	UserID string `json:"user_id" binding:"required"`
+}
+
+func (h *Handler) AddManagedGroupMember(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	conversationID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid conversation id", nil, nil)
+		return
+	}
+	var body managedMemberRequest
+	if c.ShouldBindJSON(&body) != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid managed member request", nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(body.UserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_id", nil, nil)
+		return
+	}
+	if err := h.svc.ManagedAddGroupMember(c.Request.Context(), conversationID, userID); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "managed member add failed", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "member added"}, nil)
+}
+
+func (h *Handler) RemoveManagedGroupMember(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	conversationID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid conversation id", nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user id", nil, nil)
+		return
+	}
+	if err := h.svc.ManagedRemoveGroupMember(c.Request.Context(), conversationID, userID); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "managed member removal failed", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "member removed"}, nil)
 }
 
 func (h *Handler) Health(c *gin.Context) {
@@ -247,7 +413,10 @@ func (h *Handler) CreateGroupConversation(c *gin.Context) {
 	}
 	idempotencyKey := c.GetHeader("Idempotency-Key")
 
-	conv, err := h.svc.CreateGroupConversation(c.Request.Context(), userID, req.Title, memberIDs, idempotencyKey)
+	// Production chat pass: creation resolves every candidate through their
+	// who_can_add_to_groups policy. `data` stays the conversation (wire-
+	// compatible with existing clients); per-target outcomes ride in `meta`.
+	result, err := h.svc.CreateGroupWithPolicy(c.Request.Context(), userID, req.Title, memberIDs, idempotencyKey)
 	if err != nil {
 		if handled := writeIdempotencyError(c, err); handled {
 			return
@@ -257,7 +426,13 @@ func (h *Handler) CreateGroupConversation(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusCreated, conv, nil)
+	// Embedding keeps the conversation's fields at the top level of `data`
+	// (wire-compatible with pre-pass clients); the per-target outcomes ride
+	// alongside as `member_outcomes`.
+	api.JSON(c.Writer, http.StatusCreated, struct {
+		*service.ConversationResponse
+		MemberOutcomes []service.AddOutcome `json:"member_outcomes,omitempty"`
+	}{result.Conversation, result.Outcomes}, nil)
 }
 
 func (h *Handler) GetConversation(c *gin.Context) {
@@ -347,13 +522,15 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.AddMember(c.Request.Context(), userID, convID, targetID); err != nil {
+	outcome, err := h.svc.AddMemberWithPolicy(c.Request.Context(), userID, convID, targetID)
+	if err != nil {
 		h.log.Warn("failed to add member", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "member added"}, nil)
+	// Honest outcome: added, invited (consent pending) or skipped (privacy).
+	api.JSON(c.Writer, http.StatusOK, outcome, nil)
 }
 
 func (h *Handler) RemoveMember(c *gin.Context) {
@@ -373,7 +550,7 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.RemoveMember(c.Request.Context(), userID, convID, targetID); err != nil {
+	if err := h.svc.RemoveMemberGoverned(c.Request.Context(), userID, convID, targetID); err != nil {
 		h.log.Warn("failed to remove member", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
@@ -383,7 +560,8 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 }
 
 type UpdateConversationRequest struct {
-	Title string `json:"title" binding:"required,min=1,max=100"`
+	Title         *string `json:"title" binding:"omitempty,min=1,max=100"`
+	AvatarMediaID *string `json:"avatar_media_id" binding:"omitempty,uuid"`
 }
 
 func (h *Handler) UpdateConversation(c *gin.Context) {
@@ -401,14 +579,27 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
 		return
 	}
+	if req.Title == nil && req.AvatarMediaID == nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Nothing to update", nil, nil)
+		return
+	}
+	var avatarID *uuid.UUID
+	if req.AvatarMediaID != nil {
+		parsed, err := uuid.Parse(*req.AvatarMediaID)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid avatar_media_id", nil, nil)
+			return
+		}
+		avatarID = &parsed
+	}
 
-	if err := h.svc.UpdateTitle(c.Request.Context(), userID, convID, req.Title); err != nil {
+	if err := h.svc.UpdateGroupInfoGoverned(c.Request.Context(), userID, convID, req.Title, avatarID); err != nil {
 		h.log.Warn("failed to update conversation", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "title updated"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
 }
 
 // --- Messages ---
@@ -812,6 +1003,10 @@ type GetPresenceRequest struct {
 }
 
 func (h *Handler) GetPresence(c *gin.Context) {
+	requesterID, ok := getUserID(c, h.log)
+	if !ok {
+		return
+	}
 	var req GetPresenceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
@@ -832,7 +1027,7 @@ func (h *Handler) GetPresence(c *gin.Context) {
 		userIDs = append(userIDs, id)
 	}
 
-	presence, err := h.svc.GetPresence(c.Request.Context(), userIDs)
+	presence, err := h.svc.GetPresence(c.Request.Context(), requesterID, userIDs)
 	if err != nil {
 		h.log.Error("failed to get presence", "err", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL", "Failed to check presence", nil, nil)

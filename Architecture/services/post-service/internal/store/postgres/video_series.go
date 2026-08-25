@@ -11,18 +11,18 @@ import (
 
 // VideoSeries represents a named series of video episodes created by a creator.
 type VideoSeries struct {
-	ID             uuid.UUID  `json:"id"`
-	CreatorID      uuid.UUID  `json:"creator_id"`
-	ChannelID      *uuid.UUID `json:"channel_id,omitempty"`
-	Title          string     `json:"title"`
-	Description    string     `json:"description"`
-	CoverMediaID   *uuid.UUID `json:"cover_media_id,omitempty"`
-	TrailerPostID  *uuid.UUID `json:"trailer_post_id,omitempty"`
-	EpisodeCount   int        `json:"episode_count"`
-	IsComplete     bool       `json:"is_complete"`
-	IsPublic       bool       `json:"is_public"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID            uuid.UUID  `json:"id"`
+	CreatorID     uuid.UUID  `json:"creator_id"`
+	ChannelID     *uuid.UUID `json:"channel_id,omitempty"`
+	Title         string     `json:"title"`
+	Description   string     `json:"description"`
+	CoverMediaID  *uuid.UUID `json:"cover_media_id,omitempty"`
+	TrailerPostID *uuid.UUID `json:"trailer_post_id,omitempty"`
+	EpisodeCount  int        `json:"episode_count"`
+	IsComplete    bool       `json:"is_complete"`
+	IsPublic      bool       `json:"is_public"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // VideoSeriesEpisode links a post to a video series at a specific episode number.

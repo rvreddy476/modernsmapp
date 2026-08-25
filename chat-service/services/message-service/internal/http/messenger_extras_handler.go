@@ -609,7 +609,7 @@ func (h *Handler) ListScheduledMessages(c *gin.Context) {
 // --- Translation ---
 
 func (h *Handler) GetMessageTranslation(c *gin.Context) {
-	_, ok := getUserID(c, h.log)
+	userID, ok := getUserID(c, h.log)
 	if !ok {
 		return
 	}
@@ -627,7 +627,7 @@ func (h *Handler) GetMessageTranslation(c *gin.Context) {
 		return
 	}
 
-	translation, err := h.svc.GetTranslation(c.Request.Context(), messageID, lang)
+	translation, err := h.svc.GetTranslation(c.Request.Context(), userID, messageID, lang)
 	if err != nil {
 		h.log.Error("failed to get message translation", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get translation", nil, nil)
@@ -644,7 +644,7 @@ func (h *Handler) GetMessageTranslation(c *gin.Context) {
 // --- Threads ---
 
 func (h *Handler) GetOrCreateThread(c *gin.Context) {
-	_, ok := getUserID(c, h.log)
+	userID, ok := getUserID(c, h.log)
 	if !ok {
 		return
 	}
@@ -660,10 +660,14 @@ func (h *Handler) GetOrCreateThread(c *gin.Context) {
 		return
 	}
 
-	thread, err := h.svc.GetOrCreateThreadSvc(c.Request.Context(), convID, parentMsgID)
+	thread, err := h.svc.GetOrCreateThreadSvc(c.Request.Context(), userID, convID, parentMsgID)
 	if err != nil {
 		h.log.Error("failed to get or create thread", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get thread", nil, nil)
+		return
+	}
+	if thread == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Conversation content not found", nil, nil)
 		return
 	}
 
@@ -671,7 +675,7 @@ func (h *Handler) GetOrCreateThread(c *gin.Context) {
 }
 
 func (h *Handler) ListConversationThreads(c *gin.Context) {
-	_, ok := getUserID(c, h.log)
+	userID, ok := getUserID(c, h.log)
 	if !ok {
 		return
 	}
@@ -680,10 +684,14 @@ func (h *Handler) ListConversationThreads(c *gin.Context) {
 		return
 	}
 
-	threads, err := h.svc.ListThreadsSvc(c.Request.Context(), convID)
+	threads, err := h.svc.ListThreadsSvc(c.Request.Context(), userID, convID)
 	if err != nil {
 		h.log.Error("failed to list conversation threads", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list threads", nil, nil)
+		return
+	}
+	if threads == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Conversation content not found", nil, nil)
 		return
 	}
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -183,9 +184,56 @@ func (s *Service) GetSubtitles(ctx context.Context, mediaAssetID uuid.UUID) ([]p
 	return s.pgStore.GetSubtitles(ctx, mediaAssetID)
 }
 
-// CreateSubtitle upserts a subtitle track for a media asset.
-func (s *Service) CreateSubtitle(ctx context.Context, sub *postgres.MediaSubtitle) (*postgres.MediaSubtitle, error) {
+// ErrNotMediaOwner is returned when an actor tries to write captions for
+// media they do not own. Handlers map it to 403.
+var ErrNotMediaOwner = errors.New("forbidden: you do not own this media")
+
+// AssertMediaOwner is the single authorization gate for every caption
+// write path (Module 1 fixes-v1 / Codex P0-3). The vulnerability was that
+// `POST /v1/subtitles/:mediaId` and `/auto` authenticated the caller but
+// never checked ownership, so any authenticated user could overwrite
+// another creator's canonical caption track (the store upserts on
+// (media_asset_id, language)). Enforcement lives HERE, at the service
+// boundary, so no handler can forget it.
+func (s *Service) AssertMediaOwner(ctx context.Context, mediaID, actorID uuid.UUID) error {
+	if actorID == uuid.Nil {
+		return ErrNotMediaOwner
+	}
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return err
+	}
+	if media == nil || media.UploaderID != actorID {
+		return ErrNotMediaOwner
+	}
+	return nil
+}
+
+// CreateSubtitle upserts a subtitle track for a media asset. Owner-only.
+func (s *Service) CreateSubtitle(ctx context.Context, actorID uuid.UUID, sub *postgres.MediaSubtitle) (*postgres.MediaSubtitle, error) {
+	if err := s.AssertMediaOwner(ctx, sub.MediaAssetID, actorID); err != nil {
+		return nil, err
+	}
+	// Normalize to the schema's enum. 'auto' is not an accepted value —
+	// writing it violated the CHECK constraint and every configured
+	// transcription failed at the database (Codex P0-2 evidence).
+	sub.Source = normalizeSubtitleSource(sub.Source)
 	return s.pgStore.CreateSubtitle(ctx, sub)
+}
+
+// normalizeSubtitleSource maps caller/legacy spellings onto the
+// media_subtitles CHECK set (auto_generated | manual | translated).
+func normalizeSubtitleSource(source string) string {
+	switch source {
+	case "auto", "auto_generated", "":
+		return "auto_generated"
+	case "manual", "translated":
+		return source
+	default:
+		// Unknown values would otherwise fail the constraint at insert
+		// time; treat an unrecognized source as a manual upload.
+		return "manual"
+	}
 }
 
 // GenerateAutoCaptions runs the configured speech-to-text backend
@@ -202,16 +250,49 @@ func (s *Service) CreateSubtitle(ctx context.Context, sub *postgres.MediaSubtitl
 //     pending — wire a backend".
 //
 // language="" asks the backend to auto-detect.
+// ProviderTranscript is PROVIDER-GENERATED transcription evidence.
+//
+// Module 1 fixes-v3 / LB-2 requirement 5: this is deliberately a distinct
+// type from the stored display caption. The stored row can be overwritten
+// by the owner (`edited_by_owner`), and `CreateSubtitle` suppresses the
+// upsert in that case and returns the EXISTING owner-authored row. Feeding
+// that row back to the safety evaluator would reintroduce exactly the
+// bypass LB-2 closes. Safety therefore consumes this value, which never
+// passes through the display-caption merge.
+type ProviderTranscript struct {
+	Text       string
+	Language   string
+	Confidence float64
+	Backend    string
+	// Placeholder marks a stub/no-op backend result — never real evidence.
+	Placeholder bool
+}
+
+// GenerateAutoCaptionsWithEvidence runs the backend and returns both the
+// stored display caption and the untouched provider transcript.
+func (s *Service) GenerateAutoCaptionsWithEvidence(ctx context.Context, mediaID uuid.UUID, language string) (*postgres.MediaSubtitle, *ProviderTranscript, error) {
+	return s.generateAutoCaptions(ctx, mediaID, language)
+}
+
+// GenerateAutoCaptions preserves the original signature for the HTTP
+// caller, which only needs the display caption.
 func (s *Service) GenerateAutoCaptions(ctx context.Context, mediaID uuid.UUID, language string) (*postgres.MediaSubtitle, error) {
+	sub, _, err := s.generateAutoCaptions(ctx, mediaID, language)
+	return sub, err
+}
+
+func (s *Service) generateAutoCaptions(ctx context.Context, mediaID uuid.UUID, language string) (*postgres.MediaSubtitle, *ProviderTranscript, error) {
 	if s.captions == nil {
-		return nil, fmt.Errorf("CAPTIONS_BACKEND_UNCONFIGURED")
+		return nil, nil, fmt.Errorf("CAPTIONS_BACKEND_UNCONFIGURED")
 	}
 	media, err := s.pgStore.GetMedia(ctx, mediaID)
 	if err != nil {
-		return nil, fmt.Errorf("media not found: %w", err)
+		return nil, nil, fmt.Errorf("media not found: %w", err)
 	}
-	if media.FileType != "video" {
-		return nil, fmt.Errorf("auto-captions only supported for video media")
+	// Module 1 P0-6/P0-9: audio (voice posts) transcribes through the same
+	// path as video — the backend consumes a presigned URL either way.
+	if media.FileType != "video" && media.FileType != "audio" {
+		return nil, nil, fmt.Errorf("auto-captions only supported for video and audio media")
 	}
 
 	// Use a presigned GET URL so the backend can fetch directly from
@@ -219,14 +300,35 @@ func (s *Service) GenerateAutoCaptions(ctx context.Context, mediaID uuid.UUID, l
 	// transcription rarely takes more than a minute or two.
 	signed, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, 30*time.Minute)
 	if err != nil {
-		return nil, fmt.Errorf("sign audio url: %w", err)
+		return nil, nil, fmt.Errorf("sign audio url: %w", err)
 	}
 
 	res, err := s.captions.Transcribe(ctx, signed.String(), language)
 	if err != nil {
 		slog.Error("auto-captions: backend failed",
 			"backend", s.captions.Name(), "media_id", mediaID, "error", err)
-		return nil, fmt.Errorf("transcribe: %w", err)
+		return nil, nil, fmt.Errorf("transcribe: %w", err)
+	}
+
+	// Module 1 P0-9: a placeholder result means no real backend is wired.
+	// Storing it as a subtitle row would present "captions unavailable"
+	// as a finished caption. Return nils so callers report the honest
+	// "unavailable" state instead.
+	if res.IsPlaceholder {
+		slog.Info("auto-captions: backend is a placeholder; no subtitle row stored",
+			"backend", s.captions.Name(), "media_id", mediaID)
+		return nil, nil, nil
+	}
+
+	// Module 1 fixes-v3 / LB-2: capture the provider transcript BEFORE it
+	// is written to (and potentially suppressed by) the display-caption
+	// row. This value is the only thing safety evaluation may consume.
+	evidence := &ProviderTranscript{
+		Text:        res.Text,
+		Language:    res.Language,
+		Confidence:  float64(res.Confidence),
+		Backend:     s.captions.Name(),
+		Placeholder: res.IsPlaceholder,
 	}
 
 	var wordsJSON []byte
@@ -235,17 +337,19 @@ func (s *Service) GenerateAutoCaptions(ctx context.Context, mediaID uuid.UUID, l
 	}
 	conf := res.Confidence
 	sub := &postgres.MediaSubtitle{
-		MediaAssetID:  mediaID,
-		Language:      res.Language,
-		Source:        "auto",
+		MediaAssetID: mediaID,
+		Language:     res.Language,
+		// Schema enum, not 'auto' — see normalizeSubtitleSource.
+		Source:        "auto_generated",
 		Format:        res.Format,
 		ContentURL:    "", // inline transcript only — no .vtt file rendered yet
+		Content:       res.Text,
 		WordLevelJSON: wordsJSON,
 		Confidence:    &conf,
 	}
 	saved, err := s.pgStore.CreateSubtitle(ctx, sub)
 	if err != nil {
-		return nil, fmt.Errorf("save subtitle: %w", err)
+		return nil, nil, fmt.Errorf("save subtitle: %w", err)
 	}
 	slog.Info("auto-captions: stored",
 		"backend", s.captions.Name(),
@@ -253,9 +357,8 @@ func (s *Service) GenerateAutoCaptions(ctx context.Context, mediaID uuid.UUID, l
 		"language", res.Language,
 		"placeholder", res.IsPlaceholder,
 		"word_count", len(res.Words))
-	return saved, nil
+	return saved, evidence, nil
 }
-
 
 // ─── Voiceover ───────────────────────────────────────────────────────
 

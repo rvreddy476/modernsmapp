@@ -219,8 +219,8 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
         colors: [AppColors.accentPurple, AppColors.postgramSecondary],
       ),
       const _RouteFeature(
-        title: 'Monetize',
-        subtitle: 'Creator tools',
+        title: 'Creator Studio',
+        subtitle: 'Insights & recorded earnings',
         icon: Icons.monetization_on_outlined,
         route: '/monetization',
         colors: [AppColors.postgramPrimary, AppColors.postbookPrimary],
@@ -262,8 +262,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                           style: AppTextStyles.body,
                           decoration: InputDecoration(
                             border: InputBorder.none,
-                            hintText:
-                                'Search topics, users, groups, and tags',
+                            hintText: 'Search topics, users, groups, and tags',
                             hintStyle: AppTextStyles.bodySmall,
                             prefixIcon: const Icon(
                               Icons.search,
@@ -737,8 +736,9 @@ class _ServicesRail extends StatelessWidget {
                     height: 56,
                     decoration: BoxDecoration(
                       color: app.accentColor.withValues(alpha: 0.16),
-                      borderRadius:
-                          BorderRadius.circular(AppSpacing.radiusLarge),
+                      borderRadius: BorderRadius.circular(
+                        AppSpacing.radiusLarge,
+                      ),
                     ),
                     alignment: Alignment.center,
                     child: Icon(

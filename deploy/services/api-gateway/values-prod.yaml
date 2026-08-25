@@ -5,7 +5,7 @@ service:
   port: 8080
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/api-gateway
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/api-gateway'
   tag: latest
 
 replicaCount: 6
@@ -24,7 +24,7 @@ resources:
     memory: 2Gi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-prod-api-gateway-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-api-gateway-irsa'
 
 externalSecret:
   enabled: true
@@ -47,6 +47,25 @@ externalSecret:
 env:
   ENV: prod
   LOG_LEVEL: info
+  REVIEWER_PUBLIC_ENABLED: "false"
+  # ── Module 3 SR-1: edge token identity ──────────────────────────────────
+  # APP_ENV is what the gateway reads to decide whether to apply production
+  # token rules. It is set explicitly here rather than relying on ENV so the
+  # intent is unambiguous; the gateway accepts both.
+  #
+  # In production the gateway REFUSES TO START without JWT_ISSUER,
+  # JWT_AUDIENCE and JWT_PUBLIC_KEY_PEM, and it accepts RS256 only. These two
+  # values MUST match identity-auth-service's JWT_ISSUER / JWT_AUDIENCE
+  # exactly, or every token minted by auth-service is rejected at the edge.
+  APP_ENV: "production"
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: "atpost-api"
+  # Paths allowed to carry a token in the query string. Query tokens leak
+  # through access logs, browser history and Referer headers, so this is an
+  # explicit allowlist matched on exact path or path-segment boundary — never
+  # a raw prefix. Realtime upgrades cannot set an Authorization header; every
+  # REST route must.
+  GATEWAY_QUERY_TOKEN_PATHS: /v1/ws
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # RS256 key id — must match auth-service's JWT_RS256_KID.
   JWT_RS256_KID: rsa-1
