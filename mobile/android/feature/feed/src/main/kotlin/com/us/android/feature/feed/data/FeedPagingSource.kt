@@ -6,13 +6,15 @@ import com.us.android.core.common.error.AppError
 import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
-import com.us.android.core.model.FeedMedia
+import com.us.android.core.model.FeedPoll
+import com.us.android.core.model.FeedPollOption
 import com.us.android.core.model.FeedSurface
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.feature.feed.data.dto.FeedItemDto
 import kotlinx.coroutines.CancellationException
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Pages a feed surface by cursor.
@@ -39,6 +41,29 @@ class FeedPagingSource(
     private val errorMapper: ErrorMapper,
 ) : PagingSource<String, FeedItem>() {
 
+    /**
+     * Post ids already emitted by THIS paging generation.
+     *
+     * ## WHY DE-DUPLICATION IS A CRASH FIX, NOT POLISH
+     *
+     * A repeated id in a `LazyColumn` keyed by id throws
+     * `IllegalArgumentException: Key "…" was already used` and kills the feed —
+     * the first screen after login — so the app becomes unusable rather than
+     * showing one row twice.
+     *
+     * The feed is time-ordered and assembled by fan-out, so an id can
+     * legitimately repeat: a post can arrive through more than one path, and a
+     * post inserted between two page fetches shifts every later row into the
+     * next one. Filtering inside a single page cannot catch that — the same id
+     * arrives on a LATER page — which is why this is scoped to the source.
+     *
+     * A new generation (refresh, or invalidation) constructs a new
+     * `FeedPagingSource`, so the set resets exactly when the list does.
+     *
+     * Concurrent: append and refresh loads can overlap.
+     */
+    private val emittedIds = ConcurrentHashMap.newKeySet<String>()
+
     @Suppress("TooGenericExceptionCaught")
     override suspend fun load(params: LoadParams<String>): LoadResult<String, FeedItem> = try {
         val envelope = api.getFeed(
@@ -51,7 +76,13 @@ class FeedPagingSource(
                 AppErrorException(AppError.Unknown(code = error.code, statusCode = null)),
             )
         } ?: LoadResult.Page(
-            data = (envelope.data ?: emptyList()).map { it.toDomain() },
+            // De-duplicated by post id — see `dropDuplicates`. A repeated id is a
+            // CRASH in Compose, not a cosmetic issue, because LazyColumn keys
+            // must be unique.
+            // First occurrence wins, so ordering is untouched.
+            data = (envelope.data ?: emptyList())
+                .map { it.toDomain() }
+                .filter { emittedIds.add(it.id) },
             prevKey = null, // Feeds are forward-only; there is no previous page.
             nextKey = envelope.nextKey(),
         )
@@ -133,21 +164,7 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     postType = postType,
     createdAt = createdAt,
     isPinned = isPinned,
-    media = media.map {
-        FeedMedia(
-            mediaId = it.mediaId,
-            kind = it.kind,
-            altText = it.altText,
-            altDecorative = it.altDecorative,
-            status = it.status,
-            width = it.width,
-            height = it.height,
-            blurhash = it.blurhash,
-            variants = it.variants,
-            hlsUrl = it.hlsUrl,
-            expiresAt = it.expiresAt,
-        )
-    },
+    media = media.toOrderedFeedMedia(),
     counts = FeedCounts(
         likes = counts.likes,
         comments = counts.comments,
@@ -162,4 +179,21 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     ),
     isRepostable = isRepostable,
     score = score,
+    poll = poll?.let { dto ->
+        FeedPoll(
+            question = dto.question,
+            allowsMultiple = dto.allowsMultiple,
+            options = dto.options.map {
+                FeedPollOption(
+                    id = it.id,
+                    label = it.label,
+                    voteCount = it.voteCount,
+                    percentage = it.percentage,
+                )
+            },
+            totalVotes = dto.totalVotes,
+            viewerVotedOptionIds = dto.viewerVotes,
+            hasEnded = dto.hasEnded,
+        )
+    },
 )

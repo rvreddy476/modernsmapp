@@ -281,29 +281,9 @@ func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, lim
 	}
 
 	// Batch-fetch media so the client gets thumbnails without a second round-trip.
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT pm.post_id, `+postMediaColumns+`
-			`+postMediaSource+` WHERE pm.post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 	return posts, nextCursor, nil
 }
@@ -370,29 +350,9 @@ func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, lim
 		posts = posts[:limit]
 	}
 
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT pm.post_id, `+postMediaColumns+`
-			`+postMediaSource+` WHERE pm.post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil
@@ -454,29 +414,9 @@ func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit 
 		posts = posts[:limit]
 	}
 
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT pm.post_id, `+postMediaColumns+`
-			`+postMediaSource+` WHERE pm.post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil

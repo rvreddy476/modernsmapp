@@ -41,6 +41,34 @@ data class FeedItem(
      * itself the signal that a surface is ranked.
      */
     val score: Double? = null,
+    /** Present exactly when this post is a poll. */
+    val poll: FeedPoll? = null,
+)
+
+/**
+ * A hydrated poll, delivered inline like everything else on a feed row.
+ *
+ * [viewerVotedOptionIds] is what flips the card from ballots to results: a
+ * viewer who has voted (or a poll that has ended) sees counts, everyone else
+ * sees choices. The percentages are server-computed; the client never derives
+ * them from counts, so both stay authoritative.
+ */
+data class FeedPoll(
+    val question: String,
+    val allowsMultiple: Boolean,
+    val options: List<FeedPollOption>,
+    val totalVotes: Long,
+    val viewerVotedOptionIds: List<String> = emptyList(),
+    val hasEnded: Boolean = false,
+) {
+    val showResults: Boolean get() = hasEnded || viewerVotedOptionIds.isNotEmpty()
+}
+
+data class FeedPollOption(
+    val id: String,
+    val label: String,
+    val voteCount: Long,
+    val percentage: Double,
 )
 
 /**
@@ -89,6 +117,8 @@ data class FeedMedia(
      */
     val altText: String = "",
     val altDecorative: Boolean = false,
+    /** Carousel ordinal; -1 when the payload predates the field. */
+    val position: Int = CarouselOrdinals.ABSENT,
     val status: String = "",
     val width: Int = 0,
     val height: Int = 0,

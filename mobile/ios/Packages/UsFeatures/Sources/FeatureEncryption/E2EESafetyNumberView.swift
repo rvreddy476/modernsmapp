@@ -2,19 +2,21 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+// P0-6 (chat production correction pass): this screen displayed "Verify
+// End-to-End Encryption" with a hardcoded fake safety number and a toggle
+// that "verified" nothing, over a plaintext backend. No end-to-end
+// encryption exists in this product yet (see docs/adr/
+// adr-chat-e2ee-implementation.md), and the directive forbids every E2EE
+// claim — lock badges, safety numbers, "only you can read this" — until
+// CH-LB-5 passes. The public API is preserved; the surface now states the
+// truth and presents no verification theater.
+
 public struct E2EESafetyNumberView: View {
     public let contact: Author
     public let onDismiss: () -> Void
 
-    @State private var isVerified: Bool = false
-    private let safetyNumberChunks: [String] = [
-        "28491", "94820", "57291", "10482",
-        "73910", "48201", "84920", "39102",
-        "58291", "04829", "19482", "67291"
-    ]
-
     public init(
-        contact: Author = Author(id: "c1", username: "sarah_c", displayName: "Sarah Chen"),
+        contact: Author = Author(id: "", username: "", displayName: ""),
         onDismiss: @escaping () -> Void = {}
     ) {
         self.contact = contact
@@ -27,65 +29,23 @@ public struct E2EESafetyNumberView: View {
                 UsColors.bgPrimary
                     .ignoresSafeArea()
 
-                ScrollView {
-                    VStack(spacing: 20) {
-                        // Header
-                        VStack(spacing: 6) {
-                            Image(systemName: "lock.shield.fill")
-                                .font(.system(size: 40))
-                                .foregroundColor(UsColors.onlineGreen)
+                VStack(spacing: 16) {
+                    Image(systemName: "hourglass")
+                        .font(.system(size: 40))
+                        .foregroundColor(UsColors.textMuted)
 
-                            Text("Verify End-to-End Encryption")
-                                .font(.system(size: 18, weight: .bold))
-                                .foregroundColor(UsColors.textPrimary)
+                    Text("Encryption verification isn't available")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(UsColors.textPrimary)
 
-                            Text("Compare this safety number with \(contact.nameForDisplay) to verify that your messages and calls are encrypted end-to-end.")
-                                .font(.system(size: 12))
-                                .foregroundColor(UsColors.textMuted)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 16)
-                        }
-                        .padding(.top, 12)
-
-                        // 60-Digit Numbers Grid
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                            ForEach(safetyNumberChunks, id: \.self) { chunk in
-                                Text(chunk)
-                                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                                    .foregroundColor(UsColors.textPrimary)
-                                    .padding(.vertical, 6)
-                                    .padding(.horizontal, 8)
-                                    .background(UsColors.bgSecondary)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                        }
-                        .padding(16)
-                        .background(UsColors.bgTertiary)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                        .padding(.horizontal, 16)
-
-                        // Verification toggle button
-                        Button(action: {
-                            isVerified.toggle()
-                            HapticManager.shared.trigger(.success)
-                            ToastManager.shared.show(isVerified ? "Safety numbers verified with \(contact.nameForDisplay)!" : "Verification reset", style: .success)
-                        }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: isVerified ? "checkmark.circle.fill" : "circle")
-                                Text(isVerified ? "Verified with Contact" : "Mark as Verified")
-                            }
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(isVerified ? .black : UsColors.textPrimary)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 12)
-                            .background(isVerified ? UsColors.onlineGreen : UsColors.bgSecondary)
-                            .clipShape(Capsule())
-                        }
-                    }
-                    .padding(16)
+                    Text("Messages in this app are protected in transit and at rest, but they are not end-to-end encrypted today, so there is no safety number to compare. This screen will exist only when there are real keys behind it.")
+                        .font(.system(size: 13))
+                        .foregroundColor(UsColors.textMuted)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
                 }
             }
-            .navigationTitle("Encryption Keys")
+            .navigationTitle("Encryption")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

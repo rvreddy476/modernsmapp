@@ -135,6 +135,36 @@ func (s *Store) CheckBlock(ctx context.Context, blockerID, blockedID uuid.UUID) 
 	return exists, err
 }
 
+// BlockedWithAny returns the subset of candidates that have a block with
+// userID in EITHER direction — one bounded query, so chat's group-roster
+// check (P0-5: blocked pairs never co-added) does not fan out into N calls.
+// The adjacency itself never leaves this service: only the matching subset of
+// the ids the caller already named is returned.
+func (s *Store) BlockedWithAny(ctx context.Context, userID uuid.UUID, candidates []uuid.UUID) ([]uuid.UUID, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT CASE WHEN blocker_id = $1 THEN blocked_id ELSE blocker_id END
+		FROM blocks
+		WHERE (blocker_id = $1 AND blocked_id = ANY($2))
+		   OR (blocked_id = $1 AND blocker_id = ANY($2))
+	`, userID, candidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // CreateFollow adds a follow relationship. Returns (inserted, err)
 // where inserted is true only when a new follows row landed — duplicate
 // calls return (false, nil) so the caller can skip its counter bump.
@@ -655,6 +685,32 @@ func (s *Store) CheckConnection(ctx context.Context, userA, userB uuid.UUID) (bo
 	err := s.db.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM connections WHERE user_a = $1 AND user_b = $2)
 	`, nA, nB).Scan(&exists)
+	return exists, err
+}
+
+// CheckSecondDegree reports whether actor and target share at least one
+// accepted connection (friends-of-friends, chat directive §3.1).
+//
+// A bounded EXISTS over the two users' connection rows — the permission
+// answer leaves this service as ONE boolean; adjacency lists never do. Both
+// sides are resolved through the normalized (user_a < user_b) pair encoding,
+// and the shared neighbour must be a third party (never actor or target
+// themselves, which would otherwise make any directly-connected pair also
+// "second degree" through each other).
+func (s *Store) CheckSecondDegree(ctx context.Context, actorID, targetID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM connections c1
+			JOIN connections c2
+			  ON (CASE WHEN c1.user_a = $1 THEN c1.user_b ELSE c1.user_a END) =
+			     (CASE WHEN c2.user_a = $2 THEN c2.user_b ELSE c2.user_a END)
+			WHERE (c1.user_a = $1 OR c1.user_b = $1)
+			  AND (c2.user_a = $2 OR c2.user_b = $2)
+			  AND (CASE WHEN c1.user_a = $1 THEN c1.user_b ELSE c1.user_a END) NOT IN ($1, $2)
+		)
+	`, actorID, targetID).Scan(&exists)
 	return exists, err
 }
 

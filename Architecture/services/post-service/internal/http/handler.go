@@ -469,12 +469,22 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	}
 
 	var mediaIDs []uuid.UUID
+	seenMedia := make(map[uuid.UUID]struct{}, len(req.MediaIDs))
 	for _, idStr := range req.MediaIDs {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid media ID: "+idStr, nil)
 			return
 		}
+		// Reject duplicates BEFORE the insert. `post_media` is keyed on
+		// (post_id, media_id), so a repeated id would be silently collapsed and
+		// a three-image carousel would publish as two with no error returned to
+		// anyone. Creator Studio P0-A, freeze-v3 2.3.
+		if _, dup := seenMedia[id]; dup {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "DUPLICATE_MEDIA", "Media ID repeated in one post: "+idStr, nil)
+			return
+		}
+		seenMedia[id] = struct{}{}
 		mediaIDs = append(mediaIDs, id)
 	}
 

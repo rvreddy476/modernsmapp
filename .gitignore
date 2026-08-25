@@ -8,6 +8,9 @@
 *.bin
 server
 
+# Loose APK build artifacts at the repo root (rebuildable via Gradle)
+/*.apk
+
 # IDE
 .idea/
 

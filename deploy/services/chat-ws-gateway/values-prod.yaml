@@ -37,6 +37,9 @@ externalSecret:
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
     # RS256 verification (public key); HS256 stays accepted in parallel.
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    # Owner-issued conversation-room entitlements (shared HMAC with
+    # chat-message-service; the gateway verifies, never mints).
+    - { secretKey: CHAT_ENTITLEMENT_SECRET, remoteRef: chat_entitlement_secret }
 
 env:
   ENV: prod

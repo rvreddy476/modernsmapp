@@ -20,6 +20,7 @@ type Config struct {
 	JWTSecretPrevious    string
 	JWTKIDPrevious       string
 	UserServiceURL       string
+	IdentityUserURL      string
 	GraphServiceURL      string
 	MediaServiceURL      string
 	InternalServiceKey   string
@@ -48,6 +49,7 @@ func Load() *Config {
 		JWTSecretPrevious:    getEnv("JWT_SECRET_PREVIOUS", ""),
 		JWTKIDPrevious:       getEnv("JWT_KID_PREVIOUS", ""),
 		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
+		IdentityUserURL:      getEnv("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110"),
 		GraphServiceURL:      getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
 		MediaServiceURL:      getEnv("MEDIA_SERVICE_URL", "http://media-service:8087"),
 		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),

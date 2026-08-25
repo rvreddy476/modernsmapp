@@ -1,6 +1,9 @@
 import com.android.build.api.dsl.ApplicationExtension
 import com.us.android.convention.AndroidSdk
 import com.us.android.convention.configureFlavors
+import com.us.android.convention.devApiUrl
+import com.us.android.convention.devHost
+import com.us.android.convention.devWsUrl
 import com.us.android.convention.configureKotlinAndroid
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -15,7 +18,7 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
 
         extensions.configure<ApplicationExtension> {
             configureKotlinAndroid(this)
-            configureFlavors()
+            configureFlavors(devHost(), devApiUrl(), devWsUrl())
 
             defaultConfig.targetSdk = AndroidSdk.TARGET
             defaultConfig.versionCode = 1

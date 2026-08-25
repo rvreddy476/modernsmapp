@@ -28,6 +28,10 @@ type Config struct {
 	WSPongWait        time.Duration
 	WSPingPeriod      time.Duration
 	WSMaxMessageSize  int64
+	// EntitlementSecret verifies owner-issued conversation-room tokens
+	// (production chat pass §5.3). Shared with message-service; empty
+	// disables entitled room subscriptions entirely.
+	EntitlementSecret string
 }
 
 func (c *Config) ValidateProduction(production bool) error {
@@ -69,6 +73,7 @@ func Load() *Config {
 		WSPongWait:        pongWait,
 		WSPingPeriod:      pingPeriod,
 		WSMaxMessageSize:  getEnvInt64("WS_MAX_MESSAGE_SIZE", 64*1024),
+		EntitlementSecret: getEnv("CHAT_ENTITLEMENT_SECRET", ""),
 	}
 }
 

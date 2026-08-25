@@ -2,6 +2,7 @@ package com.us.android.push
 
 import com.us.android.core.auth.SessionManager
 import com.us.android.core.notifications.data.PushTokenRegistrar
+import com.us.android.core.notifications.data.PushTokenStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,6 +45,7 @@ import javax.inject.Singleton
 class PushRegistrationCoordinator @Inject constructor(
     private val sessionManager: SessionManager,
     private val registrar: PushTokenRegistrar,
+    private val tokenStore: PushTokenStore,
 ) {
 
     // Application-scoped and deliberately never cancelled: registration must
@@ -62,6 +64,17 @@ class PushRegistrationCoordinator @Inject constructor(
                     // an authenticated state costs nothing.
                     if (authenticated) registrar.registerIfNeeded()
                 }
+        }
+        scope.launch {
+            // Token ROTATION while a session is already active. FCM reissues
+            // tokens on its own schedule; without this collector the rotated
+            // token was stored and never posted, and push silently died until
+            // the next sign-in (chat completion pass, scope H).
+            tokenStore.tokenUpdates.collect {
+                if (sessionManager.state.value.isAuthenticated) {
+                    registrar.registerIfNeeded()
+                }
+            }
         }
     }
 }

@@ -60,14 +60,37 @@ interface RemoteKeyDao {
  * there is nothing for a migration test to migrate *from*.
  */
 @Database(
-    entities = [RemoteKeyEntity::class, ComposerDraftEntity::class],
-    version = 2,
+    entities = [
+        RemoteKeyEntity::class,
+        ComposerDraftEntity::class,
+        // Creator Studio P0-A.
+        CreatorProjectEntity::class,
+        CreatorPublishOperationEntity::class,
+        CreatorLiveOperationEntity::class,
+        CreatorSourceAssetEntity::class,
+        CreatorMigrationStagingEntity::class,
+        ComposerDraftFallbackStateEntity::class,
+        CreatorLegacyRecoveryEntity::class,
+        // Production chat pass — the durable chat boundary.
+        ChatConversationEntity::class,
+        ChatMessageEntity::class,
+        ChatPendingSendEntity::class,
+    ],
+    version = 5,
     exportSchema = true,
 )
 abstract class UsDatabase : RoomDatabase() {
     abstract fun remoteKeyDao(): RemoteKeyDao
 
     abstract fun composerDraftDao(): ComposerDraftDao
+
+    abstract fun chatDao(): ChatDao
+
+    abstract fun creatorProjectDao(): CreatorProjectDao
+
+    abstract fun creatorPublishOperationDao(): CreatorPublishOperationDao
+
+    abstract fun creatorMigrationDao(): CreatorMigrationDao
 
     companion object {
         const val NAME = "us.db"

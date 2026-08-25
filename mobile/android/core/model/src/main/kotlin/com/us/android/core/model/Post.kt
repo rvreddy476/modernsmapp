@@ -64,6 +64,8 @@ data class PostMediaRef(
     val kind: String,
     val altText: String = "",
     val altDecorative: Boolean = false,
+    /** Carousel ordinal; -1 when the payload predates the field. */
+    val position: Int = CarouselOrdinals.ABSENT,
 ) {
     /**
      * What a screen reader should announce, or null for silence.

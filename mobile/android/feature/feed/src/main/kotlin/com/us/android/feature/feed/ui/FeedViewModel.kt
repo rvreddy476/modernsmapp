@@ -11,11 +11,16 @@ import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
+import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedSurface
+import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.feature.feed.data.FeedRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -37,9 +42,30 @@ class FeedViewModel @Inject constructor(
      *
      * For video this is the poster frame. The feed never plays; reels does.
      */
-    fun posterUrl(item: FeedItem): String? {
-        val media = item.media.firstOrNull() ?: return null
-        return if (media.kind == VIDEO_KIND) {
+    fun posterUrl(item: FeedItem): String? = item.media.firstOrNull()?.let(::resolveUrl)
+
+    /**
+     * Every page of the row's carousel, in the author's order.
+     *
+     * Built here rather than in the card because URL resolution needs the
+     * variant ladder and the viewer's signed delivery, and because the ORDER is
+     * a product promise: `item.media` was already validated and sorted by
+     * `CarouselOrdinals` on the way out of the paging source, so mapping it
+     * index-for-index is what carries that promise to the screen.
+     */
+    fun mediaPages(item: FeedItem): List<PostCardMediaPage> = item.media.map { media ->
+        PostCardMediaPage(
+            mediaId = media.mediaId,
+            url = resolveUrl(media),
+            aspectRatio = media.aspectRatio(),
+            // Each page's own description — the same photo cropped two ways can
+            // honestly need two different ones.
+            contentDescription = media.contentDescription,
+        )
+    }
+
+    private fun resolveUrl(media: FeedMedia): String? =
+        if (media.kind == VIDEO_KIND) {
             // A video's ladder rungs are VIDEO files. `480p` on a video asset
             // is an mp4, and handing one to an image loader fetches it in full,
             // fails to decode, and shows an empty box — verified on a device,
@@ -50,7 +76,6 @@ class FeedViewModel @Inject constructor(
             urlResolver.bestVariant(media.variants, FEED_IMAGE_MAX_HEIGHT)
                 ?: urlResolver.thumbnail(media.variants)
         }
-    }
 
     /**
      * `cachedIn(viewModelScope)` is not optional here.
@@ -75,6 +100,31 @@ class FeedViewModel @Inject constructor(
     val overlays: StateFlow<Map<String, EngagementOverlay>> = engagement.overlays
 
     val failures: StateFlow<List<EngagementFailure>> = engagement.failures
+
+    /**
+     * The viewer's poll votes cast THIS session, postId → optionIds.
+     *
+     * The same overlay idea as engagement: a PagingData row cannot be edited
+     * in place, so the tap is layered over the server's hydration until the
+     * next refresh carries it back as `viewer_votes`.
+     */
+    private val _pollVotes = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    val pollVotes: StateFlow<Map<String, Set<String>>> = _pollVotes.asStateFlow()
+
+    fun onVotePoll(postId: String, optionId: String) {
+        // Optimistic: flip to results immediately; revert if the server said no.
+        _pollVotes.update { votes ->
+            votes + (postId to (votes[postId].orEmpty() + optionId))
+        }
+        viewModelScope.launch {
+            if (!repository.votePoll(postId, optionId)) {
+                _pollVotes.update { votes ->
+                    val remaining = votes[postId].orEmpty() - optionId
+                    if (remaining.isEmpty()) votes - postId else votes + (postId to remaining)
+                }
+            }
+        }
+    }
 
     fun onReact(postId: String, serverReacted: Boolean) = viewModelScope.launch {
         engagement.toggleReaction(postId, serverReacted)

@@ -1,0 +1,60 @@
+# Cloudflare Tunnel — local dev stack on a public HTTPS hostname.
+#
+# WHY THIS EXISTS
+#
+# Testing on a physical handset needs the backend reachable from the phone.
+# The LAN route (workstation IP + a firewall rule) only works on the same WiFi
+# and is plain HTTP. A tunnel gives a real HTTPS endpoint that works over mobile
+# data, needs no inbound firewall rule and no port forwarding, and satisfies
+# both Android's strict cleartext policy and iOS App Transport Security.
+#
+# TWO HOSTNAMES, NOT ONE
+#
+# The API and the media bytes travel to different ports. A presigned upload URL
+# points the phone straight at object storage, bypassing the gateway entirely —
+# so `media-dev` must be reachable in its own right or every photo upload fails
+# while the rest of the app looks fine.
+#
+# The presigned signature is computed against MINIO_PUBLIC_ENDPOINT, so that
+# variable must match the media hostname below exactly, scheme included.
+#
+# SETUP (run these yourself — they authenticate to your Cloudflare account):
+#
+#   cloudflared tunnel login
+#   cloudflared tunnel create atpost-dev
+#   cloudflared tunnel route dns atpost-dev api-dev.cleestudio.com
+#   cloudflared tunnel route dns atpost-dev media-dev.cleestudio.com
+#
+# `tunnel create` prints a UUID and writes a credentials JSON. Put both below.
+#
+# RUN:
+#   cloudflared tunnel --config Architecture/docker/cloudflared-dev.yml run
+#
+# NOTE ON EXPOSURE: this publishes a development stack to the public internet.
+# Registration is open, so anyone who learns the hostname can create an account
+# and post. Take the tunnel down when you are not testing, or put Cloudflare
+# Access in front of it.
+
+tunnel: d3774243-f647-4e35-991d-bd43db41cae7
+credentials-file: C:/Users/RVReddy/.cloudflared/d3774243-f647-4e35-991d-bd43db41cae7.json
+
+ingress:
+  # The API gateway. Everything the app calls except media bytes.
+  - hostname: api-dev.cleestudio.com
+    service: http://localhost:8080
+
+  # Object storage. Presigned PUT on upload, presigned GET on read.
+  - hostname: media-dev.cleestudio.com
+    service: http://localhost:9000
+
+  # Pre-existing mappings from ~/.cloudflared/config.yml, kept so running this
+  # config does not silently drop hostnames that were already routed here.
+  - hostname: api.cleestudio.com
+    service: http://localhost:8080
+    originRequest:
+      connectTimeout: 10s
+  - hostname: media.cleestudio.com
+    service: http://localhost:8087
+
+  # Required catch-all: anything else gets a 404 rather than reaching the stack.
+  - service: http_status:404

@@ -28,6 +28,14 @@ func (s *Service) deliveryStore() deliveryStore {
 	return s.convStore.(deliveryStore)
 }
 
+type lastMessageStore interface {
+	SetLastMessage(ctx context.Context, conversationID, senderID uuid.UUID, preview string, ts time.Time) error
+}
+
+func (s *Service) lastMessageStore() lastMessageStore {
+	return s.convStore.(lastMessageStore)
+}
+
 func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.MessageDeliveryIntent) error {
 	message := &scylla.Message{
 		ConversationID: intent.ConversationID,
@@ -50,6 +58,12 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 	}
 	if err := s.convStore.TouchConversation(ctx, intent.ConversationID, intent.MessageTS); err != nil {
 		return fmt.Errorf("touch conversation: %w", err)
+	}
+	// Inbox last-message metadata (unread previews). The ts guard inside
+	// makes repair replay idempotent — an older intent never overwrites a
+	// newer preview.
+	if err := s.lastMessageStore().SetLastMessage(ctx, intent.ConversationID, intent.SenderID, intent.MessageText, intent.MessageTS); err != nil {
+		return fmt.Errorf("set last message: %w", err)
 	}
 	if intent.MediaID != nil {
 		if err := s.deliveryStore().InsertMessageMediaReference(ctx, intent.MessageID, *intent.MediaID, intent.ConversationID); err != nil {

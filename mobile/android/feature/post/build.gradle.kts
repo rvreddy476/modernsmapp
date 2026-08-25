@@ -17,17 +17,32 @@ dependencies {
     implementation(projects.core.network)
     implementation(projects.core.profile)
     implementation(projects.core.media)
+    // The publish transport PORT lives in the pure contract module; this
+    // adapter implements it beside the DTO whose bytes it freezes.
+    implementation(projects.core.creatorModel)
+    implementation(projects.core.creatorEngine)
     // The composer draft is durable: it must survive a navigation pop, which
     // SavedStateHandle does not. See ComposerDraftStore.
     implementation(projects.core.database)
     implementation(projects.core.engagement)
 
+    // The composer previews the picked photo as a card. The ImageLoader itself
+    // is configured in :app on the authenticated client; this module renders only.
+    implementation(libs.coil.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     // rememberLauncherForActivityResult for the system Photo Picker.
     implementation(libs.androidx.activity.compose)
     implementation(libs.hilt.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
+    // Accessible drag-and-drop for the Studio's thumbnail strip ONLY — the
+    // binding library decision for P1-A. It reorders a LazyRow; every actual
+    // move is still a MovePage command through the reducer.
+    implementation(libs.reorderable)
+    // Studio background publish continuation.
+    implementation(libs.work.runtime)
+    implementation(libs.hilt.work)
+    ksp(libs.hilt.work.compiler)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

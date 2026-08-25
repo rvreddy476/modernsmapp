@@ -26,8 +26,8 @@ sealed interface PrivacySettingsUiState {
     }
 }
 
-enum class PrivacyEnumField { MESSAGE, PHOTO }
-enum class PrivacyToggleField { STRICT, TC_POSTS }
+enum class PrivacyEnumField { MESSAGE, PHOTO, GROUP_ADD, ONLINE, LAST_SEEN, READ_RECEIPTS, CHAT_AVAILABILITY }
+enum class PrivacyToggleField { STRICT, TC_POSTS, TYPING, MESSAGE_PREVIEW }
 
 @HiltViewModel
 class PrivacySettingsViewModel @Inject constructor(
@@ -51,6 +51,11 @@ class PrivacySettingsViewModel @Inject constructor(
         when (field) {
             PrivacyEnumField.MESSAGE -> current.copy(whoCanMessage = value)
             PrivacyEnumField.PHOTO -> current.copy(whoCanSeeProfilePhoto = value)
+            PrivacyEnumField.GROUP_ADD -> current.copy(whoCanAddToGroups = value)
+            PrivacyEnumField.ONLINE -> current.copy(whoCanSeeOnlineStatus = value)
+            PrivacyEnumField.LAST_SEEN -> current.copy(whoCanSeeLastSeen = value)
+            PrivacyEnumField.READ_RECEIPTS -> current.copy(whoCanSeeReadReceipts = value)
+            PrivacyEnumField.CHAT_AVAILABILITY -> current.copy(chatAvailability = value)
         }
     }
 
@@ -58,6 +63,8 @@ class PrivacySettingsViewModel @Inject constructor(
         when (field) {
             PrivacyToggleField.STRICT -> if (enabled) current.strict() else current.copy(strictPrivacyMode = false)
             PrivacyToggleField.TC_POSTS -> current.copy(trustedCircleCloseFriendsPosts = enabled)
+            PrivacyToggleField.TYPING -> current.copy(sendTypingIndicators = enabled)
+            PrivacyToggleField.MESSAGE_PREVIEW -> current.copy(showMessagePreview = enabled)
         }
     }
 

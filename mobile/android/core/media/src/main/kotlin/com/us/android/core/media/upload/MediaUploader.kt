@@ -71,10 +71,13 @@ class MediaUploader @Inject constructor(
         sizeBytes: Long,
         mediaSubtype: String = SUBTYPE_GENERAL,
         uploadPurpose: String = UPLOAD_PURPOSE_COMPOSER,
+        // The server binds `oneof=image video`; image stays the default so
+        // every existing call site keeps its exact request.
+        fileType: String = FILE_TYPE_IMAGE,
     ): AppResult<MediaInitDto> = apiCall(errorMapper) {
         api.init(
             MediaInitRequest(
-                fileType = FILE_TYPE_IMAGE,
+                fileType = fileType,
                 mediaSubtype = mediaSubtype,
                 mimeType = mimeType,
                 fileSizeBytes = sizeBytes,

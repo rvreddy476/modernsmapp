@@ -163,7 +163,18 @@ func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.U
 				}
 				if prefs.PushEnabled && !isQuietHours(quietStart, quietEnd) {
 					title, body := notifTitleBody(notifType)
-					pushData := map[string]string{"type": notifType}
+					// entity_id and deep_link ride the data payload so the
+					// client can open the exact destination from a tap —
+					// including background taps, where FCM hands these keys
+					// to the launch intent as extras. No message content is
+					// ever included here: chat pushes stay generic by
+					// construction, which is what keeps previews and lock
+					// screens privacy-safe regardless of client settings.
+					pushData := map[string]string{
+						"type":      notifType,
+						"entity_id": entityID.String(),
+						"deep_link": deepLink,
+					}
 					// Compute collapse key so repeated notifications (e.g. many likes)
 					// replace each other on the device instead of flooding.
 					if ck := GetCollapseKey(notifType, entityID.String(), userID.String()); ck != "" {

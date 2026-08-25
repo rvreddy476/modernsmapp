@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
       Phase 0 declares only what the scaffold actually uses.
@@ -73,6 +74,35 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+        <!-- Hilt WorkManager: the default androidx.startup initializer would
+             build WorkManager with the STOCK factory before our
+             Configuration.Provider is ever consulted, and every @HiltWorker
+             then fails with "Could not create Worker". On-demand
+             initialization requires removing that initializer here. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+        <!--
+          Create-hub camera capture target. TakePicture/CaptureVideo hand this
+          URI to the SYSTEM camera app, which needs a grantable content URI —
+          no CAMERA permission is required for delegated capture.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/create_capture_paths" />
+        </provider>
     </application>
 
 </manifest>

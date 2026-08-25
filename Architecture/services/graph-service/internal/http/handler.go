@@ -127,6 +127,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	internal := r.Group("/v1/internal/graph")
 	internal.GET("/blocked-and-muted", h.GetBlockedAndMutedInternal)
+	internal.POST("/blocked-any", h.BlockedAnyInternal)
 
 	// Permission check API (spec §9.8). Single source of truth for
 	// "can actor do X to target" — used by clients to render buttons
@@ -847,6 +848,36 @@ func (h *Handler) GetBlockedAndMutedInternal(c *gin.Context) {
 		return
 	}
 	h.writeBlockedAndMuted(c, userID, false)
+}
+
+// BlockedAnyInternal answers chat's group-roster gate (P0-5): which of the
+// named candidates hold a block with user_id in either direction. Bounded to
+// the group cap; only the matching subset of caller-supplied ids is returned,
+// never the adjacency itself.
+func (h *Handler) BlockedAnyInternal(c *gin.Context) {
+	var req struct {
+		UserID       uuid.UUID   `json:"user_id" binding:"required"`
+		CandidateIDs []uuid.UUID `json:"candidate_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	const candidateCap = 1024
+	if len(req.CandidateIDs) > candidateCap {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"too many candidate ids", nil)
+		return
+	}
+	blocked, err := h.svc.BlockedWithAny(c.Request.Context(), req.UserID, req.CandidateIDs)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if blocked == nil {
+		blocked = []uuid.UUID{}
+	}
+	c.JSON(http.StatusOK, gin.H{"blocked_user_ids": blocked})
 }
 
 func (h *Handler) writeBlockedAndMuted(c *gin.Context, userID uuid.UUID, envelope bool) {

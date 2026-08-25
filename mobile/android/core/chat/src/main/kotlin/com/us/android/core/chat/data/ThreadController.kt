@@ -22,6 +22,13 @@ data class ThreadUiState(
      * and one of them stopping must not clear the indicator for the other.
      */
     val typingUserIds: Set<String> = emptySet(),
+    /**
+     * The newest of the viewer's messages the DIRECT peer has read, from the
+     * privacy-gated `read_receipt` frame. Null until one arrives — the UI
+     * shows nothing rather than guessing, because absence of a receipt is
+     * exactly what a `no_one` receipts setting looks like.
+     */
+    val peerLastReadMessageId: String? = null,
 ) {
     val canLoadMore: Boolean get() = nextCursor != null && !appending && appendError == null
     val canSend: Boolean get() = draft.isValidMessage() && !sending
@@ -77,6 +84,8 @@ const val MAX_MESSAGE_LENGTH = 2_000
 class ThreadController(
     private val conversationId: String,
     private val repository: ChatRepository,
+    /** The signed-in user, for own-message affordances (react/delete/read). */
+    val viewerId: String = "",
 ) {
 
     private var state = ThreadUiState(conversationId = conversationId)
@@ -265,12 +274,23 @@ class ThreadController(
             else -> onTypingStopped(event.userId)
         }
 
+        // The peer read up to a message: server-gated disclosure, rendered
+        // only for THIS conversation and only when the identifiers are whole.
+        is ChatSocketEvent.ReadReceipt -> when {
+            event.conversationId != conversationId -> null
+            event.messageId.isBlank() -> null
+            else -> state.copy(peerLastReadMessageId = event.messageId).also { state = it }
+        }
+
         // Malformed is listed explicitly rather than swept up by an `else`:
         // an exhaustive `when` is what forces the next person who adds a frame
         // type to decide what a thread does with it, instead of inheriting
-        // "ignore" by default.
+        // "ignore" by default. SubscriptionRevoked belongs to the session
+        // manager (room bookkeeping); a removed member's next thread action
+        // surfaces the server's refusal.
         is ChatSocketEvent.Connected,
         is ChatSocketEvent.Disconnected,
+        is ChatSocketEvent.SubscriptionRevoked,
         is ChatSocketEvent.Unknown,
         is ChatSocketEvent.Malformed,
         -> null
@@ -338,6 +358,45 @@ class ThreadController(
         return state.copy(typingUserIds = state.typingUserIds - userId).also { state = it }
     }
 
+    /**
+     * Toggles the viewer's [emoji] on one message: server first, then the
+     * local summary is updated from the server's added/removed answer. No
+     * optimistic write — a reaction the server refused must never linger.
+     */
+    suspend fun toggleReaction(messageId: String, emoji: String): ThreadUiState {
+        val message = state.messages.firstOrNull { it.id == messageId } ?: return state
+        if (!message.addressable || viewerId.isBlank()) return state
+        return when (val result = repository.toggleReaction(conversationId, message, emoji)) {
+            is AppResult.Success -> {
+                val updated = message.copy(
+                    reactions = message.reactions.applyToggle(
+                        emoji = emoji,
+                        userId = viewerId,
+                        added = result.data.added,
+                    ),
+                )
+                state.copy(
+                    messages = state.messages.map { if (it.id == messageId) updated else it },
+                ).also { state = it }
+            }
+            is AppResult.Failure -> state
+        }
+    }
+
+    /**
+     * Deletes one message. The server decides who may (sender, or a group
+     * owner/admin moderating); a refusal leaves the row untouched.
+     */
+    suspend fun deleteMessage(messageId: String): AppResult<Unit>? {
+        val message = state.messages.firstOrNull { it.id == messageId } ?: return null
+        if (!message.addressable) return null
+        val result = repository.deleteMessage(conversationId, message)
+        if (result is AppResult.Success) {
+            state = state.copy(messages = state.messages.filterNot { it.id == messageId })
+        }
+        return result
+    }
+
     /** Marks the newest message read; a no-op on an empty thread. */
     suspend fun markRead(): AppResult<Unit>? {
         val newest = state.messages.firstOrNull { !it.pending } ?: return null
@@ -351,6 +410,34 @@ class ThreadController(
         } else {
             memberNames[senderId]?.let { copy(senderDisplayName = it) } ?: this
         }
+}
+
+/**
+ * Applies one confirmed toggle to a reaction-summary list: the viewer joins
+ * or leaves the [emoji] group; an emptied group disappears. Top-level so the
+ * summary arithmetic is testable without a controller.
+ */
+fun List<ReactionSummary>.applyToggle(
+    emoji: String,
+    userId: String,
+    added: Boolean,
+): List<ReactionSummary> {
+    val existing = firstOrNull { it.emoji == emoji }
+    return when {
+        added && existing == null -> this + ReactionSummary(emoji, listOf(userId))
+        added -> map {
+            if (it.emoji == emoji && userId !in it.userIds) it.copy(userIds = it.userIds + userId) else it
+        }
+        existing == null -> this
+        else -> mapNotNull {
+            if (it.emoji != emoji) {
+                it
+            } else {
+                val remaining = it.userIds - userId
+                if (remaining.isEmpty()) null else it.copy(userIds = remaining)
+            }
+        }
+    }
 }
 
 /**

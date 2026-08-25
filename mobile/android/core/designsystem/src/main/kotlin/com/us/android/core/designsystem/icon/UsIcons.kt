@@ -259,6 +259,21 @@ object UsIcons {
         lineTo(4f, 12f)
         lineTo(10.4f, 18.4f)
     }
+
+    /**
+     * A close cross — dismiss a full-screen surface.
+     *
+     * Distinct from [Back] on purpose. An arrow means "return to where you
+     * came from"; a cross means "abandon what is on screen". The composer is
+     * the second: leaving it decides the fate of a draft, and offering an
+     * arrow there quietly implies the work is being kept.
+     */
+    val Close: ImageVector = stroked("Close") {
+        moveTo(18f, 6f)
+        lineTo(6f, 18f)
+        moveTo(6f, 6f)
+        lineTo(18f, 18f)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,9 @@ android {
 // about the product. It knows how to resolve a media URL, pool players and
 // cache segments; it does not know what a reel or a post is.
 dependencies {
+    // Implements the RenderExporter port DECLARED in :core:creator-model.
+    // Never :core:creator-engine — guard G-5. App DI binds this adapter.
+    implementation(projects.core.creatorModel)
     implementation(projects.core.common)
     // For ApiConfig (base URL) and the authenticated OkHttp client. Media3
     // MUST read through that client: HLS playlists are served authorized from
@@ -31,6 +34,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
 
+    testImplementation(projects.core.testing)
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)

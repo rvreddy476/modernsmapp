@@ -35,12 +35,14 @@ func TestPostMediaSerializesItsAccessibilityDecision(t *testing.T) {
 			media: PostMedia{
 				MediaID: id, Kind: "image",
 				AltText: "a cat asleep on a keyboard", AltDecorative: false,
+				Position: 0,
 			},
 			want: map[string]any{
 				"media_id":       id.String(),
 				"kind":           "image",
 				"alt_text":       "a cat asleep on a keyboard",
 				"alt_decorative": false,
+				"position":       float64(0),
 			},
 		},
 		{
@@ -49,12 +51,13 @@ func TestPostMediaSerializesItsAccessibilityDecision(t *testing.T) {
 			// no information" with "nobody said", and only the first of those
 			// may render an image with no label.
 			name:  "a decorative image carries an explicit flag and no description",
-			media: PostMedia{MediaID: id, Kind: "image", AltText: "", AltDecorative: true},
+			media: PostMedia{MediaID: id, Kind: "image", AltText: "", AltDecorative: true, Position: 2},
 			want: map[string]any{
 				"media_id":       id.String(),
 				"kind":           "image",
 				"alt_text":       "",
 				"alt_decorative": true,
+				"position":       float64(2),
 			},
 		},
 		{
@@ -68,6 +71,10 @@ func TestPostMediaSerializesItsAccessibilityDecision(t *testing.T) {
 				"kind":           "image",
 				"alt_text":       "",
 				"alt_decorative": false,
+				// Always emitted, never omitempty: an absent ordinal and
+				// ordinal 0 must not be the same bytes, or a reader cannot
+				// tell "first" from "unknown".
+				"position": float64(0),
 			},
 		},
 	}

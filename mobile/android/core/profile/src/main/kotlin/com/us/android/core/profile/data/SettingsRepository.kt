@@ -142,6 +142,9 @@ private fun PrivacySettingsDto.toDomain() = PrivacySettings(
     trustedCircleLocationPings,
     trustedCircleAfterHoursPosts,
     trustedCircleAudioRoomInvites,
+    chatAvailability,
+    sendTypingIndicators,
+    showMessagePreview,
     privacyVersion,
 )
 
@@ -164,6 +167,9 @@ private fun PrivacySettings.toRequest() = UpdatePrivacySettingsRequest(
     trustedCircleLocationPings,
     trustedCircleAfterHoursPosts,
     trustedCircleAudioRoomInvites,
+    chatAvailability,
+    sendTypingIndicators,
+    showMessagePreview,
 )
 
 private fun NotificationSettingsDto.toDomain() = NotificationSettings(

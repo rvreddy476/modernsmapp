@@ -98,8 +98,18 @@ type Author struct {
 // image, and "field absent" is a third state neither renderer should have to
 // reason about.
 type HydratedMedia struct {
-	MediaID       uuid.UUID         `json:"media_id"`
-	Kind          string            `json:"kind"`
+	MediaID uuid.UUID `json:"media_id"`
+	Kind    string    `json:"kind"`
+
+	// Position is the zero-based carousel ordinal, decoded from post-service
+	// and re-emitted. Creator Studio P0-A, errata E-2.
+	//
+	// Always emitted, never omitempty: an absent ordinal and ordinal 0 must
+	// not be the same bytes. Renumbered after the authorization filter,
+	// because a denied middle asset would otherwise leave a gap the client is
+	// required to reject.
+	Position int `json:"position"`
+
 	AltText       string            `json:"alt_text"`
 	AltDecorative bool              `json:"alt_decorative"`
 	Status        string            `json:"status,omitempty"`
@@ -321,6 +331,17 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 				m.ExpiresAt = nil
 			}
 			authorizedMedia = append(authorizedMedia, m)
+		}
+		// Renumber after filtering.
+		//
+		// post-service already returned this slice ordered and the loop above
+		// preserves that order, so index IS the ordinal. It is reassigned rather
+		// than passed through because a denied asset is omitted, and dropping
+		// position 1 from a three-image post would emit ordinals 0 and 2 - a gap
+		// the client contiguity check rejects, which would lose the whole post
+		// from the feed instead of one unviewable image.
+		for j := range authorizedMedia {
+			authorizedMedia[j].Position = j
 		}
 		posts[i].Media = authorizedMedia
 	}

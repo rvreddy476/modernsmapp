@@ -1,16 +1,23 @@
 package com.us.android.feature.profile.ui
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.chat.data.AddMemberRequest
 import com.us.android.core.chat.data.ChatApi
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.ConversationDto
 import com.us.android.core.chat.data.ConversationMemberDto
+import com.us.android.core.chat.data.ConversationSettingsDto
 import com.us.android.core.chat.data.CreateDirectRequest
 import com.us.android.core.chat.data.CreateGroupRequest
+import com.us.android.core.chat.data.DeleteMessageRequest
 import com.us.android.core.chat.data.MarkReadRequest
 import com.us.android.core.chat.data.SendMessageRequest
+import com.us.android.core.chat.data.SetRoleRequest
 import com.us.android.core.chat.data.StatusDto
+import com.us.android.core.chat.data.ToggleReactionRequest
+import com.us.android.core.chat.data.TransferOwnerRequest
 import com.us.android.core.chat.data.TypingRequest
+import com.us.android.core.chat.data.UpdateGroupInfoRequest
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
@@ -56,8 +63,52 @@ class StartChatViewModelTest {
             return responses.removeFirst().invoke()
         }
 
-        override suspend fun conversations(): Nothing = error("not used")
+        override suspend fun conversations(limit: Int, cursor: String?): Nothing = error("not used")
+
+        override suspend fun toggleReaction(
+            conversationId: String,
+            messageId: String,
+            body: ToggleReactionRequest,
+        ): Nothing = error("not used")
+        override suspend fun deleteMessage(
+            conversationId: String,
+            messageId: String,
+            body: DeleteMessageRequest,
+        ): Nothing = error("not used")
+        override suspend fun conversationSettings(conversationId: String): Nothing = error("not used")
+        override suspend fun updateConversationSettings(
+            conversationId: String,
+            body: ConversationSettingsDto,
+        ): Nothing = error("not used")
+        override suspend fun subscriptionEntitlement(conversationId: String): Nothing = error("not used")
         override suspend fun conversation(conversationId: String): Nothing = error("not used")
+
+        // Production chat pass surface — unused by this navigation test.
+        override suspend fun requests(): Nothing = error("not used")
+        override suspend fun acceptRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun declineRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun blockRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun reportRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun leave(conversationId: String): Nothing = error("not used")
+        override suspend fun transferOwner(
+            conversationId: String,
+            body: TransferOwnerRequest,
+        ): Nothing = error("not used")
+        override suspend fun setMemberRole(
+            conversationId: String,
+            userId: String,
+            body: SetRoleRequest,
+        ): Nothing = error("not used")
+        override suspend fun addMember(conversationId: String, body: AddMemberRequest): Nothing = error("not used")
+        override suspend fun removeMember(conversationId: String, userId: String): Nothing = error("not used")
+        override suspend fun updateGroupInfo(
+            conversationId: String,
+            body: UpdateGroupInfoRequest,
+        ): Nothing = error("not used")
+        override suspend fun invitations(): Nothing = error("not used")
+        override suspend fun acceptInvitation(invitationId: String): Nothing = error("not used")
+        override suspend fun declineInvitation(invitationId: String): Nothing = error("not used")
+        override suspend fun connections(userId: String, limit: Int): Nothing = error("not used")
         override suspend fun createGroup(
             idempotencyKey: String,
             body: CreateGroupRequest,

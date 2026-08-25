@@ -40,6 +40,31 @@ data class FeedItemDto(
     @SerialName("is_repostable") val isRepostable: Boolean = false,
     /** Ranked surfaces only. Home is chronological and omits it. */
     val score: Double? = null,
+    /** Present exactly when the post is a poll — hydrated by feed-service. */
+    val poll: FeedPollDto? = null,
+)
+
+/**
+ * The hydrated poll block — post-service's `PollData`, passed through
+ * feed-service as raw JSON. Server-computed percentages included; the client
+ * renders them, never derives them.
+ */
+@Serializable
+data class FeedPollDto(
+    val question: String = "",
+    @SerialName("allows_multiple") val allowsMultiple: Boolean = false,
+    val options: List<FeedPollOptionDto> = emptyList(),
+    @SerialName("total_votes") val totalVotes: Long = 0,
+    @SerialName("viewer_votes") val viewerVotes: List<String> = emptyList(),
+    @SerialName("has_ended") val hasEnded: Boolean = false,
+)
+
+@Serializable
+data class FeedPollOptionDto(
+    val id: String = "",
+    val label: String = "",
+    @SerialName("vote_count") val voteCount: Long = 0,
+    val percentage: Double = 0.0,
 )
 
 /**
@@ -68,6 +93,8 @@ data class FeedAuthorDto(
 data class FeedMediaDto(
     @SerialName("media_id") val mediaId: String = "",
     val kind: String = "",
+    /** The carousel ordinal. Defaults to -1, never 0 — see CarouselOrdinals. */
+    val position: Int = com.us.android.core.model.CarouselOrdinals.ABSENT,
     /**
      * The author's accessibility decision — Slice C, C-CLB-3.
      *

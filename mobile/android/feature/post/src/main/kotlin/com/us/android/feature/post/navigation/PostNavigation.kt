@@ -106,3 +106,57 @@ fun NavGraphBuilder.composerScreen(
 
 /** Type-safe navigation to the composer. */
 fun NavController.navigateToComposer() = navigate(ComposerRoute)
+
+/**
+ * The Post Studio — the multi-photo editor.
+ *
+ * [initialUris] carries the Create hub's picker result (content-URI strings)
+ * so the studio opens already loaded. Document STATE still never rides the
+ * route — the studio resumes its project from ProjectStore; these are only
+ * the not-yet-imported picks, consumed once by the ViewModel.
+ */
+@Serializable
+data class StudioRoute(val initialUris: List<String> = emptyList())
+
+fun NavGraphBuilder.studioScreen(
+    onClose: () -> Unit,
+    onPublished: (postId: String) -> Unit,
+) {
+    composable<StudioRoute> {
+        com.us.android.feature.post.studio.StudioScreen(
+            onClose = onClose,
+            onPublished = onPublished,
+        )
+    }
+}
+
+/** Type-safe navigation to the Post Studio. */
+fun NavController.navigateToStudio(initialUris: List<String> = emptyList()) =
+    navigate(StudioRoute(initialUris))
+
+/**
+ * The Create hub — ONE entry for making anything.
+ *
+ * The feed's "+" lands here. A footer rail switches the surface (Text, Image,
+ * Reel, Poll); nothing else on the screen selects a format, which is the whole
+ * point: no extra plus buttons, no dropdowns.
+ */
+@Serializable
+data object CreateRoute
+
+fun NavGraphBuilder.createHubScreen(
+    onClose: () -> Unit,
+    onPublished: (postId: String) -> Unit,
+    onOpenStudio: (uris: List<String>) -> Unit,
+) {
+    composable<CreateRoute> {
+        com.us.android.feature.post.createhub.CreateHubScreen(
+            onClose = onClose,
+            onPublished = onPublished,
+            onOpenStudio = onOpenStudio,
+        )
+    }
+}
+
+/** Type-safe navigation to the Create hub. */
+fun NavController.navigateToCreate() = navigate(CreateRoute)

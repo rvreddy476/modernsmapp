@@ -3,7 +3,11 @@ package com.us.android.feature.feed.data
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.feed.data.dto.FeedDeltaDto
 import com.us.android.feature.feed.data.dto.FeedItemDto
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -52,4 +56,17 @@ interface FeedApi {
         @Query("anchor") anchor: String,
         @Query("limit") limit: Int,
     ): ApiEnvelope<FeedDeltaDto>
+
+    /**
+     * Casts one poll vote. The server enforces poll-open and single-vote
+     * rules; the client's optimistic flip is corrected on the next hydration.
+     */
+    @POST("v1/posts/{postId}/poll/vote")
+    suspend fun votePoll(
+        @Path("postId") postId: String,
+        @Body body: PollVoteRequest,
+    ): ApiEnvelope<Map<String, Boolean>>
 }
+
+@Serializable
+data class PollVoteRequest(@SerialName("option_id") val optionId: String)

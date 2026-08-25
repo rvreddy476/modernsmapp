@@ -15,6 +15,10 @@ import (
 const (
 	identityUserRegistered     = "UserRegistered"
 	identityUserProfileUpdated = "UserProfileUpdated"
+	// identityUserSettingsChanged invalidates the local chat-policy
+	// projection so pause/typing/receipt changes take effect on the next
+	// hot-path read instead of the 5-minute TTL (production chat pass §5.1).
+	identityUserSettingsChanged = "user.settings_changed"
 )
 
 type identityEnvelope struct {
@@ -34,9 +38,11 @@ type userProfileUpdatedPayload struct {
 	AvatarMediaID *string `json:"avatar_media_id,omitempty"`
 }
 
-// ProfileUpserter is the interface for upserting user profiles.
+// ProfileUpserter is the interface for upserting user profiles and
+// invalidating the chat policy projection (production chat pass §5.1).
 type ProfileUpserter interface {
 	UpsertUserProfile(ctx context.Context, userID uuid.UUID, displayName string, avatarMediaID *uuid.UUID) error
+	InvalidateUserPolicy(ctx context.Context, userID uuid.UUID) error
 }
 
 // IdentityConsumer consumes identity events from Kafka and maintains a local profile cache.
@@ -121,9 +127,31 @@ func (c *IdentityConsumer) processMessage(ctx context.Context, message kafka.Mes
 		return c.handleUserRegistered(ctx, envelope.Payload)
 	case identityUserProfileUpdated:
 		return c.handleUserProfileUpdated(ctx, envelope.Payload)
+	case identityUserSettingsChanged:
+		return c.handleUserSettingsChanged(ctx, envelope.Payload)
 	default:
 		return nil
 	}
+}
+
+// handleUserSettingsChanged drops the projected chat policy so the next
+// send/typing/receipt path re-fetches the authoritative snapshot. Idempotent.
+func (c *IdentityConsumer) handleUserSettingsChanged(ctx context.Context, payload json.RawMessage) error {
+	var p struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return permanentEventError{err}
+	}
+	userID, err := uuid.Parse(p.UserID)
+	if err != nil {
+		return permanentEventError{err}
+	}
+	if err := c.store.InvalidateUserPolicy(ctx, userID); err != nil {
+		c.log.Error("failed to invalidate chat policy", "err", err, "user_id", userID)
+		return err
+	}
+	return nil
 }
 
 func (c *IdentityConsumer) handleUserRegistered(ctx context.Context, payload json.RawMessage) error {

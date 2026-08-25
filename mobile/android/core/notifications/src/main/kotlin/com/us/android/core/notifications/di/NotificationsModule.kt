@@ -14,6 +14,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
+import kotlinx.coroutines.flow.asSharedFlow
 import retrofit2.Retrofit
 import javax.inject.Singleton
 
@@ -50,10 +51,18 @@ internal class SharedPrefsPushTokenStore(
     private val prefs: SharedPreferences,
 ) : PushTokenStore {
 
+    private val _tokenUpdates = kotlinx.coroutines.flow.MutableSharedFlow<String>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    override val tokenUpdates: kotlinx.coroutines.flow.SharedFlow<String> =
+        _tokenUpdates.asSharedFlow()
+
     override fun token(): String? = prefs.getString(KEY_TOKEN, null)
 
     override fun setToken(token: String) {
         prefs.edit().putString(KEY_TOKEN, token).apply()
+        _tokenUpdates.tryEmit(token)
     }
 
     override fun registeredToken(): String? = prefs.getString(KEY_REGISTERED, null)

@@ -78,6 +78,9 @@ class PostViewModel @Inject constructor(
                     serverReposted = content.post.viewer.hasReposted,
                 )
                 loadAuthor(content.post.authorId)
+                // Resolve the first page eagerly so the post is not blank while
+                // the reader decides whether to swipe. The rest arrive as they
+                // are reached; see onPageSettled.
                 loadMedia(content.post.media.firstOrNull()?.mediaId)
             }
         }
@@ -111,10 +114,26 @@ class PostViewModel @Inject constructor(
      */
     private suspend fun loadMedia(mediaId: String?) {
         if (mediaId.isNullOrBlank()) return
+        val alreadyResolved = (_state.value as? PostUiState.Content)?.media?.containsKey(mediaId)
+        if (alreadyResolved == true) return
         val delivery = (media.delivery(mediaId) as? AppResult.Success)?.data ?: return
         _state.update { state ->
-            (state as? PostUiState.Content)?.copy(media = delivery) ?: state
+            (state as? PostUiState.Content)?.let { it.copy(media = it.media + (mediaId to delivery)) }
+                ?: state
         }
+    }
+
+    /**
+     * Resolve the page the reader just swiped to.
+     *
+     * Called by the pager rather than on load, so a ten-page carousel costs one
+     * image up front instead of ten. [loadMedia] is idempotent, so swiping back
+     * and forth re-resolves nothing.
+     */
+    fun onPageSettled(index: Int) {
+        val content = _state.value as? PostUiState.Content ?: return
+        val mediaId = content.post.media.getOrNull(index)?.mediaId ?: return
+        viewModelScope.launch { loadMedia(mediaId) }
     }
 
     /**

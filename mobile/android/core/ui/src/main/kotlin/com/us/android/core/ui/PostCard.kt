@@ -12,10 +12,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
@@ -31,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -76,9 +80,146 @@ data class PostCardState(
      * `contentDescription` rule on the domain model.
      */
     val mediaContentDescription: String? = null,
+    /**
+     * Every attachment, in the author's order — Creator Studio P0-A.
+     *
+     * Empty means "this surface has not adopted carousels yet", and the card
+     * falls back to the single-attachment fields above. Search and profile
+     * cards still do that; the feed supplies real pages.
+     *
+     * Each page carries ITS OWN description, because the same photo cropped two
+     * ways across two pages can honestly need two different ones. Announcing
+     * page 1's text for page 3 would be confidently wrong, which is worse for a
+     * screen-reader user than saying nothing.
+     */
+    val mediaPages: List<PostCardMediaPage> = emptyList(),
     val actions: PostActionState,
     val isPinned: Boolean = false,
+    /** Present exactly when the post is a poll. */
+    val poll: PostCardPoll? = null,
 )
+
+/**
+ * A poll ready to render: server-computed counts and percentages, plus the
+ * viewer's own votes (with any this-session tap already layered in by the
+ * surface that built this state).
+ */
+data class PostCardPoll(
+    val options: List<PostCardPollOption>,
+    val totalVotes: Long,
+    val votedOptionIds: Set<String>,
+    val hasEnded: Boolean,
+) {
+    val showResults: Boolean get() = hasEnded || votedOptionIds.isNotEmpty()
+}
+
+data class PostCardPollOption(
+    val id: String,
+    val label: String,
+    val voteCount: Long,
+    /** 0..100, computed by the server. */
+    val percentage: Double,
+)
+
+/**
+ * One page of a post's carousel, already resolved to a URL.
+ *
+ * The card is handed resolved URLs rather than media ids because resolution
+ * needs the variant ladder and the viewer's signed delivery, neither of which
+ * belongs in a component that also renders search results.
+ */
+data class PostCardMediaPage(
+    val mediaId: String,
+    val url: String?,
+    val aspectRatio: Float = DEFAULT_MEDIA_ASPECT,
+    /** This page's own description, or null for decorative/undeclared. */
+    val contentDescription: String? = null,
+)
+
+/**
+ * The attachment area: one image, or a swipeable ordered carousel.
+ *
+ * ## WHY THE SINGLE-IMAGE BRANCH STAYS
+ *
+ * Not every surface has adopted carousels. Search and profile cards still pass
+ * only the single-attachment fields, and this renders those exactly as before.
+ * Deleting that branch would have meant rewriting three unrelated surfaces
+ * inside a slice whose scope is the feed and post detail.
+ */
+@Composable
+private fun PostMediaCarousel(state: PostCardState) {
+    val pages = state.mediaPages
+    if (pages.size <= 1) {
+        val single = pages.firstOrNull()
+        PostMedia(
+            url = single?.url ?: state.mediaUrl,
+            postType = state.postType,
+            count = state.mediaCount,
+            aspectRatio = single?.aspectRatio ?: state.mediaAspectRatio,
+            contentDescription = single?.contentDescription ?: state.mediaContentDescription,
+        )
+        return
+    }
+
+    val pagerState = rememberPagerState(pageCount = { pages.size })
+    Column(modifier = Modifier.fillMaxWidth()) {
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { index ->
+            val page = pages[index]
+            PostMedia(
+                url = page.url,
+                postType = state.postType,
+                // 1, not mediaCount: PostMedia draws an "N" badge, and at
+                // mediaCount it would stamp "3" onto every page of the very
+                // carousel it is meant to be counting.
+                count = 1,
+                aspectRatio = page.aspectRatio,
+                contentDescription = page.contentDescription,
+            )
+        }
+        CarouselPips(
+            pageCount = pages.size,
+            currentPage = pagerState.currentPage,
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .padding(top = UsTheme.spacing.m),
+        )
+    }
+}
+
+/**
+ * Position pips.
+ *
+ * Semantics cleared on purpose: a screen-reader user swipes the pager and hears
+ * each page's own description, so announcing "dot dot dot" adds nothing and
+ * interrupts the part that does.
+ */
+@Composable
+private fun CarouselPips(pageCount: Int, currentPage: Int, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.clearAndSetSemantics { },
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(pageCount) { index ->
+            Box(
+                modifier = Modifier
+                    .size(if (index == currentPage) PIP_SELECTED else PIP_UNSELECTED)
+                    .clip(CircleShape)
+                    .background(
+                        if (index == currentPage) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            UsTheme.extended.textSecondary.copy(alpha = PIP_DIM_ALPHA)
+                        },
+                    ),
+            )
+        }
+    }
+}
+
+private val PIP_SELECTED = 7.dp
+private val PIP_UNSELECTED = 5.dp
+private const val PIP_DIM_ALPHA = 0.35f
 
 /**
  * Reusable compact post card for standard list feeds, search results, and
@@ -111,6 +252,8 @@ fun PostCard(
      */
     onOptionClick: (() -> Unit)? = null,
     onFollow: (() -> Unit)? = null,
+    /** Casts a vote in this card's poll. Null on surfaces that cannot vote. */
+    onVotePoll: ((optionId: String) -> Unit)? = null,
 ) {
     Column(
         modifier = modifier
@@ -207,15 +350,15 @@ fun PostCard(
             )
         }
 
+        // Poll block — ballots until the viewer votes (or the poll ends),
+        // results after.
+        state.poll?.let { poll ->
+            PostPollBlock(poll = poll, onVote = onVotePoll)
+        }
+
         // Media attachment
         if (state.mediaCount > 0) {
-            PostMedia(
-                url = state.mediaUrl,
-                postType = state.postType,
-                count = state.mediaCount,
-                aspectRatio = state.mediaAspectRatio,
-                contentDescription = state.mediaContentDescription,
-            )
+            PostMediaCarousel(state)
         }
 
         // Social action bar
@@ -593,7 +736,124 @@ fun PostMedia(
     }
 }
 
+/**
+ * The poll body: ballots until the viewer votes (or the poll ends), then
+ * results with the server's percentages as filled bars.
+ *
+ * One block, two honest states — an option row is a BUTTON only while a vote
+ * can still change something. After that it is a result, and rendering it as
+ * anything tappable would be a lie the server corrects with an error.
+ */
+@Composable
+private fun PostPollBlock(poll: PostCardPoll, onVote: ((String) -> Unit)?) {
+    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+        poll.options.forEach { option ->
+            if (poll.showResults) {
+                PollResultRow(option = option, chosen = option.id in poll.votedOptionIds)
+            } else {
+                PollBallotRow(option = option, onVote = onVote)
+            }
+        }
+        Text(
+            text = buildString {
+                append(poll.totalVotes)
+                append(if (poll.totalVotes == 1L) " vote" else " votes")
+                if (poll.hasEnded) append(" · Final results")
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.textMuted,
+        )
+    }
+}
+
+@Composable
+private fun PollBallotRow(option: PostCardPollOption, onVote: ((String) -> Unit)?) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.full))
+            .border(
+                HAIRLINE_FULL,
+                MaterialTheme.colorScheme.primary,
+                RoundedCornerShape(UsTheme.radii.full),
+            )
+            .then(
+                if (onVote != null) {
+                    Modifier.clickable { onVote(option.id) }
+                } else {
+                    Modifier
+                },
+            )
+            .padding(vertical = UsTheme.spacing.m, horizontal = UsTheme.spacing.l),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = option.label,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun PollResultRow(option: PostCardPollOption, chosen: Boolean) {
+    val fraction = (option.percentage / PERCENT_D).toFloat().coerceIn(0f, 1f)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.bgCard),
+    ) {
+        // The bar IS the datum: width = the server's percentage.
+        Box(modifier = Modifier.matchParentSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction.coerceAtLeast(MIN_BAR_FRACTION))
+                    .background(
+                        if (chosen) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = RESULT_BAR_ALPHA)
+                        } else {
+                            UsTheme.extended.borderSubtle
+                        },
+                    ),
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = UsTheme.spacing.m, horizontal = UsTheme.spacing.l),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = option.label + if (chosen) "  ✓" else "",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (chosen) FontWeight.Bold else FontWeight.Normal,
+                color = UsTheme.extended.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "${option.percentage.toInt()}%",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.textSecondary,
+            )
+        }
+    }
+}
+
 private const val MAX_LINES = 8
+private const val PERCENT_D = 100.0
+private const val RESULT_BAR_ALPHA = 0.35f
+
+/** A sliver even at 0% so every option reads as a bar, not a blank row. */
+private const val MIN_BAR_FRACTION = 0.02f
+private val HAIRLINE_FULL = 1.dp
 const val DEFAULT_MEDIA_ASPECT = 16f / 9f
 
 const val VIDEO_POST = "video"

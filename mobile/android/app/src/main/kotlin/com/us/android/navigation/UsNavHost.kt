@@ -8,6 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,23 +30,39 @@ import com.us.android.core.model.SessionState
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
+import com.us.android.feature.chat.navigation.ChatRequestRoute
+import com.us.android.feature.chat.navigation.ChatThreadRoute
+import com.us.android.feature.chat.navigation.GroupCreateRoute
 import com.us.android.feature.chat.navigation.chatInboxScreen
+import com.us.android.feature.chat.navigation.chatLockSettingsScreen
+import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
+import com.us.android.feature.chat.navigation.groupCreateScreen
+import com.us.android.feature.chat.navigation.groupInfoScreen
 import com.us.android.feature.chat.navigation.navigateToChatInbox
+import com.us.android.feature.chat.navigation.navigateToChatLockSettings
+import com.us.android.feature.chat.navigation.navigateToChatRequest
 import com.us.android.feature.chat.navigation.navigateToChatThread
+import com.us.android.feature.chat.navigation.navigateToGroupCreate
+import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.notifications.navigation.navigateToNotifications
 import com.us.android.feature.notifications.navigation.notificationsScreen
 import com.us.android.feature.post.navigation.ComposerRoute
+import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
+import com.us.android.feature.post.navigation.StudioRoute
 import com.us.android.feature.post.navigation.commentsScreen
 import com.us.android.feature.post.navigation.composerScreen
+import com.us.android.feature.post.navigation.createHubScreen
 import com.us.android.feature.post.navigation.navigateToComments
-import com.us.android.feature.post.navigation.navigateToComposer
+import com.us.android.feature.post.navigation.navigateToCreate
 import com.us.android.feature.post.navigation.navigateToPost
+import com.us.android.feature.post.navigation.navigateToStudio
 import com.us.android.feature.post.navigation.postScreen
+import com.us.android.feature.post.navigation.studioScreen
 import com.us.android.feature.profile.navigation.NotificationSettingsRoute
 import com.us.android.feature.profile.navigation.PrivacySettingsRoute
 import com.us.android.feature.profile.navigation.ProfileDetailsRoute
@@ -118,9 +135,29 @@ data object GalleryRoute
 fun UsNavHost(
     sessionState: SessionState,
     pool: PlayerPool,
+    pushDestination: com.us.android.push.PushDestination? = null,
+    onPushDestinationConsumed: () -> Unit = {},
     navController: NavHostController = rememberNavController(),
 ) {
     val startDestination = if (sessionState.isAuthenticated) FeedRoute else LoginRoute
+
+    // A notification tap routes ONLY under an authenticated session: a tap
+    // while signed out waits through the login (the destination survives in
+    // PushDestinations), and a tap for a session that has ended routes
+    // nowhere until someone signs in again. The thread title is left blank —
+    // the screen fills it from the loaded conversation.
+    LaunchedEffect(pushDestination, sessionState.isAuthenticated) {
+        val destination = pushDestination ?: return@LaunchedEffect
+        if (!sessionState.isAuthenticated) return@LaunchedEffect
+        onPushDestinationConsumed()
+        when (destination.type) {
+            "dm" -> if (destination.entityId.isNotBlank()) {
+                navController.navigateToChatThread(destination.entityId, title = "")
+            }
+            "message_request" -> navController.navigateToChatInbox()
+            else -> Unit // not a chat push; existing surfaces handle their own
+        }
+    }
 
     // The bar lives OUTSIDE the NavHost so it survives destination changes
     // rather than being recomposed away and back on every navigation.
@@ -216,6 +253,7 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
  * are blocked on backend work rather than client effort, and the placeholder
  * is where that stays visible.
  */
+@Suppress("LongMethod") // One destination registration per line; splitting hides the graph.
 private fun NavGraphBuilder.tabDestinations(
     navController: NavHostController,
     pool: PlayerPool,
@@ -228,21 +266,42 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
         onOpenMessages = { navController.navigateToChatInbox() },
         onOpenNotifications = { navController.navigateToNotifications() },
-        onCreatePost = { navController.navigateToComposer() },
+        onCreatePost = { navController.navigateToCreate() },
     )
 
-    // The composer. `:feature:feed` hands back "the user wants to write" and
-    // `:app` decides that opens `:feature:post`, so neither feature imports the
-    // other.
-    //
-    // On success the created post REPLACES the composer in the back stack:
-    // popUpTo(inclusive) means Back from the new post returns to the feed, not
-    // to a composer whose content is already published.
+    // The Create hub — the feed's "+" lands here; the footer rail switches
+    // between Text, Image, Reel and Poll. On success the created post REPLACES
+    // the hub in the back stack: Back from the new post returns to the feed,
+    // not to a creator whose content is already published.
+    createHubScreen(
+        onClose = { navController.popBackStack() },
+        onPublished = { postId ->
+            navController.navigate(PostRoute(postId)) {
+                popUpTo<CreateRoute> { inclusive = true }
+            }
+        },
+        onOpenStudio = { uris -> navController.navigateToStudio(uris) },
+    )
+
+    // The classic composer route stays registered for any older entry point;
+    // the hub's Text tab embeds the same screen.
     composerScreen(
         onClose = { navController.popBackStack() },
         onPublished = { postId ->
             navController.navigate(PostRoute(postId)) {
                 popUpTo<ComposerRoute> { inclusive = true }
+            }
+        },
+    )
+
+    // The Post Studio — the multi-photo editor. Same success contract as the
+    // composer: the published post replaces the studio in the back stack, so
+    // Back lands on the feed rather than an editor whose work is already live.
+    studioScreen(
+        onClose = { navController.popBackStack() },
+        onPublished = { postId ->
+            navController.navigate(PostRoute(postId)) {
+                popUpTo<StudioRoute> { inclusive = true }
             }
         },
     )
@@ -276,11 +335,46 @@ private fun NavGraphBuilder.tabDestinations(
     // conversation would open with a blank header until its member list loaded.
     chatInboxScreen(
         onBack = { navController.popBackStack() },
-        onOpenThread = { conversationId, title ->
-            navController.navigateToChatThread(conversationId, title)
+        onOpenThread = { conversationId, title, isGroup ->
+            navController.navigateToChatThread(conversationId, title, isGroup)
+        },
+        onOpenRequest = { conversationId, title ->
+            navController.navigateToChatRequest(conversationId, title)
+        },
+        onCreateGroup = { navController.navigateToGroupCreate() },
+        onOpenLockSettings = { navController.navigateToChatLockSettings() },
+    )
+    chatLockSettingsScreen(onBack = { navController.popBackStack() })
+    chatThreadScreen(
+        onBack = { navController.popBackStack() },
+        onOpenGroupInfo = { conversationId ->
+            navController.navigateToGroupInfo(conversationId)
         },
     )
-    chatThreadScreen(onBack = { navController.popBackStack() })
+    // A request decision replaces itself: Accept opens the now-real thread,
+    // every other decision returns to the inbox.
+    chatRequestScreen(
+        onBack = { navController.popBackStack() },
+        onAccepted = { conversationId, title ->
+            navController.navigate(ChatThreadRoute(conversationId, title)) {
+                popUpTo<ChatRequestRoute> { inclusive = true }
+            }
+        },
+        onClosed = { navController.popBackStack() },
+    )
+    groupCreateScreen(
+        onBack = { navController.popBackStack() },
+        onCreated = { conversationId, title ->
+            navController.navigate(ChatThreadRoute(conversationId, title, isGroup = true)) {
+                popUpTo<GroupCreateRoute> { inclusive = true }
+            }
+        },
+    )
+    groupInfoScreen(
+        onBack = { navController.popBackStack() },
+        // Leaving a group closes its info AND its thread.
+        onLeft = { navController.navigateToChatInbox() },
+    )
     composable<GalleryRoute> {
         // The gallery is still reachable from Explore so the design tokens stay
         // reviewable on a real device at real density.
@@ -374,7 +468,13 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
 @Composable
 fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
-    UsNavHost(sessionState = sessionState, pool = pool)
+    val pushDestination by viewModel.pushDestination.collectAsStateWithLifecycle()
+    UsNavHost(
+        sessionState = sessionState,
+        pool = pool,
+        pushDestination = pushDestination,
+        onPushDestinationConsumed = viewModel::consumePushDestination,
+    )
 }
 
 @Preview(name = "Splash", showBackground = true, backgroundColor = 0xFF000000)

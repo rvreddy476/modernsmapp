@@ -21,6 +21,10 @@ data class PrivacySettings(
     val trustedCircleLocationPings: Boolean,
     val trustedCircleAfterHoursPosts: Boolean,
     val trustedCircleAudioRoomInvites: Boolean,
+    // Production chat pass (directive §3.2).
+    val chatAvailability: String,
+    val sendTypingIndicators: Boolean,
+    val showMessagePreview: Boolean,
     val privacyVersion: Int,
 )
 

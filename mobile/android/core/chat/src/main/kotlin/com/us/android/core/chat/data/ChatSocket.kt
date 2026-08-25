@@ -47,6 +47,27 @@ sealed interface ChatSocketEvent {
     ) : ChatSocketEvent
 
     /**
+     * The peer in a DIRECT conversation read up to [messageId].
+     *
+     * Server-gated disclosure: message-service publishes this frame only when
+     * the reader's privacy settings and the graph's `see_read_receipts`
+     * decision both permit (`message.go:1596-1650`), and only for direct
+     * conversations. The client renders what arrives and infers nothing.
+     */
+    data class ReadReceipt(
+        val conversationId: String,
+        val userId: String,
+        val messageId: String,
+    ) : ChatSocketEvent
+
+    /**
+     * The viewer's room subscription for [conversationId] was revoked —
+     * they were removed from the conversation. The session manager drops the
+     * room; screens showing it fall back to their next refresh's 403.
+     */
+    data class SubscriptionRevoked(val conversationId: String) : ChatSocketEvent
+
+    /**
      * A frame this client does not model.
      *
      * Surfaced rather than dropped so an unhandled server event is visible in
@@ -115,6 +136,19 @@ class ChatSocket(
 ) {
 
     /**
+     * The live connection, held so the session manager can SEND the two
+     * frames the gateway accepts from a chat client: `conversation.subscribe`
+     * (with an owner-issued entitlement — the gateway verifies, never trusts)
+     * and `conversation.unsubscribe`. Cleared on close/failure so a send
+     * against a dead socket reports false instead of silently vanishing.
+     */
+    @Volatile
+    private var active: WebSocket? = null
+
+    /** Sends one frame on the live socket. False when there is none. */
+    fun send(frame: String): Boolean = active?.send(frame) ?: false
+
+    /**
      * Opens the socket and emits until it closes.
      *
      * [tokenProvider] is read at CONNECT time, not captured once: a reconnect
@@ -138,6 +172,7 @@ class ChatSocket(
             request,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    active = webSocket
                     trySend(ChatSocketEvent.Connected)
                 }
 
@@ -150,6 +185,7 @@ class ChatSocket(
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    active = null
                     trySend(ChatSocketEvent.Disconnected(permanent = false))
                     close()
                 }
@@ -158,6 +194,7 @@ class ChatSocket(
                     // 401/403 mean the credential is wrong, and retrying with
                     // the same one is a way to get rate-limited rather than
                     // connected. Everything else is worth another attempt.
+                    active = null
                     val permanent = response?.code == HTTP_UNAUTHORIZED ||
                         response?.code == HTTP_FORBIDDEN
                     trySend(ChatSocketEvent.Disconnected(permanent = permanent))
@@ -166,7 +203,10 @@ class ChatSocket(
             },
         )
 
-        awaitClose { socket.close(NORMAL_CLOSURE, null) }
+        awaitClose {
+            active = null
+            socket.close(NORMAL_CLOSURE, null)
+        }
     }
 
     private companion object {
@@ -276,9 +316,71 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
             isTyping = payload.bool("is_typing") ?: true,
         )
 
+        FRAME_READ_RECEIPT -> parseReadReceipt(payload)
+
+        FRAME_SUBSCRIPTION_REVOKED -> parseSubscriptionRevoked(payload)
+
         else -> ChatSocketEvent.Unknown(type)
     }
 }
+
+/**
+ * Same fail-closed identifier rule as message frames: a receipt with a blank
+ * conversation or user cannot be attributed, and a client that guesses files
+ * it against the wrong thread.
+ */
+private fun parseReadReceipt(payload: JsonObject): ChatSocketEvent {
+    val conversationId = payload.str("conversation_id").orEmpty()
+    val userId = payload.str("user_id").orEmpty()
+    val messageId = payload.str("message_id").orEmpty()
+    return if (conversationId.isBlank() || userId.isBlank() || messageId.isBlank()) {
+        ChatSocketEvent.Malformed(FRAME_READ_RECEIPT, "missing or blank identifier")
+    } else {
+        ChatSocketEvent.ReadReceipt(conversationId, userId, messageId)
+    }
+}
+
+private fun parseSubscriptionRevoked(payload: JsonObject): ChatSocketEvent {
+    val conversationId = payload.str("conversation_id").orEmpty()
+    return if (conversationId.isBlank()) {
+        ChatSocketEvent.Malformed(FRAME_SUBSCRIPTION_REVOKED, "missing or blank conversation_id")
+    } else {
+        ChatSocketEvent.SubscriptionRevoked(conversationId)
+    }
+}
+
+/**
+ * The two frames a chat client may SEND (`ws-gateway/server.go:330-395`):
+ * built here so a test can pin the exact wire bytes without a socket.
+ */
+fun subscribeFrame(json: Json, entitlement: String): String =
+    json.encodeToString(
+        SubscribeFrame.serializer(),
+        SubscribeFrame(entitlement = entitlement),
+    )
+
+fun unsubscribeFrame(json: Json, conversationId: String): String =
+    json.encodeToString(
+        UnsubscribeFrame.serializer(),
+        UnsubscribeFrame(conversationId = conversationId),
+    )
+
+// `type` carries @EncodeDefault because the app-wide Json leaves
+// encodeDefaults off — the exact omission that once sent every chat message
+// without its `type` field (see SendMessageRequest).
+@kotlinx.serialization.Serializable
+internal data class SubscribeFrame(
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.ALWAYS)
+    val type: String = "conversation.subscribe",
+    val entitlement: String,
+)
+
+@kotlinx.serialization.Serializable
+internal data class UnsubscribeFrame(
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.ALWAYS)
+    val type: String = "conversation.unsubscribe",
+    @kotlinx.serialization.SerialName("conversation_id") val conversationId: String,
+)
 
 private fun JsonObject.str(key: String): String? =
     runCatching { this[key]?.jsonPrimitive?.contentOrNull }.getOrNull()
@@ -288,6 +390,8 @@ private fun JsonObject.bool(key: String): Boolean? =
 
 private const val FRAME_MESSAGE = "message"
 private const val FRAME_TYPING = "typing"
+private const val FRAME_READ_RECEIPT = "read_receipt"
+private const val FRAME_SUBSCRIPTION_REVOKED = "subscription_revoked"
 
 /**
  * How long to wait before the next reconnection attempt.

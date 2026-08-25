@@ -50,6 +50,7 @@ func containsLink(text string) bool {
 
 type ConversationStore interface {
 	CreateDirectConversation(ctx context.Context, userA, userB, createdBy uuid.UUID) (uuid.UUID, bool, error)
+	SeverDirectConversation(ctx context.Context, blockerID, blockedID uuid.UUID) (uuid.UUID, []postgres.SeveredMembership, error)
 	MarkConversationAsRequest(ctx context.Context, conversationID uuid.UUID) error
 	CreateMessageRequest(ctx context.Context, convID, senderID, receiverID uuid.UUID) error
 	GetMessageRequestByConversation(ctx context.Context, convID uuid.UUID) (*postgres.MessageRequest, error)
@@ -117,6 +118,22 @@ type ConversationResponse struct {
 	Members   []MemberWithProfile `json:"members"`
 	CreatedAt time.Time           `json:"created_at"`
 	UpdatedAt time.Time           `json:"updated_at"`
+
+	// Production chat pass: inbox metadata. HasUnread compares the viewer's
+	// durable read cursor with the denormalized last-message timestamp;
+	// preview text rides along so the inbox renders without a per-row
+	// message fetch.
+	AvatarMediaID      *uuid.UUID `json:"avatar_media_id,omitempty"`
+	LastMessageAt      *time.Time `json:"last_message_at,omitempty"`
+	LastMessagePreview string     `json:"last_message_preview,omitempty"`
+	LastMessageSender  *uuid.UUID `json:"last_message_sender,omitempty"`
+	HasUnread          bool       `json:"has_unread"`
+
+	// Android chat completion pass: the VIEWER's per-conversation settings,
+	// joined in one page query — additive, omitted when false, so every
+	// earlier client and capture stays byte-compatible.
+	IsPinned bool `json:"is_pinned,omitempty"`
+	IsMuted  bool `json:"is_muted,omitempty"`
 }
 
 type ReactionSummary struct {
@@ -161,9 +178,11 @@ type Service struct {
 	log                *slog.Logger
 	pollInterval       time.Duration
 	userServiceURL     string
+	identityUserURL    string
 	graphServiceURL    string
 	mediaServiceURL    string
 	internalServiceKey string
+	entitlementSecret  string
 	httpClient         *http.Client
 }
 
@@ -251,19 +270,51 @@ func (s *Service) GetConversationPresence(ctx context.Context, userID, convID uu
 		if err != nil {
 			return nil, err
 		}
-		out.ActiveUsers = users
+		out.ActiveUsers = s.filterPresenceDisclosure(ctx, userID, users)
 		typing, err := s.pres.TypingUsers(ctx, convID.String(), smallGroupCap)
 		if err != nil {
 			return nil, err
 		}
-		out.TypingUsers = typing
+		out.TypingUsers = s.filterPresenceDisclosure(ctx, userID, typing)
 	}
 	return out, nil
+}
+
+// filterPresenceDisclosure keeps only roster entries whose owner discloses
+// online state to the requester (P0-2 correction): membership alone never
+// justified handing out an identity roster, because who_can_see_online_status
+// is a per-target setting. The check is the same graph-gated, 30s-cached,
+// fail-closed decision the direct-presence endpoint uses; the requester
+// always sees themself.
+func (s *Service) filterPresenceDisclosure(ctx context.Context, requesterID uuid.UUID, ids []string) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	filtered := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if id == requesterID || s.discloseOnlineTo(ctx, requesterID, id) {
+			filtered = append(filtered, raw)
+		}
+	}
+	return filtered
 }
 
 func (s *Service) SetUserDirectory(userServiceURL, internalServiceKey string) {
 	s.userServiceURL = strings.TrimRight(userServiceURL, "/")
 	s.internalServiceKey = internalServiceKey
+}
+
+// SetIdentityAuthority wires the identity user-service that owns
+// usr.user_settings — the authority the chat policy projection refreshes
+// from. This is a DIFFERENT deployment from the legacy user directory above:
+// pointing the policy fetch at the directory yields empty 200s and every
+// unknown-policy caller fails closed out of chat.
+func (s *Service) SetIdentityAuthority(identityUserURL string) {
+	s.identityUserURL = strings.TrimRight(identityUserURL, "/")
 }
 
 // SetGraphService wires the graph-service base URL used for DM permission
@@ -301,6 +352,13 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 		return nil, errors.New("cannot create conversation with self")
 	}
 
+	// The ACTOR's own chat pause blocks new conversations they initiate
+	// (directive §3.2). The target's pause is enforced by the graph decision
+	// below. Unknown own-policy fails closed for CREATION (sensitive action).
+	if own := s.GetChatPolicy(ctx, userID); !own.Known || own.ChatPaused {
+		return nil, ErrMessagingNotAllowed
+	}
+
 	// DM gating (spec §1, §4): a non-connection cannot silently open a direct
 	// DM. Depending on the target's privacy + relationship state the attempt
 	// is permitted, downgraded to a Message Request, or rejected outright.
@@ -310,6 +368,25 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 	}
 	if !allowed && !asRequest {
 		return nil, ErrMessagingNotAllowed
+	}
+
+	// Decline cooldown (directive §3.3): a recently declined/blocked/reported
+	// request bars a re-request REGARDLESS of the idempotency key presented.
+	// Checked outside the idempotency closure on purpose — a rotated key is
+	// exactly the bypass this closes.
+	if !allowed && asRequest {
+		prev, err := s.groupStore().GetLatestRequestBetween(ctx, userID, otherID)
+		if err != nil {
+			return nil, err
+		}
+		if prev != nil && prev.RespondedAt != nil {
+			switch prev.Status {
+			case "ignored", "blocked", "reported":
+				if time.Since(*prev.RespondedAt) < requestDeclineCooldown {
+					return nil, ErrRequestCooldown
+				}
+			}
+		}
 	}
 
 	req := struct {
@@ -491,6 +568,24 @@ func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit
 		return nil, nil, err
 	}
 
+	// One cursor query for the whole page — never per row.
+	convIDs := make([]uuid.UUID, len(convs))
+	for i, c := range convs {
+		convIDs[i] = c.ID
+	}
+	cursors, err := s.groupStore().GetReadCursors(ctx, userID, convIDs)
+	if err != nil {
+		s.log.Warn("read cursor batch failed — unread flags degraded", "err", err)
+		cursors = nil
+	}
+	// Pinned/muted flags for the page, one query (never per row). Failure
+	// degrades the flags to defaults rather than failing the inbox.
+	settings, err := s.extrasStore().GetSettingsForConversations(ctx, userID, convIDs)
+	if err != nil {
+		s.log.Warn("conversation settings batch failed — pin/mute flags degraded", "err", err)
+		settings = nil
+	}
+
 	out := make([]ConversationResponse, 0, len(convs))
 	for _, c := range convs {
 		members, err := s.convStore.GetMembers(ctx, c.ID)
@@ -498,15 +593,30 @@ func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit
 			return nil, nil, err
 		}
 		enrichedMembers := s.enrichMembers(ctx, members)
+		hasUnread := false
+		if c.LastMessageAt != nil {
+			// A message the viewer sent themselves is never "unread".
+			if c.LastMessageSender == nil || *c.LastMessageSender != userID {
+				rc, ok := cursors[c.ID]
+				hasUnread = !ok || rc.LastReadAt.Before(*c.LastMessageAt)
+			}
+		}
 		out = append(out, ConversationResponse{
-			ID:        c.ID,
-			Type:      c.Type,
-			Title:     c.Title,
-			CreatedBy: c.CreatedBy,
-			IsRequest: c.IsRequest,
-			Members:   enrichedMembers,
-			CreatedAt: c.CreatedAt,
-			UpdatedAt: c.UpdatedAt,
+			ID:                 c.ID,
+			Type:               c.Type,
+			Title:              c.Title,
+			CreatedBy:          c.CreatedBy,
+			IsRequest:          c.IsRequest,
+			Members:            enrichedMembers,
+			CreatedAt:          c.CreatedAt,
+			UpdatedAt:          c.UpdatedAt,
+			AvatarMediaID:      c.AvatarMediaID,
+			LastMessageAt:      c.LastMessageAt,
+			LastMessagePreview: c.LastMessagePreview,
+			LastMessageSender:  c.LastMessageSender,
+			HasUnread:          hasUnread,
+			IsPinned:           settings[c.ID].IsPinned,
+			IsMuted:            settings[c.ID].IsMuted,
 		})
 	}
 
@@ -547,7 +657,10 @@ func (s *Service) AddMember(ctx context.Context, userID, conversationID, targetU
 		return errors.New("user is already a conversation member")
 	}
 
-	if err := s.convStore.AddMember(ctx, conversationID, targetUserID, "member"); err != nil {
+	// Blocker-2 final correction: even this legacy (currently unrouted)
+	// method uses the conversation-locked writer, so a future re-wiring can
+	// never reintroduce an unserialized membership add.
+	if err := s.groupStore().AddMemberCapped(ctx, conversationID, targetUserID, "member", GroupMemberCap); err != nil {
 		return err
 	}
 
@@ -574,7 +687,12 @@ func (s *Service) ManagedAddGroupMember(ctx context.Context, conversationID, use
 	if conversation == nil || conversation.Type != "group" {
 		return errors.New("managed group conversation not found")
 	}
-	return s.convStore.AddMember(ctx, conversationID, userID, "member")
+	// Blocker-2 final correction: the legacy AddMember took no conversation
+	// lock, so a managed add could race a removal outside the generation
+	// serialization every other membership write obeys. AddMemberCapped is
+	// the conversation-locked writer (and managed groups obey the same
+	// launch cap as every group).
+	return s.groupStore().AddMemberCapped(ctx, conversationID, userID, "member", GroupMemberCap)
 }
 
 func (s *Service) ManagedRemoveGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error {
@@ -585,8 +703,11 @@ func (s *Service) ManagedRemoveGroupMember(ctx context.Context, conversationID, 
 	if conversation == nil || conversation.Type != "group" {
 		return errors.New("managed group conversation not found")
 	}
-	_, err = s.convStore.RemoveMember(ctx, conversationID, userID)
-	return err
+	// Final-verification P0-4: this path severed through the legacy store
+	// and acknowledged success with no revocation, leaving the removed
+	// member's room subscription and token live. Every sever now goes
+	// through the one revocation protocol.
+	return s.severMemberWithRevocation(ctx, conversationID, userID)
 }
 
 func (s *Service) RemoveMember(ctx context.Context, userID, conversationID, targetUserID uuid.UUID) error {
@@ -645,12 +766,11 @@ func (s *Service) RemoveMember(ctx context.Context, userID, conversationID, targ
 		}
 	}
 
-	removed, err := s.convStore.RemoveMember(ctx, conversationID, targetUserID)
-	if err != nil {
+	// Blocker-2 final correction: even this legacy (currently unrouted)
+	// method severs through the revocation protocol, so a future re-wiring
+	// can never reintroduce an unrevoked sever.
+	if err := s.severMemberWithRevocation(ctx, conversationID, targetUserID); err != nil {
 		return err
-	}
-	if !removed {
-		return errors.New("target user is not a conversation member")
 	}
 
 	_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MemberRemoved, sharedEvents.MemberRemovedPayload{
@@ -699,6 +819,17 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 	if !ok {
 		return nil, errors.New("not a conversation member")
 	}
+	// Chat pause (directive §3.2, P0-1 correction): a paused SENDER sends
+	// nothing; a paused direct RECIPIENT receives nothing new. Both read the
+	// LOCAL policy projection — no HTTP on the hot path when the projection
+	// is fresh. An UNKNOWN policy fails closed like a pause: the Postgres
+	// projection (bounded by policyStaleGrace) carries availability through a
+	// short identity outage, so "unknown" means the pause state genuinely
+	// cannot be established, and sending anyway would override a pause we
+	// cannot see.
+	if own := s.GetChatPolicy(ctx, userID); !own.Known || own.ChatPaused {
+		return nil, ErrMessagingNotAllowed
+	}
 	// P0-3 dating-match send gate: reject sends to a closed dating
 	// conversation (match unmatched / expired / one side blocked /
 	// paused / suspended). The closed_at flag is flipped by the
@@ -712,6 +843,28 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 	}
 	if meta != nil && meta.SourceApp == "dating" && meta.ClosedAt != nil {
 		return nil, ErrMatchClosed
+	}
+	// Direct-recipient pause (P0-1 correction): look up the other member's
+	// projected policy. Lookup errors propagate — swallowing them turned a
+	// database hiccup into a delivery to a possibly-paused recipient — and an
+	// unknown recipient policy fails closed for the same reason as above.
+	conv, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if conv != nil && conv.Type == "direct" {
+		members, err := s.convStore.GetMembers(ctx, conversationID)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range members {
+			if m.UserID == userID {
+				continue
+			}
+			if p := s.GetChatPolicy(ctx, m.UserID); !p.Known || p.ChatPaused {
+				return nil, ErrMessagingNotAllowed
+			}
+		}
 	}
 
 	req := struct {
@@ -901,6 +1054,13 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 				pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
 				recipients++
 			}
+			// Conversation-room publish (scoped-rooms foundation, directive
+			// §5.3): entitled gateway subscriptions receive the frame once
+			// per conversation instead of once per member. Personal-channel
+			// fan-out stays (it is the public delivery path today); clients
+			// de-duplicate by message_id. One extra PUBLISH, harmless when
+			// nothing is subscribed.
+			pipe.Publish(pubCtx, fmt.Sprintf("convroom:%s", conversationID), payload)
 			if recipients > 0 {
 				if _, err := pipe.Exec(pubCtx); err != nil {
 					l.Warn("failed to pipeline-publish to redis pubsub", "err", err, "recipients", recipients)
@@ -1214,14 +1374,18 @@ func (s *Service) getConversationResponse(ctx context.Context, convID uuid.UUID)
 	}
 	enrichedMembers := s.enrichMembers(ctx, members)
 	return &ConversationResponse{
-		ID:        conv.ID,
-		Type:      conv.Type,
-		Title:     conv.Title,
-		CreatedBy: conv.CreatedBy,
-		IsRequest: conv.IsRequest,
-		Members:   enrichedMembers,
-		CreatedAt: conv.CreatedAt,
-		UpdatedAt: conv.UpdatedAt,
+		ID:                 conv.ID,
+		Type:               conv.Type,
+		Title:              conv.Title,
+		CreatedBy:          conv.CreatedBy,
+		IsRequest:          conv.IsRequest,
+		Members:            enrichedMembers,
+		CreatedAt:          conv.CreatedAt,
+		UpdatedAt:          conv.UpdatedAt,
+		AvatarMediaID:      conv.AvatarMediaID,
+		LastMessageAt:      conv.LastMessageAt,
+		LastMessagePreview: conv.LastMessagePreview,
+		LastMessageSender:  conv.LastMessageSender,
 	}, nil
 }
 
@@ -1409,6 +1573,13 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 	if !ok {
 		return errors.New("not a member of this conversation")
 	}
+	// Typing is an ACTOR-side disclosure (directive §3.2 setting 7): the
+	// sender's own toggle gates it, a paused sender publishes nothing, and an
+	// UNKNOWN policy fails closed — silence is always safe. Returns success
+	// so a denied indicator never surfaces as a client error.
+	if p := s.GetChatPolicy(ctx, userID); !p.Known || p.ChatPaused || !p.SendTypingIndicators {
+		return nil
+	}
 
 	// Set a short-lived key as typing indicator
 	typingKey := fmt.Sprintf("typing:%s:%s", conversationID, userID)
@@ -1436,7 +1607,16 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 	return nil
 }
 
-// MarkRead updates the read cursor and broadcasts a read receipt via Redis PubSub.
+// MarkRead durably advances the reader's unread watermark, then broadcasts a
+// read receipt ONLY when the reader's privacy settings permit disclosure.
+//
+// The cursor write is unconditional — unread state is the reader's OWN data
+// and repairs push/inbox counts (CH-LB-4.6). The receipt broadcast is a
+// DISCLOSURE and obeys who_can_see_read_receipts: no_one (or unknown policy)
+// discloses nothing; everyone discloses; connections_only is disclosed only
+// in DIRECT conversations after a graph see_read_receipts decision. Group
+// conversations get no per-user receipt frames at launch — permitted senders
+// read aggregate state, never a reader roster (directive §3.5).
 func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error {
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
@@ -1446,34 +1626,124 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		return errors.New("not a member of this conversation")
 	}
 
-	// Broadcast read receipt to members
+	now := time.Now().UTC()
+	if msgID, err := uuid.Parse(messageID); err == nil {
+		if err := s.groupStore().UpsertReadCursor(ctx, conversationID, userID, msgID, now); err != nil {
+			s.log.Warn("read cursor upsert failed", "err", err, "conversation_id", conversationID, "user_id", userID)
+		}
+	}
+
+	policy := s.GetChatPolicy(ctx, userID)
+	if !policy.Known || policy.ChatPaused || policy.ReadReceiptsVisibility == "no_one" {
+		return nil
+	}
+
+	conv, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil || conv == nil {
+		return nil
+	}
 	members, _ := s.convStore.GetMembers(ctx, conversationID)
+
+	if conv.Type != "direct" {
+		// Launch groups: aggregate counts only, computed from read cursors —
+		// no per-reader receipt frames.
+		return nil
+	}
+
 	payload, _ := json.Marshal(map[string]interface{}{
 		"type": "read_receipt",
 		"payload": map[string]interface{}{
 			"conversation_id": conversationID.String(),
 			"user_id":         userID.String(),
 			"message_id":      messageID,
-			"read_at":         time.Now().UTC().Format(time.RFC3339Nano),
+			"read_at":         now.Format(time.RFC3339Nano),
 		},
 	})
-
 	for _, m := range members {
 		if m.UserID == userID {
 			continue
 		}
-		channel := fmt.Sprintf("chat:%s", m.UserID)
-		s.rdb.Publish(ctx, channel, payload)
+		if policy.ReadReceiptsVisibility == "connections_only" &&
+			!s.discloseReceiptTo(ctx, m.UserID, userID) {
+			continue
+		}
+		s.rdb.Publish(ctx, fmt.Sprintf("chat:%s", m.UserID), payload)
 	}
-
 	return nil
 }
 
-// GetPresence checks which of the given user IDs are currently online
-// by looking up their presence keys in Redis.
-func (s *Service) GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[string]bool, error) {
+// discloseReceiptTo asks graph whether VIEWER may see READER's receipts —
+// the connections_only resolution. Cached in Redis for 30 s per pair;
+// failure fails closed (no disclosure).
+func (s *Service) discloseReceiptTo(ctx context.Context, viewerID, readerID uuid.UUID) bool {
+	if s.rdb == nil {
+		return s.checkVisibilityPermission(ctx, viewerID, readerID, "see_read_receipts")
+	}
+	cacheKey := "receiptvis:" + viewerID.String() + ":" + readerID.String()
+	if cached, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
+		return cached == "1"
+	}
+	allowed := s.checkVisibilityPermission(ctx, viewerID, readerID, "see_read_receipts")
+	value := "0"
+	if allowed {
+		value = "1"
+	}
+	s.rdb.Set(ctx, cacheKey, value, 30*time.Second)
+	return allowed
+}
+
+// checkVisibilityPermission resolves one disclosure action via graph.
+// ANY failure returns false — disclosure fails closed.
+func (s *Service) checkVisibilityPermission(ctx context.Context, actorID, targetID uuid.UUID, action string) bool {
+	if s.graphServiceURL == "" {
+		return false
+	}
+	url := fmt.Sprintf("%s/v1/permissions/check?target_user_id=%s&actions=%s", s.graphServiceURL, targetID, action)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("X-User-Id", actorID.String())
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+	var envelope struct {
+		Data struct {
+			Decisions map[string]struct {
+				Allowed bool `json:"allowed"`
+			} `json:"decisions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false
+	}
+	return envelope.Data.Decisions[action].Allowed
+}
+
+// GetPresence checks which of the given user IDs are currently online,
+// GATED per target by their who_can_see_online_status (directive §3.5).
+//
+// The requester is the actor; each target's own privacy decides disclosure.
+// A denied or unknown decision reports OFFLINE — indistinguishable from a
+// genuinely offline user, which is the point: privacy denial must not leak.
+func (s *Service) GetPresence(ctx context.Context, requesterID uuid.UUID, userIDs []uuid.UUID) (map[string]bool, error) {
 	if len(userIDs) == 0 {
 		return map[string]bool{}, nil
+	}
+	if len(userIDs) > 50 {
+		userIDs = userIDs[:50]
 	}
 
 	keys := make([]string, len(userIDs))
@@ -1489,7 +1759,29 @@ func (s *Service) GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[str
 
 	presence := make(map[string]bool, len(userIDs))
 	for i, id := range userIDs {
-		presence[id.String()] = results[i] != nil
+		online := results[i] != nil
+		if online && id != requesterID {
+			online = s.discloseOnlineTo(ctx, requesterID, id)
+		}
+		presence[id.String()] = online
 	}
 	return presence, nil
+}
+
+// discloseOnlineTo mirrors discloseReceiptTo for online-status visibility.
+func (s *Service) discloseOnlineTo(ctx context.Context, viewerID, targetID uuid.UUID) bool {
+	if s.rdb == nil {
+		return s.checkVisibilityPermission(ctx, viewerID, targetID, "see_online_status")
+	}
+	cacheKey := "onlinevis:" + viewerID.String() + ":" + targetID.String()
+	if cached, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
+		return cached == "1"
+	}
+	allowed := s.checkVisibilityPermission(ctx, viewerID, targetID, "see_online_status")
+	value := "0"
+	if allowed {
+		value = "1"
+	}
+	s.rdb.Set(ctx, cacheKey, value, 30*time.Second)
+	return allowed
 }

@@ -53,6 +53,11 @@ type UserSettings struct {
 	TcAfterHoursPosts   bool `json:"tc_after_hours_posts"`
 	TcAudioRoomInvite   bool `json:"tc_audio_room_invite"`
 
+	// Production chat pass (chat directive §3.2).
+	ChatAvailability     string `json:"chat_availability"`
+	SendTypingIndicators bool   `json:"send_typing_indicators"`
+	ShowMessagePreview   bool   `json:"show_message_preview"`
+
 	PrivacyVersion int `json:"privacy_version"`
 
 	CreatedAt time.Time `json:"created_at"`
@@ -67,6 +72,7 @@ const userSettingsColumns = `user_id, account_visibility, allow_messages_from, a
 	allow_phone_discovery, allow_contact_sync_match, discoverable_by_phone_to_contacts,
 	strict_privacy_mode, block_unknown_calls, auto_filter_abusive_content, under_18_mode,
 	tc_close_friends_posts, tc_location_pings, tc_after_hours_posts, tc_audio_room_invite,
+	chat_availability, send_typing_indicators, show_message_preview,
 	privacy_version, created_at, updated_at`
 
 // scanUserSettings scans a row matching userSettingsColumns into us.
@@ -78,6 +84,7 @@ func scanUserSettings(row pgx.Row, us *UserSettings) error {
 		&us.AllowPhoneDiscovery, &us.AllowContactSyncMatch, &us.DiscoverableByPhoneToContacts,
 		&us.StrictPrivacyMode, &us.BlockUnknownCalls, &us.AutoFilterAbusiveContent, &us.Under18Mode,
 		&us.TcCloseFriendsPosts, &us.TcLocationPings, &us.TcAfterHoursPosts, &us.TcAudioRoomInvite,
+		&us.ChatAvailability, &us.SendTypingIndicators, &us.ShowMessagePreview,
 		&us.PrivacyVersion, &us.CreatedAt, &us.UpdatedAt,
 	)
 }
@@ -231,6 +238,9 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 			tc_location_pings = $21,
 			tc_after_hours_posts = $22,
 			tc_audio_room_invite = $23,
+			chat_availability = $24,
+			send_typing_indicators = $25,
+			show_message_preview = $26,
 			privacy_version = privacy_version + 1,
 			updated_at = NOW()
 		WHERE user_id = $1
@@ -241,6 +251,7 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 		settings.AllowPhoneDiscovery, settings.AllowContactSyncMatch, settings.DiscoverableByPhoneToContacts,
 		settings.StrictPrivacyMode, settings.BlockUnknownCalls, settings.AutoFilterAbusiveContent, settings.Under18Mode,
 		settings.TcCloseFriendsPosts, settings.TcLocationPings, settings.TcAfterHoursPosts, settings.TcAudioRoomInvite,
+		settings.ChatAvailability, settings.SendTypingIndicators, settings.ShowMessagePreview,
 	)
 	if err := scanUserSettings(row, &us); err != nil {
 		return nil, err

@@ -161,6 +161,7 @@ data class MediaStatusDto(
 )
 
 const val FILE_TYPE_IMAGE = "image"
+const val FILE_TYPE_VIDEO = "video"
 const val SUBTYPE_GENERAL = "general"
 const val SUBTYPE_AVATAR = "avatar"
 const val SUBTYPE_COVER = "cover"

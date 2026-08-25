@@ -33,6 +33,13 @@ class FeedRepository @Inject constructor(
         pagingSourceFactory = { FeedPagingSource(api, surface, errorMapper) },
     ).flow
 
+    /**
+     * Casts one poll vote. Returns whether the server accepted it — the
+     * caller's optimistic flip stands on success and reverts on failure.
+     */
+    suspend fun votePoll(postId: String, optionId: String): Boolean =
+        runCatching { api.votePoll(postId, PollVoteRequest(optionId)) }.isSuccess
+
     private companion object {
         const val PAGE_SIZE = 15
 

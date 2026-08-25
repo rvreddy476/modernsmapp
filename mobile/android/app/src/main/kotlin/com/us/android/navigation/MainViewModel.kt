@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.AuthRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.model.SessionState
+import com.us.android.push.PushDestination
+import com.us.android.push.PushDestinations
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -22,8 +24,14 @@ import javax.inject.Inject
 class MainViewModel @Inject constructor(
     authRepository: AuthRepository,
     engagementStore: EngagementStore,
+    private val pushDestinations: PushDestinations,
 ) : ViewModel() {
     val sessionState: StateFlow<SessionState> = authRepository.sessionState
+
+    /** The un-navigated notification tap, if any. Consumed by the nav host. */
+    val pushDestination: StateFlow<PushDestination?> = pushDestinations.pending
+
+    fun consumePushDestination() = pushDestinations.consume()
 
     init {
         // Bind the shared engagement overlay to whoever is signed in.

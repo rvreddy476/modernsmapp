@@ -80,6 +80,10 @@ type idempotencyConvStoreStub struct {
 	releaseCalled int
 }
 
+func (s *idempotencyConvStoreStub) SeverDirectConversation(context.Context, uuid.UUID, uuid.UUID) (uuid.UUID, []postgres.SeveredMembership, error) {
+	return uuid.Nil, nil, nil
+}
+
 func (s *idempotencyConvStoreStub) CreateDirectConversation(ctx context.Context, userA, userB, createdBy uuid.UUID) (uuid.UUID, bool, error) {
 	return uuid.Nil, false, errors.New("not implemented")
 }

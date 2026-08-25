@@ -120,8 +120,13 @@ func main() {
 	msgStore := scyllaStore.New(scyllaSession)
 	svc := service.New(convStore, msgStore, rdb, producer, logger, cfg.OutboxPollInterval)
 	svc.SetUserDirectory(cfg.UserServiceURL, cfg.InternalServiceKey)
+	svc.SetIdentityAuthority(cfg.IdentityUserURL)
 	svc.SetGraphService(cfg.GraphServiceURL)
 	svc.SetMediaService(cfg.MediaServiceURL)
+	// Scoped-room entitlement issuance (production chat pass §5.3). Shared
+	// with ws-gateway; empty disables issuance and the personal channel
+	// remains the only delivery path.
+	svc.SetEntitlementSecret(os.Getenv("CHAT_ENTITLEMENT_SECRET"))
 	handler := http.New(svc, logger).WithInternalServiceKey(cfg.InternalServiceKey)
 
 	// 6. Identity Event Consumer (background)
@@ -130,7 +135,9 @@ func main() {
 
 	// 6b. Social (graph) Event Consumer (background) — auto-promote message
 	// requests on ConnectionAccepted and block-sever on UserBlocked.
-	socialConsumer := events.NewSocialConsumerWithDialer(cfg.KafkaBrokers, cfg.SocialKafkaTopic, cfg.SocialKafkaGroupID, kafkaDialer, convStore, logger)
+	// The block-sever goes through the SERVICE so revocation markers are
+	// armed before the event is acknowledged (final-verification P0-4).
+	socialConsumer := events.NewSocialConsumerWithDialer(cfg.KafkaBrokers, cfg.SocialKafkaTopic, cfg.SocialKafkaGroupID, kafkaDialer, convStore, svc, logger)
 	go socialConsumer.Start(ctx)
 
 	// 6c. Dating Event Consumer (background) — close conversation on
@@ -142,6 +149,10 @@ func main() {
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)
 	go svc.StartMessageDeliveryRepairWorker(ctx)
+	// Blocker-2 final correction: drains durable revocation intents so a
+	// committed sever's deny marker reaches Redis even when the arming
+	// process crashed or Redis was down — never dependent on client retries.
+	go svc.StartRevocationRepairWorker(ctx)
 
 	// 8. Scheduled Message Worker (background)
 	go svc.StartScheduledMessageWorker(ctx)

@@ -175,7 +175,55 @@ enum class AppEnvironment(
     ),
 }
 
-internal fun ApplicationExtension.configureFlavors() {
+/**
+ * The host a DEV build talks to.
+ *
+ * Defaults to `10.0.2.2`, the Android emulator's alias for the host machine.
+ * That alias is meaningless on a PHYSICAL DEVICE — it is unroutable — so a real
+ * handset needs the workstation's LAN address instead:
+ *
+ * ```
+ * ./gradlew.bat assembleDevDebug -PdevHost=192.168.1.3
+ * ```
+ *
+ * The value also lands in the dev network-security config, because cleartext to
+ * anything but loopback is denied by default and an unlisted host fails with a
+ * bare connection error that looks like the server is down.
+ *
+ * DEV ONLY. Staging and prod are unaffected and keep the strict policy.
+ */
+/** The emulator host alias baked into the DEV entries above. */
+private const val DEFAULT_DEV_HOST = "10.0.2.2"
+
+internal fun Project.devHost(): String =
+    (findProperty("devHost") as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_DEV_HOST
+
+/**
+ * Full base-URL overrides for a DEV build.
+ *
+ * `devHost` only swaps the host, keeping `http://` and `:8080` — which is right
+ * for a workstation on the LAN and wrong for a TUNNEL, where the endpoint is
+ * `https://api-dev.example.com` with no port and a different scheme.
+ *
+ * ```
+ * ./gradlew.bat assembleDevDebug \
+ *   -PdevApiUrl=https://api-dev.cleestudio.com \
+ *   -PdevWsUrl=wss://api-dev.cleestudio.com
+ * ```
+ *
+ * A tunnel also means real TLS, so the cleartext exemption is not used at all.
+ */
+internal fun Project.devApiUrl(): String? =
+    (findProperty("devApiUrl") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+
+internal fun Project.devWsUrl(): String? =
+    (findProperty("devWsUrl") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+
+internal fun ApplicationExtension.configureFlavors(
+    devHost: String,
+    devApiUrl: String? = null,
+    devWsUrl: String? = null,
+) {
     buildFeatures.buildConfig = true
     flavorDimensions += "environment"
     productFlavors {
@@ -186,10 +234,28 @@ internal fun ApplicationExtension.configureFlavors() {
                     applicationIdSuffix = it
                     versionNameSuffix = it
                 }
-                buildConfigField("String", "API_BASE_URL", "\"${env.apiBaseUrl}\"")
-                buildConfigField("String", "WS_BASE_URL", "\"${env.wsBaseUrl}\"")
+                // DEV substitutes the chosen host so a physical device can
+                // reach the workstation; every other flavour is untouched.
+                // A full override wins outright; otherwise just swap the host.
+                val isDev = env == AppEnvironment.DEV
+                val api = if (isDev && devApiUrl != null) {
+                    devApiUrl
+                } else {
+                    env.apiBaseUrl.replace(DEFAULT_DEV_HOST, devHost)
+                }
+                val ws = if (isDev && devWsUrl != null) {
+                    devWsUrl
+                } else {
+                    env.wsBaseUrl.replace(DEFAULT_DEV_HOST, devHost)
+                }
+                buildConfigField("String", "API_BASE_URL", "\"$api\"")
+                buildConfigField("String", "WS_BASE_URL", "\"$ws\"")
                 buildConfigField("String", "ENVIRONMENT", "\"${env.flavorName}\"")
-                buildConfigField("String", "OTLP_ENDPOINT", "\"${env.otlpEndpoint}\"")
+                buildConfigField(
+                    "String",
+                    "OTLP_ENDPOINT",
+                    "\"${env.otlpEndpoint.replace(DEFAULT_DEV_HOST, devHost)}\"",
+                )
             }
         }
     }

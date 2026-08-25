@@ -116,6 +116,17 @@ func main() {
 	// 3. Dependencies
 	userStore := store.New(dbPool)
 	userSvc := service.New(userStore, rdb, cfg, logger)
+	// Settings-changed invalidation signal for graph/chat permission caches
+	// (production chat pass, directive §5.1). Best-effort by design.
+	settingsProducer := events.NewProducer(cfg.KafkaBrokers, cfg.KafkaTopic, logger)
+	if settingsProducer != nil {
+		userSvc.WithProducer(settingsProducer)
+		defer func() {
+			if err := settingsProducer.Close(); err != nil {
+				logger.Warn("failed to close settings producer", "err", err)
+			}
+		}()
+	}
 	userHandler := http.New(userSvc, logger)
 	// Audit UC1: wire the internal-service-key gate. Without this,
 	// X-User-Id is effectively a public header — every other audit

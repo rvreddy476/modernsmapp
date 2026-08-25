@@ -19,6 +19,12 @@ type Conversation struct {
 	IsRequest bool       `json:"is_request"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+
+	// Production chat pass: group avatar + inbox last-message metadata.
+	AvatarMediaID      *uuid.UUID `json:"avatar_media_id,omitempty"`
+	LastMessageAt      *time.Time `json:"last_message_at,omitempty"`
+	LastMessagePreview string     `json:"last_message_preview,omitempty"`
+	LastMessageSender  *uuid.UUID `json:"last_message_sender,omitempty"`
 }
 
 type Member struct {
@@ -87,7 +93,7 @@ func (s *ConversationStore) CreateDirectConversation(ctx context.Context, userA,
 		return uuid.Nil, false, err
 	}
 
-	_, err = tx.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at) VALUES ($1, $2, 'member', $3), ($1, $4, 'member', $3)`, conversationID, userA, now, userB)
+	_, err = tx.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen) VALUES ($1, $2, 'member', $3, nextval('chat.membership_gen_seq')), ($1, $4, 'member', $3, nextval('chat.membership_gen_seq'))`, conversationID, userA, now, userB)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
@@ -159,8 +165,9 @@ func (s *ConversationStore) CreateDatingMatchConversation(ctx context.Context, u
 		return uuid.Nil, false, err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at)
-		VALUES ($1, $2, 'member', $3), ($1, $4, 'member', $3)
+		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen)
+		VALUES ($1, $2, 'member', $3, nextval('chat.membership_gen_seq')),
+		       ($1, $4, 'member', $3, nextval('chat.membership_gen_seq'))
 	`, conversationID, userA, now, userB); err != nil {
 		return uuid.Nil, false, err
 	}
@@ -320,38 +327,79 @@ func (s *ConversationStore) PromoteRequestConversationByPair(ctx context.Context
 	return true, nil
 }
 
+// SeveredMembership reports one sever this statement performed, with the
+// revocation generation the caller MUST persist (final-verification P0-4).
+type SeveredMembership struct {
+	ConversationID uuid.UUID
+	UserID         uuid.UUID
+	Gen            int64
+}
+
 // SeverDirectConversation severs the blocker from the direct conversation it
 // shares with the blocked user (messaging/privacy spec §16.1). The blocker's
 // conversation_members.left_at is set so the conversation disappears from
 // their inbox and they can no longer send into it; any pending
 // message_requests row for that conversation is moved to 'blocked'. No-op
-// when the pair has no direct conversation. Returns true when a sever
-// happened.
-func (s *ConversationStore) SeverDirectConversation(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error) {
+// when the pair has no direct conversation. Takes the conversation row lock
+// first — the same order as every other membership write, so the returned
+// generation is serialization-ordered — and returns every sever performed so
+// the caller can arm revocation markers before acknowledging the block.
+// The first return is the pair's direct conversation id (uuid.Nil when the
+// pair has none) — callers use it to re-arm defensively on retries where the
+// sever already happened and the list comes back empty.
+func (s *ConversationStore) SeverDirectConversation(ctx context.Context, blockerID, blockedID uuid.UUID) (uuid.UUID, []SeveredMembership, error) {
 	userA, userB := normalizePair(blockerID, blockedID)
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return false, err
+		return uuid.Nil, nil, err
 	}
 	defer tx.Rollback(ctx)
 
 	var conversationID uuid.UUID
 	err = tx.QueryRow(ctx, `SELECT conversation_id FROM chat.direct_conversation_keys WHERE user_a = $1 AND user_b = $2`, userA, userB).Scan(&conversationID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return uuid.Nil, nil, nil
 	}
 	if err != nil {
-		return false, err
+		return uuid.Nil, nil, err
 	}
 
-	tag, err := tx.Exec(ctx, `
+	var convType string
+	if err := tx.QueryRow(ctx, `SELECT type FROM chat.conversations WHERE id = $1 FOR UPDATE`,
+		conversationID).Scan(&convType); err != nil {
+		return uuid.Nil, nil, err
+	}
+
+	rows, err := tx.Query(ctx, `
 		UPDATE chat.conversation_members
 		SET left_at = NOW()
 		WHERE conversation_id = $1 AND user_id = ANY($2::uuid[]) AND left_at IS NULL
+		RETURNING user_id, nextval('chat.membership_gen_seq')
 	`, conversationID, []uuid.UUID{blockerID, blockedID})
 	if err != nil {
-		return false, err
+		return uuid.Nil, nil, err
+	}
+	var severed []SeveredMembership
+	for rows.Next() {
+		sm := SeveredMembership{ConversationID: conversationID}
+		if err := rows.Scan(&sm.UserID, &sm.Gen); err != nil {
+			rows.Close()
+			return uuid.Nil, nil, err
+		}
+		severed = append(severed, sm)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return uuid.Nil, nil, err
+	}
+	// Durable revocation intents ride the sever transaction (Blocker-2
+	// final correction): a committed sever always leaves the marker debt on
+	// record for the repair worker.
+	for _, sm := range severed {
+		if err := upsertRevocationIntentTx(ctx, tx, conversationID, sm.UserID, sm.Gen); err != nil {
+			return uuid.Nil, nil, err
+		}
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -360,13 +408,13 @@ func (s *ConversationStore) SeverDirectConversation(ctx context.Context, blocker
 		WHERE conversation_id = $1 AND status = 'pending'
 	`, conversationID)
 	if err != nil {
-		return false, err
+		return uuid.Nil, nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return false, err
+		return uuid.Nil, nil, err
 	}
-	return tag.RowsAffected() > 0, nil
+	return conversationID, severed, nil
 }
 
 // CreateGroupConversation creates a group conversation with the creator as admin.
@@ -385,8 +433,8 @@ func (s *ConversationStore) CreateGroupConversation(ctx context.Context, creator
 		return uuid.Nil, err
 	}
 
-	// Creator is admin
-	_, err = tx.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at) VALUES ($1, $2, 'admin', $3)`, conversationID, creatorID, now)
+	// Creator is the OWNER (directive §3.4: exactly one owner per group).
+	_, err = tx.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen) VALUES ($1, $2, 'owner', $3, nextval('chat.membership_gen_seq'))`, conversationID, creatorID, now)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -396,7 +444,7 @@ func (s *ConversationStore) CreateGroupConversation(ctx context.Context, creator
 		if memberID == creatorID {
 			continue
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at) VALUES ($1, $2, 'member', $3) ON CONFLICT DO NOTHING`, conversationID, memberID, now)
+		_, err = tx.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen) VALUES ($1, $2, 'member', $3, nextval('chat.membership_gen_seq')) ON CONFLICT DO NOTHING`, conversationID, memberID, now)
 		if err != nil {
 			return uuid.Nil, err
 		}
@@ -411,9 +459,11 @@ func (s *ConversationStore) CreateGroupConversation(ctx context.Context, creator
 func (s *ConversationStore) GetConversation(ctx context.Context, conversationID uuid.UUID) (*Conversation, error) {
 	var c Conversation
 	err := s.db.QueryRow(ctx, `
-		SELECT id, type, title, created_by, is_request, created_at, updated_at
+		SELECT id, type, title, created_by, is_request, created_at, updated_at,
+		       avatar_media_id, last_message_at, last_message_preview, last_message_sender
 		FROM chat.conversations WHERE id = $1
-	`, conversationID).Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt)
+	`, conversationID).Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt,
+		&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -425,6 +475,21 @@ func (s *ConversationStore) GetConversation(ctx context.Context, conversationID 
 
 func (s *ConversationStore) TouchConversation(ctx context.Context, conversationID uuid.UUID, ts time.Time) error {
 	_, err := s.db.Exec(ctx, `UPDATE chat.conversations SET updated_at = $2 WHERE id = $1`, conversationID, ts)
+	return err
+}
+
+// SetLastMessage denormalizes the newest message onto the conversation row
+// for the inbox list. The ts guard makes delivery-repair REPLAY idempotent:
+// an older intent re-run never overwrites a newer preview.
+func (s *ConversationStore) SetLastMessage(ctx context.Context, conversationID, senderID uuid.UUID, preview string, ts time.Time) error {
+	if len(preview) > 140 {
+		preview = preview[:140]
+	}
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations
+		SET last_message_at = $2, last_message_preview = $3, last_message_sender = $4, updated_at = $2
+		WHERE id = $1 AND (last_message_at IS NULL OR last_message_at <= $2)
+	`, conversationID, ts, preview, senderID)
 	return err
 }
 
@@ -440,9 +505,11 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	// (e.g. by a block — spec §16.1) so they no longer appear in the inbox.
 	var rows pgx.Rows
 	var err error
+	const listColumns = `c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at,
+		c.avatar_media_id, c.last_message_at, c.last_message_preview, c.last_message_sender`
 	if cursorUpdatedAt != nil && cursorID != nil {
 		rows, err = s.db.Query(ctx, `
-			SELECT c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at
+			SELECT `+listColumns+`
 			FROM chat.conversations c
 			JOIN chat.conversation_members m ON m.conversation_id = c.id
 			WHERE m.user_id = $1 AND m.left_at IS NULL AND (c.updated_at, c.id) < ($2, $3)
@@ -451,7 +518,7 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 		`, userID, *cursorUpdatedAt, *cursorID, limit)
 	} else {
 		rows, err = s.db.Query(ctx, `
-			SELECT c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at
+			SELECT `+listColumns+`
 			FROM chat.conversations c
 			JOIN chat.conversation_members m ON m.conversation_id = c.id
 			WHERE m.user_id = $1 AND m.left_at IS NULL
@@ -467,7 +534,8 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	var out []Conversation
 	for rows.Next() {
 		var c Conversation
-		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt,
+			&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -509,7 +577,9 @@ func (s *ConversationStore) GetMembers(ctx context.Context, conversationID uuid.
 
 func (s *ConversationStore) GetMemberRole(ctx context.Context, conversationID, userID uuid.UUID) (string, error) {
 	var role string
-	err := s.db.QueryRow(ctx, `SELECT role FROM chat.conversation_members WHERE conversation_id = $1 AND user_id = $2`, conversationID, userID).Scan(&role)
+	// left_at IS NULL: a severed/removed member has no role. Without the
+	// filter, a removed admin could still pass role checks.
+	err := s.db.QueryRow(ctx, `SELECT role FROM chat.conversation_members WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`, conversationID, userID).Scan(&role)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil
@@ -519,13 +589,32 @@ func (s *ConversationStore) GetMemberRole(ctx context.Context, conversationID, u
 	return role, nil
 }
 
+// AddMember inserts an active membership. A former member (left_at set) is
+// REJOINED by clearing left_at with a fresh joined_at — the previous ON
+// CONFLICT DO NOTHING silently left a re-added member severed, which made
+// every remove permanent. An already-active member is left untouched
+// (idempotent re-add).
 func (s *ConversationStore) AddMember(ctx context.Context, conversationID, userID uuid.UUID, role string) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT DO NOTHING`, conversationID, userID, role)
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen)
+		VALUES ($1, $2, $3, NOW(), nextval('chat.membership_gen_seq'))
+		ON CONFLICT (conversation_id, user_id) DO UPDATE
+			SET role = EXCLUDED.role, joined_at = NOW(), left_at = NULL,
+			    join_gen = nextval('chat.membership_gen_seq')
+			WHERE chat.conversation_members.left_at IS NOT NULL
+	`, conversationID, userID, role)
 	return err
 }
 
+// RemoveMember severs the membership NON-DESTRUCTIVELY by setting left_at —
+// the same model the block sever uses (spec §16.1). History and the other
+// members' view survive; the removed member fails CheckMembership from this
+// statement on. Returns false when the user was not an active member.
 func (s *ConversationStore) RemoveMember(ctx context.Context, conversationID, userID uuid.UUID) (bool, error) {
-	tag, err := s.db.Exec(ctx, `DELETE FROM chat.conversation_members WHERE conversation_id = $1 AND user_id = $2`, conversationID, userID)
+	tag, err := s.db.Exec(ctx, `
+		UPDATE chat.conversation_members SET left_at = NOW()
+		WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
+	`, conversationID, userID)
 	if err != nil {
 		return false, err
 	}

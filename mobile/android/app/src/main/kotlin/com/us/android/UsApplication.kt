@@ -1,10 +1,13 @@
 package com.us.android
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import coil3.SingletonImageLoader
 import com.us.android.core.network.di.AuthenticatedClient
 import com.us.android.core.notifications.NotificationChannelSpec
 import com.us.android.core.telemetry.Telemetry
+import com.us.android.creator.LegacyAdoptionCoordinator
 import com.us.android.push.PushRegistrationCoordinator
 import dagger.Lazy
 import dagger.hilt.android.HiltAndroidApp
@@ -20,9 +23,19 @@ import javax.inject.Inject
  * measurable, not hidden in onCreate.
  */
 @HiltAndroidApp
-class UsApplication : Application() {
+class UsApplication : Application(), Configuration.Provider {
 
     @Inject lateinit var telemetry: Telemetry
+
+    /**
+     * Hilt-aware WorkManager factory, so PublishWorker can inject the
+     * CreatorPublisher. The default on-demand initializer picks this up via
+     * Configuration.Provider; no manual WorkManager.initialize call.
+     */
+    @Inject lateinit var workerFactory: HiltWorkerFactory
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
 
     /**
      * Slice D: posts the FCM token once a session exists.
@@ -34,6 +47,13 @@ class UsApplication : Application() {
     @Inject lateinit var pushRegistration: PushRegistrationCoordinator
 
     /**
+     * Creator Studio: adopts a legacy composer draft staged by the 2 -> 3
+     * migration. One indexed read when there is nothing to do; idempotent and
+     * restartable when there is. Runs off the cold-start path.
+     */
+    @Inject lateinit var legacyAdoption: LegacyAdoptionCoordinator
+
+    /**
      * Lazy on purpose. Injecting the client directly would build the whole
      * OkHttp stack during Application.onCreate, on the cold-start path, for a
      * loader that may not be asked for an image until a screen renders.
@@ -42,9 +62,37 @@ class UsApplication : Application() {
     @AuthenticatedClient
     lateinit var httpClient: Lazy<OkHttpClient>
 
+    /**
+     * Chat lock timing (production chat pass, CH-LB-6.2): backgrounding
+     * stamps the clock; foregrounding past the configured interval re-locks.
+     * Process death needs no observer — the manager constructs LOCKED
+     * whenever the lock is enabled.
+     */
+    @Inject lateinit var chatLockManager: com.us.android.core.chat.lock.ChatLockManager
+
+    /**
+     * Foreground flag for the notification presenter: while the app is
+     * visible, the session socket already delivers chat, so a system
+     * notification for the same message would be a duplicate.
+     */
+    @Inject lateinit var appForegroundState: com.us.android.core.notifications.AppForegroundState
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
+        androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : androidx.lifecycle.DefaultLifecycleObserver {
+                override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
+                    appForegroundState.isForeground = false
+                    chatLockManager.onAppBackgrounded()
+                }
+
+                override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+                    appForegroundState.isForeground = true
+                    chatLockManager.onAppForegrounded()
+                }
+            },
+        )
         // Cheap and idempotent: creating a channel that already exists is a
         // no-op, and the platform refuses to let re-registration override a
         // user's setting. Done here so a push arriving before any screen
@@ -54,6 +102,9 @@ class UsApplication : Application() {
         // Starts a single flow collection. Without this the FCM token is
         // stored and never sent, which is the state the app shipped in.
         pushRegistration.start()
+        // Adoption of a migrated legacy draft — no-op on every start after the
+        // first successful run.
+        legacyAdoption.start()
         // setSafe, not setUnsafe: this is a lambda, so the loader — and the
         // OkHttp client behind it — is built on first image request rather
         // than on the cold-start path.

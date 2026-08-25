@@ -4,7 +4,6 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
-import com.us.android.core.model.PostMediaRef
 import com.us.android.core.model.PostViewerState
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
@@ -34,14 +33,7 @@ class PostRepository @Inject constructor(
 
 private fun PostDto.toDomain() = Post(
     id = id,
-    media = media.map {
-        PostMediaRef(
-            mediaId = it.mediaId,
-            kind = it.kind,
-            altText = it.altText,
-            altDecorative = it.altDecorative,
-        )
-    },
+    media = media.toOrderedRefs(),
     authorId = authorId,
     text = text,
     visibility = visibility,

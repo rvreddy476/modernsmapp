@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,12 +20,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -45,6 +50,7 @@ import com.us.android.core.engagement.data.repostedOr
 import com.us.android.core.media.data.MediaDelivery
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
+import com.us.android.core.model.PostMediaRef
 import com.us.android.core.model.PostViewerState
 import com.us.android.core.model.Profile
 import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
@@ -80,6 +86,7 @@ fun PostScreen(
         onDismissActionError = viewModel::dismissActionError,
         onOpenAuthor = onOpenAuthor,
         onOpenComments = onOpenComments,
+        onPageSettled = viewModel::onPageSettled,
     )
 }
 
@@ -99,6 +106,8 @@ internal fun PostContent(
     onDismissActionError: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
     onOpenComments: () -> Unit,
+    /** Fired when the carousel settles, so only the visible page is resolved. */
+    onPageSettled: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     UsScaffold(
@@ -135,6 +144,7 @@ internal fun PostContent(
                     onDismissActionError = onDismissActionError,
                     onOpenAuthor = onOpenAuthor,
                     onOpenComments = onOpenComments,
+                    onPageSettled = onPageSettled,
                 )
             }
         }
@@ -143,7 +153,7 @@ internal fun PostContent(
 
 // One Compose layout; see PostCard for why it is not split to fit a budget.
 // MagicNumber: inline ARGB surface colours from the current visual design.
-@Suppress("LongMethod", "MagicNumber")
+@Suppress("LongMethod", "MagicNumber", "LongParameterList")
 @Composable
 private fun LoadedPost(
     state: PostUiState.Content,
@@ -153,6 +163,7 @@ private fun LoadedPost(
     onDismissActionError: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
     onOpenComments: () -> Unit,
+    onPageSettled: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val post = state.post
@@ -211,7 +222,7 @@ private fun LoadedPost(
                 )
             }
 
-            PostAttachment(post = post, media = state.media)
+            PostAttachment(post = post, media = state.media, onPageSettled = onPageSettled)
 
             PostActionBar(
                 state = PostActionState(
@@ -277,18 +288,62 @@ private fun LoadedPost(
  *    apology, since the text is the post and an error block would dominate it
  */
 @Composable
-private fun PostAttachment(post: Post, media: MediaDelivery?) {
-    val reference = post.media.firstOrNull() ?: return
+private fun PostAttachment(
+    post: Post,
+    media: Map<String, MediaDelivery>,
+    onPageSettled: (Int) -> Unit,
+) {
+    val pages = post.media
+    if (pages.isEmpty()) return
 
+    val pagerState = rememberPagerState(pageCount = { pages.size })
+
+    // Resolve the page the reader has actually landed on, not every page.
+    LaunchedEffect(pagerState.settledPage, pages.size) {
+        onPageSettled(pagerState.settledPage)
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth(),
+        ) { index ->
+            val reference = pages[index]
+            CarouselPage(reference = reference, delivery = media[reference.mediaId])
+        }
+
+        // Only shown for a real carousel. A single photo with a "1/1" pip under
+        // it would be noise pretending to be information.
+        if (pages.size > 1) {
+            PageIndicator(
+                pageCount = pages.size,
+                currentPage = pagerState.currentPage,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = UsTheme.spacing.m),
+            )
+        }
+    }
+}
+
+/**
+ * One carousel page.
+ *
+ * Each page carries ITS OWN description. The same photo cropped two ways on two
+ * pages can honestly need two different descriptions, and announcing the first
+ * page's text for all of them would be worse than silence — it would be
+ * confidently wrong.
+ */
+@Composable
+private fun CarouselPage(reference: PostMediaRef, delivery: MediaDelivery?) {
     when {
-        media == null -> Unit
+        delivery == null -> Unit
 
-        media.isReady -> PostMedia(
-            url = media.posterUrl,
+        delivery.isReady -> PostMedia(
+            url = delivery.posterUrl,
             postType = if (reference.kind == VIDEO_POST) VIDEO_POST else reference.kind,
-            count = post.media.size,
-            aspectRatio = media.aspectRatio ?: DEFAULT_MEDIA_ASPECT,
-            // The description the author was required to write, finally read.
+            count = 1,
+            aspectRatio = delivery.aspectRatio ?: DEFAULT_MEDIA_ASPECT,
             contentDescription = reference.contentDescription,
         )
 
@@ -299,6 +354,41 @@ private fun PostAttachment(post: Post, media: MediaDelivery?) {
         )
     }
 }
+
+/**
+ * Position pips.
+ *
+ * Marked as decorative for accessibility: a screen-reader user navigates the
+ * pager itself and hears each page's description, so announcing "dot, dot, dot"
+ * adds nothing and interrupts what does.
+ */
+@Composable
+private fun PageIndicator(pageCount: Int, currentPage: Int, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.clearAndSetSemantics { },
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(pageCount) { index ->
+            val selected = index == currentPage
+            Box(
+                modifier = Modifier
+                    .size(if (selected) SELECTED_PIP else UNSELECTED_PIP)
+                    .clip(CircleShape)
+                    .background(
+                        if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.outlineVariant
+                        },
+                    ),
+            )
+        }
+    }
+}
+
+private val SELECTED_PIP = 7.dp
+private val UNSELECTED_PIP = 5.dp
 
 // ── Previews ────────────────────────────────────────────────────────────
 

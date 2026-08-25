@@ -148,6 +148,15 @@ data class PostMediaDto(
     @SerialName("media_id") val mediaId: String = "",
     val kind: String = "",
     /**
+     * The carousel ordinal — Creator Studio P0-A.
+     *
+     * Defaults to -1, NEVER 0. A payload cached before this field existed has
+     * no ordinal, and defaulting to 0 would make every item claim to be first;
+     * the contiguity check would then reject the whole post and the reader
+     * would lose it entirely. See CarouselOrdinals.
+     */
+    val position: Int = com.us.android.core.model.CarouselOrdinals.ABSENT,
+    /**
      * The author's accessibility decision — Slice C, C-CLB-3.
      *
      * Defaulted, because posts created before this field existed do not carry

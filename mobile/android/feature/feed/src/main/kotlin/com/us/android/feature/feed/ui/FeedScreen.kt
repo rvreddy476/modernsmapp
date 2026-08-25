@@ -52,6 +52,9 @@ import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
 import com.us.android.core.ui.EngagementFailureBar
 import com.us.android.core.ui.PostActionState
 import com.us.android.core.ui.PostCard
+import com.us.android.core.ui.PostCardMediaPage
+import com.us.android.core.ui.PostCardPoll
+import com.us.android.core.ui.PostCardPollOption
 import com.us.android.core.ui.PostCardState
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -71,6 +74,7 @@ fun FeedScreen(
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
+    val pollVotes by viewModel.pollVotes.collectAsStateWithLifecycle()
     val failures by viewModel.failures.collectAsStateWithLifecycle()
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -140,14 +144,17 @@ fun FeedScreen(
             FeedList(
                 items = items,
                 overlays = overlays,
+                pollVotes = pollVotes,
                 onOpenPost = onOpenPost,
                 onOpenAuthor = onOpenAuthor,
                 onOpenComments = { commentsFor = it },
                 onReact = viewModel::onReact,
                 onBookmark = viewModel::onBookmark,
                 onRepost = viewModel::onRepost,
+                onVotePoll = viewModel::onVotePoll,
                 onExternalShared = viewModel::onExternalShared,
                 posterUrl = viewModel::posterUrl,
+                mediaPages = viewModel::mediaPages,
             )
         }
     }
@@ -167,14 +174,17 @@ fun FeedScreen(
 private fun FeedList(
     items: LazyPagingItems<FeedItem>,
     overlays: Map<String, EngagementOverlay>,
+    pollVotes: Map<String, Set<String>>,
     onOpenPost: (String) -> Unit,
     onOpenAuthor: (String) -> Unit,
     onOpenComments: (String) -> Unit,
     onReact: (postId: String, serverReacted: Boolean) -> Unit,
     onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
     onRepost: (postId: String, serverReposted: Boolean) -> Unit,
+    onVotePoll: (postId: String, optionId: String) -> Unit,
     onExternalShared: (String) -> Unit,
     posterUrl: (FeedItem) -> String?,
+    mediaPages: (FeedItem) -> List<PostCardMediaPage>,
     modifier: Modifier = Modifier,
 ) {
     val refresh = items.loadState.refresh
@@ -227,13 +237,23 @@ private fun FeedList(
                 val item = items[index] ?: return@items
                 val overlay = overlays[item.id] ?: EngagementOverlay()
                 PostCard(
-                    state = item.toCardState(overlay, posterUrl(item)),
+                    state = item.toCardState(
+                        overlay,
+                        posterUrl(item),
+                        mediaPages(item),
+                        pollVotes[item.id].orEmpty(),
+                    ),
                     onClick = { onOpenPost(item.id) },
                     onAuthorClick = { onOpenAuthor(item.author.id) },
                     onReact = { onReact(item.id, item.viewer.hasReacted) },
                     onComment = { onOpenComments(item.id) },
                     onRepost = { onRepost(item.id, item.viewer.hasReposted) },
                     onBookmark = { onBookmark(item.id, item.viewer.isBookmarked) },
+                    onVotePoll = if (item.poll?.hasEnded == false) {
+                        { optionId -> onVotePoll(item.id, optionId) }
+                    } else {
+                        null
+                    },
                     onShare = {
                         share(item.text, item.author.nameForDisplay)
                         // Recorded only after the chooser was actually
@@ -302,7 +322,12 @@ private fun Throwable.feedMessage(): String = when ((this as? AppErrorException)
  * Membership in the set means "the user changed this since the page loaded",
  * which is why it is an XOR against the server value rather than a replacement.
  */
-private fun FeedItem.toCardState(overlay: EngagementOverlay, posterUrl: String?) = PostCardState(
+private fun FeedItem.toCardState(
+    overlay: EngagementOverlay,
+    posterUrl: String?,
+    mediaPages: List<PostCardMediaPage>,
+    localPollVotes: Set<String> = emptySet(),
+) = PostCardState(
     postId = id,
     authorId = author.id,
     // Real author identity, embedded by the server as of 2026-08-17. This was
@@ -318,7 +343,27 @@ private fun FeedItem.toCardState(overlay: EngagementOverlay, posterUrl: String?)
     // Slice C / C-CLB-3. The feed is where most images are seen, so this is
     // the surface where a dropped description costs the most.
     mediaContentDescription = media.firstOrNull()?.contentDescription,
+    // The ordered carousel — Creator Studio P0-A.
+    mediaPages = mediaPages,
     isPinned = isPinned,
+    poll = poll?.let { p ->
+        // A vote cast THIS session is layered onto the server's counts the
+        // same way engagement taps are — one-step, derived, never accumulated.
+        val localOnly = localPollVotes - p.viewerVotedOptionIds.toSet()
+        PostCardPoll(
+            options = p.options.map { option ->
+                PostCardPollOption(
+                    id = option.id,
+                    label = option.label,
+                    voteCount = option.voteCount + if (option.id in localOnly) 1 else 0,
+                    percentage = option.percentage,
+                )
+            },
+            totalVotes = p.totalVotes + localOnly.size,
+            votedOptionIds = p.viewerVotedOptionIds.toSet() + localPollVotes,
+            hasEnded = p.hasEnded,
+        )
+    },
     actions = PostActionState(
         // Server value plus at most a one-step correction for local intent.
         // Derived rather than accumulated, so repeated taps cannot drift the
@@ -351,7 +396,7 @@ private fun FeedEmptyPreview() {
  * dividing by it yields Infinity, which Compose resolves to a zero-height box
  * that then jumps to full size when the real frame arrives.
  */
-private fun FeedMedia.aspectRatio(): Float =
+internal fun FeedMedia.aspectRatio(): Float =
     if (width > 0 && height > 0) width.toFloat() / height.toFloat() else DEFAULT_MEDIA_ASPECT
 
 /**

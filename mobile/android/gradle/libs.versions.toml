@@ -95,6 +95,8 @@ room                      = "2.8.4"
 # Paging 3. Feed, reels, chat and search all page; one library, one set of
 # load/error/retry semantics, rather than a hand-rolled load-more per screen.
 paging                    = "3.4.0"
+workManager               = "2.10.0"
+reorderable               = "3.1.0"
 # Media3 / ExoPlayer. The reels surface is the reason this project chose native
 # over Flutter, and HLS + a recycled player pool is the whole performance story.
 media3                    = "1.9.0"
@@ -105,6 +107,10 @@ media3                    = "1.9.0"
 coil                      = "3.4.0"
 datastore                 = "1.2.1"
 securityCrypto            = "1.1.0"
+biometric                 = "1.1.0"
+# Argon2id for the chat-lock PIN verifier (P0-7): the platform ships no
+# memory-hard KDF, and the directive requires a reviewed one, not home-made.
+bouncycastle              = "1.78.1"
 
 [libraries]
 # ── AndroidX core ──────────────────────────────────────────────────────
@@ -115,6 +121,7 @@ androidx-navigation-compose        = { module = "androidx.navigation:navigation-
 
 # ── Lifecycle ──────────────────────────────────────────────────────────
 androidx-lifecycle-runtime-ktx     = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-process         = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycle" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 
@@ -143,6 +150,10 @@ hilt-android                       = { module = "com.google.dagger:hilt-android"
 hilt-compiler                      = { module = "com.google.dagger:hilt-android-compiler", version.ref = "hilt" }
 hilt-android-testing               = { module = "com.google.dagger:hilt-android-testing", version.ref = "hilt" }
 hilt-navigation-compose            = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+hilt-work                          = { module = "androidx.hilt:hilt-work", version.ref = "hiltNavigationCompose" }
+hilt-work-compiler                 = { module = "androidx.hilt:hilt-compiler", version.ref = "hiltNavigationCompose" }
+work-runtime                       = { module = "androidx.work:work-runtime-ktx", version.ref = "workManager" }
+reorderable                        = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
 
 # ── Async ──────────────────────────────────────────────────────────────
 kotlinx-coroutines-android         = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
@@ -201,6 +212,8 @@ room-compiler                      = { module = "androidx.room:room-compiler", v
 room-testing                       = { module = "androidx.room:room-testing", version.ref = "room" }
 datastore-preferences              = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 androidx-security-crypto           = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
+bouncycastle-provider              = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+androidx-biometric                 = { module = "androidx.biometric:biometric", version.ref = "biometric" }
 
 [plugins]
 android-application       = { id = "com.android.application", version.ref = "agp" }

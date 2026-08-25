@@ -94,16 +94,98 @@ tasks.register("moduleGraphCheck") {
                     )
                 }
             }
+
+            // Creator Studio P0-A, guards G-4/G-5/G-6.
+            //
+            // The render/export PORT lives in :core:creator-model, which is why
+            // neither of these edges is needed in either direction. An earlier
+            // design had the engine owning the interface AND media consuming a
+            // model interface, which is a cycle waiting to be written; asserting
+            // the actual Gradle edges is what stops it being written by accident.
+            if (sub.path == ":core:creator-engine" && deps.contains(":core:media")) {
+                add(
+                    ":core:creator-engine must not depend on :core:media — it calls " +
+                        "the RenderExporter port in :core:creator-model, and app DI " +
+                        "binds the :core:media implementation to it.",
+                )
+            }
+            if (sub.path == ":core:media" && deps.contains(":core:creator-engine")) {
+                add(
+                    ":core:media must not depend on :core:creator-engine — it only " +
+                        "implements the port declared in :core:creator-model.",
+                )
+            }
+            // G-6, ADJUSTED FROM THE FROZEN SPEC — see the handover.
+            //
+            // The spec said no :feature may depend on :core:media. That was
+            // written from an architecture sketch rather than from this graph:
+            // :feature:post and :feature:profile have depended on :core:media
+            // since Slice C for URL resolution and upload, neither of which has
+            // anything to do with rendering. Enforcing the rule as written would
+            // mean rewriting two features for a guard aimed at something else.
+            //
+            // What the rule was actually protecting is that no feature reaches
+            // the render/export IMPLEMENTATION directly, bypassing the port. A
+            // feature that depends on :core:media must not ALSO depend on
+            // :core:creator-model, because that combination is how a screen
+            // starts calling a RenderExporter implementation it found itself
+            // instead of the one app DI bound.
+            // :feature:post holds a NAMED waiver: the PublishTransport adapter
+            // must live beside the CreatePostRequest DTO it freezes (the
+            // provenance rule), and that module already depends on :core:media
+            // for Slice C upload. The hazard this guard exists for — a feature
+            // binding the RENDER port implementation itself — is asserted at
+            // source level by RenderPortBoundaryGuardTest, which fails if any
+            // feature file so much as imports RenderExporter.
+            if (sub.path.startsWith(":feature") && sub.path != ":feature:post" &&
+                deps.contains(":core:media") && deps.contains(":core:creator-model")
+            ) {
+                add(
+                    "${sub.path} depends on BOTH :core:media and :core:creator-model — " +
+                        "a feature must reach render/export through :core:creator-engine, " +
+                        "never by binding a port implementation itself.",
+                )
+            }
+        }
+
+        // G-2: :core:creator-model is pure Kotlin/JVM.
+        //
+        // Purity is what makes the canonical bytes unit-testable on the JVM and
+        // what lets :core:media implement the port without the engine ever
+        // seeing it. An Android import here quietly costs both.
+        subprojects.find { it.path == ":core:creator-model" }?.let { model ->
+            listOf("com.android.library", "com.android.application").forEach { id ->
+                if (model.pluginManager.hasPlugin(id)) {
+                    add(":core:creator-model must not apply '$id' — it is pure Kotlin/JVM.")
+                }
+            }
         }
     }
     val moduleCount = subprojects.size
 
+    // G-1: the expected module count, not merely "green".
+    //
+    // A green graph cannot detect a module nobody meant to add. Naming the
+    // number makes an unplanned module a build failure rather than a surprise
+    // six weeks later. Update this deliberately when a module is authorised.
+    val expectedModuleCount = 26
+
     doLast {
-        if (violations.isNotEmpty()) {
+        val allViolations = buildList {
+            addAll(violations)
+            if (moduleCount != expectedModuleCount) {
+                add(
+                    "Module count is $moduleCount, expected $expectedModuleCount. " +
+                        "If the change is intended, update expectedModuleCount in " +
+                        "build.gradle.kts in the same commit that adds the module.",
+                )
+            }
+        }
+        if (allViolations.isNotEmpty()) {
             throw GradleException(
-                "Module graph violations:\n" + violations.joinToString("\n") { "  - $it" },
+                "Module graph violations:\n" + allViolations.joinToString("\n") { "  - $it" },
             )
         }
-        println("Module graph OK ($moduleCount modules checked).")
+        println("Module graph OK ($moduleCount modules checked, count asserted).")
     }
 }

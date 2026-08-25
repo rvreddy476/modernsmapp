@@ -107,6 +107,27 @@ private fun ContactPermissionSection(
         PrivacySelect("Who can message you", value.whoCanMessage, MESSAGE_OPTIONS, locked) {
             viewModel.select(PrivacyEnumField.MESSAGE, it)
         }
+        PrivacySelect("Who can add you to groups", value.whoCanAddToGroups, GROUP_ADD_OPTIONS, locked) {
+            viewModel.select(PrivacyEnumField.GROUP_ADD, it)
+        }
+    }
+    // Production chat pass (directive §3.2): every control below has a named
+    // server-side consumer — pause gates creation and sends, the visibility
+    // trio gates presence/receipt disclosure, typing gates the actor's own
+    // indicator, and the preview toggle gates push text.
+    UsSettingsSection("Chat") {
+        PrivacySelect("Chat availability", value.chatAvailability, CHAT_AVAILABILITY_OPTIONS, false) {
+            viewModel.select(PrivacyEnumField.CHAT_AVAILABILITY, it)
+        }
+        PrivacySelect("Who sees you online", value.whoCanSeeOnlineStatus, VISIBILITY_OPTIONS, locked) {
+            viewModel.select(PrivacyEnumField.ONLINE, it)
+        }
+        PrivacySelect("Who sees your last seen", value.whoCanSeeLastSeen, VISIBILITY_OPTIONS, locked) {
+            viewModel.select(PrivacyEnumField.LAST_SEEN, it)
+        }
+        PrivacySelect("Who sees your read receipts", value.whoCanSeeReadReceipts, VISIBILITY_OPTIONS, locked) {
+            viewModel.select(PrivacyEnumField.READ_RECEIPTS, it)
+        }
     }
 }
 
@@ -144,6 +165,20 @@ private fun ProtectionSection(
             description = "Allow posts addressed to your trusted circle to reach those people.",
             enabled = !state.saving,
         )
+        UsSettingsSwitchRow(
+            title = "Send typing indicators",
+            checked = value.sendTypingIndicators,
+            onCheckedChange = { viewModel.toggle(PrivacyToggleField.TYPING, it) },
+            description = "Show others when you're typing a message to them.",
+            enabled = !state.saving,
+        )
+        UsSettingsSwitchRow(
+            title = "Show message text in notifications",
+            checked = value.showMessagePreview,
+            onCheckedChange = { viewModel.toggle(PrivacyToggleField.MESSAGE_PREVIEW, it) },
+            description = "Off shows \"New message\" instead of the message itself.",
+            enabled = !state.saving,
+        )
     }
 }
 
@@ -165,6 +200,7 @@ private val MESSAGE_OPTIONS = options(
     "no_one" to "No one",
     "connections_only" to "Connections",
     "connections_and_mutual_followers" to "Connections + mutual followers",
+    "friends_of_friends_requests" to "Friends of friends via requests",
     "followers_message_requests" to "Followers via requests",
     "everyone_message_requests" to "Everyone via requests",
 )
@@ -173,4 +209,16 @@ private val VISIBILITY_OPTIONS = options(
     "no_one" to "No one",
     "connections_only" to "Connections",
     "everyone" to "Everyone",
+)
+
+private val GROUP_ADD_OPTIONS = options(
+    "no_one" to "No one",
+    "connections_only" to "Connections",
+    "friends_of_friends_invites" to "Friends of friends, by invite",
+    "everyone_with_approval" to "Anyone, with your approval",
+)
+
+private val CHAT_AVAILABILITY_OPTIONS = options(
+    "enabled" to "On",
+    "paused" to "Paused — no new messages in or out",
 )

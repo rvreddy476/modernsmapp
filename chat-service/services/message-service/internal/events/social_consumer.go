@@ -38,30 +38,36 @@ type userBlockedPayload struct {
 }
 
 // SocialReconciler is the store surface the social consumer needs to apply
-// auto-promote (§16.6) and block-sever (§16.1) effects on chat state.
+// auto-promote (§16.6) effects on chat state.
 type SocialReconciler interface {
 	// PromoteRequestConversationByPair promotes a pending message-request
 	// conversation between the pair to a normal conversation.
 	PromoteRequestConversationByPair(ctx context.Context, userA, userB uuid.UUID) (bool, error)
-	// SeverDirectConversation severs the blocker from the direct conversation
-	// it shares with the blocked user.
-	SeverDirectConversation(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error)
+}
+
+// DirectSeverRevoker is the SERVICE surface the block-sever (§16.1) rides:
+// the sever must arm the room-revocation marker before the event is
+// acknowledged (final-verification P0-4), and only the service holds the
+// Redis client and entitlement configuration to do that.
+type DirectSeverRevoker interface {
+	SeverDirectConversationOnBlock(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error)
 }
 
 // SocialConsumer consumes graph-service events from Kafka and reconciles chat
 // state: auto-promoting message requests on ConnectionAccepted and severing
 // shared direct conversations on UserBlocked.
 type SocialConsumer struct {
-	reader *kafka.Reader
-	store  SocialReconciler
-	log    *slog.Logger
+	reader  *kafka.Reader
+	store   SocialReconciler
+	severer DirectSeverRevoker
+	log     *slog.Logger
 }
 
-func NewSocialConsumer(brokers []string, topic, groupID string, store SocialReconciler, logger *slog.Logger) *SocialConsumer {
-	return NewSocialConsumerWithDialer(brokers, topic, groupID, nil, store, logger)
+func NewSocialConsumer(brokers []string, topic, groupID string, store SocialReconciler, severer DirectSeverRevoker, logger *slog.Logger) *SocialConsumer {
+	return NewSocialConsumerWithDialer(brokers, topic, groupID, nil, store, severer, logger)
 }
 
-func NewSocialConsumerWithDialer(brokers []string, topic, groupID string, dialer *kafka.Dialer, store SocialReconciler, logger *slog.Logger) *SocialConsumer {
+func NewSocialConsumerWithDialer(brokers []string, topic, groupID string, dialer *kafka.Dialer, store SocialReconciler, severer DirectSeverRevoker, logger *slog.Logger) *SocialConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -71,7 +77,7 @@ func NewSocialConsumerWithDialer(brokers []string, topic, groupID string, dialer
 		GroupID: groupID,
 		Dialer:  dialer,
 	})
-	return &SocialConsumer{reader: r, store: store, log: logger}
+	return &SocialConsumer{reader: r, store: store, severer: severer, log: logger}
 }
 
 func (c *SocialConsumer) Start(ctx context.Context) {
@@ -190,7 +196,10 @@ func (c *SocialConsumer) handleUserBlocked(ctx context.Context, payload json.Raw
 		return permanentEventError{err}
 	}
 
-	severed, err := c.store.SeverDirectConversation(ctx, blockerID, blockedID)
+	// The sever rides the revocation protocol (final-verification P0-4): an
+	// error — including a failed marker write — is returned WITHOUT ack, so
+	// the at-least-once redelivery retries until revocation is durable.
+	severed, err := c.severer.SeverDirectConversationOnBlock(ctx, blockerID, blockedID)
 	if err != nil {
 		c.log.Error("failed to sever direct conversation on block", "err", err, "blocker_id", blockerID, "blocked_id", blockedID)
 		return err

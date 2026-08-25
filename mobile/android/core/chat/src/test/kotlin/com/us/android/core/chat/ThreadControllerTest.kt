@@ -1,21 +1,28 @@
 package com.us.android.core.chat
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.chat.data.AddMemberRequest
 import com.us.android.core.chat.data.ChatApi
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.ChatSocketEvent
 import com.us.android.core.chat.data.ConversationMember
+import com.us.android.core.chat.data.ConversationSettingsDto
 import com.us.android.core.chat.data.CreateDirectRequest
 import com.us.android.core.chat.data.CreateGroupRequest
+import com.us.android.core.chat.data.DeleteMessageRequest
 import com.us.android.core.chat.data.MAX_MESSAGE_LENGTH
 import com.us.android.core.chat.data.MAX_RECONNECT_MILLIS
 import com.us.android.core.chat.data.MarkReadRequest
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.MessageDto
 import com.us.android.core.chat.data.SendMessageRequest
+import com.us.android.core.chat.data.SetRoleRequest
 import com.us.android.core.chat.data.TYPING_TTL_MILLIS
 import com.us.android.core.chat.data.ThreadController
+import com.us.android.core.chat.data.ToggleReactionRequest
+import com.us.android.core.chat.data.TransferOwnerRequest
 import com.us.android.core.chat.data.TypingRequest
+import com.us.android.core.chat.data.UpdateGroupInfoRequest
 import com.us.android.core.chat.data.isValidMessage
 import com.us.android.core.chat.data.parseChatFrame
 import com.us.android.core.chat.data.reconnectCeilingMillis
@@ -56,7 +63,51 @@ class ThreadControllerTest {
 
         var readMessageIds = mutableListOf<String>()
 
-        override suspend fun conversations(): Nothing = error("not used")
+        override suspend fun conversations(limit: Int, cursor: String?): Nothing = error("not used")
+
+        override suspend fun toggleReaction(
+            conversationId: String,
+            messageId: String,
+            body: ToggleReactionRequest,
+        ): Nothing = error("not used")
+        override suspend fun deleteMessage(
+            conversationId: String,
+            messageId: String,
+            body: DeleteMessageRequest,
+        ): Nothing = error("not used")
+        override suspend fun conversationSettings(conversationId: String): Nothing = error("not used")
+        override suspend fun updateConversationSettings(
+            conversationId: String,
+            body: ConversationSettingsDto,
+        ): Nothing = error("not used")
+        override suspend fun subscriptionEntitlement(conversationId: String): Nothing = error("not used")
+
+        // Production chat pass surface — unused by these controller tests.
+        override suspend fun requests(): Nothing = error("not used")
+        override suspend fun acceptRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun declineRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun blockRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun reportRequest(conversationId: String): Nothing = error("not used")
+        override suspend fun leave(conversationId: String): Nothing = error("not used")
+        override suspend fun transferOwner(
+            conversationId: String,
+            body: TransferOwnerRequest,
+        ): Nothing = error("not used")
+        override suspend fun setMemberRole(
+            conversationId: String,
+            userId: String,
+            body: SetRoleRequest,
+        ): Nothing = error("not used")
+        override suspend fun addMember(conversationId: String, body: AddMemberRequest): Nothing = error("not used")
+        override suspend fun removeMember(conversationId: String, userId: String): Nothing = error("not used")
+        override suspend fun updateGroupInfo(
+            conversationId: String,
+            body: UpdateGroupInfoRequest,
+        ): Nothing = error("not used")
+        override suspend fun invitations(): Nothing = error("not used")
+        override suspend fun acceptInvitation(invitationId: String): Nothing = error("not used")
+        override suspend fun declineInvitation(invitationId: String): Nothing = error("not used")
+        override suspend fun connections(userId: String, limit: Int): Nothing = error("not used")
         override suspend fun conversation(conversationId: String): Nothing = error("not used")
 
         override suspend fun createDirect(

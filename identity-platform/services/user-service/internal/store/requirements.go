@@ -48,6 +48,7 @@ var SchemaRequirements = []schemaguard.Requirement{
 		"allow_phone_discovery", "allow_contact_sync_match", "discoverable_by_phone_to_contacts",
 		"strict_privacy_mode", "block_unknown_calls", "auto_filter_abusive_content", "under_18_mode",
 		"tc_close_friends_posts", "tc_location_pings", "tc_after_hours_posts", "tc_audio_room_invite",
+		"chat_availability", "send_typing_indicators", "show_message_preview",
 		"privacy_version", "created_at", "updated_at",
 	}},
 

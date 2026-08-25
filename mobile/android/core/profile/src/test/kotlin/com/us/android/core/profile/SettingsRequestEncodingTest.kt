@@ -36,6 +36,9 @@ class SettingsRequestEncodingTest {
                 trustedCircleLocationPings = false,
                 trustedCircleAfterHoursPosts = false,
                 trustedCircleAudioRoomInvites = false,
+                chatAvailability = "paused",
+                sendTypingIndicators = false,
+                showMessagePreview = false,
             ),
         )
         val body = json.parseToJsonElement(encoded).jsonObject
@@ -90,7 +93,8 @@ class SettingsRequestEncodingTest {
             "allow_contact_sync_match", "discoverable_by_phone_to_contacts",
             "strict_privacy_mode", "block_unknown_calls", "auto_filter_abusive_content",
             "tc_close_friends_posts", "tc_location_pings", "tc_after_hours_posts",
-            "tc_audio_room_invite",
+            "tc_audio_room_invite", "chat_availability", "send_typing_indicators",
+            "show_message_preview",
         )
         val NOTIFICATION_KEYS = setOf(
             "push_enabled", "email_enabled", "quiet_hours_enabled", "quiet_hours_start",

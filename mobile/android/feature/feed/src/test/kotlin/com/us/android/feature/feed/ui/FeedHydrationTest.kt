@@ -198,6 +198,11 @@ private class UnusedFeedApi : com.us.android.feature.feed.data.FeedApi {
 
     override suspend fun getDelta(feedType: String, anchor: String, limit: Int): Nothing =
         error("feed delta is not under test")
+
+    override suspend fun votePoll(
+        postId: String,
+        body: com.us.android.feature.feed.data.PollVoteRequest,
+    ): Nothing = error("poll voting is not under test")
 }
 
 private class UnusedEngagementApi : com.us.android.core.engagement.data.EngagementApi {

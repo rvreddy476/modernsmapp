@@ -37,11 +37,24 @@ func (s *Service) permissionFacts(ctx context.Context, actorID, targetID uuid.UU
 	if err != nil {
 		return permission.Facts{}, err
 	}
+	// Second degree matters only when the pair is NOT directly connected —
+	// skip the extra EXISTS for the common connected case. A lookup failure
+	// fails toward "not second degree" (the strictly safer answer for every
+	// consumer of this fact), never toward granting.
+	secondDegree := false
+	if !full.IsConnection && !full.Blocked && !actorBlockedTarget {
+		secondDegree, err = s.store.CheckSecondDegree(ctx, actorID, targetID)
+		if err != nil {
+			log.Printf("[graph] second-degree check failed for %s->%s, treating as false: %v", actorID, targetID, err)
+			secondDegree = false
+		}
+	}
 	return permission.Facts{
 		Blocked:            full.Blocked || actorBlockedTarget,
 		IsConnection:       full.IsConnection,
 		ActorFollowsTarget: full.Follows,
 		TargetFollowsActor: full.FollowedBy,
+		SecondDegree:       secondDegree,
 	}, nil
 }
 
@@ -49,13 +62,25 @@ func (s *Service) permissionFacts(ctx context.Context, actorID, targetID uuid.UU
 // real settings cannot be fetched — it never silently opens messaging up.
 func strictPrivacyDefaults() permission.Privacy {
 	return permission.Privacy{
-		WhoCanMessage:               "connections_only",
-		WhoCanCall:                  "connections_only",
-		WhoCanAddToGroups:           "connections_only",
+		// P0-2 correction: chat actions and presence disclosure DENY outright
+		// while the target's real settings are unreadable. The previous
+		// connections_only posture let an existing connection open a chat and
+		// read online/receipt state during an identity outage even when the
+		// target's real setting was no_one or paused — an unknown setting is
+		// not a licence to act on the most permissive plausible one.
+		WhoCanMessage:               "no_one",
+		WhoCanCall:                  "no_one",
+		WhoCanAddToGroups:           "no_one",
 		WhoCanSendConnectionRequest: "friends_of_friends_or_contacts",
-		WhoCanSeeOnlineStatus:       "connections_only",
-		WhoCanSeeReadReceipts:       "connections_only",
+		WhoCanSeeOnlineStatus:       "no_one",
+		WhoCanSeeReadReceipts:       "no_one",
+		WhoCanSeeLastSeen:           "no_one",
 		WhoCanSeeProfilePhoto:       "everyone",
+		// NOT 'paused': the no_one values above already deny every chat
+		// action; 'paused' would additionally masquerade as a state the user
+		// chose. This stays 'enabled' purely so the pause-specific reason
+		// codes remain truthful.
+		ChatAvailability: "enabled",
 	}
 }
 
@@ -140,7 +165,9 @@ func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.U
 			WhoCanSendConnectionRequest string `json:"who_can_send_connection_request"`
 			WhoCanSeeOnlineStatus       string `json:"who_can_see_online_status"`
 			WhoCanSeeReadReceipts       string `json:"who_can_see_read_receipts"`
+			WhoCanSeeLastSeen           string `json:"who_can_see_last_seen"`
 			WhoCanSeeProfilePhoto       string `json:"who_can_see_profile_photo"`
+			ChatAvailability            string `json:"chat_availability"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -153,6 +180,8 @@ func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.U
 		WhoCanSendConnectionRequest: envelope.Data.WhoCanSendConnectionRequest,
 		WhoCanSeeOnlineStatus:       envelope.Data.WhoCanSeeOnlineStatus,
 		WhoCanSeeReadReceipts:       envelope.Data.WhoCanSeeReadReceipts,
+		WhoCanSeeLastSeen:           envelope.Data.WhoCanSeeLastSeen,
 		WhoCanSeeProfilePhoto:       envelope.Data.WhoCanSeeProfilePhoto,
+		ChatAvailability:            envelope.Data.ChatAvailability,
 	}, nil
 }

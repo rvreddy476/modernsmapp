@@ -3,7 +3,6 @@ package com.us.android.feature.post.navigation
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -200,7 +199,11 @@ class ComposerJourneyTest {
      */
     private fun typePost(text: String) {
         composeRule
-            .onNode(hasSetTextAction() and hasAnyAncestor(hasContentDescription("Post text")))
+            // The canvas is a BasicTextField, so ONE node carries both the
+            // description and the text action. It used to be a wrapped
+            // UsTextField where only a descendant was editable, hence the
+            // former ancestor match.
+            .onNode(hasSetTextAction() and hasContentDescription("Post text"))
             .performTextInput(text)
         composeRule.waitForIdle()
     }
@@ -234,7 +237,7 @@ class ComposerJourneyTest {
         typePost("half a thought")
         pressSystemBack()
 
-        composeRule.onNodeWithText("Keep editing").performScrollTo().performClick()
+        composeRule.onNodeWithText("Keep editing").performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithText("Discard this post?").assertDoesNotExist()
@@ -249,7 +252,7 @@ class ComposerJourneyTest {
         typePost("half a thought")
         pressSystemBack()
 
-        composeRule.onNodeWithText("Discard").performScrollTo().performClick()
+        composeRule.onNodeWithText("Discard").performClick()
         composeRule.waitForIdle()
 
         assertThat(currentRoute).contains(FeedStub::class.qualifiedName)
@@ -289,7 +292,7 @@ class ComposerJourneyTest {
         launchComposer()
         typePost("shipping it")
 
-        composeRule.onNodeWithContentDescription("Post").performScrollTo().performClick()
+        composeRule.onNodeWithContentDescription("Post").performClick()
         composeRule.waitForIdle()
 
         assertThat(currentRoute).contains(PostStub::class.qualifiedName)

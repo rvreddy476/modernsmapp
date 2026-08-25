@@ -199,7 +199,17 @@ ALTER TABLE usr.user_settings
     ADD COLUMN IF NOT EXISTS tc_location_pings                 BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS tc_after_hours_posts              BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS tc_audio_room_invite              BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS privacy_version                   INT     NOT NULL DEFAULT 1;
+    ADD COLUMN IF NOT EXISTS privacy_version                   INT     NOT NULL DEFAULT 1,
+    -- Production chat pass (chat directive §3.2). chat_availability 'paused'
+    -- is STRONGER than who_can_message='no_one': it stops new conversations,
+    -- requests, invites and user messages in both directions while keeping
+    -- history readable. send_typing_indicators gates the actor's own typing
+    -- broadcasts. show_message_preview gates message text in push
+    -- notifications (defaults on for plaintext chat; E2EE conversations
+    -- default off client-side regardless of this value).
+    ADD COLUMN IF NOT EXISTS chat_availability                 TEXT    NOT NULL DEFAULT 'enabled',
+    ADD COLUMN IF NOT EXISTS send_typing_indicators            BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS show_message_preview              BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS profile.profiles (
     user_id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,

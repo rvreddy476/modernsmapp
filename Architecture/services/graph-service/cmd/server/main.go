@@ -93,6 +93,16 @@ func main() {
 	defer producer.Close()
 	slog.Info("kafka producer ready")
 
+	// Identity-events consumer (production chat pass, directive §5.1):
+	// user.settings_changed invalidates the privacy:<user_id> cache so a
+	// privacy change takes effect on the NEXT permission check, not after the
+	// TTL. The 3-second TTL remains the fallback for a lost event.
+	identityTopic := env("IDENTITY_KAFKA_TOPIC", "identity.events.v1")
+	identityConsumer := events.NewConsumer(strings.Split(kafkaBrokers, ","), identityTopic, kafkaDialer, dbPool, rdb)
+	defer identityConsumer.Close()
+	go identityConsumer.Start(ctx)
+	slog.Info("identity events consumer started", "topic", identityTopic)
+
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("graph-service")
 	dbMetrics := metrics.NewDBPoolMetrics("graph-service", "postgres")

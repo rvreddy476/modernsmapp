@@ -153,6 +153,37 @@ func (s *ConversationStore) GetConversationSettings(ctx context.Context, convID,
 	return &cs, nil
 }
 
+// GetSettingsForConversations is the ONE-QUERY page lookup the inbox uses for
+// pinned/muted flags — never a per-row settings fetch. Conversations without
+// a row simply have no entry (defaults apply).
+func (s *ConversationStore) GetSettingsForConversations(ctx context.Context, userID uuid.UUID, convIDs []uuid.UUID) (map[uuid.UUID]ConversationSettings, error) {
+	if len(convIDs) == 0 {
+		return map[uuid.UUID]ConversationSettings{}, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,
+		       read_receipts_enabled, theme, is_pinned, pinned_at
+		FROM chat.conversation_settings
+		WHERE user_id = $1 AND conversation_id = ANY($2::uuid[])
+	`, userID, convIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[uuid.UUID]ConversationSettings, len(convIDs))
+	for rows.Next() {
+		var cs ConversationSettings
+		if err := rows.Scan(
+			&cs.ConversationID, &cs.UserID, &cs.Label, &cs.IsMuted, &cs.MuteUntil,
+			&cs.DisappearAfterMs, &cs.ReadReceiptsEnabled, &cs.Theme, &cs.IsPinned, &cs.PinnedAt,
+		); err != nil {
+			return nil, err
+		}
+		out[cs.ConversationID] = cs
+	}
+	return out, rows.Err()
+}
+
 func (s *ConversationStore) ListConversationsByLabel(ctx context.Context, userID uuid.UUID, label string, limit, offset int) ([]ConversationSettings, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,

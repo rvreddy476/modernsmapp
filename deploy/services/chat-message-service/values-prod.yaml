@@ -36,6 +36,8 @@ externalSecret:
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    # Owner-issued conversation-room entitlements (shared HMAC with chat-ws-gateway).
+    - { secretKey: CHAT_ENTITLEMENT_SECRET, remoteRef: chat_entitlement_secret }
 
 env:
   ENV: prod
@@ -46,6 +48,10 @@ env:
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
   USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  # Chat-policy authority (usr.user_settings). Distinct from the legacy user
+  # directory above — pointing this at user-service silently breaks policy
+  # refresh (it answers 200 with an empty body on the settings route).
+  IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8082
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Where the Create hub's camera captures land. cache-path: a capture that never
+  becomes a post should be reclaimable by the OS, and one that does become a
+  post is copied into the SourceVault immediately.
+-->
+<paths>
+    <cache-path name="create_capture" path="create_capture/" />
+</paths>

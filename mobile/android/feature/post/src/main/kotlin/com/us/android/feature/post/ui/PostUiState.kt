@@ -38,13 +38,18 @@ sealed interface PostUiState {
          */
         val author: Profile? = null,
         /**
-         * Delivery for the first attachment, resolved after the post lands.
+         * Deliveries by media id, filled in as carousel pages are reached.
          *
-         * Null means "not resolved yet or not resolvable" — the post still
-         * renders. A post is readable without its picture; it is not readable
-         * if a failed image lookup blanks the screen.
+         * A MAP rather than one delivery, because a post can now carry 2-10
+         * ordered pages. An absent entry means "not resolved yet or not
+         * resolvable" and the post still renders: a post is readable without
+         * its picture, and it is not readable if a failed image lookup blanks
+         * the screen.
+         *
+         * Pages are resolved lazily. Fetching all ten up front would spend a
+         * reader's data on images they may never swipe to.
          */
-        val media: MediaDelivery? = null,
+        val media: Map<String, MediaDelivery> = emptyMap(),
         /** Shared optimistic engagement for this post — see EngagementStore. */
         val overlay: EngagementOverlay = EngagementOverlay(),
         /** True while any interaction is in flight. */

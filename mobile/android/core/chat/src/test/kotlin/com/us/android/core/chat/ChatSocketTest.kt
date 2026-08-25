@@ -252,11 +252,57 @@ class ChatSocketTest {
      */
     @Test
     fun `a refused message frame is distinguishable from an unmodelled one`() {
+        // read_receipt WAS the unmodelled example here; the completion pass
+        // modelled it, so an empty one is now refused rather than unknown.
         val malformed = parseChatFrame(json, """{"type":"message","payload":{}}""")
-        val unmodelled = parseChatFrame(json, """{"type":"read_receipt","payload":{}}""")
+        val unmodelled = parseChatFrame(json, """{"type":"presence_update","payload":{}}""")
 
         assertThat(malformed).isInstanceOf(ChatSocketEvent.Malformed::class.java)
-        assertThat(unmodelled).isEqualTo(ChatSocketEvent.Unknown("read_receipt"))
+        assertThat(unmodelled).isEqualTo(ChatSocketEvent.Unknown("presence_update"))
+    }
+
+    // ── Completion-pass frames ──────────────────────────────────────────
+
+    @Test
+    fun `a read receipt decodes and a blank identifier refuses it`() {
+        val ok = parseChatFrame(
+            json,
+            """{"type":"read_receipt","payload":{"conversation_id":"c1","user_id":"u2",""" +
+                """"message_id":"m9","read_at":"2026-08-25T10:00:00Z"}}""",
+        )
+        assertThat(ok).isEqualTo(ChatSocketEvent.ReadReceipt("c1", "u2", "m9"))
+
+        val refused = parseChatFrame(
+            json,
+            """{"type":"read_receipt","payload":{"user_id":"u2","message_id":"m9"}}""",
+        )
+        assertThat(refused).isInstanceOf(ChatSocketEvent.Malformed::class.java)
+    }
+
+    @Test
+    fun `a subscription revocation decodes and a blank conversation refuses it`() {
+        val ok = parseChatFrame(
+            json,
+            """{"type":"subscription_revoked","payload":{"conversation_id":"c1"}}""",
+        )
+        assertThat(ok).isEqualTo(ChatSocketEvent.SubscriptionRevoked("c1"))
+
+        val refused = parseChatFrame(json, """{"type":"subscription_revoked","payload":{}}""")
+        assertThat(refused).isInstanceOf(ChatSocketEvent.Malformed::class.java)
+    }
+
+    /**
+     * The two frames this client SENDS — pinned to exact wire bytes, because
+     * the gateway reads `type` and `entitlement`/`conversation_id` verbatim
+     * and the app-wide Json omits defaulted properties (the SendMessageRequest
+     * trap, again).
+     */
+    @Test
+    fun `subscribe and unsubscribe frames carry their type on the wire`() {
+        assertThat(com.us.android.core.chat.data.subscribeFrame(json, "TOKEN"))
+            .isEqualTo("""{"type":"conversation.subscribe","entitlement":"TOKEN"}""")
+        assertThat(com.us.android.core.chat.data.unsubscribeFrame(json, "c1"))
+            .isEqualTo("""{"type":"conversation.unsubscribe","conversation_id":"c1"}""")
     }
 
     /** A complete frame still decodes — the guard must not refuse valid traffic. */

@@ -37,10 +37,25 @@ dependencies {
     implementation(projects.core.ui)
     implementation(projects.core.chat)
     implementation(projects.core.auth)
+    // Production chat pass: image attachments ride the SAME media authority
+    // as every other upload (ChatAttachmentUploader), and rendering an
+    // attachment needs the authorized serve URL from ApiConfig.
+    implementation(projects.core.media)
+    implementation(projects.core.network)
+    // Clearing a handled conversation's notification when its thread opens.
+    implementation(projects.core.notifications)
+    // Member-picker name resolution for group creation.
+    implementation(projects.core.profile)
+    implementation(projects.core.model)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.hilt.navigation.compose)
+    // The system photo picker for attachments.
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.coil.compose)
+    // Chat lock: BiometricPrompt + device credential.
+    implementation(libs.androidx.biometric)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.junit)

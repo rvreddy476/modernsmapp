@@ -219,6 +219,11 @@ type updateSettingsRequest struct {
 	TcLocationPings     *bool `json:"tc_location_pings"`
 	TcAfterHoursPosts   *bool `json:"tc_after_hours_posts"`
 	TcAudioRoomInvite   *bool `json:"tc_audio_room_invite"`
+
+	// Production chat pass (directive §3.2).
+	ChatAvailability     *string `json:"chat_availability"`
+	SendTypingIndicators *bool   `json:"send_typing_indicators"`
+	ShowMessagePreview   *bool   `json:"show_message_preview"`
 }
 
 // applyTo merges the present fields of the request onto cur.
@@ -285,6 +290,15 @@ func (r *updateSettingsRequest) applyTo(cur *store.UserSettings) {
 	}
 	if r.TcAudioRoomInvite != nil {
 		cur.TcAudioRoomInvite = *r.TcAudioRoomInvite
+	}
+	if r.ChatAvailability != nil {
+		cur.ChatAvailability = *r.ChatAvailability
+	}
+	if r.SendTypingIndicators != nil {
+		cur.SendTypingIndicators = *r.SendTypingIndicators
+	}
+	if r.ShowMessagePreview != nil {
+		cur.ShowMessagePreview = *r.ShowMessagePreview
 	}
 }
 

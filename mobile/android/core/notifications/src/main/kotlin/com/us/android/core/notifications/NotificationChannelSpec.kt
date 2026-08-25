@@ -82,7 +82,10 @@ enum class NotificationChannelSpec(
         /** The channel for a push, defaulting to SOCIAL for an unknown type. */
         fun forType(type: String?): NotificationChannelSpec = when (type) {
             "call", "call_invite" -> CALLS
-            "message", "chat" -> MESSAGES
+            // "dm" and "message_request" are what notification-service
+            // actually sends for chat (notifTitleBody, notification.go);
+            // without them chat pushes landed on the muteable SOCIAL channel.
+            "message", "chat", "dm", "message_request" -> MESSAGES
             "account", "security" -> ACCOUNT
             else -> SOCIAL
         }

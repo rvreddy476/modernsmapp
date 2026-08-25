@@ -4,31 +4,50 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.AuthRepository
 import com.us.android.core.chat.data.ChatRepository
+import com.us.android.core.chat.data.ChatSessionManager
+import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.Conversation
-import com.us.android.core.common.error.AppError
+import com.us.android.core.chat.data.GroupInvitation
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.model.SessionState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/** Which inbox surface is selected. */
+enum class InboxTab { Chats, Requests, Invites }
+
 /** Everything the inbox renders. */
 data class InboxUiState(
+    val tab: InboxTab = InboxTab.Chats,
     val conversations: List<Conversation> = emptyList(),
+    val requests: List<Conversation> = emptyList(),
+    val invitations: List<GroupInvitation> = emptyList(),
     val loading: Boolean = false,
-    val error: AppError? = null,
+    val syncFailed: Boolean = false,
     /** Needed to name a direct thread after the OTHER participant. */
     val viewerId: String = "",
+    /** Row-level busy markers for invitation accept/decline. */
+    val busyInvitationIds: Set<String> = emptySet(),
 ) {
-    val isEmpty: Boolean get() = conversations.isEmpty() && !loading && error == null
+    val requestCount: Int get() = requests.size
+    val inviteCount: Int get() = invitations.size
 }
 
+/**
+ * The inbox over the DURABLE store (directive §5.4): rows render from Room
+ * first — offline, instantly, with unread state that survived process death —
+ * and every [refresh] reconciles them against the authoritative lists.
+ */
 @HiltViewModel
 class ChatInboxViewModel @Inject constructor(
     private val repository: ChatRepository,
+    private val store: ChatStore,
+    private val session: ChatSessionManager,
     authRepository: AuthRepository,
 ) : ViewModel() {
 
@@ -41,28 +60,100 @@ class ChatInboxViewModel @Inject constructor(
     val state: StateFlow<InboxUiState> = _state.asStateFlow()
 
     init {
+        // One socket per session; the inbox is usually the first chat surface
+        // to run, so it arms the manager and the outbox drain.
+        session.start()
+        store.scheduleDrain()
+        observeCache()
         refresh()
     }
 
-    fun refresh() {
-        _state.value = _state.value.copy(loading = true, error = null)
-        viewModelScope.launch {
-            _state.value = when (val result = repository.conversations()) {
-                is AppResult.Success -> _state.value.copy(
-                    // Newest activity first. `updated_at` advances when a
-                    // message is sent, which is what makes it the sort key
-                    // rather than creation time.
-                    conversations = result.data.sortedByDescending { it.updatedAt },
-                    loading = false,
-                    error = null,
-                )
+    fun selectTab(tab: InboxTab) = _state.update { it.copy(tab = tab) }
 
-                is AppResult.Failure -> _state.value.copy(
+    fun refresh() {
+        _state.update { it.copy(loading = true) }
+        viewModelScope.launch {
+            val ok = store.syncInbox()
+            val invitations = repository.invitations()
+            _state.update { current ->
+                current.copy(
                     loading = false,
-                    // Loaded rows are preserved: a failed refresh must not
-                    // empty someone's inbox over a transient network blip.
-                    error = result.error,
+                    syncFailed = !ok,
+                    invitations = (invitations as? AppResult.Success)?.data
+                        ?: current.invitations,
                 )
+            }
+        }
+    }
+
+    /** Flips the pin; the server confirms and the cache reorders the row. */
+    fun togglePin(conversation: Conversation) = viewModelScope.launch {
+        store.setConversationSettings(
+            conversation.id,
+            com.us.android.core.chat.data.ConversationSettings(
+                isMuted = conversation.isMuted,
+                isPinned = !conversation.isPinned,
+            ),
+        )
+    }
+
+    /**
+     * Flips the mute. Honest boundary: this silences the CONVERSATION flag
+     * the server stores and the inbox renders; push fan-out is
+     * notification-service's, which today checks the user's global push
+     * switch, not per-conversation mute — tracked as P1 debt in the handover.
+     */
+    fun toggleMute(conversation: Conversation) = viewModelScope.launch {
+        store.setConversationSettings(
+            conversation.id,
+            com.us.android.core.chat.data.ConversationSettings(
+                isMuted = !conversation.isMuted,
+                isPinned = conversation.isPinned,
+            ),
+        )
+    }
+
+    fun acceptInvitation(invitationId: String) = resolveInvitation(invitationId) {
+        repository.acceptInvitation(invitationId)
+    }
+
+    fun declineInvitation(invitationId: String) = resolveInvitation(invitationId) {
+        repository.declineInvitation(invitationId)
+    }
+
+    private fun resolveInvitation(
+        invitationId: String,
+        action: suspend () -> AppResult<Unit>,
+    ) {
+        _state.update { it.copy(busyInvitationIds = it.busyInvitationIds + invitationId) }
+        viewModelScope.launch {
+            when (action()) {
+                is AppResult.Success -> {
+                    _state.update { current ->
+                        current.copy(
+                            invitations = current.invitations.filterNot { it.id == invitationId },
+                            busyInvitationIds = current.busyInvitationIds - invitationId,
+                        )
+                    }
+                    // An accepted invitation is a new conversation — resync.
+                    store.syncInbox()
+                }
+                is AppResult.Failure -> _state.update {
+                    it.copy(busyInvitationIds = it.busyInvitationIds - invitationId)
+                }
+            }
+        }
+    }
+
+    private fun observeCache() {
+        viewModelScope.launch {
+            store.conversationsFlow().collect { rows ->
+                _state.update { it.copy(conversations = rows) }
+            }
+        }
+        viewModelScope.launch {
+            store.requestsFlow().collect { rows ->
+                _state.update { it.copy(requests = rows) }
             }
         }
     }

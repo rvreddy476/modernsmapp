@@ -45,6 +45,8 @@ include(":core:testing")
 // ── Phase 1 modules ────────────────────────────────────────────────────
 include(":core:datastore")
 include(":core:database")
+include(":core:creator-model")
+include(":core:creator-engine")
 include(":core:telemetry")
 include(":core:network")
 include(":core:auth")

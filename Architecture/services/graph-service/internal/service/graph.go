@@ -661,6 +661,12 @@ func (s *Service) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]u
 	return s.store.GetBlockedAndMuted(ctx, userID)
 }
 
+// BlockedWithAny reports which of the candidates hold a block with userID in
+// either direction. Internal-only: chat's group-roster gate (P0-5).
+func (s *Service) BlockedWithAny(ctx context.Context, userID uuid.UUID, candidates []uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.BlockedWithAny(ctx, userID, candidates)
+}
+
 func (s *Service) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]store.Relationship, error) {
 	// M4-P0-1: this used to truncate to the first 100 targets and return
 	// normally. Every target past the cap came back absent from the map,

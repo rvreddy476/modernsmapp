@@ -59,14 +59,15 @@ func main() {
 	}
 
 	server := httpapi.NewServer(rdb, logger, httpapi.ServerOptions{
-		JWTSecret:       cfg.JWTSecret,
-		JWTKeys:         jwtKeys,
-		AllowedOrigins:  cfg.AllowedOrigins,
-		AllowQueryToken: cfg.WSAllowQueryToken,
-		WriteWait:       cfg.WSWriteWait,
-		PongWait:        cfg.WSPongWait,
-		PingPeriod:      cfg.WSPingPeriod,
-		MaxMessageSize:  cfg.WSMaxMessageSize,
+		JWTSecret:         cfg.JWTSecret,
+		JWTKeys:           jwtKeys,
+		AllowedOrigins:    cfg.AllowedOrigins,
+		AllowQueryToken:   cfg.WSAllowQueryToken,
+		WriteWait:         cfg.WSWriteWait,
+		PongWait:          cfg.WSPongWait,
+		PingPeriod:        cfg.WSPingPeriod,
+		MaxMessageSize:    cfg.WSMaxMessageSize,
+		EntitlementSecret: cfg.EntitlementSecret,
 	})
 
 	httpServer := &http.Server{

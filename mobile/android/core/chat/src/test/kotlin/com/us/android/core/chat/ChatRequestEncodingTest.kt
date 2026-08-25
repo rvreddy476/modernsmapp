@@ -73,3 +73,61 @@ class ChatRequestEncodingTest {
             .isEqualTo("""{"typing":true}""")
     }
 }
+
+// ── Android chat completion pass ────────────────────────────────────────
+
+/**
+ * Reactions and deletion address a Scylla row by (bucket, ts, msg_id); the
+ * server binds all three `required`, so an omitted field is a 400 the
+ * composer cannot explain. `ts` is passed back VERBATIM.
+ */
+class ChatCompletionRequestEncodingTest {
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+        coerceInputValues = true
+        isLenient = true
+    }
+
+    @Test
+    fun `a reaction toggle carries emoji bucket and verbatim ts`() {
+        val body = json.encodeToString(
+            com.us.android.core.chat.data.ToggleReactionRequest(
+                emoji = "❤️",
+                bucket = "202608",
+                ts = "2026-08-25T10:00:00.123Z",
+            ),
+        )
+        assertThat(body).isEqualTo(
+            """{"emoji":"❤️","bucket":"202608","ts":"2026-08-25T10:00:00.123Z"}""",
+        )
+    }
+
+    @Test
+    fun `a delete carries bucket and verbatim ts`() {
+        val body = json.encodeToString(
+            com.us.android.core.chat.data.DeleteMessageRequest(
+                bucket = "202608",
+                ts = "2026-08-25T10:00:00.123Z",
+            ),
+        )
+        assertThat(body).isEqualTo("""{"bucket":"202608","ts":"2026-08-25T10:00:00.123Z"}""")
+    }
+
+    /**
+     * Settings are a read-modify-write of two booleans. `false` values MUST
+     * be on the wire — an omitted `is_muted` would leave the server value
+     * untouched-or-defaulted depending on binding, which is exactly the
+     * ambiguity @EncodeDefault removes… except these have no defaults, so
+     * both always encode.
+     */
+    @Test
+    fun `conversation settings encode both switches explicitly`() {
+        val body = json.encodeToString(
+            com.us.android.core.chat.data.ConversationSettingsDto(isMuted = false, isPinned = true),
+        )
+        assertThat(body).contains("\"is_muted\":false")
+        assertThat(body).contains("\"is_pinned\":true")
+    }
+}

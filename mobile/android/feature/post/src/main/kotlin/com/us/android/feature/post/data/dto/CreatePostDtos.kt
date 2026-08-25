@@ -103,6 +103,34 @@ data class CreatePostRequest(
      * normal.
      */
     val distribution: DistributionRequest,
+
+    /**
+     * Present exactly when [contentType] is `poll`; omitted from the wire
+     * otherwise (null default, `encodeDefaults` off), so every existing
+     * request — including Studio's FROZEN replay bytes — is byte-identical to
+     * what it was before this field existed.
+     */
+    val poll: CreatePollRequest? = null,
+
+    /**
+     * Reel title. Present exactly when [contentType] is `flick`; omitted
+     * otherwise, for the same byte-stability reason as [poll].
+     */
+    val title: String? = null,
+)
+
+/**
+ * The server's `CreatePollRequest`: a question and 2–6 options
+ * (`binding:"required,min=2,max=6"`), optional multi-select, optional
+ * duration in hours (server default applies when omitted).
+ */
+@Serializable
+data class CreatePollRequest(
+    val question: String,
+    val options: List<String>,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    @SerialName("allows_multiple") val allowsMultiple: Boolean = false,
+    @SerialName("duration_hours") val durationHours: Int? = null,
 )
 
 /**
@@ -135,8 +163,11 @@ data class DistributionRequest(
 
 const val VISIBILITY_PUBLIC = "public"
 const val CONTENT_TYPE_POST = "post"
+const val CONTENT_TYPE_POLL = "poll"
+const val CONTENT_TYPE_FLICK = "flick"
 const val POST_TYPE_TEXT = "text"
 const val POST_TYPE_IMAGE = "image"
+const val POST_TYPE_VIDEO = "video"
 const val APP_ORIGIN_POSTBOOK = "postbook"
 const val DISTRIBUTION_VERSION = 1
 

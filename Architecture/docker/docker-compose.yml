@@ -1024,10 +1024,17 @@ services:
       KAFKA_TOPIC: chat.events.v1
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       USER_SERVICE_URL: http://user-service:8082
+      # Settings/privacy authority (usr.user_settings) — NOT the legacy user
+      # directory above; the chat policy projection refreshes from here.
+      IDENTITY_USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       IDENTITY_KAFKA_TOPIC: identity.events.v1
       IDENTITY_KAFKA_GROUP_ID: chat-service-identity
       GRAPH_SERVICE_URL: http://graph-service:8083
+      MEDIA_SERVICE_URL: http://media-service:8087
+      # Production chat pass: owner-issued conversation-room entitlements
+      # (shared HMAC with chat-ws-gateway).
+      CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}
     ports:
       - "8092:8092"
     depends_on:
@@ -1061,6 +1068,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
       WS_ALLOW_QUERY_TOKEN: ${WS_ALLOW_QUERY_TOKEN:-true}
+      CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}
     ports:
       - "8093:8093"
     depends_on:

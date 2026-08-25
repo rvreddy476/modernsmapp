@@ -1,13 +1,11 @@
 package com.us.android.feature.post.navigation
 
 import androidx.compose.material3.Text
-import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -146,7 +144,11 @@ class ComposerDiscardDurabilityTest {
         // RequestFocus, so matching the ancestor alone finds a node that
         // cannot be typed into.
         composeRule
-            .onNode(hasSetTextAction() and hasAnyAncestor(hasContentDescription("Post text")))
+            // The canvas is a BasicTextField, so ONE node carries both the
+            // description and the text action. It used to be a wrapped
+            // UsTextField where only a descendant was editable, hence the
+            // former ancestor match.
+            .onNode(hasSetTextAction() and hasContentDescription("Post text"))
             .performTextInput(text)
         composeRule.waitForIdle()
         // The draft is written on a launched coroutine; wait for the row rather
@@ -172,7 +174,7 @@ class ComposerDiscardDurabilityTest {
 
         pressSystemBack()
         composeRule.onNodeWithText("Discard this post?").assertExists()
-        composeRule.onNodeWithText("Discard").performScrollTo().performClick()
+        composeRule.onNodeWithText("Discard").performClick()
         composeRule.waitForIdle()
 
         // The pop happened, so the navigation-owned ViewModel was destroyed and
@@ -202,7 +204,7 @@ class ComposerDiscardDurabilityTest {
         typeDraft("ordering matters")
 
         pressSystemBack()
-        composeRule.onNodeWithText("Discard").performScrollTo().performClick()
+        composeRule.onNodeWithText("Discard").performClick()
         // waitForIdle first: the discard runs on a coroutine and the
         // navigation LaunchedEffect only fires on the recomposition that
         // follows it. The ordering claim is unaffected — the route cannot
@@ -229,7 +231,7 @@ class ComposerDiscardDurabilityTest {
         typeDraft("still writing this")
 
         pressSystemBack()
-        composeRule.onNodeWithText("Keep editing").performScrollTo().performClick()
+        composeRule.onNodeWithText("Keep editing").performClick()
         composeRule.waitForIdle()
 
         assertThat(currentRoute).contains(ComposerRoute::class.qualifiedName)

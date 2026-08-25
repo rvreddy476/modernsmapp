@@ -7,14 +7,14 @@ import (
 )
 
 type Config struct {
-	HTTPPort       string
-	PostgresDSN    string
-	RedisAddr      string
-	KafkaBrokers   []string
-	KafkaTopic     string
-	KafkaGroupID   string
-	CacheTTL       time.Duration
-	JWTSecret      string
+	HTTPPort     string
+	PostgresDSN  string
+	RedisAddr    string
+	KafkaBrokers []string
+	KafkaTopic   string
+	KafkaGroupID string
+	CacheTTL     time.Duration
+	JWTSecret    string
 	// C7: kid-aware verification. JWTKID identifies the secret in the
 	// active set; JWTSecretPrevious + JWTKIDPrevious allow zero-downtime
 	// rotation by keeping the prior secret usable until all access

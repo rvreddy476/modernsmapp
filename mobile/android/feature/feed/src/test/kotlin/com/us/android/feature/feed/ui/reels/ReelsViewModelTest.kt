@@ -45,6 +45,11 @@ class ReelsViewModelTest {
             anchor: String,
             limit: Int,
         ): ApiEnvelope<FeedDeltaDto> = error("unused")
+
+        override suspend fun votePoll(
+            postId: String,
+            body: com.us.android.feature.feed.data.PollVoteRequest,
+        ): Nothing = error("unused")
     }
 
     private fun viewModel() = ReelsViewModel(

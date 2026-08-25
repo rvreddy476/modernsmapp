@@ -98,6 +98,11 @@ type PostMedia struct {
 	Kind          string    `json:"kind"`
 	AltText       string    `json:"alt_text"`
 	AltDecorative bool      `json:"alt_decorative"`
+
+	// Position is the zero-based carousel ordinal. Always emitted, never
+	// omitempty: an absent ordinal and ordinal 0 must not be the same bytes,
+	// or a client cannot tell "first" from "unknown".
+	Position int `json:"position"`
 }
 
 // The one projection every post-media read uses.
@@ -112,7 +117,7 @@ type PostMedia struct {
 // be returned without its description rather than disappearing from the post
 // entirely. COALESCE for the same reason.
 const (
-	postMediaColumns = `pm.media_id, pm.kind, COALESCE(ma.alt_text, ''), COALESCE(ma.alt_decorative, FALSE)`
+	postMediaColumns = `pm.media_id, pm.kind, COALESCE(ma.alt_text, ''), COALESCE(ma.alt_decorative, FALSE), pm.position`
 	postMediaSource  = `FROM post_media pm LEFT JOIN media_assets ma ON ma.id = pm.media_id`
 )
 
@@ -580,12 +585,19 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		return err
 	}
 
-	// Insert media attachments
-	for _, m := range p.Media {
+	// Insert media attachments, in request order.
+	//
+	// The ordinal is the REQUEST index, assigned here inside the create
+	// transaction and never afterwards: there is no reorder endpoint in P0-A,
+	// so `position` is immutable from the moment the post exists. Duplicate
+	// media ids are rejected upstream (400 DUPLICATE_MEDIA) — without that
+	// check the (post_id, media_id) primary key would silently collapse a
+	// three-image carousel into two with no error anywhere.
+	for i, m := range p.Media {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO post_media (post_id, media_id, kind)
-			VALUES ($1, $2, $3)
-		`, p.ID, m.MediaID, m.Kind)
+			INSERT INTO post_media (post_id, media_id, kind, position)
+			VALUES ($1, $2, $3, $4)
+		`, p.ID, m.MediaID, m.Kind, i)
 		if err != nil {
 			return err
 		}
@@ -740,20 +752,12 @@ func (s *Store) GetPost(ctx context.Context, id uuid.UUID) (*Post, error) {
 		return nil, err
 	}
 
-	// Load media
-	rows, err := s.db.Query(ctx,
-		`SELECT `+postMediaColumns+` `+postMediaSource+` WHERE pm.post_id = $1`, id)
+	// Load media, ordered + normalized in one place; see post_media.go.
+	media, err := s.loadPostMediaForPost(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var m PostMedia
-		if err := rows.Scan(&m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err != nil {
-			return nil, err
-		}
-		p.Media = append(p.Media, m)
-	}
+	p.Media = media
 
 	return p, nil
 }
@@ -812,29 +816,9 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 	}
 
 	// Batch-fetch media for all posts
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT pm.post_id, `+postMediaColumns+`
-			`+postMediaSource+` WHERE pm.post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil
@@ -890,29 +874,9 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, li
 	}
 
 	// Batch-fetch media for all posts
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT pm.post_id, `+postMediaColumns+`
-			`+postMediaSource+` WHERE pm.post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil
@@ -1333,29 +1297,9 @@ func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, err
 	}
 
 	// Batch-fetch media for all posts
-	if len(posts) > 0 {
-		postIDs := make([]uuid.UUID, len(posts))
-		for i, p := range posts {
-			postIDs[i] = p.ID
-		}
-		mediaRows, err := s.db.Query(ctx, `
-			SELECT pm.post_id, `+postMediaColumns+`
-			`+postMediaSource+` WHERE pm.post_id = ANY($1)
-		`, postIDs)
-		if err == nil {
-			defer mediaRows.Close()
-			mediaMap := make(map[uuid.UUID][]PostMedia)
-			for mediaRows.Next() {
-				var postID uuid.UUID
-				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
-					mediaMap[postID] = append(mediaMap[postID], m)
-				}
-			}
-			for i := range posts {
-				posts[i].Media = mediaMap[posts[i].ID]
-			}
-		}
+	// Ordered + normalized in one place; see post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, err
 	}
 
 	return posts, nil

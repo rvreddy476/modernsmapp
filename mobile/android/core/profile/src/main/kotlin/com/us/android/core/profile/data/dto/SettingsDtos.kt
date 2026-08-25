@@ -25,6 +25,10 @@ data class PrivacySettingsDto(
     @SerialName("tc_location_pings") val trustedCircleLocationPings: Boolean = true,
     @SerialName("tc_after_hours_posts") val trustedCircleAfterHoursPosts: Boolean = true,
     @SerialName("tc_audio_room_invite") val trustedCircleAudioRoomInvites: Boolean = true,
+    // Production chat pass (directive §3.2).
+    @SerialName("chat_availability") val chatAvailability: String = "enabled",
+    @SerialName("send_typing_indicators") val sendTypingIndicators: Boolean = true,
+    @SerialName("show_message_preview") val showMessagePreview: Boolean = true,
     @SerialName("privacy_version") val privacyVersion: Int = 0,
 )
 
@@ -49,6 +53,11 @@ data class UpdatePrivacySettingsRequest(
     @SerialName("tc_location_pings") val trustedCircleLocationPings: Boolean,
     @SerialName("tc_after_hours_posts") val trustedCircleAfterHoursPosts: Boolean,
     @SerialName("tc_audio_room_invite") val trustedCircleAudioRoomInvites: Boolean,
+    // Production chat pass (directive §3.2). Part of the full snapshot so a
+    // hidden value can never be silently reset by an older write.
+    @SerialName("chat_availability") val chatAvailability: String,
+    @SerialName("send_typing_indicators") val sendTypingIndicators: Boolean,
+    @SerialName("show_message_preview") val showMessagePreview: Boolean,
 )
 
 @Serializable

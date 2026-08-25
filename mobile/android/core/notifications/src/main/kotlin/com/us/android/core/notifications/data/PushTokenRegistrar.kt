@@ -79,4 +79,12 @@ interface PushTokenStore {
     fun deviceId(): String?
     fun markRegistered(token: String, deviceId: String)
     fun clearRegistration()
+
+    /**
+     * Emits every stored token, including rotations that happen while the
+     * app is running. Session-transition registration alone misses those: a
+     * token FCM reissues mid-session was stored and never posted, and the
+     * device silently stopped receiving push until the next sign-in.
+     */
+    val tokenUpdates: kotlinx.coroutines.flow.SharedFlow<String>
 }
