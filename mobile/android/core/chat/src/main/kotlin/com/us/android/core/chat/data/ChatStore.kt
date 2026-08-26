@@ -4,11 +4,15 @@ import com.us.android.core.database.ChatConversationEntity
 import com.us.android.core.database.ChatDao
 import com.us.android.core.database.ChatMessageEntity
 import com.us.android.core.database.ChatPendingSendEntity
+import com.us.android.core.database.scrubDeletedRowsFromDisk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -44,14 +48,110 @@ interface OutboxScheduler {
     fun cancelDrain()
 }
 
+/**
+ * Persists the "disk scrub still owed" marker across process death, so a
+ * VACUUM/checkpoint that could not complete at logout is retried at the next
+ * session start instead of being forgotten (review finding F2-LB-3). The
+ * flag carries no user data — it is one boolean.
+ */
+interface ScrubRecoveryFlag {
+    fun isPending(): Boolean
+    fun setPending(pending: Boolean)
+}
+
 @Singleton
+// One class owns the durable chat boundary: cache, outbox, and the logout
+// write gate. Splitting it would scatter the gate's invariants across files.
+@Suppress("TooManyFunctions")
 class ChatStore @Inject constructor(
     private val repository: ChatRepository,
     private val dao: ChatDao,
     private val scheduler: OutboxScheduler,
+    private val scrubRecovery: ScrubRecoveryFlag,
 ) {
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    // ── The logout write gate + session lease (F2-LB-1) ─────────────────
+    //
+    // WorkManager cancellation is best-effort and coroutines that fetch
+    // before they write can outlive teardown, so "cancel then wipe" alone
+    // lets an already-running writer commit the OLD account's plaintext
+    // AFTER the wipe and scrub. Every chat DB write therefore passes this
+    // gate, and every operation with a NETWORK boundary before its write —
+    // the outbox drain, the inbox sync, a thread history fetch, an
+    // attachment upload — must hold a LEASE acquired before that boundary:
+    //
+    //  - a lease is issued ONLY while the gate is open and the store is not
+    //    quarantined; acquisition during teardown is refused outright;
+    //  - teardown advances the generation, so every previously issued lease
+    //    is dead forever — including after the gate reopens for the next
+    //    account;
+    //  - teardown AWAITS writers already inside a DB write block, so the
+    //    wipe never interleaves with a commit.
+    private val gateLock = Mutex()
+    private val recoveryLock = Mutex()
+    private var writeGeneration = 0L
+    private var tearingDown = false
+
+    /** True while a failed disk scrub is still owed (F2-LB-3). */
+    private var quarantined = scrubRecovery.isPending()
+    private var activeWriters = 0
+    private var writersIdle = CompletableDeferred<Unit>().also { it.complete(Unit) }
+
+    /**
+     * Issues a session write lease, or null while teardown is in progress or
+     * an owed scrub could not be repaid. Callers MUST acquire the lease
+     * BEFORE any network call whose response they intend to write, and pass
+     * it to the write — an operation whose lease predates a teardown is
+     * refused forever, so a response landing after logout (even after the
+     * next account signs in) can never write stale rows.
+     */
+    suspend fun acquireWriteLease(): Long? {
+        if (!ensureReady()) return null
+        return gateLock.withLock {
+            if (tearingDown) null else writeGeneration
+        }
+    }
+
+    /**
+     * The awaited readiness barrier (F2-LB-3): if the previous logout's disk
+     * scrub is still owed, repay it — another idempotent wipe + scrub —
+     * BEFORE any chat read/write proceeds. Returns false when repayment
+     * failed; the store then stays quarantined: no lease is issued, no write
+     * runs, and the session manager must not start the socket.
+     */
+    suspend fun ensureReady(): Boolean {
+        gateLock.withLock { if (!quarantined) return true }
+        recoveryLock.withLock {
+            gateLock.withLock { if (!quarantined) return true }
+            return wipeForLogout()
+        }
+    }
+
+    /**
+     * Runs [block] only if the store is ready, the gate is open, and
+     * [generation] (when given) is still current; returns null without
+     * running it otherwise. The active count lets teardown await in-flight
+     * writes instead of racing them.
+     */
+    private suspend fun <T> guardedWrite(generation: Long? = null, block: suspend () -> T): T? {
+        if (!ensureReady()) return null
+        gateLock.withLock {
+            if (tearingDown) return null
+            if (generation != null && generation != writeGeneration) return null
+            if (activeWriters == 0) writersIdle = CompletableDeferred()
+            activeWriters++
+        }
+        try {
+            return block()
+        } finally {
+            gateLock.withLock {
+                activeWriters--
+                if (activeWriters == 0) writersIdle.complete(Unit)
+            }
+        }
+    }
 
     private val _reconnectPending = MutableStateFlow(false)
 
@@ -77,16 +177,25 @@ class ChatStore @Inject constructor(
      * missed is repaired here from durable history.
      */
     suspend fun syncInbox(): Boolean {
+        // The lease is acquired BEFORE the network calls: a sync that was in
+        // flight when logout began must not write its stale-account
+        // response, no matter when it lands. During teardown or quarantine
+        // no lease is issued and the sync refuses immediately.
+        val generation = acquireWriteLease() ?: return false
         val conversations = repository.conversations()
         val requests = repository.requests()
         val now = System.currentTimeMillis()
         var ok = false
         if (conversations is com.us.android.core.common.result.AppResult.Success) {
-            dao.upsertConversations(conversations.data.map { it.toEntity(isRequestList = false, now) })
-            ok = true
+            val written = guardedWrite(generation) {
+                dao.upsertConversations(conversations.data.map { it.toEntity(isRequestList = false, now) })
+            }
+            ok = written != null
         }
         if (requests is com.us.android.core.common.result.AppResult.Success) {
-            dao.upsertConversations(requests.data.map { it.toEntity(isRequestList = true, now) })
+            guardedWrite(generation) {
+                dao.upsertConversations(requests.data.map { it.toEntity(isRequestList = true, now) })
+            }
         }
         if (ok) _reconnectPending.value = false
         return ok
@@ -104,28 +213,50 @@ class ChatStore @Inject constructor(
         conversationId: String,
         settings: ConversationSettings,
     ): com.us.android.core.common.result.AppResult<ConversationSettings> {
+        val generation = acquireWriteLease()
+            ?: return com.us.android.core.common.result.AppResult.Failure(
+                com.us.android.core.common.error.AppError.Unknown(
+                    code = "SESSION_TEARDOWN",
+                    statusCode = null,
+                    requestId = null,
+                ),
+            )
         val result = repository.updateConversationSettings(conversationId, settings)
         if (result is com.us.android.core.common.result.AppResult.Success) {
-            dao.updateSettingsFlags(
-                conversationId = conversationId,
-                pinned = result.data.isPinned,
-                muted = result.data.isMuted,
-            )
+            guardedWrite(generation) {
+                dao.updateSettingsFlags(
+                    conversationId = conversationId,
+                    pinned = result.data.isPinned,
+                    muted = result.data.isMuted,
+                )
+            }
         }
         return result
     }
 
     /** Removes one message row from the local cache after a server delete. */
-    suspend fun removeCachedMessage(messageId: String) = dao.deleteMessage(messageId)
+    suspend fun removeCachedMessage(messageId: String) {
+        guardedWrite { dao.deleteMessage(messageId) }
+    }
 
-    suspend fun clearUnread(conversationId: String) = dao.clearUnread(conversationId)
+    suspend fun clearUnread(conversationId: String) {
+        guardedWrite { dao.clearUnread(conversationId) }
+    }
 
     // ── Messages ────────────────────────────────────────────────────────
 
-    /** Caches a page of history; duplicates are ignored by primary key. */
-    suspend fun cacheMessages(messages: List<Message>) {
+    /**
+     * Caches a page of history; duplicates are ignored by primary key.
+     *
+     * Callers that FETCHED the page over the network must pass the [lease]
+     * they acquired before the fetch — a history response that lands after
+     * logout is refused instead of writing old-account plaintext (F2-LB-1).
+     */
+    suspend fun cacheMessages(messages: List<Message>, lease: Long? = null) {
         if (messages.isEmpty()) return
-        dao.insertMessages(messages.filter { it.id.isNotBlank() }.map { it.toEntity() })
+        guardedWrite(lease) {
+            dao.insertMessages(messages.filter { it.id.isNotBlank() }.map { it.toEntity() })
+        }
     }
 
     /** The offline fallback for an open thread. Newest first. */
@@ -140,12 +271,14 @@ class ChatStore @Inject constructor(
      */
     suspend fun applyRealtimeMessage(message: Message) {
         if (message.id.isBlank() || message.conversationId.isBlank()) return
-        dao.insertMessages(listOf(message.toEntity()))
-        dao.markUnread(
-            conversationId = message.conversationId,
-            preview = message.text.take(PREVIEW_LENGTH),
-            at = message.createdAt,
-        )
+        guardedWrite {
+            dao.insertMessages(listOf(message.toEntity()))
+            dao.markUnread(
+                conversationId = message.conversationId,
+                preview = message.text.take(PREVIEW_LENGTH),
+                at = message.createdAt,
+            )
+        }
     }
 
     // ── The durable send outbox ─────────────────────────────────────────
@@ -170,30 +303,39 @@ class ChatStore @Inject constructor(
      * key so the optimistic UI row and the eventual server row can be tied
      * together.
      */
-    suspend fun enqueueSend(conversationId: String, text: String, mediaId: String? = null): String {
+    suspend fun enqueueSend(
+        conversationId: String,
+        text: String,
+        mediaId: String? = null,
+        lease: Long? = null,
+    ): String {
         val key = ChatRepository.newIdempotencyKey()
-        dao.enqueueSend(
-            ChatPendingSendEntity(
-                idempotencyKey = key,
-                conversationId = conversationId,
-                text = text,
-                mediaId = mediaId,
-                createdAtMillis = System.currentTimeMillis(),
-                attempts = 0,
-                failed = false,
-            ),
-        )
-        scheduleDrain()
+        val written = guardedWrite(lease) {
+            dao.enqueueSend(
+                ChatPendingSendEntity(
+                    idempotencyKey = key,
+                    conversationId = conversationId,
+                    text = text,
+                    mediaId = mediaId,
+                    createdAtMillis = System.currentTimeMillis(),
+                    attempts = 0,
+                    failed = false,
+                ),
+            )
+        }
+        if (written != null) scheduleDrain()
         return key
     }
 
     /** Puts a failed row back in the queue and kicks the worker. */
     suspend fun retrySend(idempotencyKey: String) {
-        dao.retry(idempotencyKey)
+        guardedWrite { dao.retry(idempotencyKey) } ?: return
         scheduleDrain()
     }
 
-    suspend fun abandonSend(idempotencyKey: String) = dao.completeSend(idempotencyKey)
+    suspend fun abandonSend(idempotencyKey: String) {
+        guardedWrite { dao.completeSend(idempotencyKey) }
+    }
 
     /** Re-arms the outbox worker; also called from app start so sends queued
      *  before a process death resume without any user action. */
@@ -222,20 +364,25 @@ class ChatStore @Inject constructor(
      *    genuinely empty or blocked.
      */
     suspend fun drainOutbox(): Boolean {
+        // Leased ONCE for the whole drain: WorkManager cancellation is
+        // best-effort, so a worker that outlives teardown must find every
+        // one of its writes refused — including after a new session opens.
+        val generation = acquireWriteLease() ?: return true
         while (true) {
-            val rows = dao.pendingSends()
+            val rows = guardedWrite(generation) { dao.pendingSends() } ?: return true
             if (rows.isEmpty()) return true
             var progressed = false
             var retryableFailure = false
             val blockedConversations = mutableSetOf<String>()
             for (row in rows) {
                 if (row.conversationId in blockedConversations) continue
-                when (attemptSend(row)) {
+                when (attemptSend(row, generation)) {
                     SendAttempt.Delivered, SendAttempt.Parked -> progressed = true
                     SendAttempt.RetryLater -> {
                         retryableFailure = true
                         blockedConversations += row.conversationId
                     }
+                    SendAttempt.Halted -> return true
                 }
             }
             if (retryableFailure) return false
@@ -243,10 +390,11 @@ class ChatStore @Inject constructor(
         }
     }
 
-    private enum class SendAttempt { Delivered, Parked, RetryLater }
+    private enum class SendAttempt { Delivered, Parked, RetryLater, Halted }
 
-    private suspend fun attemptSend(row: ChatPendingSendEntity): SendAttempt {
-        dao.recordAttempt(row.idempotencyKey)
+    private suspend fun attemptSend(row: ChatPendingSendEntity, generation: Long): SendAttempt {
+        guardedWrite(generation) { dao.recordAttempt(row.idempotencyKey) }
+            ?: return SendAttempt.Halted
         val mediaId = row.mediaId
         val result = if (mediaId != null) {
             repository.sendMedia(row.conversationId, mediaId, row.idempotencyKey, row.text)
@@ -255,8 +403,13 @@ class ChatStore @Inject constructor(
         }
         return when (result) {
             is com.us.android.core.common.result.AppResult.Success -> {
-                cacheMessages(listOf(result.data))
-                dao.completeSend(row.idempotencyKey)
+                // Same generation-guarded writes: if teardown began while the
+                // network call was in flight, the server copy stands (it is
+                // durable server-side) and NOTHING lands in the local cache.
+                guardedWrite(generation) {
+                    dao.insertMessages(listOf(result.data).filter { it.id.isNotBlank() }.map { it.toEntity() })
+                    dao.completeSend(row.idempotencyKey)
+                } ?: return SendAttempt.Halted
                 SendAttempt.Delivered
             }
             is com.us.android.core.common.result.AppResult.Failure -> {
@@ -264,7 +417,8 @@ class ChatStore @Inject constructor(
                 if (permanent || row.attempts + 1 >= MAX_SEND_ATTEMPTS) {
                     // Parked for an explicit user retry — never silently
                     // dropped, never retried forever.
-                    dao.markFailed(row.idempotencyKey)
+                    guardedWrite(generation) { dao.markFailed(row.idempotencyKey) }
+                        ?: return SendAttempt.Halted
                     SendAttempt.Parked
                 } else {
                     SendAttempt.RetryLater
@@ -273,10 +427,46 @@ class ChatStore @Inject constructor(
         }
     }
 
-    /** Logout/account switch: every cached row and queued send goes. */
-    suspend fun wipeForLogout() {
+    /**
+     * Logout/account switch: every cached row and queued send goes, and the
+     * deleted bytes are scrubbed from disk.
+     *
+     * Order and guarantees (review findings F2-LB-1/2/3):
+     *  1. the gate closes and the generation advances — every writer that
+     *     started before this point is refused from here on;
+     *  2. teardown AWAITS writers already inside a DB write block, so the
+     *     wipe cannot interleave with a commit;
+     *  3. the wipe and scrub run against a quiesced database;
+     *  4. a scrub that STILL could not complete is recorded as owed and
+     *     retried at the next session start ([retryPendingScrubIfNeeded]) —
+     *     logout itself always completes (fail-secure, not fail-stuck), and
+     *     the wiped rows are already unreadable through every query path.
+     *
+     * Returns true when the disk scrub verifiably completed.
+     */
+    suspend fun wipeForLogout(): Boolean {
+        val idle = gateLock.withLock {
+            tearingDown = true
+            // Every lease issued before this line is dead FOREVER — leases
+            // cannot be acquired while tearingDown, so no lease can ever
+            // match the post-increment value until the gate reopens.
+            writeGeneration++
+            if (activeWriters == 0) null else writersIdle
+        }
         scheduler.cancelDrain()
-        dao.wipeAll()
+        idle?.await()
+        return try {
+            dao.wipeAll()
+            val clean = dao.scrubDeletedRowsFromDisk()
+            // Synchronously persisted marker + in-process quarantine: a
+            // failed scrub keeps the store unavailable (no lease, no write,
+            // no socket) until [ensureReady] repays it.
+            scrubRecovery.setPending(!clean)
+            gateLock.withLock { quarantined = !clean }
+            clean
+        } finally {
+            gateLock.withLock { tearingDown = false }
+        }
     }
 
     private fun Conversation.toEntity(isRequestList: Boolean, syncedAt: Long) =

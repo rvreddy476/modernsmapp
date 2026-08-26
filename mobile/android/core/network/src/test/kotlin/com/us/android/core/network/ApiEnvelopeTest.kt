@@ -137,6 +137,37 @@ class ApiEnvelopeTest {
     }
 
     @Test
+    fun `list call treats data null as an empty list`() = runTest {
+        // Captured live from GET /v1/auth/trusted-devices on an account with
+        // no trusted devices: a Go nil slice marshals as `"data": null`.
+        enqueue(200, """{"data":null}""")
+
+        val result = listApiCall(errorMapper) { api.list() }
+
+        assertThat((result as AppResult.Success).data).isEmpty()
+    }
+
+    @Test
+    fun `list call treats an absent data key as an empty list`() = runTest {
+        enqueue(200, """{"meta":{"request_id":"req-10"}}""")
+
+        val result = listApiCall(errorMapper) { api.list() }
+
+        assertThat((result as AppResult.Success).data).isEmpty()
+    }
+
+    @Test
+    fun `list call still surfaces an error object as a failure`() = runTest {
+        enqueue(200, """{"error":{"code":"NOPE","message":"x"},"meta":{"request_id":"req-11"}}""")
+
+        val result = listApiCall(errorMapper) { api.list() }
+
+        val error = (result as AppResult.Failure).error
+        assertThat((error as AppError.Unknown).code).isEqualTo("NOPE")
+        assertThat(error.requestId).isEqualTo("req-11")
+    }
+
+    @Test
     fun `an empty page is a success, not an error`() = runTest {
         enqueue(200, """{"data":[],"meta":{}}""")
 

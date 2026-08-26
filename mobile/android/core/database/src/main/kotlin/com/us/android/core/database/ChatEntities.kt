@@ -1,11 +1,16 @@
 package com.us.android.core.database
 
+import android.database.SQLException
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.RawQuery
+import androidx.sqlite.db.SimpleSQLiteQuery
+import androidx.sqlite.db.SupportSQLiteQuery
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -160,4 +165,57 @@ interface ChatDao {
         clearMessages()
         clearConversations()
     }
+
+    /** Raw escape hatch for [scrubDeletedRowsFromDisk] — VACUUM/PRAGMA are not valid in [Query]. */
+    @RawQuery
+    suspend fun rawCheckpoint(query: SupportSQLiteQuery): Int
 }
+
+/**
+ * Removes deleted rows' bytes from DISK, not just from query results.
+ *
+ * [ChatDao.wipeAll] deletes the rows, but their bytes survive twice over:
+ * the write-ahead log keeps every superseded page image until a checkpoint
+ * (captured live after a device sign-out — `us.db` was a bare header while
+ * `us.db-wal` still carried message plaintext), and inside the main file the
+ * freed pages keep their old content on the free list. VACUUM rebuilds the
+ * database without the free pages; the TRUNCATE checkpoint then flushes and
+ * zeroes the WAL. Must run OUTSIDE the wipe transaction — neither statement
+ * is legal inside one.
+ *
+ * Returns true only when BOTH steps verifiably completed. `PRAGMA
+ * wal_checkpoint(TRUNCATE)` reports contention as a RESULT ROW, not an
+ * exception: column zero is `1` when an active reader or writer prevented
+ * completion, in which case the WAL still holds the deleted plaintext.
+ * Treating that row as success was the review finding F2-LB-2 — a busy
+ * checkpoint must surface as a failed scrub so the caller can run its
+ * fail-secure recovery, never be swallowed.
+ */
+suspend fun ChatDao.scrubDeletedRowsFromDisk(): Boolean {
+    var vacuumed = false
+    repeat(SCRUB_ATTEMPTS) { attempt ->
+        if (attempt > 0) delay(SCRUB_RETRY_MILLIS)
+        if (!vacuumed) {
+            vacuumed = try {
+                rawCheckpoint(SimpleSQLiteQuery("VACUUM"))
+                true
+            } catch (_: SQLException) {
+                // A concurrent holder blocks VACUUM entirely; retry.
+                false
+            }
+        }
+        if (vacuumed) {
+            val busy = try {
+                rawCheckpoint(SimpleSQLiteQuery("PRAGMA wal_checkpoint(TRUNCATE)"))
+            } catch (_: SQLException) {
+                CHECKPOINT_BUSY
+            }
+            if (busy != CHECKPOINT_BUSY) return true
+        }
+    }
+    return false
+}
+
+private const val SCRUB_ATTEMPTS = 3
+private const val SCRUB_RETRY_MILLIS = 150L
+private const val CHECKPOINT_BUSY = 1

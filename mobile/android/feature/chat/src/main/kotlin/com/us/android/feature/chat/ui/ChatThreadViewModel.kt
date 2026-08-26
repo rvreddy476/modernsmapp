@@ -107,6 +107,9 @@ class ChatThreadViewModel @Inject constructor(
     }
 
     fun refresh() = viewModelScope.launch {
+        // Lease BEFORE the fetch (F2-LB-1): a history response that lands
+        // after logout must not cache old-account plaintext.
+        val lease = store.acquireWriteLease() ?: return@launch
         val refreshed = controller.refresh()
         if (refreshed.refreshError != null && refreshed.messages.isEmpty()) {
             // Offline fallback: the cached tail renders instead of a blank
@@ -121,15 +124,16 @@ class ChatThreadViewModel @Inject constructor(
                 return@launch
             }
         }
-        store.cacheMessages(refreshed.messages)
+        store.cacheMessages(refreshed.messages, lease)
         _state.value = _state.value.copy(thread = refreshed, offline = false)
         controller.markRead()
         store.clearUnread(conversationId)
     }
 
     fun loadMore() = viewModelScope.launch {
+        val lease = store.acquireWriteLease() ?: return@launch
         val next = controller.loadMore()
-        store.cacheMessages(next.messages)
+        store.cacheMessages(next.messages, lease)
         _state.value = _state.value.copy(thread = next)
     }
 
@@ -166,6 +170,10 @@ class ChatThreadViewModel @Inject constructor(
     fun sendAttachment(uri: Uri) {
         attachmentJob?.cancel()
         attachmentJob = viewModelScope.launch {
+            // Lease BEFORE the upload (F2-LB-1): an upload finishing after
+            // logout must not enqueue an old-account media message into the
+            // next session's outbox.
+            val lease = store.acquireWriteLease() ?: return@launch
             _state.value = _state.value.copy(
                 attachmentUploading = true,
                 attachmentError = null,
@@ -180,7 +188,7 @@ class ChatThreadViewModel @Inject constructor(
             }
             when (result) {
                 is AppResult.Success -> {
-                    store.enqueueSend(conversationId, text = "", mediaId = result.data)
+                    store.enqueueSend(conversationId, text = "", mediaId = result.data, lease = lease)
                     _state.value = _state.value.copy(attachmentUploading = false)
                 }
                 is AppResult.Failure -> _state.value = _state.value.copy(
@@ -240,9 +248,13 @@ class ChatThreadViewModel @Inject constructor(
                 is ChatSocketEvent.Connected -> {
                     // Reconnect reconciliation: HTTP repairs whatever the
                     // socket missed; the controller de-duplicates by id.
-                    val refreshed = controller.refresh()
-                    store.cacheMessages(refreshed.messages)
-                    _state.value = _state.value.copy(thread = refreshed, offline = false)
+                    // Same lease-before-fetch rule as refresh().
+                    val lease = store.acquireWriteLease()
+                    if (lease != null) {
+                        val refreshed = controller.refresh()
+                        store.cacheMessages(refreshed.messages, lease)
+                        _state.value = _state.value.copy(thread = refreshed, offline = false)
+                    }
                 }
                 is ChatSocketEvent.Disconnected ->
                     _state.value = _state.value.copy(offline = true)

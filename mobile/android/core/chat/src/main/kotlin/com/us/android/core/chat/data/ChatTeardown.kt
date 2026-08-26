@@ -21,7 +21,11 @@ class ChatTeardown @Inject constructor(
 ) : SessionTeardownTask {
 
     override suspend fun onSignOut() {
-        session.stop()
+        // AWAIT the session's whole job tree (socket loop, reconciliation,
+        // room subscribes) before wiping — cancellation alone can leave a
+        // writer mid-flight (F2-LB-1); the store's write gate then refuses
+        // whatever this join could not reach (e.g. a WorkManager worker).
+        session.stopAndJoin()
         store.wipeForLogout()
         lock.clearForLogout()
     }

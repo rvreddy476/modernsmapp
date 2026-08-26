@@ -129,7 +129,9 @@ sealed interface ChatSocketEvent {
  * and stops; it does not loop, because a client that reconnects on its own
  * cannot be told to stop when the session ends.
  */
-class ChatSocket(
+// `open` so session-manager tests can script connection outcomes — the
+// permanent-rejection restart path is untestable against a real socket.
+open class ChatSocket(
     private val client: OkHttpClient,
     private val wsBaseUrl: String,
     private val json: Json = Json { ignoreUnknownKeys = true },
@@ -146,7 +148,7 @@ class ChatSocket(
     private var active: WebSocket? = null
 
     /** Sends one frame on the live socket. False when there is none. */
-    fun send(frame: String): Boolean = active?.send(frame) ?: false
+    open fun send(frame: String): Boolean = active?.send(frame) ?: false
 
     /**
      * Opens the socket and emits until it closes.
@@ -155,7 +157,7 @@ class ChatSocket(
      * after a token refresh must present the new token, and a stale one would
      * be rejected forever.
      */
-    fun connect(tokenProvider: () -> String?): Flow<ChatSocketEvent> = callbackFlow {
+    open fun connect(tokenProvider: () -> String?): Flow<ChatSocketEvent> = callbackFlow {
         val token = tokenProvider()
         if (token.isNullOrBlank()) {
             trySend(ChatSocketEvent.Disconnected(permanent = true))
