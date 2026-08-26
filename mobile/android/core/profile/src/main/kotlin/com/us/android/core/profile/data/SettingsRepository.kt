@@ -4,6 +4,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
+import com.us.android.core.network.listApiCall
 import com.us.android.core.profile.data.dto.AboutItemDto
 import com.us.android.core.profile.data.dto.AccountSessionDto
 import com.us.android.core.profile.data.dto.AccountSummaryDto
@@ -59,7 +60,7 @@ class SecuritySettingsRepository @Inject constructor(
         apiCall(errorMapper) { accountApi.account() }.map { it.toDomain() }
 
     suspend fun sessions(): AppResult<List<AccountSession>> =
-        apiCall(errorMapper) { deviceApi.sessions() }.map { rows -> rows.map { it.toDomain() } }
+        listApiCall(errorMapper) { deviceApi.sessions() }.map { rows -> rows.map { it.toDomain() } }
 
     suspend fun revokeSession(id: String): AppResult<Unit> =
         apiCall(errorMapper) { deviceApi.revokeSession(id) }.map { }
@@ -67,13 +68,17 @@ class SecuritySettingsRepository @Inject constructor(
     suspend fun logoutAll(): AppResult<Unit> = apiCall(errorMapper) { deviceApi.logoutAll() }.map { }
 
     suspend fun trustedDevices(): AppResult<List<TrustedDevice>> =
-        apiCall(errorMapper) { deviceApi.trustedDevices() }.map { rows -> rows.map { it.toDomain() } }
+        listApiCall(errorMapper) {
+            deviceApi.trustedDevices()
+        }.map { rows -> rows.map { it.toDomain() } }
 
     suspend fun removeTrustedDevice(id: String): AppResult<Unit> =
         apiCall(errorMapper) { deviceApi.removeTrustedDevice(id) }.map { }
 
     suspend fun securityEvents(): AppResult<List<SecurityEvent>> =
-        apiCall(errorMapper) { accountApi.securityEvents() }.map { rows -> rows.map { it.toDomain() } }
+        listApiCall(errorMapper) {
+            accountApi.securityEvents()
+        }.map { rows -> rows.map { it.toDomain() } }
 
     suspend fun acknowledgeEvent(id: String): AppResult<Unit> =
         apiCall(errorMapper) { accountApi.acknowledgeEvent(id) }.map { }
@@ -96,7 +101,7 @@ class ProfileDetailsRepository @Inject constructor(
     private val errorMapper: ErrorMapper,
 ) {
     suspend fun about(): AppResult<List<ProfileAboutItem>> =
-        apiCall(errorMapper) { api.about() }.map { rows -> rows.map { it.toDomain() } }
+        listApiCall(errorMapper) { api.about() }.map { rows -> rows.map { it.toDomain() } }
 
     suspend fun saveAbout(value: ProfileAboutItem): AppResult<ProfileAboutItem> =
         apiCall(errorMapper) { api.saveAbout(value.section, value.toRequest()) }.map { it.toDomain() }
@@ -105,7 +110,7 @@ class ProfileDetailsRepository @Inject constructor(
         apiCall(errorMapper) { api.deleteAbout(value.section, value.itemId) }.map { }
 
     suspend fun links(): AppResult<List<ProfileLink>> =
-        apiCall(errorMapper) { api.links() }.map { rows -> rows.map { it.toDomain() } }
+        listApiCall(errorMapper) { api.links() }.map { rows -> rows.map { it.toDomain() } }
 
     suspend fun saveLink(value: ProfileLink): AppResult<ProfileLink> = apiCall(errorMapper) {
         if (value.id.isBlank()) {

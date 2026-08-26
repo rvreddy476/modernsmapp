@@ -83,6 +83,39 @@ suspend inline fun noContentApiCall(
 }
 
 /**
+ * [apiCall] for non-paginated LIST endpoints.
+ *
+ * Go handlers hand the envelope a slice that is `nil` when the user has no
+ * rows, which marshals as `"data": null` (captured live from
+ * `GET /v1/auth/trusted-devices` on a fresh account). For a list endpoint
+ * that is a legitimate empty result, not a malformed response — the same
+ * rule [pagedApiCall] already applies. Routing these through plain [apiCall]
+ * turned every empty list into a failure and took down any screen that
+ * required all its sections to load.
+ */
+@Suppress("TooGenericExceptionCaught")
+suspend inline fun <T> listApiCall(
+    errorMapper: ErrorMapper,
+    crossinline block: suspend () -> ApiEnvelope<List<T>>,
+): AppResult<List<T>> = try {
+    val envelope = block()
+    when {
+        envelope.error != null -> AppResult.Failure(
+            AppError.Unknown(
+                code = envelope.error.code,
+                statusCode = null,
+                requestId = envelope.meta?.requestId,
+            ),
+        )
+        else -> AppResult.Success(envelope.data ?: emptyList())
+    }
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    AppResult.Failure(errorMapper.map(e))
+}
+
+/**
  * [apiCall] for cursor-paginated list endpoints, folding `meta.next_cursor`
  * into the result so callers never touch the envelope.
  */

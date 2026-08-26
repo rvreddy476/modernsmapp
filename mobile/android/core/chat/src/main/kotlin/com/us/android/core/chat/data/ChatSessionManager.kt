@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -46,8 +48,16 @@ class ChatSessionManager @Inject constructor(
     /** Connection state for screens that show an offline banner. */
     enum class ConnectionState { Disconnected, Connecting, Connected }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var loop: Job? = null
+    /**
+     * One job tree per started session. EVERYTHING this manager launches —
+     * the socket loop, the reconnect [ChatStore.syncInbox] reconciliation and
+     * the room subscribes — is a child of [sessionScope]'s supervisor job, so
+     * [stopAndJoin] can cancel AND await the whole tree. The previous shape
+     * launched reconciliation as a detached sibling; logout could complete
+     * while that sibling was still writing (review finding F2-LB-1).
+     */
+    @Volatile
+    private var sessionScope: CoroutineScope? = null
     private val json = Json { ignoreUnknownKeys = true }
 
     private val _events = MutableSharedFlow<ChatSocketEvent>(extraBufferCapacity = 64)
@@ -73,16 +83,58 @@ class ChatSessionManager @Inject constructor(
      * while running is a no-op, so every screen may call it defensively.
      */
     fun start() {
-        if (loop?.isActive == true) return
-        loop = scope.launch { runLoop() }
+        if (sessionScope?.isActive == true) return
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        sessionScope = scope
+        scope.launch {
+            try {
+                // AWAITED readiness barrier (F2-LB-3): an owed disk scrub is
+                // repaid before the socket exists. If repayment fails the
+                // store is quarantined — every write and lease is refused —
+                // and the socket MUST NOT start.
+                if (store.ensureReady()) runLoop(scope)
+            } finally {
+                // The loop only returns on permanent credential rejection,
+                // failed readiness, or cancellation. Release the root so a
+                // later re-authentication start() begins fresh — an active
+                // but childless supervisor previously swallowed every
+                // restart (F2-LB-1 gap 3).
+                endSession(scope)
+            }
+        }
     }
 
-    /** Stops the socket; called on logout BEFORE the local wipe. */
+    private fun endSession(scope: CoroutineScope) {
+        if (sessionScope === scope) {
+            sessionScope = null
+            _connection.value = ConnectionState.Disconnected
+        }
+        scope.cancel()
+    }
+
+    /** Stops the socket; prefer [stopAndJoin] on logout. */
     fun stop() {
-        loop?.cancel()
-        loop = null
+        sessionScope?.cancel()
+        sessionScope = null
         synchronized(roomsLock) { subscribedRooms.clear() }
         _connection.value = ConnectionState.Disconnected
+    }
+
+    /**
+     * Stops the session and AWAITS every job it owns — the loop, in-flight
+     * reconciliation, room subscribes. Logout must not proceed to the wipe
+     * while any of them could still be running (F2-LB-1); the store's write
+     * gate then refuses whatever cancellation alone could not reach.
+     */
+    suspend fun stopAndJoin() {
+        val scope = sessionScope
+        sessionScope = null
+        synchronized(roomsLock) { subscribedRooms.clear() }
+        _connection.value = ConnectionState.Disconnected
+        scope?.coroutineContext?.get(Job)?.let { job ->
+            job.cancel()
+            job.join()
+        }
     }
 
     /**
@@ -97,7 +149,7 @@ class ChatSessionManager @Inject constructor(
         if (conversationId.isBlank()) return
         synchronized(roomsLock) { subscribedRooms.add(conversationId) }
         if (_connection.value == ConnectionState.Connected) {
-            scope.launch { sendSubscribe(conversationId) }
+            sessionScope?.launch { sendSubscribe(conversationId) }
         }
     }
 
@@ -120,7 +172,7 @@ class ChatSessionManager @Inject constructor(
         if (token.isNotBlank()) socket.send(subscribeFrame(json, token))
     }
 
-    private suspend fun runLoop() {
+    private suspend fun runLoop(scope: CoroutineScope) {
         var attempt = 0
         while (true) {
             _connection.value = ConnectionState.Connecting
@@ -132,7 +184,8 @@ class ChatSessionManager @Inject constructor(
                         _connection.value = ConnectionState.Connected
                         // Reconnect reconciliation (CH-LB-4.3): repair the
                         // durable inbox from HTTP, then re-subscribe every
-                        // open room with a fresh entitlement.
+                        // open room with a fresh entitlement. Children of the
+                        // session job, so stopAndJoin awaits them.
                         scope.launch { store.syncInbox() }
                         val rooms = synchronized(roomsLock) { subscribedRooms.toList() }
                         rooms.forEach { scope.launch { sendSubscribe(it) } }

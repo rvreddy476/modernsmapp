@@ -49,6 +49,7 @@ class ChatOutboxDrainTest {
         override suspend fun clearUnread(conversationId: String) = Unit
         override suspend fun markUnread(conversationId: String, preview: String, at: String) = Unit
         override suspend fun updateSettingsFlags(conversationId: String, pinned: Boolean, muted: Boolean) = Unit
+        override suspend fun rawCheckpoint(query: androidx.sqlite.db.SupportSQLiteQuery): Int = 0
         override suspend fun deleteMessage(messageId: String) = Unit
         override suspend fun deleteConversation(conversationId: String) = Unit
         override suspend fun clearConversations() = Unit
@@ -128,11 +129,20 @@ class ChatOutboxDrainTest {
         override fun cancelDrain() = Unit
     }
 
+    private class FakeScrubFlag : com.us.android.core.chat.data.ScrubRecoveryFlag {
+        private var stored = false
+        override fun isPending(): Boolean = stored
+        override fun setPending(pending: Boolean) {
+            stored = pending
+        }
+    }
+
     private fun store(dao: FakeDao, api: FakeApi): ChatStore =
         ChatStore(
             repository = ChatRepository(api, ErrorMapper(Json { ignoreUnknownKeys = true })),
             dao = dao,
             scheduler = RecordingScheduler(),
+            scrubRecovery = FakeScrubFlag(),
         )
 
     private fun row(key: String, conv: String, at: Long, attempts: Int = 0) =

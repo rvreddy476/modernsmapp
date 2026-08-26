@@ -98,7 +98,32 @@ object ChatModule {
             }
         }
 
+    /**
+     * The "disk scrub still owed" marker (F2-LB-3). SharedPreferences, not
+     * Room: it must survive precisely the situations where the database
+     * could not be scrubbed, and it carries no user data.
+     */
+    @Provides
+    @Singleton
+    fun provideScrubRecoveryFlag(
+        @ApplicationContext context: Context,
+    ): com.us.android.core.chat.data.ScrubRecoveryFlag {
+        val prefs = context.getSharedPreferences("chat_maintenance", Context.MODE_PRIVATE)
+        return object : com.us.android.core.chat.data.ScrubRecoveryFlag {
+            override fun isPending(): Boolean = prefs.getBoolean(SCRUB_PENDING_KEY, false)
+
+            // commit(), not apply(): the marker exists precisely for abrupt
+            // process death right after a failed scrub — an asynchronous
+            // write could be lost with it. Callers run on Dispatchers.IO.
+            @android.annotation.SuppressLint("ApplySharedPref")
+            override fun setPending(pending: Boolean) {
+                prefs.edit().putBoolean(SCRUB_PENDING_KEY, pending).commit()
+            }
+        }
+    }
+
     private const val SEND_BACKOFF_SECONDS = 10L
+    private const val SCRUB_PENDING_KEY = "scrub_pending"
 }
 
 @dagger.Module

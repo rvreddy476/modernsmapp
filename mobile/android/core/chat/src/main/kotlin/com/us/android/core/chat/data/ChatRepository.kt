@@ -4,6 +4,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.Paged
 import com.us.android.core.network.apiCall
+import com.us.android.core.network.listApiCall
 import com.us.android.core.network.pagedApiCall
 import java.util.UUID
 import javax.inject.Inject
@@ -132,7 +133,7 @@ class ChatRepository @Inject constructor(
         }.mapValue { it.toDomain() }
 
     suspend fun requests(): AppResult<List<Conversation>> =
-        apiCall(errorMapper) { api.requests() }.mapList { it.toDomain() }
+        listApiCall(errorMapper) { api.requests() }.mapList { it.toDomain() }
 
     suspend fun acceptRequest(conversationId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.acceptRequest(conversationId) }.mapValue { }
@@ -174,7 +175,7 @@ class ChatRepository @Inject constructor(
         }.mapValue { }
 
     suspend fun invitations(): AppResult<List<GroupInvitation>> =
-        apiCall(errorMapper) { api.invitations() }
+        listApiCall(errorMapper) { api.invitations() }
             .mapList { GroupInvitation(it.id, it.conversationId, it.inviterId, it.createdAt) }
 
     suspend fun acceptInvitation(invitationId: String): AppResult<Unit> =
@@ -185,7 +186,7 @@ class ChatRepository @Inject constructor(
 
     /** The viewer's own connections — the member-picker candidate ids. */
     suspend fun connections(viewerId: String): AppResult<List<String>> =
-        apiCall(errorMapper) { api.connections(viewerId) }.mapValue { it }
+        listApiCall(errorMapper) { api.connections(viewerId) }
 
     // ── Android chat completion pass ────────────────────────────────────
 
