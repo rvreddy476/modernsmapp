@@ -184,6 +184,35 @@ func (s *ConversationStore) GetSettingsForConversations(ctx context.Context, use
 	return out, rows.Err()
 }
 
+// ListMutedMemberIDs returns the members who currently have this conversation
+// muted — the inverse lookup of GetSettingsForConversations, and the one the
+// send path needs to tell notification-service whom NOT to buzz.
+//
+// A temporary mute (mute_until in the past) is not a mute any more, so the
+// expiry is evaluated here rather than trusting is_muted alone.
+func (s *ConversationStore) ListMutedMemberIDs(ctx context.Context, conversationID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id
+		FROM chat.conversation_settings
+		WHERE conversation_id = $1
+		  AND is_muted = true
+		  AND (mute_until IS NULL OR mute_until > now())
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (s *ConversationStore) ListConversationsByLabel(ctx context.Context, userID uuid.UUID, label string, limit, offset int) ([]ConversationSettings, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,

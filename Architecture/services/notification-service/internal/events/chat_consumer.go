@@ -45,6 +45,9 @@ type messageCreatedPayload struct {
 	Type           string    `json:"type"`
 	CreatedAt      time.Time `json:"created_at"`
 	RecipientIDs   []string  `json:"recipient_ids"`
+	// Recipients who muted this conversation. Chat owns that setting, so it
+	// arrives on the event; absent means nobody muted it.
+	MutedRecipientIDs []string `json:"muted_recipient_ids,omitempty"`
 }
 
 // messageRequestCreatedPayload is the payload of a MessageRequestCreated
@@ -61,9 +64,18 @@ type messageRequestCreatedPayload struct {
 // events from the chat.events.v1 topic. Modeled on CallConsumer — a
 // separate consumer/group so chat-event lag never blocks social-event
 // notification delivery.
+// chatNotifier is the narrow slice of notification-service this consumer
+// actually uses. Extracting it (launch-backlog D-D3) is what makes the fan-out
+// rules — who gets a row, who gets a push — testable without Scylla, Redis and
+// a push transport.
+type chatNotifier interface {
+	CreateNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
+	CreateNotificationWithoutPush(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
+}
+
 type ChatConsumer struct {
 	reader  *kafka.Reader
-	service *service.Service
+	service chatNotifier
 }
 
 func NewChatConsumer(brokers []string, groupID string, topic string, svc *service.Service) *ChatConsumer {
@@ -157,6 +169,13 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 	}
 	deepLink := fmt.Sprintf("/messages/%s", e.ConversationID)
 
+	// Muted recipients still get the durable inbox row — mute silences the
+	// device, it does not hide the conversation — but no push is sent.
+	muted := make(map[string]struct{}, len(e.MutedRecipientIDs))
+	for _, id := range e.MutedRecipientIDs {
+		muted[id] = struct{}{}
+	}
+
 	var firstErr error
 	for _, ridStr := range e.RecipientIDs {
 		recipientID, err := uuid.Parse(ridStr)
@@ -167,7 +186,11 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 		if recipientID == senderID {
 			continue
 		}
-		if err := c.service.CreateNotification(
+		create := c.service.CreateNotification
+		if _, isMuted := muted[ridStr]; isMuted {
+			create = c.service.CreateNotificationWithoutPush
+		}
+		if err := create(
 			ctx, recipientID, senderID, "dm", "conversation", conversationID, deepLink, createdAt,
 		); err != nil {
 			log.Printf("chat: failed to create dm notification for %s: %v\n", ridStr, err)

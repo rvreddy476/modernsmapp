@@ -33,6 +33,10 @@ type FCMPusher struct {
 	serviceAccountJSON string
 	httpClient         *http.Client
 
+	// apiBaseURL overrides the FCM endpoint for adapter fixture tests;
+	// empty means the real https://fcm.googleapis.com.
+	apiBaseURL string
+
 	// Parsed service account, populated lazily on first send.
 	saOnce sync.Once
 	sa     *fcmServiceAccount
@@ -63,15 +67,41 @@ func NewFCMPusher(projectID, serviceAccountJSON string) *FCMPusher {
 	}
 }
 
-// Send delivers a push notification via FCM to an Android or Web device.
-func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body string, data map[string]string) error {
-	if f.projectID == "" || f.serviceAccountJSON == "" {
-		return nil // FCM not configured, skip silently
+// callPushTypes are the ringing/call types that use Android's calling push
+// contract (CALL-LB-4): DATA-ONLY — a `notification` block would be
+// system-rendered in background as an ordinary tray card and NEVER reach
+// FirebaseMessagingService, so the app could not show its full-screen
+// incoming-call UI — and HIGH priority, so a Dozing device still wakes.
+// Title/body ride in `data` for the app's own presenter.
+var callPushTypes = map[string]bool{
+	"incoming_call":       true,
+	"incoming_video_call": true,
+}
+
+// BuildFCMMessage shapes one FCM v1 `message` object. Exported (and pure) so
+// the calling contract is pinned by tests without an FCM round trip.
+func BuildFCMMessage(token, title, body string, data map[string]string) map[string]interface{} {
+	android := map[string]interface{}{}
+	if ck, ok := data["collapse_key"]; ok && ck != "" {
+		// FCM collapse_key: the latest notification replaces older ones
+		// with the same key.
+		android["collapse_key"] = ck
 	}
 
-	accessToken, err := f.getAccessToken(ctx)
-	if err != nil {
-		return fmt.Errorf("fcm: get access token: %w", err)
+	if callPushTypes[data["type"]] {
+		// Data-only + high priority: the app renders the ring itself.
+		enriched := make(map[string]string, len(data)+2)
+		for k, v := range data {
+			enriched[k] = v
+		}
+		enriched["title"] = title
+		enriched["body"] = body
+		android["priority"] = "high"
+		return map[string]interface{}{
+			"token":   token,
+			"data":    enriched,
+			"android": android,
+		}
 	}
 
 	msg := map[string]interface{}{
@@ -82,21 +112,37 @@ func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body strin
 		},
 		"data": data,
 	}
-
-	// Apply collapse key if provided in data.
-	// FCM collapse_key causes the latest notification to replace older ones with the same key.
-	if ck, ok := data["collapse_key"]; ok && ck != "" {
-		msg["android"] = map[string]interface{}{
-			"collapse_key": ck,
-		}
+	if len(android) > 0 {
+		msg["android"] = android
 	}
+	return msg
+}
+
+// Send delivers a push notification via FCM to an Android or Web device.
+func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body string, data map[string]string) error {
+	if f.projectID == "" || f.serviceAccountJSON == "" {
+		// CALL-LB-4: an unconfigured provider is no longer silent success —
+		// the caller decides whether a skipped push is acceptable.
+		return fmt.Errorf("fcm credentials missing: %w", ErrProviderNotConfigured)
+	}
+
+	accessToken, err := f.getAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("fcm: get access token: %w", err)
+	}
+
+	msg := BuildFCMMessage(token, title, body, data)
 
 	payload := map[string]interface{}{
 		"message": msg,
 	}
 
 	b, _ := json.Marshal(payload)
-	apiURL := fmt.Sprintf("https://fcm.googleapis.com/v1/projects/%s/messages:send", f.projectID)
+	base := f.apiBaseURL
+	if base == "" {
+		base = "https://fcm.googleapis.com"
+	}
+	apiURL := fmt.Sprintf("%s/v1/projects/%s/messages:send", base, f.projectID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(b))
 	if err != nil {
 		return err
@@ -111,6 +157,14 @@ func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body strin
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
+		// CALL-LB-4A: the RESPONSE BODY decides, not the status — FCM uses
+		// 400 for invalid tokens AND invalid requests, distinguished only
+		// by error.details. A dead token retires; a request/config/auth/
+		// quota failure propagates without blaming a healthy device.
+		if isFCMTokenRejection(body) {
+			return fmt.Errorf("fcm: status %d: %s: %w",
+				resp.StatusCode, string(body), ErrDeviceRejected)
+		}
 		return fmt.Errorf("fcm: send failed with status %d: %s", resp.StatusCode, string(body))
 	}
 	return nil

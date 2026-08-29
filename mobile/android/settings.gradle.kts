@@ -69,6 +69,12 @@ include(":core:engagement")
 include(":core:chat")
 include(":feature:chat")
 
+// Voice & video calling (calling P0). :core:call owns the data seam, the
+// signaling protocol over the ONE session socket, and the WebRTC engine;
+// :feature:call renders the incoming/outgoing/in-call surfaces.
+include(":core:call")
+include(":feature:call")
+
 // The notification inbox — Slice D. A feature module rather than screens bolted
 // onto :feature:feed: the inbox is its own destination with its own paging and
 // read-state, and putting it in the feed would make the feed depend on

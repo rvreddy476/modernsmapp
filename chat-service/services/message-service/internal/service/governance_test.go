@@ -279,6 +279,10 @@ func (f *governanceFake) GetConversationMeta(context.Context, uuid.UUID) (*postg
 	return nil, nil
 }
 
+func (f *governanceFake) ReplaceLastMessage(context.Context, uuid.UUID, time.Time, string, *uuid.UUID, *time.Time) error {
+	return nil
+}
+
 // --- groupStore ---
 
 func (f *governanceFake) CountActiveMembers(ctx context.Context, convID uuid.UUID) (int, error) {

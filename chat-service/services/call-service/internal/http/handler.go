@@ -45,6 +45,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.POST("", h.CreateCall)
 		v1.GET("/history", h.GetCallHistory)
+		// The callee's discovery surface: pending invitations WITH invite
+		// ids (accept/decline need them; nothing else client-reachable
+		// carried them). Also how a push-tap cold start finds the ring.
+		v1.GET("/invites/pending", h.ListPendingInvites)
 		v1.GET("/:callId", h.GetCall)
 		v1.POST("/:callId/join", h.JoinCall)
 		v1.POST("/:callId/invites/:inviteId/accept", h.AcceptInvite)
@@ -135,6 +139,20 @@ func (h *Handler) CreateCall(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, result, nil)
+}
+
+// ListPendingInvites handles GET /v1/calls/invites/pending
+func (h *Handler) ListPendingInvites(c *gin.Context) {
+	userID, ok := getUserID(c, h.log)
+	if !ok {
+		return
+	}
+	result, err := h.svc.ListPendingInvites(c.Request.Context(), userID)
+	if err != nil {
+		h.handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
 // GetCall handles GET /v1/calls/:callId
@@ -424,15 +442,25 @@ func (h *Handler) handleServiceError(c *gin.Context, err error) {
 	switch err {
 	case service.ErrCallNotFound, service.ErrInviteNotFound:
 		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
-	case service.ErrNotParticipant, service.ErrNotHost:
+	case service.ErrNotParticipant, service.ErrNotHost, service.ErrGroupCallsDisabled:
 		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
 	case service.ErrCallAlreadyEnded, service.ErrAlreadyInCall, service.ErrAlreadyJoined,
 		service.ErrInviteNotPending, service.ErrCannotInviteSelf, service.ErrCallNotActive,
-		service.ErrAlreadyAudioVideo, service.ErrMaxParticipants, service.ErrMaxInvitesPerCall:
+		service.ErrAlreadyAudioVideo, service.ErrMaxParticipants, service.ErrMaxInvitesPerCall,
+		service.ErrTargetUnavailable:
 		api.Error(c.Writer, http.StatusConflict, "CONFLICT", err.Error(), nil, nil)
 	case service.ErrCallRateLimitExceeded, service.ErrInviteRateLimitExceeded,
 		service.ErrJoinRateLimitExceeded, service.ErrRingAntiSpam:
 		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMIT", err.Error(), nil, nil)
+	case service.ErrCallNotAllowed:
+		// ONE generic refusal for block/privacy/circle — distinguishing
+		// them would leak the callee's block state. Previously these
+		// policy errors fell through to the default 500.
+		api.Error(c.Writer, http.StatusForbidden, "CALL_NOT_ALLOWED",
+			"Calling this user is not permitted", nil, nil)
+	case service.ErrGraphUnavailable:
+		api.Error(c.Writer, http.StatusServiceUnavailable, "TEMPORARILY_UNAVAILABLE",
+			"Please try again shortly", nil, nil)
 	default:
 		h.log.Error("unhandled service error", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)

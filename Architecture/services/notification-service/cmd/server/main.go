@@ -201,6 +201,20 @@ func main() {
 
 	notifSvc.SetPusher(push.NewDispatcher(fcmPusher, apnsPusher))
 
+	// CALL-LB-4 fail-closed startup guard: enabling calling makes the FCM
+	// wake-up load-bearing. CALLS_ENABLED=true on call-service REQUIRES
+	// CALL_PUSH_REQUIRED=true here, and this refuses to start without FCM
+	// rather than committing rings that never pushed.
+	callPushRequired := env("CALL_PUSH_REQUIRED", "false") == "true"
+	if err := push.ValidateCallPushConfig(callPushRequired, fcmPusher != nil); err != nil {
+		slog.Error("call push configuration invalid", "error", err)
+		os.Exit(1)
+	}
+	if callPushRequired {
+		notifSvc.SetCallPushRequired(true)
+		slog.Info("call pushes are REQUIRED: delivery fails closed on missing transport")
+	}
+
 	notifHandler := http.New(notifSvc, rdb)
 
 	// Audit CS1: previously the handler defined WithInternalKey but

@@ -1097,6 +1097,14 @@ services:
       KAFKA_LIFECYCLE_TOPIC: call.lifecycle
       KAFKA_NOTIFICATION_TOPIC: call.notifications
       KAFKA_ANALYTICS_TOPIC: call.analytics
+      # Calling P0: enabled in dev; the policy gate requires the graph
+      # permission authority + internal key when enabled (config validation).
+      CALLS_ENABLED: "true"
+      # Dev-only: direct-WebRTC 1:1 on the stub provider, no LiveKit/TURN.
+      # The policy gates (graph authority + internal key) still apply.
+      CALLS_DEV_ALLOW_STUB_MEDIA: "true"
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       LIVEKIT_HOST: ${LIVEKIT_HOST:-}
       LIVEKIT_URL: ${LIVEKIT_URL:-}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}

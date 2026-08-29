@@ -156,6 +156,9 @@ func main() {
 
 	// 8. Scheduled Message Worker (background)
 	go svc.StartScheduledMessageWorker(ctx)
+	// MP-LB-1: resumes durable preview-repair obligations (deleted-message
+	// inbox previews) after failures and restarts.
+	go svc.StartPreviewRepairWorker(ctx)
 
 	// 9. HTTP Server
 	r := gin.New()

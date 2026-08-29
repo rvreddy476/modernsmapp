@@ -132,8 +132,9 @@ class ChatOutboxDrainTest {
     private class FakeScrubFlag : com.us.android.core.chat.data.ScrubRecoveryFlag {
         private var stored = false
         override fun isPending(): Boolean = stored
-        override fun setPending(pending: Boolean) {
+        override fun setPending(pending: Boolean): Boolean {
             stored = pending
+            return true
         }
     }
 

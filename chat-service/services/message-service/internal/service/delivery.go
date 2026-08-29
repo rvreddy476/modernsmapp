@@ -36,6 +36,47 @@ func (s *Service) lastMessageStore() lastMessageStore {
 	return s.convStore.(lastMessageStore)
 }
 
+type mutedMemberStore interface {
+	ListMutedMemberIDs(ctx context.Context, conversationID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// mutedRecipients narrows [recipients] to those who have muted the
+// conversation, so the published event can tell notification-service whom not
+// to buzz.
+//
+// Fails OPEN: a lookup error means the message is announced as it always was.
+// Failing closed would silently swallow a notification, which is a worse
+// outcome than an unwanted buzz and much harder to notice.
+func (s *Service) mutedRecipients(ctx context.Context, conversationID uuid.UUID, recipients []string) []string {
+	if len(recipients) == 0 {
+		return nil
+	}
+	store, ok := s.convStore.(mutedMemberStore)
+	if !ok {
+		return nil
+	}
+	muted, err := store.ListMutedMemberIDs(ctx, conversationID)
+	if err != nil {
+		s.log.Warn("muted-member lookup failed; announcing to every recipient",
+			"err", err, "conversation_id", conversationID)
+		return nil
+	}
+	if len(muted) == 0 {
+		return nil
+	}
+	mutedSet := make(map[string]struct{}, len(muted))
+	for _, id := range muted {
+		mutedSet[id.String()] = struct{}{}
+	}
+	var out []string
+	for _, r := range recipients {
+		if _, ok := mutedSet[r]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.MessageDeliveryIntent) error {
 	message := &scylla.Message{
 		ConversationID: intent.ConversationID,
@@ -83,7 +124,10 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		SenderID:       intent.SenderID.String(),
 		Type:           intent.MessageType,
 		RecipientIDs:   recipients,
-		CreatedAt:      intent.MessageTS,
+		// Per-conversation mute is chat's state; it rides the event so the
+		// notifier never has to ask across the service boundary.
+		MutedRecipientIDs: s.mutedRecipients(ctx, intent.ConversationID, recipients),
+		CreatedAt:         intent.MessageTS,
 	}
 	if err := s.deliveryStore().InsertOutboxEventOnce(ctx, "message-created:"+intent.MessageID.String(), sharedEvents.MessageCreated, created); err != nil {
 		return fmt.Errorf("queue message-created event: %w", err)

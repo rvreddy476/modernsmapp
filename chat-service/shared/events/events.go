@@ -140,8 +140,15 @@ type MessageCreatedPayload struct {
 	Type           string `json:"type"`
 	// RecipientIDs lists every conversation member except the sender so that
 	// notification-service can fan out without re-querying chat-service.
-	RecipientIDs []string  `json:"recipient_ids"`
-	CreatedAt    time.Time `json:"created_at"`
+	RecipientIDs []string `json:"recipient_ids"`
+	// MutedRecipientIDs is the subset of RecipientIDs who have muted this
+	// conversation. Chat owns per-conversation mute, so it travels with the
+	// event rather than notification-service reaching across a service
+	// boundary to ask. Those recipients still get their durable inbox row —
+	// mute means "do not buzz me", not "hide this from me" — but no device
+	// push. Additive and omitempty: an older publisher simply mutes nobody.
+	MutedRecipientIDs []string  `json:"muted_recipient_ids,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 type MessageDeletedPayload struct {

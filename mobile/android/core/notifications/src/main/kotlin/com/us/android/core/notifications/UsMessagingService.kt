@@ -24,6 +24,9 @@ class UsMessagingService : FirebaseMessagingService() {
     @Inject
     lateinit var presenter: NotificationPresenter
 
+    @Inject
+    lateinit var incomingCallHandler: IncomingCallPushHandler
+
     /**
      * Fires on first launch, reinstall, data clear, and periodic rotation.
      *
@@ -48,6 +51,19 @@ class UsMessagingService : FirebaseMessagingService() {
      * a server-side contract, not a client setting.
      */
     override fun onMessageReceived(message: RemoteMessage) {
-        presenter.present(message.data)
+        val data = message.data
+        // CALL-LB-4: ringing pushes are DATA-ONLY and HIGH priority
+        // server-side precisely so they reach here in the background. They
+        // wake the calling stack — which re-verifies the invite with the
+        // server and posts the full-screen ring itself — instead of
+        // rendering a tray card.
+        if (data[NotificationPresenter.KEY_TYPE] in RINGING_PUSH_TYPES) {
+            incomingCallHandler.onIncomingCallPush(
+                callId = data[NotificationPresenter.KEY_ENTITY_ID].orEmpty(),
+                video = data[NotificationPresenter.KEY_TYPE] == "incoming_video_call",
+            )
+            return
+        }
+        presenter.present(data)
     }
 }

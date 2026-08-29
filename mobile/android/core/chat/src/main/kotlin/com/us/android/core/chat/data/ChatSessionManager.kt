@@ -38,7 +38,10 @@ import javax.inject.Singleton
  *    reconnect; nothing here is the source of truth.
  */
 @Singleton
-class ChatSessionManager @Inject constructor(
+// `open` (class + the three functions a thread screen calls) solely so the
+// feature-level ViewModel tests can substitute an inert session; production
+// behavior is unchanged.
+open class ChatSessionManager @Inject constructor(
     private val socket: ChatSocket,
     private val store: ChatStore,
     private val tokenProvider: TokenProvider,
@@ -63,10 +66,15 @@ class ChatSessionManager @Inject constructor(
     private val _events = MutableSharedFlow<ChatSocketEvent>(extraBufferCapacity = 64)
 
     /** Every socket event, after the durable store has applied it. */
-    val events: SharedFlow<ChatSocketEvent> = _events.asSharedFlow()
+    // `open` (like start/subscribeRoom/sendCallFrame) so call-layer tests can
+    // substitute a scripted stream; production behavior unchanged.
+    open val events: SharedFlow<ChatSocketEvent> = _events.asSharedFlow()
 
     private val _connection = MutableStateFlow(ConnectionState.Disconnected)
-    val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
+
+    // `open` (like events/sendCallFrame) so call-layer tests can script
+    // connection readiness; production behavior unchanged.
+    open val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
 
     /**
      * Conversations with a live room interest (an open thread), guarded by
@@ -82,7 +90,7 @@ class ChatSessionManager @Inject constructor(
      * Starts (or restarts) the session socket. Idempotent — a second start
      * while running is a no-op, so every screen may call it defensively.
      */
-    fun start() {
+    open fun start() {
         if (sessionScope?.isActive == true) return
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         sessionScope = scope
@@ -145,7 +153,7 @@ class ChatSessionManager @Inject constructor(
      * design — the personal channel still delivers everything today, so the
      * room is an acceleration, not the delivery guarantee.
      */
-    fun subscribeRoom(conversationId: String) {
+    open fun subscribeRoom(conversationId: String) {
         if (conversationId.isBlank()) return
         synchronized(roomsLock) { subscribedRooms.add(conversationId) }
         if (_connection.value == ConnectionState.Connected) {
@@ -153,8 +161,16 @@ class ChatSessionManager @Inject constructor(
         }
     }
 
+    /**
+     * Sends one call-signaling frame on the live session socket (calling P0).
+     * The ONE socket carries chat and call signaling both — a second socket
+     * would fork token refresh and double every reconnect race. Returns false
+     * when there is no live socket; the call layer decides what that means.
+     */
+    open fun sendCallFrame(frame: String): Boolean = socket.send(frame)
+
     /** Drops room interest when the thread closes. */
-    fun unsubscribeRoom(conversationId: String) {
+    open fun unsubscribeRoom(conversationId: String) {
         val wasTracked = synchronized(roomsLock) { subscribedRooms.remove(conversationId) }
         if (wasTracked && _connection.value == ConnectionState.Connected) {
             socket.send(unsubscribeFrame(json, conversationId))

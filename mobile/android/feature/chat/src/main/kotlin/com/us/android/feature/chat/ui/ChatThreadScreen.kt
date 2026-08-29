@@ -68,6 +68,7 @@ fun ChatThreadScreen(
     onOpenGroupInfo: () -> Unit,
     isGroup: Boolean,
     onBack: () -> Unit,
+    onStartCall: (peerUserId: String, peerName: String, video: Boolean) -> Unit = { _, _, _ -> },
     viewModel: ChatThreadViewModel = hiltViewModel(),
 ) {
     val render by viewModel.state.collectAsStateWithLifecycle()
@@ -104,6 +105,21 @@ fun ChatThreadScreen(
                 title = title.ifBlank { render.loadedTitle.ifBlank { "Conversation" } },
                 onBack = onBack,
                 actions = {
+                    // Calls are DIRECT-only in P0, and the buttons appear only
+                    // once the roster resolved the peer. Whether the peer may
+                    // actually be called is the server's decision when the
+                    // button is pressed — visibility here is not permission.
+                    if (!isGroup && !render.loadedIsGroup && render.peerUserId.isNotBlank()) {
+                        val name = title.ifBlank { render.loadedTitle }
+                        TextButton(
+                            onClick = { onStartCall(render.peerUserId, name, false) },
+                            modifier = Modifier.testTag("thread-call-audio"),
+                        ) { Text("📞") }
+                        TextButton(
+                            onClick = { onStartCall(render.peerUserId, name, true) },
+                            modifier = Modifier.testTag("thread-call-video"),
+                        ) { Text("🎥") }
+                    }
                     if (isGroup || render.loadedIsGroup) {
                         TextButton(
                             onClick = onOpenGroupInfo,
@@ -173,7 +189,9 @@ fun ChatThreadScreen(
 
             Composer(
                 draft = state.draft,
-                canSend = state.canSend,
+                // One send at a time: while an enqueue awaits Room, a second
+                // tap must not mint a second outbox row for the same text.
+                canSend = state.canSend && !render.sendInFlight,
                 attaching = render.attachmentUploading,
                 onDraftChange = {
                     viewModel.onDraftChange(it)
@@ -257,6 +275,17 @@ private fun ComposerStatus(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
             modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
+        )
+    }
+    if (render.sendUnavailable) {
+        Text(
+            text = "Chat is finishing a security cleanup. Your message wasn't " +
+                "sent — it's kept below, tap Send to retry.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .testTag("send-unavailable"),
         )
     }
 }

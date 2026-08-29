@@ -291,6 +291,9 @@ class ThreadController(
         is ChatSocketEvent.Connected,
         is ChatSocketEvent.Disconnected,
         is ChatSocketEvent.SubscriptionRevoked,
+        // Call signaling belongs to :core:call's CallSessionManager; a chat
+        // thread renders nothing for it.
+        is ChatSocketEvent.CallSignal,
         is ChatSocketEvent.Unknown,
         is ChatSocketEvent.Malformed,
         -> null

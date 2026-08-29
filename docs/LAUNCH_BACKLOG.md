@@ -42,6 +42,45 @@ Slices A, B and C are complete and unbanked on `codex/module-01-02-launch-safety
 No commit, push, branch or PR has been authorised. This is a single point of
 failure until it is.
 
+### R-3. MP-LB-1 stale-completion race — generation/CAS on preview-repair obligations
+
+Recorded 2026-08-28 from `prompt/chat-deleted-preview-durable-repair-review.md`
+(the final chat review cycle). The durable deleted-preview repair is in place
+and all single-attempt boundaries are proven, but ONE interleaving remains,
+reproduced by the reviewer against the production SQL:
+
+1. delete attempt A writes an obligation; its Scylla delete fails; the
+   obligation ages past `liveMessageRetireAfter`;
+2. a worker claims it, reads the message LIVE, and decides to retire —
+   but has not completed yet;
+3. the client retries the delete: `CreatePreviewRepairObligation` re-arms the
+   SAME `message_id` (upsert bumps only `next_attempt_at`), and the retry's
+   Scylla delete succeeds;
+4. the stale worker's completion deletes by `message_id` alone — removing the
+   NEWLY re-armed obligation;
+5. if the retrying process dies before its inline repair, deleted plaintext
+   can again remain in `last_message_preview` with no durable debt left.
+
+**Required fix (design agreed, not yet implemented):**
+
+- add a monotonically increasing `generation BIGINT` to
+  `chat.preview_repair_obligations` (expand-only `ALTER ... ADD COLUMN`);
+- `CreatePreviewRepairObligation` re-arm increments the generation AND
+  refreshes `created_at` (the deletion-attempt age must restart, or the
+  young-live-message deferral is bypassed too);
+- claims return the generation; `CompletePreviewRepairObligation` and
+  `DeferPreviewRepairObligation` become CAS:
+  `... WHERE message_id = $1 AND generation = $2` — a stale worker's
+  completion/defer of a newer generation is a no-op;
+- proofs: a unit interleaving test racing live-message retirement against a
+  same-message re-arm, and a live-PostgreSQL test executing the reviewer's
+  exact five-step SQL sequence asserting `obligations_after_stale_completion = 1`.
+
+Until fixed, the exposure window requires: a failed Scylla delete, a >10-minute
+wait, a worker claim racing a client retry, the retry's delete succeeding, AND
+process death before inline repair — narrow, but it is deleted plaintext, so it
+gates release.
+
 ---
 
 ## Slice D debt (notification inbox)
@@ -60,6 +99,11 @@ received on a real device. Fold into the physical-device smoke (R-1).
 2 test files for 8 event consumers and two push transports. `processMessage`
 takes a concrete `*service.Service`, so unit-testing the consumer needs an
 interface extraction. Deferred because those files were under concurrent edit.
+
+> **Partially closed 2026-08-27** — `prompt/chat-mute-and-preview-claude.md`.
+> The CHAT consumer now depends on a narrow `chatNotifier` interface and has
+> four unit tests (mute routing, sender skip, fan-out continuation, absent
+> muted list). The other consumers still hold the concrete service.
 
 ### D-D4. Notification rows say "Someone"
 

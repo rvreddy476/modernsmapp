@@ -25,6 +25,10 @@ type Service struct {
 	rdb         *redis.Client
 	pusher      push.Pusher
 	mail        mailer.Mailer
+
+	// callPushRequired makes the CALL delivery path fail closed on any
+	// missing push transport (CALL-LB-4). Set via SetCallPushRequired.
+	callPushRequired bool
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
@@ -67,7 +71,18 @@ func (s *Service) SendEmail(ctx context.Context, to, htmlTemplate string, data a
 // Use CreateNotificationIdempotent for any at-least-once path (retries,
 // resumable batches) where a duplicate row would be user-visible.
 func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error {
-	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, "")
+	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, "", false)
+}
+
+// CreateNotificationWithoutPush writes the durable inbox row and publishes
+// realtime, but sends NO device push.
+//
+// This is what a per-conversation mute means: the conversation is not hidden
+// and the notification is still recorded for when the user looks — the device
+// simply stays quiet. The mute itself is chat's state and arrives on the
+// event, because this service must not reach into chat's tables to ask.
+func (s *Service) CreateNotificationWithoutPush(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error {
+	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, "", true)
 }
 
 // CreateNotificationIdempotent writes the inbox row under a deterministic
@@ -93,10 +108,10 @@ func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.U
 // `identity` must be stable for the logical delivery — the subscriber
 // fan-out uses "<post_id>:<user_id>:<type>".
 func (s *Service) CreateNotificationIdempotent(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string) error {
-	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity)
+	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity, false)
 }
 
-func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string) error {
+func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string, suppressPush bool) error {
 	id := uuid.New()
 
 	// 1. Save to Scylla (Inbox)
@@ -147,7 +162,11 @@ func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.U
 		fmt.Printf("failed to publish to redis: %v\n", err)
 	}
 
-	// 3. Send push notification if pusher is configured
+	// 3. Send push notification if pusher is configured — unless this
+	// delivery is silenced (per-conversation mute).
+	if suppressPush {
+		return nil
+	}
 	if s.pusher != nil && s.pgStore != nil {
 		tokens, err := s.pgStore.GetUserDevices(ctx, userID)
 		if err == nil && len(tokens) > 0 {

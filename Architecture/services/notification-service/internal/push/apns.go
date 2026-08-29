@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -23,6 +24,10 @@ type APNSPusher struct {
 	bundleID   string
 	httpClient *http.Client
 	production bool
+
+	// hostOverride points Send at a fixture server in adapter tests;
+	// empty means the real APNs hosts.
+	hostOverride string
 }
 
 // NewAPNSPusher creates an APNs pusher. privateKeyPEM is the .p8 file contents.
@@ -80,7 +85,8 @@ func mustJSON(v interface{}) []byte {
 
 func (a *APNSPusher) Send(ctx context.Context, token, _, title, body string, data map[string]string) error {
 	if a.privateKey == nil {
-		return nil // APNs not configured
+		// CALL-LB-4: an unconfigured provider is no longer silent success.
+		return fmt.Errorf("apns key missing: %w", ErrProviderNotConfigured)
 	}
 
 	tokenStr, err := a.buildJWT()
@@ -114,10 +120,17 @@ func (a *APNSPusher) Send(ctx context.Context, token, _, title, body string, dat
 	if a.production {
 		host = "https://api.push.apple.com"
 	}
+	if a.hostOverride != "" {
+		host = a.hostOverride
+	}
 	url := fmt.Sprintf("%s/3/device/%s", host, token)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	req.Header.Set("Authorization", "bearer "+tokenStr)
 	req.Header.Set("apns-topic", a.bundleID)
+	// CALL-LB-4A: apns-push-type is REQUIRED on modern APNs; omitting it
+	// draws a request-level 400 (MissingPushType) that a status-only rule
+	// would have blamed on — and retired — a healthy device.
+	req.Header.Set("apns-push-type", "alert")
 	req.Header.Set("Content-Type", "application/json")
 
 	// Set apns-collapse-id header — APNs uses this to replace notifications on the device.
@@ -131,7 +144,16 @@ func (a *APNSPusher) Send(ctx context.Context, token, _, title, body string, dat
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("apns: send failed with status %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		// CALL-LB-4A: the JSON `reason` decides, not the status — APNs 400
+		// covers BadDeviceToken AND many request/header/topic defects. Only
+		// a documented device-terminal reason retires the token.
+		if isAPNSTokenRejection(respBody) {
+			return fmt.Errorf("apns: status %d: %s: %w",
+				resp.StatusCode, string(respBody), ErrDeviceRejected)
+		}
+		return fmt.Errorf("apns: send failed with status %d: %s",
+			resp.StatusCode, string(respBody))
 	}
 	return nil
 }

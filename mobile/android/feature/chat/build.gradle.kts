@@ -61,6 +61,13 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+    // TEST-ONLY. The send-journey test drives the real ChatThreadViewModel
+    // over a real ChatStore backed by a real in-memory Room database, so
+    // "exactly one outbox row" is asserted against actual rows rather than a
+    // fake's bookkeeping. Production code in this module still never sees
+    // Room — moduleGraphCheck inspects implementation/api only, and this
+    // stays off both.
+    testImplementation(projects.core.database)
 
     // Compose + navigation testing, on the UNIT test source set (Robolectric),
     // not androidTest.

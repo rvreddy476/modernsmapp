@@ -4,17 +4,19 @@ import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.us.android.core.auth.AuthRepository
+import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.ChatSessionManager
 import com.us.android.core.chat.data.ChatSocketEvent
 import com.us.android.core.chat.data.ChatStore
+import com.us.android.core.chat.data.DurableSendResult
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
 import com.us.android.core.chat.data.TYPING_TTL_MILLIS
 import com.us.android.core.chat.data.ThreadController
 import com.us.android.core.chat.data.ThreadUiState
 import com.us.android.core.chat.data.isValidMessage
+import com.us.android.core.chat.data.sendDurably
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.upload.ChatAttachmentUploader
@@ -51,6 +53,25 @@ data class ThreadRenderState(
     val loadedTitle: String = "",
     /** True when the loaded conversation is a group. */
     val loadedIsGroup: Boolean = false,
+    /**
+     * The OTHER member of a direct conversation — who the call buttons ring.
+     * Blank for groups and until the roster loads. Display only ever comes
+     * from the roster; whether the peer may actually be called is the
+     * server's decision at create time.
+     */
+    val peerUserId: String = "",
+    /**
+     * True when the last send was REFUSED because chat is unavailable (an
+     * owed security cleanup is still being repaid). The draft is retained;
+     * the user retries by tapping Send again.
+     */
+    val sendUnavailable: Boolean = false,
+    /**
+     * True while ONE send is being durably enqueued. The Send button is
+     * disabled for its duration — a second tap must not create a second
+     * outbox row for the same text.
+     */
+    val sendInFlight: Boolean = false,
 )
 
 @HiltViewModel
@@ -63,7 +84,7 @@ class ChatThreadViewModel @Inject constructor(
     private val session: ChatSessionManager,
     private val attachmentUploader: ChatAttachmentUploader,
     private val notificationPresenter: NotificationPresenter,
-    authRepository: AuthRepository,
+    sessionState: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -71,7 +92,7 @@ class ChatThreadViewModel @Inject constructor(
         savedStateHandle.get<String>(CONVERSATION_ID_KEY).orEmpty()
 
     private val viewerId: String =
-        (authRepository.sessionState.value as? SessionState.Authenticated)?.userId.orEmpty()
+        (sessionState.sessionState.value as? SessionState.Authenticated)?.userId.orEmpty()
 
     private val controller = ThreadController(conversationId, repository, viewerId)
 
@@ -125,7 +146,10 @@ class ChatThreadViewModel @Inject constructor(
             }
         }
         store.cacheMessages(refreshed.messages, lease)
-        _state.value = _state.value.copy(thread = refreshed, offline = false)
+        // The controller's CURRENT state, not the snapshot captured before
+        // these awaits: a draft typed while the fetch was in flight must
+        // survive the write-back (same draft-loss family as the send path).
+        _state.value = _state.value.copy(thread = controller.snapshot(), offline = false)
         controller.markRead()
         store.clearUnread(conversationId)
     }
@@ -134,7 +158,7 @@ class ChatThreadViewModel @Inject constructor(
         val lease = store.acquireWriteLease() ?: return@launch
         val next = controller.loadMore()
         store.cacheMessages(next.messages, lease)
-        _state.value = _state.value.copy(thread = next)
+        _state.value = _state.value.copy(thread = controller.snapshot())
     }
 
     fun onDraftChange(text: String) {
@@ -142,15 +166,49 @@ class ChatThreadViewModel @Inject constructor(
     }
 
     /**
-     * The DURABLE send: outbox row first, network second. The draft clears
-     * immediately; the pending row renders from Room until the worker
-     * confirms, and the confirmed server message is merged back in by id.
+     * The DURABLE send: outbox row first, network second.
+     *
+     * Two rules the review's adverse interleavings demanded (F2-LB-3):
+     *
+     *  - ONE send at a time. A second tap while the enqueue awaits Room is
+     *    a no-op (and the button is disabled via [ThreadRenderState
+     *    .sendInFlight]) — otherwise each tap minted a fresh idempotency
+     *    key and the same text was delivered twice.
+     *  - Clear only the EXACT draft revision that was queued. If the user
+     *    typed while the enqueue was in flight, the newer draft stays —
+     *    the composer never erases text that was not sent.
      */
-    fun send() = viewModelScope.launch {
-        val text = _state.value.thread.draft.trim()
-        if (!text.isValidMessage()) return@launch
-        _state.value = _state.value.copy(thread = controller.onDraftChange(""))
-        store.enqueueSend(conversationId, text)
+    fun send() {
+        if (_state.value.sendInFlight) return
+        val draftAtSend = _state.value.thread.draft
+        val text = draftAtSend.trim()
+        if (!text.isValidMessage()) return
+        _state.value = _state.value.copy(sendInFlight = true)
+        viewModelScope.launch {
+            try {
+                when (store.sendDurably(conversationId, text)) {
+                    is DurableSendResult.Queued -> {
+                        val current = _state.value
+                        _state.value = if (current.thread.draft == draftAtSend) {
+                            current.copy(
+                                thread = controller.onDraftChange(""),
+                                sendUnavailable = false,
+                            )
+                        } else {
+                            // The user typed while the enqueue was in
+                            // flight: the queued revision is on its way,
+                            // the NEWER draft is preserved untouched.
+                            current.copy(sendUnavailable = false)
+                        }
+                    }
+                    DurableSendResult.ChatUnavailable -> _state.value = _state.value.copy(
+                        sendUnavailable = true,
+                    )
+                }
+            } finally {
+                _state.value = _state.value.copy(sendInFlight = false)
+            }
+        }
     }
 
     fun retrySend(idempotencyKey: String) = viewModelScope.launch {
@@ -188,8 +246,22 @@ class ChatThreadViewModel @Inject constructor(
             }
             when (result) {
                 is AppResult.Success -> {
-                    store.enqueueSend(conversationId, text = "", mediaId = result.data, lease = lease)
-                    _state.value = _state.value.copy(attachmentUploading = false)
+                    val key = store.enqueueSend(
+                        conversationId,
+                        text = "",
+                        mediaId = result.data,
+                        lease = lease,
+                    )
+                    _state.value = _state.value.copy(
+                        attachmentUploading = false,
+                        // A refused enqueue (logout raced the upload) must
+                        // not pretend the photo was queued.
+                        attachmentError = if (key == null) {
+                            "The photo couldn't be queued. Try again."
+                        } else {
+                            null
+                        },
+                    )
                 }
                 is AppResult.Failure -> _state.value = _state.value.copy(
                     attachmentUploading = false,
@@ -237,6 +309,11 @@ class ChatThreadViewModel @Inject constructor(
                 // conversation supplies the real one.
                 loadedTitle = result.data.displayTitle(viewerId),
                 loadedIsGroup = result.data.type == "group",
+                peerUserId = if (result.data.type == "group") {
+                    ""
+                } else {
+                    result.data.members.firstOrNull { it.userId != viewerId }?.userId.orEmpty()
+                },
             )
             is AppResult.Failure -> Unit
         }
@@ -253,7 +330,10 @@ class ChatThreadViewModel @Inject constructor(
                     if (lease != null) {
                         val refreshed = controller.refresh()
                         store.cacheMessages(refreshed.messages, lease)
-                        _state.value = _state.value.copy(thread = refreshed, offline = false)
+                        _state.value = _state.value.copy(
+                            thread = controller.snapshot(),
+                            offline = false,
+                        )
                     }
                 }
                 is ChatSocketEvent.Disconnected ->

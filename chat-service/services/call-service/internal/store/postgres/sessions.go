@@ -1,10 +1,12 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/atpost/chat-call-service/internal/domain"
@@ -15,6 +17,63 @@ import (
 
 type CallStore struct {
 	db *pgxpool.Pool
+}
+
+// WithCallUsersLock serializes call creation across EVERY user who would
+// participate in the new call (CALL-LB-5).
+//
+// The first fix locked only the initiator, which still let callers A and C
+// place recipient B into two concurrent live calls: their two locks never
+// contended and neither request examined B. Now the caller passes the
+// complete direct-call user set (initiator + targets) and transaction-scoped
+// advisory locks are taken for every one of them in deterministic UUID-byte
+// order — NEVER request order — so any two creates that share a user always
+// contend on that user's key, and A→B racing B→A sorts identically on both
+// sides and cannot deadlock. pg_advisory_xact_lock releases on commit AND
+// rollback, so the lock can never leak into the pool.
+//
+// Lock-versus-pool coverage proof: fn's writes go through the POOL, not this
+// transaction. That is sound because the only ENABLED writer that can put a
+// user into a new live call is createCallLocked, and every path into it
+// holds these locks — every OTHER participant-add path (group create,
+// ScheduleCall's group funnel, post-create InviteParticipants, open-mode
+// JoinCall and its JoinCallByLink funnel) is refused server-side while
+// Service.groupCallsEnabled is false, which is P0's fixed posture. The
+// winner's pool writes are autocommitted per statement BEFORE its fn
+// returns, and this lock releases only after fn returns; the loser acquires
+// the contended key strictly afterwards, so its GetActiveCallForUser check
+// reads the winner's committed rows. Enabling group calls without extending
+// the lock to those paths would break this premise — that is why the flag
+// has no config knob.
+func (s *CallStore) WithCallUsersLock(ctx context.Context, userIDs []uuid.UUID, fn func() error) error {
+	ids := append([]uuid.UUID(nil), userIDs...)
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for i, id := range ids {
+		if i > 0 && id == ids[i-1] {
+			continue // duplicate user (self-target): one lock suffices
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, advisoryLockKey(id)); err != nil {
+			return err
+		}
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// advisoryLockKey folds a UUID into the int64 keyspace pg advisory locks use.
+func advisoryLockKey(id uuid.UUID) int64 {
+	var key int64
+	for i := 0; i < 8; i++ {
+		key = key<<8 | int64(id[i])
+	}
+	return key
 }
 
 func NewCallStore(db *pgxpool.Pool) *CallStore {

@@ -49,14 +49,28 @@ interface OutboxScheduler {
 }
 
 /**
- * Persists the "disk scrub still owed" marker across process death, so a
+ * Persists the "disk scrub still owed" state across process death, so a
  * VACUUM/checkpoint that could not complete at logout is retried at the next
  * session start instead of being forgotten (review finding F2-LB-3). The
  * flag carries no user data — it is one boolean.
+ *
+ * FAIL-SECURE CONTRACT: implementations must default to OWED when no durable
+ * state can be read — the production implementation stores the INVERSE (a
+ * "verifiably clean" marker) so that no failure sequence (a refused commit,
+ * process death between writes, a full disk) can ever read back as clean.
+ * A first launch or an upgrade without the marker costs one idempotent
+ * repayment wipe of the chat CACHE, which the next sync repopulates.
  */
 interface ScrubRecoveryFlag {
     fun isPending(): Boolean
-    fun setPending(pending: Boolean)
+
+    /**
+     * Returns true only when the new state DURABLY reached storage. Android
+     * reports persistence failure (`SharedPreferences.commit()` returns
+     * false); discarding that result silently treated a lost marker as
+     * durable — review F2-LB-3c. Callers must fail secure on false.
+     */
+    fun setPending(pending: Boolean): Boolean
 }
 
 @Singleton
@@ -303,14 +317,21 @@ class ChatStore @Inject constructor(
      * key so the optimistic UI row and the eventual server row can be tied
      * together.
      */
+    /**
+     * Returns the idempotency key AFTER the Room row is durably inserted, or
+     * null when the write was REFUSED (quarantine, teardown, or a dead
+     * lease). Returning a key for a row that does not exist let the UI clear
+     * a draft that was never queued — a silently lost message (review
+     * F2-LB-3, blocker 2). Callers must treat null as "nothing happened".
+     */
     suspend fun enqueueSend(
         conversationId: String,
         text: String,
         mediaId: String? = null,
         lease: Long? = null,
-    ): String {
+    ): String? {
         val key = ChatRepository.newIdempotencyKey()
-        val written = guardedWrite(lease) {
+        guardedWrite(lease) {
             dao.enqueueSend(
                 ChatPendingSendEntity(
                     idempotencyKey = key,
@@ -322,8 +343,8 @@ class ChatStore @Inject constructor(
                     failed = false,
                 ),
             )
-        }
-        if (written != null) scheduleDrain()
+        } ?: return null
+        scheduleDrain()
         return key
     }
 
@@ -456,14 +477,27 @@ class ChatStore @Inject constructor(
         scheduler.cancelDrain()
         idle?.await()
         return try {
+            // WRITE-AHEAD recovery marker (F2-LB-3c): the owed flag reaches
+            // durable storage BEFORE the scrub attempt, so a failed scrub
+            // can never exist without its marker — abrupt process death
+            // included. The commit result is honoured, not discarded.
+            val markerPersisted = scrubRecovery.setPending(true)
             dao.wipeAll()
-            val clean = dao.scrubDeletedRowsFromDisk()
-            // Synchronously persisted marker + in-process quarantine: a
-            // failed scrub keeps the store unavailable (no lease, no write,
-            // no socket) until [ensureReady] repays it.
-            scrubRecovery.setPending(!clean)
-            gateLock.withLock { quarantined = !clean }
-            clean
+            val scrubbed = dao.scrubDeletedRowsFromDisk()
+            if (scrubbed) {
+                // Nothing is owed. Clearing may fail harmlessly: a stale
+                // owed marker costs one extra idempotent repayment later,
+                // in the safe direction.
+                scrubRecovery.setPending(false)
+            } else if (!markerPersisted) {
+                // The scrub is owed and the write-ahead marker did not
+                // persist — retry now; every later [ensureReady] repayment
+                // attempt re-runs this whole path until BOTH the marker is
+                // durable or the scrub itself succeeds.
+                scrubRecovery.setPending(true)
+            }
+            gateLock.withLock { quarantined = !scrubbed }
+            scrubbed
         } finally {
             gateLock.withLock { tearingDown = false }
         }
@@ -575,6 +609,28 @@ fun com.us.android.core.common.error.AppError.isRetryableSend(): Boolean = when 
 }
 
 private const val HTTP_SERVER_ERROR = 500
+
+/**
+ * The UI-facing outcome of a durable text send. [Queued] means the outbox
+ * row EXISTS in Room; only then may a composer clear its draft.
+ * [ChatUnavailable] means the store refused the write (an owed scrub is
+ * still being repaid, or teardown is in progress) — the draft must be
+ * retained and the user told to retry.
+ */
+sealed interface DurableSendResult {
+    data class Queued(val idempotencyKey: String) : DurableSendResult
+    data object ChatUnavailable : DurableSendResult
+}
+
+/**
+ * The send journey the thread screen runs: enqueue durably, then report
+ * truthfully. Top-level over [ChatStore.enqueueSend] so the quarantined
+ * journey is testable without the Android ViewModel shell.
+ */
+suspend fun ChatStore.sendDurably(conversationId: String, text: String): DurableSendResult {
+    val key = enqueueSend(conversationId, text)
+    return if (key == null) DurableSendResult.ChatUnavailable else DurableSendResult.Queued(key)
+}
 
 /** One queued (or parked-failed) send, as the UI renders it. */
 data class PendingSend(

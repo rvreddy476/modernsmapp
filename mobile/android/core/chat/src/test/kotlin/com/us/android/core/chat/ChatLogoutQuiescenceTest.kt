@@ -10,6 +10,7 @@ import com.us.android.core.chat.data.MessageDto
 import com.us.android.core.chat.data.OutboxScheduler
 import com.us.android.core.chat.data.ScrubRecoveryFlag
 import com.us.android.core.chat.data.SendMessageRequest
+import com.us.android.core.chat.data.sendDurably
 import com.us.android.core.database.ChatConversationEntity
 import com.us.android.core.database.ChatDao
 import com.us.android.core.database.ChatMessageEntity
@@ -140,11 +141,17 @@ class ChatLogoutQuiescenceTest {
         override suspend fun requests(): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = emptyList())
     }
 
+    /** Durable-marker fake: [commitWorks] models `commit()` returning false. */
     private class FakeScrubFlag : ScrubRecoveryFlag {
         var stored = false
+        var commitWorks = true
+        val persistCalls = mutableListOf<Boolean>()
         override fun isPending(): Boolean = stored
-        override fun setPending(pending: Boolean) {
+        override fun setPending(pending: Boolean): Boolean {
+            persistCalls += pending
+            if (!commitWorks) return false
             stored = pending
+            return true
         }
     }
 
@@ -342,8 +349,9 @@ class ChatLogoutQuiescenceTest {
             ),
             staleLease,
         )
-        // Attachment enqueue: refused.
-        store.enqueueSend("conv", text = "", mediaId = "media-stale", lease = staleLease)
+        // Attachment enqueue: refused, and TRUTHFULLY reported as null.
+        assertThat(store.enqueueSend("conv", text = "", mediaId = "media-stale", lease = staleLease))
+            .isNull()
 
         assertThat(dao.messages).isEmpty()
         assertThat(dao.sends).isEmpty()
@@ -351,7 +359,7 @@ class ChatLogoutQuiescenceTest {
         // A lease acquired AFTER the reopen works — the fence is on the
         // stale session, not on the next one.
         val freshLease = store.acquireWriteLease()
-        store.enqueueSend("conv", text = "new session", lease = freshLease)
+        assertThat(store.enqueueSend("conv", text = "new session", lease = freshLease)).isNotNull()
         assertThat(dao.sends).hasSize(1)
     }
 
@@ -392,7 +400,7 @@ class ChatLogoutQuiescenceTest {
         // The new account's first send: enqueueSend AWAITS readiness — the
         // repayment wipe runs FIRST, then the enqueue. The new message can
         // never be the thing the recovery wipes (review P0 #2).
-        val key = store.enqueueSend("conv", text = "new account's first message")
+        val key = requireNotNull(store.enqueueSend("conv", text = "new account's first message"))
 
         assertThat(flag.stored).isFalse()
         assertThat(dao.sends.keys).containsExactly(key)
@@ -407,11 +415,12 @@ class ChatLogoutQuiescenceTest {
         val store = store(dao, api, flag)
         dao.checkpointResult = { sql -> if (sql.contains("wal_checkpoint")) 1 else 0 }
 
-        // Repayment keeps failing: the store must stay unavailable.
+        // Repayment keeps failing: the store must stay unavailable, and the
+        // refusal must be REPORTED, never a key for a row that was refused.
         assertThat(store.ensureReady()).isFalse()
         assertThat(store.acquireWriteLease()).isNull()
         assertThat(store.syncInbox()).isFalse()
-        store.enqueueSend("conv", text = "must not be accepted")
+        assertThat(store.enqueueSend("conv", text = "must not be accepted")).isNull()
         assertThat(dao.sends).isEmpty()
         assertThat(dao.messages).isEmpty()
         assertThat(dao.conversations).isEmpty()
@@ -421,8 +430,92 @@ class ChatLogoutQuiescenceTest {
         dao.checkpointResult = { 0 }
         assertThat(store.ensureReady()).isTrue()
         assertThat(flag.stored).isFalse()
-        store.enqueueSend("conv", text = "accepted now")
+        assertThat(store.enqueueSend("conv", text = "accepted now")).isNotNull()
         assertThat(dao.sends).hasSize(1)
+    }
+
+    @Test
+    fun `a failed marker commit stays fail-secure and the marker is written ahead of the scrub`() = runTest {
+        val dao = FakeDao()
+        val api = FakeApi()
+        val flag = FakeScrubFlag()
+        val store = store(dao, api, flag)
+        var flagAtCheckpoint: Boolean? = null
+        var busy = true
+        dao.checkpointResult = { sql ->
+            if (sql.contains("wal_checkpoint")) {
+                flagAtCheckpoint = flag.stored
+                if (busy) 1 else 0
+            } else {
+                0
+            }
+        }
+
+        // Contended logout with healthy storage: the WRITE-AHEAD marker is
+        // already durable when the (failing) scrub attempt runs — no failed
+        // scrub can exist without its marker.
+        assertThat(store.wipeForLogout()).isFalse()
+        assertThat(flagAtCheckpoint).isTrue()
+
+        // The marker medium now fails too (commit() == false) and the value
+        // is lost from disk: chat must STAY closed in-process, and each
+        // repayment attempt must retry the persist rather than trust it.
+        flag.commitWorks = false
+        flag.stored = false
+        flag.persistCalls.clear()
+        assertThat(store.ensureReady()).isFalse()
+        assertThat(store.acquireWriteLease()).isNull()
+        assertThat(flag.persistCalls).contains(true)
+
+        // Storage recovers while the scrub is STILL contended: the very
+        // next repayment re-persists the marker durably...
+        flag.commitWorks = true
+        assertThat(store.ensureReady()).isFalse()
+        assertThat(flag.stored).isTrue()
+
+        // ...so process death can no longer lose it: a store rebuilt over
+        // the same disk state boots QUARANTINED, and repays once the
+        // contention ends.
+        val reborn = store(dao, api, flag)
+        assertThat(reborn.acquireWriteLease()).isNull()
+        busy = false
+        assertThat(reborn.ensureReady()).isTrue()
+        assertThat(flag.stored).isFalse()
+    }
+
+    @Test
+    fun `a quarantined send keeps the draft, reports unavailable, and retries cleanly`() = runTest {
+        val dao = FakeDao()
+        val api = FakeApi()
+        val flag = FakeScrubFlag().also { it.stored = true } // owed from last logout
+        val store = store(dao, api, flag)
+        dao.checkpointResult = { sql -> if (sql.contains("wal_checkpoint")) 1 else 0 }
+
+        // The composer state machine the thread screen runs: the ViewModel
+        // clears the draft ONLY on DurableSendResult.Queued.
+        val controller = com.us.android.core.chat.data.ThreadController(
+            "conv",
+            ChatRepository(api, ErrorMapper(Json { ignoreUnknownKeys = true })),
+            "viewer",
+        )
+        var thread = controller.onDraftChange("typed while cleanup owed")
+
+        // Send while repayment is contended — the review's blocker journey.
+        val refused = store.sendDurably("conv", thread.draft.trim())
+        assertThat(refused).isEqualTo(com.us.android.core.chat.data.DurableSendResult.ChatUnavailable)
+        // Not Queued → the draft is NOT cleared and no phantom row exists.
+        assertThat(thread.draft).isEqualTo("typed while cleanup owed")
+        assertThat(dao.sends).isEmpty()
+
+        // Contention clears; the user taps Send again with the SAME draft.
+        dao.checkpointResult = { 0 }
+        val queued = store.sendDurably("conv", thread.draft.trim())
+        assertThat(queued)
+            .isInstanceOf(com.us.android.core.chat.data.DurableSendResult.Queued::class.java)
+        thread = controller.onDraftChange("") // the Queued branch clears it
+        assertThat(thread.draft).isEmpty()
+        assertThat(dao.sends.values.single().text).isEqualTo("typed while cleanup owed")
+        assertThat(flag.stored).isFalse()
     }
 }
 

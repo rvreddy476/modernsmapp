@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -30,6 +31,12 @@ import com.us.android.core.model.SessionState
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
+import com.us.android.feature.call.navigation.CallRoute
+import com.us.android.feature.call.navigation.callHistoryScreen
+import com.us.android.feature.call.navigation.callScreen
+import com.us.android.feature.call.navigation.navigateToCallHistory
+import com.us.android.feature.call.navigation.navigateToCallSurface
+import com.us.android.feature.call.navigation.navigateToOutgoingCall
 import com.us.android.feature.chat.navigation.ChatRequestRoute
 import com.us.android.feature.chat.navigation.ChatThreadRoute
 import com.us.android.feature.chat.navigation.GroupCreateRoute
@@ -137,9 +144,22 @@ fun UsNavHost(
     pool: PlayerPool,
     pushDestination: com.us.android.push.PushDestination? = null,
     onPushDestinationConsumed: () -> Unit = {},
+    callState: com.us.android.core.call.CallState = com.us.android.core.call.CallState.Idle,
     navController: NavHostController = rememberNavController(),
 ) {
     val startDestination = if (sessionState.isAuthenticated) FeedRoute else LoginRoute
+
+    // An incoming ring fronts the call surface (foreground path; background
+    // rings arrive via the full-screen CALLS notification whose tap lands in
+    // the same place). Guarded so a ring never stacks a second call screen.
+    LaunchedEffect(callState, sessionState.isAuthenticated) {
+        if (callState is com.us.android.core.call.CallState.Incoming &&
+            sessionState.isAuthenticated &&
+            navController.currentBackStackEntry?.destination?.hasRoute(CallRoute::class) != true
+        ) {
+            navController.navigateToCallSurface()
+        }
+    }
 
     // A notification tap routes ONLY under an authenticated session: a tap
     // while signed out waits through the login (the destination survives in
@@ -155,6 +175,10 @@ fun UsNavHost(
                 navController.navigateToChatThread(destination.entityId, title = "")
             }
             "message_request" -> navController.navigateToChatInbox()
+            // Call pushes: the ring tap attaches to the live call state; a
+            // missed-call tap opens the history.
+            "incoming_call", "incoming_video_call" -> navController.navigateToCallSurface()
+            "missed_call" -> navController.navigateToCallHistory()
             else -> Unit // not a chat push; existing surfaces handle their own
         }
     }
@@ -343,6 +367,7 @@ private fun NavGraphBuilder.tabDestinations(
         },
         onCreateGroup = { navController.navigateToGroupCreate() },
         onOpenLockSettings = { navController.navigateToChatLockSettings() },
+        onOpenCallHistory = { navController.navigateToCallHistory() },
     )
     chatLockSettingsScreen(onBack = { navController.popBackStack() })
     chatThreadScreen(
@@ -350,7 +375,12 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenGroupInfo = { conversationId ->
             navController.navigateToGroupInfo(conversationId)
         },
+        onStartCall = { peerUserId, peerName, video, conversationId ->
+            navController.navigateToOutgoingCall(peerUserId, peerName, video, conversationId)
+        },
     )
+    callScreen(onBack = { navController.popBackStack() })
+    callHistoryScreen(onBack = { navController.popBackStack() })
     // A request decision replaces itself: Accept opens the now-real thread,
     // every other decision returns to the inbox.
     chatRequestScreen(
@@ -469,11 +499,13 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
 fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val pushDestination by viewModel.pushDestination.collectAsStateWithLifecycle()
+    val callState by viewModel.callState.collectAsStateWithLifecycle()
     UsNavHost(
         sessionState = sessionState,
         pool = pool,
         pushDestination = pushDestination,
         onPushDestinationConsumed = viewModel::consumePushDestination,
+        callState = callState,
     )
 }
 

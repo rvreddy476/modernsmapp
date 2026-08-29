@@ -37,6 +37,12 @@ object AuthModule {
     @Provides
     @Singleton
     fun provideTokenRefresher(sessionManager: SessionManager): TokenRefresher = sessionManager
+
+    @Provides
+    @Singleton
+    fun provideSessionStateProvider(
+        repository: com.us.android.core.auth.AuthRepository,
+    ): com.us.android.core.auth.SessionStateProvider = repository
 }
 
 @Module

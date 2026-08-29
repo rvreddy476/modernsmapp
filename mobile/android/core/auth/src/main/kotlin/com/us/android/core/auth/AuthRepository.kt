@@ -29,9 +29,9 @@ class AuthRepository @Inject constructor(
      * learn what needs tearing down. See [SessionTeardownTask].
      */
     private val teardownTasks: Set<@JvmSuppressWildcards SessionTeardownTask>,
-) {
+) : SessionStateProvider {
 
-    val sessionState: StateFlow<SessionState> = sessionManager.state
+    override val sessionState: StateFlow<SessionState> = sessionManager.state
 
     /**
      * Signs in, returning the resulting [SessionState] rather than a boolean.

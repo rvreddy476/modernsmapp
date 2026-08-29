@@ -59,6 +59,7 @@ fun ChatInboxScreen(
     onOpenRequest: (conversationId: String, title: String) -> Unit,
     onCreateGroup: () -> Unit,
     onOpenLockSettings: () -> Unit = {},
+    onOpenCallHistory: () -> Unit = {},
     onBack: () -> Unit,
     viewModel: ChatInboxViewModel = hiltViewModel(),
 ) {
@@ -70,6 +71,10 @@ fun ChatInboxScreen(
                 title = "Messages",
                 onBack = onBack,
                 actions = {
+                    TextButton(
+                        onClick = onOpenCallHistory,
+                        modifier = Modifier.testTag("chat-call-history"),
+                    ) { Text("Calls") }
                     TextButton(
                         onClick = onOpenLockSettings,
                         modifier = Modifier.testTag("chat-lock-settings"),

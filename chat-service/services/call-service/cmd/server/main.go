@@ -35,6 +35,9 @@ func main() {
 		logger.Error("refusing to start with unsafe access-token policy", "err", err)
 		os.Exit(1)
 	}
+	if cfg.CallsEnabled && cfg.AllowInsecureDevMedia {
+		logger.Warn("CALLS_DEV_ALLOW_STUB_MEDIA is set: calls enabled WITHOUT LiveKit/TURN — dev rigs only, never production")
+	}
 	if err := cfg.ValidateCallEnablement(); err != nil {
 		logger.Error("refusing to enable calls with unsafe configuration", "err", err)
 		os.Exit(1)

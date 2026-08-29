@@ -58,6 +58,18 @@ func (s *Store) UnregisterDevice(ctx context.Context, deviceID, userID uuid.UUID
 	return nil
 }
 
+// RetireDeviceToken durably deactivates ONE permanently rejected push token
+// (CALL-LB-4): the provider said this token can never deliver (unregistered,
+// invalid, app uninstalled), so it must leave the active set — otherwise the
+// call path would retry a dead token forever and stall its Kafka partition.
+// Idempotent: retiring an already-retired or absent token is a no-op.
+func (s *Store) RetireDeviceToken(ctx context.Context, userID uuid.UUID, pushToken string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE user_devices SET is_active = FALSE, updated_at = NOW()
+		WHERE user_id = $1 AND push_token = $2`, userID, pushToken)
+	return err
+}
+
 // DeactivateDeviceTokens marks all push-notification devices for the given user
 // as inactive, fulfilling the GDPR right-to-erasure requirement for device tokens.
 func (s *Store) DeactivateDeviceTokens(ctx context.Context, userID uuid.UUID) error {

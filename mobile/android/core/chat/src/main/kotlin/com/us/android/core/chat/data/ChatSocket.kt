@@ -68,6 +68,16 @@ sealed interface ChatSocketEvent {
     data class SubscriptionRevoked(val conversationId: String) : ChatSocketEvent
 
     /**
+     * A call-signaling frame relayed by ws-gateway (`call_*` and
+     * `ice_candidate`). These arrive FLAT — the gateway injects `sender_id`
+     * into the client's own envelope and relays it verbatim, so there is no
+     * nested `payload` object. Carried raw to :core:call, whose parser
+     * validates every identifier fail-closed; nothing in :core:chat trusts
+     * or interprets the contents.
+     */
+    data class CallSignal(val type: String, val frame: JsonObject) : ChatSocketEvent
+
+    /**
      * A frame this client does not model.
      *
      * Surfaced rather than dropped so an unhandled server event is visible in
@@ -248,9 +258,45 @@ open class ChatSocket(
  * Returns null when the text is not a JSON object or carries no `type` — the
  * only case worth dropping silently.
  */
+private fun isCallSignalType(type: String): Boolean =
+    type.startsWith("call_") || type == "ice_candidate"
+
+private fun parseMessageFrame(type: String, payload: JsonObject): ChatSocketEvent {
+    val id = payload.str("message_id").orEmpty()
+    val conversationId = payload.str("conversation_id").orEmpty()
+    val senderId = payload.str("sender_id").orEmpty()
+    val missing = buildList {
+        if (id.isBlank()) add("message_id")
+        if (conversationId.isBlank()) add("conversation_id")
+        if (senderId.isBlank()) add("sender_id")
+    }
+    if (missing.isNotEmpty()) {
+        return ChatSocketEvent.Malformed(type, "missing or blank: " + missing.joinToString(", "))
+    }
+    return ChatSocketEvent.MessageReceived(
+        Message(
+            id = id,
+            conversationId = conversationId,
+            senderId = senderId,
+            // Not on the wire. The thread fills it in from the member list it
+            // already holds, so a group message never costs a profile request
+            // per row.
+            senderDisplayName = null,
+            text = payload.str("text").orEmpty(),
+            createdAt = payload.str("created_at").orEmpty(),
+        ),
+    )
+}
+
 fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
     val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
     val type = frame.str("type") ?: return null
+
+    // Call signaling is relayed FLAT (no payload object) and is owned by
+    // :core:call — hand the raw frame across the seam untouched.
+    if (isCallSignalType(type)) {
+        return ChatSocketEvent.CallSignal(type, frame)
+    }
 
     // ws-gateway re-wraps a non-JSON Redis payload as {"type":"message",
     // "payload":"<the raw string>"} (server.go:616). The payload is then a
@@ -281,31 +327,7 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
             // Refused rather than repaired: there is no correct value to
             // invent for any of them, and a client that guesses an identifier
             // is a client that files a message under the wrong conversation.
-            val id = payload.str("message_id").orEmpty()
-            val conversationId = payload.str("conversation_id").orEmpty()
-            val senderId = payload.str("sender_id").orEmpty()
-            val missing = buildList {
-                if (id.isBlank()) add("message_id")
-                if (conversationId.isBlank()) add("conversation_id")
-                if (senderId.isBlank()) add("sender_id")
-            }
-            if (missing.isNotEmpty()) {
-                ChatSocketEvent.Malformed(type, "missing or blank: " + missing.joinToString(", "))
-            } else {
-                ChatSocketEvent.MessageReceived(
-                    Message(
-                        id = id,
-                        conversationId = conversationId,
-                        senderId = senderId,
-                        // Not on the wire. The thread fills it in from the
-                        // member list it already holds, so a group message
-                        // never costs a profile request per row.
-                        senderDisplayName = null,
-                        text = payload.str("text").orEmpty(),
-                        createdAt = payload.str("created_at").orEmpty(),
-                    ),
-                )
-            }
+            parseMessageFrame(type, payload)
         }
 
         FRAME_TYPING -> ChatSocketEvent.Typing(

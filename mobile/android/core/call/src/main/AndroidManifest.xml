@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Calling P0. Runtime-requested where dangerous; declared here so the
+         merged manifest carries them with the module that needs them. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- Full-screen incoming-call notifications (API 34+ gates this). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <application>
+        <!-- Keeps the process and mic/camera alive while a call is active.
+             Started on answer/connect, stopped on hangup/teardown. -->
+        <service
+            android:name=".service.OngoingCallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|camera" />
+    </application>
+</manifest>

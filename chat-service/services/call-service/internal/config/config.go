@@ -37,6 +37,7 @@ type Config struct {
 	MaxCallDurationMinutes int
 	ReconnectGraceSeconds  int
 	CallsEnabled           bool
+	AllowInsecureDevMedia  bool
 	GraphServiceURL        string
 	InternalServiceKey     string
 }
@@ -65,6 +66,7 @@ func Load() *Config {
 		MaxCallDurationMinutes: getEnvInt("MAX_CALL_DURATION_MINUTES", 240),
 		ReconnectGraceSeconds:  getEnvInt("RECONNECT_GRACE_SECONDS", 30),
 		CallsEnabled:           getEnvBool("CALLS_ENABLED", false),
+		AllowInsecureDevMedia:  getEnvBool("CALLS_DEV_ALLOW_STUB_MEDIA", false),
 		GraphServiceURL:        strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")),
 		InternalServiceKey:     strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY")),
 	}
@@ -81,6 +83,14 @@ func (c *Config) ValidateCallEnablement() error {
 		return errors.New("GRAPH_SERVICE_URL is required when calls are enabled")
 	case c.InternalServiceKey == "":
 		return errors.New("INTERNAL_SERVICE_KEY is required when calls are enabled")
+	// DEV-ONLY escape hatch (calling P0): 1:1 calls are direct WebRTC — the
+	// SFU is unused and STUN suffices on a local network — so a dev rig may
+	// enable calls on the stub provider without LiveKit or a TURN relay.
+	// The POLICY requirements above (graph authority + internal key) are
+	// deliberately NOT skippable: the abuse gates run in every posture.
+	// Production manifests must never set this; main logs loudly when set.
+	case c.AllowInsecureDevMedia:
+		return nil
 	case strings.TrimSpace(c.LiveKitHost) == "":
 		return errors.New("LIVEKIT_HOST is required when calls are enabled")
 	case strings.TrimSpace(c.LiveKitAPIKey) == "":

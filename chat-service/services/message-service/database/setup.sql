@@ -391,3 +391,25 @@ CREATE TABLE IF NOT EXISTS chat.revocation_intents (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (conversation_id, user_id)
 );
+
+-- Durable preview-repair obligations (MP-LB-1): a message deletion writes
+-- this row BEFORE the Scylla soft delete, so a crash, Scylla read failure,
+-- PostgreSQL write failure or restart after the delete can never leave the
+-- deleted text in chat.conversations.last_message_preview indefinitely — the
+-- repair worker resumes it. PRIMARY KEY on message_id makes a replayed
+-- deletion idempotent. next_attempt_at doubles as a claim lease: workers
+-- claim with FOR UPDATE SKIP LOCKED and push it forward, so two replicas
+-- can never process the same obligation concurrently and a crashed worker's
+-- claim simply expires.
+CREATE TABLE IF NOT EXISTS chat.preview_repair_obligations (
+    message_id      UUID PRIMARY KEY,
+    conversation_id UUID NOT NULL,
+    bucket          TEXT NOT NULL,
+    deleted_ts      TIMESTAMPTZ NOT NULL,
+    attempt_count   INT NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_preview_repair_due
+    ON chat.preview_repair_obligations(next_attempt_at);

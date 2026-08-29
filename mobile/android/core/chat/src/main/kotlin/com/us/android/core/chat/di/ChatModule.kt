@@ -109,21 +109,53 @@ object ChatModule {
         @ApplicationContext context: Context,
     ): com.us.android.core.chat.data.ScrubRecoveryFlag {
         val prefs = context.getSharedPreferences("chat_maintenance", Context.MODE_PRIVATE)
+        // INVERTED, fail-secure marker: what is persisted is "the chat store
+        // is verifiably CLEAN", in two media (a preference and a marker
+        // file). The scrub is OWED unless a clean marker exists — so being
+        // owed never depends on a durable WRITE succeeding. Every loss
+        // sequence the review named (commit() returning false, process death
+        // between two marker writes, both media failing under disk
+        // pressure) leaves NO clean marker, which the next process reads as
+        // "owed" and repays before opening chat. The write that CAN fail —
+        // recording cleanliness — fails in the safe direction: one extra
+        // idempotent repayment. Marking owed is two DELETES, which succeed
+        // precisely in the disk-full states where creates fail.
+        val cleanFile = java.io.File(context.filesDir, "chat_scrub_clean")
         return object : com.us.android.core.chat.data.ScrubRecoveryFlag {
-            override fun isPending(): Boolean = prefs.getBoolean(SCRUB_PENDING_KEY, false)
+            // Clean requires BOTH media (AND): a partially completed
+            // owed-marking — one delete done, then process death — must
+            // already read as owed, and a partially completed clean-marking
+            // must NOT yet read as clean.
+            override fun isPending(): Boolean =
+                !(prefs.getBoolean(SCRUB_CLEAN_KEY, false) && cleanFile.exists())
 
-            // commit(), not apply(): the marker exists precisely for abrupt
-            // process death right after a failed scrub — an asynchronous
-            // write could be lost with it. Callers run on Dispatchers.IO.
+            // commit(), not apply(): cleanliness must be on disk before it
+            // is believed. Callers run on Dispatchers.IO.
             @android.annotation.SuppressLint("ApplySharedPref")
-            override fun setPending(pending: Boolean) {
-                prefs.edit().putBoolean(SCRUB_PENDING_KEY, pending).commit()
+            override fun setPending(pending: Boolean): Boolean {
+                return if (pending) {
+                    // Mark OWED = break the clean claim. ONE successful
+                    // delete suffices (clean is the AND), and deletes are
+                    // exactly the operations that still succeed on a full
+                    // disk where creates fail.
+                    val prefsGone = prefs.edit().putBoolean(SCRUB_CLEAN_KEY, false).commit() ||
+                        !prefs.getBoolean(SCRUB_CLEAN_KEY, false)
+                    val fileGone = runCatching { cleanFile.delete() || !cleanFile.exists() }
+                        .getOrDefault(false)
+                    prefsGone || fileGone
+                } else {
+                    // Mark CLEAN = BOTH media must durably record it.
+                    val prefsOk = prefs.edit().putBoolean(SCRUB_CLEAN_KEY, true).commit()
+                    val fileOk = runCatching { cleanFile.createNewFile() || cleanFile.exists() }
+                        .getOrDefault(false)
+                    prefsOk && fileOk
+                }
             }
         }
     }
 
     private const val SEND_BACKOFF_SECONDS = 10L
-    private const val SCRUB_PENDING_KEY = "scrub_pending"
+    private const val SCRUB_CLEAN_KEY = "scrub_clean"
 }
 
 @dagger.Module

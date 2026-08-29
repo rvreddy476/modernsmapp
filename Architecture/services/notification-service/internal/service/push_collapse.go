@@ -9,6 +9,12 @@ import "fmt"
 // An empty return means no collapsing — the notification is always shown individually.
 func GetCollapseKey(eventType, targetID, recipientID string) string {
 	switch eventType {
+	// One ringing/missed push per CALL (CALL-LB-4): an at-least-once
+	// redelivery must REPLACE, not stack, the incoming-call wake-up on
+	// the device.
+	case "incoming_call", "incoming_video_call", "missed_call":
+		return fmt.Sprintf("call:%s", targetID)
+
 	// Sparks (likes) on same post collapse into one notification.
 	case "post.liked", "post.super_liked":
 		return fmt.Sprintf("spark:%s", targetID)

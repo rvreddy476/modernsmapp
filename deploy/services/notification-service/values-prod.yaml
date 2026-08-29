@@ -39,6 +39,13 @@ externalSecret:
 env:
   ENV: prod
   LOG_LEVEL: info
+  # CALL-LB-4B deployment contract, MACHINE-ENFORCED by
+  # notification-service internal/push TestDeployedManifestsCoupleCallsToRequiredPush:
+  # CALLS_ENABLED may not be "true" in chat-call-service values for this
+  # environment unless CALL_PUSH_REQUIRED is "true" here AND the FCM env
+  # (FCM_PROJECT_ID + FCM_SERVICE_ACCOUNT_KEY secret) is configured -- the
+  # service then refuses to start without working push credentials.
+  CALL_PUSH_REQUIRED: "false"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 
 ingress:

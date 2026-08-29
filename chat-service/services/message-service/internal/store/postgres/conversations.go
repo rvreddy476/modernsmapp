@@ -493,6 +493,45 @@ func (s *ConversationStore) SetLastMessage(ctx context.Context, conversationID, 
 	return err
 }
 
+// ReplaceLastMessage rewrites the denormalized inbox preview after the message
+// it was taken from was deleted.
+//
+// Guarded on the CURRENT preview still pointing at deletedTs, which makes it a
+// no-op when a newer message has already replaced it — so a delete racing a
+// send can never resurrect an older preview. Unlike SetLastMessage this must
+// accept an OLDER timestamp: the replacement is by definition the message
+// before the deleted one.
+//
+// updated_at is deliberately untouched: deleting a message must not reorder
+// the inbox.
+func (s *ConversationStore) ReplaceLastMessage(
+	ctx context.Context,
+	conversationID uuid.UUID,
+	deletedTs time.Time,
+	preview string,
+	senderID *uuid.UUID,
+	ts *time.Time,
+) error {
+	if len(preview) > 140 {
+		preview = preview[:140]
+	}
+	// The guard is a ONE-MILLISECOND WINDOW, not equality. last_message_at is
+	// written from the delivery intent at microsecond precision, while the
+	// same instant read back from Scylla is truncated to milliseconds — an
+	// `=` comparison silently never matched, and the deleted text stayed on
+	// the inbox. The window covers the truncation from either direction; two
+	// messages inside one millisecond would at worst trigger a recompute
+	// that lands on the same newest survivor anyway.
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations
+		SET last_message_at = $3, last_message_preview = $4, last_message_sender = $5
+		WHERE id = $1
+		  AND last_message_at >= $2
+		  AND last_message_at < $2 + interval '1 millisecond'
+	`, conversationID, deletedTs, ts, preview, senderID)
+	return err
+}
+
 func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID uuid.UUID, limit int, cursorUpdatedAt *time.Time, cursorID *uuid.UUID) ([]Conversation, error) {
 	if limit <= 0 {
 		limit = 20

@@ -169,3 +169,7 @@ func (s *idempotencyConvStoreStub) MarkConversationClosedByMatch(ctx context.Con
 func (s *idempotencyConvStoreStub) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*postgres.ConversationMeta, error) {
 	return nil, nil
 }
+
+func (s *idempotencyConvStoreStub) ReplaceLastMessage(context.Context, uuid.UUID, time.Time, string, *uuid.UUID, *time.Time) error {
+	return nil
+}

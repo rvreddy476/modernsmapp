@@ -12,21 +12,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// CallPolicy gates "can user A call user B" against the social graph.
+// CallPolicy gates "can user A call user B" against graph-service's
+// permission matrix — the SAME single source of truth message-service uses
+// for who_can_message (GET /v1/permissions/check).
 //
-// Per the realtime audit C2, CreateCall used to skip this entirely —
-// rate limit + anti-spam was the only barrier between any authed user
-// and ringing arbitrary strangers. Mirrors the DM policy already used
-// by message-service (Architecture/services/message-service/internal/
-// policy/dm_policy.go), with two deliberate differences:
+// History: per the realtime audit C2, CreateCall used to skip social gating
+// entirely. The first fix queried the raw relationship endpoint and
+// re-implemented a circle heuristic here — which silently IGNORED the
+// callee's `who_can_call` privacy setting (stored, editable, and rendered in
+// clients, but never enforced). Delegating to /v1/permissions/check closes
+// that: graph resolves block-in-either-direction AND who_can_call in one
+// decision, and a future policy change lands in exactly one service.
 //
-//  1. Returns ErrBlockedByTarget / ErrNotInCircle separately so the
-//     handler can present a more accurate message than "denied".
-//  2. Fails closed on transport errors (matches DM policy) — the
-//     audit specifically flagged fail-open as the bug path. If
-//     graph-service is unreachable, every direct call is rejected
-//     with a transient error until graph recovers; the alternative
-//     is a known abuse window.
+// Fails CLOSED on transport errors (the audit specifically flagged fail-open
+// as the bug path): if graph-service is unreachable, direct calls are
+// rejected with a transient error until it recovers.
 type CallPolicy struct {
 	graphServiceURL string
 	internalKey     string
@@ -34,20 +34,16 @@ type CallPolicy struct {
 }
 
 var (
-	// ErrBlockedByTarget signals the callee has blocked the caller.
-	// Surface as 403; client should hide the call button entirely.
-	ErrBlockedByTarget = errors.New("target has blocked the caller")
+	// ErrCallNotAllowed is the ONE refusal for every policy denial —
+	// block, privacy, circle. Deliberately generic: distinguishing
+	// "blocked you" from "privacy settings" would leak the callee's
+	// block state to the caller. Surface as 403 with generic copy.
+	ErrCallNotAllowed = errors.New("calling this user is not permitted")
 
-	// ErrNotInCircle signals neither friend nor mutual-follow.
-	// Surface as 403; clients can show "you can only call people
-	// you follow / who follow you back".
-	ErrNotInCircle = errors.New("caller and target are not in each other's circle")
-
-	// ErrGraphUnavailable wraps any graph-service transport error.
-	// Caller should return 503/Service-Unavailable to the client so
-	// they know to retry; we don't want to misrepresent "graph down"
-	// as "you can't call this person".
-	ErrGraphUnavailable = errors.New("call-relationship lookup temporarily unavailable")
+	// ErrGraphUnavailable wraps any permission-lookup transport error.
+	// Surface as 503 so the client knows to retry; "graph down" must not
+	// be misrepresented as "you can't call this person".
+	ErrGraphUnavailable = errors.New("call-permission lookup temporarily unavailable")
 )
 
 func NewCallPolicy(graphServiceURL, internalKey string) *CallPolicy {
@@ -58,13 +54,11 @@ func NewCallPolicy(graphServiceURL, internalKey string) *CallPolicy {
 	}
 }
 
-// CanCall checks the social graph and returns nil when the call is
-// allowed. The error sentinels above let the handler decide HTTP
-// status + user-facing copy.
+// CanCall returns nil when the call is allowed.
 //
-// Bypassed entirely when graphServiceURL is empty — used in unit
-// tests + bootstrap configs that don't run graph-service. Anything
-// that wants a hard gate must validate the URL at startup.
+// Bypassed entirely when graphServiceURL is empty — used in unit tests +
+// bootstrap configs that don't run graph-service. Anything that wants a hard
+// gate must validate the URL at startup (config does, when CALLS_ENABLED).
 func (p *CallPolicy) CanCall(ctx context.Context, callerID, targetID uuid.UUID) error {
 	if p.graphServiceURL == "" {
 		return nil
@@ -74,16 +68,18 @@ func (p *CallPolicy) CanCall(ctx context.Context, callerID, targetID uuid.UUID) 
 	}
 
 	url := fmt.Sprintf(
-		"%s/v1/graph/relationship?user_id=%s&other_id=%s",
-		p.graphServiceURL, callerID, targetID,
+		"%s/v1/permissions/check?target_user_id=%s&actions=call",
+		p.graphServiceURL, targetID,
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		slog.Warn("call_policy: build request failed", "err", err)
 		return ErrGraphUnavailable
 	}
-	// graph-service gates /v1/graph/* behind the internal service key —
-	// without it the call 401s and CanCall fails closed on every call.
+	// The permission check is actor-scoped: the caller is the actor.
+	req.Header.Set("X-User-Id", callerID.String())
+	// graph-service gates /v1/* behind the internal service key — without it
+	// the call 401s and CanCall fails closed on every call.
 	if p.internalKey != "" {
 		req.Header.Set("X-Internal-Service-Key", p.internalKey)
 	}
@@ -99,51 +95,32 @@ func (p *CallPolicy) CanCall(ctx context.Context, callerID, targetID uuid.UUID) 
 		return ErrGraphUnavailable
 	}
 
-	var body struct {
+	var envelope struct {
 		Data struct {
-			IsFriend     bool `json:"is_friend"`
-			IsConnection bool `json:"is_connection"`
-			Follows      bool `json:"follows"`
-			FollowedBy   bool `json:"followed_by"`
-			Blocked      bool `json:"blocked"`
-			BlockedBy    bool `json:"blocked_by"`
+			Decisions map[string]struct {
+				Allowed bool   `json:"allowed"`
+				Reason  string `json:"reason,omitempty"`
+			} `json:"decisions"`
 		} `json:"data"`
-		// Legacy un-wrapped shape (some endpoints return the
-		// relationship at the top level) — tolerated.
-		IsFriend     bool `json:"is_friend"`
-		IsConnection bool `json:"is_connection"`
-		Follows      bool `json:"follows"`
-		FollowedBy   bool `json:"followed_by"`
-		Blocked      bool `json:"blocked"`
-		BlockedBy    bool `json:"blocked_by"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		slog.Warn("call_policy: graph response decode failed", "err", err)
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		slog.Warn("call_policy: permission response decode failed", "err", err)
 		return ErrGraphUnavailable
 	}
-	rel := body.Data
-	if !rel.IsFriend && !rel.IsConnection && !rel.Follows && !rel.FollowedBy && !rel.Blocked && !rel.BlockedBy {
-		// Fall back to the un-wrapped shape.
-		rel.IsFriend = body.IsFriend
-		rel.IsConnection = body.IsConnection
-		rel.Follows = body.Follows
-		rel.FollowedBy = body.FollowedBy
-		rel.Blocked = body.Blocked
-		rel.BlockedBy = body.BlockedBy
+	decision, ok := envelope.Data.Decisions["call"]
+	if !ok {
+		// The authority answered but did not decide the action — fail
+		// closed as unavailable, not as a policy denial.
+		slog.Warn("call_policy: no call decision in response",
+			"caller", callerID, "target", targetID)
+		return ErrGraphUnavailable
 	}
-
-	// `Blocked=true` in the graph response means: from `callerID`'s
-	// perspective, `targetID` has blocked them. Reject the call so
-	// the target's device doesn't ring.
-	if rel.Blocked || rel.BlockedBy {
-		return ErrBlockedByTarget
+	if !decision.Allowed {
+		// The reason (blocked / privacy_no_one / privacy_connections_only)
+		// is logged for operators but NEVER differentiated to the caller.
+		slog.Info("call rejected by permission matrix",
+			"caller", callerID, "target", targetID, "reason", decision.Reason)
+		return ErrCallNotAllowed
 	}
-	// Circle gate: same as DM policy. Friend OR mutual-follow.
-	if rel.IsFriend || rel.IsConnection {
-		return nil
-	}
-	if rel.Follows && rel.FollowedBy {
-		return nil
-	}
-	return ErrNotInCircle
+	return nil
 }

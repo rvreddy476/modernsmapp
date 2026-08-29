@@ -82,8 +82,9 @@ class ChatSessionRestartTest {
 
     private class Flag(var stored: Boolean = false) : ScrubRecoveryFlag {
         override fun isPending(): Boolean = stored
-        override fun setPending(pending: Boolean) {
+        override fun setPending(pending: Boolean): Boolean {
             stored = pending
+            return true
         }
     }
 

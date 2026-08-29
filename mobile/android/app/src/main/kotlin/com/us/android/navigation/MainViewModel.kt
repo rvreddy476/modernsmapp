@@ -25,11 +25,15 @@ class MainViewModel @Inject constructor(
     authRepository: AuthRepository,
     engagementStore: EngagementStore,
     private val pushDestinations: PushDestinations,
+    callSessionManager: com.us.android.core.call.CallSessionManager,
 ) : ViewModel() {
     val sessionState: StateFlow<SessionState> = authRepository.sessionState
 
     /** The un-navigated notification tap, if any. Consumed by the nav host. */
     val pushDestination: StateFlow<PushDestination?> = pushDestinations.pending
+
+    /** The device's one call — the nav host fronts the surface on Incoming. */
+    val callState: StateFlow<com.us.android.core.call.CallState> = callSessionManager.state
 
     fun consumePushDestination() = pushDestinations.consume()
 

@@ -80,6 +80,7 @@ type ConversationStore interface {
 	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error)
 	MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error
 	GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*postgres.ConversationMeta, error)
+	ReplaceLastMessage(ctx context.Context, conversationID uuid.UUID, deletedTs time.Time, preview string, senderID *uuid.UUID, ts *time.Time) error
 }
 
 type MessageStore interface {
@@ -1204,13 +1205,49 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 		return errors.New("not allowed to delete this message")
 	}
 
+	// MP-LB-1 WRITE-AHEAD: the durable preview-repair obligation is committed
+	// BEFORE the soft delete. The inbox preview is denormalized from the
+	// newest message; if that is THIS message, its text keeps showing on
+	// every member's inbox until repaired, and the repair can fail after the
+	// delete succeeded (Scylla read, PostgreSQL write, crash, restart). With
+	// the obligation on disk first, every one of those failures is resumed by
+	// the repair worker. If the obligation itself cannot be recorded, the
+	// message is NOT deleted — the client retries a delete that did nothing.
+	if err := s.previewRepairStore().CreatePreviewRepairObligation(
+		ctx, conversationID, messageID, bucket, msg.Ts,
+	); err != nil {
+		return fmt.Errorf("record preview repair obligation: %w", err)
+	}
+
 	if err := s.msgStore.SoftDeleteMessage(ctx, conversationID, bucket, ts, messageID); err != nil {
+		// The obligation stands; the worker later finds the message still
+		// live and retires it without touching the preview.
 		return err
 	}
 
 	// Invalidate cache
 	key := fmt.Sprintf("chat_messages:%s", conversationID)
 	s.rdb.Del(ctx, key)
+
+	// Inline repair attempt. On success the obligation is retired; on any
+	// failure it stays durable and the worker finishes the job — the API
+	// still reports success because the message IS deleted.
+	obligation := postgres.PreviewRepairObligation{
+		MessageID:      messageID,
+		ConversationID: conversationID,
+		Bucket:         bucket,
+		DeletedTs:      msg.Ts,
+		CreatedAt:      time.Now(),
+	}
+	if outcome, rerr := s.resolvePreviewRepair(ctx, obligation); outcome == previewRepairResolved {
+		if cerr := s.previewRepairStore().CompletePreviewRepairObligation(ctx, messageID); cerr != nil {
+			s.log.Warn("preview repair completion failed; worker will retire it",
+				"err", cerr, "message_id", messageID)
+		}
+	} else if rerr != nil {
+		s.log.Warn("inline preview repair deferred to worker",
+			"err", rerr, "message_id", messageID, "conversation_id", conversationID)
+	}
 
 	_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageDeleted, sharedEvents.MessageDeletedPayload{
 		MessageID:      messageID.String(),

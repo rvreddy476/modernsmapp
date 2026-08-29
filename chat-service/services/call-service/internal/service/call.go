@@ -28,6 +28,17 @@ var (
 	ErrMaxInvitesPerCall = errors.New("maximum 20 invites per call")
 	ErrCannotInviteSelf  = errors.New("cannot invite yourself")
 	ErrCallNotActive     = errors.New("call is not active")
+	// ErrTargetUnavailable is the GENERIC busy/unavailable refusal for a
+	// recipient who is already in a live call (CALL-LB-5). The text reveals
+	// nothing about the recipient's current call — same privacy rule as the
+	// policy refusal.
+	ErrTargetUnavailable = errors.New("the call cannot be placed right now")
+	// ErrGroupCallsDisabled fences every NON-direct participant-add path in
+	// P0 (CALL-LB-5): group create, post-create invites and open joins do
+	// not hold the user-set busy lock, so while they are unproven they are
+	// refused server-side — the one-live-call invariant must not depend on
+	// clients simply not calling those routes.
+	ErrGroupCallsDisabled = errors.New("group calls are not available")
 	ErrAlreadyAudioVideo = errors.New("call already has video enabled")
 	ErrMaxParticipants   = errors.New("call has reached maximum participants")
 )
@@ -43,6 +54,12 @@ type Service struct {
 
 	signalingEndpoint     string
 	reconnectGraceSeconds int
+
+	// groupCallsEnabled stays FALSE in P0 (CALL-LB-5): the advisory
+	// user-set lock plus busy check covers only direct creation, so every
+	// other participant-add path is refused until group calls implement
+	// the same locked invariant. There is deliberately no config knob yet.
+	groupCallsEnabled bool
 }
 
 func New(
@@ -89,6 +106,34 @@ func (s *Service) CreateCall(ctx context.Context, userID uuid.UUID, req CreateCa
 		return nil, err
 	}
 
+	// CALL-LB-5: group creation does not hold the user-set busy invariant
+	// yet, so it is refused at the boundary (ScheduleCall funnels through
+	// here and is fenced by the same check).
+	if req.CallType != domain.CallTypeDirectAudio && req.CallType != domain.CallTypeDirectVideo &&
+		!s.groupCallsEnabled {
+		return nil, ErrGroupCallsDisabled
+	}
+
+	// CALL-LB-5: the active-call checks and the creation writes run under
+	// transaction-scoped advisory locks for EVERY user in the new call
+	// (initiator + targets), taken in deterministic UUID order. Two
+	// concurrent starts that share ANY participant — same initiator twice,
+	// or two different callers ringing one recipient — serialize here, and
+	// the loser's checks see the winner's call: one live call per USER,
+	// enforced by the database, not by client politeness.
+	lockUsers := make([]uuid.UUID, 0, 1+len(req.TargetUserIDs))
+	lockUsers = append(lockUsers, userID)
+	lockUsers = append(lockUsers, req.TargetUserIDs...)
+	var response *CallResponse
+	err := s.store.WithCallUsersLock(ctx, lockUsers, func() error {
+		created, createErr := s.createCallLocked(ctx, userID, req)
+		response = created
+		return createErr
+	})
+	return response, err
+}
+
+func (s *Service) createCallLocked(ctx context.Context, userID uuid.UUID, req CreateCallRequest) (*CallResponse, error) {
 	// Check user not already in active call
 	existing, err := s.store.GetActiveCallForUser(ctx, userID)
 	if err != nil {
@@ -98,8 +143,30 @@ func (s *Service) CreateCall(ctx context.Context, userID uuid.UUID, req CreateCa
 		return nil, ErrAlreadyInCall
 	}
 
-	// Anti-spam check for direct calls
 	isDirect := req.CallType == domain.CallTypeDirectAudio || req.CallType == domain.CallTypeDirectVideo
+
+	// CALL-LB-5: a recipient already in a live call may not be placed into
+	// a second one. Checked under the SAME user-set lock as the initiator
+	// check, and BEFORE any SFU room, session, participant, invite or
+	// outbox write exists — the loser leaves no side effect at all. The
+	// refusal is the generic unavailable contract: no recipient call
+	// details leak.
+	if isDirect {
+		for _, targetID := range req.TargetUserIDs {
+			if targetID == userID {
+				continue
+			}
+			busy, err := s.store.GetActiveCallForUser(ctx, targetID)
+			if err != nil {
+				return nil, fmt.Errorf("check target active call: %w", err)
+			}
+			if busy != nil {
+				return nil, ErrTargetUnavailable
+			}
+		}
+	}
+
+	// Anti-spam check for direct calls
 	if isDirect && len(req.TargetUserIDs) == 1 {
 		if err := s.rateLimiter.CheckRingAntiSpam(ctx, userID, req.TargetUserIDs[0]); err != nil {
 			return nil, err
@@ -269,6 +336,45 @@ func (s *Service) CreateCall(ctx context.Context, userID uuid.UUID, req CreateCa
 	return s.buildCallResponse(ctx, callID)
 }
 
+// PendingInviteResponse is one ringing invitation for the viewer — the
+// surface a callee (especially one cold-starting from a push tap) uses to
+// discover the call AND its invite id, which accept/decline require but no
+// other client-reachable surface carried.
+type PendingInviteResponse struct {
+	InviteID      uuid.UUID `json:"invite_id"`
+	CallID        uuid.UUID `json:"call_id"`
+	InviterUserID uuid.UUID `json:"inviter_user_id"`
+	CallType      string    `json:"call_type"`
+	AudioOnly     bool      `json:"audio_only"`
+	CallState     string    `json:"call_state"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// ListPendingInvites returns the viewer's pending invitations on live calls.
+func (s *Service) ListPendingInvites(ctx context.Context, userID uuid.UUID) ([]PendingInviteResponse, error) {
+	invites, err := s.store.ListPendingInvitesForUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending invites: %w", err)
+	}
+	out := make([]PendingInviteResponse, 0, len(invites))
+	for _, inv := range invites {
+		session, err := s.store.GetCallSession(ctx, inv.CallSessionID)
+		if err != nil || session == nil {
+			continue
+		}
+		out = append(out, PendingInviteResponse{
+			InviteID:      inv.ID,
+			CallID:        inv.CallSessionID,
+			InviterUserID: inv.InviterUserID,
+			CallType:      session.CallType,
+			AudioOnly:     session.AudioOnly,
+			CallState:     session.State,
+			CreatedAt:     inv.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // GetCall
 // ---------------------------------------------------------------------------
@@ -323,6 +429,13 @@ func (s *Service) JoinCall(ctx context.Context, userID, callID uuid.UUID) (*Join
 	if participant == nil {
 		// If open join mode, allow joining without invite
 		if session.JoinMode == domain.JoinModeOpen {
+			// CALL-LB-5: an open join adds a live participant WITHOUT the
+			// user-set busy lock — fenced off with the rest of the group
+			// surface in P0 (JoinCallByLink funnels through here too).
+			// Generic refusal: a non-participant stays a non-participant.
+			if !s.groupCallsEnabled {
+				return nil, ErrNotParticipant
+			}
 			activeCount, err := s.store.CountActiveParticipants(ctx, callID)
 			if err != nil {
 				return nil, err
@@ -371,8 +484,16 @@ func (s *Service) JoinCall(ctx context.Context, userID, callID uuid.UUID) (*Join
 		return nil, err
 	}
 
-	// Transition call to active if first non-initiator joins
-	if session.State == domain.CallStateRinging || session.State == domain.CallStateInitiated {
+	// Transition to active only when a NON-INITIATOR joins (CALL-LB-1).
+	// The comment above always said "first non-initiator"; the missing
+	// check meant the CALLER's own join — which the Android client performs
+	// right after create, to obtain ICE servers — flipped the session to
+	// active while the callee was still being rung, and the callee's
+	// pending-invite lookup then reported a call that was never answered as
+	// already active. Activation is the ANSWER transition, and only the
+	// answering side may cause it.
+	if userID != session.InitiatorUserID &&
+		(session.State == domain.CallStateRinging || session.State == domain.CallStateInitiated) {
 		_ = s.store.UpdateCallState(ctx, callID, domain.CallStateActive, nil)
 		_ = s.store.UpdateRoomStatus(ctx, room.ID, domain.RoomStatusActive)
 	}
@@ -480,13 +601,13 @@ func (s *Service) DeclineInvite(ctx context.Context, userID, callID, inviteID uu
 		DeclinedAt: time.Now(),
 	})
 
-	// If all invitees declined in a direct call, auto-end
+	// CALL-LB-3: declining a DIRECT call ends it, full stop. The old
+	// zero-joined guard never fired once the caller's own join marked them
+	// joined, stranding the caller "already in a call" against a callee who
+	// had already said no. endCallInternal is idempotent.
 	session, _ := s.store.GetCallSession(ctx, callID)
 	if session != nil && session.IsDirectCall() {
-		activeCount, _ := s.store.CountActiveParticipants(ctx, callID)
-		if activeCount == 0 {
-			s.endCallInternal(ctx, callID, session.InitiatorUserID, domain.EndedReasonMissed)
-		}
+		s.endCallInternal(ctx, callID, session.InitiatorUserID, domain.EndedReasonMissed)
 	}
 
 	return nil
@@ -529,7 +650,24 @@ func (s *Service) LeaveCall(ctx context.Context, userID, callID uuid.UUID) error
 		LeftAt: time.Now(),
 	})
 
-	// Check if all participants have left → auto-end
+	// CALL-LB-3: a DIRECT call is two people — either of them leaving IS
+	// the end of the call. The old zero-joined-participants condition left
+	// the session active whenever the other peer was still marked joined,
+	// which stranded that peer as "already in a call" until the duration
+	// cap. endCallInternal is idempotent (already-ended guard), so replays
+	// and both-sides-hang-up races are safe.
+	if session.IsDirectCall() {
+		reason := domain.EndedReasonCompleted
+		if session.State == domain.CallStateRinging || session.State == domain.CallStateInitiated {
+			// Nobody ever answered: the caller abandoning the ring is a
+			// cancel, not a completed conversation.
+			reason = domain.EndedReasonCanceled
+		}
+		s.endCallInternal(ctx, callID, userID, reason)
+		return nil
+	}
+
+	// Group calls: auto-end only when the last participant leaves.
 	activeCount, _ := s.store.CountActiveParticipants(ctx, callID)
 	if activeCount == 0 {
 		reason := domain.EndedReasonAllLeft
@@ -555,12 +693,17 @@ func (s *Service) EndCall(ctx context.Context, userID, callID uuid.UUID) error {
 		return ErrCallNotFound
 	}
 	if session.InitiatorUserID != userID {
-		// Allow host or moderator
 		participant, err := s.store.GetParticipant(ctx, callID, userID)
 		if err != nil {
 			return err
 		}
-		if participant == nil || (participant.Role != domain.RoleHost && participant.Role != domain.RoleModerator) {
+		// CALL-LB-3: in a DIRECT call both parties own the call equally —
+		// either may end it. The host/moderator restriction remains for
+		// group calls only.
+		allowed := participant != nil &&
+			(session.IsDirectCall() ||
+				participant.Role == domain.RoleHost || participant.Role == domain.RoleModerator)
+		if !allowed {
 			return ErrNotHost
 		}
 	}
@@ -639,6 +782,12 @@ type InviteParticipantsRequest struct {
 }
 
 func (s *Service) InviteParticipants(ctx context.Context, userID, callID uuid.UUID, req InviteParticipantsRequest) (*InviteResponse, error) {
+	// CALL-LB-5: a post-create invite adds a live participant WITHOUT the
+	// user-set busy lock. P0 direct calls create their one invite inside
+	// the locked CreateCall; everything else is group surface — refused.
+	if !s.groupCallsEnabled {
+		return nil, ErrGroupCallsDisabled
+	}
 	if len(req.UserIDs) > 20 {
 		return nil, ErrMaxInvitesPerCall
 	}

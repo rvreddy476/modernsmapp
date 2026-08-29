@@ -168,7 +168,8 @@ tasks.register("moduleGraphCheck") {
     // A green graph cannot detect a module nobody meant to add. Naming the
     // number makes an unplanned module a build failure rather than a surprise
     // six weeks later. Update this deliberately when a module is authorised.
-    val expectedModuleCount = 26
+    // 28 = 26 + :core:call and :feature:call (calling P0).
+    val expectedModuleCount = 28
 
     doLast {
         val allViolations = buildList {

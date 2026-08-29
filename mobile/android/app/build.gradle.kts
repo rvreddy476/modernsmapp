@@ -38,7 +38,9 @@ dependencies {
     implementation(projects.core.engagement)
     // Production chat pass: the chat lock lifecycle hooks.
     implementation(projects.core.chat)
+    implementation(projects.core.call)
     implementation(projects.feature.auth)
+    implementation(projects.feature.call)
     implementation(projects.feature.chat)
     implementation(projects.feature.feed)
     implementation(projects.feature.post)

@@ -98,10 +98,10 @@ class ChatInboxViewModel @Inject constructor(
     }
 
     /**
-     * Flips the mute. Honest boundary: this silences the CONVERSATION flag
-     * the server stores and the inbox renders; push fan-out is
-     * notification-service's, which today checks the user's global push
-     * switch, not per-conversation mute — tracked as P1 debt in the handover.
+     * Flips the mute, which now reaches the DEVICE: message-service ships the
+     * muted recipients on the MessageCreated event and notification-service
+     * writes their inbox row without sending a push. Mute silences the phone;
+     * it does not hide the conversation or the notification.
      */
     fun toggleMute(conversation: Conversation) = viewModelScope.launch {
         store.setConversationSettings(

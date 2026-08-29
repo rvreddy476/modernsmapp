@@ -67,6 +67,7 @@ fun NavGraphBuilder.chatInboxScreen(
     onOpenRequest: (conversationId: String, title: String) -> Unit,
     onCreateGroup: () -> Unit,
     onOpenLockSettings: () -> Unit = {},
+    onOpenCallHistory: () -> Unit = {},
 ) {
     composable<ChatInboxRoute> {
         // EVERY chat surface sits behind the local lock gate (CH-LB-6): while
@@ -80,6 +81,7 @@ fun NavGraphBuilder.chatInboxScreen(
                 onOpenRequest = onOpenRequest,
                 onCreateGroup = onCreateGroup,
                 onOpenLockSettings = onOpenLockSettings,
+                onOpenCallHistory = onOpenCallHistory,
             )
         }
     }
@@ -89,6 +91,8 @@ fun NavGraphBuilder.chatInboxScreen(
 fun NavGraphBuilder.chatThreadScreen(
     onBack: () -> Unit,
     onOpenGroupInfo: (conversationId: String) -> Unit,
+    onStartCall: (peerUserId: String, peerName: String, video: Boolean, conversationId: String) -> Unit =
+        { _, _, _, _ -> },
 ) {
     composable<ChatThreadRoute> { entry ->
         val route = entry.toRoute<ChatThreadRoute>()
@@ -98,6 +102,9 @@ fun NavGraphBuilder.chatThreadScreen(
                 isGroup = route.isGroup,
                 onOpenGroupInfo = { onOpenGroupInfo(route.conversationId) },
                 onBack = onBack,
+                onStartCall = { peerUserId, peerName, video ->
+                    onStartCall(peerUserId, peerName, video, route.conversationId)
+                },
             )
         }
     }
