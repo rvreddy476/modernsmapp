@@ -19,15 +19,15 @@ var ErrIdempotencyKeyNotFound = errors.New("idempotency: key not found")
 // FindIdempotency looks up a previous record for the (key, user, operation)
 // triple. Returns ErrIdempotencyKeyNotFound when nothing recorded yet, or
 // ErrIdempotencyMismatch when the key is used by this user for a different
-// operation (or by a different user entirely).
-func (s *Store) FindIdempotency(ctx context.Context, key string, userID uuid.UUID, operation string) (*IdempotencyRecord, error) {
+// operation or different request payload.
+func (s *Store) FindIdempotency(ctx context.Context, key string, userID uuid.UUID, operation string, requestHash string) (*IdempotencyRecord, error) {
 	const q = `
-        SELECT key, user_id, operation, resource_id, response_body, created_at, expires_at
+        SELECT key, user_id, operation, request_hash, resource_id, response_body, created_at, expires_at
         FROM rider_idempotency
         WHERE key = $1 AND expires_at > now()`
 	row := s.db.QueryRow(ctx, q, key)
 	var rec IdempotencyRecord
-	if err := row.Scan(&rec.Key, &rec.UserID, &rec.Operation, &rec.ResourceID, &rec.ResponseBody, &rec.CreatedAt, &rec.ExpiresAt); err != nil {
+	if err := row.Scan(&rec.Key, &rec.UserID, &rec.Operation, &rec.RequestHash, &rec.ResourceID, &rec.ResponseBody, &rec.CreatedAt, &rec.ExpiresAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrIdempotencyKeyNotFound
 		}
@@ -36,18 +36,25 @@ func (s *Store) FindIdempotency(ctx context.Context, key string, userID uuid.UUI
 	if rec.UserID != userID || rec.Operation != operation {
 		return nil, ErrIdempotencyMismatch
 	}
+	if requestHash != "" && rec.RequestHash != nil && *rec.RequestHash != requestHash {
+		return nil, ErrIdempotencyMismatch
+	}
 	return &rec, nil
 }
 
 // RecordIdempotency stores the (key, user, operation) -> resource_id +
 // response_body mapping. Duplicate keys are no-ops (ON CONFLICT DO NOTHING)
 // so retries don't blow up.
-func (s *Store) RecordIdempotency(ctx context.Context, key string, userID uuid.UUID, operation string, resourceID *uuid.UUID, responseBody []byte) error {
+func (s *Store) RecordIdempotency(ctx context.Context, key string, userID uuid.UUID, operation string, requestHash string, resourceID *uuid.UUID, responseBody []byte) error {
 	const q = `
-        INSERT INTO rider_idempotency (key, user_id, operation, resource_id, response_body)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO rider_idempotency (key, user_id, operation, request_hash, resource_id, response_body)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (key) DO NOTHING`
-	if _, err := s.db.Exec(ctx, q, key, userID, operation, resourceID, responseBody); err != nil {
+	var reqHashPtr *string
+	if requestHash != "" {
+		reqHashPtr = &requestHash
+	}
+	if _, err := s.db.Exec(ctx, q, key, userID, operation, reqHashPtr, resourceID, responseBody); err != nil {
 		return fmt.Errorf("record idempotency: %w", err)
 	}
 	return nil

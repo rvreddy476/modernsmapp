@@ -16,6 +16,7 @@ import (
 
 	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/events"
+	"github.com/atpost/rider-service/internal/routing"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
 	"github.com/atpost/shared/outbox"
@@ -32,6 +33,7 @@ type Service struct {
 	digilockerClient digilocker.Client
 	rdb              *redis.Client
 	producer         EventPublisher
+	router           routing.Calculator
 	cfg              Config
 	rtPublisher      *realtime.Publisher
 	rtSigner         *realtime.TokenSigner
@@ -220,7 +222,7 @@ func (noopPublisher) PublishAdminQueueSummary(_ context.Context, _ events.AdminQ
 // defaults to a no-op; main.go calls SetProducer with the real Kafka publisher.
 func New(s *store.Store, w wallet.Client, cfg Config) *Service {
 	if cfg.WindingFactor <= 0 {
-		cfg.WindingFactor = 1.4
+		cfg.WindingFactor = 1.25
 	}
 	if cfg.AverageSpeedKMPH <= 0 {
 		cfg.AverageSpeedKMPH = 22.0
@@ -232,12 +234,16 @@ func New(s *store.Store, w wallet.Client, cfg Config) *Service {
 		store:    s,
 		wallet:   w,
 		producer: noopPublisher{},
+		router:   routing.NewDeterministicCalculator(cfg.WindingFactor, cfg.AverageSpeedKMPH),
 		cfg:      cfg,
 	}
 }
 
 // SetProducer swaps in a real event publisher.
 func (s *Service) SetProducer(p EventPublisher) { s.producer = p }
+
+// SetRouter swaps in a custom routing provider.
+func (s *Service) SetRouter(r routing.Calculator) { s.router = r }
 
 // SetDigiLockerClient injects the partner client. main.go selects HTTP vs
 // Mock via DIGILOCKER_MODE.

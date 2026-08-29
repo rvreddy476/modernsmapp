@@ -63,7 +63,7 @@ func (s *Store) AdminDashboardCounts(ctx context.Context) (*AdminDashboardCounts
 	if err := s.db.QueryRow(ctx, `SELECT COUNT(*)::int FROM rider_rides WHERE status = 'completed' AND completed_at >= date_trunc('day', NOW())`).Scan(&out.CompletedToday); err != nil {
 		return nil, fmt.Errorf("count completed today: %w", err)
 	}
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*)::int FROM rider_rides WHERE status LIKE 'cancelled_%' AND cancelled_at >= date_trunc('day', NOW())`).Scan(&out.CancelledToday); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*)::int FROM rider_rides WHERE status::text LIKE 'cancelled_%' AND cancelled_at >= date_trunc('day', NOW())`).Scan(&out.CancelledToday); err != nil {
 		return nil, fmt.Errorf("count cancelled today: %w", err)
 	}
 	if err := s.db.QueryRow(ctx, `
@@ -397,11 +397,7 @@ func (s *Store) ListLiveRides(ctx context.Context, limit int) ([]Ride, error) {
 		limit = 200
 	}
 	const q = `
-        SELECT id, customer_user_id, partner_id, vehicle_id, city_id, vehicle_type, status,
-               pickup_address, ST_Y(pickup_location::geometry), ST_X(pickup_location::geometry),
-               drop_address, ST_Y(drop_location::geometry), ST_X(drop_location::geometry),
-               estimated_distance_km, estimated_duration_min, estimated_fare, payment_method,
-               otp_expires_at, requested_at, created_at, updated_at
+        SELECT ` + rideSelectColumns + `
         FROM rider_rides
         WHERE status IN ('requested','searching_partner','partner_assigned','partner_arriving','arrived','otp_verified','in_progress')
         ORDER BY requested_at DESC

@@ -1,0 +1,207 @@
+asyncapi: 2.6.0
+info:
+  title: Mopedu Mobility Event Contracts
+  version: 1.0.0
+  description: Event specifications for Kafka topic `rider-events` and Realtime SSE streams.
+channels:
+  rider-events:
+    description: Partitioned Kafka topic for authoritative mobility lifecycle events.
+    publish:
+      summary: Events emitted by rider-service via transactional outbox
+      message:
+        oneOf:
+          - $ref: '#/components/messages/RideRequested'
+          - $ref: '#/components/messages/RideAssigned'
+          - $ref: '#/components/messages/RideArriving'
+          - $ref: '#/components/messages/RideArrived'
+          - $ref: '#/components/messages/RideStarted'
+          - $ref: '#/components/messages/RideCompleted'
+          - $ref: '#/components/messages/RideCancelled'
+          - $ref: '#/components/messages/SOSTriggered'
+          - $ref: '#/components/messages/PartnerLocationUpdated'
+
+components:
+  messages:
+    RideRequested:
+      name: rider.ride.requested
+      payload:
+        type: object
+        required: [ride_id, customer_id, vehicle_type]
+        properties:
+          ride_id:
+            type: string
+            format: uuid
+          customer_id:
+            type: string
+            format: uuid
+          vehicle_type:
+            type: string
+          city_id:
+            type: string
+          requested_at:
+            type: string
+            format: date-time
+
+    RideAssigned:
+      name: rider.ride.assigned
+      payload:
+        type: object
+        required: [ride_id, customer_id, partner_id, vehicle_id]
+        properties:
+          ride_id:
+            type: string
+            format: uuid
+          customer_id:
+            type: string
+            format: uuid
+          partner_id:
+            type: string
+            format: uuid
+          vehicle_id:
+            type: string
+            format: uuid
+          offer_id:
+            type: string
+            format: uuid
+
+    RideArriving:
+      name: rider.ride.arriving
+      payload:
+        type: object
+        required: [ride_id, customer_id, partner_id]
+        properties:
+          ride_id:
+            type: string
+            format: uuid
+          customer_id:
+            type: string
+            format: uuid
+          partner_id:
+            type: string
+            format: uuid
+
+    RideArrived:
+      name: rider.ride.arrived
+      payload:
+        type: object
+        required: [ride_id, customer_id, partner_id]
+        properties:
+          ride_id:
+            type: string
+            format: uuid
+          customer_id:
+            type: string
+            format: uuid
+          partner_id:
+            type: string
+            format: uuid
+
+    RideStarted:
+      name: rider.ride.started
+      payload:
+        type: object
+        required: [ride_id, customer_id, partner_id]
+        properties:
+          ride_id:
+            type: string
+            format: uuid
+          customer_id:
+            type: string
+            format: uuid
+          partner_id:
+            type: string
+            format: uuid
+
+    RideCompleted:
+      name: rider.ride.completed
+      payload:
+        type: object
+        required: [ride_id, partner_id, final_fare_paise, payment_method, completed_at]
+        properties:
+          ride_id:
+            type: string
+            format: uuid
+          partner_id:
+            type: string
+            format: uuid
+          final_distance_km:
+            type: number
+          final_duration_min:
+            type: integer
+          final_fare_paise:
+            type: integer
+            format: int64
+          payment_method:
+            type: string
+          payment_status:
+            type: string
+          flagged_for_review:
+            type: boolean
+          completed_at:
+            type: string
+            format: date-time
+
+    RideCancelled:
+      name: rider.ride.cancelled
+      payload:
+        type: object
+        required: [ride_id, cancelled_by, reason]
+        properties:
+          ride_id:
+            type: string
+            format: uuid
+          cancelled_by:
+            type: string
+          reason:
+            type: string
+          cancellation_fee_paise:
+            type: integer
+            format: int64
+
+    SOSTriggered:
+      name: rider.sos.triggered
+      payload:
+        type: object
+        required: [incident_id, ride_id, triggered_by, severity]
+        properties:
+          incident_id:
+            type: string
+            format: uuid
+          ride_id:
+            type: string
+            format: uuid
+          triggered_by:
+            type: string
+            format: uuid
+          severity:
+            type: string
+          lat:
+            type: number
+          lng:
+            type: number
+          timestamp:
+            type: string
+            format: date-time
+
+    PartnerLocationUpdated:
+      name: rider.partner.location_updated
+      payload:
+        type: object
+        required: [partner_id, lat, lng, timestamp]
+        properties:
+          partner_id:
+            type: string
+            format: uuid
+          lat:
+            type: number
+          lng:
+            type: number
+          speed_mps:
+            type: number
+          heading:
+            type: number
+          accuracy_meters:
+            type: number
+          timestamp:
+            type: string
+            format: date-time

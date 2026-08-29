@@ -11,7 +11,7 @@ func TestGenerateAndCompare_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	if !strings.HasPrefix(string(hash), "r1$") {
+	if !strings.HasPrefix(string(hash), "$2a$") && !strings.HasPrefix(string(hash), "r1$") {
 		t.Fatalf("hash should be versioned: %q", hash)
 	}
 	if err := CompareHashAndPassword(hash, []byte("4827")); err != nil {

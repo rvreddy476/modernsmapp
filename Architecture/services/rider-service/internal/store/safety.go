@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -229,53 +231,59 @@ func scanSafetyIncident(row pgx.Row) (*SafetyIncident, error) {
 // ShareToken is one row in rider_share_tokens.
 type ShareToken struct {
 	Token        string     `json:"token"`
+	TokenHash    string     `json:"token_hash,omitempty"`
 	RideID       uuid.UUID  `json:"ride_id"`
 	CustomerID   uuid.UUID  `json:"customer_id"`
 	ExpiresAt    time.Time  `json:"expires_at"`
 	ViewCount    int        `json:"view_count"`
 	LastViewedAt *time.Time `json:"last_viewed_at,omitempty"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
-// CreateShareToken inserts a share-token row.
-func (s *Store) CreateShareToken(ctx context.Context, token string, rideID, customerID uuid.UUID, expiresAt time.Time) (*ShareToken, error) {
+// CreateShareToken inserts a share-token row with token hash.
+func (s *Store) CreateShareToken(ctx context.Context, token, tokenHash string, rideID, customerID uuid.UUID, expiresAt time.Time) (*ShareToken, error) {
 	const q = `
-        INSERT INTO rider_share_tokens (token, ride_id, customer_id, expires_at)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (token) DO NOTHING
-        RETURNING token, ride_id, customer_id, expires_at, view_count, last_viewed_at, created_at`
-	row := s.db.QueryRow(ctx, q, token, rideID, customerID, expiresAt)
-	t, err := scanShareToken(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Conflict — token already present, return existing.
-			return s.LookupShareToken(ctx, token)
-		}
-		return nil, err
-	}
-	return t, nil
+        INSERT INTO rider_share_tokens (token, token_hash, ride_id, customer_id, expires_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (token) DO UPDATE SET
+            token_hash = EXCLUDED.token_hash,
+            expires_at = EXCLUDED.expires_at
+        RETURNING token, token_hash, ride_id, customer_id, expires_at, view_count, last_viewed_at, revoked_at, created_at`
+	row := s.db.QueryRow(ctx, q, token, tokenHash, rideID, customerID, expiresAt)
+	return scanShareToken(row)
 }
 
-// LookupShareToken returns the share-token row for the given token. Does
-// NOT increment view_count — callers that want to track views must call
-// MarkShareTokenViewed in addition.
+// LookupShareToken returns the share-token row for the given token string or hash.
 func (s *Store) LookupShareToken(ctx context.Context, token string) (*ShareToken, error) {
+	h := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(h[:])
 	const q = `
-        SELECT token, ride_id, customer_id, expires_at, view_count, last_viewed_at, created_at
+        SELECT token, token_hash, ride_id, customer_id, expires_at, view_count, last_viewed_at, revoked_at, created_at
         FROM rider_share_tokens
-        WHERE token = $1`
-	row := s.db.QueryRow(ctx, q, token)
-	t, err := scanShareToken(row)
+        WHERE (token = $1 OR token_hash = $1 OR token_hash = $2) AND revoked_at IS NULL`
+	row := s.db.QueryRow(ctx, q, token, tokenHash)
+	st, err := scanShareToken(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrShareTokenNotFound
 		}
 		return nil, err
 	}
-	if t.ExpiresAt.Before(time.Now().UTC()) {
-		return t, ErrShareTokenExpired
+	if st.ExpiresAt.Before(time.Now().UTC()) {
+		return nil, ErrShareTokenExpired
 	}
-	return t, nil
+	return st, nil
+}
+
+// RevokeShareTokensForRide revokes all active share tokens for a ride.
+func (s *Store) RevokeShareTokensForRide(ctx context.Context, rideID, customerID uuid.UUID) error {
+	const q = `
+        UPDATE rider_share_tokens
+        SET revoked_at = NOW()
+        WHERE ride_id = $1 AND customer_id = $2 AND revoked_at IS NULL`
+	_, err := s.db.Exec(ctx, q, rideID, customerID)
+	return err
 }
 
 // MarkShareTokenViewed bumps view_count + stamps last_viewed_at = now().
@@ -284,7 +292,7 @@ func (s *Store) MarkShareTokenViewed(ctx context.Context, token string) error {
         UPDATE rider_share_tokens
         SET view_count     = view_count + 1,
             last_viewed_at = NOW()
-        WHERE token = $1`
+        WHERE (token = $1 OR token_hash = $1)`
 	tag, err := s.db.Exec(ctx, q, token)
 	if err != nil {
 		return fmt.Errorf("mark share token viewed: %w", err)
@@ -297,7 +305,7 @@ func (s *Store) MarkShareTokenViewed(ctx context.Context, token string) error {
 
 func scanShareToken(row pgx.Row) (*ShareToken, error) {
 	var t ShareToken
-	if err := row.Scan(&t.Token, &t.RideID, &t.CustomerID, &t.ExpiresAt, &t.ViewCount, &t.LastViewedAt, &t.CreatedAt); err != nil {
+	if err := row.Scan(&t.Token, &t.TokenHash, &t.RideID, &t.CustomerID, &t.ExpiresAt, &t.ViewCount, &t.LastViewedAt, &t.RevokedAt, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &t, nil

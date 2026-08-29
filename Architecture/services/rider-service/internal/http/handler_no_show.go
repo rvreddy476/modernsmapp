@@ -19,10 +19,8 @@ type PostNoShowRequest struct {
 // the grace window. The mobile app enforces the wait timer; this
 // endpoint is purely the server-side authoritative transition.
 func (h *Handler) PostMarkNoShow(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	uid, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	uid, ok := getUserID(c)
+	if !ok {
 		return
 	}
 	rideID, err := uuid.Parse(c.Param("id"))

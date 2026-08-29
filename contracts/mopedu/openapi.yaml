@@ -1,0 +1,829 @@
+openapi: 3.0.3
+info:
+  title: Mopedu Mobility Platform API
+  version: 1.0.0
+  description: Authoritative REST API for Mopedu Rider & Captain Mobility Services. All monetary amounts are in integer paise (INR).
+servers:
+  - url: https://api.atpost.app
+    description: Production API Gateway
+  - url: http://localhost:8080
+    description: Local API Gateway
+
+paths:
+  /v1/rider/cities:
+    get:
+      summary: List serviceable cities
+      operationId: listCities
+      tags: [Public]
+      responses:
+        '200':
+          description: List of serviceable cities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/City'
+
+  /v1/rider/serviceability:
+    get:
+      summary: Check coordinates serviceability
+      operationId: checkServiceability
+      tags: [Public]
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+        - name: lng
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+      responses:
+        '200':
+          description: Serviceability response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceabilityResponse'
+
+  /v1/rider/estimate:
+    post:
+      summary: Request authoritative fare quote
+      operationId: estimateFare
+      tags: [Rider]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EstimateRequest'
+      responses:
+        '200':
+          description: Quote snapshot with vehicle options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuoteSnapshotResponse'
+
+  /v1/rider/rides:
+    post:
+      summary: Create or book a ride
+      operationId: createRide
+      tags: [Rider]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRideRequest'
+      responses:
+        '201':
+          description: Ride booked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ride'
+
+  /v1/rider/rides/active:
+    get:
+      summary: Get caller's active ride snapshot
+      operationId: getActiveRide
+      tags: [Rider]
+      responses:
+        '200':
+          description: Active ride details or active=false
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active:
+                    type: boolean
+                  ride:
+                    $ref: '#/components/schemas/Ride'
+
+  /v1/rider/rides/me:
+    get:
+      summary: List recent rides
+      operationId: listMyRides
+      tags: [Rider]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of rides
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Ride'
+
+  /v1/rider/rides/{id}:
+    get:
+      summary: Get ride by ID
+      operationId: getRide
+      tags: [Rider]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Ride details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ride'
+
+  /v1/rider/rides/{id}/receipt:
+    get:
+      summary: Get immutable trip receipt
+      operationId: getRideReceipt
+      tags: [Rider]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Trip receipt in integer paise
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideReceipt'
+
+  /v1/rider/rides/{id}/cancel:
+    post:
+      summary: Cancel a ride
+      operationId: cancelRide
+      tags: [Rider]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                idempotency_key:
+                  type: string
+      responses:
+        '200':
+          description: Cancellation confirmed
+
+  /v1/rider/rides/{id}/rate:
+    post:
+      summary: Rate a completed trip
+      operationId: rateRide
+      tags: [Rider]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                feedback:
+                  type: string
+      responses:
+        '200':
+          description: Rating recorded
+
+  /v1/rider/offers/incoming:
+    get:
+      summary: Get incoming ride offers for online captain
+      operationId: getIncomingOffers
+      tags: [Captain]
+      responses:
+        '200':
+          description: List of pending offers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RideOffer'
+
+  /v1/rider/offers/{id}/accept:
+    post:
+      summary: Accept a dispatched offer
+      operationId: acceptOffer
+      tags: [Captain]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Offer accepted; ride assigned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptOfferResponse'
+
+  /v1/rider/offers/{id}/reject:
+    post:
+      summary: Reject an offer
+      operationId: rejectOffer
+      tags: [Captain]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Offer rejected
+
+  /v1/rider/rides/{id}/arriving:
+    post:
+      summary: Mark captain is arriving at pickup
+      operationId: markArriving
+      tags: [Captain]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Status updated to partner_arriving
+
+  /v1/rider/rides/{id}/arrived:
+    post:
+      summary: Mark captain has arrived at pickup
+      operationId: markArrived
+      tags: [Captain]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Status updated to arrived
+
+  /v1/rider/rides/{id}/start:
+    post:
+      summary: Verify OTP and start trip
+      operationId: startRide
+      tags: [Captain]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [otp]
+              properties:
+                otp:
+                  type: string
+                  example: "4829"
+      responses:
+        '200':
+          description: OTP verified; trip started
+
+  /v1/rider/rides/{id}/complete:
+    post:
+      summary: Complete trip and submit final telemetry
+      operationId: completeRide
+      tags: [Captain]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [final_distance_km, final_duration_min, idempotency_key]
+              properties:
+                final_distance_km:
+                  type: number
+                final_duration_min:
+                  type: integer
+                idempotency_key:
+                  type: string
+      responses:
+        '200':
+          description: Trip completed; payment generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RidePayment'
+
+  /v1/rider/rides/{id}/payment/cash-confirm:
+    post:
+      summary: Captain confirms receipt of cash fare
+      operationId: confirmCashPayment
+      tags: [Captain]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Cash receipt confirmed
+
+  /v1/rider/partners/me/online:
+    post:
+      summary: Transition captain to online status
+      operationId: goOnline
+      tags: [Captain]
+      responses:
+        '200':
+          description: Captain is online
+
+  /v1/rider/partners/me/offline:
+    post:
+      summary: Transition captain to offline status
+      operationId: goOffline
+      tags: [Captain]
+      responses:
+        '200':
+          description: Captain is offline
+
+  /v1/rider/partners/me/location:
+    post:
+      summary: Ingest captain GPS location telemetry
+      operationId: updateLocation
+      tags: [Captain]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lat, lng]
+              properties:
+                lat:
+                  type: number
+                lng:
+                  type: number
+                speed_mps:
+                  type: number
+                heading:
+                  type: number
+                accuracy_meters:
+                  type: number
+                sequence:
+                  type: integer
+      responses:
+        '200':
+          description: Telemetry ingested
+
+  /v1/rider/rides/{id}/sos:
+    post:
+      summary: Trigger emergency SOS alert
+      operationId: triggerSOS
+      tags: [Safety]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lat:
+                  type: number
+                lng:
+                  type: number
+                reason:
+                  type: string
+      responses:
+        '201':
+          description: SOS incident logged and dispatched
+
+  /v1/rider/rides/{id}/share:
+    post:
+      summary: Create live trip sharing link
+      operationId: createShareToken
+      tags: [Safety]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Share link created
+    delete:
+      summary: Revoke active share links for ride
+      operationId: revokeShareToken
+      tags: [Safety]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Share links revoked
+
+  /v1/rider/share/{token}:
+    get:
+      summary: Public redacted live trip view
+      operationId: getSharedRide
+      tags: [Public]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Redacted live ride view
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SharedRideView'
+
+components:
+  schemas:
+    City:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        state:
+          type: string
+        country:
+          type: string
+        currency_code:
+          type: string
+        is_active:
+          type: boolean
+
+    ServiceabilityResponse:
+      type: object
+      properties:
+        serviceable:
+          type: boolean
+        city_id:
+          type: string
+          format: uuid
+        city_name:
+          type: string
+        supported_vehicle_types:
+          type: array
+          items:
+            type: string
+
+    EstimateRequest:
+      type: object
+      required: [pickup_lat, pickup_lng, drop_lat, drop_lng, city_id]
+      properties:
+        pickup_lat:
+          type: number
+        pickup_lng:
+          type: number
+        pickup_label:
+          type: string
+        drop_lat:
+          type: number
+        drop_lng:
+          type: number
+        drop_label:
+          type: string
+        vehicle_type:
+          type: string
+        city_id:
+          type: string
+          format: uuid
+
+    QuoteBreakdownPaise:
+      type: object
+      properties:
+        base_paise:
+          type: integer
+          format: int64
+        distance_paise:
+          type: integer
+          format: int64
+        time_paise:
+          type: integer
+          format: int64
+        platform_fee_paise:
+          type: integer
+          format: int64
+        tax_paise:
+          type: integer
+          format: int64
+        toll_paise:
+          type: integer
+          format: int64
+        surge_basis_points:
+          type: integer
+          format: int64
+
+    QuoteOption:
+      type: object
+      properties:
+        vehicle_type:
+          type: string
+        available:
+          type: boolean
+        pickup_eta_seconds:
+          type: integer
+        distance_meters:
+          type: integer
+        duration_seconds:
+          type: integer
+        currency:
+          type: string
+        total_paise:
+          type: integer
+          format: int64
+        breakdown:
+          $ref: '#/components/schemas/QuoteBreakdownPaise'
+
+    QuoteSnapshotResponse:
+      type: object
+      properties:
+        quote_id:
+          type: string
+        estimated_distance_km:
+          type: number
+        estimated_duration_min:
+          type: number
+        fare_estimate_paise:
+          type: integer
+          format: int64
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuoteOption'
+        expires_at:
+          type: string
+          format: date-time
+
+    CreateRideRequest:
+      type: object
+      required: [pickup, drop, vehicle_type]
+      properties:
+        quote_id:
+          type: string
+          format: uuid
+        pickup:
+          $ref: '#/components/schemas/Location'
+        drop:
+          $ref: '#/components/schemas/Location'
+        vehicle_type:
+          type: string
+        city_id:
+          type: string
+          format: uuid
+        payment_method:
+          type: string
+        idempotency_key:
+          type: string
+
+    Location:
+      type: object
+      required: [address, lat, lng]
+      properties:
+        address:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+
+    Ride:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_user_id:
+          type: string
+          format: uuid
+        partner_id:
+          type: string
+          format: uuid
+        vehicle_id:
+          type: string
+          format: uuid
+        city_id:
+          type: string
+          format: uuid
+        quote_id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+        vehicle_type:
+          type: string
+        status:
+          type: string
+        pickup_address:
+          type: string
+        pickup_lat:
+          type: number
+        pickup_lng:
+          type: number
+        drop_address:
+          type: string
+        drop_lat:
+          type: number
+        drop_lng:
+          type: number
+        estimated_fare:
+          type: number
+        final_fare_paise:
+          type: integer
+          format: int64
+        payment_method:
+          type: string
+        otp:
+          type: string
+          description: Plaintext OTP shown only to rider
+        requested_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    RideReceipt:
+      type: object
+      properties:
+        ride_id:
+          type: string
+          format: uuid
+        customer_user_id:
+          type: string
+          format: uuid
+        partner_id:
+          type: string
+          format: uuid
+        vehicle_type:
+          type: string
+        status:
+          type: string
+        pickup_address:
+          type: string
+        drop_address:
+          type: string
+        distance_meters:
+          type: integer
+        duration_seconds:
+          type: integer
+        total_paise:
+          type: integer
+          format: int64
+        payment_method:
+          type: string
+        payment_status:
+          type: string
+        fare_breakdown:
+          type: object
+        completed_at:
+          type: string
+          format: date-time
+
+    RideOffer:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ride_id:
+          type: string
+          format: uuid
+        score:
+          type: number
+        distance_km:
+          type: number
+        expires_at:
+          type: string
+          format: date-time
+
+    AcceptOfferResponse:
+      type: object
+      properties:
+        ride_id:
+          type: string
+          format: uuid
+        partner_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        otp_expires_at:
+          type: string
+          format: date-time
+
+    RidePayment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ride_id:
+          type: string
+          format: uuid
+        amount_paise:
+          type: integer
+          format: int64
+        payment_method:
+          type: string
+        status:
+          type: string
+
+    SharedRideView:
+      type: object
+      properties:
+        ride_id:
+          type: string
+        status:
+          type: string
+        vehicle_type:
+          type: string
+        drop_address:
+          type: string
+        driver_first_name:
+          type: string
+        vehicle_registration:
+          type: string
+        eta_minutes:
+          type: integer

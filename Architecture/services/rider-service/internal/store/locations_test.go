@@ -102,12 +102,12 @@ func TestFindOnlinePartnersByGeohash(t *testing.T) {
 		FullName: "Geo Test", Phone: "+919801000002",
 	})
 	if err := s.UpsertPartnerLocation(ctx, UpsertPartnerLocationInput{
-		PartnerID: p.ID, LastLat: 12.97, LastLng: 77.59, LastGeohash: "tdr1uy",
+		PartnerID: p.ID, LastLat: 12.97, LastLng: 77.59, LastGeohash: "tdr1u9",
 		IsOnline: true,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	out, err := s.FindOnlinePartnersByGeohash(ctx, []string{"tdr1uy", "tdr1v0"}, 10)
+	out, err := s.FindOnlinePartnersByGeohash(ctx, []string{"tdr1u9"}, 10)
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}

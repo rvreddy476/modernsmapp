@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -240,8 +241,10 @@ func (s *Service) CreateShareToken(ctx context.Context, customerID, rideID uuid.
 	if err != nil {
 		return nil, fmt.Errorf("generate token: %w", err)
 	}
+	h := sha256.Sum256([]byte(tok))
+	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().UTC().Add(ShareTokenTTL)
-	stored, err := s.store.CreateShareToken(ctx, tok, rideID, customerID, expiresAt)
+	stored, err := s.store.CreateShareToken(ctx, tok, tokenHash, rideID, customerID, expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("store share token: %w", err)
 	}

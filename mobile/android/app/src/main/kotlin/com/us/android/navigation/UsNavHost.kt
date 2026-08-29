@@ -76,6 +76,7 @@ import com.us.android.feature.profile.navigation.navigateToSettings
 import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
 import com.us.android.feature.profile.navigation.settingsScreens
+import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -374,6 +375,9 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         // Leaving a group closes its info AND its thread.
         onLeft = { navController.navigateToChatInbox() },
+    )
+    mopeduRiderScreen(
+        onNavigateBack = { navController.popBackStack() },
     )
     composable<GalleryRoute> {
         // The gallery is still reachable from Explore so the design tokens stay

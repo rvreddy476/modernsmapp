@@ -1471,6 +1471,7 @@ services:
   # Rider service (Mopedu mini-app). Customers ride free; partners pay
   # monthly subscription. See services/rider-service + mopedu/MOPEDU_SPEC.md.
   rider-service:
+    profiles: ["mopedu", "pilot", "all"]
     build:
       context: ..
       dockerfile: services/rider-service/Dockerfile
@@ -1482,6 +1483,7 @@ services:
       KAFKA_BROKERS: redpanda:9092
       KAFKA_TOPIC: rider-events
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      MOPEDU_ENABLED: ${MOPEDU_ENABLED:-false}
       WALLET_SERVICE_URL: http://wallet-service:8114
       DIGILOCKER_MODE: ${DIGILOCKER_MODE:-mock}
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}

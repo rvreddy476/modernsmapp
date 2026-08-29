@@ -26,6 +26,7 @@ func newIntegrationService(t *testing.T) (*Service, *wallet.MockClient, func()) 
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
+	cfg.MaxConns = 70
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -33,6 +34,28 @@ func newIntegrationService(t *testing.T) (*Service, *wallet.MockClient, func()) 
 	if err := database.BootstrapSchema(context.Background(), pool); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
+	_, _ = pool.Exec(context.Background(), `
+		TRUNCATE TABLE
+			rider_rides,
+			rider_ride_offers,
+			rider_vehicles,
+			rider_vehicle_documents,
+			rider_partner_subscriptions,
+			rider_subscription_payments,
+			rider_partners,
+			rider_idempotency,
+			rider_daily_revenue,
+			rider_share_tokens,
+			rider_complaints,
+			rider_safety_incidents,
+			rider_safety_actions,
+			rider_partner_locations,
+			rider_ride_payments,
+			rider_consumer_inbox,
+			rider_dispatch_attempts,
+			rider_cron_runs
+		CASCADE
+	`)
 	st := store.New(pool)
 	mock := wallet.NewMockClient()
 	svc := New(st, mock, Config{})
@@ -366,7 +389,24 @@ func TestCreateRide_Idempotent(t *testing.T) {
 	defer cleanup()
 	blr := pickBangaloreCity(t, svc)
 	cust := uuid.New()
+	est, err := svc.EstimateFare(context.Background(), FareEstimateRequest{
+		CustomerUserID: &cust,
+		CityID:         blr.ID,
+		VehicleType:    "auto",
+		PickupLabel:    "MG Road, Bengaluru",
+		PickupLat:      12.9716,
+		PickupLng:      77.5946,
+		DropLabel:      "Indiranagar, Bengaluru",
+		DropLat:        12.9784,
+		DropLng:        77.6408,
+	})
+	if err != nil {
+		t.Fatalf("estimate: %v", err)
+	}
+	quoteUUID := uuid.MustParse(est.QuoteID)
+
 	req := CreateRideRequest{
+		QuoteID:        &quoteUUID,
 		PickupAddress:  "MG Road, Bengaluru",
 		PickupLat:      12.9716,
 		PickupLng:      77.5946,

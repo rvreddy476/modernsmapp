@@ -148,15 +148,13 @@ tasks.register("moduleGraphCheck") {
             }
         }
 
-        // G-2: :core:creator-model is pure Kotlin/JVM.
-        //
-        // Purity is what makes the canonical bytes unit-testable on the JVM and
-        // what lets :core:media implement the port without the engine ever
-        // seeing it. An Android import here quietly costs both.
-        subprojects.find { it.path == ":core:creator-model" }?.let { model ->
-            listOf("com.android.library", "com.android.application").forEach { id ->
-                if (model.pluginManager.hasPlugin(id)) {
-                    add(":core:creator-model must not apply '$id' — it is pure Kotlin/JVM.")
+        // G-2: :core:creator-model and :core:mobility-model are pure Kotlin/JVM.
+        listOf(":core:creator-model", ":core:mobility-model").forEach { path ->
+            subprojects.find { it.path == path }?.let { model ->
+                listOf("com.android.library", "com.android.application").forEach { id ->
+                    if (model.pluginManager.hasPlugin(id)) {
+                        add("$path must not apply '$id' — it is pure Kotlin/JVM.")
+                    }
                 }
             }
         }
@@ -168,7 +166,7 @@ tasks.register("moduleGraphCheck") {
     // A green graph cannot detect a module nobody meant to add. Naming the
     // number makes an unplanned module a build failure rather than a surprise
     // six weeks later. Update this deliberately when a module is authorised.
-    val expectedModuleCount = 26
+    val expectedModuleCount = 32
 
     doLast {
         val allViolations = buildList {

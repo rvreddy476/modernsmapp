@@ -76,6 +76,7 @@ func TestAdminGuard_RejectsBadUser(t *testing.T) {
 	r := newTestRouter(w)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/rider/admin/dashboard", nil)
+	req.Header.Set(RiderWriteSourceHeader, GatewayWriteSource)
 	req.Header.Set("X-User-ID", "not-a-uuid")
 	req.Header.Set(AdminRoleHeader, AdminRoleValue)
 	r.ServeHTTP(rec, req)
@@ -90,6 +91,7 @@ func TestAdminGuard_RejectsMissingRole(t *testing.T) {
 	r := newTestRouter(w)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/rider/admin/dashboard", nil)
+	req.Header.Set(RiderWriteSourceHeader, GatewayWriteSource)
 	req.Header.Set("X-User-ID", uuid.NewString())
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -103,6 +105,7 @@ func TestAdminGuard_RejectsWrongRole(t *testing.T) {
 	r := newTestRouter(w)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/rider/admin/dashboard", nil)
+	req.Header.Set(RiderWriteSourceHeader, GatewayWriteSource)
 	req.Header.Set("X-User-ID", uuid.NewString())
 	req.Header.Set(AdminRoleHeader, "guest")
 	r.ServeHTTP(rec, req)

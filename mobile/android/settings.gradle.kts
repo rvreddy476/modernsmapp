@@ -74,3 +74,12 @@ include(":feature:chat")
 // read-state, and putting it in the feed would make the feed depend on
 // :core:notifications for a surface it does not render.
 include(":feature:notifications")
+
+// ── Mopedu P0 Mobility modules ─────────────────────────────────────────
+include(":core:mobility-model")
+include(":core:maps")
+include(":core:location")
+include(":feature:mopedu-rider")
+include(":feature:mopedu-captain")
+include(":mopedu-captain-app")
+

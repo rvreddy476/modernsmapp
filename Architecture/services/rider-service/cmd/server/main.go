@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -188,6 +189,23 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
+
+	mopeduEnabled := strings.EqualFold(env("MOPEDU_ENABLED", "false"), "true") || strings.EqualFold(env("ENABLE_MOPEDU_PILOT", "false"), "true")
+	if !mopeduEnabled {
+		slog.Warn("Mopedu service disabled via kill switch (MOPEDU_ENABLED=false)")
+		r.Use(func(c *gin.Context) {
+			if strings.HasPrefix(c.Request.URL.Path, "/v1/rider") {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{
+						"code":    "FEATURE_DISABLED",
+						"message": "Mopedu mobility service is not enabled",
+					},
+				})
+				return
+			}
+			c.Next()
+		})
+	}
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,9 +88,11 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, planID uuid.U
 		return nil, fmt.Errorf("invalid: idempotency_key required")
 	}
 
+	reqFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%s", userID, planID, paymentMethod))))
+
 	// Idempotency replay: if we've seen this key for this user + Subscribe,
 	// return the cached response body verbatim.
-	if existing, err := s.store.FindIdempotency(ctx, idempotencyKey, userID, SubscribeOperation); err == nil {
+	if existing, err := s.store.FindIdempotency(ctx, idempotencyKey, userID, SubscribeOperation, reqFingerprint); err == nil {
 		var cached SubscribeResult
 		if len(existing.ResponseBody) > 0 {
 			if err := json.Unmarshal(existing.ResponseBody, &cached); err == nil && cached.PaymentID != uuid.Nil {
@@ -191,7 +194,7 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, planID uuid.U
 	}
 
 	if body, merr := json.Marshal(res); merr == nil {
-		_ = s.store.RecordIdempotency(ctx, idempotencyKey, userID, SubscribeOperation, &payment.ID, body)
+		_ = s.store.RecordIdempotency(ctx, idempotencyKey, userID, SubscribeOperation, reqFingerprint, &payment.ID, body)
 	}
 	return res, nil
 }

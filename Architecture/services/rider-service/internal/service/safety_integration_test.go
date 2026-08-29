@@ -31,6 +31,28 @@ func integrationService(t *testing.T) (*Service, *recordingPublisher, func()) {
 	if err := database.BootstrapSchema(context.Background(), pool); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
+	_, _ = pool.Exec(context.Background(), `
+		TRUNCATE TABLE
+			rider_rides,
+			rider_ride_offers,
+			rider_vehicles,
+			rider_vehicle_documents,
+			rider_partner_subscriptions,
+			rider_subscription_payments,
+			rider_partners,
+			rider_idempotency,
+			rider_daily_revenue,
+			rider_share_tokens,
+			rider_complaints,
+			rider_safety_incidents,
+			rider_safety_actions,
+			rider_partner_locations,
+			rider_ride_payments,
+			rider_consumer_inbox,
+			rider_dispatch_attempts,
+			rider_cron_runs
+		CASCADE
+	`)
 	st := store.New(pool)
 	pub := &recordingPublisher{}
 	walletClient := wallet.NewMockClient()
@@ -254,9 +276,12 @@ func TestService_Admin_VerifyVehicle(t *testing.T) {
 		UserID: uid, PartnerType: "individual_driver",
 		FullName: "V Owner", Phone: "9000055555",
 	})
-	v, _ := svc.Store().CreateVehicle(ctx, store.CreateVehicleInput{
-		PartnerID: p.ID, VehicleType: "auto", RegistrationNumber: "KA01TEST5555",
+	v, err := svc.Store().CreateVehicle(ctx, store.CreateVehicleInput{
+		PartnerID: p.ID, VehicleType: "auto", RegistrationNumber: "KA01V" + uuid.New().String()[:6],
 	})
+	if err != nil {
+		t.Fatalf("CreateVehicle: %v", err)
+	}
 	if err := svc.VerifyVehicle(ctx, v.ID, admin); err != nil {
 		t.Fatalf("VerifyVehicle: %v", err)
 	}

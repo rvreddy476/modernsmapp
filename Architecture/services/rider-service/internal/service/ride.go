@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +20,7 @@ import (
 	"github.com/atpost/rider-service/internal/otp"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -339,23 +342,20 @@ func redisOnlineKey(cityID string) string {
 
 // --- Offer accept ---------------------------------------------------------
 
-// AcceptOfferResult is what AcceptOffer returns to the partner. Includes the
-// plain-text OTP — the only call that ever exposes it. Subsequent fetches
-// only see the bcrypt hash on the row.
+// AcceptOfferResult is what AcceptOffer returns to the partner.
+// Note: Plaintext OTP is NEVER returned to the partner (it is only visible to the rider).
 type AcceptOfferResult struct {
 	RideID    uuid.UUID `json:"ride_id"`
 	PartnerID uuid.UUID `json:"partner_id"`
-	OTP       string    `json:"otp"`
+	Status    string    `json:"status"`
 	OTPExpiry time.Time `json:"otp_expires_at"`
 }
 
 // AcceptOffer is the race-safe accept path:
-//  1. AcceptOfferTx (in store) takes a row lock + supersedes siblings.
-//  2. Generate 4-digit OTP, bcrypt hash it, expiry +30min.
-//  3. AssignRidePartner stamps partner_id, vehicle_id, otp_hash on the ride.
-//  4. Transition ride searching_partner -> partner_assigned.
-//  5. Increment lead_usage on the partner's active subscription.
-//  6. Emit ride.assigned + return plaintext OTP in the response.
+//  1. AcceptOfferAndAssignRideTx (in store) takes a row lock on ride, then offer,
+//     accepts offer, supersedes siblings, stamps partner_id, vehicle_id, otp_hash, otp_encrypted.
+//  2. Transition ride searching_partner -> partner_assigned.
+//  3. Emit ride.assigned to Kafka + realtime.
 func (s *Service) AcceptOffer(ctx context.Context, partnerUserID, offerID uuid.UUID) (*AcceptOfferResult, error) {
 	if partnerUserID == uuid.Nil || offerID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: partner user id and offer id required")
@@ -367,7 +367,44 @@ func (s *Service) AcceptOffer(ctx context.Context, partnerUserID, offerID uuid.U
 		}
 		return nil, err
 	}
-	updated, err := s.store.AcceptOfferTx(ctx, offerID, partner.ID)
+	// Pick the partner's first approved vehicle as the assignment carrier.
+	vehicles, err := s.store.ListVehiclesByPartner(ctx, partner.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list vehicles: %w", err)
+	}
+	var vehicleID *uuid.UUID
+	for _, v := range vehicles {
+		if v.Status == "approved" && v.IsActive {
+			vid := v.ID
+			vehicleID = &vid
+			break
+		}
+	}
+	if vehicleID == nil {
+		return nil, fmt.Errorf("invalid: partner has no approved vehicle")
+	}
+
+	_, otpHash, otpEncrypted, err := generateOTPAndHash()
+	if err != nil {
+		return nil, fmt.Errorf("generate otp: %w", err)
+	}
+
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"partner_id": partner.ID.String(),
+		"vehicle_id": vehicleID.String(),
+		"offer_id":   offerID.String(),
+	})
+
+	_, ride, err := s.store.AcceptOfferAndAssignRideTx(ctx, store.AcceptOfferAndAssignInput{
+		OfferID:         offerID,
+		PartnerID:       partner.ID,
+		PartnerUserID:   partnerUserID,
+		VehicleID:       vehicleID,
+		OTPPlain:        otpHash,
+		OTPEncrypted:    otpEncrypted,
+		OutboxEventType: "rider.ride.assigned",
+		OutboxPayload:   outboxPayload,
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrOfferAlreadyDecided) {
 			return nil, fmt.Errorf("conflict: offer already decided")
@@ -377,132 +414,294 @@ func (s *Service) AcceptOffer(ctx context.Context, partnerUserID, offerID uuid.U
 		}
 		return nil, err
 	}
-	// Pick the partner's first approved vehicle as the assignment carrier.
-	vehicles, err := s.store.ListVehiclesByPartner(ctx, partner.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list vehicles: %w", err)
-	}
-	var vehicleID uuid.UUID
-	for _, v := range vehicles {
-		if v.Status == "approved" && v.IsActive {
-			vehicleID = v.ID
-			break
-		}
-	}
-	if vehicleID == uuid.Nil {
-		return nil, fmt.Errorf("invalid: partner has no approved vehicle")
-	}
-	otpPlain, otpHash, err := generateOTPAndHash()
-	if err != nil {
-		return nil, fmt.Errorf("generate otp: %w", err)
-	}
-	otpExpiry := time.Now().UTC().Add(30 * time.Minute)
-	if err := s.store.AssignRidePartner(ctx, updated.RideID, partner.ID, vehicleID, otpHash, otpExpiry); err != nil {
-		return nil, fmt.Errorf("assign partner: %w", err)
-	}
-	ride, err := s.store.GetRide(ctx, updated.RideID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.transitionRide(ctx, ride, "partner_assigned", "partner", &partner.UserID, nil); err != nil {
-		return nil, err
-	}
+
 	if _, err := s.store.IncrementSubscriptionLeadsUsed(ctx, partner.ID); err != nil {
-		// Log but don't fail — lead accounting is best-effort vs blocking the ride.
 		slog.Warn("rider: increment leads_used failed", "partner_id", partner.ID, "error", err)
 	}
-	if perr := s.producer.PublishRideAssigned(ctx, ride.ID, ride.CustomerUserID, partner.ID, vehicleID, offerID); perr != nil {
+	if perr := s.producer.PublishRideAssigned(ctx, ride.ID, ride.CustomerUserID, partner.ID, *vehicleID, offerID); perr != nil {
 		slog.Warn("rider: publish ride.assigned failed", "ride_id", ride.ID, "error", perr)
 	}
 	s.emit(ctx, "rider.ride."+ride.ID.String(), "rider.ride.assigned", ride)
 	s.publishRealtime(ctx, "rider.admin.live_rides", "rider.ride.assigned", ride)
+
+	otpExp := time.Now().UTC().Add(30 * time.Minute)
+	if ride.OTPExpiresAt != nil {
+		otpExp = *ride.OTPExpiresAt
+	}
+
 	return &AcceptOfferResult{
 		RideID:    ride.ID,
 		PartnerID: partner.ID,
-		OTP:       otpPlain,
-		OTPExpiry: otpExpiry,
+		Status:    "partner_assigned",
+		OTPExpiry: otpExp,
 	}, nil
 }
 
 // --- Mid-ride status changes ----------------------------------------------
 
 // MarkArriving moves partner_assigned -> partner_arriving.
-func (s *Service) MarkArriving(ctx context.Context, partnerUserID, rideID uuid.UUID) error {
+func (s *Service) MarkArriving(ctx context.Context, partnerUserID, rideID uuid.UUID, expectedRevision int) error {
+	if expectedRevision <= 0 {
+		return fmt.Errorf("invalid: expected_revision required")
+	}
 	ride, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
 	if err != nil {
 		return err
 	}
-	if err := s.store.SetArrivingAt(ctx, rideID); err != nil {
-		return fmt.Errorf("set arriving: %w", err)
-	}
-	if err := s.transitionRide(ctx, ride, "partner_arriving", "partner", &partner.UserID, nil); err != nil {
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"ride_id":    rideID.String(),
+		"partner_id": partner.ID.String(),
+	})
+	updatedRide, err := s.store.TransitionRideAtomic(ctx, store.TransitionRideAtomicInput{
+		RideID:           rideID,
+		ExpectedRevision: expectedRevision,
+		FromStatus:       "partner_assigned",
+		ToStatus:         "partner_arriving",
+		ActorKind:        "partner",
+		ActorUserID:      &partner.UserID,
+		OutboxEventType:  "rider.ride.arriving",
+		OutboxPayload:    outboxPayload,
+		Mutate: func(tx pgx.Tx, r *store.Ride) error {
+			const q = `UPDATE rider_rides SET partner_arriving_at = NOW() WHERE id = $1`
+			_, err := tx.Exec(ctx, q, rideID)
+			return err
+		},
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrRevisionConflict) {
+			return fmt.Errorf("conflict: revision conflict")
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return fmt.Errorf("conflict: invalid state transition")
+		}
 		return err
 	}
 	if perr := s.producer.PublishRideArriving(ctx, rideID, ride.CustomerUserID, partner.ID); perr != nil {
 		slog.Warn("rider: publish ride.arriving failed", "ride_id", rideID, "error", perr)
 	}
-	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.arriving", ride)
+	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.arriving", updatedRide)
 	return nil
 }
 
 // MarkArrived moves partner_arriving -> arrived.
-func (s *Service) MarkArrived(ctx context.Context, partnerUserID, rideID uuid.UUID) error {
+func (s *Service) MarkArrived(ctx context.Context, partnerUserID, rideID uuid.UUID, expectedRevision int) error {
+	if expectedRevision <= 0 {
+		return fmt.Errorf("invalid: expected_revision required")
+	}
 	ride, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
 	if err != nil {
 		return err
 	}
-	if err := s.store.SetArrivedAt(ctx, rideID); err != nil {
-		return fmt.Errorf("set arrived: %w", err)
-	}
-	if err := s.transitionRide(ctx, ride, "arrived", "partner", &partner.UserID, nil); err != nil {
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"ride_id":    rideID.String(),
+		"partner_id": partner.ID.String(),
+	})
+	updatedRide, err := s.store.TransitionRideAtomic(ctx, store.TransitionRideAtomicInput{
+		RideID:           rideID,
+		ExpectedRevision: expectedRevision,
+		FromStatus:       "partner_arriving",
+		ToStatus:         "arrived",
+		ActorKind:        "partner",
+		ActorUserID:      &partner.UserID,
+		OutboxEventType:  "rider.ride.arrived",
+		OutboxPayload:    outboxPayload,
+		Mutate: func(tx pgx.Tx, r *store.Ride) error {
+			const q = `UPDATE rider_rides SET arrived_at = NOW() WHERE id = $1`
+			_, err := tx.Exec(ctx, q, rideID)
+			return err
+		},
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrRevisionConflict) {
+			return fmt.Errorf("conflict: revision conflict")
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return fmt.Errorf("conflict: invalid state transition")
+		}
 		return err
 	}
 	if perr := s.producer.PublishRideArrived(ctx, rideID, ride.CustomerUserID, partner.ID); perr != nil {
 		slog.Warn("rider: publish ride.arrived failed", "ride_id", rideID, "error", perr)
 	}
-	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.arrived", ride)
+	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.arrived", updatedRide)
 	return nil
 }
 
-// StartRide verifies the OTP + transitions arrived -> otp_verified -> in_progress.
-func (s *Service) StartRide(ctx context.Context, partnerUserID, rideID uuid.UUID, otpPlain string) error {
+// StartRide verifies the OTP + transitions arrived -> otp_verified -> in_progress with attempt tracking.
+func (s *Service) StartRide(ctx context.Context, partnerUserID, rideID uuid.UUID, otpPlain string, expectedRevision int) error {
+	if expectedRevision <= 0 {
+		return fmt.Errorf("invalid: expected_revision required")
+	}
 	if strings.TrimSpace(otpPlain) == "" {
 		return fmt.Errorf("invalid: otp required")
+	}
+	_, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.store.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	const lockQ = `
+        SELECT id, customer_user_id, status, revision, otp_code, otp_expires_at, otp_attempts, otp_locked_until
+        FROM rider_rides
+        WHERE id = $1 FOR UPDATE`
+	var rID, custID uuid.UUID
+	var status string
+	var rev, attempts int
+	var otpCode *string
+	var otpExpiresAt, lockedUntil *time.Time
+	if err := tx.QueryRow(ctx, lockQ, rideID).Scan(&rID, &custID, &status, &rev, &otpCode, &otpExpiresAt, &attempts, &lockedUntil); err != nil {
+		return fmt.Errorf("lock ride for start: %w", err)
+	}
+
+	if rev != expectedRevision {
+		return fmt.Errorf("conflict: revision conflict")
+	}
+	if status != "arrived" {
+		return fmt.Errorf("conflict: ride must be in arrived status to start (current: %s)", status)
+	}
+	if lockedUntil != nil && lockedUntil.After(time.Now().UTC()) {
+		return fmt.Errorf("forbidden: otp verification temporarily locked for 15 minutes due to excessive failed attempts")
+	}
+	if attempts >= 3 {
+		return fmt.Errorf("forbidden: max otp attempts exceeded")
+	}
+	if otpCode == nil || *otpCode == "" {
+		return fmt.Errorf("invalid: ride has no OTP set")
+	}
+	if otpExpiresAt != nil && otpExpiresAt.Before(time.Now().UTC()) {
+		return fmt.Errorf("forbidden: otp expired")
+	}
+
+	if err := otp.CompareHashAndPassword([]byte(*otpCode), []byte(strings.TrimSpace(otpPlain))); err != nil {
+		newAttempts := attempts + 1
+		var lockTime *time.Time
+		if newAttempts >= 3 {
+			t := time.Now().UTC().Add(15 * time.Minute)
+			lockTime = &t
+		}
+		const updateLockQ = `UPDATE rider_rides SET otp_attempts = $2, otp_locked_until = $3, updated_at = NOW() WHERE id = $1`
+		if _, execErr := tx.Exec(ctx, updateLockQ, rideID, newAttempts, lockTime); execErr != nil {
+			return fmt.Errorf("record failed attempt: %w", execErr)
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return fmt.Errorf("commit failed attempt: %w", commitErr)
+		}
+		if newAttempts >= 3 {
+			return fmt.Errorf("forbidden: invalid otp; 3 failed attempts, verification locked for 15 minutes")
+		}
+		return fmt.Errorf("forbidden: otp mismatch (attempt %d/3)", newAttempts)
+	}
+
+	// OTP Verified — transition to in_progress and wipe encrypted OTP in the same transaction
+	const updateRideQ = `
+        UPDATE rider_rides
+        SET status = 'in_progress', revision = revision + 1, started_at = NOW(),
+            otp_encrypted = NULL, otp_attempts = 0, otp_locked_until = NULL, updated_at = NOW()
+        WHERE id = $1 AND revision = $2`
+	if _, err := tx.Exec(ctx, updateRideQ, rideID, rev); err != nil {
+		return fmt.Errorf("start ride transition: %w", err)
+	}
+
+	const histQ = `
+        INSERT INTO rider_ride_status_history (ride_id, from_status, to_status, actor_kind, actor_user_id, reason)
+        VALUES ($1, 'arrived', 'in_progress', 'partner', $2, 'OTP verified and ride started')`
+	if _, err := tx.Exec(ctx, histQ, rideID, partner.UserID); err != nil {
+		return fmt.Errorf("insert start history: %w", err)
+	}
+
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"ride_id":    rideID.String(),
+		"partner_id": partner.ID.String(),
+	})
+	if err := store.InsertOutboxEventTx(ctx, tx, "rider.ride.started", "ride", rideID.String(), outboxPayload); err != nil {
+		return fmt.Errorf("insert start outbox: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit ride start: %w", err)
+	}
+
+	if perr := s.producer.PublishRideStarted(ctx, rideID, custID, partner.ID); perr != nil {
+		slog.Warn("rider: publish ride.started failed", "ride_id", rideID, "error", perr)
+	}
+	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.started", map[string]interface{}{"id": rideID, "status": "in_progress"})
+	return nil
+}
+
+// ConfirmCashPayment records that the assigned captain has collected cash.
+func (s *Service) ConfirmCashPayment(ctx context.Context, partnerUserID, rideID uuid.UUID, expectedRevision int) error {
+	if expectedRevision <= 0 {
+		return fmt.Errorf("invalid: expected_revision required")
 	}
 	ride, partner, err := s.loadRideForPartner(ctx, partnerUserID, rideID)
 	if err != nil {
 		return err
 	}
-	_, otpHash, otpExpiry, err := s.store.GetRideWithOTP(ctx, rideID)
+	if ride.Status != "completed" {
+		return fmt.Errorf("conflict: cash payment can only be confirmed after ride completion")
+	}
+
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"ride_id":    rideID.String(),
+		"partner_id": partner.ID.String(),
+		"amount":     ride.FinalFarePaise,
+	})
+
+	tx, err := s.store.BeginTx(ctx)
 	if err != nil {
 		return err
 	}
-	if otpHash == nil || *otpHash == "" {
-		return fmt.Errorf("invalid: ride has no OTP set")
+	defer tx.Rollback(ctx)
+
+	const lockQ = `SELECT revision FROM rider_rides WHERE id = $1 FOR UPDATE`
+	var rev int
+	if err := tx.QueryRow(ctx, lockQ, rideID).Scan(&rev); err != nil {
+		return fmt.Errorf("lock ride for payment: %w", err)
 	}
-	if otpExpiry != nil && otpExpiry.Before(time.Now().UTC()) {
-		return fmt.Errorf("forbidden: otp expired")
+	if rev != expectedRevision {
+		return fmt.Errorf("conflict: revision conflict")
 	}
-	if err := otp.CompareHashAndPassword([]byte(*otpHash), []byte(strings.TrimSpace(otpPlain))); err != nil {
-		if errors.Is(err, otp.ErrMismatchedHashAndPassword) {
-			return fmt.Errorf("forbidden: otp mismatch")
-		}
-		return fmt.Errorf("verify otp: %w", err)
+
+	const updatePayQ = `
+        UPDATE rider_ride_payments
+        SET status = 'succeeded', settled_at = NOW()
+        WHERE ride_id = $1 AND payment_method = 'cash' AND status = 'pending_cash_confirmation'`
+	tag, err := tx.Exec(ctx, updatePayQ, rideID)
+	if err != nil {
+		return fmt.Errorf("update payment status: %w", err)
 	}
-	// arrived -> otp_verified -> in_progress (two transitions, one history row each).
-	if err := s.transitionRide(ctx, ride, "otp_verified", "partner", &partner.UserID, nil); err != nil {
-		return err
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("conflict: no pending cash payment confirmation row for this ride")
 	}
-	if err := s.store.SetStartedAt(ctx, rideID); err != nil {
-		return fmt.Errorf("set started: %w", err)
+
+	const updateRideQ = `
+        UPDATE rider_rides
+        SET cash_confirmed_at = NOW(), cash_confirmed_by = $2, revision = revision + 1, updated_at = NOW()
+        WHERE id = $1 AND revision = $3`
+	if _, err := tx.Exec(ctx, updateRideQ, rideID, partner.UserID, rev); err != nil {
+		return fmt.Errorf("confirm cash in ride: %w", err)
 	}
-	if err := s.transitionRide(ctx, ride, "in_progress", "partner", &partner.UserID, nil); err != nil {
-		return err
+
+	const histQ = `
+        INSERT INTO rider_ride_status_history (ride_id, from_status, to_status, actor_kind, actor_user_id, reason)
+        VALUES ($1, 'completed', 'completed', 'partner', $2, 'cash collected and confirmed')`
+	if _, err := tx.Exec(ctx, histQ, rideID, partner.UserID); err != nil {
+		return fmt.Errorf("insert cash history: %w", err)
 	}
-	if perr := s.producer.PublishRideStarted(ctx, rideID, ride.CustomerUserID, partner.ID); perr != nil {
-		slog.Warn("rider: publish ride.started failed", "ride_id", rideID, "error", perr)
+
+	if err := store.InsertOutboxEventTx(ctx, tx, "rider.ride.payment.reconciled", "ride", rideID.String(), outboxPayload); err != nil {
+		return fmt.Errorf("insert cash outbox: %w", err)
 	}
-	s.publishRealtime(ctx, "rider.ride."+rideID.String(), "rider.ride.started", ride)
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit cash confirmation: %w", err)
+	}
 	return nil
 }
 
@@ -511,21 +710,23 @@ type CompleteRideRequest struct {
 	FinalDistanceKM  float64
 	FinalDurationMin int
 	IdempotencyKey   string
+	ExpectedRevision int
 }
 
 // CompleteRide finalizes a ride: compute final fare from rule, flag for
-// review if >1.5× estimate, insert ride_payments, settle cash immediately,
-// debit wallet for wallet method, return UPI intent for upi method.
-//
-// Idempotent on idempotencyKey via rider_idempotency.
+// review if >1.5× estimate, insert ride_payments atomically, and transition to completed.
 func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.UUID, req CompleteRideRequest) (*store.RidePayment, error) {
+	if req.ExpectedRevision <= 0 {
+		return nil, fmt.Errorf("invalid: expected_revision required")
+	}
 	if req.IdempotencyKey == "" {
 		return nil, fmt.Errorf("invalid: idempotency_key required")
 	}
 	if req.FinalDistanceKM < 0 || req.FinalDurationMin < 0 {
 		return nil, fmt.Errorf("invalid: final telemetry must be non-negative")
 	}
-	if existing, err := s.store.FindIdempotency(ctx, req.IdempotencyKey, partnerUserID, "ride_complete"); err == nil {
+	reqFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%.3f:%d", partnerUserID, rideID, req.FinalDistanceKM, req.FinalDurationMin))))
+	if existing, err := s.store.FindIdempotency(ctx, req.IdempotencyKey, partnerUserID, "ride_complete", reqFingerprint); err == nil {
 		if existing.ResourceID != nil {
 			return s.store.GetRidePayment(ctx, *existing.ResourceID)
 		}
@@ -543,79 +744,127 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 	if err != nil {
 		return nil, fmt.Errorf("fare rule lookup: %w", err)
 	}
-	rawINR := rule.BaseFare + rule.PerKMFare*req.FinalDistanceKM + rule.PerMinuteFare*float64(req.FinalDurationMin)
-	if rawINR < rule.MinimumFare {
-		rawINR = rule.MinimumFare
+
+	basePaise := int64(math.Round(rule.BaseFare * 100))
+	perKMPaise := int64(math.Round(rule.PerKMFare * 100))
+	perMinPaise := int64(math.Round(rule.PerMinuteFare * 100))
+	platformPaise := int64(math.Round(rule.PlatformFee * 100))
+	minPaise := int64(math.Round(rule.MinimumFare * 100))
+
+	distPaise := (int64(math.Round(req.FinalDistanceKM * 1000)) * perKMPaise) / 1000
+	timePaise := (int64(req.FinalDurationMin) * 60 * perMinPaise) / 60
+	rawPaise := basePaise + distPaise + timePaise + platformPaise
+	if rawPaise < minPaise {
+		rawPaise = minPaise
 	}
-	// Surge handled at the fare-rule level (peak/night multipliers). Apply max
-	// of the two so fares are never under-quoted at peak.
+
 	mult := math.Max(rule.NightMultiplier, rule.PeakMultiplier)
-	if mult <= 0 {
-		mult = 1.0
+	var surgeBPS int64 = 0
+	if mult > 1.0 {
+		surgeBPS = int64(math.Round((mult - 1.0) * 10000))
 	}
-	rawINR *= mult
-	finalPaise := int64(math.Round(rawINR * 100))
+	surgePaise := (rawPaise * surgeBPS) / 10000
+	totalPaise := rawPaise + surgePaise
+	taxPaise := (totalPaise * 500) / 10000
+	finalPaise := totalPaise + taxPaise
+	rawINR := float64(finalPaise) / 100.0
+
 	flag := false
 	if ride.EstimatedFare != nil && *ride.EstimatedFare > 0 {
 		if rawINR > 1.5*(*ride.EstimatedFare) {
 			flag = true
 		}
 	}
-	if err := s.store.FinalizeRide(ctx, store.CompleteRideInput{
-		RideID:           rideID,
-		FinalDistanceKM:  req.FinalDistanceKM,
-		FinalDurationMin: req.FinalDurationMin,
-		FinalFareINR:     rawINR,
-		FinalFarePaise:   finalPaise,
-		FlaggedForReview: flag,
-	}); err != nil {
-		return nil, fmt.Errorf("finalize ride: %w", err)
-	}
-	if err := s.transitionRide(ctx, ride, "completed", "partner", &partner.UserID, nil); err != nil {
-		return nil, err
-	}
+
 	method := "cash"
 	if ride.PaymentMethod != nil && *ride.PaymentMethod != "" {
 		method = *ride.PaymentMethod
 	}
-	pay, err := s.store.CreateRidePayment(ctx, store.CreateRidePaymentInput{
+	initialPayStatus := "pending"
+	if method == "cash" {
+		initialPayStatus = "pending_cash_confirmation"
+	}
+
+	payID := uuid.New()
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"ride_id":    rideID.String(),
+		"partner_id": partner.ID.String(),
+		"final_fare": finalPaise,
+		"payment_id": payID.String(),
+	})
+
+	_, err = s.store.TransitionRideAtomic(ctx, store.TransitionRideAtomicInput{
+		RideID:           rideID,
+		ExpectedRevision: req.ExpectedRevision,
+		FromStatus:       "in_progress",
+		ToStatus:         "completed",
+		ActorKind:        "partner",
+		ActorUserID:      &partner.UserID,
+		OutboxEventType:  "rider.ride.completed",
+		OutboxPayload:    outboxPayload,
+		Mutate: func(tx pgx.Tx, r *store.Ride) error {
+			const q = `
+                UPDATE rider_rides
+                SET final_distance_km = $2, final_duration_min = $3, final_fare = $4,
+                    final_fare_paise = $5, flagged_for_review = $6, completed_at = NOW()
+                WHERE id = $1`
+			if _, err := tx.Exec(ctx, q, rideID, req.FinalDistanceKM, req.FinalDurationMin, rawINR, finalPaise, flag); err != nil {
+				return err
+			}
+
+			const payQ = `
+                INSERT INTO rider_ride_payments (id, ride_id, partner_id, amount_paise, payment_method, status)
+                VALUES ($1, $2, $3, $4, $5, $6)`
+			if _, err := tx.Exec(ctx, payQ, payID, rideID, partner.ID, finalPaise, method, initialPayStatus); err != nil {
+				return err
+			}
+
+			const idempQ = `
+                INSERT INTO rider_idempotency (idempotency_key, user_id, operation, request_hash, resource_id, response_status, expires_at)
+                VALUES ($1, $2, 'ride_complete', $3, $4, 200, NOW() + INTERVAL '24 hours')
+                ON CONFLICT (idempotency_key, user_id, operation) DO UPDATE SET resource_id = $4`
+			if _, err := tx.Exec(ctx, idempQ, req.IdempotencyKey, partnerUserID, reqFingerprint, payID); err != nil {
+				return err
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrRevisionConflict) {
+			return nil, fmt.Errorf("conflict: revision conflict")
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return nil, fmt.Errorf("conflict: invalid state transition")
+		}
+		return nil, err
+	}
+
+	pay := &store.RidePayment{
+		ID:            payID,
 		RideID:        rideID,
 		PartnerID:     partner.ID,
 		AmountPaise:   finalPaise,
 		PaymentMethod: method,
-		Status:        "pending",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create payment: %w", err)
+		Status:        initialPayStatus,
+		CreatedAt:     time.Now().UTC(),
 	}
-	switch method {
-	case "cash":
-		// Cash settles informally — partner collects on the spot.
-		if pay, err = s.store.MarkRidePaymentSucceeded(ctx, pay.ID, nil, nil); err != nil {
-			return nil, err
-		}
-	case "wallet":
-		if s.wallet == nil {
-			slog.Warn("rider: wallet client not configured; payment stays pending", "payment_id", pay.ID)
-		} else if finalPaise > 0 {
-			debit, derr := s.wallet.DebitForSubscription(ctx, ride.CustomerUserID, finalPaise, pay.ID, "ride-complete-"+pay.ID.String())
-			if derr != nil {
-				slog.Warn("rider: wallet debit for ride failed", "payment_id", pay.ID, "error", derr)
-				_ = s.store.MarkRidePaymentFailed(ctx, pay.ID)
-			} else {
-				if pay, err = s.store.MarkRidePaymentSucceeded(ctx, pay.ID, &debit.TransactionID, nil); err != nil {
-					return nil, err
-				}
+
+	if method == "wallet" && s.wallet != nil && finalPaise > 0 {
+		debit, derr := s.wallet.DebitForSubscription(ctx, ride.CustomerUserID, finalPaise, pay.ID, "ride-complete-"+pay.ID.String())
+		if derr != nil {
+			slog.Warn("rider: wallet debit for ride failed", "payment_id", pay.ID, "error", derr)
+			_ = s.store.MarkRidePaymentFailed(ctx, pay.ID)
+		} else {
+			if updatedPay, err := s.store.MarkRidePaymentSucceeded(ctx, pay.ID, &debit.TransactionID, nil); err == nil {
+				pay = updatedPay
 			}
 		}
-	case "upi":
-		// upi stays pending until customer confirms the txn ref out-of-band.
-	default:
-		// Unknown method — leave pending; admin reconciles.
 	}
+
 	if err := s.store.IncrementPartnerCompleted(ctx, partner.ID); err != nil {
 		slog.Warn("rider: increment partner completed failed", "partner_id", partner.ID, "error", err)
 	}
+
 	if perr := s.producer.PublishRideCompleted(ctx, events.RideCompletedPayload{
 		RideID:           rideID.String(),
 		PartnerID:        partner.ID.String(),
@@ -629,7 +878,7 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 	}); perr != nil {
 		slog.Warn("rider: publish ride.completed failed", "ride_id", rideID, "error", perr)
 	}
-	_ = s.store.RecordIdempotency(ctx, req.IdempotencyKey, partnerUserID, "ride_complete", &pay.ID, nil)
+
 	return pay, nil
 }
 
@@ -637,8 +886,9 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 
 // CancelRideRequest is the customer- or partner-supplied cancel input.
 type CancelRideRequest struct {
-	Reason         string
-	IdempotencyKey string
+	Reason           string
+	IdempotencyKey   string
+	ExpectedRevision int
 }
 
 // CancelRide computes the per-state cancellation fee, marks the ride
@@ -661,6 +911,15 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 		}
 		return nil, err
 	}
+
+	expRev := req.ExpectedRevision
+	if by != "system" && expRev <= 0 {
+		return nil, fmt.Errorf("invalid: expected_revision required")
+	}
+	if expRev <= 0 {
+		expRev = ride.Revision
+	}
+
 	// Authorization: customer must own the ride; partner must be assigned.
 	switch by {
 	case "customer":
@@ -693,15 +952,41 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 	if actorUserID != uuid.Nil {
 		actorRef = &actorUserID
 	}
-	if err := s.transitionRide(ctx, ride, to, by, actorRef, r); err != nil {
-		return nil, err
-	}
-	if err := s.store.MarkRideCancelled(ctx, store.CancelRideInput{
-		RideID:               rideID,
-		CancellationFeePaise: feePaise,
-		Reason:               reason,
-		CancelledByKind:      by,
-	}); err != nil {
+
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"ride_id":   rideID.String(),
+		"reason":    reason,
+		"by":        by,
+		"fee_paise": feePaise,
+	})
+
+	updatedRide, err := s.store.TransitionRideAtomic(ctx, store.TransitionRideAtomicInput{
+		RideID:           rideID,
+		ExpectedRevision: expRev,
+		FromStatus:       ride.Status,
+		ToStatus:         to,
+		ActorKind:        by,
+		ActorUserID:      actorRef,
+		Reason:           r,
+		OutboxEventType:  "rider.ride.cancelled",
+		OutboxPayload:    outboxPayload,
+		Mutate: func(tx pgx.Tx, rd *store.Ride) error {
+			const cancelQ = `
+                UPDATE rider_rides
+                SET cancellation_fee_paise = $2, cancelled_by_kind = $3, cancelled_by_user_id = $4,
+                    cancellation_reason = $5, cancelled_at = NOW()
+                WHERE id = $1`
+			_, err := tx.Exec(ctx, cancelQ, rideID, feePaise, by, actorRef, reason)
+			return err
+		},
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrRevisionConflict) {
+			return nil, fmt.Errorf("conflict: revision conflict")
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return nil, fmt.Errorf("conflict: invalid state transition")
+		}
 		return nil, err
 	}
 	if by == "partner" && ride.PartnerID != nil {
@@ -732,7 +1017,7 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 	}); perr != nil {
 		slog.Warn("rider: publish ride.cancelled failed", "ride_id", rideID, "error", perr)
 	}
-	return ride, nil
+	return updatedRide, nil
 }
 
 // computeCancellationFeePaise applies the fee schedule per the spec.
@@ -868,12 +1153,11 @@ func (s *Service) loadRideForPartner(ctx context.Context, partnerUserID, rideID 
 	return ride, partner, nil
 }
 
-// generateOTPAndHash returns a 4-digit OTP + its bcrypt-style hash. The
-// plaintext is returned exactly once (to AcceptOffer) and never stored.
-func generateOTPAndHash() (plain string, hash string, err error) {
+// generateOTPAndHash returns a 4-digit OTP + its hash + its encrypted envelope.
+func generateOTPAndHash() (plain string, hash string, encrypted []byte, err error) {
 	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	n := binary.BigEndian.Uint32(buf[:]) % 10000
 	plain = strconv.FormatUint(uint64(n), 10)
@@ -882,9 +1166,13 @@ func generateOTPAndHash() (plain string, hash string, err error) {
 	}
 	h, err := otp.GenerateFromPassword([]byte(plain), 0)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
-	return plain, string(h), nil
+	enc, err := otp.EncryptOTP(plain, nil)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return plain, string(h), enc, nil
 }
 
 // hexEncode is a tiny hex encoder so share tokens are URL-safe and the

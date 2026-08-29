@@ -43,6 +43,7 @@ dependencies {
     implementation(projects.feature.feed)
     implementation(projects.feature.post)
     implementation(projects.feature.profile)
+    implementation(projects.feature.mopeduRider)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.coil.compose)

@@ -8,6 +8,7 @@
 package store
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +36,9 @@ type City struct {
 	Country      string    `json:"country"`
 	CurrencyCode string    `json:"currency_code"`
 	IsActive     bool      `json:"is_active"`
+	CenterLat    *float64  `json:"center_lat,omitempty"`
+	CenterLng    *float64  `json:"center_lng,omitempty"`
+	RadiusKM     *float64  `json:"radius_km,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -208,27 +212,50 @@ type FareRule struct {
 
 // Ride is one row in rider_rides.
 type Ride struct {
-	ID                   uuid.UUID  `json:"id"`
-	CustomerUserID       uuid.UUID  `json:"customer_user_id"`
-	PartnerID            *uuid.UUID `json:"partner_id,omitempty"`
-	VehicleID            *uuid.UUID `json:"vehicle_id,omitempty"`
-	CityID               *uuid.UUID `json:"city_id,omitempty"`
-	VehicleType          string     `json:"vehicle_type"`
-	Status               string     `json:"status"`
-	PickupAddress        string     `json:"pickup_address"`
-	PickupLat            float64    `json:"pickup_lat"`
-	PickupLng            float64    `json:"pickup_lng"`
-	DropAddress          string     `json:"drop_address"`
-	DropLat              float64    `json:"drop_lat"`
-	DropLng              float64    `json:"drop_lng"`
-	EstimatedDistanceKM  *float64   `json:"estimated_distance_km,omitempty"`
-	EstimatedDurationMin *float64   `json:"estimated_duration_min,omitempty"`
-	EstimatedFare        *float64   `json:"estimated_fare,omitempty"`
-	PaymentMethod        *string    `json:"payment_method,omitempty"`
-	OTPExpiresAt         *time.Time `json:"otp_expires_at,omitempty"`
-	RequestedAt          time.Time  `json:"requested_at"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
+	ID                   uuid.UUID       `json:"id"`
+	CustomerUserID       uuid.UUID       `json:"customer_user_id"`
+	PartnerID            *uuid.UUID      `json:"partner_id,omitempty"`
+	VehicleID            *uuid.UUID      `json:"vehicle_id,omitempty"`
+	CityID               *uuid.UUID      `json:"city_id,omitempty"`
+	QuoteID              *uuid.UUID      `json:"quote_id,omitempty"`
+	Revision             int             `json:"revision"`
+	VehicleType          string          `json:"vehicle_type"`
+	Status               string          `json:"status"`
+	PickupAddress        string          `json:"pickup_address"`
+	PickupLat            float64         `json:"pickup_lat"`
+	PickupLng            float64         `json:"pickup_lng"`
+	DropAddress          string          `json:"drop_address"`
+	DropLat              float64         `json:"drop_lat"`
+	DropLng              float64         `json:"drop_lng"`
+	EstimatedDistanceKM  *float64        `json:"estimated_distance_km,omitempty"`
+	EstimatedDurationMin *float64        `json:"estimated_duration_min,omitempty"`
+	EstimatedFare        *float64        `json:"estimated_fare,omitempty"`
+	FinalDistanceKM      *float64        `json:"final_distance_km,omitempty"`
+	FinalDurationMin     *float64        `json:"final_duration_min,omitempty"`
+	FinalFare            *float64        `json:"final_fare,omitempty"`
+	FinalFarePaise       *int64          `json:"final_fare_paise,omitempty"`
+	PaymentMethod        *string         `json:"payment_method,omitempty"`
+	OTPCode              *string         `json:"-"`
+	OTPEncrypted         []byte          `json:"-"`
+	OTPExpiresAt         *time.Time      `json:"-"`
+	OTPAttempts          int             `json:"-"`
+	OTPLockedUntil       *time.Time      `json:"-"`
+	CashConfirmedAt      *time.Time      `json:"cash_confirmed_at,omitempty"`
+	CashConfirmedBy      *uuid.UUID      `json:"cash_confirmed_by,omitempty"`
+	FareBreakdown        json.RawMessage `json:"fare_breakdown,omitempty"`
+	ScheduledFor         *time.Time      `json:"scheduled_for,omitempty"`
+	RequestedAt          time.Time       `json:"requested_at"`
+	AssignedAt           *time.Time      `json:"assigned_at,omitempty"`
+	ArrivedAt            *time.Time      `json:"arrived_at,omitempty"`
+	StartedAt            *time.Time      `json:"started_at,omitempty"`
+	CompletedAt          *time.Time      `json:"completed_at,omitempty"`
+	CancelledAt          *time.Time      `json:"cancelled_at,omitempty"`
+	CancelledBy          *uuid.UUID      `json:"cancelled_by,omitempty"`
+	CancellationReason   *string         `json:"cancellation_reason,omitempty"`
+	CustomerRating       *int            `json:"customer_rating,omitempty"`
+	PartnerRating        *int            `json:"partner_rating,omitempty"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
 }
 
 // RideStatusHistory is one row in rider_ride_status_history.
@@ -288,6 +315,7 @@ type IdempotencyRecord struct {
 	Key          string     `json:"key"`
 	UserID       uuid.UUID  `json:"user_id"`
 	Operation    string     `json:"operation"`
+	RequestHash  *string    `json:"request_hash,omitempty"`
 	ResourceID   *uuid.UUID `json:"resource_id,omitempty"`
 	ResponseBody []byte     `json:"response_body,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`

@@ -20,9 +20,12 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -64,34 +67,123 @@ type AuditWriter interface {
 }
 
 // AdminGuard is a gin middleware that enforces:
-//   - X-User-ID header (parsed as uuid; the admin user id),
-//   - X-Admin-Role: rider:admin (production: JWT claim),
-//
-// On success the resolved admin user id lives at c.Keys[AdminUserKey] for
-// handlers to consume.
+//   - Cryptographically authenticated admin identity from context or trusted gateway source,
+//   - Method-aware scope checks (read scopes cannot authorize mutations).
 func AdminGuard() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		raw := c.GetHeader("X-User-ID")
-		if raw == "" {
-			raw = c.GetHeader("X-User-Id")
-		}
-		if raw == "" {
-			c.AbortWithStatusJSON(401, gin.H{"error": gin.H{"code": "AUTH_REQUIRED", "message": "missing X-User-ID"}})
+		method := c.Request.Method
+		isMutation := method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch || method == http.MethodDelete
+
+		// 1. Check authenticated user from JWT context
+		if uid, ok := GetAuthenticatedUserID(c); ok && uid != uuid.Nil {
+			scopes := GetAuthenticatedScopes(c)
+			if rolesVal, exists := c.Get(ContextKeyRoles); exists {
+				if roles, ok := rolesVal.([]string); ok {
+					for _, r := range roles {
+						scopes = scopes + " " + r
+					}
+				}
+			}
+
+			if checkScopes(scopes, isMutation) {
+				c.Set(AdminUserKey, uid)
+				c.Next()
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "FORBIDDEN", "message": "insufficient admin scopes for operation"}})
 			return
 		}
-		uid, err := uuid.Parse(raw)
-		if err != nil {
-			c.AbortWithStatusJSON(400, gin.H{"error": gin.H{"code": "INVALID_ID", "message": "invalid user id"}})
-			return
+
+		// 2. Gateway verified claims from trusted edge (requiring cryptographic internal service key)
+		internalHeader := c.GetHeader("X-Internal-Service-Key")
+		internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+		isGatewayTrusted := internalHeader != "" && internalKey != "" && hmac.Equal([]byte(internalHeader), []byte(internalKey))
+
+		if isGatewayTrusted {
+			gwUserID := c.GetHeader("X-Verified-User-Id")
+			if gwUserID == "" {
+				gwUserID = c.GetHeader("X-User-Id")
+			}
+			if gwUserID == "" {
+				gwUserID = c.GetHeader("X-User-ID")
+			}
+			if gwUserID != "" {
+				uid, err := uuid.Parse(gwUserID)
+				if err != nil {
+					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_USER_ID", "message": "invalid user id in gateway header"}})
+					return
+				}
+				scopes := c.GetHeader("X-Scopes")
+				if scopes == "" {
+					scopes = c.GetHeader(AdminRoleHeader)
+				}
+				if checkScopes(scopes, isMutation) {
+					c.Set(AdminUserKey, uid)
+					c.Next()
+					return
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "FORBIDDEN", "message": "insufficient admin scopes for operation"}})
+				return
+			}
 		}
-		role := c.GetHeader(AdminRoleHeader)
-		if role != AdminRoleValue {
-			c.AbortWithStatusJSON(403, gin.H{"error": gin.H{"code": "FORBIDDEN", "message": "rider:admin role required"}})
-			return
+
+		// In development and test mode only: allow direct header if non-production
+		if !isProductionEnv() {
+			role := c.GetHeader(AdminRoleHeader)
+			raw := c.GetHeader("X-User-ID")
+			if raw == "" {
+				raw = c.GetHeader("X-User-Id")
+			}
+			if raw != "" {
+				uid, err := uuid.Parse(raw)
+				if err != nil {
+					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_USER_ID", "message": "invalid user id header"}})
+					return
+				}
+				if checkScopes(role, isMutation) {
+					c.Set(AdminUserKey, uid)
+					c.Next()
+					return
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "FORBIDDEN", "message": "admin role required"}})
+				return
+			}
 		}
-		c.Set(AdminUserKey, uid)
-		c.Next()
+
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "AUTH_REQUIRED", "message": "missing authenticated admin credentials"}})
 	}
+}
+
+func checkScopes(scopes string, isMutation bool) bool {
+	if scopes == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(scopes, func(r rune) bool {
+		return r == ' ' || r == ','
+	})
+
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		// Universal admin scopes
+		if p == "rider:admin" || p == "admin" || p == "superadmin" {
+			return true
+		}
+
+		// Non-mutating read routes can be satisfied by read scopes
+		if !isMutation {
+			if p == "rider:ops:read" || p == "rider:read" || p == "rider:partner:review" ||
+				p == "rider:safety:respond" || p == "rider:fare:manage" || p == "rider:payment:reconcile" {
+				return true
+			}
+		} else {
+			// Mutating routes require specific mutation scopes (read-only scopes like rider:ops:read or rider:read fail)
+			if p == "rider:partner:review" || p == "rider:safety:respond" ||
+				p == "rider:fare:manage" || p == "rider:payment:reconcile" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AuditAdmin is the gin middleware that writes one audit row per admin

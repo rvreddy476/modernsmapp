@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/atpost/rider-service/internal/http/middleware"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -16,10 +17,8 @@ type AppendRideMessageRequest struct {
 
 // PostRideMessage — POST /v1/rider/rides/:id/messages (party-only)
 func (h *Handler) PostRideMessage(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	uid, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	uid, ok := getUserID(c)
+	if !ok {
 		return
 	}
 	rideID, err := uuid.Parse(c.Param("id"))
@@ -32,7 +31,7 @@ func (h *Handler) PostRideMessage(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "body required", nil)
 		return
 	}
-	isAdmin := hasAdminScope(c.GetHeader("X-Scopes"))
+	isAdmin := hasAdminScope(middleware.GetAuthenticatedScopes(c))
 	m, err := h.svc.AppendRideMessage(c.Request.Context(), rideID, uid, req.Body, isAdmin)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MESSAGE_FAILED", err.Error(), nil)
@@ -43,10 +42,8 @@ func (h *Handler) PostRideMessage(c *gin.Context) {
 
 // ListRideMessages — GET /v1/rider/rides/:id/messages (party-only)
 func (h *Handler) ListRideMessages(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	uid, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	uid, ok := getUserID(c)
+	if !ok {
 		return
 	}
 	rideID, err := uuid.Parse(c.Param("id"))
@@ -54,7 +51,7 @@ func (h *Handler) ListRideMessages(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_RIDE_ID", err.Error(), nil)
 		return
 	}
-	isAdmin := hasAdminScope(c.GetHeader("X-Scopes"))
+	isAdmin := hasAdminScope(middleware.GetAuthenticatedScopes(c))
 	rows, err := h.svc.ListRideMessages(c.Request.Context(), rideID, uid, isAdmin)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIST_MESSAGES_FAILED", err.Error(), nil)
@@ -70,10 +67,8 @@ type MarkRideMessageReadRequest struct {
 
 // MarkRideMessageRead — POST /v1/rider/rides/:id/messages/:msgId/read
 func (h *Handler) MarkRideMessageRead(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	uid, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	uid, ok := getUserID(c)
+	if !ok {
 		return
 	}
 	msgID, err := uuid.Parse(c.Param("msgId"))

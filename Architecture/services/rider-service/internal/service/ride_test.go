@@ -98,7 +98,7 @@ func TestComputeCancellationFee_TerminalReturnsZero(t *testing.T) {
 }
 
 func TestGenerateOTPAndHash_RoundTrip(t *testing.T) {
-	plain, hash, err := generateOTPAndHash()
+	plain, hash, enc, err := generateOTPAndHash()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -110,21 +110,24 @@ func TestGenerateOTPAndHash_RoundTrip(t *testing.T) {
 			t.Fatalf("OTP must be all digits; got %q", plain)
 		}
 	}
-	if !strings.HasPrefix(hash, "r1$") {
+	if !strings.HasPrefix(hash, "$2a$") && !strings.HasPrefix(hash, "r1$") {
 		t.Fatalf("hash must be versioned; got %q", hash)
+	}
+	if len(enc) == 0 {
+		t.Fatalf("encrypted material must not be empty")
 	}
 }
 
 func TestGenerateOTPAndHash_DistinctEachCall(t *testing.T) {
-	a, _, _ := generateOTPAndHash()
-	b, _, _ := generateOTPAndHash()
+	a, _, _, _ := generateOTPAndHash()
+	b, _, _, _ := generateOTPAndHash()
 	// 1 in 10000 chance of collision; a single observation is fine.
 	if a == b {
 		t.Logf("two OTPs collided (rare but possible): %q", a)
 	}
 	// Hashes always distinct due to random salt.
-	_, ha, _ := generateOTPAndHash()
-	_, hb, _ := generateOTPAndHash()
+	_, ha, _, _ := generateOTPAndHash()
+	_, hb, _, _ := generateOTPAndHash()
 	if ha == hb {
 		t.Fatalf("two hashes collided — random salt missing?")
 	}
@@ -155,9 +158,20 @@ func TestRateRide_ServiceLayer_RequiresCompleted(t *testing.T) {
 	defer cleanup()
 	blr := pickBangaloreCity(t, svc)
 	cust := uuid.New()
+	est, err := svc.EstimateFare(context.Background(), FareEstimateRequest{
+		CustomerUserID: &cust, CityID: blr.ID, VehicleType: "auto",
+		PickupLabel: "P", PickupLat: 12.9716, PickupLng: 77.5946,
+		DropLabel: "D", DropLat: 12.9352, DropLng: 77.6245,
+	})
+	if err != nil {
+		t.Fatalf("estimate: %v", err)
+	}
+	quoteID := uuid.MustParse(est.QuoteID)
+
 	r, err := svc.CreateRide(context.Background(), cust, CreateRideRequest{
-		PickupAddress: "P", PickupLat: 12.97, PickupLng: 77.59,
-		DropAddress: "D", DropLat: 12.93, DropLng: 77.62,
+		QuoteID: &quoteID,
+		PickupAddress: "P", PickupLat: 12.9716, PickupLng: 77.5946,
+		DropAddress: "D", DropLat: 12.9352, DropLng: 77.6245,
 		VehicleType: "auto", CityID: &blr.ID,
 		IdempotencyKey: "ride-rate-pre-001",
 	})
@@ -177,16 +191,27 @@ func TestCancelRide_ServiceLayer_BeforeAssignedZeroFee(t *testing.T) {
 	defer cleanup()
 	blr := pickBangaloreCity(t, svc)
 	cust := uuid.New()
+	est, err := svc.EstimateFare(context.Background(), FareEstimateRequest{
+		CustomerUserID: &cust, CityID: blr.ID, VehicleType: "auto",
+		PickupLabel: "P", PickupLat: 12.9716, PickupLng: 77.5946,
+		DropLabel: "D", DropLat: 12.9352, DropLng: 77.6245,
+	})
+	if err != nil {
+		t.Fatalf("estimate: %v", err)
+	}
+	quoteID := uuid.MustParse(est.QuoteID)
+
 	r, err := svc.CreateRide(context.Background(), cust, CreateRideRequest{
-		PickupAddress: "P", PickupLat: 12.97, PickupLng: 77.59,
-		DropAddress: "D", DropLat: 12.93, DropLng: 77.62,
+		QuoteID: &quoteID,
+		PickupAddress: "P", PickupLat: 12.9716, PickupLng: 77.5946,
+		DropAddress: "D", DropLat: 12.9352, DropLng: 77.6245,
 		VehicleType: "auto", CityID: &blr.ID,
 		IdempotencyKey: "ride-cancel-zero-001",
 	})
 	if err != nil {
 		t.Fatalf("create ride: %v", err)
 	}
-	if _, err := svc.CancelRide(context.Background(), cust, r.ID, "customer", CancelRideRequest{Reason: "changed mind"}); err != nil {
+	if _, err := svc.CancelRide(context.Background(), cust, r.ID, "customer", CancelRideRequest{Reason: "changed mind", ExpectedRevision: 1}); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 	if len(walletMock.Debits()) != 0 {

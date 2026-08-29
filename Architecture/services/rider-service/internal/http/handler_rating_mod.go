@@ -15,10 +15,8 @@ type AdminHideRatingRequest struct {
 
 // AdminHideRideRating — POST /v1/rider/admin/rides/:id/rating/visibility
 func (h *Handler) AdminHideRideRating(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	adminID, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	adminID, ok := getUserID(c)
+	if !ok {
 		return
 	}
 	rideID, err := uuid.Parse(c.Param("id"))
@@ -45,10 +43,8 @@ type PartnerRespondRatingRequest struct {
 
 // PostPartnerRespondRating — POST /v1/rider/rides/:id/rating/response
 func (h *Handler) PostPartnerRespondRating(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	uid, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	uid, ok := getUserID(c)
+	if !ok {
 		return
 	}
 	rideID, err := uuid.Parse(c.Param("id"))

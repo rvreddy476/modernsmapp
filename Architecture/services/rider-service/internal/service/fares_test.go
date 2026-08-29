@@ -3,13 +3,14 @@ package service
 import (
 	"math"
 	"testing"
+
+	"github.com/atpost/rider-service/internal/geo"
 )
 
 // TestHaversine_KnownDistance — Bengaluru → MG Road type short hop.
-// Sanity-check the great-circle math against a hand-computed value.
 func TestHaversine_KnownDistance(t *testing.T) {
 	// MG Road -> Whitefield ~16km straight-line.
-	got := haversineKM(12.9716, 77.5946, 12.9698, 77.7500)
+	got := geo.HaversineKM(12.9716, 77.5946, 12.9698, 77.7500)
 	want := 16.85
 	if math.Abs(got-want) > 0.5 {
 		t.Errorf("haversine(MG -> Whitefield) = %.2f km, want ~%.2f km", got, want)
@@ -17,7 +18,7 @@ func TestHaversine_KnownDistance(t *testing.T) {
 }
 
 func TestHaversine_ZeroDistance(t *testing.T) {
-	got := haversineKM(12.97, 77.59, 12.97, 77.59)
+	got := geo.HaversineKM(12.97, 77.59, 12.97, 77.59)
 	if got != 0 {
 		t.Errorf("same point should be 0 km, got %v", got)
 	}
@@ -41,18 +42,12 @@ func TestValidLatLng(t *testing.T) {
 	}
 }
 
-// TestEstimateFareMath_Manual checks the headline fare math against a
-// hand-computed expectation. Bengaluru auto base ₹25 + ₹12/km × 5km × 1.4 winding
-// + ₹0/min × duration -> at minimum the formula rounds correctly.
-//
-// NB: this is a pure-math check via the helper functions; full estimate
-// tests that hit the DB live in service_integration_test.go (TEST_PG_DSN).
 func TestRound2_Stable(t *testing.T) {
 	cases := []struct {
 		in, want float64
 	}{
 		{1.234, 1.23},
-		{1.235, 1.24}, // banker's-rounding edge — math.Round is half-away
+		{1.235, 1.24},
 		{0.0, 0.0},
 		{99.999, 100.0},
 	}
@@ -60,6 +55,24 @@ func TestRound2_Stable(t *testing.T) {
 		got := round2(c.in)
 		if got != c.want {
 			t.Errorf("round2(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestSurgeBasisPointsMath(t *testing.T) {
+	cases := []struct {
+		surgeMultiplier float64
+		wantBps         int64
+	}{
+		{1.0, 0},
+		{1.25, 2500},
+		{1.5, 5000},
+		{2.0, 10000},
+	}
+	for _, tc := range cases {
+		got := int64(math.Round((tc.surgeMultiplier - 1.0) * 10000))
+		if got != tc.wantBps {
+			t.Errorf("surge %v -> bps %d, want %d", tc.surgeMultiplier, got, tc.wantBps)
 		}
 	}
 }

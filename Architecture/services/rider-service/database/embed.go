@@ -4,29 +4,28 @@ package database
 
 import (
 	"context"
+	"embed"
 	"fmt"
-	"strings"
 
-	_ "embed"
-
+	"github.com/atpost/shared/store/migrationrunner"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed setup.sql
 var SetupSQL string
 
-// BootstrapSchema applies the rider-service schema. Idempotent: every CREATE
-// uses IF NOT EXISTS (or DO blocks for enum types), so this can be run on
-// every cold start.
+//go:embed migrations/*.sql
+var Migrations embed.FS
+
+// BootstrapSchema runs tracked versioned migrations via migrationrunner.
+// Ensures migrations run in order and exactly once per database.
 func BootstrapSchema(ctx context.Context, db *pgxpool.Pool) error {
 	if db == nil {
 		return fmt.Errorf("db pool is nil")
 	}
-	if strings.TrimSpace(SetupSQL) == "" {
-		return fmt.Errorf("schema sql is empty")
-	}
-	if _, err := db.Exec(ctx, SetupSQL); err != nil {
-		return fmt.Errorf("apply rider schema: %w", err)
+	if err := migrationrunner.Run(ctx, db, "rider-service", Migrations, "migrations"); err != nil {
+		return fmt.Errorf("apply rider migrations: %w", err)
 	}
 	return nil
 }
+

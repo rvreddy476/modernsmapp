@@ -245,6 +245,7 @@ func main() {
 	// counters once we wrap upstream calls.
 	promHandler := promhttp.Handler()
 	reviewerPublicEnabled := strings.EqualFold(env("REVIEWER_PUBLIC_ENABLED", "false"), "true")
+	mopeduPilotEnabled := strings.EqualFold(env("ENABLE_MOPEDU_PILOT", "false"), "true") || strings.EqualFold(env("MOPEDU_ENABLED", "false"), "true")
 
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handleProbe(w, r, len(routes)) {
@@ -256,6 +257,9 @@ func main() {
 			return
 		}
 		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
+			return
+		}
+		if serveMopeduLaunchGate(w, r, mopeduPilotEnabled) {
 			return
 		}
 
@@ -356,6 +360,16 @@ func serveReviewerLaunchGate(w http.ResponseWriter, r *http.Request, enabled boo
 	return true
 }
 
+func serveMopeduLaunchGate(w http.ResponseWriter, r *http.Request, enabled bool) bool {
+	if enabled || (r.URL.Path != "/v1/rider" && !strings.HasPrefix(r.URL.Path, "/v1/rider/")) {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"error":{"code":"FEATURE_DISABLED","message":"Mopedu mobility service is not enabled"}}`))
+	return true
+}
+
 // jwtExtractMiddleware inspects the Authorization: Bearer <token> header,
 // verifies the JWT signature using jwtSecret (HMAC-SHA256), and propagates the
 // trusted identity headers X-User-Id, X-Verified-User-Id, X-Scopes, and
@@ -406,24 +420,22 @@ func (k jwtKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) { return k.toKeySet
 // token plus a forged `X-Scopes: admin` and impersonate / privilege-escalate.
 var trustedIdentityHeaders = []string{
 	"X-User-Id",
+	"X-User-ID",
 	"X-Verified-User-Id",
 	"X-Scopes",
 	"X-Device-Id",
+	"X-Admin-Role",
 	"X-Internal-Service-Key",
 	// Module 3 LB-3: the graph write-source label.
-	//
-	// graph-service refuses a mutating request whose source is not an approved
-	// caller. That is only attribution if the label cannot be supplied by a
-	// client — otherwise any caller can claim to be `api-gateway` and the guard
-	// becomes decoration. It belongs in this list for the same reason
-	// X-Scopes does: the gateway is the only thing allowed to set it.
 	graphWriteSourceHeader,
+	riderWriteSourceHeader,
 }
 
 // The header constants and the stamping rule live in pkg/edgeheaders so they
 // are TRACKED — a new file under cmd/server/ is invisible to git (.gitignore
 // bare `server` rule) and would be missing from a clean checkout.
 const graphWriteSourceHeader = edgeheaders.GraphWriteSourceHeader
+const riderWriteSourceHeader = edgeheaders.RiderWriteSourceHeader
 
 func stripInboundIdentityHeaders(r *http.Request) {
 	for _, h := range trustedIdentityHeaders {
@@ -433,6 +445,7 @@ func stripInboundIdentityHeaders(r *http.Request) {
 
 // stampGraphWriteSource delegates to the tracked package. See LB-3 there.
 func stampGraphWriteSource(r *http.Request) { edgeheaders.StampGraphWriteSource(r) }
+func stampRiderWriteSource(r *http.Request) { edgeheaders.StampRiderWriteSource(r) }
 
 func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -443,10 +456,11 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		// never smuggle an identity or scope past the edge.
 		stripInboundIdentityHeaders(r)
 
-		// LB-3: attribute graph mutations to this gateway. Runs immediately
-		// after the strip so a forged inbound label is overwritten, never
-		// trusted.
+		// LB-3: attribute graph mutations and rider requests to this gateway.
+		// Runs immediately after the strip so a forged inbound label is
+		// overwritten, never trusted.
 		stampGraphWriteSource(r)
+		stampRiderWriteSource(r)
 
 		// Resolve JWT from one of (in priority order):
 		//   1. Authorization: Bearer header   — mobile + REST callers
@@ -488,6 +502,9 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		if userID != "" {
 			r.Header.Set("X-User-Id", userID)
 			r.Header.Set("X-Verified-User-Id", userID)
+			if internalKey := env("INTERNAL_SERVICE_KEY", ""); internalKey != "" {
+				r.Header.Set("X-Internal-Service-Key", internalKey)
+			}
 		}
 		if scopes != "" {
 			r.Header.Set("X-Scopes", scopes)
