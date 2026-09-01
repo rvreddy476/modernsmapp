@@ -368,6 +368,18 @@ object UsIcons {
         curveTo(16.2f, 13.8f, 19.6f, 16.5f, 19.6f, 20.6f)
     }
 
+    /** A smiling face — the emoji panel's own face. */
+    val Smile: ImageVector = stroked("Smile") {
+        circle(12f, 12f, 9f)
+        moveTo(8.4f, 14.2f)
+        curveTo(9.2f, 15.8f, 10.5f, 16.6f, 12f, 16.6f)
+        curveTo(13.5f, 16.6f, 14.8f, 15.8f, 15.6f, 14.2f)
+        moveTo(9f, 9.4f)
+        lineTo(9f, 9.6f)
+        moveTo(15f, 9.4f)
+        lineTo(15f, 9.6f)
+    }
+
     /** A figure with a plus — invitations and friend requests. */
     val UserPlus: ImageVector = stroked("UserPlus") {
         circle(9f, 8f, 3.6f)

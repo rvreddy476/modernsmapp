@@ -10,6 +10,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -48,6 +52,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -396,6 +401,7 @@ private fun Composer(
     onSend: () -> Unit,
     onAttach: () -> Unit,
 ) {
+    var emojiOpen by remember { mutableStateOf(false) }
     Column {
         Box(
             modifier = Modifier
@@ -403,6 +409,9 @@ private fun Composer(
                 .height(HAIRLINE)
                 .background(UsTheme.extended.borderSubtle),
         )
+        if (emojiOpen) {
+            EmojiPanel(onPick = { emoji -> onDraftChange(draft + emoji) })
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -425,8 +434,10 @@ private fun Composer(
             ComposerField(
                 draft = draft,
                 attaching = attaching,
+                emojiOpen = emojiOpen,
                 onDraftChange = onDraftChange,
                 onAttach = onAttach,
+                onToggleEmoji = { emojiOpen = !emojiOpen },
                 modifier = Modifier.weight(1f),
             )
             Box(
@@ -453,17 +464,21 @@ private fun Composer(
     }
 }
 
-/** The pill field: placeholder, draft, and the camera glyph inside. */
+/** The pill field: smiley, placeholder, draft, and the camera glyph inside. */
+@Suppress("LongParameterList")
 @Composable
 private fun ComposerField(
     draft: String,
     attaching: Boolean,
+    emojiOpen: Boolean,
     onDraftChange: (String) -> Unit,
     onAttach: () -> Unit,
+    onToggleEmoji: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         modifier = modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
             .background(UsTheme.extended.bgCanvas)
@@ -477,6 +492,16 @@ private fun ComposerField(
                 vertical = UsTheme.spacing.l,
             ),
     ) {
+        Icon(
+            imageVector = UsIcons.Smile,
+            contentDescription = if (emojiOpen) "Hide emoji" else "Emoji",
+            tint = if (emojiOpen) UsTheme.extended.chatAccent else UsTheme.extended.textMuted,
+            modifier = Modifier
+                .size(COMPOSER_GLYPH)
+                .clip(CircleShape)
+                .clickable(onClick = onToggleEmoji)
+                .testTag("thread-emoji"),
+        )
         Box(modifier = Modifier.weight(1f)) {
             if (draft.isEmpty()) {
                 Text(
@@ -507,6 +532,37 @@ private fun ComposerField(
                 .clip(CircleShape)
                 .clickable(enabled = !attaching, onClick = onAttach),
         )
+    }
+}
+
+/**
+ * The emoji panel: a curated grid inserted into the draft at a tap. Kept
+ * in-app rather than relying on the keyboard's own emoji page — the point
+ * of the smiley button is that emoji are ONE tap away, not three.
+ */
+@Composable
+private fun EmojiPanel(onPick: (String) -> Unit) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(EMOJI_COLUMNS),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(EMOJI_PANEL_HEIGHT)
+            .background(UsTheme.extended.bgCardSolid)
+            .testTag("emoji-panel"),
+        contentPadding = PaddingValues(UsTheme.spacing.m),
+    ) {
+        items(EMOJI_CHOICES) { emoji ->
+            Text(
+                text = emoji,
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(UsTheme.radii.small))
+                    .clickable { onPick(emoji) }
+                    .padding(UsTheme.spacing.s)
+                    .semantics { contentDescription = "Insert $emoji" },
+            )
+        }
     }
 }
 
@@ -757,7 +813,24 @@ private const val FOLLOW_THRESHOLD = 1
 private const val ATTACHMENT_ASPECT = 4f / 3f
 
 /** The quick-reaction palette. The server stores any emoji string. */
-private val REACTION_CHOICES = listOf("❤️", "👍", "😂")
+private val REACTION_CHOICES = listOf("❤️", "👍", "😂", "😮", "😢", "🙏")
+
+/**
+ * The composer's emoji grid — a curated set across the categories people
+ * actually send, not a full unicode browser. The keyboard remains the long
+ * tail; this is the fast path.
+ */
+private val EMOJI_CHOICES = listOf(
+    "😀", "😂", "🤣", "😊", "😍", "😘", "😎", "🤩",
+    "😅", "😉", "🙃", "😇", "🥰", "😜", "🤔", "🙄",
+    "😴", "🥺", "😢", "😭", "😡", "🤯", "😱", "🥳",
+    "👍", "👎", "👏", "🙌", "🙏", "🤝", "💪", "✌️",
+    "👀", "🔥", "✨", "🎉", "🚀", "❤️", "💔", "💯",
+    "😋", "🍕", "☕", "🍻", "🎂", "🌟", "🌈", "☀️",
+)
+
+private const val EMOJI_COLUMNS = 8
+private val EMOJI_PANEL_HEIGHT = 220.dp
 
 // ── The Figma conversation language (98:321) ────────────────────────────
 
