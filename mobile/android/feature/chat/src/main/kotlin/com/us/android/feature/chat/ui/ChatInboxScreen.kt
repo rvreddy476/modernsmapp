@@ -42,8 +42,11 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -370,7 +373,10 @@ private fun ChatsTab(
                 detail = "Messages from people you can chat with show up here.",
             )
 
-            else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(ROW_GAP),
+            ) {
                 val online = state.conversations.filter { conversation ->
                     conversation.type != "group" && conversation.members.any {
                         it.userId != state.viewerId && it.userId in state.onlineUserIds
@@ -391,6 +397,7 @@ private fun ChatsTab(
                     ConversationRow(
                         conversation = conversation,
                         title = title,
+                        viewerId = state.viewerId,
                         online = conversation.type != "group" && conversation.members.any {
                             it.userId != state.viewerId && it.userId in state.onlineUserIds
                         },
@@ -533,6 +540,7 @@ private fun RequestsTab(
             ConversationRow(
                 conversation = request,
                 title = title,
+                viewerId = state.viewerId,
                 onClick = { onOpenRequest(request.id, title) },
             )
         }
@@ -611,6 +619,7 @@ private fun InvitationRow(
 private fun ConversationRow(
     conversation: Conversation,
     title: String,
+    viewerId: String,
     onClick: () -> Unit,
     online: Boolean = false,
     onTogglePin: () -> Unit = {},
@@ -620,27 +629,38 @@ private fun ConversationRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = ROW_MARGIN)
+            .clip(RoundedCornerShape(ROW_CORNER))
+            // A CARD, and only when the row wants something (136:144).
+            //
+            // The frame raises exactly one row onto #1A1A1A. Our conversation
+            // payload carries `has_unread` and nothing finer, so the raise is
+            // keyed on that: the rows needing attention lift off the page and
+            // the settled ones lie flat. Keying it on list position instead
+            // would leave the top row highlighted after everything was read.
+            .background(if (conversation.hasUnread) UsTheme.extended.bgCardSolid else Color.Transparent)
             .combinedClickable(onClick = onClick, onLongClick = { menuOpen = true })
-            .padding(
-                horizontal = UsTheme.spacing.pageHorizontal,
-                vertical = UsTheme.spacing.l,
-            ),
+            .padding(ROW_PADDING),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        horizontalArrangement = Arrangement.spacedBy(ROW_PADDING),
     ) {
         Box {
-            UsAvatar(name = title, size = UsAvatarSize.Medium, seed = conversation.id)
+            UsAvatar(name = title, size = UsAvatarSize.Chat, seed = conversation.id)
             if (online) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .size(ONLINE_DOT)
                         .clip(CircleShape)
-                        .background(UsTheme.extended.chatOnline),
+                        .background(UsTheme.extended.chatOnline)
+                        .border(ONLINE_DOT_RING, UsTheme.extended.bgCanvas, CircleShape),
                 )
             }
         }
-        Column(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(NAME_PREVIEW_GAP),
+        ) {
             val markers = buildString {
                 if (conversation.isPinned) append("📌 ")
                 if (conversation.isMuted) append("🔕 ")
@@ -666,40 +686,71 @@ private fun ConversationRow(
                     },
                 )
             }
-            val preview = when {
-                conversation.isRequest -> "Message request"
-                conversation.lastMessagePreview.isNotBlank() -> conversation.lastMessagePreview
-                else -> null
-            }
-            preview?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = if (conversation.hasUnread) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (conversation.hasUnread) {
-                        UsTheme.extended.textPrimary
-                    } else {
-                        UsTheme.extended.textMuted
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            ConversationPreview(conversation = conversation, viewerId = viewerId)
         }
         if (conversation.hasUnread) {
-            // Chat green, per the design's unread badges. A DOT rather than
-            // a count: the server tells us "unread", not how many, and an
-            // invented number is worse than none.
+            // The badge's SIZE, COLOUR and PLACE are the design's (136:153);
+            // the number is not, because there is no number to show. The
+            // conversation payload carries `has_unread` and no count — the
+            // server never sends one — so the circle stays empty rather than
+            // displaying a figure the client made up.
             Box(
                 modifier = Modifier
-                    .size(UNREAD_DOT)
+                    .size(UNREAD_BADGE)
                     .clip(CircleShape)
-                    .background(UsTheme.extended.chatAccent)
+                    .background(UNREAD_INDIGO)
                     .testTag("chat-unread-dot"),
             )
         }
     }
 }
+
+/**
+ * The second line: what was last said, and by whom when that is not obvious.
+ *
+ * A group prefixes the sender in white against the muted body (136:162) —
+ * in a direct thread the sender is the person already named above, so the
+ * prefix would be noise. A missed call is the design's one red line (136:193).
+ */
+@Composable
+private fun ConversationPreview(conversation: Conversation, viewerId: String) {
+    val body = when {
+        conversation.isRequest -> "Message request"
+        conversation.lastMessagePreview.isNotBlank() -> conversation.lastMessagePreview
+        // A message exists but carries no text — that is a media send, whose
+        // preview the server leaves empty. Saying so beats the half-drawn row
+        // a blank second line produces.
+        conversation.lastMessageAt != null -> "Photo"
+        else -> return
+    }
+    val senderName = conversation.lastMessageSender
+        ?.takeIf { conversation.type == "group" && it != viewerId }
+        ?.let { id -> conversation.members.firstOrNull { it.userId == id }?.displayName }
+        ?.takeIf { it.isNotBlank() }
+
+    val text = buildAnnotatedString {
+        if (senderName != null) {
+            withStyle(
+                SpanStyle(
+                    color = UsTheme.extended.textPrimary,
+                    fontWeight = FontWeight.Bold,
+                ),
+            ) { append("$senderName: ") }
+        }
+        append(body)
+    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (conversation.isMissedCall) MISSED_CALL_RED else UsTheme.extended.textMuted,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/** message-service writes the missed-call marker into the preview itself. */
+private val Conversation.isMissedCall: Boolean
+    get() = lastMessagePreview.startsWith("Missed", ignoreCase = true)
 
 /**
  * Figma inbox row (98:65): bold name with the relative time on the trailing
@@ -712,24 +763,45 @@ private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
         Text(
             text = name,
             style = MaterialTheme.typography.titleSmall,
-            fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
+            fontWeight = FontWeight.Bold,
             color = UsTheme.extended.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = UsTheme.spacing.s),
         )
         val time = formatRelativeTime(timeIso)
         if (time.isNotBlank()) {
             Text(
                 text = time,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (unread) UsTheme.extended.chatAccent else UsTheme.extended.textMuted,
+                // Indigo while unread, muted once read — the same accent the
+                // badge uses, so the two halves of "needs you" agree.
+                color = if (unread) UNREAD_INDIGO else UsTheme.extended.textMuted,
+                maxLines = 1,
             )
         }
     }
 }
 
-private val UNREAD_DOT = 10.dp
+// ── The Figma messages-inbox frame (136:86) ────────────────────────────
+
+/** Unread badge and its matching timestamp accent (136:153). */
+@Suppress("MagicNumber") // The hex IS the token; the frame defines no variable.
+private val UNREAD_INDIGO = Color(0xFF6366F1)
+
+/** The design's one red line: a call that was missed (136:193). */
+@Suppress("MagicNumber")
+private val MISSED_CALL_RED = Color(0xFFEF5350)
+
+private val ROW_MARGIN = 12.dp
+private val ROW_PADDING = 12.dp
+private val ROW_CORNER = 16.dp
+private val ROW_GAP = 8.dp
+private val NAME_PREVIEW_GAP = 2.dp
+private val UNREAD_BADGE = 18.dp
+private val ONLINE_DOT_RING = 2.dp
 private val ONLINE_DOT = 12.dp
 private val SEGMENT_INDICATOR_WIDTH = 60.dp
 private val SEGMENT_INDICATOR_HEIGHT = 2.dp

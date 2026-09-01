@@ -35,6 +35,9 @@ import kotlin.math.absoluteValue
 enum class UsAvatarSize(val diameter: Dp, val initialsSize: TextUnit) {
     Small(32.dp, 13.sp),
     Medium(44.dp, 17.sp),
+
+    /** Chat list rows and the online rail (Figma messages-inbox 136:86). */
+    Chat(48.dp, 18.sp),
     Large(88.dp, 32.sp),
 }
 
