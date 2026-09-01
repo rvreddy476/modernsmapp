@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -148,7 +149,10 @@ private fun mediaPermissions(kind: GalleryKind): List<String> = when {
 
 // ── The grid ────────────────────────────────────────────────────────────
 
-@Suppress("LongParameterList")
+// Figma create-post-redesign (93:4): preview pane over the grid, Select
+// toggle for multi-pick, Next in the header. One tap previews AND selects;
+// Select mode turns taps into badge-numbered multi-selection.
+@Suppress("LongParameterList", "LongMethod")
 @Composable
 private fun GalleryGrid(
     kind: GalleryKind,
@@ -162,7 +166,18 @@ private fun GalleryGrid(
         value = withContext(Dispatchers.IO) { queryMedia(context, kind) }
     }
     val selected = remember { emptyList<Uri>().toMutableStateList() }
+    var focused by remember { mutableStateOf<GalleryItem?>(null) }
+    var selectMode by remember { mutableStateOf(false) }
     val multiSelect = kind == GalleryKind.Photos
+
+    // The newest item previews and preselects itself, so posting the latest
+    // shot is header-Next away with zero grid taps.
+    LaunchedEffect(media) {
+        if (focused == null && media.isNotEmpty()) {
+            focused = media.first()
+            if (selected.isEmpty()) selected.add(media.first().uri)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -193,30 +208,74 @@ private fun GalleryGrid(
                 color = UsTheme.extended.textPrimary,
                 modifier = Modifier.weight(1f),
             )
-            if (multiSelect && selected.isNotEmpty()) {
+            if (selected.isNotEmpty()) {
                 Button(
                     onClick = { onPicked(selected.toList()) },
                     modifier = Modifier.testTag("create-gallery-next"),
-                ) { Text("Next (${selected.size})") }
+                ) {
+                    Text(if (selected.size > 1) "Next (${selected.size})" else "Next")
+                }
             }
         }
+
+        PreviewPane(focused = focused, selected = selected)
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = UsTheme.spacing.xl,
+                    vertical = UsTheme.spacing.m,
+                ),
+        ) {
+            Text(
+                "Recents",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            if (multiSelect) {
+                SelectPill(
+                    active = selectMode,
+                    onToggle = {
+                        selectMode = !selectMode
+                        if (!selectMode) {
+                            // Leaving multi-select collapses to the previewed
+                            // item — what you see is what Next will post.
+                            val keep = focused?.uri
+                            selected.clear()
+                            keep?.let(selected::add)
+                        }
+                    },
+                )
+            }
+        }
+
         LazyVerticalGrid(
             columns = GridCells.Fixed(GRID_COLUMNS),
             horizontalArrangement = Arrangement.spacedBy(GRID_GAP),
             verticalArrangement = Arrangement.spacedBy(GRID_GAP),
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
         ) {
             item(key = "camera") { CameraTile(kind = kind, onClick = onCamera) }
             items(media, key = { it.id }) { item ->
                 MediaTile(
                     item = item,
-                    order = selected.indexOf(item.uri),
+                    order = if (selectMode) selected.indexOf(item.uri) else -1,
                     onClick = {
-                        if (!multiSelect) {
-                            onPicked(listOf(item.uri))
-                        } else if (selected.contains(item.uri)) {
-                            selected.remove(item.uri)
-                        } else if (selected.size < MAX_SELECT) {
+                        focused = item
+                        if (multiSelect && selectMode) {
+                            if (selected.contains(item.uri)) {
+                                selected.remove(item.uri)
+                            } else if (selected.size < MAX_SELECT) {
+                                selected.add(item.uri)
+                            }
+                        } else {
+                            selected.clear()
                             selected.add(item.uri)
                         }
                     },
@@ -224,6 +283,89 @@ private fun GalleryGrid(
             }
         }
     }
+}
+
+/**
+ * The big look-at-it pane: whatever tile was tapped last, rendered large.
+ * Dots below mirror the multi-selection, the filled dot being the previewed
+ * item's place in it.
+ */
+@Composable
+private fun PreviewPane(focused: GalleryItem?, selected: List<Uri>) {
+    val context = LocalContext.current
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.xl)
+            .height(PREVIEW_HEIGHT)
+            .clip(RoundedCornerShape(PREVIEW_CORNER))
+            .background(UsTheme.extended.bgCardSolid),
+        contentAlignment = Alignment.Center,
+    ) {
+        val preview by produceState<ImageBitmap?>(initialValue = null, focused?.uri) {
+            value = focused?.let {
+                withContext(Dispatchers.IO) { loadThumbnail(context, it, PREVIEW_PX) }
+            }
+        }
+        preview?.let {
+            Image(
+                bitmap = it,
+                contentDescription = "Selected media preview",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+    if (selected.size > 1) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = UsTheme.spacing.m)
+                .wrapContentWidth(Alignment.CenterHorizontally),
+        ) {
+            val focusIndex = selected.indexOf(focused?.uri)
+            repeat(selected.size) { index ->
+                Box(
+                    modifier = Modifier
+                        .size(PREVIEW_DOT)
+                        .clip(CircleShape)
+                        .background(
+                            if (index == focusIndex) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                UsTheme.extended.textGhost
+                            },
+                        ),
+                )
+            }
+        }
+    }
+}
+
+/** Multi-select toggle, per the redesign's Select chip. */
+@Composable
+private fun SelectPill(active: Boolean, onToggle: () -> Unit) {
+    Text(
+        "Select",
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        color = if (active) MaterialTheme.colorScheme.onPrimary else UsTheme.extended.textPrimary,
+        modifier = Modifier
+            .clip(RoundedCornerShape(UsTheme.radii.full))
+            .background(
+                if (active) MaterialTheme.colorScheme.primary else UsTheme.extended.bgCardSolid,
+            )
+            .clickable(onClick = onToggle)
+            .padding(
+                horizontal = UsTheme.spacing.l,
+                vertical = UsTheme.spacing.s,
+            )
+            .semantics {
+                contentDescription = if (active) "Select multiple, on" else "Select multiple"
+            }
+            .testTag("create-gallery-select"),
+    )
 }
 
 /** The first tile of every gallery: capture something new instead. */
@@ -444,9 +586,13 @@ private fun queryMedia(context: Context, kind: GalleryKind): List<GalleryItem> {
     }
 }
 
-private fun loadThumbnail(context: Context, item: GalleryItem): ImageBitmap? = runCatching {
+private fun loadThumbnail(
+    context: Context,
+    item: GalleryItem,
+    sizePx: Int = THUMB_PX,
+): ImageBitmap? = runCatching {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        context.contentResolver.loadThumbnail(item.uri, Size(THUMB_PX, THUMB_PX), null)
+        context.contentResolver.loadThumbnail(item.uri, Size(sizePx, sizePx), null)
     } else {
         @Suppress("DEPRECATION")
         if (item.durationMs != null) {
@@ -480,6 +626,10 @@ private const val GRID_COLUMNS = 4
 private const val MAX_SELECT = 10
 private const val RECENT_LIMIT = 120
 private const val THUMB_PX = 512
+private const val PREVIEW_PX = 1024
+private val PREVIEW_HEIGHT = 300.dp
+private val PREVIEW_CORNER = 24.dp
+private val PREVIEW_DOT = 6.dp
 private const val MS_PER_SECOND = 1000L
 private const val SECONDS_PER_MINUTE = 60L
 private val GRID_GAP = 2.dp

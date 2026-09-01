@@ -130,46 +130,58 @@ private val CreateSurface.icon: ImageVector
     }
 
 /**
- * The footer rail — the hub's one and only format switch.
+ * The format switch — a FLOATING pill, per the create-post redesign (93:4).
  *
- * Figma create-post toolbar (36:30): a solid card-dark bar with rounded top
- * corners floating over the canvas, icon-only tools in per-tool accents. The
- * selected tool sits on a soft chip because unlike the reference — where the
- * toolbar inserts into one composer — this rail SWITCHES surfaces, and the
- * current choice has to be visible.
+ * The reference pill spells POST · STORY · REEL · LIVE in text; the founder's
+ * call (2026-09-01) is icons instead, so the pill carries the per-tool accent
+ * glyphs. Only surfaces with a real backend earn a slot — STORY and LIVE join
+ * when they exist. The selected tool sits on a soft chip because this pill
+ * SWITCHES surfaces and the current choice has to be visible.
  */
 @Composable
 private fun CreateRail(selected: CreateSurface, onSelect: (CreateSurface) -> Unit) {
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = RAIL_CORNER, topEnd = RAIL_CORNER))
-            .background(UsTheme.extended.bgCardSolid)
-            .padding(horizontal = RAIL_GUTTER, vertical = UsTheme.spacing.xxl),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(
+                top = UsTheme.spacing.m,
+                bottom = UsTheme.spacing.l,
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        CreateSurface.entries.forEach { candidate ->
-            val active = candidate == selected
-            Box(
-                modifier = Modifier
-                    .size(RAIL_TOOL)
-                    .clip(RoundedCornerShape(RAIL_TOOL_CORNER))
-                    .background(if (active) RAIL_ACTIVE_BG else Color.Transparent)
-                    .clickable { onSelect(candidate) }
-                    .semantics {
-                        contentDescription = "Create ${candidate.label.lowercase()}" +
-                            if (active) ", selected" else ""
-                    }
-                    .testTag("create-rail-${candidate.label.lowercase()}"),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = candidate.icon,
-                    contentDescription = null,
-                    tint = candidate.accent,
-                    modifier = Modifier.size(RAIL_GLYPH),
-                )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(UsTheme.radii.full))
+                .background(UsTheme.extended.bgCardSolid)
+                .padding(
+                    horizontal = UsTheme.spacing.l,
+                    vertical = UsTheme.spacing.s,
+                ),
+        ) {
+            CreateSurface.entries.forEach { candidate ->
+                val active = candidate == selected
+                Box(
+                    modifier = Modifier
+                        .size(RAIL_TOOL)
+                        .clip(RoundedCornerShape(UsTheme.radii.full))
+                        .background(if (active) RAIL_ACTIVE_BG else Color.Transparent)
+                        .clickable { onSelect(candidate) }
+                        .semantics {
+                            contentDescription = "Create ${candidate.label.lowercase()}" +
+                                if (active) ", selected" else ""
+                        }
+                        .testTag("create-rail-${candidate.label.lowercase()}"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = candidate.icon,
+                        contentDescription = null,
+                        tint = candidate.accent,
+                        modifier = Modifier.size(RAIL_GLYPH),
+                    )
+                }
             }
         }
     }
@@ -568,17 +580,10 @@ private const val MAX_PICK = 10
 private const val PERCENT = 100
 private val QUESTION_TEXT_SIZE = 19.sp
 
-// ── The rail, per the Figma create-post toolbar (36:30) ─────────────────
+// ── The floating rail pill, per the create-post redesign (93:4) ─────────
 
-/** Rounded top corners lifting the bar off the canvas. */
-private val RAIL_CORNER = 24.dp
-
-/** Side gutter inside the bar. */
-private val RAIL_GUTTER = 24.dp
-
-/** Each tool's touch container and its chip corner. */
+/** Each tool's touch container. */
 private val RAIL_TOOL = 40.dp
-private val RAIL_TOOL_CORNER = 10.dp
 
 /** Glyph size inside a tool. */
 private val RAIL_GLYPH = 24.dp

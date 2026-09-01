@@ -239,6 +239,28 @@ object UsIcons {
         close()
     }
 
+    /** A phone handset — the calling vocabulary (missed-call rows, call UI). */
+    val Phone: ImageVector = stroked("Phone") {
+        moveTo(22f, 16.9f)
+        verticalLineTo(19.9f)
+        curveTo(22f, 21.1f, 21f, 22.1f, 19.8f, 21.9f)
+        curveTo(16.7f, 21.6f, 13.7f, 20.5f, 11.2f, 18.8f)
+        curveTo(8.8f, 17.2f, 6.8f, 15.2f, 5.2f, 12.8f)
+        curveTo(3.5f, 10.3f, 2.4f, 7.3f, 2.1f, 4.2f)
+        curveTo(2f, 3f, 2.9f, 2f, 4.1f, 2f)
+        horizontalLineTo(7.1f)
+        curveTo(8.1f, 2f, 9f, 2.7f, 9.1f, 3.7f)
+        curveTo(9.3f, 4.7f, 9.5f, 5.6f, 9.8f, 6.5f)
+        curveTo(10.1f, 7.2f, 9.9f, 8f, 9.4f, 8.6f)
+        lineTo(8.1f, 9.9f)
+        curveTo(9.6f, 12.4f, 11.6f, 14.4f, 14.1f, 15.9f)
+        lineTo(15.4f, 14.6f)
+        curveTo(16f, 14.1f, 16.8f, 13.9f, 17.5f, 14.2f)
+        curveTo(18.4f, 14.5f, 19.3f, 14.7f, 20.3f, 14.9f)
+        curveTo(21.3f, 15f, 22f, 15.9f, 22f, 16.9f)
+        close()
+    }
+
     /** A framed photo — sun dot and mountain line, the universal "image". */
     val Photo: ImageVector = stroked("Photo") {
         moveTo(5f, 3f)
