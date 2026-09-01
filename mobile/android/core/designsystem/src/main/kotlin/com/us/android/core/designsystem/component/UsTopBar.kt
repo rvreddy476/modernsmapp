@@ -175,14 +175,14 @@ fun UsHomeTopBar(
                     modifier = Modifier
                         .size(BRAND_CHIP)
                         .clip(RoundedCornerShape(UsTheme.radii.small))
-                        .background(Color.White),
+                        .background(UsTheme.extended.brandChip),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         text = "at",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.ExtraBold,
-                        color = Color.Black,
+                        color = UsTheme.extended.onBrandChip,
                     )
                 }
                 Text(

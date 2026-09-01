@@ -1,5 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="us_background">#FF000000</color>
+    <!-- Light canvas (Figma 81:*). The dark value lives in values-night. -->
+    <color name="us_background">#FFFAFAFA</color>
     <color name="us_brand">#FFFF6B35</color>
 </resources>

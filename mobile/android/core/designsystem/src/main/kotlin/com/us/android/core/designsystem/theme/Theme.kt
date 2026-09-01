@@ -1,9 +1,11 @@
 package com.us.android.core.designsystem.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
@@ -35,6 +37,30 @@ private val UsDarkColorScheme = darkColorScheme(
     scrim = Color.Black,
 )
 
+private val UsLightColorScheme = lightColorScheme(
+    primary = UsColorTokens.PostbookPrimary,
+    onPrimary = Color.White,
+    primaryContainer = UsColorTokens.PostbookSecondary,
+    onPrimaryContainer = Color.Black,
+    secondary = UsColorTokens.PostgramPrimary,
+    onSecondary = Color.White,
+    secondaryContainer = UsColorTokens.PostgramSecondary,
+    onSecondaryContainer = Color.White,
+    tertiary = UsColorTokens.PosttubePrimary,
+    onTertiary = Color.Black,
+    background = UsColorTokens.Light.BgPrimary,
+    onBackground = UsColorTokens.Light.TextPrimary,
+    surface = UsColorTokens.Light.BgSecondary,
+    onSurface = UsColorTokens.Light.TextPrimary,
+    surfaceVariant = UsColorTokens.Light.BgTertiary,
+    onSurfaceVariant = UsColorTokens.Light.TextMuted,
+    error = UsColorTokens.StatusError,
+    onError = Color.White,
+    outline = UsColorTokens.Light.BorderMedium,
+    outlineVariant = UsColorTokens.Light.BorderSubtle,
+    scrim = Color.Black,
+)
+
 // Radii ported from app_spacing.dart: 8 / 12 / 16 / 20.
 private val UsShapes = Shapes(
     extraSmall = RoundedCornerShape(4.dp),
@@ -47,15 +73,18 @@ private val UsShapes = Shapes(
 /**
  * The single theme entry point. Every screen and every @Preview wraps in this.
  *
- * Dark-only by design: there is no `darkTheme` parameter, because offering
- * one would imply a light palette exists. It does not (PHASE_0_1_PLAN §D.7).
- * Dynamic colour is also deliberately off — the brand ramp is the identity.
+ * [darkTheme] defaults to the system setting — the Figma light frames (81:*,
+ * 2026-09-01) are the sign-off the old dark-only rule was waiting for.
+ * Dynamic colour stays deliberately off — the brand ramp is the identity.
  */
 @Composable
 fun UsTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val extendedColors = remember { DarkExtendedColors }
+    val extendedColors = remember(darkTheme) {
+        if (darkTheme) DarkExtendedColors else LightExtendedColors
+    }
     val radii = remember { UsRadii() }
     val spacing = remember { UsSpacing() }
 
@@ -65,7 +94,7 @@ fun UsTheme(
         LocalUsSpacing provides spacing,
     ) {
         MaterialTheme(
-            colorScheme = UsDarkColorScheme,
+            colorScheme = if (darkTheme) UsDarkColorScheme else UsLightColorScheme,
             typography = UsTypography,
             shapes = UsShapes,
             content = content,

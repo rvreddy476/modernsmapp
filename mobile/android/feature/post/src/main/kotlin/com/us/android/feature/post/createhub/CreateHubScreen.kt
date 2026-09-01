@@ -166,7 +166,9 @@ private fun CreateRail(selected: CreateSurface, onSelect: (CreateSurface) -> Uni
                     modifier = Modifier
                         .size(RAIL_TOOL)
                         .clip(RoundedCornerShape(UsTheme.radii.full))
-                        .background(if (active) RAIL_ACTIVE_BG else Color.Transparent)
+                        .background(
+                            if (active) UsTheme.extended.glassBg else Color.Transparent,
+                        )
                         .clickable { onSelect(candidate) }
                         .semantics {
                             contentDescription = "Create ${candidate.label.lowercase()}" +
@@ -587,10 +589,6 @@ private val RAIL_TOOL = 40.dp
 
 /** Glyph size inside a tool. */
 private val RAIL_GLYPH = 24.dp
-
-/** The selected tool's chip — soft white over the card-dark bar. */
-@Suppress("MagicNumber")
-private val RAIL_ACTIVE_BG = Color(0x1FFFFFFF)
 
 // Per-tool accents, sampled from the Figma toolbar glyphs.
 @Suppress("MagicNumber")

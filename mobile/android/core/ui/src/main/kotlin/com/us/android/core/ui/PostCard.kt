@@ -318,10 +318,12 @@ fun PostCard(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (onFollow != null) {
+                    // Inverted chip: ink-on-light and light-on-ink both come
+                    // from the ramp, so the control reads in either theme.
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(UsTheme.radii.full))
-                            .background(Color.White)
+                            .background(UsTheme.extended.textPrimary)
                             .clickable(onClick = onFollow)
                             .padding(horizontal = UsTheme.spacing.l, vertical = 6.dp),
                         contentAlignment = Alignment.Center,
@@ -330,7 +332,7 @@ fun PostCard(
                             text = "Follow",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color.Black,
+                            color = UsTheme.extended.bgCanvas,
                         )
                     }
                 }

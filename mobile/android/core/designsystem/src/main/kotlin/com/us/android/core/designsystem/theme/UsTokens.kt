@@ -38,6 +38,9 @@ data class UsExtendedColors(
     val borderMedium: Color,
     val glassBg: Color,
     val glassBorder: Color,
+    /** The "at" logo square and its glyph — white/black dark, cream/ink light. */
+    val brandChip: Color,
+    val onBrandChip: Color,
     val onlineGreen: Color,
     val liveRed: Color,
     val statusWarning: Color,
@@ -105,6 +108,8 @@ internal val DarkExtendedColors = UsExtendedColors(
     borderMedium = UsColorTokens.BorderMedium,
     glassBg = UsColorTokens.GlassBg,
     glassBorder = UsColorTokens.GlassBorder,
+    brandChip = UsColorTokens.BrandChip,
+    onBrandChip = UsColorTokens.OnBrandChip,
     onlineGreen = UsColorTokens.OnlineGreen,
     liveRed = UsColorTokens.LiveRed,
     statusWarning = UsColorTokens.StatusWarning,
@@ -129,4 +134,30 @@ internal val DarkExtendedColors = UsExtendedColors(
     ctaGradient = Brush.horizontalGradient(
         listOf(UsColorTokens.PostbookPrimary, UsColorTokens.PostgramPrimary),
     ),
+)
+
+/**
+ * The light palette, from the Figma light frames (81:*). Brand gradients and
+ * presence/status colours are shared with dark — the surfaces and text ramp
+ * invert, the identity does not.
+ */
+internal val LightExtendedColors = DarkExtendedColors.copy(
+    textPrimary = UsColorTokens.Light.TextPrimary,
+    textSecondary = UsColorTokens.Light.TextSecondary,
+    textTertiary = UsColorTokens.Light.TextTertiary,
+    textMuted = UsColorTokens.Light.TextMuted,
+    textDim = UsColorTokens.Light.TextDim,
+    textDimmest = UsColorTokens.Light.TextDimmest,
+    textGhost = UsColorTokens.Light.TextGhost,
+    bgCard = UsColorTokens.Light.BgCard,
+    bgCardHover = UsColorTokens.Light.BgCardHover,
+    bgCardSolid = UsColorTokens.Light.FeedCard,
+    bgCanvas = UsColorTokens.Light.FeedCanvas,
+    textBody = UsColorTokens.Light.TextBody,
+    borderSubtle = UsColorTokens.Light.BorderSubtle,
+    borderMedium = UsColorTokens.Light.BorderMedium,
+    glassBg = UsColorTokens.Light.GlassBg,
+    glassBorder = UsColorTokens.Light.GlassBorder,
+    brandChip = UsColorTokens.Light.BrandChip,
+    onBrandChip = UsColorTokens.Light.OnBrandChip,
 )

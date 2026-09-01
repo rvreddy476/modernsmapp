@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Night keeps the original dark window; the base values/ variant is now the
+     light canvas so a light-mode launch does not flash black first. -->
+<resources>
+    <color name="us_background">#FF000000</color>
+</resources>
