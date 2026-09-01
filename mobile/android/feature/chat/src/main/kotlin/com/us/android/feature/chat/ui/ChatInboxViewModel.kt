@@ -33,9 +33,24 @@ data class InboxUiState(
     val viewerId: String = "",
     /** Row-level busy markers for invitation accept/decline. */
     val busyInvitationIds: Set<String> = emptySet(),
+    /** Who is online right now, from the bulk presence endpoint. */
+    val onlineUserIds: Set<String> = emptySet(),
+    /** The search pill's text; filters the cached rows locally. */
+    val query: String = "",
 ) {
     val requestCount: Int get() = requests.size
     val inviteCount: Int get() = invitations.size
+
+    /** Rows matching the query — the whole list when the pill is empty. */
+    val visibleConversations: List<Conversation>
+        get() = if (query.isBlank()) {
+            conversations
+        } else {
+            conversations.filter { conversation ->
+                conversation.displayTitle(viewerId).contains(query, ignoreCase = true) ||
+                    conversation.lastMessagePreview.contains(query, ignoreCase = true)
+            }
+        }
 }
 
 /**
@@ -70,6 +85,8 @@ class ChatInboxViewModel @Inject constructor(
 
     fun selectTab(tab: InboxTab) = _state.update { it.copy(tab = tab) }
 
+    fun onQueryChange(query: String) = _state.update { it.copy(query = query) }
+
     fun refresh() {
         _state.update { it.copy(loading = true) }
         viewModelScope.launch {
@@ -83,6 +100,27 @@ class ChatInboxViewModel @Inject constructor(
                         ?: current.invitations,
                 )
             }
+            refreshPresence()
+        }
+    }
+
+    /**
+     * The Online Now rail's data: bulk presence for the OTHER member of every
+     * direct conversation. Best-effort — a presence failure costs the rail,
+     * never the inbox — and capped at the server's 50-id limit.
+     */
+    private suspend fun refreshPresence() {
+        val viewerId = _state.value.viewerId
+        val peers = _state.value.conversations
+            .filter { it.type != "group" }
+            .flatMap { conversation -> conversation.members.map { it.userId } }
+            .filter { it.isNotBlank() && it != viewerId }
+            .distinct()
+            .take(PRESENCE_LIMIT)
+        if (peers.isEmpty()) return
+        val online = repository.bulkPresence(peers)
+        if (online is AppResult.Success) {
+            _state.update { it.copy(onlineUserIds = online.data) }
         }
     }
 
@@ -158,3 +196,6 @@ class ChatInboxViewModel @Inject constructor(
         }
     }
 }
+
+/** The bulk presence endpoint truncates past 50 ids; don't send more. */
+private const val PRESENCE_LIMIT = 50

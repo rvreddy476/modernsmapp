@@ -115,6 +115,11 @@ class ChatRepository @Inject constructor(
         apiCall(errorMapper) { api.presence(conversationId) }
             .mapValue { Presence(it.activeCount, it.isBigGroup) }
 
+    /** Bulk presence for the Online Now rail: the set of ONLINE ids. */
+    suspend fun bulkPresence(userIds: List<String>): AppResult<Set<String>> =
+        apiCall(errorMapper) { api.bulkPresence(BulkPresenceRequest(userIds)) }
+            .mapValue { map -> map.filterValues { it }.keys }
+
     // ── Production chat pass: requests, groups, invitations, media ─────
 
     /** Sends a MEDIA message: the asset must already be uploaded and ready. */

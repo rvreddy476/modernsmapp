@@ -102,6 +102,14 @@ interface ChatApi {
     @GET("v1/chat/conversations/{id}/presence")
     suspend fun presence(@Path("id") conversationId: String): ApiEnvelope<PresenceDto>
 
+    /**
+     * Bulk presence for the inbox's Online Now rail: user id → online. The
+     * server answers only for people the requester may see (privacy gate is
+     * server-side) and caps the list at 50.
+     */
+    @POST("v1/chat/presence")
+    suspend fun bulkPresence(@Body body: BulkPresenceRequest): ApiEnvelope<Map<String, Boolean>>
+
     // ── Production chat pass: requests, groups, invitations ─────────────
 
     /** The recipient's pending message requests. */
@@ -366,6 +374,9 @@ data class ReactionSummaryDto(
 
 @Serializable
 data class TypingRequest(val typing: Boolean)
+
+@Serializable
+data class BulkPresenceRequest(@SerialName("user_ids") val userIds: List<String>)
 
 @Serializable
 data class StatusDto(val status: String = "")

@@ -1,10 +1,13 @@
 package com.us.android.feature.chat.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,11 +15,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -30,7 +38,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -42,7 +53,7 @@ import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsLoadingState
@@ -66,32 +77,21 @@ fun ChatInboxScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
+    val onChatsTab = state.tab == InboxTab.Chats
     UsScaffold(
         topBar = {
-            UsTopBar(
-                title = "Messages",
-                onBack = onBack,
-                actions = {
-                    TextButton(
-                        onClick = onOpenCallHistory,
-                        modifier = Modifier.testTag("chat-call-history"),
-                    ) { Text("Calls") }
-                    TextButton(
-                        onClick = onOpenLockSettings,
-                        modifier = Modifier.testTag("chat-lock-settings"),
-                    ) { Text("Lock") }
-                    TextButton(
-                        onClick = onCreateGroup,
-                        modifier = Modifier.testTag("chat-new-group"),
-                    ) { Text("New group") }
-                },
+            InboxHeader(
+                state = state,
+                onBack = if (onChatsTab) onBack else ({ viewModel.selectTab(InboxTab.Chats) }),
+                onOpenRequests = { viewModel.selectTab(InboxTab.Requests) },
+                onOpenCallHistory = onOpenCallHistory,
+                onOpenLockSettings = onOpenLockSettings,
+                onCreateGroup = onCreateGroup,
             )
         },
         applyPageGutter = false,
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
-            InboxTabs(state = state, onSelect = viewModel::selectTab)
-
             val nothingCached = state.conversations.isEmpty() && state.requests.isEmpty()
             if (state.syncFailed && nothingCached && state.tab != InboxTab.Invites) {
                 OfflineBanner(onRetry = viewModel::refresh)
@@ -100,13 +100,15 @@ fun ChatInboxScreen(
             when (state.tab) {
                 InboxTab.Chats -> ChatsTab(
                     state = state,
+                    onQueryChange = viewModel::onQueryChange,
                     onOpenConversation = onOpenConversation,
                     onTogglePin = viewModel::togglePin,
                     onToggleMute = viewModel::toggleMute,
                 )
-                InboxTab.Requests -> RequestsTab(state, onOpenRequest)
-                InboxTab.Invites -> InvitesTab(
+                InboxTab.Requests, InboxTab.Invites -> RequestsAndInvites(
                     state = state,
+                    onSelect = viewModel::selectTab,
+                    onOpenRequest = onOpenRequest,
                     onAccept = viewModel::acceptInvitation,
                     onDecline = viewModel::declineInvitation,
                 )
@@ -115,27 +117,153 @@ fun ChatInboxScreen(
     }
 }
 
+/**
+ * The inbox header, per the Figma messages frame (98:21): a big left title
+ * and ONE icon — user-plus with the pending count, the door to requests and
+ * invites. Calls, chat lock and new-group survive in the overflow rather
+ * than as three text buttons fighting the title.
+ */
+@Suppress("LongParameterList")
 @Composable
-private fun InboxTabs(state: InboxUiState, onSelect: (InboxTab) -> Unit) {
-    TabRow(selectedTabIndex = state.tab.ordinal) {
-        Tab(
-            selected = state.tab == InboxTab.Chats,
-            onClick = { onSelect(InboxTab.Chats) },
-            text = { Text("Chats") },
-            modifier = Modifier.testTag("chat-tab-chats"),
+private fun InboxHeader(
+    state: InboxUiState,
+    onBack: () -> Unit,
+    onOpenRequests: () -> Unit,
+    onOpenCallHistory: () -> Unit,
+    onOpenLockSettings: () -> Unit,
+    onCreateGroup: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = UsTheme.spacing.m,
+                vertical = UsTheme.spacing.s,
+            ),
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(
+                imageVector = UsIcons.Back,
+                contentDescription = "Back",
+                tint = UsTheme.extended.textPrimary,
+            )
+        }
+        Text(
+            text = if (state.tab == InboxTab.Chats) "Messages" else "Requests",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.textPrimary,
+            modifier = Modifier.weight(1f),
         )
-        Tab(
-            selected = state.tab == InboxTab.Requests,
-            onClick = { onSelect(InboxTab.Requests) },
-            text = { TabLabelWithCount("Requests", state.requestCount) },
-            modifier = Modifier.testTag("chat-tab-requests"),
-        )
-        Tab(
-            selected = state.tab == InboxTab.Invites,
-            onClick = { onSelect(InboxTab.Invites) },
-            text = { TabLabelWithCount("Invites", state.inviteCount) },
-            modifier = Modifier.testTag("chat-tab-invites"),
-        )
+        if (state.tab == InboxTab.Chats) {
+            val pending = state.requestCount + state.inviteCount
+            Box {
+                IconButton(
+                    onClick = onOpenRequests,
+                    modifier = Modifier.testTag("chat-tab-requests"),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.UserPlus,
+                        contentDescription = "Requests and invites" +
+                            if (pending > 0) ", $pending pending" else "",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
+                if (pending > 0) {
+                    Badge(
+                        containerColor = UsTheme.extended.chatAccent,
+                        modifier = Modifier.align(Alignment.TopEnd),
+                    ) { Text(pending.toString()) }
+                }
+            }
+            InboxOverflowMenu(
+                open = menuOpen,
+                onOpenChange = { menuOpen = it },
+                onOpenCallHistory = onOpenCallHistory,
+                onOpenLockSettings = onOpenLockSettings,
+                onCreateGroup = onCreateGroup,
+            )
+        }
+    }
+}
+
+@Composable
+private fun InboxOverflowMenu(
+    open: Boolean,
+    onOpenChange: (Boolean) -> Unit,
+    onOpenCallHistory: () -> Unit,
+    onOpenLockSettings: () -> Unit,
+    onCreateGroup: () -> Unit,
+) {
+    Box {
+        IconButton(onClick = { onOpenChange(true) }) {
+            Icon(
+                imageVector = UsIcons.More,
+                contentDescription = "More options",
+                tint = UsTheme.extended.textPrimary,
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { onOpenChange(false) }) {
+            DropdownMenuItem(
+                text = { Text("Calls") },
+                onClick = {
+                    onOpenChange(false)
+                    onOpenCallHistory()
+                },
+                modifier = Modifier.testTag("chat-call-history"),
+            )
+            DropdownMenuItem(
+                text = { Text("Chat lock") },
+                onClick = {
+                    onOpenChange(false)
+                    onOpenLockSettings()
+                },
+                modifier = Modifier.testTag("chat-lock-settings"),
+            )
+            DropdownMenuItem(
+                text = { Text("New group") },
+                onClick = {
+                    onOpenChange(false)
+                    onCreateGroup()
+                },
+                modifier = Modifier.testTag("chat-new-group"),
+            )
+        }
+    }
+}
+
+/**
+ * Requests and invites behind the user-plus — one surface, segmented, per
+ * the design's dedicated Requests screen (98:132).
+ */
+@Composable
+private fun RequestsAndInvites(
+    state: InboxUiState,
+    onSelect: (InboxTab) -> Unit,
+    onOpenRequest: (String, String) -> Unit,
+    onAccept: (String) -> Unit,
+    onDecline: (String) -> Unit,
+) {
+    Column {
+        TabRow(selectedTabIndex = if (state.tab == InboxTab.Requests) 0 else 1) {
+            Tab(
+                selected = state.tab == InboxTab.Requests,
+                onClick = { onSelect(InboxTab.Requests) },
+                text = { TabLabelWithCount("Messages", state.requestCount) },
+            )
+            Tab(
+                selected = state.tab == InboxTab.Invites,
+                onClick = { onSelect(InboxTab.Invites) },
+                text = { TabLabelWithCount("Group invites", state.inviteCount) },
+                modifier = Modifier.testTag("chat-tab-invites"),
+            )
+        }
+        when (state.tab) {
+            InboxTab.Requests -> RequestsTab(state, onOpenRequest)
+            else -> InvitesTab(state = state, onAccept = onAccept, onDecline = onDecline)
+        }
     }
 }
 
@@ -177,32 +305,166 @@ private fun OfflineBanner(onRetry: () -> Unit) {
 @Composable
 private fun ChatsTab(
     state: InboxUiState,
+    onQueryChange: (String) -> Unit,
     onOpenConversation: (String, String, Boolean) -> Unit,
     onTogglePin: (Conversation) -> Unit,
     onToggleMute: (Conversation) -> Unit,
 ) {
-    when {
-        state.loading && state.conversations.isEmpty() ->
-            UsLoadingState(label = "Loading conversations")
+    Column {
+        SearchPill(query = state.query, onQueryChange = onQueryChange)
 
-        state.conversations.isEmpty() -> UsEmptyState(
-            title = "No conversations yet",
-            detail = "Messages from people you can chat with show up here.",
-        )
+        when {
+            state.loading && state.conversations.isEmpty() ->
+                UsLoadingState(label = "Loading conversations")
 
-        else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(state.conversations, key = { it.id }) { conversation ->
-                val title = conversation.displayTitle(state.viewerId)
-                ConversationRow(
-                    conversation = conversation,
-                    title = title,
-                    onClick = { onOpenConversation(conversation.id, title, conversation.type == "group") },
-                    onTogglePin = { onTogglePin(conversation) },
-                    onToggleMute = { onToggleMute(conversation) },
-                )
+            state.conversations.isEmpty() -> UsEmptyState(
+                title = "No conversations yet",
+                detail = "Messages from people you can chat with show up here.",
+            )
+
+            else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                val online = state.conversations.filter { conversation ->
+                    conversation.type != "group" && conversation.members.any {
+                        it.userId != state.viewerId && it.userId in state.onlineUserIds
+                    }
+                }
+                if (online.isNotEmpty() && state.query.isBlank()) {
+                    item(key = "online-now") {
+                        OnlineNowRail(
+                            online = online,
+                            viewerId = state.viewerId,
+                            onOpen = onOpenConversation,
+                        )
+                    }
+                }
+                item(key = "recent-label") { SectionLabel("Recent chats") }
+                items(state.visibleConversations, key = { it.id }) { conversation ->
+                    val title = conversation.displayTitle(state.viewerId)
+                    ConversationRow(
+                        conversation = conversation,
+                        title = title,
+                        online = conversation.type != "group" && conversation.members.any {
+                            it.userId != state.viewerId && it.userId in state.onlineUserIds
+                        },
+                        onClick = {
+                            onOpenConversation(conversation.id, title, conversation.type == "group")
+                        },
+                        onTogglePin = { onTogglePin(conversation) },
+                        onToggleMute = { onToggleMute(conversation) },
+                    )
+                }
             }
         }
     }
+}
+
+/** The search pill (98:31): filters the cached rows as you type. */
+@Composable
+private fun SearchPill(query: String, onQueryChange: (String) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = UsTheme.spacing.pageHorizontal,
+                vertical = UsTheme.spacing.s,
+            )
+            .clip(RoundedCornerShape(UsTheme.radii.full))
+            .background(UsTheme.extended.glassBg)
+            .padding(
+                horizontal = UsTheme.spacing.xl,
+                vertical = UsTheme.spacing.l,
+            ),
+    ) {
+        Icon(
+            imageVector = UsIcons.Explore,
+            contentDescription = null,
+            tint = UsTheme.extended.textMuted,
+            modifier = Modifier.size(SEARCH_GLYPH),
+        )
+        Box(modifier = Modifier.weight(1f)) {
+            if (query.isEmpty()) {
+                Text(
+                    text = "Search messages…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = UsTheme.extended.textMuted,
+                )
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = UsTheme.extended.textPrimary,
+                ),
+                cursorBrush = SolidColor(UsTheme.extended.chatAccent),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "Search messages" }
+                    .testTag("chat-search"),
+            )
+        }
+    }
+}
+
+/** ONLINE NOW (98:36): green-ringed avatars of people online right now. */
+@Composable
+private fun OnlineNowRail(
+    online: List<Conversation>,
+    viewerId: String,
+    onOpen: (String, String, Boolean) -> Unit,
+) {
+    Column {
+        SectionLabel("Online now")
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = UsTheme.spacing.pageHorizontal),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
+            items(online, key = { it.id }) { conversation ->
+                val title = conversation.displayTitle(viewerId)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(UsTheme.radii.medium))
+                        .clickable { onOpen(conversation.id, title, false) }
+                        .padding(UsTheme.spacing.xs),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .border(
+                                width = ONLINE_RING,
+                                color = UsTheme.extended.chatOnline,
+                                shape = CircleShape,
+                            )
+                            .padding(ONLINE_RING_GAP),
+                    ) {
+                        UsAvatar(name = title, size = UsAvatarSize.Medium, seed = conversation.id)
+                    }
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = UsTheme.extended.textMuted,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionLabel(label: String) {
+    Text(
+        text = label.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = UsTheme.extended.textMuted,
+        modifier = Modifier.padding(
+            horizontal = UsTheme.spacing.pageHorizontal,
+            vertical = UsTheme.spacing.m,
+        ),
+    )
 }
 
 @Composable
@@ -302,6 +564,7 @@ private fun ConversationRow(
     conversation: Conversation,
     title: String,
     onClick: () -> Unit,
+    online: Boolean = false,
     onTogglePin: () -> Unit = {},
     onToggleMute: () -> Unit = {},
 ) {
@@ -317,7 +580,18 @@ private fun ConversationRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        UsAvatar(name = title, size = UsAvatarSize.Medium, seed = conversation.id)
+        Box {
+            UsAvatar(name = title, size = UsAvatarSize.Medium, seed = conversation.id)
+            if (online) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(ONLINE_DOT)
+                        .clip(CircleShape)
+                        .background(UsTheme.extended.chatOnline),
+                )
+            }
+        }
         Column(modifier = Modifier.weight(1f)) {
             val markers = buildString {
                 if (conversation.isPinned) append("📌 ")
@@ -408,3 +682,7 @@ private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
 }
 
 private val UNREAD_DOT = 10.dp
+private val ONLINE_DOT = 12.dp
+private val ONLINE_RING = 2.dp
+private val ONLINE_RING_GAP = 2.dp
+private val SEARCH_GLYPH = 20.dp

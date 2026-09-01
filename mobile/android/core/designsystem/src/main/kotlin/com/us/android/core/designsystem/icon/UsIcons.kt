@@ -368,6 +368,18 @@ object UsIcons {
         curveTo(16.2f, 13.8f, 19.6f, 16.5f, 19.6f, 20.6f)
     }
 
+    /** A figure with a plus — invitations and friend requests. */
+    val UserPlus: ImageVector = stroked("UserPlus") {
+        circle(9f, 8f, 3.6f)
+        moveTo(2.6f, 20.6f)
+        curveTo(2.6f, 16.7f, 5.6f, 14.2f, 9f, 14.2f)
+        curveTo(12.4f, 14.2f, 15.4f, 16.7f, 15.4f, 20.6f)
+        moveTo(19f, 7f)
+        verticalLineTo(13f)
+        moveTo(16f, 10f)
+        horizontalLineTo(22f)
+    }
+
     val Back: ImageVector = stroked("Back") {
         moveTo(20f, 12f)
         horizontalLineTo(4.4f)
