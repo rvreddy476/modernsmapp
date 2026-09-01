@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.chat.data.Conversation
+import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsScaffold
@@ -322,13 +323,10 @@ private fun ConversationRow(
                 if (conversation.isPinned) append("📌 ")
                 if (conversation.isMuted) append("🔕 ")
             }
-            Text(
-                text = markers + title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (conversation.hasUnread) FontWeight.Bold else FontWeight.SemiBold,
-                color = UsTheme.extended.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            NameAndTimeLine(
+                name = markers + title,
+                timeIso = conversation.lastMessageAt ?: conversation.updatedAt,
+                unread = conversation.hasUnread,
             )
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(
@@ -367,12 +365,43 @@ private fun ConversationRow(
             }
         }
         if (conversation.hasUnread) {
+            // Chat green, per the design's unread badges. A DOT rather than
+            // a count: the server tells us "unread", not how many, and an
+            // invented number is worse than none.
             Box(
                 modifier = Modifier
                     .size(UNREAD_DOT)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary)
+                    .background(UsTheme.extended.chatAccent)
                     .testTag("chat-unread-dot"),
+            )
+        }
+    }
+}
+
+/**
+ * Figma inbox row (98:65): bold name with the relative time on the trailing
+ * edge — chat green while the row is unread, so the freshest thing on screen
+ * is also the loudest.
+ */
+@Composable
+private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
+            color = UsTheme.extended.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        val time = formatRelativeTime(timeIso)
+        if (time.isNotBlank()) {
+            Text(
+                text = time,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (unread) UsTheme.extended.chatAccent else UsTheme.extended.textMuted,
             )
         }
     }
