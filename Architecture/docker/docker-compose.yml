@@ -1109,7 +1109,13 @@ services:
       LIVEKIT_URL: ${LIVEKIT_URL:-}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
-      ICE_SERVERS_JSON: ${ICE_SERVERS_JSON:-}
+      # ICE config handed to every call grant. Default: Google STUN plus the
+      # in-stack coturn below. TURN_HOST is what DEVICES dial: 10.0.2.2 for
+      # the emulator; set your LAN IP for phones on your WiFi, or a public
+      # host/managed-TURN creds (override ICE_SERVERS_JSON wholesale) for
+      # devices on other networks — the Cloudflare tunnel cannot carry TURN.
+      ICE_SERVERS_JSON: >-
+        ${ICE_SERVERS_JSON:-[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:${TURN_HOST:-10.0.2.2}:3478?transport=udp","turn:${TURN_HOST:-10.0.2.2}:3478?transport=tcp"],"username":"atpost","credential":"${TURN_SECRET:-atpost_dev_turn_secret}"}]}
     ports:
       - "8097:8097"
     depends_on:
@@ -1554,6 +1560,27 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+
+  # TURN relay for 1:1 calls (coturn). WebRTC media is peer-to-peer; when
+  # NATs block the direct path, media relays through here — the difference
+  # between "calls work on the same WiFi" and "calls work". Long-term-
+  # credential auth with one static dev user; production runs the same
+  # image on a public host with real secrets (use-auth-secret + TLS).
+  coturn:
+    image: coturn/coturn:4.6
+    command: >-
+      -n --log-file=stdout --verbose
+      --realm=atpost.dev
+      --user=atpost:${TURN_SECRET:-atpost_dev_turn_secret}
+      --lt-cred-mech
+      --fingerprint
+      --listening-port=3478
+      --min-port=49160 --max-port=49200
+      --external-ip=${TURN_HOST:-10.0.2.2}
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
 
   # The LiveKit SFU behind live-service-v2. Dev keys only — NEVER these
   # values in staging/prod. Media: 7881/tcp is the ICE-TCP fallback and
