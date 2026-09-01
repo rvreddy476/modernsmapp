@@ -21,7 +21,6 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -255,12 +254,18 @@ fun PostCard(
     /** Casts a vote in this card's poll. Null on surfaces that cannot vote. */
     onVotePoll: ((optionId: String) -> Unit)? = null,
 ) {
+    // Figma redesign (feed-card 4:186): a CONTAINED card — solid #1A1A1A
+    // surface, 20dp corners, 16dp padding, 14dp internal rhythm — instead of
+    // the previous full-bleed row with a divider. Separation between cards is
+    // the list's spacing, not a rule line.
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(CARD_CORNER))
+            .background(UsTheme.extended.bgCardSolid)
             .clickable(onClick = onClick)
-            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.m),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            .padding(UsTheme.spacing.xxl),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
     ) {
         // Author header row
         Row(
@@ -287,7 +292,9 @@ fun PostCard(
                         Text(
                             text = state.authorName,
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
+                            // ExtraBold 15 in the Figma card — the name is
+                            // the card's strongest text.
+                            fontWeight = FontWeight.ExtraBold,
                             color = UsTheme.extended.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -339,12 +346,13 @@ fun PostCard(
             }
         }
 
-        // Post body text
+        // Post body text — the design's dedicated body step (#CCC), one
+        // notch quieter than the author name so the header stays the anchor.
         if (state.text.isNotBlank()) {
             Text(
                 text = state.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textPrimary,
+                color = UsTheme.extended.textBody,
                 maxLines = MAX_LINES,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -361,7 +369,8 @@ fun PostCard(
             PostMediaCarousel(state)
         }
 
-        // Social action bar
+        // Social action bar. No trailing divider: the contained card ends
+        // itself, and the list's spacing separates neighbours.
         PostActionBar(
             state = state.actions,
             onReact = onReact,
@@ -371,10 +380,11 @@ fun PostCard(
             onShare = onShare,
             modifier = Modifier.fillMaxWidth(),
         )
-
-        HorizontalDivider(color = UsTheme.extended.borderSubtle)
     }
 }
+
+/** Figma feed-card corner radius (between UsRadii.large 16 and xl 20). */
+private val CARD_CORNER = 20.dp
 
 /**
  * Full-screen immersive post page used by VerticalPager for immersive media/video feeds.
@@ -666,7 +676,9 @@ fun PostMedia(
      */
     contentDescription: String?,
 ) {
-    val mediaShape = RoundedCornerShape(UsTheme.radii.medium)
+    // 14dp per the Figma feed-card media container (between radii.medium 12
+    // and radii.large 16).
+    val mediaShape = RoundedCornerShape(MEDIA_CORNER)
 
     Box(
         modifier = modifier
@@ -694,20 +706,36 @@ fun PostMedia(
         }
 
         if (postType == VIDEO_POST || postType == "flick" || postType == "long_video") {
-            Box(
+            // Figma redesign: a bottom-start "Reel" pill on the canvas
+            // surface, replacing the old centred play circle — the label
+            // says WHAT the media is, and stops covering the frame with a
+            // scrim button.
+            Row(
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(PLAY_BADGE)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = PLAY_BADGE_ALPHA))
-                    .border(HAIRLINE, Color(0x33FFFFFF), CircleShape),
-                contentAlignment = Alignment.Center,
+                    .align(Alignment.BottomStart)
+                    .padding(UsTheme.spacing.l)
+                    .clip(RoundedCornerShape(UsTheme.radii.full))
+                    .background(UsTheme.extended.bgCanvas)
+                    .padding(
+                        start = 10.dp,
+                        end = UsTheme.spacing.l,
+                        top = UsTheme.spacing.s,
+                        bottom = UsTheme.spacing.s,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
             ) {
                 Icon(
                     imageVector = UsIcons.Play,
                     contentDescription = "Play video",
                     tint = Color.White,
-                    modifier = Modifier.size(PLAY_GLYPH),
+                    modifier = Modifier.size(REEL_GLYPH),
+                )
+                Text(
+                    text = "Reel",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
                 )
             }
         }
@@ -858,9 +886,8 @@ const val DEFAULT_MEDIA_ASPECT = 16f / 9f
 
 const val VIDEO_POST = "video"
 private val HAIRLINE = 0.5.dp
-private val PLAY_BADGE = 48.dp
-private val PLAY_GLYPH = 24.dp
-private const val PLAY_BADGE_ALPHA = 0.55f
+private val MEDIA_CORNER = 14.dp
+private val REEL_GLYPH = 14.dp
 private const val COUNT_PILL_ALPHA = 0.6f
 
 // ── Previews ────────────────────────────────────────────────────────────

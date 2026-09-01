@@ -239,6 +239,68 @@ object UsIcons {
         close()
     }
 
+    /** A framed photo — sun dot and mountain line, the universal "image". */
+    val Photo: ImageVector = stroked("Photo") {
+        moveTo(5f, 3f)
+        horizontalLineTo(19f)
+        curveTo(20.1f, 3f, 21f, 3.9f, 21f, 5f)
+        verticalLineTo(19f)
+        curveTo(21f, 20.1f, 20.1f, 21f, 19f, 21f)
+        horizontalLineTo(5f)
+        curveTo(3.9f, 21f, 3f, 20.1f, 3f, 19f)
+        verticalLineTo(5f)
+        curveTo(3f, 3.9f, 3.9f, 3f, 5f, 3f)
+        close()
+        circle(9f, 9f, 2f)
+        moveTo(21f, 15f)
+        lineTo(17.9f, 11.9f)
+        curveTo(17.5f, 11.5f, 17f, 11.3f, 16.5f, 11.3f)
+        curveTo(16f, 11.3f, 15.5f, 11.5f, 15.1f, 11.9f)
+        lineTo(6f, 21f)
+    }
+
+    /** A camera body with its lens — capture, as opposed to [Photo], the library. */
+    val Camera: ImageVector = stroked("Camera") {
+        moveTo(14.5f, 4f)
+        horizontalLineTo(9.5f)
+        lineTo(7f, 7f)
+        horizontalLineTo(4f)
+        curveTo(2.9f, 7f, 2f, 7.9f, 2f, 9f)
+        verticalLineTo(18f)
+        curveTo(2f, 19.1f, 2.9f, 20f, 4f, 20f)
+        horizontalLineTo(20f)
+        curveTo(21.1f, 20f, 22f, 19.1f, 22f, 18f)
+        verticalLineTo(9f)
+        curveTo(22f, 7.9f, 21.1f, 7f, 20f, 7f)
+        horizontalLineTo(17f)
+        close()
+        circle(12f, 13f, 3f)
+    }
+
+    /** Three rising bars — a poll's results, which is what a poll becomes. */
+    val Poll: ImageVector = stroked("Poll") {
+        moveTo(5f, 21f)
+        verticalLineTo(15f)
+        moveTo(12f, 21f)
+        verticalLineTo(3f)
+        moveTo(19f, 21f)
+        verticalLineTo(9f)
+    }
+
+    /** A serifed capital T — typography, the mark for a text post. */
+    val Type: ImageVector = stroked("Type") {
+        moveTo(12f, 4f)
+        verticalLineTo(20f)
+        moveTo(4f, 7f)
+        verticalLineTo(5f)
+        curveTo(4f, 4.45f, 4.45f, 4f, 5f, 4f)
+        horizontalLineTo(19f)
+        curveTo(19.55f, 4f, 20f, 4.45f, 20f, 5f)
+        verticalLineTo(7f)
+        moveTo(9f, 20f)
+        horizontalLineTo(15f)
+    }
+
     val Explore: ImageVector = stroked("Explore") {
         circle(10.8f, 10.8f, 6.6f)
         moveTo(15.6f, 15.6f)

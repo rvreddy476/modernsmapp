@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +26,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
@@ -90,7 +92,8 @@ fun PostActionBar(
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        // 20dp between actions, per the Figma feed-card action row.
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxxxl),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ActionButton(
@@ -155,10 +158,12 @@ private fun ActionButton(
     onClick: () -> Unit,
     activeTint: Color = Color.Unspecified,
 ) {
+    // Resting tint is the MUTED step (#8E8E93), per the Figma action row —
+    // the actions are quieter than the content until they are active.
     val tint = when {
         !enabled -> UsTheme.extended.textGhost
         active && activeTint != Color.Unspecified -> activeTint
-        else -> UsTheme.extended.textSecondary
+        else -> UsTheme.extended.textMuted
     }
     // The whole control is one node. Exposing the icon and the count
     // separately makes a screen reader read "button, 12" with no idea what
@@ -184,16 +189,26 @@ private fun ActionButton(
                 if (!enabled) disabled()
             },
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = tint)
+        // 20dp glyphs and BOLD counts, per the Figma action row.
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(ACTION_GLYPH),
+        )
         if (caption != null) {
             Text(
                 text = caption,
                 style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
                 color = tint,
             )
         }
     }
 }
+
+/** Figma feed-card action glyph size. */
+private val ACTION_GLYPH = 20.dp
 
 private val previewState = PostActionState(
     likeCount = 128,

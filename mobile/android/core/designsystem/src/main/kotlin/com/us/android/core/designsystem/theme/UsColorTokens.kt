@@ -17,6 +17,15 @@ internal object UsColorTokens {
     val BgCard = Color(0x0AFFFFFF)
     val BgCardHover = Color(0x0FFFFFFF)
 
+    // ── Figma redesign tokens (atPost design file, 2026-08-29) ─────────
+    // Extracted from the feed-card spec: bg/surface, bg/card, and the body
+    // text step that sits between TextPrimary and TextMuted. These are the
+    // SOLID card surfaces of the new design language, distinct from the
+    // translucent BgCard above which the older ported screens still use.
+    val FeedCanvas = Color(0xFF0D0D0D)
+    val FeedCard = Color(0xFF1A1A1A)
+    val TextBody = Color(0xFFCCCCCC)
+
     // ── Borders ────────────────────────────────────────────────────────
     val BorderSubtle = Color(0x0FFFFFFF)
     val BorderMedium = Color(0x14FFFFFF)

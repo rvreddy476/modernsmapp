@@ -1,6 +1,13 @@
 package com.us.android.core.designsystem.component
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -10,13 +17,17 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -148,13 +159,37 @@ fun UsHomeTopBar(
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     TopAppBar(
-        title = {},
-        navigationIcon = {
-            IconButton(onClick = onHomeClick) {
-                Icon(
-                    imageVector = UsIcons.Home,
-                    contentDescription = "Home",
-                    tint = UsTheme.extended.textPrimary,
+        // Figma redesign (home 4:8): the brand row replaces the bare home
+        // glyph — a white rounded-square "at" chip beside the ExtraBold
+        // wordmark. Still one tappable block, same scroll-to-top contract.
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(UsTheme.radii.small))
+                    .clickable(onClick = onHomeClick)
+                    .semantics { contentDescription = "atPost home" },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(BRAND_CHIP)
+                        .clip(RoundedCornerShape(UsTheme.radii.small))
+                        .background(Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "at",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.Black,
+                    )
+                }
+                Text(
+                    text = "atPost",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = UsTheme.extended.textPrimary,
                 )
             }
         },
@@ -166,6 +201,9 @@ fun UsHomeTopBar(
         modifier = modifier,
     )
 }
+
+/** Figma home top bar: the rounded-square "at" logo chip. */
+private val BRAND_CHIP = 30.dp
 
 @Preview(name = "Top bar — home feed", showBackground = true)
 @Composable

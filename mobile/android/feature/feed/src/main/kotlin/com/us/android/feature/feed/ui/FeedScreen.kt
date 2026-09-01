@@ -225,7 +225,15 @@ private fun FeedList(
             // the scroll viewport so cards are clipped at a hard inset edge
             // mid-scroll. Padding the content lets them reach the real screen
             // edges and insets only the first and last.
-            contentPadding = PaddingValues(vertical = UsTheme.spacing.m),
+            //
+            // Figma redesign: contained cards float on the canvas with a
+            // 20dp side gutter and 16dp between neighbours — the separation
+            // the old full-bleed rows drew as divider lines.
+            contentPadding = PaddingValues(
+                horizontal = UsTheme.spacing.xxxxl,
+                vertical = UsTheme.spacing.xxl,
+            ),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
         ) {
             // `key` is what lets Compose keep an item's state across a page
             // append. Without it every append re-keys by index and the whole

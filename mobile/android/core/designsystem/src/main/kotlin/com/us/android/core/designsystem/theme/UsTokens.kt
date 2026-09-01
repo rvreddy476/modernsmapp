@@ -26,6 +26,14 @@ data class UsExtendedColors(
     val textGhost: Color,
     val bgCard: Color,
     val bgCardHover: Color,
+    /**
+     * Figma redesign (2026-08-29): the SOLID card surface (`bg/card`,
+     * #1A1A1A) and its canvas (`bg/surface`, #0D0D0D), plus the body-text
+     * step (#CCC) the feed card uses between textPrimary and textMuted.
+     */
+    val bgCardSolid: Color,
+    val bgCanvas: Color,
+    val textBody: Color,
     val borderSubtle: Color,
     val borderMedium: Color,
     val glassBg: Color,
@@ -90,6 +98,9 @@ internal val DarkExtendedColors = UsExtendedColors(
     textGhost = UsColorTokens.TextGhost,
     bgCard = UsColorTokens.BgCard,
     bgCardHover = UsColorTokens.BgCardHover,
+    bgCardSolid = UsColorTokens.FeedCard,
+    bgCanvas = UsColorTokens.FeedCanvas,
+    textBody = UsColorTokens.TextBody,
     borderSubtle = UsColorTokens.BorderSubtle,
     borderMedium = UsColorTokens.BorderMedium,
     glassBg = UsColorTokens.GlassBg,
