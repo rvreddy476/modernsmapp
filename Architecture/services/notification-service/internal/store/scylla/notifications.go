@@ -84,6 +84,13 @@ func (s *NotificationStore) CreateNotificationIfNotExists(ctx context.Context, n
 		ts = gocql.UUIDFromTime(n.CreatedAt)
 	}
 
+	// MapScanCAS, not ScanCAS(): when the row already exists (applied =
+	// false) Cassandra returns the EXISTING row's columns, and a bare
+	// ScanCAS with no destinations fails with "not enough columns to scan
+	// into" — which turned every legitimate retry after a half-observed
+	// first insert into a permanent scan error (device-pass finding,
+	// 2026-08-29: the durable call consumer was stuck retrying exactly
+	// this). MapScanCAS absorbs whatever columns come back.
 	applied, err := s.session.Query(`
 		INSERT INTO notifications_by_user (user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -91,7 +98,7 @@ func (s *NotificationStore) CreateNotificationIfNotExists(ctx context.Context, n
 	`, gocql.UUID(n.UserID), bucket, ts, gocql.UUID(n.NotificationID), n.Type,
 		gocql.UUID(n.ActorUserID), n.EntityType, gocql.UUID(n.EntityID),
 		n.DeepLink, n.IsRead, n.CreatedAt).
-		WithContext(ctx).ScanCAS()
+		WithContext(ctx).MapScanCAS(map[string]interface{}{})
 	if err != nil {
 		return false, err
 	}

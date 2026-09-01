@@ -9,10 +9,18 @@ import "fmt"
 // An empty return means no collapsing — the notification is always shown individually.
 func GetCollapseKey(eventType, targetID, recipientID string) string {
 	switch eventType {
-	// One ringing/missed push per CALL (CALL-LB-4): an at-least-once
-	// redelivery must REPLACE, not stack, the incoming-call wake-up on
-	// the device.
-	case "incoming_call", "incoming_video_call", "missed_call":
+	// RINGING pushes are deliberately NON-collapsible (device-pass finding,
+	// 2026-08-29): FCM holds collapsible messages and honors at most four
+	// distinct pending collapse keys per device — with a unique key per
+	// call, real rings stalled undelivered on a healthy, connected device
+	// while identical non-collapsible sends arrived in seconds. A ring must
+	// be immediate; at-least-once duplicates are already harmless because
+	// the app's wake-up is idempotent and server-verified (refreshIncoming
+	// rings only a live invite). missed_call keeps collapsing: it is an
+	// ordinary tray notification where replacement is the right behavior.
+	case "incoming_call", "incoming_video_call":
+		return ""
+	case "missed_call":
 		return fmt.Sprintf("call:%s", targetID)
 
 	// Sparks (likes) on same post collapse into one notification.

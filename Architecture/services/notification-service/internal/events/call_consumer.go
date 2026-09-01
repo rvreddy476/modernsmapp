@@ -216,6 +216,25 @@ const (
 	maxConsumeRetryBackoff = 30 * time.Second
 )
 
+// WIRE event types, pinned to what the PRODUCER actually writes.
+//
+// Device-pass finding (2026-08-29): call-service publishes through
+// chat-service/shared/events, whose constants are "CallInvited"/"CallEnded".
+// This module's events.EventCallInvited is the UNRELATED string
+// "call.invited" — matching it made this consumer a silent no-op: every call
+// event fell into the default branch, committed, and no ring push was EVER
+// sent in production, while every test passed because both sides of the
+// tests shared the same (wrong-side) constant. The switch below matches the
+// producer's literal strings, with the dotted forms accepted defensively;
+// call_consumer_wire_contract_test.go pins these as LITERALS so no shared
+// constant can hide a drift again.
+const (
+	wireCallInvited       = "CallInvited"
+	wireCallInvitedDotted = "call.invited"
+	wireCallEnded         = "CallEnded"
+	wireCallEndedDotted   = "call.ended"
+)
+
 // parseRequiredUUID rejects a missing or malformed required id as PERMANENT
 // input failure — the old code swallowed the parse error and continued with
 // uuid.Nil, notifying nobody (or the zero user) forever.
@@ -240,7 +259,7 @@ func (c *CallConsumer) processMessage(ctx context.Context, m kafka.Message) erro
 	}
 
 	switch envelope.EventType {
-	case events.EventCallInvited:
+	case wireCallInvited, wireCallInvitedDotted:
 		var e events.CallInvitedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return permanentf("malformed CallInvited payload: %v", err)
@@ -274,7 +293,7 @@ func (c *CallConsumer) processMessage(ctx context.Context, m kafka.Message) erro
 		return c.notifier.CreateCallNotification(ctx, inviteeID, inviterID,
 			notifType, "call", callID, deepLink, e.CreatedAt, identity)
 
-	case events.EventCallEnded:
+	case wireCallEnded, wireCallEndedDotted:
 		var e events.CallEndedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return permanentf("malformed CallEnded payload: %v", err)

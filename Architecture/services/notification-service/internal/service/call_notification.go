@@ -179,6 +179,15 @@ func (s *Service) sendCallPush(ctx context.Context, target callPushTarget, notif
 		data["collapse_key"] = ck
 	}
 	err := s.pusher.Send(ctx, target.Token, target.Platform, title, body, data)
+	// Device-pass observability: one line per send attempt — platform,
+	// token PREFIX (never the token), and the outcome. A ring that FCM
+	// "accepted" but never delivered is invisible without this.
+	tokenPrefix := target.Token
+	if len(tokenPrefix) > 12 {
+		tokenPrefix = tokenPrefix[:12]
+	}
+	slog.Info("call push attempt", "type", notifType, "platform", target.Platform,
+		"token_prefix", tokenPrefix, "err", err)
 	if err != nil && errors.Is(err, push.ErrProviderNotConfigured) && !s.callPushRequired {
 		// Dev posture: a platform without its provider is a loud skip, not
 		// a failure. In REQUIRED mode this propagates and keeps the event
