@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,8 +27,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -247,19 +247,33 @@ private fun RequestsAndInvites(
     onDecline: (String) -> Unit,
 ) {
     Column {
-        TabRow(selectedTabIndex = if (state.tab == InboxTab.Requests) 0 else 1) {
-            Tab(
+        // The segmented bar from the Figma requests screen (98:151): white
+        // for the selected segment with a short indicator, muted otherwise —
+        // monochrome on purpose, no accent colour fighting the content.
+        Row(modifier = Modifier.fillMaxWidth()) {
+            SegmentTab(
+                label = "Messages",
+                count = state.requestCount,
                 selected = state.tab == InboxTab.Requests,
                 onClick = { onSelect(InboxTab.Requests) },
-                text = { TabLabelWithCount("Messages", state.requestCount) },
+                modifier = Modifier.weight(1f),
             )
-            Tab(
+            SegmentTab(
+                label = "Group invites",
+                count = state.inviteCount,
                 selected = state.tab == InboxTab.Invites,
                 onClick = { onSelect(InboxTab.Invites) },
-                text = { TabLabelWithCount("Group invites", state.inviteCount) },
-                modifier = Modifier.testTag("chat-tab-invites"),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("chat-tab-invites"),
             )
         }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(SEGMENT_HAIRLINE)
+                .background(UsTheme.extended.borderSubtle),
+        )
         when (state.tab) {
             InboxTab.Requests -> RequestsTab(state, onOpenRequest)
             else -> InvitesTab(state = state, onAccept = onAccept, onDecline = onDecline)
@@ -268,15 +282,48 @@ private fun RequestsAndInvites(
 }
 
 @Composable
-private fun TabLabelWithCount(label: String, count: Int) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+private fun SegmentTab(
+    label: String,
+    count: Int,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .padding(top = UsTheme.spacing.l),
     ) {
-        Text(label)
-        if (count > 0) {
-            Badge { Text(count.toString()) }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                color = if (selected) {
+                    UsTheme.extended.textPrimary
+                } else {
+                    UsTheme.extended.textMuted
+                },
+            )
+            if (count > 0) {
+                Badge(containerColor = UsTheme.extended.chatAccent) {
+                    Text(count.toString())
+                }
+            }
         }
+        Box(
+            modifier = Modifier
+                .padding(top = UsTheme.spacing.m)
+                .size(width = SEGMENT_INDICATOR_WIDTH, height = SEGMENT_INDICATOR_HEIGHT)
+                .clip(RoundedCornerShape(UsTheme.radii.small))
+                .background(
+                    if (selected) UsTheme.extended.textPrimary else Color.Transparent,
+                ),
+        )
     }
 }
 
@@ -683,6 +730,9 @@ private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
 
 private val UNREAD_DOT = 10.dp
 private val ONLINE_DOT = 12.dp
+private val SEGMENT_INDICATOR_WIDTH = 60.dp
+private val SEGMENT_INDICATOR_HEIGHT = 2.dp
+private val SEGMENT_HAIRLINE = 1.dp
 private val ONLINE_RING = 2.dp
 private val ONLINE_RING_GAP = 2.dp
 private val SEARCH_GLYPH = 20.dp
