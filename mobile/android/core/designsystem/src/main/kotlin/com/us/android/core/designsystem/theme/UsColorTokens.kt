@@ -60,6 +60,12 @@ internal object UsColorTokens {
     val GlassBg = Color(0x1AFFFFFF)
     val GlassBorder = Color(0x14FFFFFF)
 
+    // ── Chat (Figma chat tour 98:*) ────────────────────────────────────
+    // The chat vertical's own accent: outgoing bubbles, send, unread
+    // badges. Shared across themes — green IS the chat identity.
+    val ChatAccent = Color(0xFF22C55E)
+    val ChatOnline = Color(0xFF4ADE80)
+
     // ── Brand chip (the "at" logo square) ──────────────────────────────
     val BrandChip = Color(0xFFFFFFFF)
     val OnBrandChip = Color(0xFF000000)

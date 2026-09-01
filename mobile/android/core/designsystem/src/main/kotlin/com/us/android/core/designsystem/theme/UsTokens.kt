@@ -41,6 +41,9 @@ data class UsExtendedColors(
     /** The "at" logo square and its glyph — white/black dark, cream/ink light. */
     val brandChip: Color,
     val onBrandChip: Color,
+    /** Chat's green identity: outgoing bubbles, send, unread badges. */
+    val chatAccent: Color,
+    val chatOnline: Color,
     val onlineGreen: Color,
     val liveRed: Color,
     val statusWarning: Color,
@@ -110,6 +113,8 @@ internal val DarkExtendedColors = UsExtendedColors(
     glassBorder = UsColorTokens.GlassBorder,
     brandChip = UsColorTokens.BrandChip,
     onBrandChip = UsColorTokens.OnBrandChip,
+    chatAccent = UsColorTokens.ChatAccent,
+    chatOnline = UsColorTokens.ChatOnline,
     onlineGreen = UsColorTokens.OnlineGreen,
     liveRed = UsColorTokens.LiveRed,
     statusWarning = UsColorTokens.StatusWarning,

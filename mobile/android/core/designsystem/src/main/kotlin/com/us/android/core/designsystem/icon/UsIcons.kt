@@ -281,6 +281,25 @@ object UsIcons {
         lineTo(6f, 21f)
     }
 
+    /** A camcorder: body plus the right-facing lens wedge. Video call. */
+    val Video: ImageVector = stroked("Video") {
+        moveTo(4.8f, 6f)
+        horizontalLineTo(13.2f)
+        curveTo(14.3f, 6f, 15.2f, 6.9f, 15.2f, 8f)
+        verticalLineTo(16f)
+        curveTo(15.2f, 17.1f, 14.3f, 18f, 13.2f, 18f)
+        horizontalLineTo(4.8f)
+        curveTo(3.7f, 18f, 2.8f, 17.1f, 2.8f, 16f)
+        verticalLineTo(8f)
+        curveTo(2.8f, 6.9f, 3.7f, 6f, 4.8f, 6f)
+        close()
+        moveTo(15.2f, 10.6f)
+        lineTo(21.2f, 7f)
+        verticalLineTo(17f)
+        lineTo(15.2f, 13.4f)
+        close()
+    }
+
     /** A broadcast mark: a dot mid-air between two pairs of waves. Live. */
     val Live: ImageVector = stroked("Live") {
         circle(12f, 12f, 1.8f)

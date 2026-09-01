@@ -4,6 +4,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,13 +14,20 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,9 +41,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -44,14 +58,13 @@ import com.us.android.core.chat.data.PendingSend
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsScaffold
-import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import kotlin.math.abs
 
 /**
  * One conversation, over the DURABLE boundary (directive §5.4/§5.5).
@@ -99,34 +112,25 @@ fun ChatThreadScreen(
 
     UsScaffold(
         topBar = {
-            UsTopBar(
+            ChatThreadTopBar(
                 // A deep-linked thread navigates with a blank title; the
                 // loaded conversation supplies the real one.
                 title = title.ifBlank { render.loadedTitle.ifBlank { "Conversation" } },
+                typing = state.typingUserIds.isNotEmpty(),
+                // Calls are DIRECT-only in P0, and the buttons appear only
+                // once the roster resolved the peer. Whether the peer may
+                // actually be called is the server's decision when the button
+                // is pressed — visibility here is not permission.
+                showCalls = !isGroup && !render.loadedIsGroup && render.peerUserId.isNotBlank(),
+                showGroupInfo = isGroup || render.loadedIsGroup,
                 onBack = onBack,
-                actions = {
-                    // Calls are DIRECT-only in P0, and the buttons appear only
-                    // once the roster resolved the peer. Whether the peer may
-                    // actually be called is the server's decision when the
-                    // button is pressed — visibility here is not permission.
-                    if (!isGroup && !render.loadedIsGroup && render.peerUserId.isNotBlank()) {
-                        val name = title.ifBlank { render.loadedTitle }
-                        TextButton(
-                            onClick = { onStartCall(render.peerUserId, name, false) },
-                            modifier = Modifier.testTag("thread-call-audio"),
-                        ) { Text("📞") }
-                        TextButton(
-                            onClick = { onStartCall(render.peerUserId, name, true) },
-                            modifier = Modifier.testTag("thread-call-video"),
-                        ) { Text("🎥") }
-                    }
-                    if (isGroup || render.loadedIsGroup) {
-                        TextButton(
-                            onClick = onOpenGroupInfo,
-                            modifier = Modifier.testTag("thread-group-info"),
-                        ) { Text("Info") }
-                    }
+                onAudioCall = {
+                    onStartCall(render.peerUserId, title.ifBlank { render.loadedTitle }, false)
                 },
+                onVideoCall = {
+                    onStartCall(render.peerUserId, title.ifBlank { render.loadedTitle }, true)
+                },
+                onOpenGroupInfo = onOpenGroupInfo,
             )
         },
         applyPageGutter = false,
@@ -208,6 +212,100 @@ fun ChatThreadScreen(
     }
 }
 
+/**
+ * The thread header, per the Figma conversation frame (98:331): card-dark
+ * bar with a hairline underneath, the peer's avatar beside a bold name, and
+ * the LIVE state line — "typing…" in the chat green when the peer is typing.
+ * The call buttons are the design's video/phone glyphs, wired to the real
+ * calling stack.
+ */
+@Suppress("LongParameterList")
+@Composable
+private fun ChatThreadTopBar(
+    title: String,
+    typing: Boolean,
+    showCalls: Boolean,
+    showGroupInfo: Boolean,
+    onBack: () -> Unit,
+    onAudioCall: () -> Unit,
+    onVideoCall: () -> Unit,
+    onOpenGroupInfo: () -> Unit,
+) {
+    Column {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UsTheme.extended.bgCardSolid)
+                .padding(
+                    horizontal = UsTheme.spacing.xxl,
+                    vertical = UsTheme.spacing.m,
+                ),
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = UsIcons.Back,
+                    contentDescription = "Back",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+            UsAvatar(name = title, size = UsAvatarSize.Small, seed = title)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = UsTheme.extended.textPrimary,
+                    maxLines = 1,
+                )
+                if (typing) {
+                    Text(
+                        text = "typing…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = UsTheme.extended.chatOnline,
+                        modifier = Modifier.testTag("thread-typing"),
+                    )
+                }
+            }
+            if (showCalls) {
+                IconButton(
+                    onClick = onVideoCall,
+                    modifier = Modifier.testTag("thread-call-video"),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.Video,
+                        contentDescription = "Video call",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
+                IconButton(
+                    onClick = onAudioCall,
+                    modifier = Modifier.testTag("thread-call-audio"),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.Phone,
+                        contentDescription = "Voice call",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
+            }
+            if (showGroupInfo) {
+                TextButton(
+                    onClick = onOpenGroupInfo,
+                    modifier = Modifier.testTag("thread-group-info"),
+                ) { Text("Info") }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(HAIRLINE)
+                .background(UsTheme.extended.borderSubtle),
+        )
+    }
+}
+
 @Composable
 private fun OfflineThreadBanner(onRetry: () -> Unit) {
     Row(
@@ -232,16 +330,9 @@ private fun ComposerStatus(
     render: ThreadRenderState,
     onCancelAttachment: () -> Unit,
 ) {
+    // Typing lives in the HEADER now (98:340) — one live state line beside
+    // the name, instead of a floating caption over the composer.
     val state = render.thread
-    if (state.typingUserIds.isNotEmpty()) {
-        Text(
-            text = "Typing…",
-            style = MaterialTheme.typography.bodySmall,
-            color = UsTheme.extended.textMuted,
-            modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
-        )
-    }
-
     if (state.draftTooLong) {
         Text(
             text = "That's longer than a message can be. " +
@@ -290,6 +381,12 @@ private fun ComposerStatus(
     }
 }
 
+/**
+ * The input bar, per the Figma conversation frame (98:365): a card-dark bar
+ * over a hairline — plus for attachments, a full-round pill field with the
+ * camera inside it, and the circular chat-green send button that dims when
+ * there is nothing to send.
+ */
 @Composable
 private fun Composer(
     draft: String,
@@ -299,28 +396,117 @@ private fun Composer(
     onSend: () -> Unit,
     onAttach: () -> Unit,
 ) {
+    Column {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(HAIRLINE)
+                .background(UsTheme.extended.borderSubtle),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UsTheme.extended.bgCardSolid)
+                .padding(UsTheme.spacing.xxl),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
+            IconButton(
+                onClick = onAttach,
+                enabled = !attaching,
+                modifier = Modifier.testTag("thread-attach"),
+            ) {
+                Icon(
+                    imageVector = UsIcons.Create,
+                    contentDescription = "Attach a photo",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+            ComposerField(
+                draft = draft,
+                attaching = attaching,
+                onDraftChange = onDraftChange,
+                onAttach = onAttach,
+                modifier = Modifier.weight(1f),
+            )
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(SEND_BUTTON)
+                    .clip(CircleShape)
+                    .background(
+                        if (canSend) UsTheme.extended.chatAccent else UsTheme.extended.bgCanvas,
+                    )
+                    .clickable(enabled = canSend, onClick = onSend)
+                    .semantics {
+                        contentDescription = if (canSend) "Send" else "Send. Unavailable."
+                    },
+            ) {
+                Icon(
+                    imageVector = UsIcons.Share,
+                    contentDescription = null,
+                    tint = if (canSend) Color.White else UsTheme.extended.textGhost,
+                    modifier = Modifier.size(SEND_GLYPH),
+                )
+            }
+        }
+    }
+}
+
+/** The pill field: placeholder, draft, and the camera glyph inside. */
+@Composable
+private fun ComposerField(
+    draft: String,
+    attaching: Boolean,
+    onDraftChange: (String) -> Unit,
+    onAttach: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(UsTheme.spacing.l),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .clip(RoundedCornerShape(UsTheme.radii.full))
+            .background(UsTheme.extended.bgCanvas)
+            .border(
+                width = HAIRLINE,
+                color = UsTheme.extended.borderSubtle,
+                shape = RoundedCornerShape(UsTheme.radii.full),
+            )
+            .padding(
+                horizontal = UsTheme.spacing.xl,
+                vertical = UsTheme.spacing.l,
+            ),
     ) {
-        UsSecondaryButton(
-            text = "Photo",
-            onClick = onAttach,
-            enabled = !attaching,
-            modifier = Modifier.testTag("thread-attach"),
+        Box(modifier = Modifier.weight(1f)) {
+            if (draft.isEmpty()) {
+                Text(
+                    text = "Type a message…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = UsTheme.extended.textMuted,
+                )
+            }
+            BasicTextField(
+                value = draft,
+                onValueChange = onDraftChange,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = UsTheme.extended.textPrimary,
+                ),
+                cursorBrush = SolidColor(UsTheme.extended.chatAccent),
+                maxLines = 5,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "Message" },
+            )
+        }
+        Icon(
+            imageVector = UsIcons.Camera,
+            contentDescription = "Attach a photo",
+            tint = UsTheme.extended.textMuted,
+            modifier = Modifier
+                .size(COMPOSER_GLYPH)
+                .clip(CircleShape)
+                .clickable(enabled = !attaching, onClick = onAttach),
         )
-        UsTextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            label = "Message",
-            placeholder = "Write a message…",
-            singleLine = false,
-            modifier = Modifier.weight(1f),
-        )
-        UsSecondaryButton(text = "Send", onClick = onSend, enabled = canSend)
     }
 }
 
@@ -411,45 +597,41 @@ private fun MessageRow(
         },
     ) {
         val name = message.senderDisplayName.orEmpty()
-        if (!isOwn) {
-            UsAvatar(
-                name = name.ifBlank { "?" },
-                size = UsAvatarSize.Small,
-                seed = message.senderId.ifBlank { message.id },
-            )
-        }
         Column(
             modifier = Modifier.weight(1f, fill = false),
             horizontalAlignment = if (isOwn) Alignment.End else Alignment.Start,
         ) {
+            // Figma group thread (98:395): the sender's name sits ABOVE the
+            // bubble in a colour that stays theirs for the whole thread.
             if (name.isNotBlank() && !isOwn) {
                 Text(
                     text = name,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = UsTheme.extended.textPrimary,
+                    color = senderColor(message.senderId.ifBlank { name }),
                 )
             }
-            message.mediaId?.let { mediaId ->
-                AttachmentImage(mediaId = mediaId)
-            }
-            if (message.text.isNotBlank()) {
-                Text(
-                    text = message.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (message.pending) {
-                        UsTheme.extended.textMuted
-                    } else {
-                        UsTheme.extended.textPrimary
-                    },
-                )
-            }
+            MessageBubble(message = message, isOwn = isOwn)
             if (message.reactions.isNotEmpty()) {
+                // The reaction chip hangs off the bubble's corner (98:363).
                 Text(
                     text = message.reactions.joinToString(" ") { "${it.emoji} ${it.userIds.size}" },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = UsTheme.extended.textMuted,
-                    modifier = Modifier.testTag("message-reactions"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = UsTheme.extended.textPrimary,
+                    modifier = Modifier
+                        .padding(top = UsTheme.spacing.xs)
+                        .clip(RoundedCornerShape(UsTheme.radii.full))
+                        .background(UsTheme.extended.bgCardSolid)
+                        .border(
+                            width = HAIRLINE,
+                            color = UsTheme.extended.borderSubtle,
+                            shape = RoundedCornerShape(UsTheme.radii.full),
+                        )
+                        .padding(
+                            horizontal = UsTheme.spacing.s,
+                            vertical = UsTheme.spacing.xs,
+                        )
+                        .testTag("message-reactions"),
                 )
             }
             if (isOwn && readByPeer) {
@@ -480,6 +662,56 @@ private fun MessageRow(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * The bubble itself (98:348/98:351): incoming card-dark, outgoing chat
+ * green, 18dp corners with the 4dp tail on the sender's side. A pending own
+ * message renders translucent — visibly not yet the server's.
+ */
+@Composable
+private fun MessageBubble(message: Message, isOwn: Boolean) {
+    val shape = if (isOwn) {
+        RoundedCornerShape(
+            topStart = BUBBLE_CORNER,
+            topEnd = BUBBLE_CORNER,
+            bottomStart = BUBBLE_CORNER,
+            bottomEnd = BUBBLE_TAIL,
+        )
+    } else {
+        RoundedCornerShape(
+            topStart = BUBBLE_CORNER,
+            topEnd = BUBBLE_CORNER,
+            bottomStart = BUBBLE_TAIL,
+            bottomEnd = BUBBLE_CORNER,
+        )
+    }
+    val bubbleColor = when {
+        isOwn && message.pending -> UsTheme.extended.chatAccent.copy(alpha = PENDING_ALPHA)
+        isOwn -> UsTheme.extended.chatAccent
+        else -> UsTheme.extended.bgCardSolid
+    }
+    Column(
+        modifier = Modifier
+            .widthIn(max = BUBBLE_MAX_WIDTH)
+            .clip(shape)
+            .background(bubbleColor)
+            .padding(
+                horizontal = UsTheme.spacing.xl,
+                vertical = UsTheme.spacing.m,
+            ),
+    ) {
+        message.mediaId?.let { mediaId ->
+            AttachmentImage(mediaId = mediaId)
+        }
+        if (message.text.isNotBlank()) {
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isOwn) Color.White else UsTheme.extended.textPrimary,
+            )
         }
     }
 }
@@ -526,3 +758,31 @@ private const val ATTACHMENT_ASPECT = 4f / 3f
 
 /** The quick-reaction palette. The server stores any emoji string. */
 private val REACTION_CHOICES = listOf("❤️", "👍", "😂")
+
+// ── The Figma conversation language (98:321) ────────────────────────────
+
+private val HAIRLINE = 1.dp
+private val BUBBLE_CORNER = 18.dp
+private val BUBBLE_TAIL = 4.dp
+private val BUBBLE_MAX_WIDTH = 300.dp
+private const val PENDING_ALPHA = 0.6f
+private val SEND_BUTTON = 40.dp
+private val SEND_GLYPH = 18.dp
+private val COMPOSER_GLYPH = 20.dp
+
+/**
+ * Stable per-sender name colours for group threads (98:396): the id hashes
+ * into a fixed palette, so a sender keeps one colour for the whole thread.
+ */
+@Suppress("MagicNumber")
+private val SENDER_PALETTE = listOf(
+    Color(0xFFAB47BC),
+    Color(0xFF22C55E),
+    Color(0xFFFF6B35),
+    Color(0xFF2196F3),
+    Color(0xFF4ECDC4),
+    Color(0xFFFFAB00),
+)
+
+private fun senderColor(seed: String): Color =
+    SENDER_PALETTE[abs(seed.hashCode()) % SENDER_PALETTE.size]
