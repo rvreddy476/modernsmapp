@@ -74,6 +74,9 @@ sealed interface NotificationKind {
     /** Someone subscribed to you. */
     data object NewSubscriber : NotificationKind
 
+    /** A call rang and nobody answered. Written by the call consumer. */
+    data object MissedCall : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
@@ -89,6 +92,7 @@ sealed interface NotificationKind {
             "friend_request" -> ConnectionRequest
             "friend_accepted" -> ConnectionAccepted
             "new_subscriber" -> NewSubscriber
+            "missed_call" -> MissedCall
             else -> Unknown(raw)
         }
     }

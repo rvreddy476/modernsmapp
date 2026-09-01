@@ -27,11 +27,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.common.time.formatRelativeTime
+import com.us.android.core.designsystem.component.UsAvatar
+import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
@@ -133,45 +137,101 @@ fun NotificationsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                else -> LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    items(state.items, key = { it.id }) { notification ->
-                        NotificationRow(
-                            notification = notification,
-                            onClick = {
-                                viewModel.onNotificationOpened(notification)
-                                // NOT gated on the mark-read request. Making
-                                // someone wait for a write they can already see
-                                // succeed is the wrong trade.
-                                if (notification.target != NotificationTarget.None) {
-                                    onOpenTarget(notification.target)
-                                }
-                            },
-                        )
-                    }
-
-                    if (state.isLoadingMore) {
-                        item { LoadingBlock() }
-                    }
-                }
+                else -> SectionedNotificationList(
+                    items = state.items,
+                    isLoadingMore = state.isLoadingMore,
+                    listState = listState,
+                    onOpen = { notification ->
+                        viewModel.onNotificationOpened(notification)
+                        // NOT gated on the mark-read request. Making someone
+                        // wait for a write they can already see succeed is the
+                        // wrong trade.
+                        if (notification.target != NotificationTarget.None) {
+                            onOpenTarget(notification.target)
+                        }
+                    },
+                )
             }
         }
     }
 }
 
+/**
+ * TODAY / EARLIER sections, per the Figma notifications frame (4:854). The
+ * list arrives newest-first, so a single partition keeps that order within
+ * each section.
+ */
+@Composable
+private fun SectionedNotificationList(
+    items: List<Notification>,
+    isLoadingMore: Boolean,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    onOpen: (Notification) -> Unit,
+) {
+    val (today, earlier) = items.partition { isToday(it.createdAt) }
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        if (today.isNotEmpty()) {
+            item(key = "section-today") { SectionHeader("Today") }
+        }
+        items(today, key = { it.id }) { notification ->
+            NotificationRow(notification = notification, onClick = { onOpen(notification) })
+        }
+        if (earlier.isNotEmpty()) {
+            item(key = "section-earlier") { SectionHeader("Earlier") }
+        }
+        items(earlier, key = { it.id }) { notification ->
+            NotificationRow(notification = notification, onClick = { onOpen(notification) })
+        }
+
+        if (isLoadingMore) {
+            item { LoadingBlock() }
+        }
+    }
+}
+
+/** Section label — the muted TODAY/EARLIER dividers from the Figma frame. */
+@Composable
+private fun SectionHeader(label: String) {
+    Text(
+        text = label.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = UsTheme.extended.textMuted,
+        modifier = Modifier.padding(
+            horizontal = UsTheme.spacing.pageHorizontal,
+            vertical = UsTheme.spacing.m,
+        ),
+    )
+}
+
+/** Whether an ISO timestamp falls on the device's current calendar day. */
+private fun isToday(isoInstant: String): Boolean = runCatching {
+    java.time.Instant.parse(isoInstant)
+        .atZone(java.time.ZoneId.systemDefault())
+        .toLocalDate() == java.time.LocalDate.now()
+}.getOrDefault(false)
+
+// Figma notifications row (4:854): actor avatar, sentence + relative time,
+// unread dot on the trailing edge. A missed call sits on a red-tinted band
+// with a phone badge instead of an avatar — the one row type whose absence
+// costs the user something, so it must not look like one more like.
 @Composable
 private fun NotificationRow(notification: Notification, onClick: () -> Unit) {
     val text = notification.describe()
+    val missedCall = notification.kind == NotificationKind.MissedCall
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
+            .then(
+                if (missedCall) Modifier.background(MISSED_CALL_BAND) else Modifier,
+            )
             .padding(
                 horizontal = UsTheme.spacing.pageHorizontal,
-                vertical = UsTheme.spacing.m,
+                vertical = UsTheme.spacing.l,
             )
             // ONE node to a screen reader, carrying the sentence and the
             // unread state. Without merging, the dot and the text are read as
@@ -181,10 +241,42 @@ private fun NotificationRow(notification: Notification, onClick: () -> Unit) {
                 contentDescription = if (notification.isRead) text else "Unread. $text"
             },
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
+        if (missedCall) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(ROW_BADGE)
+                    .clip(CircleShape)
+                    .background(MISSED_CALL_BAND),
+            ) {
+                Icon(
+                    imageVector = UsIcons.Phone,
+                    contentDescription = null,
+                    tint = UsTheme.extended.liveRed,
+                    modifier = Modifier.size(ROW_BADGE_GLYPH),
+                )
+            }
+        } else {
+            // No name to render yet (actor hydration is Slice D follow-up),
+            // but the seed keeps one stable colour per actor.
+            UsAvatar(name = "", size = UsAvatarSize.Medium, seed = notification.actorUserId)
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (missedCall) UsTheme.extended.liveRed else UsTheme.extended.textPrimary,
+            )
+            Text(
+                text = formatRelativeTime(notification.createdAt),
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+            )
+        }
         // The unread mark is a dot, not bold text: weight is already used for
-        // the actor's name and a second meaning for it would be ambiguous.
+        // the sentence and a second meaning for it would be ambiguous.
         Box(
             modifier = Modifier
                 .size(UNREAD_DOT)
@@ -196,12 +288,6 @@ private fun NotificationRow(notification: Notification, onClick: () -> Unit) {
                         Modifier.background(MaterialTheme.colorScheme.primary)
                     },
                 ),
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = UsTheme.extended.textPrimary,
-            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -239,6 +325,7 @@ internal fun Notification.describe(): String = when (kind) {
     NotificationKind.ConnectionRequest -> "You have a new connection request"
     NotificationKind.ConnectionAccepted -> "Your connection request was accepted"
     NotificationKind.NewSubscriber -> "You have a new subscriber"
+    NotificationKind.MissedCall -> "Missed call"
     is NotificationKind.Unknown -> "You have a new notification"
 }
 
@@ -246,6 +333,12 @@ internal fun Notification.describe(): String = when (kind) {
 private const val LOAD_MORE_THRESHOLD = 3
 
 private val UNREAD_DOT = 8.dp
+private val ROW_BADGE = 44.dp
+private val ROW_BADGE_GLYPH = 20.dp
+
+/** The red-tinted band and badge fill behind a missed call. */
+@Suppress("MagicNumber")
+private val MISSED_CALL_BAND = Color(0x1FFF3B30)
 
 /**
  * The inbox top bar.
