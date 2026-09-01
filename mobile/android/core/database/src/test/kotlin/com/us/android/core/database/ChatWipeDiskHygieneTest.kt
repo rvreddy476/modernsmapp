@@ -200,6 +200,6 @@ class ChatWipeDiskHygieneTest {
     private companion object {
         const val TEST_DB = "chat-wipe-hygiene.db"
         const val SENTINEL = "SCRUB_SENTINEL_do_not_survive_logout_7f3a"
-        const val SCHEMA_CURRENT = 5
+        const val SCHEMA_CURRENT = 6
     }
 }

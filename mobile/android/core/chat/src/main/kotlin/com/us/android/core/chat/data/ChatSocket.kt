@@ -293,6 +293,10 @@ private fun parseMessageFrame(type: String, payload: JsonObject): ChatSocketEven
             // produced the image. Blank is normalised to null so a text
             // message never claims an empty attachment.
             mediaId = payload.str("media_id")?.takeIf { it.isNotBlank() },
+            // The quote rides the frame too — a realtime reply renders whole.
+            replyToId = payload.str("reply_to_id")?.takeIf { it.isNotBlank() },
+            replyToPreview = payload.str("reply_to_preview")?.takeIf { it.isNotBlank() },
+            replyToSenderId = payload.str("reply_to_sender_id")?.takeIf { it.isNotBlank() },
             createdAt = payload.str("created_at").orEmpty(),
         ),
     )

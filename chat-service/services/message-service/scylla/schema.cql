@@ -13,6 +13,11 @@ CREATE TABLE IF NOT EXISTS chatservice.messages (
     type TEXT,
     text TEXT,
     media_id UUID,
+    -- Quoted-reply snapshot, denormalised at send time. Existing clusters:
+    -- ALTER TABLE chatservice.messages ADD (reply_to_id UUID, reply_to_preview TEXT, reply_to_sender_id UUID);
+    reply_to_id UUID,
+    reply_to_preview TEXT,
+    reply_to_sender_id UUID,
     is_deleted BOOLEAN,
     created_at TIMESTAMP,
     PRIMARY KEY ((conversation_id, bucket), ts, msg_id)

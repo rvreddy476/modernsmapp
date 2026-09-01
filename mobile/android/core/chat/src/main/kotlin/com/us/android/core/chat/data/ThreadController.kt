@@ -128,6 +128,9 @@ class ThreadController(
      * before the roster does and the rows would otherwise stay anonymous until
      * the next refresh.
      */
+    /** The roster name for [userId], for labelling a quoted reply's author. */
+    fun memberName(userId: String): String? = memberNames[userId]
+
     fun setMembers(members: List<ConversationMember>): ThreadUiState {
         memberNames = members
             .filter { it.displayName.isNotBlank() }

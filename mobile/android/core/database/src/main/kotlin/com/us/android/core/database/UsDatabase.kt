@@ -76,7 +76,7 @@ interface RemoteKeyDao {
         ChatMessageEntity::class,
         ChatPendingSendEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class UsDatabase : RoomDatabase() {

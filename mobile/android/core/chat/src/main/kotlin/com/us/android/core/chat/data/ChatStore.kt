@@ -305,6 +305,7 @@ class ChatStore @Inject constructor(
                     conversationId = it.conversationId,
                     text = it.text,
                     mediaId = it.mediaId,
+                    replyToPreview = it.replyToPreview,
                     createdAtMillis = it.createdAtMillis,
                     failed = it.failed,
                 )
@@ -328,6 +329,7 @@ class ChatStore @Inject constructor(
         conversationId: String,
         text: String,
         mediaId: String? = null,
+        replyTo: ReplyRef? = null,
         lease: Long? = null,
     ): String? {
         val key = ChatRepository.newIdempotencyKey()
@@ -338,6 +340,9 @@ class ChatStore @Inject constructor(
                     conversationId = conversationId,
                     text = text,
                     mediaId = mediaId,
+                    replyToId = replyTo?.messageId,
+                    replyToPreview = replyTo?.preview,
+                    replyToSenderId = replyTo?.senderId,
                     createdAtMillis = System.currentTimeMillis(),
                     attempts = 0,
                     failed = false,
@@ -417,10 +422,17 @@ class ChatStore @Inject constructor(
         guardedWrite(generation) { dao.recordAttempt(row.idempotencyKey) }
             ?: return SendAttempt.Halted
         val mediaId = row.mediaId
+        val replyTo = row.replyToId?.let {
+            ReplyRef(
+                messageId = it,
+                preview = row.replyToPreview.orEmpty(),
+                senderId = row.replyToSenderId.orEmpty(),
+            )
+        }
         val result = if (mediaId != null) {
-            repository.sendMedia(row.conversationId, mediaId, row.idempotencyKey, row.text)
+            repository.sendMedia(row.conversationId, mediaId, row.idempotencyKey, row.text, replyTo)
         } else {
-            repository.send(row.conversationId, row.text, row.idempotencyKey)
+            repository.send(row.conversationId, row.text, row.idempotencyKey, replyTo)
         }
         return when (result) {
             is com.us.android.core.common.result.AppResult.Success -> {
@@ -550,6 +562,9 @@ class ChatStore @Inject constructor(
         senderDisplayName = senderDisplayName,
         text = text,
         mediaId = mediaId,
+        replyToId = replyToId,
+        replyToPreview = replyToPreview,
+        replyToSenderId = replyToSenderId,
         createdAt = createdAt,
     )
 
@@ -560,6 +575,9 @@ class ChatStore @Inject constructor(
         senderDisplayName = senderDisplayName,
         text = text,
         mediaId = mediaId,
+        replyToId = replyToId,
+        replyToPreview = replyToPreview,
+        replyToSenderId = replyToSenderId,
         createdAt = createdAt,
     )
 
@@ -627,8 +645,12 @@ sealed interface DurableSendResult {
  * truthfully. Top-level over [ChatStore.enqueueSend] so the quarantined
  * journey is testable without the Android ViewModel shell.
  */
-suspend fun ChatStore.sendDurably(conversationId: String, text: String): DurableSendResult {
-    val key = enqueueSend(conversationId, text)
+suspend fun ChatStore.sendDurably(
+    conversationId: String,
+    text: String,
+    replyTo: ReplyRef? = null,
+): DurableSendResult {
+    val key = enqueueSend(conversationId, text, replyTo = replyTo)
     return if (key == null) DurableSendResult.ChatUnavailable else DurableSendResult.Queued(key)
 }
 
@@ -638,6 +660,7 @@ data class PendingSend(
     val conversationId: String,
     val text: String,
     val mediaId: String?,
+    val replyToPreview: String? = null,
     val createdAtMillis: Long,
     val failed: Boolean,
 )

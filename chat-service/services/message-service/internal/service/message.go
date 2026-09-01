@@ -152,6 +152,9 @@ type MessageResponse struct {
 	Type              string            `json:"type"`
 	Text              string            `json:"text,omitempty"`
 	MediaID           *uuid.UUID        `json:"media_id,omitempty"`
+	ReplyToID         *uuid.UUID        `json:"reply_to_id,omitempty"`
+	ReplyToPreview    string            `json:"reply_to_preview,omitempty"`
+	ReplyToSenderID   *uuid.UUID        `json:"reply_to_sender_id,omitempty"`
 	Reactions         []ReactionSummary `json:"reactions,omitempty"`
 	CreatedAt         time.Time         `json:"created_at"`
 }
@@ -809,7 +812,38 @@ func (s *Service) UpdateTitle(ctx context.Context, userID, conversationID uuid.U
 
 // --- Messages ---
 
-func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, idempotencyKey string) (*MessageResponse, error) {
+// ReplyRef is the sender-supplied quote: which message is being answered and
+// a display snapshot of it. The preview is DENORMALISED — it is what the
+// sender's client showed them, stored verbatim so the quote renders without
+// a second lookup. It is display data, not evidence.
+type ReplyRef struct {
+	ID       uuid.UUID
+	Preview  string
+	SenderID uuid.UUID
+}
+
+func replyRefID(r *ReplyRef) *uuid.UUID {
+	if r == nil {
+		return nil
+	}
+	return &r.ID
+}
+
+func replyRefPreview(r *ReplyRef) string {
+	if r == nil {
+		return ""
+	}
+	return r.Preview
+}
+
+func replyRefSenderID(r *ReplyRef) *uuid.UUID {
+	if r == nil {
+		return nil
+	}
+	return &r.SenderID
+}
+
+func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, replyTo *ReplyRef, idempotencyKey string) (*MessageResponse, error) {
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return nil, ErrIdempotencyKeyRequired
 	}
@@ -874,7 +908,11 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		Type           string     `json:"type"`
 		Text           string     `json:"text"`
 		MediaID        *uuid.UUID `json:"media_id,omitempty"`
+		ReplyToID      *uuid.UUID `json:"reply_to_id,omitempty"`
 	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID}
+	if replyTo != nil {
+		req.ReplyToID = &replyTo.ID
+	}
 	requestHash, err := hashRequestPayload(req)
 	if err != nil {
 		return nil, err
@@ -973,6 +1011,9 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			RequestReceiverID: requestReceiverID,
 			SourceApp:         sourceApp,
 			MatchID:           matchID,
+			ReplyToID:         replyRefID(replyTo),
+			ReplyToPreview:    replyRefPreview(replyTo),
+			ReplyToSenderID:   replyRefSenderID(replyTo),
 		})
 		if err != nil {
 			if errors.Is(err, postgres.ErrDeliveryIntentConflict) {
@@ -1027,6 +1068,11 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 				"text":            text,
 				"media_id":        mediaID,
 				"created_at":      now,
+			}
+			if intent.ReplyToID != nil {
+				msgBody["reply_to_id"] = intent.ReplyToID
+				msgBody["reply_to_preview"] = intent.ReplyToPreview
+				msgBody["reply_to_sender_id"] = intent.ReplyToSenderID
 			}
 			if sourceAppMeta != "" {
 				msgBody["source_app"] = sourceAppMeta
@@ -1084,15 +1130,18 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		}()
 
 		return &MessageResponse{
-			ConversationID: conversationID,
-			Bucket:         bucket,
-			Ts:             now,
-			MsgID:          msgID,
-			SenderID:       userID,
-			Type:           msgType,
-			Text:           text,
-			MediaID:        mediaID,
-			CreatedAt:      now,
+			ConversationID:  conversationID,
+			Bucket:          bucket,
+			Ts:              now,
+			MsgID:           msgID,
+			SenderID:        userID,
+			Type:            msgType,
+			Text:            text,
+			MediaID:         mediaID,
+			ReplyToID:       intent.ReplyToID,
+			ReplyToPreview:  intent.ReplyToPreview,
+			ReplyToSenderID: intent.ReplyToSenderID,
+			CreatedAt:       now,
 		}, nil
 	})
 }
@@ -1147,15 +1196,18 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	out := make([]MessageResponse, 0, len(messages))
 	for _, m := range messages {
 		resp := MessageResponse{
-			ConversationID: m.ConversationID,
-			Bucket:         m.Bucket,
-			Ts:             m.Ts,
-			MsgID:          m.MsgID,
-			SenderID:       m.SenderID,
-			Type:           m.Type,
-			Text:           m.Text,
-			MediaID:        m.MediaID,
-			CreatedAt:      m.CreatedAt,
+			ConversationID:  m.ConversationID,
+			Bucket:          m.Bucket,
+			Ts:              m.Ts,
+			MsgID:           m.MsgID,
+			SenderID:        m.SenderID,
+			Type:            m.Type,
+			Text:            m.Text,
+			MediaID:         m.MediaID,
+			ReplyToID:       m.ReplyToID,
+			ReplyToPreview:  m.ReplyToPreview,
+			ReplyToSenderID: m.ReplyToSenderID,
+			CreatedAt:       m.CreatedAt,
 		}
 		if p, ok := senderProfiles[m.SenderID]; ok {
 			resp.SenderDisplayName = p.DisplayName

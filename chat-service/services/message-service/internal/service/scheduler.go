@@ -30,7 +30,7 @@ func (s *Service) processScheduledMessages(ctx context.Context) {
 	}
 	for _, msg := range msgs {
 		_, sendErr := s.SendMessage(ctx, msg.SenderID, msg.ConversationID, msg.Type,
-			derefStr(msg.Content), msg.MediaID, "scheduled-"+msg.ID.String())
+			derefStr(msg.Content), msg.MediaID, nil, "scheduled-"+msg.ID.String())
 		if sendErr != nil {
 			if err := s.extrasStore().RecordScheduledMessageFailure(ctx, msg.ID, sendErr.Error(), scheduledMessageMaxAttempts); err != nil {
 				s.log.Error("failed to record scheduled message retry", "message_id", msg.ID, "err", err)

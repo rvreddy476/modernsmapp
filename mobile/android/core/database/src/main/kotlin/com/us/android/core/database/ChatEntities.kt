@@ -63,6 +63,10 @@ data class ChatMessageEntity(
     val senderDisplayName: String?,
     val text: String,
     val mediaId: String?,
+    // Quoted-reply snapshot (schema v6): renders the quote offline.
+    val replyToId: String? = null,
+    val replyToPreview: String? = null,
+    val replyToSenderId: String? = null,
     val createdAt: String,
 )
 
@@ -73,6 +77,10 @@ data class ChatPendingSendEntity(
     val conversationId: String,
     val text: String,
     val mediaId: String?,
+    // Quoted-reply intent (schema v6): survives process death with the send.
+    val replyToId: String? = null,
+    val replyToPreview: String? = null,
+    val replyToSenderId: String? = null,
     val createdAtMillis: Long,
     val attempts: Int,
     /** Set when retries exhausted; the row waits for an explicit user retry. */

@@ -84,7 +84,7 @@ func TestSendFailsClosedOnUnknownSenderPolicy(t *testing.T) {
 	// No policy row for the sender and no identity URL: Known=false.
 	svc := newGovernanceService(f)
 
-	_, err := svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, "p01-key-1")
+	_, err := svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, nil, "p01-key-1")
 	if !errors.Is(err, ErrMessagingNotAllowed) {
 		t.Fatalf("unknown sender policy must deny the send, got %v", err)
 	}
@@ -112,12 +112,12 @@ func TestSendFailsClosedOnStaleAndUnknownRecipientPolicy(t *testing.T) {
 		RefreshedAt:            time.Now().Add(-16 * time.Minute),
 	}
 	svc := newGovernanceService(f)
-	_, err := svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, "p01-key-2")
+	_, err := svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, nil, "p01-key-2")
 	if !errors.Is(err, ErrMessagingNotAllowed) {
 		t.Fatalf("policy row older than the stale grace must deny the send, got %v", err)
 	}
 	f.policies[sender].RefreshedAt = time.Now().Add(-25 * time.Hour)
-	_, err = svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, "p01-key-2b")
+	_, err = svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, nil, "p01-key-2b")
 	if !errors.Is(err, ErrMessagingNotAllowed) {
 		t.Fatalf("an ancient policy row must deny the send, got %v", err)
 	}
@@ -127,7 +127,7 @@ func TestSendFailsClosedOnStaleAndUnknownRecipientPolicy(t *testing.T) {
 	// deny the direct send.
 	delete(f.policies, recipient)
 	f.policies[sender].RefreshedAt = time.Now().Add(-6 * time.Minute)
-	_, err = svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, "p01-key-3")
+	_, err = svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, nil, "p01-key-3")
 	if !errors.Is(err, ErrMessagingNotAllowed) {
 		t.Fatalf("unknown recipient policy must deny the direct send, got %v", err)
 	}
@@ -139,7 +139,7 @@ func TestSendFailsClosedOnStaleAndUnknownRecipientPolicy(t *testing.T) {
 	f.freshPolicy(recipient, false)
 	func() {
 		defer func() { _ = recover() }() // absent downstream stores may panic; the gate is what's under test
-		_, err = svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, "p01-key-4")
+		_, err = svc.SendMessage(context.Background(), sender, convID, "text", "hi", nil, nil, "p01-key-4")
 		if errors.Is(err, ErrMessagingNotAllowed) {
 			t.Fatal("known unpaused policies must not be denied by the policy gate")
 		}

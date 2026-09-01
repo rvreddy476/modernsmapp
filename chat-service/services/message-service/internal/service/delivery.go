@@ -86,8 +86,11 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		SenderID:       intent.SenderID,
 		Type:           intent.MessageType,
 		Text:           intent.MessageText,
-		MediaID:        intent.MediaID,
-		CreatedAt:      intent.MessageTS,
+		MediaID:         intent.MediaID,
+		ReplyToID:       intent.ReplyToID,
+		ReplyToPreview:  intent.ReplyToPreview,
+		ReplyToSenderID: intent.ReplyToSenderID,
+		CreatedAt:       intent.MessageTS,
 	}
 	if err := s.msgStore.CreateMessage(ctx, message); err != nil {
 		return fmt.Errorf("persist message: %w", err)

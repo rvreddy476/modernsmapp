@@ -98,9 +98,19 @@ class ChatRepository @Inject constructor(
         conversationId: String,
         text: String,
         idempotencyKey: String,
+        replyTo: ReplyRef? = null,
     ): AppResult<Message> =
         apiCall(errorMapper) {
-            api.send(conversationId, idempotencyKey, SendMessageRequest(text = text))
+            api.send(
+                conversationId,
+                idempotencyKey,
+                SendMessageRequest(
+                    text = text,
+                    replyToId = replyTo?.messageId,
+                    replyToPreview = replyTo?.preview,
+                    replyToSenderId = replyTo?.senderId,
+                ),
+            )
         }.mapValue { it.toDomain() }
 
     suspend fun markRead(conversationId: String, messageId: String): AppResult<Unit> =
@@ -128,12 +138,20 @@ class ChatRepository @Inject constructor(
         mediaId: String,
         idempotencyKey: String,
         caption: String = "",
+        replyTo: ReplyRef? = null,
     ): AppResult<Message> =
         apiCall(errorMapper) {
             api.send(
                 conversationId,
                 idempotencyKey,
-                SendMessageRequest(type = MEDIA_MESSAGE, text = caption, mediaId = mediaId),
+                SendMessageRequest(
+                    type = MEDIA_MESSAGE,
+                    text = caption,
+                    mediaId = mediaId,
+                    replyToId = replyTo?.messageId,
+                    replyToPreview = replyTo?.preview,
+                    replyToSenderId = replyTo?.senderId,
+                ),
             )
         }.mapValue { it.toDomain() }
 
@@ -315,6 +333,16 @@ data class ConversationMember(
     val displayName: String,
 )
 
+/**
+ * The quote a reply carries: which message, its display snapshot, its sender.
+ * Built by the thread from the message the user long-pressed.
+ */
+data class ReplyRef(
+    val messageId: String,
+    val preview: String,
+    val senderId: String,
+)
+
 data class Message(
     val id: String,
     val conversationId: String,
@@ -324,6 +352,14 @@ data class Message(
     val createdAt: String,
     /** Set for media messages — resolved to a URL by the media layer. */
     val mediaId: String? = null,
+    /**
+     * Quoted reply: the id of the message this one answers plus the display
+     * snapshot stored at send time. A quote renders from these alone — the
+     * original may be outside the loaded page.
+     */
+    val replyToId: String? = null,
+    val replyToPreview: String? = null,
+    val replyToSenderId: String? = null,
     /** True while the message is shown optimistically, before the server ack. */
     val pending: Boolean = false,
     /** Set when the send failed and the row is offered for retry. */
@@ -374,6 +410,9 @@ private fun MessageDto.toDomain() = Message(
     senderDisplayName = senderDisplayName,
     text = text,
     mediaId = mediaId,
+    replyToId = replyToId,
+    replyToPreview = replyToPreview,
+    replyToSenderId = replyToSenderId,
     createdAt = createdAt.ifBlank { ts },
     bucket = bucket,
     ts = ts,

@@ -314,6 +314,14 @@ data class SendMessageRequest(
      * for text, so every existing text send stays byte-identical.
      */
     @SerialName("media_id") val mediaId: String? = null,
+    /**
+     * Quoted reply: the id of the message being answered plus a display
+     * snapshot of it, so the quote renders without a second lookup. Null and
+     * omitted for a plain send — existing sends stay byte-identical.
+     */
+    @SerialName("reply_to_id") val replyToId: String? = null,
+    @SerialName("reply_to_preview") val replyToPreview: String? = null,
+    @SerialName("reply_to_sender_id") val replyToSenderId: String? = null,
 )
 
 /** Field is `message_id`, not `last_read_message_id`. */
@@ -443,6 +451,10 @@ data class MessageDto(
     val text: String = "",
     /** Present on media messages: the attachment's media id. */
     @SerialName("media_id") val mediaId: String? = null,
+    /** Quoted-reply snapshot, present when this message answers another. */
+    @SerialName("reply_to_id") val replyToId: String? = null,
+    @SerialName("reply_to_preview") val replyToPreview: String? = null,
+    @SerialName("reply_to_sender_id") val replyToSenderId: String? = null,
     /** Reaction summaries, present on the LIST response when any exist. */
     val reactions: List<ReactionSummaryDto> = emptyList(),
     /**

@@ -413,3 +413,9 @@ CREATE TABLE IF NOT EXISTS chat.preview_repair_obligations (
 );
 CREATE INDEX IF NOT EXISTS idx_preview_repair_due
     ON chat.preview_repair_obligations(next_attempt_at);
+
+-- Quoted replies (2026-09-02): the durable intent carries the sender's quote
+-- snapshot so repair replays it into Scylla exactly as the live path would.
+ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS reply_to_id UUID;
+ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS reply_to_preview TEXT NOT NULL DEFAULT '';
+ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS reply_to_sender_id UUID;

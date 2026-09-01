@@ -26,6 +26,11 @@ type Message struct {
 	Type           string     `json:"type"`
 	Text           string     `json:"text,omitempty"`
 	MediaID        *uuid.UUID `json:"media_id,omitempty"`
+	// Quoted-reply snapshot, denormalised at send time so a quote renders
+	// without a second lookup — the original may be outside the loaded page.
+	ReplyToID       *uuid.UUID `json:"reply_to_id,omitempty"`
+	ReplyToPreview  string     `json:"reply_to_preview,omitempty"`
+	ReplyToSenderID *uuid.UUID `json:"reply_to_sender_id,omitempty"`
 	IsDeleted      bool       `json:"is_deleted"`
 	CreatedAt      time.Time  `json:"created_at"`
 }
@@ -45,9 +50,12 @@ type scanTarget struct {
 	SenderID       gocql.UUID
 	Type           string
 	Text           string
-	MediaID        *gocql.UUID
-	IsDeleted      bool
-	CreatedAt      time.Time
+	MediaID         *gocql.UUID
+	ReplyToID       *gocql.UUID
+	ReplyToPreview  string
+	ReplyToSenderID *gocql.UUID
+	IsDeleted       bool
+	CreatedAt       time.Time
 }
 
 func (t *scanTarget) toMessage() Message {
@@ -65,6 +73,15 @@ func (t *scanTarget) toMessage() Message {
 	if t.MediaID != nil {
 		id := uuidFromGocql(*t.MediaID)
 		m.MediaID = &id
+	}
+	if t.ReplyToID != nil {
+		id := uuidFromGocql(*t.ReplyToID)
+		m.ReplyToID = &id
+		m.ReplyToPreview = t.ReplyToPreview
+	}
+	if t.ReplyToSenderID != nil {
+		id := uuidFromGocql(*t.ReplyToSenderID)
+		m.ReplyToSenderID = &id
 	}
 	return m
 }
@@ -106,21 +123,21 @@ func PrevBucket(bucket string) string {
 // CreateMessage writes a message to the bucketed messages table.
 func (s *MessageStore) CreateMessage(ctx context.Context, msg *Message) error {
 	return s.session.Query(`
-		INSERT INTO messages (conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, is_deleted, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, uuidToGocql(msg.ConversationID), msg.Bucket, msg.Ts, uuidToGocql(msg.MsgID), uuidToGocql(msg.SenderID), msg.Type, msg.Text, uuidPtrToGocql(msg.MediaID), msg.IsDeleted, msg.CreatedAt).
+		INSERT INTO messages (conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, uuidToGocql(msg.ConversationID), msg.Bucket, msg.Ts, uuidToGocql(msg.MsgID), uuidToGocql(msg.SenderID), msg.Type, msg.Text, uuidPtrToGocql(msg.MediaID), uuidPtrToGocql(msg.ReplyToID), msg.ReplyToPreview, uuidPtrToGocql(msg.ReplyToSenderID), msg.IsDeleted, msg.CreatedAt).
 		WithContext(ctx).Exec()
 }
 
 func (s *MessageStore) GetMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) (*Message, error) {
 	var t scanTarget
 	err := s.session.Query(`
-		SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, is_deleted, created_at
+		SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, created_at
 		FROM messages
 		WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?
 		LIMIT 1
 	`, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).WithContext(ctx).
-		Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.IsDeleted, &t.CreatedAt)
+		Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.IsDeleted, &t.CreatedAt)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil, nil
@@ -153,14 +170,14 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 		var q *gocql.Query
 		if cursor != nil && i == 0 {
 			q = s.session.Query(`
-				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, is_deleted, created_at
+				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ? AND (ts, msg_id) < (?, ?)
 				LIMIT ?
 			`, convGocql, bucket, cursor.Ts, uuidToGocql(cursor.MsgID), remaining)
 		} else {
 			q = s.session.Query(`
-				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, is_deleted, created_at
+				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, is_deleted, created_at
 				FROM messages
 				WHERE conversation_id = ? AND bucket = ?
 				LIMIT ?
@@ -169,7 +186,7 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 
 		iter := q.WithContext(ctx).Iter()
 		var t scanTarget
-		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.IsDeleted, &t.CreatedAt) {
+		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.IsDeleted, &t.CreatedAt) {
 			if !t.IsDeleted {
 				messages = append(messages, t.toMessage())
 				remaining--

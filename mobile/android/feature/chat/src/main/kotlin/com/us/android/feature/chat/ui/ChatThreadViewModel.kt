@@ -12,6 +12,7 @@ import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.DurableSendResult
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
+import com.us.android.core.chat.data.ReplyRef
 import com.us.android.core.chat.data.TYPING_TTL_MILLIS
 import com.us.android.core.chat.data.ThreadController
 import com.us.android.core.chat.data.ThreadUiState
@@ -52,6 +53,8 @@ data class ThreadRenderState(
      */
     val staged: List<StagedAttachment> = emptyList(),
     val attachmentError: String? = null,
+    /** The message the next send answers; a banner on the composer until sent. */
+    val replyingTo: Message? = null,
     /** The signed-in user — own messages align right and carry send state. */
     val viewerId: String = "",
     /** The loaded conversation's display title (deep links arrive without one). */
@@ -209,22 +212,24 @@ class ChatThreadViewModel @Inject constructor(
         val draftAtSend = _state.value.thread.draft
         val text = draftAtSend.trim()
         if (!text.isValidMessage()) return
+        val replyTo = _state.value.replyingTo?.toReplyRef()
         _state.value = _state.value.copy(sendInFlight = true)
         viewModelScope.launch {
             try {
-                when (store.sendDurably(conversationId, text)) {
+                when (store.sendDurably(conversationId, text, replyTo)) {
                     is DurableSendResult.Queued -> {
                         val current = _state.value
                         _state.value = if (current.thread.draft == draftAtSend) {
                             current.copy(
                                 thread = controller.onDraftChange(""),
                                 sendUnavailable = false,
+                                replyingTo = null,
                             )
                         } else {
                             // The user typed while the enqueue was in
                             // flight: the queued revision is on its way,
                             // the NEWER draft is preserved untouched.
-                            current.copy(sendUnavailable = false)
+                            current.copy(sendUnavailable = false, replyingTo = null)
                         }
                     }
                     DurableSendResult.ChatUnavailable -> _state.value = _state.value.copy(
@@ -259,6 +264,7 @@ class ChatThreadViewModel @Inject constructor(
         attachmentJob = viewModelScope.launch {
             val draftAtSend = _state.value.thread.draft
             val caption = draftAtSend.trim()
+            val replyTo = _state.value.replyingTo?.toReplyRef()
             _state.value = _state.value.copy(
                 sendInFlight = true,
                 attachmentError = null,
@@ -277,6 +283,9 @@ class ChatThreadViewModel @Inject constructor(
                             conversationId,
                             text = if (captionUsed) "" else caption,
                             mediaId = uploaded.data,
+                            // The quote rides the first photo, same as the
+                            // caption — one reply, not one per photo.
+                            replyTo = if (captionUsed) null else replyTo,
                             lease = lease,
                         )
                         if (queued == null) refused += item.uri else captionUsed = true
@@ -303,6 +312,7 @@ class ChatThreadViewModel @Inject constructor(
                 .map { it.copy(uploading = false, failed = true) }
             state.copy(
                 staged = remaining,
+                replyingTo = if (captionUsed) null else state.replyingTo,
                 attachmentError = if (remaining.isEmpty()) {
                     null
                 } else {
@@ -317,6 +327,28 @@ class ChatThreadViewModel @Inject constructor(
                 },
             )
         }
+    }
+
+    /** Arms the composer to answer [message]; the banner shows until sent. */
+    fun startReply(message: Message) = _state.update { it.copy(replyingTo = message) }
+
+    fun cancelReply() = _state.update { it.copy(replyingTo = null) }
+
+    /**
+     * The wire quote for a message: its id plus the display snapshot. A photo
+     * with no caption quotes as "Photo" — the preview must say something.
+     */
+    private fun Message.toReplyRef() = ReplyRef(
+        messageId = id,
+        preview = text.ifBlank { if (mediaId != null) "Photo" else "" },
+        senderId = senderId,
+    )
+
+    /** The roster name for a quoted author — "You" when it is the viewer. */
+    fun quoteAuthorName(userId: String?): String = when {
+        userId.isNullOrBlank() -> ""
+        userId == viewerId -> "You"
+        else -> controller.memberName(userId).orEmpty()
     }
 
     /**

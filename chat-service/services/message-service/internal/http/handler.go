@@ -26,7 +26,7 @@ type ChatService interface {
 	AddMember(ctx context.Context, userID, conversationID, targetUserID uuid.UUID) error
 	RemoveMember(ctx context.Context, userID, conversationID, targetUserID uuid.UUID) error
 	UpdateTitle(ctx context.Context, userID, conversationID uuid.UUID, title string) error
-	SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, idempotencyKey string) (*service.MessageResponse, error)
+	SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, replyTo *service.ReplyRef, idempotencyKey string) (*service.MessageResponse, error)
 	GetMessages(ctx context.Context, userID, conversationID uuid.UUID, cursor *scylla.MessageCursor, limit int) ([]service.MessageResponse, *scylla.MessageCursor, error)
 	DeleteMessage(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time) error
 	ToggleReaction(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time, emoji string) (*service.ToggleReactionResponse, error)
@@ -604,10 +604,19 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 
 // --- Messages ---
 
+// replyPreviewMaxRunes bounds the stored quote snapshot; longer input is
+// truncated, not rejected — the preview is display data.
+const replyPreviewMaxRunes = 140
+
 type SendMessageRequest struct {
 	Type    string     `json:"type" binding:"required,oneof=text media"`
 	Text    string     `json:"text" binding:"max=2000"`
 	MediaID *uuid.UUID `json:"media_id"`
+	// Quoted reply. The preview is a display snapshot of the quoted message
+	// as the sender saw it; the server truncates rather than rejects.
+	ReplyToID       *uuid.UUID `json:"reply_to_id"`
+	ReplyToPreview  string     `json:"reply_to_preview" binding:"max=500"`
+	ReplyToSenderID *uuid.UUID `json:"reply_to_sender_id"`
 }
 
 func (h *Handler) SendMessage(c *gin.Context) {
@@ -636,7 +645,19 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	}
 	idempotencyKey := c.GetHeader("Idempotency-Key")
 
-	msg, err := h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, idempotencyKey)
+	var replyTo *service.ReplyRef
+	if req.ReplyToID != nil {
+		preview := req.ReplyToPreview
+		if runes := []rune(preview); len(runes) > replyPreviewMaxRunes {
+			preview = string(runes[:replyPreviewMaxRunes])
+		}
+		replyTo = &service.ReplyRef{ID: *req.ReplyToID, Preview: preview}
+		if req.ReplyToSenderID != nil {
+			replyTo.SenderID = *req.ReplyToSenderID
+		}
+	}
+
+	msg, err := h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, replyTo, idempotencyKey)
 	if err != nil {
 		if handled := writeIdempotencyError(c, err); handled {
 			return

@@ -134,8 +134,26 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+/**
+ * Quoted replies. Three nullable columns on each chat message surface: the
+ * cached thread rows (so a quote renders offline) and the durable outbox (so
+ * a reply queued before process death is still a reply after it).
+ */
+private const val SCHEMA_V5 = 5
+private const val SCHEMA_V6 = 6
+
+val MIGRATION_5_6 = object : Migration(SCHEMA_V5, SCHEMA_V6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        for (table in listOf("chat_message", "chat_pending_send")) {
+            db.execSQL("ALTER TABLE `$table` ADD COLUMN `replyToId` TEXT")
+            db.execSQL("ALTER TABLE `$table` ADD COLUMN `replyToPreview` TEXT")
+            db.execSQL("ALTER TABLE `$table` ADD COLUMN `replyToSenderId` TEXT")
+        }
+    }
+}
+
 val UsDatabaseMigrations: List<Migration> =
-    listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+    listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 
 /**
  * Callbacks the production database builder installs.

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -58,6 +59,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -209,9 +211,11 @@ fun ChatThreadScreen(
                                 showSenderName = (isGroup || render.loadedIsGroup) &&
                                     previousSender != message.senderId,
                                 readByPeer = message.id == state.peerLastReadMessageId,
+                                quoteAuthor = viewModel.quoteAuthorName(message.replyToSenderId),
                                 onReact = { emoji ->
                                     viewModel.toggleReaction(message.id, emoji)
                                 },
+                                onReply = { viewModel.startReply(message) },
                                 onDelete = { viewModel.deleteMessage(message.id) },
                             )
                         }
@@ -220,6 +224,16 @@ fun ChatThreadScreen(
             }
 
             ComposerStatus(render = render, onDismissError = viewModel::dismissAttachmentError)
+
+            render.replyingTo?.let { original ->
+                ReplyBanner(
+                    author = viewModel.quoteAuthorName(original.senderId),
+                    preview = original.text.ifBlank {
+                        if (original.mediaId != null) "Photo" else ""
+                    },
+                    onCancel = viewModel::cancelReply,
+                )
+            }
 
             if (render.staged.isNotEmpty()) {
                 StagedAttachmentRow(
@@ -767,13 +781,15 @@ private fun PendingSendRow(
  * OFFERED on own messages while the server remains the authority on who may.
  */
 @Composable
-@Suppress("LongMethod")
+@Suppress("LongMethod", "LongParameterList")
 private fun MessageRow(
     message: Message,
     isOwn: Boolean,
     showSenderName: Boolean,
     readByPeer: Boolean,
+    quoteAuthor: String,
     onReact: (String) -> Unit,
+    onReply: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -811,7 +827,7 @@ private fun MessageRow(
                     color = senderColor(message.senderId.ifBlank { name }),
                 )
             }
-            MessageBubble(message = message, isOwn = isOwn)
+            MessageBubble(message = message, isOwn = isOwn, quoteAuthor = quoteAuthor)
             if (message.reactions.isNotEmpty()) {
                 // The reaction chip hangs off the bubble's corner (98:363).
                 Text(
@@ -843,15 +859,36 @@ private fun MessageRow(
                 )
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                REACTION_CHOICES.forEach { emoji ->
-                    DropdownMenuItem(
-                        text = { Text(emoji) },
-                        onClick = {
-                            menuOpen = false
-                            onReact(emoji)
-                        },
-                    )
+                // The reaction palette is ONE ROW, the way every messenger
+                // draws it — six items stacked read as a menu of choices to
+                // study, side by side they read as a strip to tap.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                    modifier = Modifier.padding(horizontal = UsTheme.spacing.m),
+                ) {
+                    REACTION_CHOICES.forEach { emoji ->
+                        Text(
+                            text = emoji,
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable {
+                                    menuOpen = false
+                                    onReact(emoji)
+                                }
+                                .padding(UsTheme.spacing.xs)
+                                .semantics { contentDescription = "React $emoji" },
+                        )
+                    }
                 }
+                DropdownMenuItem(
+                    text = { Text("Reply") },
+                    onClick = {
+                        menuOpen = false
+                        onReply()
+                    },
+                    modifier = Modifier.testTag("message-reply"),
+                )
                 if (isOwn) {
                     DropdownMenuItem(
                         text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
@@ -872,7 +909,8 @@ private fun MessageRow(
  * message renders translucent — visibly not yet the server's.
  */
 @Composable
-private fun MessageBubble(message: Message, isOwn: Boolean) {
+@Suppress("CyclomaticComplexMethod")
+private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String = "") {
     val shape = if (isOwn) {
         RoundedCornerShape(
             topStart = BUBBLE_CORNER,
@@ -895,8 +933,10 @@ private fun MessageBubble(message: Message, isOwn: Boolean) {
     // media message therefore carries no bubble colour and no padding — the
     // image, clipped to the bubble's shape, IS the bubble. A caption under
     // one still needs a readable ground, so a media message WITH text keeps
-    // the fill; only the bare photo goes without.
-    val photoOnly = message.mediaId != null && message.text.isBlank()
+    // the fill; only the bare photo goes without — unless it QUOTES another
+    // message, because the quote card needs a ground to sit on.
+    val photoOnly = message.mediaId != null && message.text.isBlank() &&
+        message.replyToId == null
     val bubbleColor = when {
         photoOnly -> Color.Transparent
         isOwn && message.pending -> UsTheme.extended.chatAccent.copy(alpha = PENDING_ALPHA)
@@ -913,6 +953,17 @@ private fun MessageBubble(message: Message, isOwn: Boolean) {
                 vertical = if (photoOnly) 0.dp else UsTheme.spacing.m,
             ),
     ) {
+        // The quote sits INSIDE the bubble, above the answer — a slim card
+        // with the original's author and snapshot, the way every messenger
+        // draws a reply. Rendered from the denormalised fields alone; the
+        // original message may be pages away or deleted.
+        if (message.replyToId != null) {
+            QuoteCard(
+                author = quoteAuthor,
+                preview = message.replyToPreview.orEmpty(),
+                onDarkGround = isOwn || message.text.isBlank(),
+            )
+        }
         message.mediaId?.let { mediaId ->
             AttachmentImage(mediaId = mediaId)
         }
@@ -921,6 +972,108 @@ private fun MessageBubble(message: Message, isOwn: Boolean) {
                 text = message.text,
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (isOwn) Color.White else UsTheme.extended.textPrimary,
+            )
+        }
+    }
+}
+
+/**
+ * The quoted original inside a reply bubble: accent bar, author, snapshot.
+ * A translucent black ground reads on both bubble fills — deep enough on
+ * chat green, a visible step darker on the incoming card.
+ */
+@Composable
+private fun QuoteCard(author: String, preview: String, onDarkGround: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = UsTheme.spacing.s)
+            .clip(RoundedCornerShape(UsTheme.radii.small))
+            .background(QUOTE_GROUND),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(QUOTE_BAR)
+                .height(QUOTE_MIN_HEIGHT)
+                .background(if (onDarkGround) Color.White else UsTheme.extended.chatAccent),
+        )
+        Column(
+            modifier = Modifier.padding(
+                horizontal = UsTheme.spacing.m,
+                vertical = UsTheme.spacing.xs,
+            ),
+        ) {
+            if (author.isNotBlank()) {
+                Text(
+                    text = author,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                )
+            }
+            Text(
+                text = preview.ifBlank { "Message" },
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = QUOTE_TEXT_ALPHA),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * "Replying to …" above the composer — the armed state of a reply, with the
+ * original's snapshot and an × to disarm. Sits where the send it shapes will
+ * happen, not floating over the thread.
+ */
+@Composable
+private fun ReplyBanner(author: String, preview: String, onCancel: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = UsTheme.spacing.pageHorizontal,
+                vertical = UsTheme.spacing.xs,
+            )
+            .clip(RoundedCornerShape(UsTheme.radii.small))
+            .background(UsTheme.extended.bgCardSolid)
+            .testTag("reply-banner"),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(QUOTE_BAR)
+                .height(REPLY_BANNER_HEIGHT)
+                .background(UsTheme.extended.chatAccent),
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = UsTheme.spacing.m),
+        ) {
+            Text(
+                text = if (author.isNotBlank()) "Replying to $author" else "Replying",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.chatAccent,
+                maxLines = 1,
+            )
+            Text(
+                text = preview.ifBlank { "Message" },
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onCancel, modifier = Modifier.testTag("reply-cancel")) {
+            Icon(
+                imageVector = UsIcons.Close,
+                contentDescription = "Cancel reply",
+                tint = UsTheme.extended.textMuted,
+                modifier = Modifier.size(REMOVE_GLYPH),
             )
         }
     }
@@ -987,6 +1140,16 @@ private const val EMOJI_COLUMNS = 8
 private val EMOJI_PANEL_HEIGHT = 220.dp
 
 // ── The Figma conversation language (98:321) ────────────────────────────
+
+// Quoted replies.
+private val QUOTE_BAR = 3.dp
+private val QUOTE_MIN_HEIGHT = 40.dp
+private val REPLY_BANNER_HEIGHT = 44.dp
+private const val QUOTE_TEXT_ALPHA = 0.8f
+
+/** Translucent ground the quote card sits on, inside either bubble fill. */
+@Suppress("MagicNumber")
+private val QUOTE_GROUND = Color(0x33000000)
 
 // Composer attachments, staged and waiting for Send.
 private val STAGED_THUMB = 72.dp
