@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -69,10 +70,10 @@ import java.io.File
  *
  *  - **Text** — the proven composer, exactly as it was, minus every media
  *    control (media has its own rail items now).
- *  - **Image** — Camera or Gallery, then straight into the Post Studio with
- *    the picked photos already imported.
- *  - **Reel** — Camera or Gallery for a video, then title + caption + Post;
- *    upload/transcode/publish states shown honestly.
+ *  - **Image** — the in-app gallery grid (camera as its first tile), then
+ *    straight into the Post Studio with the picked photos already imported.
+ *  - **Reel** — the same grid over videos; one tap picks, then title +
+ *    caption + Post; upload/transcode/publish states shown honestly.
  *  - **Poll** — question + 2–6 options + multi-select, posted as a real
  *    `poll` post.
  */
@@ -96,7 +97,10 @@ fun CreateHubScreen(
                     onClose = onClose,
                     onPublished = onPublished,
                 )
-                CreateSurface.Image -> ImageSourceSurface(onOpenStudio = onOpenStudio)
+                CreateSurface.Image -> ImageSourceSurface(
+                    onClose = onClose,
+                    onOpenStudio = onOpenStudio,
+                )
                 CreateSurface.Reel -> ReelSurface(onClose = onClose, onPublished = onPublished)
                 CreateSurface.Poll -> PollSurface(onClose = onClose, onPublished = onPublished)
             }
@@ -105,51 +109,66 @@ fun CreateHubScreen(
     }
 }
 
-private enum class CreateSurface(val label: String) {
-    Text("TEXT"),
-    Image("IMAGE"),
-    Reel("REEL"),
-    Poll("POLL"),
+/**
+ * Each surface carries its own accent, per the Figma create-post toolbar:
+ * every tool is a different colour so the row reads as a palette of things
+ * to make, not four copies of one control.
+ */
+private enum class CreateSurface(val label: String, val accent: Color) {
+    Text("TEXT", CREATE_TEXT_PURPLE),
+    Image("IMAGE", CREATE_IMAGE_GREEN),
+    Reel("REEL", CREATE_REEL_RED),
+    Poll("POLL", CREATE_POLL_BLUE),
 }
 
-/** The footer rail — the hub's one and only format switch. */
+private val CreateSurface.icon: ImageVector
+    get() = when (this) {
+        CreateSurface.Text -> UsIcons.Type
+        CreateSurface.Image -> UsIcons.Photo
+        CreateSurface.Reel -> UsIcons.Reels
+        CreateSurface.Poll -> UsIcons.Poll
+    }
+
+/**
+ * The footer rail — the hub's one and only format switch.
+ *
+ * Figma create-post toolbar (36:30): a solid card-dark bar with rounded top
+ * corners floating over the canvas, icon-only tools in per-tool accents. The
+ * selected tool sits on a soft chip because unlike the reference — where the
+ * toolbar inserts into one composer — this rail SWITCHES surfaces, and the
+ * current choice has to be visible.
+ */
 @Composable
 private fun CreateRail(selected: CreateSurface, onSelect: (CreateSurface) -> Unit) {
-    Column {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(HAIRLINE)
-                .background(UsTheme.extended.borderSubtle),
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(RAIL_BG)
-                .padding(vertical = UsTheme.spacing.m),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CreateSurface.entries.forEach { candidate ->
-                val active = candidate == selected
-                Text(
-                    text = candidate.label,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-                    letterSpacing = RAIL_LETTER_SPACING,
-                    color = if (active) Color.White else RAIL_DIM,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(UsTheme.radii.full))
-                        .clickable { onSelect(candidate) }
-                        .padding(
-                            horizontal = UsTheme.spacing.m,
-                            vertical = UsTheme.spacing.s,
-                        )
-                        .semantics {
-                            contentDescription = "Create ${candidate.label.lowercase()}" +
-                                if (active) ", selected" else ""
-                        }
-                        .testTag("create-rail-${candidate.label.lowercase()}"),
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(topStart = RAIL_CORNER, topEnd = RAIL_CORNER))
+            .background(UsTheme.extended.bgCardSolid)
+            .padding(horizontal = RAIL_GUTTER, vertical = UsTheme.spacing.xxl),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CreateSurface.entries.forEach { candidate ->
+            val active = candidate == selected
+            Box(
+                modifier = Modifier
+                    .size(RAIL_TOOL)
+                    .clip(RoundedCornerShape(RAIL_TOOL_CORNER))
+                    .background(if (active) RAIL_ACTIVE_BG else Color.Transparent)
+                    .clickable { onSelect(candidate) }
+                    .semantics {
+                        contentDescription = "Create ${candidate.label.lowercase()}" +
+                            if (active) ", selected" else ""
+                    }
+                    .testTag("create-rail-${candidate.label.lowercase()}"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = candidate.icon,
+                    contentDescription = null,
+                    tint = candidate.accent,
+                    modifier = Modifier.size(RAIL_GLYPH),
                 )
             }
         }
@@ -161,7 +180,7 @@ private fun CreateRail(selected: CreateSurface, onSelect: (CreateSurface) -> Uni
 // ════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun ImageSourceSurface(onOpenStudio: (uris: List<String>) -> Unit) {
+private fun ImageSourceSurface(onClose: () -> Unit, onOpenStudio: (uris: List<String>) -> Unit) {
     val context = LocalContext.current
     var cameraTarget by remember { mutableStateOf<android.net.Uri?>(null) }
 
@@ -173,17 +192,18 @@ private fun ImageSourceSurface(onOpenStudio: (uris: List<String>) -> Unit) {
         ActivityResultContracts.TakePicture(),
     ) { saved -> if (saved) cameraTarget?.let { onOpenStudio(listOf(it.toString())) } }
 
-    SourceChooser(
+    MediaGallerySurface(
+        kind = GalleryKind.Photos,
         title = "New photo post",
         subtitle = "Up to ten photos. Editing opens next.",
-        cameraLabel = "Take a photo",
-        galleryLabel = "Choose from gallery",
+        onClose = onClose,
         onCamera = {
             val target = captureUri(context, "jpg")
             cameraTarget = target
             takePicture.launch(target)
         },
-        onGallery = {
+        onPicked = { uris -> onOpenStudio(uris.map { it.toString() }) },
+        onSystemPicker = {
             pickImages.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
             )
@@ -196,62 +216,6 @@ private fun captureUri(context: android.content.Context, extension: String): and
     val dir = File(context.cacheDir, "create_capture").apply { mkdirs() }
     val file = File(dir, "capture_${System.currentTimeMillis()}.$extension")
     return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-}
-
-@Suppress("LongParameterList")
-@Composable
-private fun SourceChooser(
-    title: String,
-    subtitle: String,
-    cameraLabel: String,
-    galleryLabel: String,
-    onCamera: () -> Unit,
-    onGallery: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(UsTheme.spacing.xl),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = UsTheme.extended.textPrimary,
-        )
-        Spacer(Modifier.height(UsTheme.spacing.s))
-        Text(
-            subtitle,
-            style = MaterialTheme.typography.bodyMedium,
-            color = UsTheme.extended.textMuted,
-        )
-        Spacer(Modifier.height(UsTheme.spacing.xl))
-        SourceOption(label = cameraLabel, testTag = "create-source-camera", onClick = onCamera)
-        Spacer(Modifier.height(UsTheme.spacing.m))
-        SourceOption(label = galleryLabel, testTag = "create-source-gallery", onClick = onGallery)
-    }
-}
-
-@Composable
-private fun SourceOption(label: String, testTag: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(UsTheme.radii.large))
-            .background(UsTheme.extended.bgCard)
-            .clickable(onClick = onClick)
-            .padding(UsTheme.spacing.l)
-            .testTag(testTag),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.titleSmall,
-            color = UsTheme.extended.textPrimary,
-        )
-    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -280,17 +244,18 @@ private fun ReelSurface(
     ) { saved -> if (saved) cameraTarget?.let(viewModel::onVideoPicked) }
 
     if (state.videoUri == null) {
-        SourceChooser(
+        MediaGallerySurface(
+            kind = GalleryKind.Videos,
             title = "New reel",
             subtitle = "Pick a video — it posts to Reels.",
-            cameraLabel = "Record a video",
-            galleryLabel = "Choose from gallery",
+            onClose = onClose,
             onCamera = {
                 val target = captureUri(context, "mp4")
                 cameraTarget = target
                 captureVideo.launch(target)
             },
-            onGallery = {
+            onPicked = { uris -> uris.firstOrNull()?.let(viewModel::onVideoPicked) },
+            onSystemPicker = {
                 pickVideo.launch(
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
                 )
@@ -601,13 +566,36 @@ private fun PollSurface(
 
 private const val MAX_PICK = 10
 private const val PERCENT = 100
-private val HAIRLINE = 1.dp
 private val QUESTION_TEXT_SIZE = 19.sp
-private val RAIL_LETTER_SPACING = 2.sp
 
-/** The rail is dark in both themes — it belongs to the creation surfaces. */
+// ── The rail, per the Figma create-post toolbar (36:30) ─────────────────
+
+/** Rounded top corners lifting the bar off the canvas. */
+private val RAIL_CORNER = 24.dp
+
+/** Side gutter inside the bar. */
+private val RAIL_GUTTER = 24.dp
+
+/** Each tool's touch container and its chip corner. */
+private val RAIL_TOOL = 40.dp
+private val RAIL_TOOL_CORNER = 10.dp
+
+/** Glyph size inside a tool. */
+private val RAIL_GLYPH = 24.dp
+
+/** The selected tool's chip — soft white over the card-dark bar. */
 @Suppress("MagicNumber")
-private val RAIL_BG = Color(0xFF101010)
+private val RAIL_ACTIVE_BG = Color(0x1FFFFFFF)
+
+// Per-tool accents, sampled from the Figma toolbar glyphs.
+@Suppress("MagicNumber")
+private val CREATE_TEXT_PURPLE = Color(0xFFAB47BC)
 
 @Suppress("MagicNumber")
-private val RAIL_DIM = Color(0x80FFFFFF)
+private val CREATE_IMAGE_GREEN = Color(0xFF4CAF50)
+
+@Suppress("MagicNumber")
+private val CREATE_REEL_RED = Color(0xFFEF5350)
+
+@Suppress("MagicNumber")
+private val CREATE_POLL_BLUE = Color(0xFF2196F3)
