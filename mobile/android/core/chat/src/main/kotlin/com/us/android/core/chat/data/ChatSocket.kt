@@ -283,6 +283,16 @@ private fun parseMessageFrame(type: String, payload: JsonObject): ChatSocketEven
             // per row.
             senderDisplayName = null,
             text = payload.str("text").orEmpty(),
+            // THE PHOTO IS ON THE WIRE — read it.
+            //
+            // message-service publishes `media_id` alongside the text
+            // (message.go, msgBody). Dropping it here is what made a photo
+            // arrive as an empty bubble for the RECIPIENT: the realtime frame
+            // carried no media, so nothing rendered, and only reopening the
+            // thread — which refetches over HTTP where media_id survives —
+            // produced the image. Blank is normalised to null so a text
+            // message never claims an empty attachment.
+            mediaId = payload.str("media_id")?.takeIf { it.isNotBlank() },
             createdAt = payload.str("created_at").orEmpty(),
         ),
     )

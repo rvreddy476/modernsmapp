@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,7 +23,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,7 +39,7 @@ import com.us.android.core.ui.UsLoadingState
 
 /**
  * All the viewer's friends (accepted connections), one Message tap from a
- * thread — the design's friends frame (98:226) in the chat green language.
+ * thread — the design's friends frame (98:226).
  *
  * [onBack] is null when this is the Friends TAB and non-null when it was
  * pushed from the inbox. A tab root with a back arrow sends the user
@@ -118,20 +118,26 @@ private fun FriendRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onMessage)
+            // Roomier rows: a friends list is a list of PEOPLE, and at the
+            // old 44dp avatar on tight padding they read as settings entries.
             .padding(
                 horizontal = UsTheme.spacing.pageHorizontal,
-                vertical = UsTheme.spacing.s,
+                vertical = UsTheme.spacing.m,
             ),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
         Box {
-            UsAvatar(name = friend.displayName, size = UsAvatarSize.Medium, seed = friend.userId)
+            UsAvatar(name = friend.displayName, size = UsAvatarSize.Large, seed = friend.userId)
             if (friend.online) {
                 Box(
                     modifier = Modifier
                         .size(ONLINE_DOT)
                         .align(Alignment.BottomEnd)
+                        // A circle's bounding-box corner is OUTSIDE the
+                        // circle, so an un-inset dot floats off the avatar's
+                        // edge. Pull it back along the diagonal to sit on it.
+                        .offset(x = -DOT_INSET, y = -DOT_INSET)
                         .clip(CircleShape)
                         .background(UsTheme.extended.chatOnline)
                         .border(ONLINE_DOT_RING, UsTheme.extended.bgCanvas, CircleShape),
@@ -141,8 +147,8 @@ private fun FriendRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = friend.displayName,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
                 color = UsTheme.extended.textPrimary,
             )
             if (friend.online) {
@@ -157,27 +163,38 @@ private fun FriendRow(
     }
 }
 
-/** The green pill from the chat language; the whole row triggers it too. */
+/**
+ * The Message action — an OUTLINE, not a filled pill.
+ *
+ * A row of solid green blocks made the button shout louder than the people
+ * it belongs to, and two of them stacked read as a colour field rather than
+ * a list. The outline keeps the affordance and gives the names the emphasis.
+ * The whole row is clickable too, so this is a hint as much as a control.
+ */
 @Composable
 private fun MessageChip(opening: Boolean, enabled: Boolean, onClick: () -> Unit) {
     Text(
         text = if (opening) "Opening…" else "Message",
         style = MaterialTheme.typography.labelLarge,
         fontWeight = FontWeight.SemiBold,
-        color = Color.White,
+        color = if (enabled || opening) {
+            UsTheme.extended.textPrimary
+        } else {
+            UsTheme.extended.textGhost
+        },
         modifier = Modifier
             .clip(CircleShape)
-            .background(
-                if (enabled || opening) {
-                    UsTheme.extended.chatAccent
-                } else {
-                    UsTheme.extended.textGhost
-                },
+            .border(
+                width = CHIP_BORDER,
+                color = UsTheme.extended.borderMedium,
+                shape = CircleShape,
             )
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs),
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s),
     )
 }
 
-private val ONLINE_DOT = 12.dp
+private val CHIP_BORDER = 1.dp
+private val DOT_INSET = 8.dp
+private val ONLINE_DOT = 14.dp
 private val ONLINE_DOT_RING = 2.dp

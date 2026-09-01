@@ -92,6 +92,44 @@ class ChatSocketTest {
         // is why chat needs no per-message profile request.
         assertThat(message.senderDisplayName).isNull()
         assertThat(message.pending).isFalse()
+        // A text frame carries an explicit null media_id, and a null must not
+        // become the empty string — an attachment bubble keyed off "" would
+        // request /v1/media//serve for every text message on the thread.
+        assertThat(message.mediaId).isNull()
+    }
+
+    /**
+     * A PHOTO arrives whole, or it does not arrive.
+     *
+     * message-service publishes `media_id` next to the text. The parser used
+     * to read five fields and drop this one, so a realtime photo reached the
+     * recipient as an empty bubble and only appeared once they backed out and
+     * reopened the thread — which refetches over HTTP, where media_id
+     * survives. The bug was invisible to the SENDER, whose own outbox row
+     * rendered locally.
+     */
+    @Test
+    fun `a media frame carries its media_id`() {
+        val event = parseChatFrame(json, MEDIA_MESSAGE_FRAME)
+
+        val message = (event as ChatSocketEvent.MessageReceived).message
+        assertThat(message.mediaId).isEqualTo("a5cd60e3-eeee-4b48-96e7-3a5e7335f3f9")
+        assertThat(message.text).isEmpty()
+    }
+
+    /** Blank is not an attachment: it normalises to null, same as absent. */
+    @Test
+    fun `a blank media_id decodes as no attachment`() {
+        val frame = """
+        {"type":"message","payload":{
+          "conversation_id":"c1","message_id":"m1","sender_id":"u2",
+          "type":"text","text":"hi","media_id":"",
+          "created_at":"2026-08-21T09:09:19.084Z"}}
+        """
+
+        val message = (parseChatFrame(json, frame) as ChatSocketEvent.MessageReceived).message
+
+        assertThat(message.mediaId).isNull()
     }
 
     /**
@@ -405,6 +443,17 @@ class ChatSocketTest {
           "message_id":"70efd586-df95-4bca-a63d-058ef9549bff",
           "sender_id":"3922df6c-3661-41fb-a794-b646c17c299e",
           "type":"text","text":"reply from Bravo","media_id":null,
+          "created_at":"2026-08-21T09:09:19.084Z"}}
+        """
+
+        /** As message-service publishes it for an image send. */
+        const val MEDIA_MESSAGE_FRAME = """
+        {"type":"message","payload":{
+          "conversation_id":"4988558d-9914-41b8-9d74-e76cc7c94e96",
+          "message_id":"9f1c2b70-1a4e-4a0b-9d2f-6b7c8e5d4a31",
+          "sender_id":"3922df6c-3661-41fb-a794-b646c17c299e",
+          "type":"media","text":"",
+          "media_id":"a5cd60e3-eeee-4b48-96e7-3a5e7335f3f9",
           "created_at":"2026-08-21T09:09:19.084Z"}}
         """
 
