@@ -51,7 +51,14 @@ type Client interface {
 type Config struct {
 	APIKey    string
 	APISecret string
-	URL       string // wss:// URL for the SFU returned to clients
+	URL       string // ws(s):// URL this SERVICE uses for Twirp admin calls
+
+	// PublicURL is the ws(s):// URL handed to CLIENTS (publisher and
+	// viewer token results). It differs from URL whenever the service and
+	// the devices live on different networks — in the dev stack the
+	// container reaches LiveKit as ws://livekit:7880 while the emulator
+	// needs ws://10.0.2.2:7880. Empty falls back to URL.
+	PublicURL string
 
 	// Egress S3 target — reused from the platform's MinIO config.
 	S3Endpoint  string
@@ -77,7 +84,12 @@ func New(cfg Config) Client {
 	}
 }
 
-func (c *httpClient) ServerURL() string { return c.cfg.URL }
+func (c *httpClient) ServerURL() string {
+	if c.cfg.PublicURL != "" {
+		return c.cfg.PublicURL
+	}
+	return c.cfg.URL
+}
 
 // CreateRoom POSTs to /twirp/livekit.RoomService/CreateRoom. It is
 // idempotent on LiveKit's side; if the room already exists we silently

@@ -55,6 +55,10 @@ import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
 import com.us.android.feature.feed.navigation.reelsScreen
+import com.us.android.feature.live.navigation.liveScreens
+import com.us.android.feature.live.navigation.navigateToGoLive
+import com.us.android.feature.live.navigation.navigateToLiveHub
+import com.us.android.feature.live.navigation.navigateToLiveWatch
 import com.us.android.feature.notifications.navigation.navigateToNotifications
 import com.us.android.feature.notifications.navigation.notificationsScreen
 import com.us.android.feature.post.navigation.ComposerRoute
@@ -305,6 +309,15 @@ private fun NavGraphBuilder.tabDestinations(
             }
         },
         onOpenStudio = { uris -> navController.navigateToStudio(uris) },
+        onOpenLive = { navController.navigateToLiveHub() },
+    )
+
+    // Live streaming: the hub (live now + go live), the broadcaster surface
+    // and the viewer surface. live-service-v2 + LiveKit behind all three.
+    liveScreens(
+        onBack = { navController.popBackStack() },
+        onGoLive = { navController.navigateToGoLive() },
+        onWatch = { streamId -> navController.navigateToLiveWatch(streamId) },
     )
 
     // The classic composer route stays registered for any older entry point;

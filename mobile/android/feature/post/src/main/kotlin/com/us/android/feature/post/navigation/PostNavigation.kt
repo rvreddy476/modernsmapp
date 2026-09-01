@@ -148,12 +148,14 @@ fun NavGraphBuilder.createHubScreen(
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
     onOpenStudio: (uris: List<String>) -> Unit,
+    onOpenLive: () -> Unit = {},
 ) {
     composable<CreateRoute> {
         com.us.android.feature.post.createhub.CreateHubScreen(
             onClose = onClose,
             onPublished = onPublished,
             onOpenStudio = onOpenStudio,
+            onOpenLive = onOpenLive,
         )
     }
 }

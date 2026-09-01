@@ -28,6 +28,11 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        // JitPack, scoped to the ONE artifact that needs it: LiveKit's
+        // audioswitch fork rides a commit hash only JitPack serves.
+        maven("https://jitpack.io") {
+            content { includeGroup("com.github.davidliu") }
+        }
     }
 }
 
@@ -74,6 +79,9 @@ include(":feature:chat")
 // :feature:call renders the incoming/outgoing/in-call surfaces.
 include(":core:call")
 include(":feature:call")
+
+// Live streaming (live-service-v2 + LiveKit): go-live, live-now, watching.
+include(":feature:live")
 
 // The notification inbox — Slice D. A feature module rather than screens bolted
 // onto :feature:feed: the inbox is its own destination with its own paging and

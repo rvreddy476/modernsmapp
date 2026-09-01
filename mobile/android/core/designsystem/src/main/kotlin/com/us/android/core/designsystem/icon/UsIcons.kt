@@ -281,6 +281,19 @@ object UsIcons {
         lineTo(6f, 21f)
     }
 
+    /** A broadcast mark: a dot mid-air between two pairs of waves. Live. */
+    val Live: ImageVector = stroked("Live") {
+        circle(12f, 12f, 1.8f)
+        moveTo(8.6f, 15.4f)
+        curveTo(6.8f, 13.5f, 6.8f, 10.5f, 8.6f, 8.6f)
+        moveTo(15.4f, 8.6f)
+        curveTo(17.2f, 10.5f, 17.2f, 13.5f, 15.4f, 15.4f)
+        moveTo(5.8f, 18.2f)
+        curveTo(2.4f, 14.8f, 2.4f, 9.2f, 5.8f, 5.8f)
+        moveTo(18.2f, 5.8f)
+        curveTo(21.6f, 9.2f, 21.6f, 14.8f, 18.2f, 18.2f)
+    }
+
     /** A camera body with its lens — capture, as opposed to [Photo], the library. */
     val Camera: ImageVector = stroked("Camera") {
         moveTo(14.5f, 4f)

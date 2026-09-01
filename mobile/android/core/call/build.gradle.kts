@@ -31,6 +31,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
 
     // Prebuilt libwebrtc: PeerConnection, Camera2 capture, EGL rendering.
+    // (LiveKit in :feature:live carries its own RELOCATED copy under
+    // livekit.org.webrtc, so the two stacks do not collide.)
     api(libs.stream.webrtc.android)
 
     testImplementation(projects.core.testing)

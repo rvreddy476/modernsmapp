@@ -43,6 +43,7 @@ dependencies {
     implementation(projects.feature.call)
     implementation(projects.feature.chat)
     implementation(projects.feature.feed)
+    implementation(projects.feature.live)
     implementation(projects.feature.post)
     implementation(projects.feature.profile)
 

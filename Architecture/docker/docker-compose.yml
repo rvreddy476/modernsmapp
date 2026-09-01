@@ -1555,6 +1555,28 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # The LiveKit SFU behind live-service-v2. Dev keys only — NEVER these
+  # values in staging/prod. Media: 7881/tcp is the ICE-TCP fallback and
+  # 7882/udp is the port-muxed RTP path; both are what an emulator (via
+  # 10.0.2.2) or a LAN phone actually streams over. The Cloudflare tunnel
+  # cannot carry this traffic — live media is LAN/emulator-only in dev.
+  livekit:
+    image: livekit/livekit-server:v1.8
+    command: --bind 0.0.0.0 --node-ip ${LIVEKIT_NODE_IP:-10.0.2.2}
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+        keys:
+          ${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret0000000000000000000000000}
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
   live-service-v2:
     build:
       context: ..
@@ -1567,9 +1589,13 @@ services:
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-}
       GRAPH_SERVICE_URL: http://graph-service:8083
-      LIVEKIT_URL: ${LIVEKIT_URL:-}
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      # Dev defaults target the in-stack LiveKit SFU below; the PUBLIC url
+      # is what devices dial (10.0.2.2 = the emulator's route to the host).
+      # A physical phone on the LAN needs LIVEKIT_PUBLIC_URL=ws://<LAN-IP>:7880.
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://livekit:7880}
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-ws://10.0.2.2:7880}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecret0000000000000000000000000}
       LIVEKIT_WEBHOOK_SECRET: ${LIVEKIT_WEBHOOK_SECRET:-}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}

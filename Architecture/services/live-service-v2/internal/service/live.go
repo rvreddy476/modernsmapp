@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -182,8 +183,12 @@ func (s *Service) StartStream(ctx context.Context, streamID, creatorID uuid.UUID
 	objectKey := recordingObjectKeyPrefix + streamID.String() + ".mp4"
 	egressID, egErr := s.livekit.StartEgressToS3(ctx, st.LiveKitRoom, objectKey)
 	if egErr != nil {
-		// We deliberately don't return — the stream goes live without
-		// recording. The handler logs the warning.
+		// Deliberately swallowed after logging — the stream goes live
+		// without recording. This function previously RETURNED egErr
+		// alongside the result, which turned "no egress deployment in
+		// dev" into a 500 on every go-live: the exact failure the
+		// comment above promises cannot happen.
+		log.Printf("live: egress start failed for stream %s (going live without recording): %v", streamID, egErr)
 		egressID = ""
 	}
 	updated, err := s.store.MarkLive(ctx, streamID, egressID)
@@ -204,7 +209,7 @@ func (s *Service) StartStream(ctx context.Context, streamID, creatorID uuid.UUID
 		PublisherToken: token,
 		Room:           updated.LiveKitRoom,
 		ServerURL:      s.livekit.ServerURL(),
-	}, egErr
+	}, nil
 }
 
 // EndStream stops the SFU egress, materialises the Redis hot viewer

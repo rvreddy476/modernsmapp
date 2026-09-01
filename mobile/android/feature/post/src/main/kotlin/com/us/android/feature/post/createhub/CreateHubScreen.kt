@@ -82,6 +82,7 @@ fun CreateHubScreen(
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
     onOpenStudio: (uris: List<String>) -> Unit,
+    onOpenLive: () -> Unit = {},
 ) {
     var surface by rememberSaveable { mutableStateOf(CreateSurface.Text) }
 
@@ -103,9 +104,17 @@ fun CreateHubScreen(
                 )
                 CreateSurface.Reel -> ReelSurface(onClose = onClose, onPublished = onPublished)
                 CreateSurface.Poll -> PollSurface(onClose = onClose, onPublished = onPublished)
+                // Unreachable: LIVE never becomes the selected surface — the
+                // rail routes it out below.
+                CreateSurface.Live -> Unit
             }
         }
-        CreateRail(selected = surface, onSelect = { surface = it })
+        CreateRail(
+            selected = surface,
+            onSelect = { picked ->
+                if (picked == CreateSurface.Live) onOpenLive() else surface = picked
+            },
+        )
     }
 }
 
@@ -119,6 +128,13 @@ private enum class CreateSurface(val label: String, val accent: Color) {
     Image("IMAGE", CREATE_IMAGE_GREEN),
     Reel("REEL", CREATE_REEL_RED),
     Poll("POLL", CREATE_POLL_BLUE),
+
+    /**
+     * Not a surface: selecting it NAVIGATES to the live hub. It sits on the
+     * rail because the redesign reserved this slot for LIVE, and the backend
+     * (live-service-v2 + LiveKit) now exists to honour it.
+     */
+    Live("LIVE", CREATE_LIVE_RED),
 }
 
 private val CreateSurface.icon: ImageVector
@@ -127,6 +143,7 @@ private val CreateSurface.icon: ImageVector
         CreateSurface.Image -> UsIcons.Photo
         CreateSurface.Reel -> UsIcons.Reels
         CreateSurface.Poll -> UsIcons.Poll
+        CreateSurface.Live -> UsIcons.Live
     }
 
 /**
@@ -602,3 +619,6 @@ private val CREATE_REEL_RED = Color(0xFFEF5350)
 
 @Suppress("MagicNumber")
 private val CREATE_POLL_BLUE = Color(0xFF2196F3)
+
+@Suppress("MagicNumber")
+private val CREATE_LIVE_RED = Color(0xFFFF3366)

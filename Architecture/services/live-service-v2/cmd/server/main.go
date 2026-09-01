@@ -42,6 +42,7 @@ func main() {
 		APIKey:      os.Getenv("LIVEKIT_API_KEY"),
 		APISecret:   os.Getenv("LIVEKIT_API_SECRET"),
 		URL:         env("LIVEKIT_URL", "ws://livekit:7880"),
+		PublicURL:   env("LIVEKIT_PUBLIC_URL", ""),
 		S3Endpoint:  env("MINIO_ENDPOINT", "http://minio:9000"),
 		S3AccessKey: os.Getenv("MINIO_ACCESS_KEY"),
 		S3SecretKey: os.Getenv("MINIO_SECRET_KEY"),
