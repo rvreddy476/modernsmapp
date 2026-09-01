@@ -13,11 +13,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -142,22 +140,10 @@ fun ChatThreadScreen(
         },
         applyPageGutter = false,
     ) { padding ->
-        // The keyboard must PUSH the composer, not cover it.
-        //
-        // enableEdgeToEdge() stops the window from resizing for the IME, so a
-        // screen that does nothing here has its composer sit behind the very
-        // keyboard being used to type into it. consumeWindowInsets(padding)
-        // before imePadding() is what keeps the two from stacking: the
-        // scaffold inset already reserved the navigation bar, and without the
-        // consume the IME inset would be added on top of it and leave a
-        // bar-height gap between the keyboard and the composer.
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .consumeWindowInsets(padding)
-                .imePadding()
-                .fillMaxSize(),
-        ) {
+        // The keyboard inset arrives in `padding`: UsScaffold folds the ime
+        // into its contentWindowInsets, so applying it here is what lifts the
+        // composer above the keyboard instead of leaving it underneath.
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             if (render.offline) {
                 OfflineThreadBanner(onRetry = viewModel::refresh)
             }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -930,6 +931,10 @@ private fun ShareStep(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            // Full-screen step with no scaffold of its own, so the keyboard
+            // inset is applied here — before verticalScroll, so the scroll
+            // viewport shrinks rather than the caption field hiding under it.
+            .imePadding()
             .verticalScroll(rememberScrollState())
             .testTag("studio-share"),
     ) {

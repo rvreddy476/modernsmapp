@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -64,7 +65,11 @@ fun VerifyEmailScreen(
     onBackToLogin: () -> Unit = {},
 ) {
     UsScaffold {
-        Box(modifier = Modifier.fillMaxSize()) {
+        // This screen discards the PaddingValues UsScaffold hands it, so the
+        // scaffold's ime inset never reaches the content — the keyboard is
+        // applied here instead. Nothing was consumed, so this is the full
+        // inset, not a remainder.
+        Box(modifier = Modifier.fillMaxSize().imePadding()) {
             VerifyBody(
                 state = state,
                 onCodeChange = onCodeChange,
