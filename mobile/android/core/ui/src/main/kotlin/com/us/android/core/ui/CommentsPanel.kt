@@ -1,6 +1,7 @@
 package com.us.android.core.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -85,40 +86,45 @@ fun CommentsPanel(
             ),
         )
 
-        when {
-            state.loading && state.rows.isEmpty() ->
-                UsLoadingState(label = "Loading comments")
+        // The whole middle region is weighted so the composer below it ALWAYS
+        // gets its space. The state views fill their box; unweighted they
+        // filled the column and pushed the composer off-screen — which made
+        // every zero-comment post impossible to comment on.
+        Box(modifier = Modifier.weight(1f, fill = false)) {
+            when {
+                state.loading && state.rows.isEmpty() ->
+                    UsLoadingState(label = "Loading comments")
 
-            // Only when there is nothing to show. A refresh failure over an
-            // already-loaded list keeps the list and surfaces the error under
-            // it, so a network blip never costs the reader the conversation.
-            state.refreshError != null && state.rows.isEmpty() -> UsErrorState(
-                message = "We couldn't load comments.",
-                onRetry = onRetryRefresh,
-            )
+                // Only when there is nothing to show. A refresh failure over an
+                // already-loaded list keeps the list and surfaces the error under
+                // it, so a network blip never costs the reader the conversation.
+                state.refreshError != null && state.rows.isEmpty() -> UsErrorState(
+                    message = "We couldn't load comments.",
+                    onRetry = onRetryRefresh,
+                )
 
-            state.rows.isEmpty() -> UsEmptyState(
-                title = "No comments yet",
-                detail = "Be the first to say something.",
-            )
+                state.rows.isEmpty() -> UsEmptyState(
+                    title = "No comments yet",
+                    detail = "Be the first to say something.",
+                )
 
-            else -> LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f, fill = false),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = UsTheme.spacing.pageHorizontal,
-                ),
-                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-            ) {
-                items(state.rows, key = { it.id }) { row -> CommentItem(row) }
+                else -> LazyColumn(
+                    state = listState,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = UsTheme.spacing.pageHorizontal,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+                ) {
+                    items(state.rows, key = { it.id }) { row -> CommentItem(row) }
 
-                if (state.appending || state.appendError != null) {
-                    item(key = "append") {
-                        AppendFooter(
-                            loading = state.appending,
-                            failed = state.appendError != null,
-                            onRetry = onRetryAppend,
-                        )
+                    if (state.appending || state.appendError != null) {
+                        item(key = "append") {
+                            AppendFooter(
+                                loading = state.appending,
+                                failed = state.appendError != null,
+                                onRetry = onRetryAppend,
+                            )
+                        }
                     }
                 }
             }
