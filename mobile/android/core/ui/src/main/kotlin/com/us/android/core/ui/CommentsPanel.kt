@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.component.UsAvatar
@@ -144,11 +145,18 @@ private fun CommentItem(row: CommentRow) {
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        // Seeded from the author id, which is the only identity this payload
-        // carries. A name would have to come from a per-row profile call —
-        // one request per visible comment — so the row stays honest instead.
-        UsAvatar(name = "", size = UsAvatarSize.Small, seed = row.authorId)
+        // Named when the server's batch hydration supplied an author; the
+        // seed keeps a stable color identity either way.
+        UsAvatar(name = row.authorName, size = UsAvatarSize.Small, seed = row.authorId)
         Column(modifier = Modifier.weight(1f)) {
+            if (row.authorName.isNotBlank()) {
+                Text(
+                    text = row.authorName,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = UsTheme.extended.textSecondary,
+                )
+            }
             Text(
                 text = row.body,
                 style = MaterialTheme.typography.bodyMedium,

@@ -27,6 +27,19 @@ type Comment struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 	// Nested reply (loaded inline for threaded display)
 	Reply *Comment `json:"reply,omitempty"`
+	// Author presentation, hydrated at read time from identity-profile —
+	// never stored here. Nil when hydration was skipped or failed; clients
+	// must render a fallback identity from AuthorID.
+	Author *CommentAuthor `json:"author,omitempty"`
+}
+
+// CommentAuthor is the deliberately small public identity a comment row
+// renders with — the comment-list twin of the feed's embedded author.
+type CommentAuthor struct {
+	ID            uuid.UUID  `json:"id"`
+	Username      string     `json:"username"`
+	DisplayName   string     `json:"display_name"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
 }
 
 // GetCommentByID returns the comment's author_id and post_id for a given comment ID.

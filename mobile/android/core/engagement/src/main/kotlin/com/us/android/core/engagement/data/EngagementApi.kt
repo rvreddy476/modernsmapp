@@ -182,10 +182,10 @@ data class ShareResultDto(
 /**
  * A comment as the list and create endpoints return it.
  *
- * Carries `author_id` and no author presentation. Resolving a display name per
- * row would be one profile request per comment inside a scrolling list; the UI
- * therefore shows an honest minimal author until a batch hydration contract
- * exists. Every field defaults because a partial row must not fail the page.
+ * The server batch-hydrates `author` from identity-profile at read time; a
+ * hydration failure ships the row with `author_id` only, so the embed stays
+ * nullable and the UI falls back to a minimal identity. Every field defaults
+ * because a partial row must not fail the page.
  */
 @Serializable
 data class CommentDto(
@@ -197,4 +197,13 @@ data class CommentDto(
     @SerialName("reply_count") val replyCount: Int = 0,
     @SerialName("is_reply") val isReply: Boolean = false,
     @SerialName("created_at") val createdAt: String = "",
+    val author: CommentAuthorDto? = null,
+)
+
+/** The embedded author block — post-service's read-time profile hydration. */
+@Serializable
+data class CommentAuthorDto(
+    val id: String = "",
+    val username: String = "",
+    @SerialName("display_name") val displayName: String = "",
 )

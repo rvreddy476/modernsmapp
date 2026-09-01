@@ -143,6 +143,9 @@ func main() {
 	scyllaInteractionStore := scylla.New(scyllaSession)
 	postSvc := service.New(pgStore, scyllaInteractionStore, rdb)
 	postSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
+	// Comment-author hydration (same identity-profile batch contract the
+	// feed uses for post authors).
+	postSvc.SetProfileServiceURL(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
 	// Community review is parked at launch; an explicit URL is required to
 	// enqueue into that future system. Empty disables the best-effort call.

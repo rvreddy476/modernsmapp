@@ -1099,6 +1099,7 @@ func (h *Handler) ListComments(c *gin.Context) {
 	if comments == nil {
 		comments = []postgres.Comment{}
 	}
+	h.svc.HydrateCommentAuthors(c.Request.Context(), viewerID, comments)
 
 	var meta *api.Meta
 	if nextCursor != "" {
@@ -1148,6 +1149,7 @@ func (h *Handler) ListCommentsAround(c *gin.Context) {
 	if comments == nil {
 		comments = []postgres.Comment{}
 	}
+	h.svc.HydrateCommentAuthors(c.Request.Context(), viewerID, comments)
 
 	api.JSON(c.Writer, http.StatusOK, comments, nil)
 }

@@ -6,11 +6,9 @@ import com.us.android.core.common.result.AppResult
 /**
  * One comment as a screen renders it.
  *
- * NO AUTHOR PRESENTATION. The list payload carries `author_id` and nothing
- * else, and resolving a display name per row would fire one profile request
- * per comment inside a scrolling list — the N+1 the review explicitly forbids.
- * Until a batch author-hydration contract exists, the UI shows an honest
- * minimal identity rather than a name invented on the client.
+ * [authorName] comes from the server's batch author hydration; it is empty
+ * when hydration failed or the account is unknown, and the UI then renders
+ * its minimal fallback rather than a name invented on the client.
  *
  * [pending] marks a comment shown optimistically, before the server has
  * confirmed it.
@@ -20,6 +18,7 @@ data class CommentRow(
     val authorId: String,
     val body: String,
     val createdAt: String,
+    val authorName: String = "",
     val likeCount: Int = 0,
     val replyCount: Int = 0,
     val pending: Boolean = false,
@@ -197,6 +196,7 @@ class CommentsController(
                     authorId = "",
                     body = text,
                     createdAt = "",
+                    authorName = "You",
                     pending = true,
                 ),
             ) + state.rows,
@@ -236,6 +236,7 @@ private fun CommentDto.toRow() = CommentRow(
     authorId = authorId,
     body = body,
     createdAt = createdAt,
+    authorName = author?.displayName.orEmpty(),
     likeCount = likeCount,
     replyCount = replyCount,
 )

@@ -65,6 +65,7 @@ type Service struct {
 	rateLimiter            *engagement.RateLimiter
 	spam                   *spam.Detector
 	userServiceURL         string
+	profileServiceURL      string
 	graphServiceURL        string
 	monetizationServiceURL string
 	reviewerServiceURL     string
