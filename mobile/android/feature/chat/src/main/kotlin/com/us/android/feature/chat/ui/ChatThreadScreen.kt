@@ -1,5 +1,6 @@
 package com.us.android.feature.chat.ui
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -29,6 +31,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -96,9 +99,11 @@ fun ChatThreadScreen(
     val state = render.thread
     val listState = rememberLazyListState()
 
-    val pickImage = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let(viewModel::sendAttachment) }
+    // MULTIPLE, and staged rather than sent. The picker hands back a list
+    // that lands on the composer; the upload waits for Send.
+    val pickImages = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(ChatThreadViewModel.MAX_ATTACHMENTS),
+    ) { uris -> viewModel.stageAttachments(uris) }
 
     val shouldLoadMore by remember(state) {
         derivedStateOf {
@@ -214,21 +219,28 @@ fun ChatThreadScreen(
                 }
             }
 
-            ComposerStatus(render = render, onCancelAttachment = viewModel::cancelAttachment)
+            ComposerStatus(render = render, onDismissError = viewModel::dismissAttachmentError)
+
+            if (render.staged.isNotEmpty()) {
+                StagedAttachmentRow(
+                    staged = render.staged,
+                    onRemove = viewModel::unstageAttachment,
+                )
+            }
 
             Composer(
                 draft = state.draft,
                 // One send at a time: while an enqueue awaits Room, a second
                 // tap must not mint a second outbox row for the same text.
-                canSend = state.canSend && !render.sendInFlight,
-                attaching = render.attachmentUploading,
+                canSend = render.canSend,
+                attaching = render.sendInFlight,
                 onDraftChange = {
                     viewModel.onDraftChange(it)
                     viewModel.sendTyping()
                 },
                 onSend = viewModel::send,
                 onAttach = {
-                    pickImage.launch(
+                    pickImages.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
@@ -359,10 +371,100 @@ private fun OfflineThreadBanner(onRetry: () -> Unit) {
     }
 }
 
+/**
+ * The photos sitting on the composer, waiting for Send.
+ *
+ * Each thumbnail carries its OWN state: a ring spinning over it while its
+ * bytes are going up, a red edge if the server refused it, and an × to take
+ * it back off. That is what a shared percentage row could not express — with
+ * several photos in flight, one number cannot say which one it is counting.
+ */
+@Composable
+private fun StagedAttachmentRow(
+    staged: List<StagedAttachment>,
+    onRemove: (Uri) -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(
+            horizontal = UsTheme.spacing.pageHorizontal,
+            vertical = UsTheme.spacing.s,
+        ),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        modifier = Modifier.testTag("staged-attachments"),
+    ) {
+        items(staged, key = { it.uri.toString() }) { item ->
+            Box {
+                AsyncImage(
+                    model = item.uri,
+                    contentDescription = "Attached photo",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(STAGED_THUMB)
+                        .clip(RoundedCornerShape(UsTheme.radii.medium))
+                        .background(UsTheme.extended.bgCardSolid)
+                        .then(
+                            if (item.failed) {
+                                Modifier.border(
+                                    width = STAGED_FAILED_BORDER,
+                                    color = MaterialTheme.colorScheme.error,
+                                    shape = RoundedCornerShape(UsTheme.radii.medium),
+                                )
+                            } else {
+                                Modifier
+                            },
+                        ),
+                )
+                if (item.uploading) {
+                    // The ring sits ON the photo, dimming it — the picture
+                    // stays visible underneath so it is obvious WHICH one is
+                    // going up.
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(STAGED_THUMB)
+                            .clip(RoundedCornerShape(UsTheme.radii.medium))
+                            .background(SCRIM),
+                    ) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = SPINNER_STROKE,
+                            modifier = Modifier
+                                .size(SPINNER_SIZE)
+                                .testTag("attachment-progress"),
+                        )
+                    }
+                } else {
+                    IconButton(
+                        onClick = { onRemove(item.uri) },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(REMOVE_BUTTON),
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(REMOVE_GLYPH_BG)
+                                .clip(CircleShape)
+                                .background(SCRIM),
+                        ) {
+                            Icon(
+                                imageVector = UsIcons.Close,
+                                contentDescription = "Remove photo",
+                                tint = Color.White,
+                                modifier = Modifier.size(REMOVE_GLYPH),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ComposerStatus(
     render: ThreadRenderState,
-    onCancelAttachment: () -> Unit,
+    onDismissError: () -> Unit,
 ) {
     // Typing lives in the HEADER now (98:340) — one live state line beside
     // the name, instead of a floating caption over the composer.
@@ -377,30 +479,23 @@ private fun ComposerStatus(
         )
     }
 
-    if (render.attachmentUploading) {
+    // NO PERCENTAGE ROW. A number ticking 0→100 under the composer says less
+    // than a ring drawn on the photo it belongs to, and with several photos
+    // in flight one shared number cannot say WHICH. Progress now lives on
+    // each thumbnail in [StagedAttachmentRow].
+    render.attachmentError?.let { message ->
         Row(
             modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Uploading photo… ${render.attachmentProgressPercent}%",
+                text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = UsTheme.extended.textMuted,
-                modifier = Modifier.weight(1f).testTag("attachment-progress"),
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f).testTag("attachment-error"),
             )
-            TextButton(
-                onClick = onCancelAttachment,
-                modifier = Modifier.testTag("attachment-cancel"),
-            ) { Text("Cancel") }
+            TextButton(onClick = onDismissError) { Text("Dismiss") }
         }
-    }
-    render.attachmentError?.let {
-        Text(
-            text = it,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
-        )
     }
     if (render.sendUnavailable) {
         Text(
@@ -793,7 +888,17 @@ private fun MessageBubble(message: Message, isOwn: Boolean) {
             bottomEnd = BUBBLE_CORNER,
         )
     }
+    // A PHOTO IS ITS OWN BUBBLE.
+    //
+    // A picture in a green slab reads as a picture stuck to a coloured card:
+    // the fill wins the eye and the photo's own edges are lost inside it. A
+    // media message therefore carries no bubble colour and no padding — the
+    // image, clipped to the bubble's shape, IS the bubble. A caption under
+    // one still needs a readable ground, so a media message WITH text keeps
+    // the fill; only the bare photo goes without.
+    val photoOnly = message.mediaId != null && message.text.isBlank()
     val bubbleColor = when {
+        photoOnly -> Color.Transparent
         isOwn && message.pending -> UsTheme.extended.chatAccent.copy(alpha = PENDING_ALPHA)
         isOwn -> UsTheme.extended.chatAccent
         else -> UsTheme.extended.bgCardSolid
@@ -804,8 +909,8 @@ private fun MessageBubble(message: Message, isOwn: Boolean) {
             .clip(shape)
             .background(bubbleColor)
             .padding(
-                horizontal = UsTheme.spacing.xl,
-                vertical = UsTheme.spacing.m,
+                horizontal = if (photoOnly) 0.dp else UsTheme.spacing.xl,
+                vertical = if (photoOnly) 0.dp else UsTheme.spacing.m,
             ),
     ) {
         message.mediaId?.let { mediaId ->
@@ -882,6 +987,19 @@ private const val EMOJI_COLUMNS = 8
 private val EMOJI_PANEL_HEIGHT = 220.dp
 
 // ── The Figma conversation language (98:321) ────────────────────────────
+
+// Composer attachments, staged and waiting for Send.
+private val STAGED_THUMB = 72.dp
+private val STAGED_FAILED_BORDER = 2.dp
+private val SPINNER_SIZE = 28.dp
+private val SPINNER_STROKE = 3.dp
+private val REMOVE_BUTTON = 28.dp
+private val REMOVE_GLYPH_BG = 20.dp
+private val REMOVE_GLYPH = 12.dp
+
+/** Dim laid over a thumbnail so a white ring or glyph reads on any photo. */
+@Suppress("MagicNumber")
+private val SCRIM = Color(0x99000000)
 
 /** Tighter tracking is what separates a NAME from a label set in the same face. */
 @Suppress("MagicNumber") // The tracking value IS the constant.

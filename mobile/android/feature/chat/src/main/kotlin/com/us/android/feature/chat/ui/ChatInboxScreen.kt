@@ -698,7 +698,7 @@ private fun ConversationRow(
                 modifier = Modifier
                     .size(UNREAD_BADGE)
                     .clip(CircleShape)
-                    .background(UNREAD_INDIGO)
+                    .background(UsTheme.extended.chatAccent)
                     .testTag("chat-unread-dot"),
             )
         }
@@ -776,9 +776,9 @@ private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
             Text(
                 text = time,
                 style = MaterialTheme.typography.labelSmall,
-                // Indigo while unread, muted once read — the same accent the
-                // badge uses, so the two halves of "needs you" agree.
-                color = if (unread) UNREAD_INDIGO else UsTheme.extended.textMuted,
+                // Chat green while unread, muted once read — the same accent
+                // the badge uses, so the two halves of "needs you" agree.
+                color = if (unread) UsTheme.extended.chatAccent else UsTheme.extended.textMuted,
                 maxLines = 1,
             )
         }
@@ -786,10 +786,6 @@ private fun NameAndTimeLine(name: String, timeIso: String, unread: Boolean) {
 }
 
 // ── The Figma messages-inbox frame (136:86) ────────────────────────────
-
-/** Unread badge and its matching timestamp accent (136:153). */
-@Suppress("MagicNumber") // The hex IS the token; the frame defines no variable.
-private val UNREAD_INDIGO = Color(0xFF6366F1)
 
 /** The design's one red line: a call that was missed (136:193). */
 @Suppress("MagicNumber")

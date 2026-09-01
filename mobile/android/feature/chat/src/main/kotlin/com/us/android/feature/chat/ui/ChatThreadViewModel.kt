@@ -17,7 +17,6 @@ import com.us.android.core.chat.data.ThreadController
 import com.us.android.core.chat.data.ThreadUiState
 import com.us.android.core.chat.data.isValidMessage
 import com.us.android.core.chat.data.sendDurably
-import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.upload.ChatAttachmentUploader
 import com.us.android.core.model.SessionState
@@ -28,6 +27,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -42,11 +42,16 @@ data class ThreadRenderState(
     val thread: ThreadUiState,
     val pendingSends: List<PendingSend> = emptyList(),
     val offline: Boolean = false,
-    /** Non-null while an attachment is uploading; renders a progress row. */
-    val attachmentUploading: Boolean = false,
+    /**
+     * Photos CHOSEN but not yet sent.
+     *
+     * Picking used to upload immediately and queue the message on the spot,
+     * so there was no moment between "I tapped a photo" and "it is gone".
+     * Nothing leaves the device until Send, which is what makes picking
+     * several and changing your mind possible.
+     */
+    val staged: List<StagedAttachment> = emptyList(),
     val attachmentError: String? = null,
-    /** 0..100 while an attachment PUT is in flight. */
-    val attachmentProgressPercent: Int = 0,
     /** The signed-in user — own messages align right and carry send state. */
     val viewerId: String = "",
     /** The loaded conversation's display title (deep links arrive without one). */
@@ -72,6 +77,23 @@ data class ThreadRenderState(
      * outbox row for the same text.
      */
     val sendInFlight: Boolean = false,
+) {
+    /** Send is offered for text OR photos — a photo alone is a message. */
+    val canSend: Boolean
+        get() = (thread.canSend || staged.isNotEmpty()) && !sendInFlight && !thread.draftTooLong
+}
+
+/**
+ * One photo waiting on the composer.
+ *
+ * [uploading] drives the ring drawn over its thumbnail. [failed] keeps a
+ * photo whose upload was refused ON the composer rather than dropping it —
+ * the user picked it, so it stays until they send it or remove it.
+ */
+data class StagedAttachment(
+    val uri: Uri,
+    val uploading: Boolean = false,
+    val failed: Boolean = false,
 )
 
 @HiltViewModel
@@ -180,6 +202,10 @@ class ChatThreadViewModel @Inject constructor(
      */
     fun send() {
         if (_state.value.sendInFlight) return
+        if (_state.value.staged.isNotEmpty()) {
+            sendStagedAttachments()
+            return
+        }
         val draftAtSend = _state.value.thread.draft
         val text = draftAtSend.trim()
         if (!text.isValidMessage()) return
@@ -220,67 +246,109 @@ class ChatThreadViewModel @Inject constructor(
     }
 
     /**
-     * Uploads a picked image through the media authority (reserve → PUT →
-     * confirm → ready+passed) and queues a durable MEDIA send. Progress and
-     * cancellation ride the job: [cancelAttachment] aborts before the message
-     * ever references the asset, so nothing dangles server-side.
+     * Send, for a composer carrying photos: upload each, then queue it.
+     *
+     * The caption rides the FIRST photo rather than becoming a seventh
+     * message of its own, which is what a caption means to the person
+     * writing it. A photo whose upload is refused STAYS on the composer
+     * marked failed — the others still go, and the user keeps the one that
+     * did not so they can retry it rather than re-picking from the gallery.
      */
-    fun sendAttachment(uri: Uri) {
+    private fun sendStagedAttachments() {
         attachmentJob?.cancel()
         attachmentJob = viewModelScope.launch {
-            // Lease BEFORE the upload (F2-LB-1): an upload finishing after
-            // logout must not enqueue an old-account media message into the
-            // next session's outbox.
-            val lease = store.acquireWriteLease() ?: return@launch
+            val draftAtSend = _state.value.thread.draft
+            val caption = draftAtSend.trim()
             _state.value = _state.value.copy(
-                attachmentUploading = true,
+                sendInFlight = true,
                 attachmentError = null,
-                attachmentProgressPercent = 0,
+                staged = _state.value.staged.map { it.copy(uploading = true, failed = false) },
             )
-            val result = attachmentUploader.uploadImage(uri) { sent, total ->
-                if (total > 0) {
-                    _state.value = _state.value.copy(
-                        attachmentProgressPercent = ((sent * PERCENT) / total).toInt(),
-                    )
+            try {
+                var captionUsed = false
+                val refused = mutableListOf<Uri>()
+                for (item in _state.value.staged) {
+                    // Lease per photo (F2-LB-1): an upload that finishes
+                    // after logout must not enqueue into the next session.
+                    val lease = store.acquireWriteLease() ?: break
+                    val uploaded = attachmentUploader.uploadImage(item.uri)
+                    if (uploaded is AppResult.Success) {
+                        val queued = store.enqueueSend(
+                            conversationId,
+                            text = if (captionUsed) "" else caption,
+                            mediaId = uploaded.data,
+                            lease = lease,
+                        )
+                        if (queued == null) refused += item.uri else captionUsed = true
+                    } else {
+                        refused += item.uri
+                    }
                 }
-            }
-            when (result) {
-                is AppResult.Success -> {
-                    val key = store.enqueueSend(
-                        conversationId,
-                        text = "",
-                        mediaId = result.data,
-                        lease = lease,
-                    )
-                    _state.value = _state.value.copy(
-                        attachmentUploading = false,
-                        // A refused enqueue (logout raced the upload) must
-                        // not pretend the photo was queued.
-                        attachmentError = if (key == null) {
-                            "The photo couldn't be queued. Try again."
-                        } else {
-                            null
-                        },
-                    )
-                }
-                is AppResult.Failure -> _state.value = _state.value.copy(
-                    attachmentUploading = false,
-                    attachmentError = (result.error as? AppError.InvalidRequest)?.message
-                        ?: "The photo couldn't be uploaded. Try again.",
-                )
+                applyAttachmentOutcome(refused, captionUsed, draftAtSend)
+            } finally {
+                _state.value = _state.value.copy(sendInFlight = false)
             }
         }
     }
 
-    /** Cancels an in-flight attachment upload. */
-    fun cancelAttachment() {
-        attachmentJob?.cancel()
-        attachmentJob = null
-        _state.value = _state.value.copy(
-            attachmentUploading = false,
-            attachmentProgressPercent = 0,
-        )
+    /** Keeps the refused photos staged and clears the draft only if it was sent. */
+    private fun applyAttachmentOutcome(
+        refused: List<Uri>,
+        captionUsed: Boolean,
+        draftAtSend: String,
+    ) {
+        _state.update { state ->
+            val remaining = state.staged
+                .filter { it.uri in refused }
+                .map { it.copy(uploading = false, failed = true) }
+            state.copy(
+                staged = remaining,
+                attachmentError = if (remaining.isEmpty()) {
+                    null
+                } else {
+                    "${remaining.size} photo(s) couldn't be sent. Tap send to try again."
+                },
+                // The draft goes only when it actually rode a photo out, and
+                // only if the user has not typed something newer since.
+                thread = if (captionUsed && state.thread.draft == draftAtSend) {
+                    controller.onDraftChange("")
+                } else {
+                    state.thread
+                },
+            )
+        }
     }
+
+    /**
+     * Puts picked photos ON the composer. NOTHING is uploaded here.
+     *
+     * Picking used to upload and queue in one motion, so a mis-tap was
+     * already sent. Staging separates choosing from sending: the user can
+     * pick several, drop one, type a caption, and only then commit.
+     */
+    fun stageAttachments(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        _state.update { state ->
+            val existing = state.staged.map { it.uri }.toSet()
+            val room = MAX_ATTACHMENTS - state.staged.size
+            val added = uris.filterNot { it in existing }.take(room.coerceAtLeast(0))
+            state.copy(
+                staged = state.staged + added.map { StagedAttachment(uri = it) },
+                attachmentError = if (added.size < uris.filterNot { it in existing }.size) {
+                    "You can attach up to $MAX_ATTACHMENTS photos at once."
+                } else {
+                    null
+                },
+            )
+        }
+    }
+
+    /** Takes one photo back off the composer before it is sent. */
+    fun unstageAttachment(uri: Uri) = _state.update { state ->
+        state.copy(staged = state.staged.filterNot { it.uri == uri }, attachmentError = null)
+    }
+
+    fun dismissAttachmentError() = _state.update { it.copy(attachmentError = null) }
 
     /** Toggles the viewer's [emoji] reaction on [messageId]. */
     fun toggleReaction(messageId: String, emoji: String) = viewModelScope.launch {
@@ -395,9 +463,9 @@ class ChatThreadViewModel @Inject constructor(
         }
     }
 
-    private companion object {
+    internal companion object {
         const val CONVERSATION_ID_KEY = "conversationId"
         const val MERGE_WINDOW = 10
-        const val PERCENT = 100L
+        const val MAX_ATTACHMENTS = 10
     }
 }
