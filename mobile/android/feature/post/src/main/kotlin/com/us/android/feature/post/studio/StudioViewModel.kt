@@ -147,9 +147,13 @@ class StudioViewModel @Inject constructor(
     ) {
         val selectedPage: PageUi? get() = pages.firstOrNull { it.pageId == selectedPageId }
         val decidedCount: Int get() = pages.count { it.altDecided }
+
+        // Alt text is encouraged, never required: the share sheet nudges
+        // toward describing photos, but an undescribed photo must not stop a
+        // post from existing (founder call, 2026-09-01 — a mandatory
+        // description was killing the whole flow).
         val canPublish: Boolean
             get() = pages.isNotEmpty() &&
-                pages.all { it.altDecided } &&
                 publish !is PublishUi.Publishing
     }
 

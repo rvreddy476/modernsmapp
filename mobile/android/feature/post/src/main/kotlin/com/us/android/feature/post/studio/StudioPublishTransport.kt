@@ -102,10 +102,12 @@ class StudioPublishTransport @Inject constructor(
         }
 
         // The FINAL accessibility decision, written before the asset can be
-        // attached — same blocking semantics as the composer: a failure here is
-        // an error, because publishing with the empty placeholder would discard
-        // a decision the product insisted on.
-        if (!uploader.updateAccessibility(init.mediaId, altText, decorative)) {
+        // attached. Alt text is optional: when the user made no decision at
+        // all (no text, not marked decorative) the server-side placeholder
+        // already says exactly that, so there is nothing to write — but a
+        // decision that WAS made must land, or the post ships wrong.
+        val decisionMade = altText.isNotBlank() || decorative
+        if (decisionMade && !uploader.updateAccessibility(init.mediaId, altText, decorative)) {
             return UploadOutcome.Retryable("accessibility update failed")
         }
 

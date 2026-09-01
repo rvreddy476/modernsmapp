@@ -1019,13 +1019,14 @@ private fun ShareStep(
 
         Spacer(Modifier.height(UsTheme.spacing.m))
 
-        // The accessibility gate's honest status: what is blocking Share, and
-        // a tap that lands on the first page still waiting for its decision.
+        // Alt text is a nudge, not a gate: the row says what is still
+        // undescribed and a tap lands on the first such page, but Share never
+        // waits for it.
         val pending = state.pages.size - state.decidedCount
         ShareRow(
             title = "Alt text",
             value = altStatusText(pending),
-            emphasis = pending > 0,
+            emphasis = false,
             onClick = if (pending > 0) viewModel::onJumpToUndecided else null,
             testTag = "studio-alt-status",
         )
@@ -1045,9 +1046,7 @@ private fun ShareStep(
                     contentDescription = when {
                         publishing -> "Share. In progress."
                         state.canPublish -> "Share"
-                        state.pages.isEmpty() -> "Share. Unavailable: add photos first."
-                        else ->
-                            "Share. Unavailable: describe every photo or mark it decorative."
+                        else -> "Share. Unavailable: add photos first."
                     }
                 },
         ) {
@@ -1062,9 +1061,9 @@ private fun ShareStep(
 }
 
 private fun altStatusText(pending: Int): String = when (pending) {
-    0 -> "Ready"
-    1 -> "1 photo still needs a description"
-    else -> "$pending photos still need a description"
+    0 -> "Added"
+    1 -> "1 photo undescribed — optional"
+    else -> "$pending photos undescribed — optional"
 }
 
 @Composable

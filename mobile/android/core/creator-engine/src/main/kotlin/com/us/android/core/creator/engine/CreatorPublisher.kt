@@ -133,8 +133,10 @@ class CreatorPublisher @Inject constructor(
     /**
      * Load the project and apply the publish gate.
      *
-     * The gate is V-12's publish half: every page carries a REAL accessibility
-     * decision before anything leaves the device.
+     * Accessibility deliberately does NOT gate here (founder call,
+     * 2026-09-01): alt text is encouraged in the share sheet, but an
+     * undescribed page must not stop the post from existing. A decision that
+     * WAS made still ships with the page — see the transport.
      */
     private suspend fun loadPublishable(projectId: String): Gated {
         val project = when (val loaded = store.load(projectId)) {
@@ -145,11 +147,6 @@ class CreatorPublisher @Inject constructor(
                 return Gated.Blocked("project is corrupt: ${loaded.reason}")
             is ProjectStore.LoadResult.NeedsNewerApp ->
                 return Gated.Blocked("project needs a newer app version")
-        }
-        project.pages.firstOrNull {
-            !it.accessibility.decorative && it.accessibility.altText.isBlank()
-        }?.let {
-            return Gated.Blocked("page ${it.pageId} has no accessibility decision")
         }
         return Gated.Ready(project)
     }

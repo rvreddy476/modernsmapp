@@ -269,17 +269,19 @@ class CreatorPublisherTest {
         assertThat(db.creatorPublishOperationDao().liveSlot(id)).isNull()
     }
 
-    /** The accessibility gate: an undecided page publishes NOTHING. */
+    /**
+     * Alt text is optional: an undescribed page still publishes. Pins the
+     * founder's 2026-09-01 call that accessibility nudges, never blocks.
+     */
     @Test
-    fun `a page without an accessibility decision blocks the publish before any upload`() =
+    fun `a page without an accessibility decision still publishes`() =
         runBlocking {
             val id = projectWithPages("described" to false, "" to false)
 
             val result = publisher.publish(id)
 
-            assertThat(result).isInstanceOf(CreatorPublisher.PublishResult.Failed::class.java)
-            assertThat(transport.uploadedAlts).isEmpty()
-            assertThat(transport.createCalls).isEmpty()
+            assertThat(result).isInstanceOf(CreatorPublisher.PublishResult.Published::class.java)
+            assertThat(transport.createCalls).hasSize(1)
         }
 
     /** DATA LOSS: a tampered vault source fails closed before anything uploads. */

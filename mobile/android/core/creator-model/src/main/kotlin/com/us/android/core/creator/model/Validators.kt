@@ -206,11 +206,10 @@ object Validators {
             if (page.confirmedMedia == null) {
                 add("V-9: page ${page.pageId} is publishing with no confirmed media")
             }
-            // V-12, the publish half: every page needs a REAL decision before
-            // anything leaves the device.
-            if (!page.accessibility.decorative && page.accessibility.altText.isBlank()) {
-                add("V-12: page ${page.pageId} has neither a description nor a decorative mark")
-            }
+            // V-12's publish half (every page needs a decision before leaving
+            // the device) was retired 2026-09-01 by founder call: alt text is
+            // a nudge, never a publish blocker. Only the unconditional
+            // contradiction half (decorative AND described) remains, above.
         }
         if (project.status != AndroidCreatorProject.STATUS_PUBLISHED) return@buildList
 
