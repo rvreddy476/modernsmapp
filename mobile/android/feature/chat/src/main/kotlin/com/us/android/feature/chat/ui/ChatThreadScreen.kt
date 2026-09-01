@@ -454,7 +454,7 @@ private fun Composer(
                     },
             ) {
                 Icon(
-                    imageVector = UsIcons.Share,
+                    imageVector = UsIcons.Forward,
                     contentDescription = null,
                     tint = if (canSend) Color.White else UsTheme.extended.textGhost,
                     modifier = Modifier.size(SEND_GLYPH),

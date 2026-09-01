@@ -392,6 +392,15 @@ object UsIcons {
         horizontalLineTo(22f)
     }
 
+    /** A right arrow — the chat send glyph (the design's circular send). */
+    val Forward: ImageVector = stroked("Forward") {
+        moveTo(4f, 12f)
+        horizontalLineTo(19.6f)
+        moveTo(13.6f, 5.6f)
+        lineTo(20f, 12f)
+        lineTo(13.6f, 18.4f)
+    }
+
     val Back: ImageVector = stroked("Back") {
         moveTo(20f, 12f)
         horizontalLineTo(4.4f)
