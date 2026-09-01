@@ -2,6 +2,8 @@ package com.us.android.feature.profile.ui
 
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.model.SessionState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
@@ -13,9 +15,12 @@ import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.ProfileMediaUpdateDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
 import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.RelationshipDto
 import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import com.us.android.core.testing.MainDispatcherRule
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Rule
@@ -58,6 +63,17 @@ class ProfileViewModelTest {
         override suspend fun updateCover(body: UpdateMediaIdRequest) =
             ApiEnvelope(ProfileMediaUpdateDto(coverMediaId = body.mediaId))
 
+        var relationship: ApiEnvelope<RelationshipDto> = ApiEnvelope(RelationshipDto())
+
+        override suspend fun relationship(userId: String, otherId: String) =
+            relationship.also { calls += "relationship($userId,$otherId)" }
+
+        override suspend fun sendConnectionRequest(body: GraphUserIdRequest) =
+            mutationResult.also { calls += "sendConnectionRequest(${body.userId})" }
+
+        override suspend fun acceptConnectionRequest(body: GraphUserIdRequest) =
+            mutationResult.also { calls += "acceptConnectionRequest(${body.userId})" }
+
         override suspend fun follow(body: GraphUserIdRequest) =
             mutationResult.also { calls += "follow(${body.userId})" }
 
@@ -71,8 +87,16 @@ class ProfileViewModelTest {
             mutationResult.also { calls += "unblock(${body.userId})" }
     }
 
+    /** A signed-in viewer; the relationship fetch requires a known viewer id. */
+    private class FakeSessionProvider(
+        state: SessionState = SessionState.Authenticated(userId = "viewer", sessionId = "s"),
+    ) : SessionStateProvider {
+        override val sessionState: StateFlow<SessionState> = MutableStateFlow(state)
+    }
+
     private fun viewModel(api: FakeApi, userId: String? = "other-user") = ProfileViewModel(
         repository = ProfileRepository(api, ErrorMapper(json)),
+        sessionStateProvider = FakeSessionProvider(),
         savedStateHandle = SavedStateHandle(
             if (userId == null) emptyMap() else mapOf("userId" to userId),
         ),
@@ -187,6 +211,95 @@ class ProfileViewModelTest {
 
         assertThat(api.calls).contains("unfollow(u)")
         assertThat((vm.state.value as ProfileUiState.Content).relationship.isFollowing).isFalse()
+    }
+
+    /**
+     * The regression that motivated the fetch: the screen used to hardcode an
+     * empty relationship, so Follow re-armed on every visit no matter what the
+     * server knew. The header must render the graph's answer.
+     */
+    @Test
+    fun `the loaded relationship comes from the graph, not a guess`() = runTest {
+        val api = FakeApi().apply {
+            relationship = ApiEnvelope(
+                RelationshipDto(follows = true, connectionStatus = "pending_received"),
+            )
+        }
+
+        val content = viewModel(api).state.value as ProfileUiState.Content
+
+        assertThat(api.calls).contains("relationship(viewer,u)")
+        assertThat(content.relationship.isFollowing).isTrue()
+        assertThat(content.relationship.connectionStatus).isEqualTo("pending_received")
+    }
+
+    /** The graph endpoint is best-effort: a blip must not cost the screen. */
+    @Test
+    fun `a relationship failure still yields content`() = runTest {
+        val api = FakeApi().apply {
+            relationship = ApiEnvelope(error = ApiErrorBody(code = "INTERNAL_ERROR"))
+        }
+
+        val state = viewModel(api).state.value
+
+        assertThat(state).isInstanceOf(ProfileUiState.Content::class.java)
+        assertThat((state as ProfileUiState.Content).relationship.connectionStatus).isEmpty()
+    }
+
+    @Test
+    fun `add friend sends a request and settles on pending_sent`() = runTest {
+        val api = FakeApi()
+        val vm = viewModel(api)
+
+        vm.onConnectionAction()
+
+        val content = vm.state.value as ProfileUiState.Content
+        assertThat(api.calls).contains("sendConnectionRequest(u)")
+        assertThat(content.relationship.connectionStatus).isEqualTo("pending_sent")
+        assertThat(content.relationshipBusy).isFalse()
+    }
+
+    @Test
+    fun `accepting a pending request lands on accepted`() = runTest {
+        val api = FakeApi().apply {
+            relationship = ApiEnvelope(RelationshipDto(connectionStatus = "pending_received"))
+        }
+        val vm = viewModel(api)
+
+        vm.onConnectionAction()
+
+        val content = vm.state.value as ProfileUiState.Content
+        assertThat(api.calls).contains("acceptConnectionRequest(u)")
+        assertThat(content.relationship.isFriend).isTrue()
+    }
+
+    @Test
+    fun `a failed connection action rolls back and reports`() = runTest {
+        val api = FakeApi().apply {
+            mutationResult = ApiEnvelope(error = ApiErrorBody(code = "INTERNAL_ERROR"))
+        }
+        val vm = viewModel(api)
+
+        vm.onConnectionAction()
+
+        val content = vm.state.value as ProfileUiState.Content
+        assertThat(content.relationship.connectionStatus).isEqualTo("none")
+        assertThat(content.actionError).isNotNull()
+        assertThat(content.relationshipBusy).isFalse()
+    }
+
+    /** pending_sent and accepted render as facts; a tap must not fire a call. */
+    @Test
+    fun `connection action is inert once sent or accepted`() = runTest {
+        val api = FakeApi().apply {
+            relationship = ApiEnvelope(RelationshipDto(connectionStatus = "accepted"))
+        }
+        val vm = viewModel(api)
+
+        vm.onConnectionAction()
+
+        assertThat(api.calls).doesNotContain("sendConnectionRequest(u)")
+        assertThat(api.calls).doesNotContain("acceptConnectionRequest(u)")
     }
 
     /** Blocking ends the follow relationship server-side; the UI must agree. */

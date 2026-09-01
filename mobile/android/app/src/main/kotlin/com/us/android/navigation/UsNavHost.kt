@@ -44,6 +44,7 @@ import com.us.android.feature.chat.navigation.chatInboxScreen
 import com.us.android.feature.chat.navigation.chatLockSettingsScreen
 import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
+import com.us.android.feature.chat.navigation.friendsScreen
 import com.us.android.feature.chat.navigation.groupCreateScreen
 import com.us.android.feature.chat.navigation.groupInfoScreen
 import com.us.android.feature.chat.navigation.navigateToChatInbox
@@ -114,9 +115,6 @@ data class VerifyEmailRoute(
 // Home is FeedRoute and Me is OwnProfileRoute; both live in their feature
 // modules, because the feature owns the screen. The rest are declared here
 // because no feature module owns them yet.
-
-@Serializable
-data object FriendsRoute
 
 @Serializable
 data object ExploreRoute
@@ -382,6 +380,12 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenLockSettings = { navController.navigateToChatLockSettings() },
         onOpenCallHistory = { navController.navigateToCallHistory() },
     )
+    // The Friends TAB — no onBack, so the top bar renders no back control.
+    friendsScreen(
+        onOpenThread = { conversationId, title ->
+            navController.navigateToChatThread(conversationId, title)
+        },
+    )
     chatLockSettingsScreen(onBack = { navController.popBackStack() })
     chatThreadScreen(
         onBack = { navController.popBackStack() },
@@ -423,14 +427,6 @@ private fun NavGraphBuilder.tabDestinations(
         // reviewable on a real device at real density.
         DesignSystemGalleryScreen(
             onOpenOwnProfile = { navController.navigateToTopLevel(TopLevelDestination.ME) },
-        )
-    }
-    composable<FriendsRoute> {
-        PlaceholderScreen(
-            title = "Friends",
-            reason = "The graph endpoints are verified, but followers and following " +
-                "return two different shapes for offset and cursor paging. This " +
-                "lands with the paging work.",
         )
     }
     // The reels surface. The pool is supplied by :app so its lifetime belongs

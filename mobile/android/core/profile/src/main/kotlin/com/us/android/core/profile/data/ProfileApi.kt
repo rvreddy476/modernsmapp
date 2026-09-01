@@ -7,6 +7,7 @@ import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.ProfileMediaUpdateDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
 import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.RelationshipDto
 import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import retrofit2.http.Body
@@ -15,6 +16,7 @@ import retrofit2.http.HTTP
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * Profile and relationship endpoints.
@@ -31,6 +33,7 @@ import retrofit2.http.Path
  * `PUT /v1/profiles/me` on the 2026-08-17 repair recapture; see
  * prompt/android-api-contracts.md §5.
  */
+@Suppress("TooManyFunctions") // Mirrors the profile + graph route surface one-to-one.
 interface ProfileApi {
 
     /** Public projection. Succeeds anonymously; 404 `NOT_FOUND` when absent. */
@@ -73,6 +76,24 @@ interface ProfileApi {
     /** Counts, including the two the profile payload does not carry. */
     @GET("v1/profiles/{userId}/stats")
     suspend fun getStats(@Path("userId") userId: String): ApiEnvelope<ProfileStatsDto>
+
+    /**
+     * The viewer's edges toward one other account — the truth the profile
+     * header renders. `user_id` is the VIEWER (this endpoint reads query
+     * params, not the gateway identity header), `other_id` the profile.
+     */
+    @GET("v1/graph/relationship")
+    suspend fun relationship(
+        @Query("user_id") userId: String,
+        @Query("other_id") otherId: String,
+    ): ApiEnvelope<RelationshipDto>
+
+    /** Friend request: send names the TARGET, accept names the SENDER. */
+    @POST("v1/graph/connection-request")
+    suspend fun sendConnectionRequest(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>
+
+    @POST("v1/graph/connection-request/accept")
+    suspend fun acceptConnectionRequest(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>
 
     @POST("v1/graph/follow")
     suspend fun follow(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>

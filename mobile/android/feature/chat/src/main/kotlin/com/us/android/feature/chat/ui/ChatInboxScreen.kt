@@ -65,6 +65,7 @@ import com.us.android.core.ui.UsLoadingState
  * offline; a sync failure keeps the rows and shows a quiet banner instead of
  * blanking someone's inbox.
  */
+@Suppress("LongParameterList")
 @Composable
 fun ChatInboxScreen(
     onOpenConversation: (conversationId: String, title: String, isGroup: Boolean) -> Unit,

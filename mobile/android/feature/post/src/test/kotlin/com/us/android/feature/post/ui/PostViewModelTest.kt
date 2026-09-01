@@ -90,6 +90,12 @@ class PostViewModelTest {
             error("post screen must not write a cover")
         override suspend fun getStats(userId: String): Nothing =
             error("post screen must not read stats")
+        override suspend fun relationship(userId: String, otherId: String): Nothing =
+            error("post screen must not read relationships")
+        override suspend fun sendConnectionRequest(body: GraphUserIdRequest): Nothing =
+            error("post screen must not send friend requests")
+        override suspend fun acceptConnectionRequest(body: GraphUserIdRequest): Nothing =
+            error("post screen must not accept friend requests")
         override suspend fun follow(body: GraphUserIdRequest): Nothing =
             error("post screen must not follow")
         override suspend fun unfollow(body: GraphUserIdRequest): Nothing =

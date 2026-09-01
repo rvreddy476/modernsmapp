@@ -13,6 +13,7 @@ import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.ProfileMediaUpdateDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
 import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.RelationshipDto
 import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import com.us.android.core.testing.MainDispatcherRule
@@ -69,6 +70,15 @@ class EditProfileViewModelTest {
 
         override suspend fun updateCover(body: UpdateMediaIdRequest) =
             ApiEnvelope(ProfileMediaUpdateDto(coverMediaId = body.mediaId))
+
+        override suspend fun relationship(userId: String, otherId: String) =
+            ApiEnvelope(RelationshipDto())
+
+        override suspend fun sendConnectionRequest(body: GraphUserIdRequest) =
+            ApiEnvelope(GraphStatusDto("requested"))
+
+        override suspend fun acceptConnectionRequest(body: GraphUserIdRequest) =
+            ApiEnvelope(GraphStatusDto("accepted"))
 
         override suspend fun follow(body: GraphUserIdRequest) = ApiEnvelope(GraphStatusDto("followed"))
 

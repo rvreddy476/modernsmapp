@@ -7,6 +7,7 @@ import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.navOptions
 import com.us.android.core.designsystem.component.UsDefaultNavItems
 import com.us.android.core.designsystem.component.UsNavItem
+import com.us.android.feature.chat.navigation.FriendsRoute
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.ReelsRoute
 import com.us.android.feature.profile.navigation.OwnProfileRoute

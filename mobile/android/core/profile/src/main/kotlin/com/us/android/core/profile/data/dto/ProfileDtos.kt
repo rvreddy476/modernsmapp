@@ -220,3 +220,17 @@ data class GraphUserIdRequest(
 data class GraphStatusDto(
     val status: String = "",
 )
+
+/**
+ * The viewer→profile edge set from `GET /v1/graph/relationship`. Every field
+ * defaults so a server-side addition cannot break decoding.
+ */
+@Serializable
+data class RelationshipDto(
+    val follows: Boolean = false,
+    @SerialName("followed_by") val followedBy: Boolean = false,
+    val blocked: Boolean = false,
+    @SerialName("blocked_by") val blockedBy: Boolean = false,
+    @SerialName("is_connection") val isConnection: Boolean = false,
+    @SerialName("connection_status") val connectionStatus: String = "",
+)

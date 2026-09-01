@@ -3,8 +3,10 @@ package com.us.android.feature.profile.ui
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.model.ProfileRelationship
+import com.us.android.core.model.SessionState
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
@@ -19,6 +21,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ProfileViewModel @Inject constructor(
     private val repository: ProfileRepository,
+    sessionStateProvider: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -28,6 +31,10 @@ class ProfileViewModel @Inject constructor(
      * have to wait for a session read before it can navigate.
      */
     private val userId: String? = savedStateHandle.profileUserId()
+
+    /** The graph relationship endpoint wants the viewer's id explicitly. */
+    private val viewerId: String =
+        (sessionStateProvider.sessionState.value as? SessionState.Authenticated)?.userId.orEmpty()
 
     private val _state = MutableStateFlow<ProfileUiState>(ProfileUiState.Loading)
     val state: StateFlow<ProfileUiState> = _state.asStateFlow()
@@ -75,10 +82,20 @@ class ProfileViewModel @Inject constructor(
                         }
                         else -> null
                     }
+                    // The REAL relationship, not a guess. This used to be
+                    // hardcoded empty, so Follow reset to "Follow" on every
+                    // visit no matter what the server knew. Best-effort: a
+                    // graph blip degrades to the empty state, never an error.
+                    val relationship = if (!profile.isOwnProfile && viewerId.isNotBlank()) {
+                        val edge = repository.relationship(viewerId, profile.userId)
+                        (edge as? AppResult.Success)?.data ?: ProfileRelationship()
+                    } else {
+                        ProfileRelationship()
+                    }
                     _state.value = ProfileUiState.Content(
                         profile = profile,
                         stats = stats,
-                        relationship = ProfileRelationship(),
+                        relationship = relationship,
                     )
                 }
             }
@@ -111,6 +128,51 @@ class ProfileViewModel @Inject constructor(
                     is AppResult.Success -> content.copy(relationshipBusy = false)
                     is AppResult.Failure -> content.copy(
                         relationship = content.relationship.copy(isFollowing = wasFollowing),
+                        relationshipBusy = false,
+                        actionError = ProfileErrorText.forRelationshipAction(result.error),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * The friend-edge action, keyed on the CURRENT status: `none` sends a
+     * request, `pending_received` accepts the other side's. `pending_sent`
+     * and `accepted` render as facts, not buttons — cancel/unfriend are
+     * later work. Optimistic with rollback, same shape as follow.
+     */
+    fun onConnectionAction() {
+        val current = _state.value as? ProfileUiState.Content ?: return
+        if (current.relationshipBusy || current.profile.isOwnProfile) return
+        val target = current.profile.userId
+        val was = current.relationship.connectionStatus
+        val optimistic = when (was) {
+            "none", "" -> "pending_sent"
+            "pending_received" -> "accepted"
+            else -> return
+        }
+
+        _state.update {
+            (it as? ProfileUiState.Content)?.copy(
+                relationship = it.relationship.copy(connectionStatus = optimistic),
+                relationshipBusy = true,
+                actionError = null,
+            ) ?: it
+        }
+
+        viewModelScope.launch {
+            val result = if (was == "pending_received") {
+                repository.acceptConnectionRequest(target)
+            } else {
+                repository.sendConnectionRequest(target)
+            }
+            _state.update { state ->
+                val content = state as? ProfileUiState.Content ?: return@update state
+                when (result) {
+                    is AppResult.Success -> content.copy(relationshipBusy = false)
+                    is AppResult.Failure -> content.copy(
+                        relationship = content.relationship.copy(connectionStatus = was),
                         relationshipBusy = false,
                         actionError = ProfileErrorText.forRelationshipAction(result.error),
                     )

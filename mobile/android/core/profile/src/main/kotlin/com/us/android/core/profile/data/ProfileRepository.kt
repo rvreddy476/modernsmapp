@@ -5,6 +5,7 @@ import com.us.android.core.common.result.map
 import com.us.android.core.model.PersonalProfile
 import com.us.android.core.model.Profile
 import com.us.android.core.model.ProfileCounts
+import com.us.android.core.model.ProfileRelationship
 import com.us.android.core.model.ProfileStats
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
@@ -64,6 +65,27 @@ class ProfileRepository @Inject constructor(
 
     suspend fun getStats(userId: String): AppResult<ProfileStats> =
         apiCall(errorMapper) { api.getStats(userId) }.map { it.toDomain() }
+
+    /**
+     * The viewer's real edges toward [otherId] — what the profile header
+     * renders instead of guessing. [viewerId] is required because the graph
+     * endpoint reads it from the query, not the gateway identity header.
+     */
+    suspend fun relationship(viewerId: String, otherId: String): AppResult<ProfileRelationship> =
+        apiCall(errorMapper) { api.relationship(viewerId, otherId) }
+            .map {
+                ProfileRelationship(
+                    isFollowing = it.follows,
+                    isBlocked = it.blockedBy,
+                    connectionStatus = it.connectionStatus.ifBlank { "none" },
+                )
+            }
+
+    suspend fun sendConnectionRequest(userId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.sendConnectionRequest(GraphUserIdRequest(userId)) }.map { }
+
+    suspend fun acceptConnectionRequest(senderUserId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.acceptConnectionRequest(GraphUserIdRequest(senderUserId)) }.map { }
 
     suspend fun follow(userId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.follow(GraphUserIdRequest(userId)) }.map { }

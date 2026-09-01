@@ -2,6 +2,7 @@ package com.us.android.feature.profile.ui
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.chat.data.AddMemberRequest
+import com.us.android.core.chat.data.BulkPresenceRequest
 import com.us.android.core.chat.data.ChatApi
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.ConversationDto
@@ -137,6 +138,7 @@ class StartChatViewModelTest {
         ): Nothing = error("not used")
 
         override suspend fun presence(conversationId: String): Nothing = error("not used")
+        override suspend fun bulkPresence(body: BulkPresenceRequest): Nothing = error("not used")
     }
 
     private fun viewModel(api: FakeChatApi) =

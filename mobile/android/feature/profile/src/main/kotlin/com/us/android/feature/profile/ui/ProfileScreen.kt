@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -93,6 +94,7 @@ fun ProfileScreen(
         actions = ProfileActions(
             onRetry = viewModel::load,
             onFollowToggle = viewModel::onFollowToggle,
+            onConnectionAction = viewModel::onConnectionAction,
             onBlockToggle = viewModel::onBlockToggle,
             onDismissActionError = viewModel::dismissActionError,
             onMessage = if (destinations.onOpenChat == null) {
@@ -119,6 +121,7 @@ data class ProfileDestinations(
 internal data class ProfileActions(
     val onRetry: () -> Unit,
     val onFollowToggle: () -> Unit,
+    val onConnectionAction: () -> Unit = {},
     val onBlockToggle: () -> Unit,
     val onDismissActionError: () -> Unit,
     val onMessage: ((userId: String, displayName: String) -> Unit)? = null,
@@ -240,6 +243,7 @@ private fun LoadedProfile(
                 relationship = state.relationship,
                 busy = state.relationshipBusy,
                 onFollowToggle = actions.onFollowToggle,
+                onConnectionAction = actions.onConnectionAction,
                 onBlockToggle = actions.onBlockToggle,
             )
         }
@@ -416,6 +420,7 @@ private fun RelationshipControls(
     relationship: ProfileRelationship,
     busy: Boolean,
     onFollowToggle: () -> Unit,
+    onConnectionAction: () -> Unit,
     onBlockToggle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -448,6 +453,11 @@ private fun RelationshipControls(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            ConnectionControl(
+                status = relationship.connectionStatus,
+                busy = busy,
+                onConnectionAction = onConnectionAction,
+            )
             UsSecondaryButton(
                 text = "Block",
                 onClick = onBlockToggle,
@@ -455,6 +465,50 @@ private fun RelationshipControls(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+}
+
+/**
+ * The friend edge, one control per state. `pending_sent` and `accepted`
+ * render disabled — the server offers no cancel or unfriend route yet, and a
+ * tappable button that 4xxs is worse than a fact.
+ */
+@Composable
+private fun ConnectionControl(
+    status: String,
+    busy: Boolean,
+    onConnectionAction: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val fill = modifier.fillMaxWidth()
+    when (status) {
+        "pending_sent" -> UsSecondaryButton(
+            text = "Request sent",
+            onClick = {},
+            enabled = false,
+            modifier = fill.testTag("profile-connection"),
+        )
+
+        "pending_received" -> UsButton(
+            text = "Accept friend request",
+            onClick = onConnectionAction,
+            loading = busy,
+            modifier = fill.testTag("profile-connection"),
+        )
+
+        "accepted" -> UsSecondaryButton(
+            text = "Friends",
+            onClick = {},
+            enabled = false,
+            modifier = fill.testTag("profile-connection"),
+        )
+
+        else -> UsSecondaryButton(
+            text = "Add friend",
+            onClick = onConnectionAction,
+            enabled = !busy,
+            modifier = fill.testTag("profile-connection"),
+        )
     }
 }
 
@@ -499,7 +553,12 @@ private fun previewState(
 private fun PreviewHost(state: ProfileUiState) = UsTheme {
     ProfileContent(
         state = state,
-        actions = ProfileActions({}, {}, {}, {}),
+        actions = ProfileActions(
+            onRetry = {},
+            onFollowToggle = {},
+            onBlockToggle = {},
+            onDismissActionError = {},
+        ),
         destinations = ProfileDestinations({}, {}, onEditProfile = {}),
     )
 }
