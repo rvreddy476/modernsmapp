@@ -29,6 +29,18 @@ type Notification struct {
 	DeepLink       string     `json:"deep_link,omitempty"`
 	IsRead         bool       `json:"is_read"`
 	CreatedAt      time.Time  `json:"created_at"`
+	// Actor presentation, hydrated at read time from identity-profile —
+	// never stored in Scylla. Nil when hydration was skipped or failed;
+	// clients must render a fallback from ActorUserID.
+	Actor *NotificationActor `json:"actor,omitempty"`
+}
+
+// NotificationActor is the small public identity an inbox row renders with —
+// the notifications twin of the feed's and comment list's embedded author.
+type NotificationActor struct {
+	ID          uuid.UUID `json:"id"`
+	Username    string    `json:"username"`
+	DisplayName string    `json:"display_name"`
 }
 
 // CQL migration (run once):

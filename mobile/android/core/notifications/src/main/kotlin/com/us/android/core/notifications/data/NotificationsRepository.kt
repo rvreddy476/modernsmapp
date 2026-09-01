@@ -124,6 +124,7 @@ internal fun NotificationDto.toDomain(): Notification = Notification(
     ts = ts,
     kind = NotificationKind.fromWire(type),
     actorUserId = actorUserId,
+    actorName = actor?.displayName.orEmpty(),
     entityType = entityType,
     entityId = entityId,
     target = NotificationTarget.parse(deepLink),

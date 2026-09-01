@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,11 @@ type Service struct {
 	// callPushRequired makes the CALL delivery path fail closed on any
 	// missing push transport (CALL-LB-4). Set via SetCallPushRequired.
 	callPushRequired bool
+
+	// Actor hydration (identity-profile batch contract). Empty URL
+	// disables it; nil client falls back to http.DefaultClient.
+	profileServiceURL string
+	profileClient     *http.Client
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {

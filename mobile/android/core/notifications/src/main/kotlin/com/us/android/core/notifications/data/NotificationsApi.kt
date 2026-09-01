@@ -75,6 +75,16 @@ data class NotificationDto(
     @SerialName("deep_link") val deepLink: String = "",
     @SerialName("is_read") val isRead: Boolean = false,
     @SerialName("created_at") val createdAt: String = "",
+    /** Read-time hydration from identity-profile; null when it failed. */
+    val actor: NotificationActorDto? = null,
+)
+
+/** The embedded actor block — notification-service's read-time hydration. */
+@Serializable
+data class NotificationActorDto(
+    val id: String = "",
+    val username: String = "",
+    @SerialName("display_name") val displayName: String = "",
 )
 
 @Serializable

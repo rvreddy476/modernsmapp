@@ -89,6 +89,7 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch notifications", nil)
 		return
 	}
+	h.svc.HydrateActors(c.Request.Context(), page.Items)
 
 	var meta *api.Meta
 	if page.NextCursor != "" {

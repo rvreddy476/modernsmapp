@@ -18,6 +18,8 @@ data class Notification(
     val ts: String,
     val kind: NotificationKind,
     val actorUserId: String,
+    /** Display name from server-side hydration; empty when unknown. */
+    val actorName: String = "",
     val entityType: String,
     val entityId: String,
     val target: NotificationTarget,

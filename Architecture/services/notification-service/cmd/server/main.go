@@ -130,6 +130,9 @@ func main() {
 	// 8. Dependencies
 	scyllaStore := scylla.New(session)
 	notifSvc := service.New(scyllaStore, rdb)
+	// Inbox actor hydration — the same identity-profile batch contract the
+	// feed and comment lists use.
+	notifSvc.SetProfileServiceURL(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"))
 	notifSvc.SetPGStore(pgStore)
 
 	// Transactional email transport. Uses SMTP when configured, otherwise logs.

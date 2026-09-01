@@ -259,9 +259,13 @@ private fun NotificationRow(notification: Notification, onClick: () -> Unit) {
                 )
             }
         } else {
-            // No name to render yet (actor hydration is Slice D follow-up),
-            // but the seed keeps one stable colour per actor.
-            UsAvatar(name = "", size = UsAvatarSize.Medium, seed = notification.actorUserId)
+            // Named when hydration supplied an actor; the seed keeps one
+            // stable colour per actor either way.
+            UsAvatar(
+                name = notification.actorName,
+                size = UsAvatarSize.Medium,
+                seed = notification.actorUserId,
+            )
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -305,28 +309,31 @@ private fun LoadingBlock() {
 /**
  * The sentence a row shows.
  *
- * Deliberately actor-less for now: resolving display names would mean a profile
- * lookup per row, and an inbox that fires N requests on open is worse than one
- * that says "Someone". Names are tracked as Slice D follow-up work, not faked
- * here with an id.
+ * The actor's name comes from the server's batch hydration; when it is
+ * missing (hydration failed, or the account is gone) the row says "Someone"
+ * — honest, and never an id dressed up as a name.
  *
  * [NotificationKind.Unknown] renders a generic line rather than being dropped:
  * one notification service serves every vertical in this super-app, so this
  * client WILL receive types it has no screen for, and a silently missing row is
  * worse than a vague one.
  */
-internal fun Notification.describe(): String = when (kind) {
-    NotificationKind.Reaction -> "Someone reacted to your post"
-    NotificationKind.Comment -> "Someone commented on your post"
-    NotificationKind.CommentReaction -> "Someone reacted to your comment"
-    NotificationKind.Follow -> "You have a new follower"
-    NotificationKind.Mention -> "You were mentioned in a post"
-    NotificationKind.Repost -> "Someone reposted your post"
-    NotificationKind.ConnectionRequest -> "You have a new connection request"
-    NotificationKind.ConnectionAccepted -> "Your connection request was accepted"
-    NotificationKind.NewSubscriber -> "You have a new subscriber"
-    NotificationKind.MissedCall -> "Missed call"
-    is NotificationKind.Unknown -> "You have a new notification"
+internal fun Notification.describe(): String {
+    val who = actorName.ifBlank { "Someone" }
+    return when (kind) {
+        NotificationKind.Reaction -> "$who reacted to your post"
+        NotificationKind.Comment -> "$who commented on your post"
+        NotificationKind.CommentReaction -> "$who reacted to your comment"
+        NotificationKind.Follow -> "$who started following you"
+        NotificationKind.Mention -> "$who mentioned you in a post"
+        NotificationKind.Repost -> "$who reposted your post"
+        NotificationKind.ConnectionRequest -> "$who sent you a connection request"
+        NotificationKind.ConnectionAccepted -> "$who accepted your connection request"
+        NotificationKind.NewSubscriber -> "$who subscribed to you"
+        NotificationKind.MissedCall ->
+            if (actorName.isBlank()) "Missed call" else "Missed call from $who"
+        is NotificationKind.Unknown -> "You have a new notification"
+    }
 }
 
 /** How many rows from the end to start fetching the next page. */

@@ -162,7 +162,7 @@ class NotificationsJourneyTest {
         launch(FakeRepository(listOf(row("n1"), row("n2", kind = NotificationKind.Follow)), 2))
 
         composeRule.onNodeWithContentDescription("Unread. Someone commented on your post").assertExists()
-        composeRule.onNodeWithContentDescription("Unread. You have a new follower").assertExists()
+        composeRule.onNodeWithContentDescription("Unread. Someone started following you").assertExists()
     }
 
     /**
@@ -224,7 +224,7 @@ class NotificationsJourneyTest {
             ),
         )
 
-        composeRule.onNodeWithContentDescription("Unread. You have a new follower").performClick()
+        composeRule.onNodeWithContentDescription("Unread. Someone started following you").performClick()
         composeRule.waitForIdle()
 
         assertThat(opened).containsExactly(NotificationTarget.Profile("user-9"))
