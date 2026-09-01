@@ -89,13 +89,13 @@ data class ThreadRenderState(
 /**
  * One photo waiting on the composer.
  *
- * [uploading] drives the ring drawn over its thumbnail. [failed] keeps a
- * photo whose upload was refused ON the composer rather than dropping it —
- * the user picked it, so it stays until they send it or remove it.
+ * [failed] keeps a photo whose upload was refused ON the composer rather
+ * than dropping it — the user picked it, so it stays until they send it or
+ * remove it. In-flight state is screen-wide (sendInFlight), drawn as ONE
+ * indicator, not one ring per photo.
  */
 data class StagedAttachment(
     val uri: Uri,
-    val uploading: Boolean = false,
     val failed: Boolean = false,
 )
 
@@ -268,7 +268,7 @@ class ChatThreadViewModel @Inject constructor(
             _state.value = _state.value.copy(
                 sendInFlight = true,
                 attachmentError = null,
-                staged = _state.value.staged.map { it.copy(uploading = true, failed = false) },
+                staged = _state.value.staged.map { it.copy(failed = false) },
             )
             try {
                 var captionUsed = false
@@ -309,7 +309,7 @@ class ChatThreadViewModel @Inject constructor(
         _state.update { state ->
             val remaining = state.staged
                 .filter { it.uri in refused }
-                .map { it.copy(uploading = false, failed = true) }
+                .map { it.copy(failed = true) }
             state.copy(
                 staged = remaining,
                 replyingTo = if (captionUsed) null else state.replyingTo,

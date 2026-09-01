@@ -136,7 +136,7 @@ private fun RequestsTabs(selected: RequestsTab, onSelect: (RequestsTab) -> Unit)
                         .width(SEGMENT_INDICATOR_WIDTH)
                         .height(SEGMENT_INDICATOR_HEIGHT)
                         .clip(RoundedCornerShape(UsTheme.radii.full))
-                        .background(if (active) FRIENDS_ACCENT else Color.Transparent),
+                        .background(if (active) UsTheme.extended.textPrimary else Color.Transparent),
                 )
             }
         }
@@ -237,10 +237,10 @@ private fun RequestIdentityRow(item: FriendRequestItem) {
                 text = "Suggest",
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = FRIENDS_ACCENT,
+                color = UsTheme.extended.textPrimary,
                 modifier = Modifier
                     .clip(RoundedCornerShape(UsTheme.radii.full))
-                    .background(FRIENDS_ACCENT.copy(alpha = BADGE_BG_ALPHA))
+                    .background(UsTheme.extended.glassBg)
                     .padding(
                         horizontal = UsTheme.spacing.s,
                         vertical = UsTheme.spacing.xs,
@@ -296,4 +296,3 @@ private val BUTTON_BORDER = 1.dp
 private val SEGMENT_INDICATOR_WIDTH = 60.dp
 private val SEGMENT_INDICATOR_HEIGHT = 2.dp
 private const val BUSY_ALPHA = 0.6f
-private const val BADGE_BG_ALPHA = 0.13f

@@ -236,10 +236,17 @@ fun ChatThreadScreen(
             }
 
             if (render.staged.isNotEmpty()) {
-                StagedAttachmentRow(
-                    staged = render.staged,
-                    onRemove = viewModel::unstageAttachment,
-                )
+                if (render.sendInFlight) {
+                    // ONE indicator for the whole send. Four thumbnails each
+                    // wearing a ring read as four separate problems; one
+                    // spinner and a count reads as one send doing its work.
+                    SendingAttachmentsRow(count = render.staged.size)
+                } else {
+                    StagedAttachmentRow(
+                        staged = render.staged,
+                        onRemove = viewModel::unstageAttachment,
+                    )
+                }
             }
 
             Composer(
@@ -428,50 +435,57 @@ private fun StagedAttachmentRow(
                             },
                         ),
                 )
-                if (item.uploading) {
-                    // The ring sits ON the photo, dimming it — the picture
-                    // stays visible underneath so it is obvious WHICH one is
-                    // going up.
+                IconButton(
+                    onClick = { onRemove(item.uri) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(REMOVE_BUTTON),
+                ) {
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(STAGED_THUMB)
-                            .clip(RoundedCornerShape(UsTheme.radii.medium))
+                            .size(REMOVE_GLYPH_BG)
+                            .clip(CircleShape)
                             .background(SCRIM),
                     ) {
-                        CircularProgressIndicator(
-                            color = Color.White,
-                            strokeWidth = SPINNER_STROKE,
-                            modifier = Modifier
-                                .size(SPINNER_SIZE)
-                                .testTag("attachment-progress"),
+                        Icon(
+                            imageVector = UsIcons.Close,
+                            contentDescription = "Remove photo",
+                            tint = Color.White,
+                            modifier = Modifier.size(REMOVE_GLYPH),
                         )
-                    }
-                } else {
-                    IconButton(
-                        onClick = { onRemove(item.uri) },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .size(REMOVE_BUTTON),
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(REMOVE_GLYPH_BG)
-                                .clip(CircleShape)
-                                .background(SCRIM),
-                        ) {
-                            Icon(
-                                imageVector = UsIcons.Close,
-                                contentDescription = "Remove photo",
-                                tint = Color.White,
-                                modifier = Modifier.size(REMOVE_GLYPH),
-                            )
-                        }
                     }
                 }
             }
         }
+    }
+}
+
+/** The single in-flight indicator: one spinner for the whole send. */
+@Composable
+private fun SendingAttachmentsRow(count: Int) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = UsTheme.spacing.pageHorizontal,
+                vertical = UsTheme.spacing.s,
+            ),
+    ) {
+        CircularProgressIndicator(
+            color = UsTheme.extended.chatAccent,
+            strokeWidth = SPINNER_STROKE,
+            modifier = Modifier
+                .size(SPINNER_SIZE)
+                .testTag("attachment-progress"),
+        )
+        Text(
+            text = if (count == 1) "Sending photo…" else "Sending $count photos…",
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+        )
     }
 }
 
@@ -710,9 +724,11 @@ private fun EmojiPanel(onPick: (String) -> Unit) {
 /**
  * A queued or parked-failed send from the durable outbox.
  *
- * Queued renders dimmed with a "Sending…" caption; a parked-failed row states
- * it plainly and offers Retry (same idempotency key — a replay, never a
- * duplicate) and Discard.
+ * IT IS ALREADY AN OWN MESSAGE. This used to be a left-aligned muted text
+ * row that turned into a right-hand bubble when the server confirmed — a
+ * message that visibly JUMPED from their side to yours. The queued row now
+ * renders as the same right-aligned own bubble it is about to become,
+ * dimmed until confirmed, so a send never changes sides.
  */
 @Composable
 private fun PendingSendRow(
@@ -721,6 +737,7 @@ private fun PendingSendRow(
     onDiscard: () -> Unit,
 ) {
     Column(
+        horizontalAlignment = Alignment.End,
         modifier = Modifier
             .fillMaxWidth()
             .padding(
@@ -729,26 +746,19 @@ private fun PendingSendRow(
             )
             .testTag("thread-pending-send"),
     ) {
-        // A queued PHOTO shows the photo, not the words "📷 Photo".
-        //
-        // Sends drain through WorkManager, so there is a real gap between the
-        // tap and the confirmed bubble. A queued text row already renders its
-        // own text, which is why sending text felt instant while sending an
-        // image looked like nothing happened until the screen was reopened.
-        // The upload finishes BEFORE the row is enqueued, so the id is live
-        // and the authorized serve route renders it immediately.
-        pending.mediaId?.let { mediaId ->
-            Box(modifier = Modifier.alpha(PENDING_ALPHA)) {
-                AttachmentImage(mediaId = mediaId)
-            }
-        }
-        if (pending.text.isNotBlank() || pending.mediaId == null) {
-            Text(
+        MessageBubble(
+            message = Message(
+                id = "pending:" + pending.idempotencyKey,
+                conversationId = pending.conversationId,
+                senderId = "",
+                senderDisplayName = null,
                 text = pending.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textMuted,
-            )
-        }
+                mediaId = pending.mediaId,
+                createdAt = "",
+                pending = true,
+            ),
+            isOwn = true,
+        )
         if (pending.failed) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -764,12 +774,6 @@ private fun PendingSendRow(
                 }
                 TextButton(onClick = onDiscard) { Text("Discard") }
             }
-        } else {
-            Text(
-                "Sending…",
-                style = MaterialTheme.typography.bodySmall,
-                color = UsTheme.extended.textMuted,
-            )
         }
     }
 }
@@ -937,10 +941,13 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
     // message, because the quote card needs a ground to sit on.
     val photoOnly = message.mediaId != null && message.text.isBlank() &&
         message.replyToId == null
+    // Own bubbles are LIGHT green with near-black text — the solid accent
+    // fill read as a hard slab of colour down the whole thread. The accent
+    // survives where it is small: the send button, the quote bar, badges.
     val bubbleColor = when {
         photoOnly -> Color.Transparent
-        isOwn && message.pending -> UsTheme.extended.chatAccent.copy(alpha = PENDING_ALPHA)
-        isOwn -> UsTheme.extended.chatAccent
+        isOwn && message.pending -> OWN_BUBBLE.copy(alpha = PENDING_ALPHA)
+        isOwn -> OWN_BUBBLE
         else -> UsTheme.extended.bgCardSolid
     }
     Column(
@@ -961,7 +968,7 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
             QuoteCard(
                 author = quoteAuthor,
                 preview = message.replyToPreview.orEmpty(),
-                onDarkGround = isOwn || message.text.isBlank(),
+                lightGround = isOwn,
             )
         }
         message.mediaId?.let { mediaId ->
@@ -971,7 +978,7 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
             Text(
                 text = message.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isOwn) Color.White else UsTheme.extended.textPrimary,
+                color = if (isOwn) OWN_BUBBLE_INK else UsTheme.extended.textPrimary,
             )
         }
     }
@@ -983,19 +990,22 @@ private fun MessageBubble(message: Message, isOwn: Boolean, quoteAuthor: String 
  * chat green, a visible step darker on the incoming card.
  */
 @Composable
-private fun QuoteCard(author: String, preview: String, onDarkGround: Boolean) {
+private fun QuoteCard(author: String, preview: String, lightGround: Boolean) {
+    // On the light own bubble the quote inks dark; on the dark incoming
+    // card it stays white. The accent bar is the accent on both.
+    val ink = if (lightGround) OWN_BUBBLE_INK else Color.White
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = UsTheme.spacing.s)
             .clip(RoundedCornerShape(UsTheme.radii.small))
-            .background(QUOTE_GROUND),
+            .background(if (lightGround) QUOTE_GROUND_LIGHT else QUOTE_GROUND),
     ) {
         Box(
             modifier = Modifier
                 .width(QUOTE_BAR)
                 .height(QUOTE_MIN_HEIGHT)
-                .background(if (onDarkGround) Color.White else UsTheme.extended.chatAccent),
+                .background(UsTheme.extended.chatAccent),
         )
         Column(
             modifier = Modifier.padding(
@@ -1008,14 +1018,14 @@ private fun QuoteCard(author: String, preview: String, onDarkGround: Boolean) {
                     text = author,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = ink,
                     maxLines = 1,
                 )
             }
             Text(
                 text = preview.ifBlank { "Message" },
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = QUOTE_TEXT_ALPHA),
+                color = ink.copy(alpha = QUOTE_TEXT_ALPHA),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1147,9 +1157,12 @@ private val QUOTE_MIN_HEIGHT = 40.dp
 private val REPLY_BANNER_HEIGHT = 44.dp
 private const val QUOTE_TEXT_ALPHA = 0.8f
 
-/** Translucent ground the quote card sits on, inside either bubble fill. */
+/** Translucent grounds the quote card sits on, one per bubble fill. */
 @Suppress("MagicNumber")
 private val QUOTE_GROUND = Color(0x33000000)
+
+@Suppress("MagicNumber")
+private val QUOTE_GROUND_LIGHT = Color(0x1A000000)
 
 // Composer attachments, staged and waiting for Send.
 private val STAGED_THUMB = 72.dp
@@ -1163,6 +1176,13 @@ private val REMOVE_GLYPH = 12.dp
 /** Dim laid over a thumbnail so a white ring or glyph reads on any photo. */
 @Suppress("MagicNumber")
 private val SCRIM = Color(0x99000000)
+
+/** Own-message surface: soft green, dark ink — light like a paper note. */
+@Suppress("MagicNumber")
+private val OWN_BUBBLE = Color(0xFFD9FDD3)
+
+@Suppress("MagicNumber")
+private val OWN_BUBBLE_INK = Color(0xFF10231B)
 
 /** Tighter tracking is what separates a NAME from a label set in the same face. */
 @Suppress("MagicNumber") // The tracking value IS the constant.

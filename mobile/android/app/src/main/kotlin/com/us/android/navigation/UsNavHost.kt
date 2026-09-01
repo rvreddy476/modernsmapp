@@ -388,6 +388,9 @@ private fun NavGraphBuilder.tabDestinations(
             navController.navigateToChatThread(conversationId, title)
         },
         onOpenRequests = { navController.navigateToFriendRequests() },
+        // The frame (140:210) puts a back arrow on the tab; as a tab root,
+        // popping lands on Home — the same place system back goes.
+        onBack = { navController.popBackStack() },
     )
     friendRequestsScreen(onBack = { navController.popBackStack() })
     chatLockSettingsScreen(onBack = { navController.popBackStack() })

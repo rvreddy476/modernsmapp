@@ -43,7 +43,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsScaffold
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
@@ -77,34 +76,10 @@ fun FriendsScreen(
 
     UsScaffold(
         topBar = {
-            UsTopBar(
-                title = "Friends",
+            FriendsHeader(
+                pendingCount = state.pendingRequestCount,
                 onBack = onBack,
-                actions = {
-                    Box {
-                        IconButton(
-                            onClick = onOpenRequests,
-                            modifier = Modifier.testTag("friends-requests"),
-                        ) {
-                            Icon(
-                                imageVector = UsIcons.UserPlus,
-                                contentDescription = "Friend requests" +
-                                    if (state.pendingRequestCount > 0) {
-                                        ", ${state.pendingRequestCount} pending"
-                                    } else {
-                                        ""
-                                    },
-                                tint = UsTheme.extended.textPrimary,
-                            )
-                        }
-                        if (state.pendingRequestCount > 0) {
-                            Badge(
-                                containerColor = FRIENDS_ACCENT,
-                                modifier = Modifier.align(Alignment.TopEnd),
-                            ) { Text(state.pendingRequestCount.toString()) }
-                        }
-                    }
-                },
+                onOpenRequests = onOpenRequests,
             )
         },
         applyPageGutter = false,
@@ -140,6 +115,66 @@ fun FriendsScreen(
                         "accepted requests show up here.",
                 )
                 else -> FriendsList(state = state, viewModel = viewModel)
+            }
+        }
+    }
+}
+
+/**
+ * The Messages-style header (140:209): back arrow, bold LEFT title — one
+ * voice with the inbox rather than a centred bar of its own — and the
+ * user-plus door to requests with the pending count.
+ */
+@Composable
+private fun FriendsHeader(
+    pendingCount: Int,
+    onBack: (() -> Unit)?,
+    onOpenRequests: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = UsTheme.spacing.m,
+                vertical = UsTheme.spacing.s,
+            ),
+    ) {
+        if (onBack != null) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = UsIcons.Back,
+                    contentDescription = "Back",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+        }
+        Text(
+            text = "Friends",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.textPrimary,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = if (onBack == null) UsTheme.spacing.s else 0.dp),
+        )
+        Box {
+            IconButton(
+                onClick = onOpenRequests,
+                modifier = Modifier.testTag("friends-requests"),
+            ) {
+                Icon(
+                    imageVector = UsIcons.UserPlus,
+                    contentDescription = "Friend requests" +
+                        if (pendingCount > 0) ", $pendingCount pending" else "",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+            if (pendingCount > 0) {
+                Badge(
+                    containerColor = UsTheme.extended.chatAccent,
+                    modifier = Modifier.align(Alignment.TopEnd),
+                ) { Text(pendingCount.toString()) }
             }
         }
     }
@@ -225,7 +260,7 @@ private fun FriendsSearchField(query: String, onQueryChange: (String) -> Unit) {
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = UsTheme.extended.textPrimary,
                 ),
-                cursorBrush = SolidColor(FRIENDS_ACCENT),
+                cursorBrush = SolidColor(UsTheme.extended.chatAccent),
                 modifier = Modifier
                     .fillMaxWidth()
                     .semantics { contentDescription = "Search friends" }
@@ -267,7 +302,7 @@ private fun FriendsTabs(selected: FriendsTab, onSelect: (FriendsTab) -> Unit) {
                         .width(TAB_INDICATOR_WIDTH)
                         .height(TAB_INDICATOR_HEIGHT)
                         .clip(RoundedCornerShape(UsTheme.radii.full))
-                        .background(if (active) FRIENDS_ACCENT else Color.Transparent),
+                        .background(if (active) UsTheme.extended.textPrimary else Color.Transparent),
                 )
             }
         }
@@ -354,11 +389,8 @@ private fun FriendRow(
     }
 }
 
-// ── The Figma friends frame (140:199) ───────────────────────────────────
-
-/** The frame's accent — tabs, badges, cursor. */
-@Suppress("MagicNumber")
-internal val FRIENDS_ACCENT = Color(0xFFF97316)
+// ── The Figma friends frame (140:199), sans its orange: the founder called
+// the accent harsh, so the live state speaks in white and the app's green.
 
 private val ROW_GAP = 12.dp
 private val ROW_PADDING = 12.dp
