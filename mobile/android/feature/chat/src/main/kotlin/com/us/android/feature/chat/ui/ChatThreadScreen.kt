@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -54,6 +56,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -182,10 +185,24 @@ fun ChatThreadScreen(
                                 onDiscard = { viewModel.abandonSend(pending.idempotencyKey) },
                             )
                         }
-                        items(state.messages, key = { it.id }) { message ->
+                        itemsIndexed(
+                            state.messages,
+                            key = { _, message -> message.id },
+                        ) { index, message ->
+                            // The sender label belongs to GROUPS only, and
+                            // only at the head of a run. A direct thread has
+                            // exactly two people and the alignment already
+                            // says which is which, so naming every incoming
+                            // bubble just repeats the top bar over and over.
+                            //
+                            // The list is newest-first under reverseLayout,
+                            // so the message drawn ABOVE this one is index+1.
+                            val previousSender = state.messages.getOrNull(index + 1)?.senderId
                             MessageRow(
                                 message = message,
                                 isOwn = message.senderId == render.viewerId,
+                                showSenderName = (isGroup || render.loadedIsGroup) &&
+                                    previousSender != message.senderId,
                                 readByPeer = message.id == state.peerLastReadMessageId,
                                 onReact = { emoji ->
                                     viewModel.toggleReaction(message.id, emoji)
@@ -245,7 +262,11 @@ private fun ChatThreadTopBar(
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
             modifier = Modifier
                 .fillMaxWidth()
-                .background(UsTheme.extended.bgCardSolid)
+                // The bar shares the page's colour rather than sitting on a
+                // lighter slab. The old bgCardSolid band read as a grey box
+                // pinned across the top, and the composer wore a matching one
+                // at the bottom — two grey bars framing a black thread.
+                .background(MaterialTheme.colorScheme.background)
                 .padding(
                     horizontal = UsTheme.spacing.xxl,
                     vertical = UsTheme.spacing.m,
@@ -262,8 +283,13 @@ private fun ChatThreadTopBar(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
+                    // The name is the one piece of identity on this screen, so
+                    // it gets a treatment of its own: heavier than a title and
+                    // tracked tighter, which is what makes a name read as a
+                    // name rather than as another label.
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = NAME_TRACKING,
                     color = UsTheme.extended.textPrimary,
                     maxLines = 1,
                 )
@@ -418,7 +444,7 @@ private fun Composer(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(UsTheme.extended.bgCardSolid)
+                .background(MaterialTheme.colorScheme.background)
                 .padding(UsTheme.spacing.xxl),
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
@@ -484,7 +510,10 @@ private fun ComposerField(
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         modifier = modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(UsTheme.extended.bgCanvas)
+            // The pill is now the only lifted surface down here, so it takes
+            // the card colour: on a bar that matches the page, bgCanvas was
+            // a black field on black and only the hairline showed it.
+            .background(UsTheme.extended.bgCardSolid)
             .border(
                 width = HAIRLINE,
                 color = UsTheme.extended.borderSubtle,
@@ -591,11 +620,26 @@ private fun PendingSendRow(
             )
             .testTag("thread-pending-send"),
     ) {
-        Text(
-            text = if (pending.mediaId != null) "📷 Photo" else pending.text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = UsTheme.extended.textMuted,
-        )
+        // A queued PHOTO shows the photo, not the words "📷 Photo".
+        //
+        // Sends drain through WorkManager, so there is a real gap between the
+        // tap and the confirmed bubble. A queued text row already renders its
+        // own text, which is why sending text felt instant while sending an
+        // image looked like nothing happened until the screen was reopened.
+        // The upload finishes BEFORE the row is enqueued, so the id is live
+        // and the authorized serve route renders it immediately.
+        pending.mediaId?.let { mediaId ->
+            Box(modifier = Modifier.alpha(PENDING_ALPHA)) {
+                AttachmentImage(mediaId = mediaId)
+            }
+        }
+        if (pending.text.isNotBlank() || pending.mediaId == null) {
+            Text(
+                text = pending.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textMuted,
+            )
+        }
         if (pending.failed) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -632,6 +676,7 @@ private fun PendingSendRow(
 private fun MessageRow(
     message: Message,
     isOwn: Boolean,
+    showSenderName: Boolean,
     readByPeer: Boolean,
     onReact: (String) -> Unit,
     onDelete: () -> Unit,
@@ -662,7 +707,8 @@ private fun MessageRow(
         ) {
             // Figma group thread (98:395): the sender's name sits ABOVE the
             // bubble in a colour that stays theirs for the whole thread.
-            if (name.isNotBlank() && !isOwn) {
+            // Gated by [showSenderName] — groups, run-heads, incoming only.
+            if (showSenderName && name.isNotBlank() && !isOwn) {
                 Text(
                     text = name,
                     style = MaterialTheme.typography.labelMedium,
@@ -836,6 +882,10 @@ private const val EMOJI_COLUMNS = 8
 private val EMOJI_PANEL_HEIGHT = 220.dp
 
 // ── The Figma conversation language (98:321) ────────────────────────────
+
+/** Tighter tracking is what separates a NAME from a label set in the same face. */
+@Suppress("MagicNumber") // The tracking value IS the constant.
+private val NAME_TRACKING = (-0.5).sp
 
 private val HAIRLINE = 1.dp
 private val BUBBLE_CORNER = 18.dp
