@@ -38,7 +38,7 @@
 #
 [versions]
 # ── Build toolchain ────────────────────────────────────────────────────
-agp                       = "9.3.1"
+agp                       = "9.3.2"
 kotlin                    = "2.4.10"
 ksp                       = "2.3.11"         # independent versioning since KSP 2.3.0
 javaTarget                = "17"
