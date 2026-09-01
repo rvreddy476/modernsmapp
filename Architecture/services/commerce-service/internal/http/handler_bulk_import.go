@@ -34,9 +34,8 @@ func (h *Handler) InitiateBulkUpload(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	var req initiateBulkUploadReq
@@ -67,9 +66,8 @@ func (h *Handler) MarkBulkUploadComplete(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	if err := h.svc.MarkUploadComplete(c.Request.Context(), seller.ID, jobID); err != nil {
@@ -90,9 +88,8 @@ func (h *Handler) ExecuteBulkImport(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	if err := h.svc.ExecuteImport(c.Request.Context(), seller.ID, jobID); err != nil {
@@ -107,9 +104,8 @@ func (h *Handler) ListBulkImportJobs(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -134,9 +130,8 @@ func (h *Handler) GetBulkImportJob(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	job, err := h.svc.GetImportJob(c.Request.Context(), seller.ID, jobID)
@@ -159,9 +154,8 @@ func (h *Handler) GetBulkImportErrors(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	url, err := h.svc.GetImportJobErrorsURL(c.Request.Context(), seller.ID, jobID, 5*time.Minute)

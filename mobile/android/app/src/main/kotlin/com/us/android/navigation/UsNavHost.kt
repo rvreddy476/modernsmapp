@@ -21,6 +21,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.designsystem.component.UsNavigationBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.theme.UsTheme
@@ -45,6 +46,10 @@ import com.us.android.feature.chat.navigation.navigateToChatRequest
 import com.us.android.feature.chat.navigation.navigateToChatThread
 import com.us.android.feature.chat.navigation.navigateToGroupCreate
 import com.us.android.feature.chat.navigation.navigateToGroupInfo
+import com.us.android.feature.commerce.navigation.commerceScreens
+import com.us.android.feature.commerce.navigation.navigateToCommerce
+import com.us.android.feature.commerce.navigation.navigateToOrders
+import com.us.android.feature.commerce.navigation.navigateToSeller
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
 import com.us.android.feature.feed.navigation.reelsScreen
@@ -88,7 +93,7 @@ data object RegisterRoute
  * Email verification.
  *
  * [verificationToken] is the server-issued credential that names the pending
- * account — the verify and resend endpoints take no user id by design, so
+ * account â the verify and resend endpoints take no user id by design, so
  * this token is the only handle on it. Carried as a route argument so the
  * screen survives rotation and process death without a shared holder.
  */
@@ -98,7 +103,7 @@ data class VerifyEmailRoute(
     val email: String,
 )
 
-// ── Top-level (tab) destinations ───────────────────────────────────────
+// ââ Top-level (tab) destinations âââââââââââââââââââââââââââââââââââââââ
 //
 // Home is FeedRoute and Me is OwnProfileRoute; both live in their feature
 // modules, because the feature owns the screen. The rest are declared here
@@ -124,7 +129,7 @@ data object GalleryRoute
  * The app's navigation graph.
  *
  * Routing is driven by [SessionState], which resolves synchronously on the
- * first frame — the graph **never awaits** session restore. That is the whole
+ * first frame â the graph **never awaits** session restore. That is the whole
  * point of the design and what closes finding F5: the Flutter router blocks
  * every navigation on a 3-second `sessionReady` await ([router.dart:128]).
  *
@@ -137,6 +142,12 @@ fun UsNavHost(
     pool: PlayerPool,
     pushDestination: com.us.android.push.PushDestination? = null,
     onPushDestinationConsumed: () -> Unit = {},
+    // Supplied by MainActivity, which IS the Activity the PSP SDK needs and
+    // which holds the coordinator. Passing it down rather than looking up a
+    // context here removes the "what if this is not an Activity" branch
+    // entirely, and keeps :app's provider choice in one place.
+    onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit = { _, _ -> },
+    onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit = { _ -> },
     navController: NavHostController = rememberNavController(),
 ) {
     val startDestination = if (sessionState.isAuthenticated) FeedRoute else LoginRoute
@@ -144,7 +155,7 @@ fun UsNavHost(
     // A notification tap routes ONLY under an authenticated session: a tap
     // while signed out waits through the login (the destination survives in
     // PushDestinations), and a tap for a session that has ended routes
-    // nowhere until someone signs in again. The thread title is left blank —
+    // nowhere until someone signs in again. The thread title is left blank â
     // the screen fills it from the loaded conversation.
     LaunchedEffect(pushDestination, sessionState.isAuthenticated) {
         val destination = pushDestination ?: return@LaunchedEffect
@@ -168,7 +179,7 @@ fun UsNavHost(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            // Null tab means the current screen is not a tab root — an auth
+            // Null tab means the current screen is not a tab root â an auth
             // screen, or a pushed profile. No bar there.
             if (currentTab != null) {
                 UsNavigationBar(
@@ -189,7 +200,7 @@ fun UsNavHost(
                 .padding(shellPadding),
         ) {
             authDestinations(navController)
-            tabDestinations(navController, pool)
+            tabDestinations(navController, pool, onOpenPaymentSheet, onAbandonPaymentSheet)
         }
     }
 }
@@ -197,7 +208,7 @@ fun UsNavHost(
 /**
  * Sign-in, registration and email verification.
  *
- * None of these are tab roots, so the bottom bar is absent on all three —
+ * None of these are tab roots, so the bottom bar is absent on all three â
  * [TopLevelDestination.forDestination] returns null for them.
  */
 private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
@@ -217,7 +228,7 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
         RegisterRoute(
             onNeedsVerification = { token, email ->
                 navController.navigate(VerifyEmailRoute(token, email)) {
-                    // Don't leave a filled signup form behind Back — the
+                    // Don't leave a filled signup form behind Back â the
                     // account already exists; resubmitting would 409.
                     popUpTo(RegisterRoute) { inclusive = true }
                 }
@@ -257,9 +268,13 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
 private fun NavGraphBuilder.tabDestinations(
     navController: NavHostController,
     pool: PlayerPool,
+    // Passed through rather than captured: this is a top-level extension, not
+    // a lambda inside UsNavHost, so the parameter is not otherwise in scope.
+    onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
+    onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit,
 ) {
     // The real home feed. It replaced the design-system gallery once the
-    // 2026-08-17 capture returned a non-empty page and proved the item shape —
+    // 2026-08-17 capture returned a non-empty page and proved the item shape â
     // before that the feed could only have been built on an invented DTO.
     feedScreen(
         onOpenPost = { postId -> navController.navigateToPost(postId) },
@@ -269,7 +284,7 @@ private fun NavGraphBuilder.tabDestinations(
         onCreatePost = { navController.navigateToCreate() },
     )
 
-    // The Create hub — the feed's "+" lands here; the footer rail switches
+    // The Create hub â the feed's "+" lands here; the footer rail switches
     // between Text, Image, Reel and Poll. On success the created post REPLACES
     // the hub in the back stack: Back from the new post returns to the feed,
     // not to a creator whose content is already published.
@@ -294,7 +309,7 @@ private fun NavGraphBuilder.tabDestinations(
         },
     )
 
-    // The Post Studio — the multi-photo editor. Same success contract as the
+    // The Post Studio â the multi-photo editor. Same success contract as the
     // composer: the published post replaces the studio in the back stack, so
     // Back lands on the feed rather than an editor whose work is already live.
     studioScreen(
@@ -306,7 +321,7 @@ private fun NavGraphBuilder.tabDestinations(
         },
     )
 
-    // The notification inbox — Slice D.
+    // The notification inbox â Slice D.
     //
     // `:feature:notifications` hands back a resolved TARGET, never a URL, and
     // `:app` maps it to a destination here. That is what stops the inbox from
@@ -316,7 +331,7 @@ private fun NavGraphBuilder.tabDestinations(
     // A comment notification opens the POST rather than the comments sheet:
     // the sheet is a modal over the post, so the post is where a deep link has
     // to land for Back to behave. Focusing the specific comment is tracked
-    // follow-up work — the id is carried, nothing yet consumes it.
+    // follow-up work â the id is carried, nothing yet consumes it.
     notificationsScreen(
         onBack = { navController.popBackStack() },
         onOpenTarget = { target -> navController.openNotificationTarget(target) },
@@ -325,13 +340,31 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenPreferences = { navController.navigate(NotificationSettingsRoute) },
     )
 
+    // Commerce â the buyer journey: catalogue â product â cart â address â
+    // checkout â payment â orders.
+    //
+    // `onOpenPaymentSheet` is supplied HERE rather than inside the feature
+    // because the PSP integration is an app-level concern; `:feature:commerce`
+    // must not know that Razorpay is the provider, or swapping one becomes a
+    // change to every screen that touches payment.
+    //
+    // The handoff asks the SERVER to open the intent, hands the returned
+    // client session to the PSP SDK, and publishes the outcome onto
+    // PaymentHandoff. The checkout screen collects that and polls â because a
+    // sheet closing is evidence, never proof.
+    commerceScreens(
+        navController = navController,
+        onOpenPaymentSheet = onOpenPaymentSheet,
+        onAbandonPaymentSheet = onAbandonPaymentSheet,
+    )
+
     // Messages. The entry point is the feed's top bar; a profile's Message
     // button is the other way in, and it arrives already holding a
     // conversation id because the SERVER decided which conversation that is.
     //
     // The inbox resolves each row's title and hands it over, so a thread has a
     // name on its first frame. Deriving it inside the thread would need the
-    // viewer's own id, which the thread does not have — every direct
+    // viewer's own id, which the thread does not have â every direct
     // conversation would open with a blank header until its member list loaded.
     chatInboxScreen(
         onBack = { navController.popBackStack() },
@@ -391,20 +424,34 @@ private fun NavGraphBuilder.tabDestinations(
         )
     }
     // The reels surface. The pool is supplied by :app so its lifetime belongs
-    // to the composition root rather than a composable the pager recomposes —
+    // to the composition root rather than a composable the pager recomposes â
     // it holds decoder sessions, and reacquiring those mid-scroll is exactly
     // the stutter this surface exists to avoid.
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
+    // Explore is the way into commerce, and until this line existed there was
+    // no way in at all.
+    //
+    // The commerce graph was fully registered and completely unreachable: the
+    // bottom bar has five tabs and none of them is a shop, `ExploreScreen` was
+    // written but never composed, and nothing anywhere called
+    // `navigateToCommerce()`. Every buyer screen, the checkout, the payment
+    // handoff and now the whole seller surface sat behind a tab that rendered
+    // "search is not built yet".
+    //
+    // Explore is the natural host. It was a placeholder, so putting the shop
+    // here costs nothing that existed, and it needs no change to
+    // TopLevelDestination or to the design system's tab list â a sixth tab
+    // would have touched three files and a test for what is really a product
+    // decision.
     composable<ExploreRoute> {
-        PlaceholderScreen(
-            title = "Explore",
-            reason = "Search is not built yet. The design-system gallery lives here " +
-                "meanwhile so the tokens stay reviewable on a real device.",
-            actionLabel = "Open the design gallery",
-            onAction = { navController.navigate(GalleryRoute) },
+        ExploreScreen(
+            onOpenShop = { navController.navigateToCommerce() },
+            onOpenOrders = { navController.navigateToOrders() },
+            onOpenSellerHub = { navController.navigateToSeller() },
+            onOpenGallery = { navController.navigate(GalleryRoute) },
         )
     }
 
@@ -466,7 +513,12 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */
 @Composable
-fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
+fun UsApp(
+    viewModel: MainViewModel,
+    pool: PlayerPool,
+    onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit = { _, _ -> },
+    onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit = { _ -> },
+) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val pushDestination by viewModel.pushDestination.collectAsStateWithLifecycle()
     UsNavHost(
@@ -474,6 +526,8 @@ fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
         pool = pool,
         pushDestination = pushDestination,
         onPushDestinationConsumed = viewModel::consumePushDestination,
+        onOpenPaymentSheet = onOpenPaymentSheet,
+        onAbandonPaymentSheet = onAbandonPaymentSheet,
     )
 }
 
@@ -498,7 +552,7 @@ private fun SplashPreview() {
 }
 
 /**
- * Maps a notification target to a destination — Slice D.
+ * Maps a notification target to a destination â Slice D.
  *
  * `:feature:notifications` hands back a resolved [NotificationTarget], never a
  * URL, and this is the only place that knows which destination each one means.
@@ -507,7 +561,7 @@ private fun SplashPreview() {
  * A comment notification opens the POST rather than the comments sheet: the
  * sheet is a modal over the post, so the post is where a deep link has to land
  * for Back to behave. Focusing the individual comment is tracked follow-up
- * work — the id is carried on the target, nothing yet consumes it.
+ * work â the id is carried on the target, nothing yet consumes it.
  *
  * [NotificationTarget.None] navigates nowhere. It is the vertical this build
  * has no screen for, or a deep link that did not parse; either way, doing

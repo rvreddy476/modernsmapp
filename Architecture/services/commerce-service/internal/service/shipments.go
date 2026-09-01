@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/atpost/commerce-service/internal/identity"
 	"github.com/atpost/commerce-service/internal/kyc"
 	"github.com/atpost/commerce-service/internal/payments"
+	"github.com/atpost/commerce-service/internal/pii"
 	"github.com/atpost/commerce-service/internal/store/blob"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
@@ -665,7 +667,7 @@ func strPtr(s string) *string {
 	return &s
 }
 
-func codAmount(pm string, total float64) float64 {
+func codAmount(pm string, total float64) float64 { // money-exempt: COD is fenced (A5) — orders_payment_method_prepaid_only rejects the method at the DB
 	if pm == "cod" {
 		return total
 	}
@@ -701,4 +703,103 @@ func sellerParty(s *postgres.Seller) invoice.Party {
 	}
 	p.Address.Country = "IN"
 	return p
+}
+
+// WithPII attaches the address-encryption cipher (LB-24).
+//
+// Nil is only acceptable outside production: without it, checkout cannot
+// decrypt a saved address to snapshot it onto an order, and main.go refuses
+// to start when ENV=prod and this is unset.
+func (s *Service) WithPII(c *pii.Cipher) *Service {
+	s.pii = c
+	return s
+}
+
+// WithPIICutover selects the address-encryption cutover mode (B4/B5).
+//
+// Unset means ModeDual, which is the only mode safe against a database whose
+// backfill has not finished: it writes both copies and can read either.
+func (s *Service) WithPIICutover(m pii.Mode) *Service {
+	s.piiCutover = m
+	return s
+}
+
+// ─── Seller pickup address ───────────────────────────────────────────
+
+// SellerAddressInput is a seller's pickup/warehouse/business address.
+type SellerAddressInput struct {
+	AddressType  string
+	ContactName  string
+	Phone        string
+	AddressLine1 string
+	AddressLine2 *string
+	City         string
+	State        string
+	PostalCode   string
+	Country      string
+	IsDefault    bool
+}
+
+// SaveSellerAddress stores a seller's address with its identifying fields
+// sealed, for the seller identified by actorUserID.
+//
+// The seller id comes from the caller's own profile, never from the request —
+// the same rule the product write paths follow, and the reason a body cannot
+// name someone else's seller.
+//
+// Sealing is mandatory. A seller's contact name, phone and street sit in the
+// same estate the PII backfill covers and the gated scrub clears, so a row
+// written unsealed is a row the scrub destroys.
+func (s *Service) SaveSellerAddress(ctx context.Context, actorUserID uuid.UUID, in SellerAddressInput) error {
+	seller, err := s.GetSellerProfile(ctx, actorUserID)
+	if err != nil {
+		if errors.Is(err, postgres.ErrNoSellerRow) {
+			return ErrNoSellerProfile
+		}
+		return err
+	}
+	if s.pii == nil {
+		return fmt.Errorf("commerce: the PII cipher is not configured; refusing to store a seller address in plaintext")
+	}
+
+	addressType := strings.TrimSpace(in.AddressType)
+	if addressType == "" {
+		addressType = "pickup"
+	}
+
+	sealed, err := s.pii.SealAddress(ctx, pii.ScopeProfile, pii.Address{
+		ContactName:  in.ContactName,
+		Phone:        in.Phone,
+		AddressLine1: in.AddressLine1,
+		AddressLine2: derefOrEmpty(in.AddressLine2),
+		City:         in.City,
+		State:        in.State,
+		PostalCode:   in.PostalCode,
+		Country:      in.Country,
+	})
+	if err != nil {
+		return fmt.Errorf("commerce: sealing the seller address: %w", err)
+	}
+
+	return s.store.UpsertSellerAddress(ctx, postgres.SellerAddress{
+		SellerID:     seller.ID,
+		AddressType:  addressType,
+		ContactName:  in.ContactName,
+		Phone:        in.Phone,
+		AddressLine1: in.AddressLine1,
+		AddressLine2: in.AddressLine2,
+		City:         in.City,
+		State:        in.State,
+		PostalCode:   in.PostalCode,
+		Country:      in.Country,
+		IsDefault:    in.IsDefault,
+	}, postgres.SealedAddressWrite{
+		ContactName:    sealed.ContactName,
+		Phone:          sealed.Phone,
+		AddressLine1:   sealed.AddressLine1,
+		AddressLine2:   sealed.AddressLine2,
+		KeyVersion:     sealed.KeyVersion,
+		LookupHash:     sealed.LookupHash,
+		WritePlaintext: s.piiCutover.WritesPlaintext(),
+	})
 }

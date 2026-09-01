@@ -177,9 +177,9 @@ func (h *Handler) SaveStorefront(c *gin.Context) {
 }
 
 type docInput struct {
-	DocumentType   string     `json:"document_type" binding:"required"`
-	DocumentNumber *string    `json:"document_number"`
-	MediaID        uuid.UUID  `json:"media_id" binding:"required"`
+	DocumentType   string    `json:"document_type" binding:"required"`
+	DocumentNumber *string   `json:"document_number"`
+	MediaID        uuid.UUID `json:"media_id" binding:"required"`
 }
 
 type saveDocumentsReq struct {
@@ -288,7 +288,10 @@ func (h *Handler) SubmitApplication(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SubmitApplication(c.Request.Context(), userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SUBMIT_FAILED", err.Error(), nil)
+		// Through the typed mapper, so an incomplete application is a 409
+		// naming what is missing rather than an opaque 400. The seller has to
+		// act on this message.
+		writeCommerceError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"message": "application submitted for review"}, nil)

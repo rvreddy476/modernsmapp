@@ -87,9 +87,8 @@ func (h *Handler) ListSellerRFQs(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	status := c.Query("status")
@@ -140,9 +139,8 @@ func (h *Handler) SendRFQQuote(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	var req sendRFQQuoteReq

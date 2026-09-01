@@ -14,9 +14,9 @@ import (
 // reads paise, so the provider order opened at ₹X/100.
 func TestRupeesToPaise(t *testing.T) {
 	cases := []struct {
-		name        string
-		rupees      float64
-		wantPaise   int64
+		name      string
+		rupees    float64
+		wantPaise int64
 	}{
 		{"one rupee", 1.0, 100},
 		{"one hundred", 100.0, 10000},
@@ -114,11 +114,11 @@ func TestInitiateRefund_PartialFlipsStatus(t *testing.T) {
 	const intentAmountMinor int64 = 10000 // ₹100.00
 
 	cases := []struct {
-		name             string
-		currentRefunded  int64
-		refundAmount     int64
-		wantStatus       string
-		wantResolvedAmt  int64
+		name            string
+		currentRefunded int64
+		refundAmount    int64
+		wantStatus      string
+		wantResolvedAmt int64
 	}{
 		// First refund of ₹40 on a fresh ₹100 intent leaves ₹60 refundable.
 		{"40 of 100 (first refund)", 0, 4000, "partially_refunded", 4000},

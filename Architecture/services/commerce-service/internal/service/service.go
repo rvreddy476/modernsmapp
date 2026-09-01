@@ -10,14 +10,17 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"os"
+
 	"strings"
 	"time"
 
 	"github.com/atpost/commerce-service/internal/courier"
 	"github.com/atpost/commerce-service/internal/identity"
 	"github.com/atpost/commerce-service/internal/kyc"
+	"github.com/atpost/commerce-service/internal/media"
+	"github.com/atpost/commerce-service/internal/money"
 	"github.com/atpost/commerce-service/internal/payments"
+	"github.com/atpost/commerce-service/internal/pii"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/events"
@@ -46,6 +49,17 @@ var (
 	ErrReviewNotFound         = fmt.Errorf("review not found")
 	ErrNotProductOwner        = fmt.Errorf("actor is not the seller for this product")
 	ErrNotReviewSeller        = fmt.Errorf("actor is not the seller for this review")
+	// ErrNoSellerProfile means the caller has no seller row. Handlers map it
+	// to 403 NO_SELLER, the same shape every other seller surface uses.
+	ErrNoSellerProfile = fmt.Errorf("caller has no seller profile")
+	// ErrInvalidStockReason means the reason code is outside the seller-facing
+	// allow-list. Handlers map it to 400 rather than letting a CHECK
+	// violation surface as a 500.
+	ErrInvalidStockReason = fmt.Errorf("unsupported stock adjustment reason")
+	// ErrApplicationIncomplete means a seller pressed Submit with something
+	// a reviewer needs still missing. The message names everything that is
+	// absent, not the first thing.
+	ErrApplicationIncomplete = fmt.Errorf("the seller application is incomplete")
 )
 
 // ConfirmPaymentInput is the request body the customer-facing confirm
@@ -64,14 +78,23 @@ type ConfirmPaymentInput struct {
 
 // Service is the main commerce service.
 type Service struct {
-	store     *postgres.Store
-	rdb       *redis.Client
-	writer    *kafka.Writer
-	courier   courier.Provider
-	blob      BlobStore
-	identity  *identity.Client
-	payments  *payments.Client
-	kyc       kyc.Validator
+	store    *postgres.Store
+	rdb      *redis.Client
+	writer   *kafka.Writer
+	courier  courier.Provider
+	blob     BlobStore
+	identity *identity.Client
+	payments *payments.Client
+	pii      *pii.Cipher
+	// piiCutover selects dual-write or ciphertext-only behaviour (B4/B5).
+	// The zero value is ModeDual, which is the safe default against an
+	// unmigrated database.
+	piiCutover pii.Mode
+	kyc        kyc.Validator
+	// media verifies that a media id a client supplies actually belongs to
+	// that client. Nil-safe: nil means unconfigured, which cmd/server only
+	// permits in a local environment and says so loudly.
+	media     *media.Client
 	payoutCfg PayoutConfig
 
 	// productViewCounter shards products.view_count across Redis so a
@@ -271,7 +294,11 @@ func (s *Service) GetSellerProfile(ctx context.Context, userID uuid.UUID) (*post
 // ─── Catalog ─────────────────────────────────────────────────
 
 type CreateProductInput struct {
-	SellerID         uuid.UUID
+	SellerID uuid.UUID
+	// ActorUserID is the human behind the seller account. Media ownership is
+	// recorded against the USER who uploaded it, not the seller row, so this
+	// is the identity the media check compares against.
+	ActorUserID      uuid.UUID
 	CategoryID       *uuid.UUID
 	BrandID          *uuid.UUID
 	TaxClassID       *uuid.UUID
@@ -302,17 +329,24 @@ type CreateProductInput struct {
 }
 
 type CreateVariantInput struct {
-	SKU          string
-	Option1Name  *string
-	Option1Value *string
-	Option2Name  *string
-	Option2Value *string
-	Option3Name  *string
-	Option3Value *string
-	MRP          float64
-	SellingPrice float64
-	CostPrice    *float64
-	StockQty     int
+	SKU string
+	// MRPMinor and SellingPriceMinor are the authority. The rupee fields
+	// below are the legacy shape, kept because this path predates the
+	// minor-unit migration; the edge resolves one from the other before
+	// anything reaches here.
+	MRPMinor          int64
+	SellingPriceMinor int64
+	CostPriceMinor    *int64
+	Option1Name       *string
+	Option1Value      *string
+	Option2Name       *string
+	Option2Value      *string
+	Option3Name       *string
+	Option3Value      *string
+	MRP               float64
+	SellingPrice      float64
+	CostPrice         *float64
+	StockQty          int
 }
 
 func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*postgres.Product, error) {
@@ -321,6 +355,17 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 	}
 	if len(in.Variants) == 0 {
 		return nil, fmt.Errorf("at least one variant is required")
+	}
+
+	// Before anything is written. Both ids arrive in the request body and
+	// were stored unchecked, so a seller could point their listing at a
+	// competitor's product photography by reading the media id out of the
+	// competitor's public product JSON.
+	if err := s.verifyMedia(ctx, in.ActorUserID, media.KindImage, in.PrimaryImageMediaID); err != nil {
+		return nil, err
+	}
+	if err := s.verifyMedia(ctx, in.ActorUserID, media.KindVideo, in.VideoMediaID); err != nil {
+		return nil, err
 	}
 
 	productType := in.ProductType
@@ -373,11 +418,17 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 			Option1Value: vi.Option1Value,
 			Option2Name:  vi.Option2Name,
 			Option2Value: vi.Option2Value,
-			MRP:          vi.MRP,
-			SellingPrice: vi.SellingPrice,
-			CostPrice:    vi.CostPrice,
-			CurrencyCode: "INR",
-			Status:       "active",
+			// Rupees are the mirror; paise are the truth. Both are written so
+			// the analytics readers that still scan the NUMERIC columns keep
+			// working through the dual-write window.
+			MRP:                 float64(vi.MRPMinor) / 100.0,          // money-exempt: NUMERIC mirror of mrp_minor
+			SellingPrice:        float64(vi.SellingPriceMinor) / 100.0, // money-exempt: NUMERIC mirror of selling_price_minor
+			CostPrice:           rupeeMirror(vi.CostPriceMinor),
+			MRPMinorIn:          &vi.MRPMinor,
+			SellingPriceMinorIn: &vi.SellingPriceMinor,
+			CostPriceMinorIn:    vi.CostPriceMinor,
+			CurrencyCode:        "INR",
+			Status:              "active",
 		}
 		if err := s.store.CreateVariant(ctx, v); err != nil {
 			return nil, fmt.Errorf("create variant %s: %w", vi.SKU, err)
@@ -404,6 +455,7 @@ func (s *Service) GetProduct(ctx context.Context, productID uuid.UUID) (*postgre
 		return nil, nil, err
 	}
 	go s.adjustProductViewCount(context.Background(), productID)
+	s.hydrateProductImages(ctx, []*postgres.Product{p})
 	return p, variants, nil
 }
 
@@ -414,8 +466,30 @@ func (s *Service) ListCategories(ctx context.Context) ([]*postgres.ProductCatego
 func (s *Service) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*postgres.Product, error) {
 	// HP3: pagination clamped (default 20, max 200).
 	limit, offset = clampListPagination(limit, offset)
-	products, _, err := s.store.ListSellerProducts(ctx, sellerID, "", limit, offset)
+	// publicOnly: this is the storefront. The route takes a seller id from the
+	// URL and requires no authentication, so it must never show draft or
+	// moderation-rejected products. Sellers read their own full catalogue
+	// through ListMyProducts, which resolves the seller from the caller.
+	products, _, err := s.store.ListSellerProducts(ctx, sellerID, "", true, limit, offset)
+	s.hydrateProductImages(ctx, products)
 	return products, err
+}
+
+// ListMyProducts is the seller's own catalogue — every status, including
+// drafts and moderation rejections, because the seller needs to see and fix
+// them. The seller id comes from the caller's profile, never from the URL.
+func (s *Service) ListMyProducts(ctx context.Context, actorUserID uuid.UUID, status string, limit, offset int) ([]*postgres.Product, int, error) {
+	seller, err := s.GetSellerProfile(ctx, actorUserID)
+	if err != nil {
+		if errors.Is(err, postgres.ErrNoSellerRow) {
+			return nil, 0, ErrNoSellerProfile
+		}
+		return nil, 0, err
+	}
+	limit, offset = clampListPagination(limit, offset)
+	products, total, err := s.store.ListSellerProducts(ctx, seller.ID, status, false, limit, offset)
+	s.hydrateProductImages(ctx, products)
+	return products, total, err
 }
 
 // ListProducts returns the customer-facing product catalog: published +
@@ -423,7 +497,9 @@ func (s *Service) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, li
 // the UI can paginate. Legacy offset/limit shape — prefer ListProductsFiltered
 // at scale.
 func (s *Service) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*postgres.Product, int, error) {
-	return s.store.ListProducts(ctx, categoryID, query, limit, offset)
+	products, total, err := s.store.ListProducts(ctx, categoryID, query, limit, offset)
+	s.hydrateProductImages(ctx, products)
+	return products, total, err
 }
 
 // ListProductsFilteredResult is the cursor-paged catalog response. NextCursor
@@ -448,6 +524,7 @@ func (s *Service) ListProductsFiltered(ctx context.Context, f postgres.ProductFi
 	if items == nil {
 		items = []*postgres.Product{}
 	}
+	s.hydrateProductImages(ctx, items)
 	return &ListProductsFilteredResult{Items: items, NextCursor: next}, nil
 }
 
@@ -651,7 +728,7 @@ type SellerOrderCard struct {
 	Order           *postgres.Order       `json:"order"`
 	Items           []*postgres.OrderItem `json:"items"`
 	Shipment        *postgres.Shipment    `json:"shipment,omitempty"`
-	SellerSubtotal  float64               `json:"seller_subtotal"`
+	SellerSubtotal  float64               `json:"seller_subtotal"` // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
 	DeliveryAddress []byte                `json:"delivery_address,omitempty"`
 }
 
@@ -699,7 +776,7 @@ func (s *Service) ListSellerFulfillment(ctx context.Context, sellerID uuid.UUID,
 	for _, o := range orders {
 		items := itemsByOrder[o.ID]
 		mine := make([]*postgres.OrderItem, 0, len(items))
-		var subtotal float64
+		var subtotal float64 // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
 		for _, it := range items {
 			if it.SellerID == sellerID {
 				mine = append(mine, it)
@@ -752,7 +829,7 @@ func (s *Service) GetSellerOrderDetail(ctx context.Context, sellerID, orderID uu
 	}
 	items, _ := s.store.GetOrderItems(ctx, orderID)
 	mine := make([]*postgres.OrderItem, 0, len(items))
-	var subtotal float64
+	var subtotal float64 // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
 	for _, it := range items {
 		if it.SellerID == sellerID {
 			mine = append(mine, it)
@@ -813,8 +890,39 @@ func (s *Service) AddToCart(ctx context.Context, userID, variantID uuid.UUID, qt
 	if err != nil {
 		return fmt.Errorf("variant not found: %w", err)
 	}
-	if variant.Status != "active" {
-		return fmt.Errorf("variant is not available")
+	// LB-17 / v1 §5.6 — moderation is no longer advisory.
+	//
+	// This used to check ONLY `variant.Status != "active"`. Neither it nor
+	// pricing looked at the product's `status` or `approval_status`, so a
+	// seller could create a product, share a direct link and sell it while
+	// `approval_status = 'pending'` — or keep selling after an admin had
+	// rejected it. The entire moderation queue was decorative.
+	//
+	// This is the cheap early guard, so the customer gets a clear answer at
+	// add-to-cart time. The AUTHORITATIVE check runs inside the checkout
+	// transaction under the row lock, because a product can be rejected
+	// between being added to a cart and being paid for.
+	sellerID, eligible, err := s.store.ProductSaleEligibility(ctx, variantID)
+	if err != nil {
+		return err
+	}
+	if !eligible || variant.Status != "active" {
+		return postgres.ErrProductUnavailable
+	}
+
+	// D2 — one seller per cart for P0.
+	//
+	// The schema supports multi-seller orders, but every cancellation,
+	// refund and fulfilment rule in this module assumes one order is one
+	// shipment from one seller. A mixed cart would mean partial cancels,
+	// partial refunds and split shipments on day one, in precisely the area
+	// that was already least correct.
+	current, err := s.store.CartSellerID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if current != uuid.Nil && current != sellerID {
+		return postgres.ErrMultipleSellers
 	}
 
 	inv, err := s.store.GetInventory(ctx, variantID)
@@ -830,7 +938,16 @@ func (s *Service) AddToCart(ctx context.Context, userID, variantID uuid.UUID, qt
 		return fmt.Errorf("get cart: %w", err)
 	}
 
-	return s.store.UpsertCartItem(ctx, cart.ID, variantID, variant.ProductID, qty, variant.SellingPrice)
+	// B5/LB-19: snapshot the price in PAISE, read the same way checkout
+	// reads it. The float `variant.SellingPrice` that used to be passed here
+	// never reached `price_snapshot_minor` at all, which silently disabled
+	// checkout's price-change detection for every line added through this
+	// route.
+	priceMinor, err := s.store.VariantSellingPriceMinor(ctx, variantID)
+	if err != nil {
+		return fmt.Errorf("read variant price: %w", err)
+	}
+	return s.store.UpsertCartItem(ctx, cart.ID, variantID, variant.ProductID, qty, priceMinor)
 }
 
 func (s *Service) RemoveFromCart(ctx context.Context, userID, variantID uuid.UUID) error {
@@ -861,7 +978,7 @@ func (s *Service) UpdateCartItem(ctx context.Context, userID, variantID uuid.UUI
 type CartSummary struct {
 	CartID    uuid.UUID
 	Items     []*CartItemDetail
-	Subtotal  float64
+	Subtotal  float64 // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
 	ItemCount int
 }
 
@@ -898,6 +1015,16 @@ func (s *Service) GetCart(ctx context.Context, userID uuid.UUID) (*CartSummary, 
 	if err != nil {
 		return nil, fmt.Errorf("batch variants: %w", err)
 	}
+
+	// The cart carries the whole Product, so hydrating it here gives every
+	// cart line a renderable image for free — the same one the catalogue
+	// showed. Without it the cart is a column of grey boxes next to the
+	// product the buyer just looked at.
+	hydrate := make([]*postgres.Product, 0, len(products))
+	for _, p := range products {
+		hydrate = append(hydrate, p)
+	}
+	s.hydrateProductImages(ctx, hydrate)
 
 	summary := &CartSummary{CartID: cart.ID}
 	for _, ci := range items {
@@ -990,7 +1117,7 @@ type QuoteItem struct {
 	SKU          string    `json:"sku,omitempty"`
 	Quantity     int       `json:"quantity"`
 	UnitPrice    float64   `json:"unit_price"`
-	LineSubtotal float64   `json:"line_subtotal"`
+	LineSubtotal float64   `json:"line_subtotal"` // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
 }
 
 // UnavailableQuoteItem is one cart row whose requested quantity exceeds
@@ -1009,7 +1136,7 @@ type UnavailableQuoteItem struct {
 // Checkout, so what the customer sees in the quote is what they get on
 // the order — there is no client-side recomputation.
 type Quote struct {
-	Subtotal         float64                `json:"subtotal"`
+	Subtotal         float64                `json:"subtotal"` // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
 	CouponDiscount   float64                `json:"coupon_discount"`
 	CouponCode       string                 `json:"coupon_code,omitempty"`
 	Shipping         float64                `json:"shipping"`
@@ -1030,7 +1157,7 @@ type pricingResult struct {
 	Cart             *postgres.Cart
 	CartItems        []*postgres.CartItem
 	OrderItems       []*postgres.OrderItem
-	Subtotal         float64
+	Subtotal         float64 // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
 	CouponDiscount   float64
 	CouponCodePtr    *string
 	Shipping         float64
@@ -1097,8 +1224,8 @@ func (s *Service) priceCart(ctx context.Context, userID uuid.UUID, paymentMethod
 
 	var orderItems []*postgres.OrderItem
 	var unavailable []UnavailableQuoteItem
-	var subtotal float64
-	totalTax := 0.0 // Phase 3+ will compute per-HSN GST; today the schema stores 0.
+	var subtotal float64 // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
+	totalTax := 0.0      // Phase 3+ will compute per-HSN GST; today the schema stores 0.
 
 	for _, ci := range cartItems {
 		variant, ok := variantsByID[ci.VariantID]
@@ -1547,38 +1674,52 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID, actorID uuid.UUID
 	if order.PaymentStatus == "paid" {
 		return nil // idempotent: payment already applied
 	}
-	if order.PaymentStatus != "payment_pending" {
+	// v1 §5.3: this comparison read `order.PaymentStatus != "payment_pending"`,
+	// testing the PAYMENT status against a value that only ever appears in
+	// `orders.status` — and which the payment_status CHECK constraint does
+	// not even permit. So every prepaid confirm returned
+	// ErrOrderNotPaymentPending and the amount-verified branch below was
+	// unreachable. The field being tested is now the right one.
+	if order.Status != "payment_pending" {
 		return ErrOrderNotPaymentPending
 	}
 
-	gateway := in.Gateway
-	if gateway == "" {
-		gateway = "razorpay"
+	// A1 / review R-3 — THIS PATH NO LONGER MARKS ANYTHING PAID.
+	//
+	// It used to call VerifyIntent (which itself transitioned the intent to
+	// `succeeded`) and then applyPaidStatus. That made a browser callback an
+	// approval-capable evaluator: whatever the client handed back became
+	// terminal order state as long as the HMAC checked out. A provider can
+	// reverse a payment, or never capture it, after that callback — and we
+	// would already have committed stock and started fulfilment.
+	//
+	// The callback is now ADVISORY. A positive verdict tells the app the
+	// redirect was genuine so it can leave the spinner and begin polling
+	// GET /v1/commerce/orders/:orderId/payment/status. The order becomes
+	// paid only when a signature-verified provider webhook reaches
+	// Store.ApplyPaymentSucceeded, which re-checks amount, currency, payer
+	// and intent against the order before committing any stock.
+	if s.payments == nil {
+		return ErrPaymentsClientMissing
 	}
-	if gateway == "stub" && os.Getenv("PAYMENTS_ALLOW_STUB") != "true" {
-		return ErrStubGatewayInProd
+	intentID, err := s.store.OrderPaymentIntentID(ctx, orderID)
+	if err != nil || intentID == uuid.Nil {
+		return ErrPaymentVerifyFailed
 	}
-
-	if gateway != "stub" {
-		if s.payments == nil {
-			return ErrPaymentsClientMissing
-		}
-		expectedMinor := int64(math.Round(order.FinalAmount * 100))
-		if in.AmountMinor != 0 && in.AmountMinor != expectedMinor {
-			return ErrPaymentAmountMismatch
-		}
-		res, err := s.payments.VerifyIntent(ctx, in.PaymentIntentID, in.RazorpayOrderID, in.RazorpayPaymentID, in.RazorpaySignature, expectedMinor)
-		if err != nil {
-			slog.Warn("payment verify failed",
-				"order_id", orderID, "intent_id", in.PaymentIntentID, "error", err)
-			return ErrPaymentVerifyFailed
-		}
-		if res == nil || !res.Verified {
-			return ErrPaymentVerifyFailed
-		}
+	verdict, err := s.payments.VerifyCallback(ctx, intentID,
+		in.RazorpayOrderID, in.RazorpayPaymentID, in.RazorpaySignature,
+		money.Paise(int64(math.Round(order.FinalAmount*100))))
+	if err != nil {
+		slog.Warn("commerce: advisory callback verification failed",
+			"order_id", orderID, "error", err)
+		return ErrPaymentVerifyFailed
 	}
-
-	return s.applyPaidStatus(ctx, orderID, in.RazorpayPaymentID, gateway, &actorID, "customer")
+	if verdict == nil || !verdict.Verified {
+		return ErrPaymentVerifyFailed
+	}
+	// Deliberately no state change: nil means "your callback looks genuine",
+	// never "you have paid".
+	return nil
 }
 
 // OrderActorRole describes how the supplied actor relates to an order —
@@ -1650,7 +1791,7 @@ func (s *Service) applyPaidStatus(ctx context.Context, orderID uuid.UUID, paymen
 
 	order, _ := s.store.GetOrderByID(ctx, orderID)
 	var buyerEmail, orderNumber string
-	var amount float64
+	var amount float64 // money-exempt: seller earnings, fenced at /v1/commerce/seller/earnings (B5)
 	if order != nil {
 		buyerEmail, _ = s.resolveBuyer(ctx, order.CustomerUserID)
 		orderNumber = order.OrderNumber
@@ -1719,54 +1860,26 @@ func (s *Service) fulfillPaidOrder(orderID uuid.UUID) {
 // call fails (an admin can retry); but on success we stamp the intent
 // ID on the order so the refund consumer can flip payment_status when
 // the gateway settles.
+// CancelOrder delegates to the transactional implementation.
+//
+// LB-10 / M-2 / LB-8. The body that used to live here had three defects
+// stacked on top of each other:
+//
+//  1. It never compared `actorID` to `order.customer_user_id`, so knowing
+//     an order UUID was enough to cancel a stranger's order.
+//  2. It never released or restored inventory, so a cancelled order's stock
+//     was lost permanently — the seller's catalogue silently drained.
+//  3. It had three `slog.Warn` + `return nil` branches on the refund leg
+//     (no client, no intent, call failed), each reporting success while no
+//     money moved and nothing remembered the debt.
+//
+// Store.CancelOrder does the ownership check, releases or restocks under the
+// same lock as the status change, and writes a DURABLE refund command that a
+// worker owns. The permitted (state, actor) pairs live in the
+// order_status_transitions table so the rule and the audit trail cannot
+// drift apart.
 func (s *Service) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, actorType, reason string) error {
-	order, err := s.store.GetOrderByID(ctx, orderID)
-	if err != nil {
-		return err
-	}
-	// Only allow cancellation before shipping
-	cancellable := map[string]bool{
-		"payment_pending": true, "created": true, "confirmed": true, "packed": true,
-	}
-	if !cancellable[order.Status] {
-		return fmt.Errorf("order cannot be cancelled in status: %s", order.Status)
-	}
-	if err := s.store.UpdateOrderStatus(ctx, orderID, "cancelled", &actorID, actorType, reason); err != nil {
-		return err
-	}
-	// Refund leg only applies to prepaid orders that captured money. COD
-	// orders + payment_pending orders have nothing to refund. Same gate
-	// the return-refund path uses (initiateReturnRefund).
-	isCOD := order.PaymentMethod != nil && strings.EqualFold(*order.PaymentMethod, "cod")
-	if isCOD || order.PaymentStatus != "paid" {
-		return nil
-	}
-	if s.payments == nil {
-		slog.Warn("cancel: payments client not configured; refund must be handled manually",
-			"order_id", orderID)
-		return nil
-	}
-	intent, err := s.payments.FindOrderIntent(ctx, orderID, actorID)
-	if err != nil || intent == nil {
-		slog.Warn("cancel: no succeeded intent for order; refund must be handled manually",
-			"order_id", orderID, "error", err)
-		return nil
-	}
-	// CancelOrder is order-level: refund the full intent. Pass amountMinor=0
-	// so payments-service refunds the entire remaining balance — preserves
-	// the historical full-refund semantics this path expects.
-	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, 0, "cancel:"+reason)
-	if err != nil {
-		slog.Warn("cancel: refund initiate failed",
-			"order_id", orderID, "intent_id", intent.ID, "error", err)
-		return nil
-	}
-	_ = refunded
-	if err := s.store.StampOrderRefundIntent(ctx, orderID, intent.ID.String()); err != nil {
-		slog.Warn("cancel: stamp refund intent failed",
-			"order_id", orderID, "intent_id", intent.ID, "error", err)
-	}
-	return nil
+	return s.store.CancelOrder(ctx, orderID, actorID, actorType, reason)
 }
 
 // ApplyRefundEvent is the system entry point the Kafka payments consumer
@@ -2016,7 +2129,7 @@ func (s *Service) initiateReturnRefund(ctx context.Context, r *postgres.ReturnRe
 		return
 	}
 	items, _ := s.store.GetOrderItems(ctx, r.OrderID)
-	var amount float64
+	var amount float64 // money-exempt: COD remittance, fenced at /v1/commerce/seller/cod-remittances (B5)
 	for _, it := range items {
 		if it.ID == r.OrderItemID {
 			amount = it.FinalPrice
@@ -2036,40 +2149,24 @@ func (s *Service) initiateReturnRefund(ctx context.Context, r *postgres.ReturnRe
 		return
 	}
 
-	if s.payments == nil {
-		slog.Warn("refund: payments client not configured; marking pending", "return_id", r.ID)
-		_ = s.store.SetReturnRefund(ctx, r.ID, "", "pending", amount)
-		return
-	}
-	intent, err := s.payments.FindOrderIntent(ctx, r.OrderID, actorID)
-	if err != nil || intent == nil {
-		slog.Warn("refund: no succeeded intent for order", "order_id", r.OrderID, "error", err)
-		_ = s.store.SetReturnRefund(ctx, r.ID, "", "pending", amount)
-		return
-	}
-	// Audit P6 + P7: pass the per-line refund value in paise-minor int64
-	// to payments-service so the refund actually caps at the returned
-	// item's value (previously the no-amount call refunded the entire
-	// order — a single-item return on a multi-item order refunded
-	// everything). math.Round, not int64() truncation: ₹10.99 must
-	// round to 1099 paise, not 1098 (IEEE-754 stores 10.99 as
-	// 10.989999...).
-	amountMinor := int64(math.Round(amount * 100))
-	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, amountMinor, "return:"+r.ReasonCode)
-	if err != nil {
-		slog.Warn("refund: initiate failed", "intent_id", intent.ID, "error", err)
-		_ = s.store.SetReturnRefund(ctx, r.ID, intent.ID.String(), "pending", amount)
-		return
-	}
-	status := "pending"
-	// `refunded` (full) flips immediately; `partially_refunded` is also
-	// a successful per-line refund (the order still has remaining
-	// refundable balance for other line items), so treat it as
-	// succeeded for this return row.
-	if refunded != nil && (refunded.Status == "refunded" || refunded.Status == "partially_refunded") {
-		status = "succeeded"
-	}
-	_ = s.store.SetReturnRefund(ctx, r.ID, intent.ID.String(), status, amount)
+	// LB-11 / D3 — returns are FENCED in Commerce P0 and this path is
+	// unreachable by design.
+	//
+	// The return loop is not part of the launch scope, and its creation path
+	// (`CreateReturnRequest`) persisted caller-supplied order_id,
+	// order_item_id, customer_user_id and seller_id with no relational
+	// check, so a caller could attach a return to a stranger's order and
+	// move that order to `return_requested` (review M-3). Repairing that
+	// loop is post-launch work; fencing it is cheaper and safer.
+	//
+	// The routes are unregistered, the worker entry points are disabled, and
+	// migration 012 puts a trigger on `return_requests` that refuses the
+	// INSERT — so a replayed legacy job cannot resurrect this either. This
+	// function remains only so that a code path which somehow reaches it
+	// fails loudly instead of half-refunding.
+	slog.Error("commerce: return refund path invoked while returns are fenced (LB-11)",
+		"return_id", r.ID, "order_id", r.OrderID)
+	_ = s.store.SetReturnRefund(ctx, r.ID, "", "pending", amount)
 }
 
 // RejectReturn closes a return with status='rejected' and records the
@@ -2157,7 +2254,7 @@ func (s *Service) payoutConfig() PayoutConfig {
 // fee, TDS, and the seller's net payout. Per-call overrides (e.g. for a
 // seller with a negotiated rate) win; if 0 is passed for a value the
 // service's configured default is used.
-func (s *Service) CalculateSellerPayout(grossAmount float64, commissionPct, platformFeePct float64) (net float64, commission float64, fee float64, tds float64) {
+func (s *Service) CalculateSellerPayout(grossAmount float64, commissionPct, platformFeePct float64) (net float64, commission float64, fee float64, tds float64) { // money-exempt: payout preview, fenced at /v1/commerce/payout (B5)
 	cfg := s.payoutConfig()
 	if commissionPct == 0 {
 		commissionPct = cfg.CommissionPct
@@ -2247,6 +2344,16 @@ func (s *Service) AddProductMedia(ctx context.Context, productID, actorUserID, m
 	if err := s.assertProductSeller(ctx, productID, actorUserID); err != nil {
 		return nil, err
 	}
+	// Owning the product is not owning the media. This route checked the
+	// first and not the second, so any seller could hang any asset in the
+	// system off their own gallery.
+	//
+	// KindAny: this endpoint carries its own mediaType for images and video
+	// alike, and constraining it here would reject a legitimate video gallery
+	// entry. Ownership, readiness and moderation are still all enforced.
+	if err := s.verifyMedia(ctx, actorUserID, media.KindAny, &mediaID); err != nil {
+		return nil, err
+	}
 	if err := s.store.AddProductMedia(ctx, productID, mediaID, mediaType, sortOrder); err != nil {
 		return nil, err
 	}
@@ -2293,8 +2400,51 @@ func (s *Service) AddSellerResponseToReview(ctx context.Context, reviewID, actor
 
 // ─── Addresses ───────────────────────────────────────────────
 
+// sealAddressForWrite encrypts an address's identifying fields.
+//
+// B4. Every client-reachable address write goes through here, and it FAILS the
+// whole write when KMS, the key ring or the cipher is unavailable. That is
+// deliberate: the alternative is storing the customer's name, phone and street
+// in plaintext because the key service had a bad minute, and a row written
+// that way is indistinguishable afterwards from one written before the
+// cutover.
+func (s *Service) sealAddressForWrite(ctx context.Context, addr *postgres.CustomerAddress) (postgres.SealedAddressWrite, error) {
+	if s.pii == nil {
+		return postgres.SealedAddressWrite{}, fmt.Errorf(
+			"commerce: the PII cipher is not configured; refusing to store an address in plaintext")
+	}
+	sealed, err := s.pii.SealAddress(ctx, pii.ScopeProfile, pii.Address{
+		ContactName:  addr.ContactName,
+		Phone:        addr.Phone,
+		AddressLine1: addr.AddressLine1,
+		AddressLine2: derefOrEmpty(addr.AddressLine2),
+		Landmark:     derefOrEmpty(addr.Landmark),
+		City:         addr.City,
+		State:        addr.State,
+		PostalCode:   addr.PostalCode,
+		Country:      addr.Country,
+	})
+	if err != nil {
+		return postgres.SealedAddressWrite{}, fmt.Errorf("commerce: sealing the address: %w", err)
+	}
+	return postgres.SealedAddressWrite{
+		ContactName:    sealed.ContactName,
+		Phone:          sealed.Phone,
+		AddressLine1:   sealed.AddressLine1,
+		AddressLine2:   sealed.AddressLine2,
+		Landmark:       sealed.Landmark,
+		KeyVersion:     sealed.KeyVersion,
+		LookupHash:     sealed.LookupHash,
+		WritePlaintext: s.piiCutover.WritesPlaintext(),
+	}, nil
+}
+
 func (s *Service) AddAddress(ctx context.Context, addr *postgres.CustomerAddress) error {
-	return s.store.CreateAddress(ctx, addr)
+	sealed, err := s.sealAddressForWrite(ctx, addr)
+	if err != nil {
+		return err
+	}
+	return s.store.CreateAddress(ctx, addr, sealed)
 }
 
 func (s *Service) GetAddresses(ctx context.Context, userID uuid.UUID) ([]*postgres.CustomerAddress, error) {
@@ -2302,7 +2452,11 @@ func (s *Service) GetAddresses(ctx context.Context, userID uuid.UUID) ([]*postgr
 }
 
 func (s *Service) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *postgres.CustomerAddress) error {
-	return s.store.UpdateAddress(ctx, id, userID, addr)
+	sealed, err := s.sealAddressForWrite(ctx, addr)
+	if err != nil {
+		return err
+	}
+	return s.store.UpdateAddress(ctx, id, userID, addr, sealed)
 }
 
 func (s *Service) DeleteAddress(ctx context.Context, id, userID uuid.UUID) error {
@@ -2491,4 +2645,61 @@ func coalesceInt(n, def int) int {
 func isPostgresUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// derefOrEmpty flattens a nullable text column for sealing.
+//
+// The cipher seals strings; NULL and "" are the same absence as far as an
+// address line is concerned, and collapsing them here keeps the sealed shape
+// stable so a row whose landmark was NULL and one whose landmark was ""
+// produce the same ciphertext structure.
+func derefOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// WithMedia attaches the media-service client used to verify that a media id
+// a client supplies actually belongs to that client.
+//
+// Nil-safe by construction, because a developer machine with no media-service
+// must still be able to run the product flows. cmd/server refuses to START
+// without it in a deployed environment — the decision about whether an
+// unverified media reference is acceptable belongs there, not scattered
+// across the call sites.
+func (s *Service) WithMedia(c *media.Client) *Service {
+	s.media = c
+	return s
+}
+
+// verifyMedia checks every supplied media id belongs to actorUserID.
+//
+// A nil client means media verification is not configured. That is only
+// reachable in a local environment (cmd/server exits otherwise), and it logs
+// once per call rather than silently passing, because "the check was skipped"
+// and "the check passed" must never look the same in a log.
+func (s *Service) verifyMedia(ctx context.Context, actorUserID uuid.UUID, kind media.Kind, ids ...*uuid.UUID) error {
+	if s.media == nil {
+		for _, id := range ids {
+			if id != nil && *id != uuid.Nil {
+				slog.Warn("commerce: media ownership NOT verified — no media-service client configured",
+					"media_id", *id, "actor", actorUserID)
+			}
+		}
+		return nil
+	}
+	return s.media.VerifyAllOwned(ctx, actorUserID, kind, ids...)
+}
+
+// rupeeMirror renders an optional paise amount as the NUMERIC column's value.
+//
+// money-exempt: this writes the deprecated rupee mirror of a minor column, for
+// the analytics readers that still scan it. Nothing computes from the result.
+func rupeeMirror(minor *int64) *float64 {
+	if minor == nil {
+		return nil
+	}
+	r := float64(*minor) / 100.0
+	return &r
 }

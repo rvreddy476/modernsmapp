@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/payments-service/database"
@@ -16,7 +19,9 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	tracepkg "github.com/atpost/shared/o11y/trace"
+	"github.com/atpost/shared/outbox"
 	sharedserver "github.com/atpost/shared/server"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -114,36 +119,68 @@ func main() {
 	// PAYMENTS_ALLOW_STUB=true to opt into the stub explicitly; if
 	// neither real creds nor the opt-in are set, refuse to start so
 	// the misconfiguration is visible at boot.
-	var gw gateway.PaymentGateway
-	if keyID := os.Getenv("RAZORPAY_KEY_ID"); keyID != "" {
-		gw = gateway.NewRazorpayGateway(keyID, os.Getenv("RAZORPAY_KEY_SECRET"))
-		slog.Info("payments: using Razorpay gateway (production credentials detected)")
-	} else if os.Getenv("PAYMENTS_ALLOW_STUB") == "true" {
-		gw = &gateway.StubGateway{}
-		slog.Warn("payments: STUB GATEWAY ACTIVE — no real money will move. Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in production and remove PAYMENTS_ALLOW_STUB.")
-	} else {
-		slog.Error("payments: RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
+	// LB-24 / M-10: the production configuration contract. Every branch
+	// below either yields a fully-configured dependency or exits. A service
+	// that boots with a stub gateway, a real key and an empty secret, or no
+	// caller allowlist is worse than one that refuses to start, because the
+	// misconfiguration is silent and money-shaped.
+	allowStub := os.Getenv("PAYMENTS_ALLOW_STUB") == "true"
+	isProd := env("ENV", "dev") == "prod"
+	if allowStub && isProd {
+		slog.Error("payments: PAYMENTS_ALLOW_STUB must never be set when ENV=prod")
 		os.Exit(1)
 	}
 
+	var (
+		gw       gateway.PaymentGateway
+		provider gateway.Provider
+	)
+	keyID := os.Getenv("RAZORPAY_KEY_ID")
+	keySecret := os.Getenv("RAZORPAY_KEY_SECRET")
 	webhookSecret := os.Getenv("RAZORPAY_WEBHOOK_SECRET")
-	if webhookSecret == "" && os.Getenv("PAYMENTS_ALLOW_STUB") != "true" {
-		slog.Error("payments: RAZORPAY_WEBHOOK_SECRET is required when running with the Razorpay gateway")
+
+	switch {
+	case keyID != "":
+		// M-10: the old code accepted a key id with an EMPTY secret and
+		// then failed every provider call at runtime. Refuse at boot.
+		if keySecret == "" {
+			slog.Error("payments: RAZORPAY_KEY_SECRET is required whenever RAZORPAY_KEY_ID is set")
+			os.Exit(1)
+		}
+		if webhookSecret == "" {
+			slog.Error("payments: RAZORPAY_WEBHOOK_SECRET is required with the Razorpay gateway; " +
+				"without it webhook verification cannot fail closed")
+			os.Exit(1)
+		}
+		gw = gateway.NewRazorpayGateway(keyID, keySecret)
+		provider = gateway.NewRazorpayProvider(keyID, keySecret, webhookSecret)
+		slog.Info("payments: Razorpay provider active")
+	case allowStub:
+		gw = &gateway.StubGateway{}
+		provider = gateway.NewRazorpayProvider("stub", "stub", env("RAZORPAY_WEBHOOK_SECRET", "stub-webhook-secret"))
+		slog.Warn("payments: STUB GATEWAY ACTIVE — no real money will move")
+	default:
+		slog.Error("payments: RAZORPAY_KEY_ID is required; set PAYMENTS_ALLOW_STUB=true for dev/test only")
 		os.Exit(1)
 	}
 
-	svc := service.NewWithDialer(store, kafkaBrokers, gw, kafkaDialer)
-	handler := nethttp.New(svc).WithWebhookSecret(webhookSecret)
-	// Audit P-internal: gate /v1/payments/* behind the shared internal-
-	// service-key. /webhook is registered outside this gate inside
-	// handler.RegisterRoutes (audit P5). Empty key keeps dev unblocked
-	// behind a loud WARN, matching every other service in the platform.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		handler.WithInternalKey(key)
-		slog.Info("payments-service: internal-service-key gate enabled")
-	} else {
-		slog.Warn("payments-service: INTERNAL_SERVICE_KEY not set — /v1/payments endpoints are unauthenticated. Do not run this configuration in production.")
+	// N3: the money path gets the RECOVERABLE provider port, not just the
+	// legacy gateway. `provider` was already constructed above and handed
+	// only to the HTTP handler, so an ambiguous CreateOrder timeout had no
+	// FetchByIdempotencyKey recovery available to it.
+	svc := service.NewWithDialer(store, kafkaBrokers, gw, kafkaDialer).WithProvider(provider)
+
+	// A2: build the caller allowlist. Each calling service has its OWN
+	// public key and its OWN permitted operations and reference types, so
+	// food-service cannot act on a commerce order and vice versa. There is
+	// no shared secret and no "trusted because it is inside the cluster".
+	verifier, err := buildServiceTokenVerifier()
+	if err != nil {
+		slog.Error("payments: service-token configuration is invalid", "error", err)
+		os.Exit(1)
 	}
+
+	handler := nethttp.New(svc).WithServiceAuth(verifier).WithProvider(provider)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -154,12 +191,112 @@ func main() {
 	r.Use(middleware.Metrics(httpMetrics))
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
-	handler.RegisterRoutes(r)
+	if err := handler.RegisterRoutes(r); err != nil {
+		slog.Error("payments: refusing to serve", "error", err)
+		os.Exit(1)
+	}
+
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+
+	// LB-7 / R-2: every domain event now leaves through the transactional
+	// outbox, with RequireAll acks. Writing to Kafka directly after a commit
+	// meant a broker outage lost a captured payment permanently, and
+	// leader-only acks meant an unreplicated leader failure did the same
+	// while the row was already marked published.
+	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		DBSchema:     "payments",
+		KafkaBrokers: kafkaBrokers,
+		DefaultTopic: "social.events.v1",
+	})
+	go outboxPublisher.Run(workerCtx)
+	slog.Info("payments: outbox publisher started (RequireAll acks)")
+
+	// A6 / LB-8: refunds are durable commands. This worker is what actually
+	// contacts the provider, using the command's deterministic idempotency
+	// key so a retry after an ambiguous timeout yields one refund.
+	go svc.RunRefundWorker(workerCtx, 15*time.Second)
+
+	// LB-9: resolve payments the webhook never told us about, and surface
+	// ledger-vs-provider drift instead of letting it accumulate silently.
+	go svc.RunReconciler(workerCtx,
+		time.Duration(envInt("PAYMENTS_RECONCILE_INTERVAL_SEC", 60))*time.Second,
+		time.Duration(envInt("PAYMENTS_PENDING_AGE_SEC", 600))*time.Second)
 
 	sharedserver.Run(r, sharedserver.Config{
 		Port: port,
 		OnShutdown: func() {
+			workerCancel()
 			dbPool.Close()
 		},
 	})
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		slog.Warn("payments: invalid integer env, using default", "key", key, "default", def)
+	}
+	return def
+}
+
+// buildServiceTokenVerifier constructs the A2 caller allowlist from the
+// environment.
+//
+// Configuration shape, one entry per calling service:
+//
+//	SERVICE_CALLERS=commerce-service,food-service
+//	SERVICE_CALLER_COMMERCE_SERVICE_KID=c1
+//	SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY=<base64 ed25519 public key>
+//	SERVICE_CALLER_COMMERCE_SERVICE_OPS=payments:intent.create,payments:intent.read,payments:refund.create
+//	SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES=order
+//
+// Note what is NOT here: any private key. payments verifies and can never
+// mint, so a compromise of this service cannot forge a caller.
+func buildServiceTokenVerifier() (*servicetoken.Verifier, error) {
+	v := servicetoken.NewVerifier(servicetoken.AudiencePayments)
+	raw := os.Getenv("SERVICE_CALLERS")
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("SERVICE_CALLERS is required: payments must know which services may call it")
+	}
+	for _, name := range strings.Split(raw, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		prefix := "SERVICE_CALLER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+		kid := os.Getenv(prefix + "_KID")
+		pub := os.Getenv(prefix + "_PUBKEY")
+		ops := splitList(os.Getenv(prefix + "_OPS"))
+		refs := splitList(os.Getenv(prefix + "_REFTYPES"))
+		if kid == "" || pub == "" {
+			return nil, fmt.Errorf("caller %q is missing %s_KID or %s_PUBKEY", name, prefix, prefix)
+		}
+		if len(ops) == 0 || len(refs) == 0 {
+			// An empty allowlist is not "allow everything" — it is a
+			// configuration error, and treating it as permissive is how
+			// the original shared-key hole was built.
+			return nil, fmt.Errorf("caller %q must declare both %s_OPS and %s_REFTYPES", name, prefix, prefix)
+		}
+		if err := v.RegisterBase64(name, kid, pub, ops, refs); err != nil {
+			return nil, fmt.Errorf("caller %q: %w", name, err)
+		}
+		slog.Info("payments: registered service caller", "caller", name, "kid", kid, "ops", ops, "ref_types", refs)
+	}
+	if v.Callers() == 0 {
+		return nil, fmt.Errorf("SERVICE_CALLERS produced no usable entries")
+	}
+	return v, nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

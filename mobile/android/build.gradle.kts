@@ -168,7 +168,12 @@ tasks.register("moduleGraphCheck") {
     // A green graph cannot detect a module nobody meant to add. Naming the
     // number makes an unplanned module a build failure rather than a surprise
     // six weeks later. Update this deliberately when a module is authorised.
-    val expectedModuleCount = 26
+    //
+    // 26 → 28: :core:commerce and :feature:commerce (Commerce P0, LB-A1/A2),
+    // updated in the same commit that adds them, as this note requires. The
+    // existing rule 3 already forbids a :feature → :feature edge, so the
+    // commerce feature is covered by it without a new rule.
+    val expectedModuleCount = 28
 
     doLast {
         val allViolations = buildList {

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/atpost/commerce-service/internal/money"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,19 +47,59 @@ func (s *Store) CreateSeller(ctx context.Context, sel *Seller) error {
 
 func (s *Store) GetSellerByUserID(ctx context.Context, userID uuid.UUID) (*Seller, error) {
 	var sel Seller
+	// `status` and `onboarding_step` are selected, and that is not cosmetic.
+	//
+	// They were absent from this list, so `GET /v1/commerce/sellers/me`
+	// always answered `"status": ""` and `"onboarding_step": 0` no matter what
+	// the row actually held. A client could not tell a draft seller from an
+	// approved one — which is precisely the question any seller UI has to
+	// answer before it decides what to show, and the question that decides
+	// whether `POST /products/:id/submit` will be refused.
+	//
+	// `status` is the onboarding/approval state machine (draft → submitted →
+	// approved). `verification_status` is the separate KYC column, and the two
+	// are not interchangeable: migration 014 added `format_ok`, which means
+	// only that a regex liked the document's shape.
 	err := s.db.QueryRow(ctx, `SELECT id,user_id,seller_type,store_name,brand_name,slug,description,
 		logo_media_id,banner_media_id,email,phone,gst_number,pan_number,state,city,postal_code,
 		verification_status,store_status,quality_score,performance_tier,avg_rating,review_count,
-		follower_count,total_products,total_orders,created_at,updated_at
+		follower_count,total_products,total_orders,created_at,updated_at,
+		status,onboarding_step
 		FROM sellers WHERE user_id=$1`, userID).Scan(
 		&sel.ID, &sel.UserID, &sel.SellerType, &sel.StoreName, &sel.BrandName, &sel.Slug, &sel.Description,
 		&sel.LogoMediaID, &sel.BannerMediaID, &sel.Email, &sel.Phone, &sel.GSTNumber, &sel.PANNumber,
 		&sel.State, &sel.City, &sel.PostalCode, &sel.VerificationStatus, &sel.StoreStatus,
 		&sel.QualityScore, &sel.PerformanceTier, &sel.AvgRating, &sel.ReviewCount,
 		&sel.FollowerCount, &sel.TotalProducts, &sel.TotalOrders, &sel.CreatedAt, &sel.UpdatedAt,
+		&sel.Status, &sel.OnboardingStep,
 	)
-	return &sel, err
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The caller has no seller account.
+		//
+		// This used to `return &sel, err` — a non-nil, zero-valued Seller
+		// alongside pgx.ErrNoRows. Every caller guarding with
+		// `if seller == nil { return ErrNoSellerProfile }` was therefore
+		// holding a check that could not fire, and the raw pgx error reached
+		// the edge as a 500 instead of a 403.
+		//
+		// The nil is what makes those guards live. The typed sentinel is what
+		// lets a handler tell "this user is not a seller" apart from "the
+		// database is down" — the existing handlers map *any* error here to
+		// 403 NO_SELLER, which reports an outage as an authorisation failure.
+		return nil, ErrNoSellerRow
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sel, nil
 }
+
+// ErrNoSellerRow means the user has no seller account.
+//
+// It is an error rather than a (nil, nil) return because the onboarding path
+// reads "no row" as "start a new draft", and that branch predates this
+// package's nil-and-sentinel convention.
+var ErrNoSellerRow = errors.New("commerce: this user has no seller account")
 
 func (s *Store) GetSellerByID(ctx context.Context, id uuid.UUID) (*Seller, error) {
 	var sel Seller
@@ -242,19 +284,43 @@ func (s *Store) GetProductAttributes(ctx context.Context, productID uuid.UUID) (
 	return out, nil
 }
 
-func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*Product, int, error) {
+// ListSellerProducts lists one seller's products.
+//
+// publicOnly is the difference between a storefront and a dashboard, and it
+// is not cosmetic. Without it this listed every row for a seller id supplied
+// in the URL — including `draft` products the seller has not released and
+// `rejected` ones moderation turned down. The route is unauthenticated, so
+// anyone who knew a seller id could read a competitor's unreleased catalogue
+// and their moderation failures.
+//
+// The public predicate is the same one the browse and search surfaces use
+// (`status='active' AND approval_status IN ('approved','live')`), so a product
+// cannot be visible on a storefront while being invisible in search.
+func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, status string, publicOnly bool, limit, offset int) ([]*Product, int, error) {
 	where := "WHERE seller_id=$1"
 	args := []any{sellerID}
+	if publicOnly {
+		where += " AND status = 'active' AND approval_status IN ('approved','live')"
+	}
 	if status != "" {
-		where += " AND status=$2"
+		where += fmt.Sprintf(" AND status=$%d", len(args)+1)
 		args = append(args, status)
 	}
 	var total int
 	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products "+where, args...).Scan(&total)
 
 	args = append(args, limit, offset)
+	// primary_image_media_id is selected, and that is not cosmetic.
+	//
+	// It was absent from this list while the two browse queries below both
+	// select it, so a storefront or seller-dashboard row came back with a nil
+	// image id no matter what the row held. Hydrating image URLs on the way
+	// out cannot help a field the query never returned — the product would
+	// still render as a placeholder, and the cause would look like a
+	// media-service problem rather than a missing column.
 	rows, err := s.db.Query(ctx, `SELECT id,seller_id,category_id,title,slug,status,approval_status,
-		avg_rating,review_count,order_count,view_count,created_at,updated_at FROM products `+
+		avg_rating,review_count,order_count,view_count,created_at,updated_at,
+		primary_image_media_id FROM products `+
 		where+fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
@@ -265,7 +331,7 @@ func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, stat
 		var p Product
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
 			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
-			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt, &p.PrimaryImageMediaID); err != nil {
 			return nil, 0, err
 		}
 		products = append(products, &p)
@@ -404,11 +470,20 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 		       v.id  AS default_variant_id,
 		       v.min_selling_price,
 		       v.min_mrp,
-		       COALESCE(s.total_stock, 0) AS total_stock
+		       v.min_price_minor,
+		       v.mrp_minor,
+		       COALESCE(s.total_stock, 0) AS total_stock,
+		       (COALESCE(s.total_stock, 0) > 0) AS in_stock
 		FROM products p
 		JOIN sellers sl ON sl.id = p.seller_id
 		LEFT JOIN LATERAL (
-			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
+			-- Paise alongside the rupee floats, from the same row, using the
+			-- same NULLIF fallback pricing uses: a legacy variant whose minor
+			-- column is still the DEFAULT 0 falls back to its float rather
+			-- than advertising a free product.
+			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp,
+			       COALESCE(NULLIF(selling_price_minor, 0), ROUND(selling_price*100))::bigint AS min_price_minor,
+			       COALESCE(NULLIF(mrp_minor, 0), ROUND(mrp*100))::bigint AS mrp_minor
 			FROM product_variants
 			WHERE product_id = p.id AND status = 'active'
 			ORDER BY selling_price ASC
@@ -435,7 +510,8 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
 			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
 			&p.PrimaryImageMediaID, &p.SourceImageURL, &p.RetailerName,
-			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
+			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP,
+			&p.MinPriceMinor, &p.MRPMinor, &p.TotalStock, &p.InStock); err != nil {
 			return nil, "", err
 		}
 		products = append(products, &p)
@@ -575,14 +651,38 @@ func (s *Store) CreateVariant(ctx context.Context, v *ProductVariant) error {
 	v.ID = uuid.New()
 	v.CreatedAt = time.Now()
 	v.UpdatedAt = time.Now()
+	// THE minor columns are written here, and they are not optional.
+	//
+	// Every pricing path reads `COALESCE(selling_price_minor, ROUND(selling_price*100))`.
+	// Migration 007 backfilled the existing estate and then set these columns
+	// to DEFAULT 0 — not NULL. So a variant inserted WITHOUT them got
+	// `selling_price_minor = 0`, COALESCE found a non-NULL zero, the float
+	// fallback never ran, and checkout charged nothing.
+	//
+	// This was the only code path that creates products. A seller entering
+	// ₹1,299 produced a variant the buyer could take for free, and no test
+	// caught it because every fixture in the suite inserts the minor columns
+	// explicitly — supplying exactly the field production dropped.
+	//
+	// Rupee floats are converted once, here, at the boundary. Below this line
+	// the money is integer paise and stays that way.
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO product_variants (id,product_id,sku,barcode,option_1_name,option_1_value,
 		  option_2_name,option_2_value,option_3_name,option_3_value,mrp,selling_price,cost_price,
+		  mrp_minor,selling_price_minor,cost_price_minor,
 		  currency_code,status,image_media_id,weight_grams,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
 		v.ID, v.ProductID, v.SKU, v.Barcode, v.Option1Name, v.Option1Value,
 		v.Option2Name, v.Option2Value, v.Option3Name, v.Option3Value,
-		v.MRP, v.SellingPrice, v.CostPrice, v.CurrencyCode, v.Status,
+		v.MRP, v.SellingPrice, v.CostPrice,
+		// Paise from the caller when they have it, converted rupees when they
+		// do not. The direction matters: a client that typed a price in paise
+		// must not have it round-tripped through a float on the way in, which
+		// is the whole reason the create route now accepts `*_minor`.
+		orConvert(v.MRPMinorIn, v.MRP),
+		orConvert(v.SellingPriceMinorIn, v.SellingPrice),
+		orConvertPtr(v.CostPriceMinorIn, v.CostPrice),
+		v.CurrencyCode, v.Status,
 		v.ImageMediaID, v.WeightGrams, v.CreatedAt, v.UpdatedAt,
 	)
 	return err
@@ -640,16 +740,45 @@ func (s *Store) UpdateVariant(ctx context.Context, id uuid.UUID, updates map[str
 		"currency_code": true, "status": true, "image_media_id": true,
 		"weight_grams": true, "barcode": true,
 	}
+
+	// Repricing must move the column pricing actually READS, and the two
+	// columns must never end up disagreeing.
+	//
+	// The original defect: a seller lowering a price updated `selling_price`
+	// while `selling_price_minor` kept its old value — and since checkout
+	// reads the minor column, the buyer was charged the price before the
+	// change. The first fix derived the minor column from the rupee one, so
+	// they could not diverge.
+	//
+	// That is still the rule; only the DIRECTION has changed. Paise are now
+	// the authority on the way in, because the create route accepts them and a
+	// price entered exactly as 129999 must not become a float on its way
+	// through an edit. `normaliseVariantMoney` resolves each pair before
+	// anything is written: whichever side the caller supplied becomes both.
+	money, err := normaliseVariantMoney(updates)
+	if err != nil {
+		return err
+	}
+
 	setClauses := []string{}
 	args := []any{}
 	idx := 1
 	for k, v := range updates {
-		if !allowed[k] {
+		if !allowed[k] || variantMoneyPairs[k] != "" {
+			// Money is written from `money` below, never straight from the
+			// caller's map, so a rupee field cannot slip past the pairing.
 			continue
 		}
 		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", k, idx))
 		args = append(args, v)
 		idx++
+	}
+	for _, m := range money {
+		setClauses = append(setClauses,
+			fmt.Sprintf("%s = $%d", m.rupeeCol, idx),
+			fmt.Sprintf("%s = $%d", m.minorCol, idx+1))
+		args = append(args, m.rupees, m.minor)
+		idx += 2
 	}
 	if len(setClauses) == 0 {
 		return nil
@@ -744,23 +873,83 @@ func (s *Store) ReserveStock(ctx context.Context, variantID, userID uuid.UUID, q
 	return tx.Commit(ctx)
 }
 
-// ReleaseReservation releases a previously reserved qty.
-func (s *Store) ReleaseReservation(ctx context.Context, variantID, userID uuid.UUID, qty int) error {
+// ReleaseReservation releases a cart hold — one reservation not attached to an
+// order — and rolls back exactly the quantity that reservation recorded.
+//
+// ─── WHAT THIS USED TO BE ───────────────────────────────────────────────
+//
+// It was broken twice over, and compiled, and read as correct:
+//
+//	UPDATE inventory_items SET reserved_qty = GREATEST(0, reserved_qty - $2) ...
+//	DELETE FROM inventory_reservations
+//	 WHERE variant_id=$1 AND user_id=$2 AND order_id IS NULL LIMIT 1
+//
+// First, PostgreSQL does not accept LIMIT on DELETE. The statement raised a
+// syntax error on every call, the transaction rolled back, and the release was
+// a no-op — while its only caller logged the failure at Warn and moved on.
+//
+// Second, and worse if the syntax error were ever fixed naively: the caller
+// passes a quantity, and the DELETE targets `order_id IS NULL`. Checkout
+// creates reservations WITH an order id. So a "release this order's hold" call
+// would decrement reserved_qty by the order's quantity while deleting an
+// unrelated cart reservation — corrupting a live hold that belonged to
+// somebody else's session.
+//
+// It is currently unreachable — `MarkPaymentFailed` is its only caller and
+// cmd/server wires the P0 consumer, which uses ApplyPaymentFailed instead. It
+// is repaired rather than deleted because the next person to need a
+// cancel-cart-hold path will find this function and use it.
+//
+// ─── WHAT IT IS NOW ─────────────────────────────────────────────────────
+//
+// The reservation row is the authority for how much to give back, not the
+// caller. One statement selects the row, deletes it and returns its quantity;
+// reserved_qty is then decremented by exactly that. A caller who passes a
+// stale quantity can no longer corrupt the count, and a release with nothing
+// to release changes nothing instead of silently subtracting.
+//
+// Order-attached reservations are explicitly out of scope: releasing those
+// belongs to ApplyPaymentFailed / CancelOrder / ExpireInventoryReservations,
+// which do it inside the order's own state transition and write the ledger.
+func (s *Store) ReleaseReservation(ctx context.Context, variantID, userID uuid.UUID, _ int) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// Delete exactly one cart hold and learn what it was actually holding.
+	// The ctid subselect is how a single row is targeted without LIMIT.
+	var released int
+	err = tx.QueryRow(ctx, `
+		DELETE FROM inventory_reservations
+		 WHERE ctid = (
+		     SELECT ctid FROM inventory_reservations
+		      WHERE variant_id = $1 AND user_id = $2 AND order_id IS NULL
+		      ORDER BY created_at
+		      LIMIT 1
+		 )
+		RETURNING quantity`, variantID, userID).Scan(&released)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Nothing held. Idempotent by construction: a second release finds no
+		// row and subtracts nothing, where the previous version would have
+		// subtracted the caller's quantity a second time.
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+
 	if _, err = tx.Exec(ctx, `
-		UPDATE inventory_items SET reserved_qty=GREATEST(0,reserved_qty-$2),updated_at=NOW()
-		WHERE variant_id=$1`, variantID, qty); err != nil {
+		UPDATE inventory_items
+		   SET reserved_qty = GREATEST(0, reserved_qty - $2), updated_at = NOW()
+		 WHERE variant_id = $1`, variantID, released); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `
-		DELETE FROM inventory_reservations
-		WHERE variant_id=$1 AND user_id=$2 AND order_id IS NULL LIMIT 1`,
-		variantID, userID); err != nil {
+		INSERT INTO inventory_ledger (variant_id, delta_total, delta_reserved, reason, actor_id, actor_type)
+		VALUES ($1, 0, $2, 'checkout_release_cancel', $3, 'customer')`,
+		variantID, -released, userID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -808,12 +997,53 @@ func (s *Store) GetOrCreateCart(ctx context.Context, userID uuid.UUID) (*Cart, e
 	return cart, nil
 }
 
-func (s *Store) UpsertCartItem(ctx context.Context, cartID, variantID, productID uuid.UUID, qty int, price float64) error {
+// VariantSellingPriceMinor reads a variant's price in paise.
+//
+// B5/LB-19. It uses the SAME expression lockAndPriceLines uses inside the
+// checkout transaction — `COALESCE(selling_price_minor, ROUND(selling_price*100))`
+// — so the snapshot written at add-to-cart is comparable to the price charged
+// at checkout. Deriving it any other way is how a price-change check ends up
+// comparing two numbers that were never the same kind of thing.
+func (s *Store) VariantSellingPriceMinor(ctx context.Context, variantID uuid.UUID) (money.Paise, error) {
+	var minor int64
+	err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(selling_price_minor, 0), ROUND(selling_price*100))
+		   FROM product_variants WHERE id = $1`, variantID).Scan(&minor)
+	if err != nil {
+		return 0, err
+	}
+	return money.Paise(minor), nil
+}
+
+// UpsertCartItem adds or updates a cart line.
+//
+// B5/LB-19 — this took a rupees-major float and wrote ONLY `price_snapshot`,
+// never `price_snapshot_minor`. It is reachable from the live AddToCart and
+// UpdateCartItem routes, so it is not legacy dead code, and the consequence
+// was quiet: the P0 checkout reads `price_snapshot_minor` to detect a price
+// change between add-to-cart and checkout, and
+//
+//	if l.SnapshotMinor != 0 && l.SnapshotMinor != priced[i].UnitMinor
+//
+// skips that check entirely when the column is 0. Every line added through
+// this path therefore had NO price-change detection: a seller could raise the
+// price after the customer added the item and the customer would be charged
+// the new price without the ErrPriceChanged response the flow exists to
+// produce.
+//
+// The parameter is paise now. The float column is still written, from the
+// integer, because analytics readers still scan it during the deprecation
+// window — but it is derived from the minor value rather than being the
+// source of it.
+func (s *Store) UpsertCartItem(ctx context.Context, cartID, variantID, productID uuid.UUID, qty int, priceMinor money.Paise) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO cart_items (id,cart_id,variant_id,product_id,quantity,price_snapshot,added_at)
-		VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,NOW())
-		ON CONFLICT (cart_id,variant_id) DO UPDATE SET quantity=$4,price_snapshot=$5`,
-		cartID, variantID, productID, qty, price,
+		INSERT INTO cart_items (id,cart_id,variant_id,product_id,quantity,price_snapshot,price_snapshot_minor,added_at)
+		VALUES (gen_random_uuid(),$1,$2,$3,$4,$5::numeric/100,$5,NOW())
+		ON CONFLICT (cart_id,variant_id) DO UPDATE
+		   SET quantity = $4,
+		       price_snapshot = $5::numeric/100,
+		       price_snapshot_minor = $5`,
+		cartID, variantID, productID, qty, priceMinor.Int64(),
 	)
 	return err
 }
@@ -1187,16 +1417,82 @@ func (s *Store) UpdatePaymentStatus(ctx context.Context, orderID uuid.UUID, paym
 
 // ─── Customer Addresses ──────────────────────────────────────
 
-func (s *Store) CreateAddress(ctx context.Context, addr *CustomerAddress) error {
+// SealedAddressWrite carries the encrypted identifying fields alongside the
+// row they belong to.
+//
+// B4. The ciphertext and the business row are written in ONE statement, so
+// there is no window in which a customer address exists without its
+// ciphertext — a window a crash would turn into a permanently plaintext row
+// that the backfill would then have to find.
+//
+// Sealing happens in the service, because it is a KMS network call and the
+// store's contract is that it does no I/O beyond the database. The store's
+// job is to make the write atomic.
+type SealedAddressWrite struct {
+	ContactName  []byte
+	Phone        []byte
+	AddressLine1 []byte
+	AddressLine2 []byte
+	Landmark     []byte
+	KeyVersion   int
+	LookupHash   string
+
+	// WritePlaintext is the cutover switch (pii.Mode.WritesPlaintext).
+	//
+	// True during the dual-write window, so the previous image can still read
+	// every row and a rollback is survivable. False after cutover, when the
+	// identifying columns are written empty and ciphertext is the only copy.
+	WritePlaintext bool
+}
+
+// identifying returns the plaintext to store in the identifying columns.
+//
+// Empty strings rather than NULL: contact_name, phone and address_line_1 are
+// NOT NULL, and widening them is a contract change this pass does not make.
+// "Nonblank identifying plaintext" is therefore the property the scrub
+// verifies, and ” is the scrubbed state.
+func (w SealedAddressWrite) identifying(
+	name, phone, line1 string, line2, landmark *string,
+) (string, string, string, *string, *string) {
+	if w.WritePlaintext {
+		return name, phone, line1, line2, landmark
+	}
+	// address_line_2 and landmark are nullable, so their scrubbed state is
+	// NULL rather than ''. The three NOT NULL columns take ''.
+	return "", "", "", nil, nil
+}
+
+// CreateAddress writes a customer address with its identifying fields sealed.
+//
+// B4: `sealed` is REQUIRED. There is no path here that stores a customer's
+// name, phone or street in plaintext only — the previous version of this
+// function had no other path, which is why every address in the database is
+// currently readable by anyone holding a database credential.
+func (s *Store) CreateAddress(ctx context.Context, addr *CustomerAddress, sealed SealedAddressWrite) error {
+	if sealed.KeyVersion <= 0 || len(sealed.AddressLine1) == 0 {
+		// A write that reached here without ciphertext would be a silent
+		// plaintext row. Refusing costs the customer one retry; accepting
+		// costs an address that the scrub will later clear and that nothing
+		// can then recover.
+		return fmt.Errorf("commerce: refusing to store an address without sealed identifying fields")
+	}
 	addr.ID = uuid.New()
 	addr.CreatedAt = time.Now()
+	name, phone, line1, line2, landmark := sealed.identifying(
+		addr.ContactName, addr.Phone, addr.AddressLine1, addr.AddressLine2, addr.Landmark)
+
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO customer_addresses (id,user_id,label,contact_name,phone,address_line_1,
-		  address_line_2,landmark,city,state,country,postal_code,address_type,is_default,created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-		addr.ID, addr.UserID, addr.Label, addr.ContactName, addr.Phone, addr.AddressLine1,
-		addr.AddressLine2, addr.Landmark, addr.City, addr.State, addr.Country, addr.PostalCode,
+		  address_line_2,landmark,city,state,country,postal_code,address_type,is_default,created_at,
+		  contact_name_enc,phone_enc,address_line_1_enc,address_line_2_enc,landmark_enc,
+		  pii_key_version,pii_scope,lookup_hash)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+		        $16,$17,$18,$19,$20,$21,'profile',NULLIF($22,''))`,
+		addr.ID, addr.UserID, addr.Label, name, phone, line1,
+		line2, landmark, addr.City, addr.State, addr.Country, addr.PostalCode,
 		addr.AddressType, addr.IsDefault, addr.CreatedAt,
+		sealed.ContactName, sealed.Phone, sealed.AddressLine1, sealed.AddressLine2, sealed.Landmark,
+		sealed.KeyVersion, sealed.LookupHash,
 	)
 	return err
 }
@@ -1238,16 +1534,36 @@ func (s *Store) GetAddressByID(ctx context.Context, id uuid.UUID) (*CustomerAddr
 	return a, nil
 }
 
-func (s *Store) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *CustomerAddress) error {
+// UpdateAddress replaces an address, re-sealing its identifying fields.
+//
+// B4: the ciphertext columns are ALWAYS overwritten, including when the
+// cutover is still writing plaintext. An update that refreshed the plaintext
+// and left stale ciphertext behind would be the worst of both — the row would
+// look encrypted, and what it decrypts to would be the previous occupant's
+// address.
+func (s *Store) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *CustomerAddress, sealed SealedAddressWrite) error {
+	if sealed.KeyVersion <= 0 || len(sealed.AddressLine1) == 0 {
+		return fmt.Errorf("commerce: refusing to update an address without sealed identifying fields")
+	}
+	name, phone, line1, line2, landmark := sealed.identifying(
+		addr.ContactName, addr.Phone, addr.AddressLine1, addr.AddressLine2, addr.Landmark)
+
 	tag, err := s.db.Exec(ctx, `
 		UPDATE customer_addresses SET
 			contact_name=$3, phone=$4, address_line_1=$5, address_line_2=$6,
 			landmark=$7, city=$8, state=$9, country=$10, postal_code=$11,
-			address_type=$12, is_default=$13
+			address_type=$12, is_default=$13,
+			contact_name_enc=$14, phone_enc=$15, address_line_1_enc=$16,
+			address_line_2_enc=$17, landmark_enc=$18,
+			pii_key_version=$19, lookup_hash=NULLIF($20,''),
+			updated_at=NOW()
 		WHERE id=$1 AND user_id=$2`,
-		id, userID, addr.ContactName, addr.Phone, addr.AddressLine1, addr.AddressLine2,
-		addr.Landmark, addr.City, addr.State, addr.Country, addr.PostalCode,
+		id, userID, name, phone, line1, line2,
+		landmark, addr.City, addr.State, addr.Country, addr.PostalCode,
 		addr.AddressType, addr.IsDefault,
+		sealed.ContactName, sealed.Phone, sealed.AddressLine1,
+		sealed.AddressLine2, sealed.Landmark,
+		sealed.KeyVersion, sealed.LookupHash,
 	)
 	if err != nil {
 		return err
@@ -1748,7 +2064,7 @@ func (s *Store) MarkCODRemittanceSettled(ctx context.Context, remittanceID, payo
 // SetReturnRefund stamps the refund intent + status onto the return. Used
 // once payments-service accepts the refund — even if the gateway is async,
 // we record the intent ID immediately so a follow-up webhook can find it.
-func (s *Store) SetReturnRefund(ctx context.Context, returnID uuid.UUID, refundIntentID, status string, amount float64) error {
+func (s *Store) SetReturnRefund(ctx context.Context, returnID uuid.UUID, refundIntentID, status string, amount float64) error { // money-exempt: returns are fenced at /v1/commerce/returns (LB-11)
 	_, err := s.db.Exec(ctx, `
 		UPDATE return_requests
 		SET refund_intent_id=$2, refund_status=$3, refund_amount=$4
@@ -1843,4 +2159,322 @@ func (s *Store) CreatePayoutBatch(ctx context.Context, batch *PayoutBatch, txns 
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// ─── Rupee → paise, in exactly one place ─────────────────────────────
+//
+// The product/variant HTTP contract takes rupee floats (`mrp`,
+// `selling_price`, `cost_price`) and the columns behind them are
+// NUMERIC(12,2). Every pricing path downstream reads the integer `_minor`
+// columns. Something has to convert, and it must happen once, at the write
+// boundary, so a rounding choice made here cannot be made differently
+// somewhere else.
+//
+// math.Round, not a truncating int64 cast: 12.99 arrives from JSON as
+// 12.989999999999998, and `int64(12.989999999999998*100)` is 1298 — a paisa
+// lost on a price nobody would ever suspect. Rounding gives 1299.
+
+// rupeesToMinor converts a rupee amount to paise.
+func rupeesToMinor(rupees float64) int64 { return int64(math.Round(rupees * 100)) }
+
+// rupeesToMinorPtr converts an optional rupee amount, preserving nil.
+//
+// nil means "not stated" — a variant with no cost price — and must stay
+// distinguishable from a stated zero.
+func rupeesToMinorPtr(rupees *float64) *int64 {
+	if rupees == nil {
+		return nil
+	}
+	m := rupeesToMinor(*rupees)
+	return &m
+}
+
+// anyRupeesToMinor converts a value arriving from an untyped JSON patch.
+//
+// `PATCH /variants/:id` binds into map[string]any, so a price is whatever
+// encoding/json produced. A non-numeric value is refused rather than
+// coerced: silently treating "1299" or true as zero would reprice the
+// variant to free, which is the defect this whole helper exists to close.
+func anyRupeesToMinor(v any) (any, error) {
+	switch n := v.(type) {
+	case nil:
+		return nil, nil
+	case float64:
+		return rupeesToMinor(n), nil
+	case float32:
+		return rupeesToMinor(float64(n)), nil
+	case int:
+		return int64(n) * 100, nil
+	case int64:
+		return n * 100, nil
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("price %q is not a number", n.String())
+		}
+		return rupeesToMinor(f), nil
+	default:
+		return nil, fmt.Errorf("price must be a number, got %T", v)
+	}
+}
+
+// ─── Seller pickup addresses ─────────────────────────────────────────
+
+// SellerAddress is a seller's pickup, warehouse or business address.
+//
+// The courier needs the pickup PIN as the origin of every shipment, and
+// `PrepareQuote` reads it for the delivery rate. Until now nothing in
+// production ever wrote one: `POST /sellers/onboard` writes only the flat
+// `state`/`city`/`postal_code` columns on `sellers`, and the onboarding wizard
+// leaves `pickup_address_id` NULL. `SellerPickupPin`'s "fall back to the
+// seller's own postcode" branch was therefore the ONLY live branch — and that
+// column is optional, so a seller who skipped it quoted deliveries from an
+// empty origin.
+type SellerAddress struct {
+	ID           uuid.UUID
+	SellerID     uuid.UUID
+	AddressType  string
+	ContactName  string
+	Phone        string
+	AddressLine1 string
+	AddressLine2 *string
+	City         string
+	State        string
+	PostalCode   string
+	Country      string
+	IsDefault    bool
+}
+
+// UpsertSellerAddress writes a seller address with its identifying fields
+// sealed, replacing any existing address of the same type.
+//
+// B4 applies here exactly as it does to customer addresses: a seller's contact
+// name, phone and street are identifying PII, they live in the same estate the
+// backfill covers, and the gated scrub will clear their plaintext. A write
+// that stored them unsealed would be a row the scrub destroys.
+//
+// One address per (seller, type). A seller has one pickup point at a time, and
+// letting two exist would make `SellerPickupPin`'s ORDER BY the thing that
+// silently decides where couriers collect from.
+func (s *Store) UpsertSellerAddress(ctx context.Context, a SellerAddress, sealed SealedAddressWrite) error {
+	if sealed.KeyVersion <= 0 || len(sealed.AddressLine1) == 0 {
+		return fmt.Errorf("commerce: refusing to store a seller address without sealed identifying fields")
+	}
+	if strings.TrimSpace(a.PostalCode) == "" {
+		// The whole reason this row exists. A pickup address with no PIN
+		// cannot originate a shipment, and the courier call would quote from
+		// nowhere.
+		return fmt.Errorf("commerce: a seller address requires a postal code")
+	}
+	if strings.TrimSpace(a.State) == "" {
+		// GST place of supply. An empty seller state silently bills CGST+SGST
+		// on an interstate sale (ErrPlaceOfSupplyUnknown).
+		return fmt.Errorf("commerce: a seller address requires a state")
+	}
+
+	name, phone, line1, line2, _ := sealed.identifying(
+		a.ContactName, a.Phone, a.AddressLine1, a.AddressLine2, nil)
+
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO seller_addresses
+		    (seller_id, address_type, contact_name, phone, address_line_1, address_line_2,
+		     city, state, country, postal_code, is_default,
+		     contact_name_enc, phone_enc, address_line_1_enc, address_line_2_enc, pii_key_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		ON CONFLICT (seller_id, address_type) DO UPDATE SET
+		    contact_name       = EXCLUDED.contact_name,
+		    phone              = EXCLUDED.phone,
+		    address_line_1     = EXCLUDED.address_line_1,
+		    address_line_2     = EXCLUDED.address_line_2,
+		    city               = EXCLUDED.city,
+		    state              = EXCLUDED.state,
+		    country            = EXCLUDED.country,
+		    postal_code        = EXCLUDED.postal_code,
+		    is_default         = EXCLUDED.is_default,
+		    contact_name_enc   = EXCLUDED.contact_name_enc,
+		    phone_enc          = EXCLUDED.phone_enc,
+		    address_line_1_enc = EXCLUDED.address_line_1_enc,
+		    address_line_2_enc = EXCLUDED.address_line_2_enc,
+		    pii_key_version    = EXCLUDED.pii_key_version`,
+		a.SellerID, a.AddressType, name, phone, line1, line2,
+		a.City, a.State, orDefaultCountry(a.Country), a.PostalCode, a.IsDefault,
+		sealed.ContactName, sealed.Phone, sealed.AddressLine1, sealed.AddressLine2,
+		sealed.KeyVersion,
+	)
+	return err
+}
+
+func orDefaultCountry(c string) string {
+	if strings.TrimSpace(c) == "" {
+		return "IN"
+	}
+	return c
+}
+
+// orConvert prefers paise the caller supplied over converting their rupees.
+//
+// The conversion is the fallback, not the path. A price typed as paise that
+// gets converted from a float on the way in has already lost whatever the
+// float lost, and every exact figure computed from it downstream is exact
+// about the wrong number.
+func orConvert(minor *int64, rupees float64) int64 {
+	if minor != nil {
+		return *minor
+	}
+	return rupeesToMinor(rupees)
+}
+
+// orConvertPtr is orConvert for an optional amount. Absent stays absent — a
+// nil cost price means "not recorded", never zero.
+func orConvertPtr(minor *int64, rupees *float64) *int64 {
+	if minor != nil {
+		return minor
+	}
+	return rupeesToMinorPtr(rupees)
+}
+
+// ─── Variant repricing ───────────────────────────────────────────────
+
+// variantMoneyPairs maps each rupee column to its paise column.
+//
+// Both names are accepted from a caller: `selling_price` is the legacy shape
+// and `selling_price_minor` is what a client written today sends. They are
+// resolved into one another before either is written.
+var variantMoneyPairs = map[string]string{
+	"mrp":                 "mrp_minor",
+	"selling_price":       "selling_price_minor",
+	"cost_price":          "cost_price_minor",
+	"mrp_minor":           "mrp",
+	"selling_price_minor": "selling_price",
+	"cost_price_minor":    "cost_price",
+}
+
+// variantMoneyUpdate is one resolved amount, ready for both columns.
+type variantMoneyUpdate struct {
+	rupeeCol string
+	minorCol string
+	rupees   any // *float64-compatible: nil clears an optional amount
+	minor    any
+}
+
+// ErrPriceDisagreement means a caller sent both shapes of the same amount and
+// they do not describe the same money.
+//
+// Refused rather than resolved. Picking one silently decides what the buyer
+// pays, and there is no reading of "selling_price: 1299, selling_price_minor:
+// 99900" that is safe to guess at.
+var ErrPriceDisagreement = errors.New("commerce: the rupee and paise forms of a price disagree")
+
+// ErrPriceNotPositive means a repricing would make a variant free.
+//
+// The catalogue has no concept of a giveaway, and checkout happily charges
+// zero. A seller who typed a price wrong should be told, not have their stock
+// taken for nothing.
+var ErrPriceNotPositive = errors.New("commerce: a price must be greater than zero")
+
+// normaliseVariantMoney resolves every money field the caller supplied into a
+// matched (rupees, paise) pair.
+func normaliseVariantMoney(updates map[string]any) ([]variantMoneyUpdate, error) {
+	out := []variantMoneyUpdate{}
+	for _, rupeeCol := range []string{"mrp", "selling_price", "cost_price"} {
+		minorCol := variantMoneyPairs[rupeeCol]
+		rawRupees, hasRupees := updates[rupeeCol]
+		rawMinor, hasMinor := updates[minorCol]
+		if !hasRupees && !hasMinor {
+			continue
+		}
+
+		// An explicit null clears an optional amount. Only cost price is
+		// optional; a null selling price would make the variant unpriceable
+		// rather than free, and the NOT NULL column would reject it anyway.
+		if (hasMinor && rawMinor == nil) || (hasRupees && rawRupees == nil) {
+			if rupeeCol != "cost_price" {
+				return nil, fmt.Errorf("%w: %s", ErrPriceNotPositive, rupeeCol)
+			}
+			out = append(out, variantMoneyUpdate{rupeeCol, minorCol, nil, nil})
+			continue
+		}
+
+		var minor int64
+		var err error
+		switch {
+		case hasMinor:
+			minor, err = anyToMinor(rawMinor)
+		default:
+			minor, err = rupeesToMinorStrict(rawRupees)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("commerce: %s: %w", rupeeCol, err)
+		}
+
+		// Both sent: they must agree. This is the one case where guessing
+		// changes what a buyer is charged.
+		if hasMinor && hasRupees {
+			fromRupees, convErr := rupeesToMinorStrict(rawRupees)
+			if convErr != nil {
+				return nil, fmt.Errorf("commerce: %s: %w", rupeeCol, convErr)
+			}
+			if fromRupees != minor {
+				return nil, fmt.Errorf("%w: %s says %d paise, %s says %d",
+					ErrPriceDisagreement, rupeeCol, fromRupees, minorCol, minor)
+			}
+		}
+
+		if minor <= 0 && rupeeCol != "cost_price" {
+			return nil, fmt.Errorf("%w: %s", ErrPriceNotPositive, rupeeCol)
+		}
+		out = append(out, variantMoneyUpdate{
+			rupeeCol: rupeeCol,
+			minorCol: minorCol,
+			// The rupee column is a mirror of the paise, written for the
+			// analytics readers that still scan it.
+			rupees: float64(minor) / 100.0, // money-exempt: NUMERIC mirror of the minor column
+			minor:  minor,
+		})
+	}
+	return out, nil
+}
+
+// anyToMinor reads a paise value out of a decoded JSON body.
+//
+// encoding/json gives float64 for every number, so an integer count of paise
+// arrives as a float and has to come back out. It must be a WHOLE number —
+// there is no such thing as a fraction of a paise, and accepting one would
+// reintroduce the rounding this path exists to remove.
+func anyToMinor(v any) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case int:
+		return int64(n), nil
+	case float64:
+		if n != math.Trunc(n) {
+			return 0, fmt.Errorf("paise must be a whole number, got %v", n)
+		}
+		return int64(n), nil
+	case json.Number:
+		return n.Int64()
+	default:
+		return 0, fmt.Errorf("expected a number of paise, got %T", v)
+	}
+}
+
+// rupeesToMinorStrict is anyRupeesToMinor with a concrete return type.
+//
+// anyRupeesToMinor returns `any` because it feeds a query-argument slice,
+// where a nil has to stay a nil. The repricing path needs to COMPARE two
+// amounts, so it needs the number.
+func rupeesToMinorStrict(v any) (int64, error) {
+	converted, err := anyRupeesToMinor(v)
+	if err != nil {
+		return 0, err
+	}
+	switch n := converted.(type) {
+	case int64:
+		return n, nil
+	case int:
+		return int64(n), nil
+	default:
+		return 0, fmt.Errorf("expected a rupee amount, got %T", v)
+	}
 }

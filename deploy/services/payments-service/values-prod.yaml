@@ -1,4 +1,21 @@
 # payments-service overrides for the prod environment.
+#
+# Commerce P0 LB-24 / review M-10 / v1 §5.11.
+#
+# What was missing here, and why it mattered:
+#
+#   * RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET were
+#     absent, and cmd/server/main.go exits non-zero without them. This
+#     service could therefore never have started in prod — meaning the entire
+#     payment path had never run against real infrastructure.
+#   * POSTGRES_DSN and KAFKA_BROKERS were absent too. Every other service in
+#     this directory provisions them; payments did not.
+#   * SERVICE_CALLERS is new (A2). Without a caller allowlist the service now
+#     refuses to register its money routes at all. That is deliberate: a
+#     permissive default is exactly how the original shared-key hole was built.
+#
+# Only secret NAMES appear here. Values live in AWS Secrets Manager under
+# `atpost/prod/payments-service` and reach the pod through External Secrets.
 
 service:
   name: payments-service
@@ -30,19 +47,80 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/payments-service
   data:
+    # ── Infrastructure (M-10: previously absent entirely) ─────────
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+
+    # ── Platform identity ─────────────────────────────────────────
+    # INTERNAL_SERVICE_KEY is retained only for the legacy routes during the
+    # food-service migration window (review §5.6). It no longer authenticates
+    # any money route: those require an audience-scoped service token (A2).
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
 
+    # ── PSP credentials (v1 §5.11) ────────────────────────────────
+    # main.go refuses to start if the key id is present without the secret
+    # (M-10), or if the webhook secret is missing — webhook verification
+    # cannot fail closed without it (LB-6).
+    - { secretKey: RAZORPAY_KEY_ID, remoteRef: razorpay_key_id }
+    - { secretKey: RAZORPAY_KEY_SECRET, remoteRef: razorpay_key_secret }
+    - { secretKey: RAZORPAY_WEBHOOK_SECRET, remoteRef: razorpay_webhook_secret }
+
+    # ── Caller allowlist (A2) ─────────────────────────────────────
+    # PUBLIC keys only. payments verifies and can never mint, so compromising
+    # this service cannot forge a caller. Each caller has its own key AND its
+    # own permitted operations and reference types — that pairing is what
+    # stops food-service refunding a commerce order.
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY, remoteRef: caller_commerce_pubkey }
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
+    - { secretKey: SERVICE_CALLER_FOOD_SERVICE_PUBKEY, remoteRef: caller_food_pubkey }
+    - { secretKey: SERVICE_CALLER_FOOD_SERVICE_KID, remoteRef: caller_food_kid }
+
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 
+  # A2 — who may call, what they may do, and what they may do it to.
+  # An empty OPS or REFTYPES entry is a startup error, never "allow all".
+  SERVICE_CALLERS: 'commerce-service,food-service'
+  SERVICE_CALLER_COMMERCE_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create,payments:payment.fetch'
+  SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: 'order'
+  SERVICE_CALLER_FOOD_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  SERVICE_CALLER_FOOD_SERVICE_REFTYPES: 'food_order'
+
+  # LB-9 — reconciliation: resolve captures the webhook never delivered, and
+  # surface ledger-vs-provider drift instead of letting it accumulate.
+  PAYMENTS_RECONCILE_INTERVAL_SEC: '60'
+  PAYMENTS_PENDING_AGE_SEC: '600'
+
+  # PAYMENTS_ALLOW_STUB is deliberately ABSENT, and main.go now exits if it
+  # is set while ENV=prod. A stub gateway in production moves no real money
+  # while reporting that it did.
+
 ingress:
   enabled: false
+
+# The PSP webhook is the only unauthenticated public surface in the payment
+# path, and it is authenticated by signature rather than by the edge. It gets
+# its own ingress; /v1/payments/* is no longer proxied by the API gateway at
+# all (LB-1).
+webhookIngress:
+  enabled: true
+  path: /v1/payments/webhook
+  wafAclArn: 'arn:aws:wafv2:ap-south-1:{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:regional/webacl/atpost-prod-psp-webhook'
+
+# A2 — only these workloads may reach payments. Behind the service token, not
+# instead of it: a stolen token is useless from a pod that cannot connect.
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - podSelector: { matchLabels: { app: commerce-service } }
+    - podSelector: { matchLabels: { app: food-service } }
+    - ingressController: true # the webhook path only
 
 pdb:
   enabled: true
