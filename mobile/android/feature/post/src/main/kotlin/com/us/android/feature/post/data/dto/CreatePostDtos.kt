@@ -162,6 +162,8 @@ data class DistributionRequest(
 )
 
 const val VISIBILITY_PUBLIC = "public"
+const val VISIBILITY_FOLLOWERS = "followers"
+const val VISIBILITY_PRIVATE = "private"
 const val CONTENT_TYPE_POST = "post"
 const val CONTENT_TYPE_POLL = "poll"
 const val CONTENT_TYPE_FLICK = "flick"
@@ -174,9 +176,13 @@ const val DISTRIBUTION_VERSION = 1
 /**
  * The audiences this client may offer, as a set the tests own.
  *
- * A single-element allowlist rather than a hardcoded string, so adding an
- * option is a visible change to a guarded constant rather than an edit buried
- * in a dropdown. `AudienceContractTest` fails the build if anything joins it
- * without the end-to-end authorization tests that would justify it.
+ * An allowlist rather than hardcoded strings, so adding an option is a
+ * visible change to a guarded constant rather than an edit buried in a
+ * dropdown. `followers` and `private` joined 2026-09-01, when post-service
+ * grew the read-path enforcement (direct-link gate, profile-grid filter)
+ * that the engagement, feed-batch and repost paths already had — before
+ * that, offering them would have recorded a promise nothing kept.
+ * `unlisted` stays out: no surface explains it.
  */
-val SupportedAudience: Set<String> = setOf(VISIBILITY_PUBLIC)
+val SupportedAudience: Set<String> =
+    setOf(VISIBILITY_PUBLIC, VISIBILITY_FOLLOWERS, VISIBILITY_PRIVATE)

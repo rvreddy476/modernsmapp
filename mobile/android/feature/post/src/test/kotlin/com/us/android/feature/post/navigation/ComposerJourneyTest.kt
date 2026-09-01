@@ -375,18 +375,18 @@ class ComposerJourneyTest {
     }
 
     /**
-     * The audience is stated as a fact and cannot be changed.
-     *
-     * Offering `followers` or `private` here would be worse than hiding it: the
-     * platform does not enforce those on the read path, the profile list or
-     * feed fan-out, so the control would record a choice nothing honours.
+     * The audience chip is a CONTROL now: it announces the current choice and
+     * that it can be changed. Public is the default, so a fresh composer
+     * announces Public.
      */
     @Test
-    fun `the audience is shown as public and is not a control`() {
+    fun `the audience defaults to public and reads as a control`() {
         launchComposer()
 
         composeRule
-            .onNodeWithContentDescription("Audience: Public. Everyone can see this post.")
+            .onNodeWithContentDescription(
+                "Audience: Public. Everyone can see this post. Tap to change.",
+            )
             .assertExists()
     }
 

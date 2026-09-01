@@ -1,6 +1,7 @@
 package com.us.android.feature.post.composer
 
 import com.us.android.feature.post.data.dto.CreatePostRequest
+import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 
 /**
  * Everything the composer can be doing, as one closed set.
@@ -105,6 +106,8 @@ data class ComposerUiState(
     val altText: String = "",
     val decorative: Boolean = false,
     val language: String = DEFAULT_LANGUAGE,
+    /** One of `SupportedAudience`. Public unless the author narrows it. */
+    val visibility: String = VISIBILITY_PUBLIC,
     /** Set once the image is confirmed AND ready. Only then may it be attached. */
     val mediaId: String? = null,
     val phase: ComposerPhase = ComposerPhase.Editing,

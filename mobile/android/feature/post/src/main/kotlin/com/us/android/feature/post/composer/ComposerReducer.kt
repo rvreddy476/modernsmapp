@@ -4,6 +4,7 @@ import com.us.android.feature.post.data.dto.CreatePostRequest
 import com.us.android.feature.post.data.dto.DistributionRequest
 import com.us.android.feature.post.data.dto.POST_TYPE_IMAGE
 import com.us.android.feature.post.data.dto.POST_TYPE_TEXT
+import com.us.android.feature.post.data.dto.SupportedAudience
 
 /**
  * Field edits: the transitions that change what the post SAYS.
@@ -68,6 +69,14 @@ object ComposerEdits {
 
     fun onLanguageChanged(state: ComposerUiState, language: String): ComposerUiState =
         if (!isEditable(state)) state else state.copy(language = language)
+
+    /** Rejects values outside the allowlist — the dropdown is not trusted. */
+    fun onVisibilityChanged(state: ComposerUiState, visibility: String): ComposerUiState =
+        if (!isEditable(state) || visibility !in SupportedAudience) {
+            state
+        } else {
+            state.copy(visibility = visibility)
+        }
 }
 
 /**
@@ -213,6 +222,7 @@ object ComposerReducer {
      */
     fun buildRequest(state: ComposerUiState): CreatePostRequest = CreatePostRequest(
         text = state.text.trim(),
+        visibility = state.visibility,
         postType = if (state.mediaId != null) POST_TYPE_IMAGE else POST_TYPE_TEXT,
         mediaIds = listOfNotNull(state.mediaId),
         language = state.language,

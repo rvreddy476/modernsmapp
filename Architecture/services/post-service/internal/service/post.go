@@ -1349,6 +1349,15 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 		}
 	}
 
+	// Visibility gate on the direct-link read. The engagement endpoints,
+	// feed batch and repost paths were already gated; this was the one
+	// door left open — anyone with the id could read a private or
+	// followers-only post. Renders as 404, not 403: a denial that
+	// confirms existence is itself a leak.
+	if !s.viewerMayViewPost(ctx, p, viewerID) {
+		return nil, nil
+	}
+
 	counts, err := s.scyllaStore.GetCounts(ctx, id)
 	if err != nil {
 		return nil, err
@@ -1411,16 +1420,48 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 // sees their own posts regardless of review status (a flagged reel still
 // shows in their own profile grid); every other viewer sees only approved.
 func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
-	includeNonApproved := viewerID != nil && *viewerID == authorID
-	posts, nextCursor, err := s.pgStore.GetPostsByAuthor(ctx, authorID, contentType, limit, cursor, includeNonApproved)
+	isAuthor := viewerID != nil && *viewerID == authorID
+	posts, nextCursor, err := s.pgStore.GetPostsByAuthor(ctx, authorID, contentType, limit, cursor, isAuthor)
 	if err != nil {
 		return nil, "", err
 	}
 
-	// Merge counts from Scylla for each post
-	details := make([]PostDetail, len(posts))
-	for i, p := range posts {
+	// Visibility filter for the profile grid. ONE graph lookup covers the
+	// whole page — every row shares the author — and it runs only when a
+	// followers-only post is actually present.
+	viewerFollows := func() func() bool {
+		checked, follows := false, false
+		return func() bool {
+			if !checked {
+				checked = true
+				if viewerID != nil {
+					f, err := s.checkViewerFollowsAuthor(ctx, *viewerID, authorID)
+					if err != nil {
+						log.Printf("Warning: profile visibility graph lookup failed; hiding restricted posts: %v", err)
+					} else {
+						follows = f
+					}
+				}
+			}
+			return follows
+		}
+	}()
+
+	// Merge counts from Scylla for each visible post
+	details := make([]PostDetail, 0, len(posts))
+	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
+		if !isAuthor {
+			switch strings.ToLower(post.Visibility) {
+			case "", "public", "unlisted":
+			case "followers", "circle":
+				if !viewerFollows() {
+					continue
+				}
+			default: // private, or an unknown value — fail closed
+				continue
+			}
+		}
 		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
 		if post.ContentType == "poll" {
 			poll, err := s.pgStore.GetPoll(ctx, post.ID)
@@ -1428,7 +1469,7 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 				post.Poll = poll
 			}
 		}
-		details[i] = PostDetail{Post: &post, Counts: counts}
+		details = append(details, PostDetail{Post: &post, Counts: counts})
 	}
 
 	return details, nextCursor, nil
@@ -2520,6 +2561,34 @@ func (s *Service) loadPostForEngagement(ctx context.Context, postID, viewerID uu
 		// Unknown visibility value: treat as private (defense in
 		// depth — a typo in a migration shouldn't open up engagement).
 		return nil, ErrPostNotVisible
+	}
+}
+
+// viewerMayViewPost applies the visibility policy to an ALREADY-LOADED post
+// — the allocation-free twin of loadPostForEngagement's gate, for callers
+// that hold the row. Same rules: authors always see their own, unknown
+// values fail closed, a graph outage denies rather than leaks.
+func (s *Service) viewerMayViewPost(ctx context.Context, post *postgres.Post, viewerID *uuid.UUID) bool {
+	if viewerID != nil && *viewerID == post.AuthorID {
+		return true
+	}
+	switch strings.ToLower(post.Visibility) {
+	case "", "public", "unlisted":
+		return true
+	case "private":
+		return false
+	case "followers", "circle":
+		if viewerID == nil {
+			return false
+		}
+		follows, err := s.checkViewerFollowsAuthor(ctx, *viewerID, post.AuthorID)
+		if err != nil {
+			log.Printf("Warning: visibility check graph lookup failed; rejecting: %v", err)
+			return false
+		}
+		return follows
+	default:
+		return false
 	}
 }
 

@@ -215,20 +215,23 @@ class CreatePostWireTest {
     // ── Audience allowlist (C-LB-2.5) ───────────────────────────────────
 
     /**
-     * Exactly one audience is offerable, and it is `public`.
+     * The audience allowlist: public, followers, private — exactly.
      *
      * The allowlist is a guarded constant rather than a hardcoded string in a
      * dropdown, so widening it is a visible change to something a test owns.
-     * `followers`, `private` and `unlisted` are ACCEPTED by the create handler
-     * but are not applied by the post read path, the profile list or feed
-     * fan-out — offering them would record a privacy choice nothing honours,
-     * which is worse than offering none.
-     *
-     * NC-C2B adds `followers` and this is the test that fails.
+     * `followers` and `private` joined 2026-09-01 alongside post-service's
+     * read-path enforcement (direct-link gate in GetPost, profile-grid filter
+     * in GetPostsByAuthor) — the engagement, feed-batch and repost gates
+     * already existed. `unlisted` stays out: no surface explains it, and an
+     * audience the author cannot reason about is not a choice.
      */
     @Test
-    fun `only public is a supported audience`() {
-        assertThat(SupportedAudience).containsExactly(VISIBILITY_PUBLIC)
+    fun `the audience allowlist is exactly the enforced set`() {
+        assertThat(SupportedAudience).containsExactly(
+            VISIBILITY_PUBLIC,
+            com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS,
+            com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE,
+        )
     }
 
     @Test

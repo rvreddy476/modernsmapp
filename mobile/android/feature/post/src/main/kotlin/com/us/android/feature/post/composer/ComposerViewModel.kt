@@ -94,6 +94,10 @@ class ComposerViewModel @Inject constructor(
         ComposerEdits.onTextChanged(ComposerReducer.onEditAfterFailure(it), text)
     }
 
+    fun onVisibilityChanged(visibility: String) = update {
+        ComposerEdits.onVisibilityChanged(it, visibility)
+    }
+
     fun onLanguageChanged(language: String) = update {
         ComposerEdits.onLanguageChanged(it, language)
     }

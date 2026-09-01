@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -39,10 +41,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -58,6 +63,9 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
+import com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE
+import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 
 /**
  * Write a post.
@@ -82,18 +90,14 @@ import com.us.android.core.designsystem.theme.UsTheme
  * primary action moves into the top bar as a compact pill, so the canvas is
  * uninterrupted and the commit gesture sits where the thumb expects it.
  *
- * Nothing about the RULES changed. The audience is still shown and still not
- * editable; the accessibility decision is still mandatory; every semantics
- * contract the tests assert is preserved. What changed is that the surface now
- * looks like somewhere you make something.
+ * ## AUDIENCE IS CHOSEN HERE
  *
- * ## AUDIENCE IS SHOWN, NOT CHOSEN
- *
- * There is a visible `Public` chip and no way to change it. Hiding the audience
- * would be dishonest; offering `followers` or `private` would be worse, because
- * the platform does not enforce those on the post read path, the profile list
- * or feed fan-out. A privacy control that records a choice nothing honours is a
- * false promise, and people decide what to post based on it.
+ * The chip beside the avatar is a dropdown: Public, Friends only
+ * (`followers` on the wire), Private. It became interactive 2026-09-01,
+ * when post-service grew the read-path enforcement (direct-link gate,
+ * profile-grid filter) to match the engagement/feed/repost gates — before
+ * that, offering a choice nothing honoured would have been a false promise,
+ * and people decide what to post based on it.
  */
 @Composable
 fun ComposerScreen(
@@ -153,7 +157,10 @@ fun ComposerScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = UsTheme.spacing.pageHorizontal),
             ) {
-                AuthorHeader()
+                AuthorHeader(
+                    visibility = state.visibility,
+                    onVisibilityChanged = viewModel::onVisibilityChanged,
+                )
 
                 PostCanvas(
                     text = state.text,
@@ -261,7 +268,7 @@ private fun ComposerTopBar(
  * property of the post and should read as one.
  */
 @Composable
-private fun AuthorHeader() {
+private fun AuthorHeader(visibility: String, onVisibilityChanged: (String) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -270,48 +277,106 @@ private fun AuthorHeader() {
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
         UsAvatar(name = "You", size = UsAvatarSize.Medium, contentDescription = null)
-        AudienceChip()
+        AudienceChip(visibility = visibility, onChange = onVisibilityChanged)
     }
 }
 
+/** One audience the dropdown offers, and how the chip announces it. */
+private data class AudienceOption(
+    val value: String,
+    val label: String,
+    val detail: String,
+)
+
+private val AUDIENCE_OPTIONS = listOf(
+    AudienceOption(VISIBILITY_PUBLIC, "Public", "Everyone can see this post"),
+    AudienceOption(VISIBILITY_FOLLOWERS, "Friends only", "Only people who follow you"),
+    AudienceOption(VISIBILITY_PRIVATE, "Private", "Only you"),
+)
+
 /**
- * Non-interactive by design. See the screen KDoc.
- *
- * One node to a screen reader, announced as a fact rather than read as a
- * control someone can try to activate. The wording is unchanged from the
- * original form layout — only its appearance moved.
+ * The audience dropdown. The dot is the at-a-glance state — green speaks,
+ * gold narrows, muted is only you — and the caret is what marks the chip as
+ * a control rather than a fact.
  */
 @Composable
-private fun AudienceChip() {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(UsTheme.extended.glassBg)
-            .border(
-                width = HAIRLINE,
-                color = UsTheme.extended.glassBorder,
-                shape = RoundedCornerShape(UsTheme.radii.full),
-            )
-            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs)
-            .clearAndSetSemantics {
-                contentDescription = "Audience: Public. Everyone can see this post."
-            },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-    ) {
-        Box(
+private fun AudienceChip(visibility: String, onChange: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val current = AUDIENCE_OPTIONS.firstOrNull { it.value == visibility }
+        ?: AUDIENCE_OPTIONS.first()
+
+    Box {
+        Row(
             modifier = Modifier
-                .size(DOT)
-                .clip(CircleShape)
-                .background(UsTheme.extended.onlineGreen),
-        )
-        Text(
-            text = "Public",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = UsTheme.extended.textSecondary,
-        )
+                .clip(RoundedCornerShape(UsTheme.radii.full))
+                .background(UsTheme.extended.glassBg)
+                .border(
+                    width = HAIRLINE,
+                    color = UsTheme.extended.glassBorder,
+                    shape = RoundedCornerShape(UsTheme.radii.full),
+                )
+                .clickable { open = true }
+                .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs)
+                .testTag("composer-audience")
+                .clearAndSetSemantics {
+                    contentDescription =
+                        "Audience: ${current.label}. ${current.detail}. Tap to change."
+                    role = Role.DropdownList
+                },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(DOT)
+                    .clip(CircleShape)
+                    .background(audienceDot(current.value)),
+            )
+            Text(
+                text = current.label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.textSecondary,
+            )
+            Text(
+                text = "▾",
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            AUDIENCE_OPTIONS.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(
+                                option.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                option.detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = UsTheme.extended.textMuted,
+                            )
+                        }
+                    },
+                    onClick = {
+                        onChange(option.value)
+                        open = false
+                    },
+                    modifier = Modifier.testTag("composer-audience-${option.value}"),
+                )
+            }
+        }
     }
+}
+
+@Composable
+private fun audienceDot(value: String) = when (value) {
+    VISIBILITY_PRIVATE -> UsTheme.extended.textMuted
+    VISIBILITY_FOLLOWERS -> UsTheme.extended.statusWarning
+    else -> UsTheme.extended.onlineGreen
 }
 
 /**
