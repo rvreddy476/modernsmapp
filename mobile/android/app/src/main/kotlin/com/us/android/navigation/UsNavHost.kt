@@ -44,6 +44,7 @@ import com.us.android.feature.chat.navigation.chatInboxScreen
 import com.us.android.feature.chat.navigation.chatLockSettingsScreen
 import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
+import com.us.android.feature.chat.navigation.friendRequestsScreen
 import com.us.android.feature.chat.navigation.friendsScreen
 import com.us.android.feature.chat.navigation.groupCreateScreen
 import com.us.android.feature.chat.navigation.groupInfoScreen
@@ -51,6 +52,7 @@ import com.us.android.feature.chat.navigation.navigateToChatInbox
 import com.us.android.feature.chat.navigation.navigateToChatLockSettings
 import com.us.android.feature.chat.navigation.navigateToChatRequest
 import com.us.android.feature.chat.navigation.navigateToChatThread
+import com.us.android.feature.chat.navigation.navigateToFriendRequests
 import com.us.android.feature.chat.navigation.navigateToGroupCreate
 import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.feed.navigation.FeedRoute
@@ -385,7 +387,9 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenThread = { conversationId, title ->
             navController.navigateToChatThread(conversationId, title)
         },
+        onOpenRequests = { navController.navigateToFriendRequests() },
     )
+    friendRequestsScreen(onBack = { navController.popBackStack() })
     chatLockSettingsScreen(onBack = { navController.popBackStack() })
     chatThreadScreen(
         onBack = { navController.popBackStack() },

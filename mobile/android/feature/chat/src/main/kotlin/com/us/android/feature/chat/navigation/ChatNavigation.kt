@@ -13,6 +13,7 @@ import com.us.android.feature.chat.ui.ChatLockGate
 import com.us.android.feature.chat.ui.ChatLockSettingsScreen
 import com.us.android.feature.chat.ui.ChatRequestScreen
 import com.us.android.feature.chat.ui.ChatThreadScreen
+import com.us.android.feature.chat.ui.FriendRequestsScreen
 import com.us.android.feature.chat.ui.FriendsScreen
 import com.us.android.feature.chat.ui.GroupCreateScreen
 import com.us.android.feature.chat.ui.GroupInfoScreen
@@ -50,6 +51,10 @@ data class ChatRequestRoute(
 /** All the viewer's friends (accepted connections), each one tap from a thread. */
 @Serializable
 data object FriendsRoute
+
+/** Pending friend requests — received and sent (Figma 140:104). */
+@Serializable
+data object FriendRequestsRoute
 
 /** The new-group flow. */
 @Serializable
@@ -141,11 +146,25 @@ fun NavGraphBuilder.chatRequestScreen(
  */
 fun NavGraphBuilder.friendsScreen(
     onOpenThread: (conversationId: String, title: String) -> Unit,
+    onOpenRequests: () -> Unit = {},
     onBack: (() -> Unit)? = null,
 ) {
     composable<FriendsRoute> {
         ChatLockGate {
-            FriendsScreen(onOpenThread = onOpenThread, onBack = onBack)
+            FriendsScreen(
+                onOpenThread = onOpenThread,
+                onOpenRequests = onOpenRequests,
+                onBack = onBack,
+            )
+        }
+    }
+}
+
+/** Registers the friend-requests screen. */
+fun NavGraphBuilder.friendRequestsScreen(onBack: () -> Unit) {
+    composable<FriendRequestsRoute> {
+        ChatLockGate {
+            FriendRequestsScreen(onBack = onBack)
         }
     }
 }
@@ -203,6 +222,9 @@ fun NavController.navigateToChatRequest(conversationId: String, title: String) =
 
 /** Type-safe navigation to the friends list. */
 fun NavController.navigateToFriends() = navigate(FriendsRoute)
+
+/** Type-safe navigation to friend requests. */
+fun NavController.navigateToFriendRequests() = navigate(FriendRequestsRoute)
 
 /** Type-safe navigation to the new-group flow. */
 fun NavController.navigateToGroupCreate() = navigate(GroupCreateRoute)

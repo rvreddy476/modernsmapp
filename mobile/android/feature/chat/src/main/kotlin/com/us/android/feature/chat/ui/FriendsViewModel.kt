@@ -23,18 +23,55 @@ import javax.inject.Inject
 data class Friend(
     val userId: String,
     val displayName: String,
+    val username: String = "",
     val online: Boolean = false,
 )
+
+/** The three lenses of the Figma friends frame (140:199). */
+enum class FriendsTab(val label: String) {
+    All("All"),
+    Close("Close Friends"),
+    Recent("Recently Added"),
+}
 
 data class FriendsUiState(
     val loading: Boolean = true,
     val friends: List<Friend> = emptyList(),
+    val tab: FriendsTab = FriendsTab.All,
+    val query: String = "",
+    /** Ids the graph marks close friends — the second tab's membership. */
+    val closeFriendIds: Set<String> = emptySet(),
+    /** Pending incoming friend requests — the header badge count. */
+    val pendingRequestCount: Int = 0,
     /** The friend whose Message tap is in flight; disables just that row. */
     val openingUserId: String? = null,
     val error: String? = null,
     /** The conversation to open. Consumed once, then cleared. */
     val openConversation: OpenFriendConversation? = null,
-)
+) {
+    /**
+     * The rows the selected tab shows. Recently Added leans on the server
+     * ordering — `GET /connections` returns newest-first — and takes its
+     * head, because connection DATES are not exposed to cut by time.
+     */
+    val visibleFriends: List<Friend>
+        get() {
+            val byTab = when (tab) {
+                FriendsTab.All -> friends
+                FriendsTab.Close -> friends.filter { it.userId in closeFriendIds }
+                FriendsTab.Recent -> friends.take(RECENT_LIMIT)
+            }
+            if (query.isBlank()) return byTab
+            return byTab.filter {
+                it.displayName.contains(query, ignoreCase = true) ||
+                    it.username.contains(query, ignoreCase = true)
+            }
+        }
+
+    private companion object {
+        const val RECENT_LIMIT = 10
+    }
+}
 
 /** A conversation the host should navigate to. */
 data class OpenFriendConversation(val conversationId: String, val title: String)
@@ -83,13 +120,35 @@ class FriendsViewModel @Inject constructor(
             // as a row with a neutral name rather than disappearing.
             val friends = ids.map { id ->
                 async {
-                    val name = (profileRepository.getProfile(id) as? AppResult.Success)
-                        ?.data?.nameForDisplay
-                    Friend(userId = id, displayName = name ?: "Friend")
+                    val profile = (profileRepository.getProfile(id) as? AppResult.Success)?.data
+                    Friend(
+                        userId = id,
+                        displayName = profile?.nameForDisplay ?: "Friend",
+                        username = profile?.username.orEmpty(),
+                    )
                 }
             }.awaitAll()
             _state.update { it.copy(loading = false, friends = friends) }
             refreshPresence(ids)
+            refreshEdges()
+        }
+    }
+
+    fun selectTab(tab: FriendsTab) = _state.update { it.copy(tab = tab) }
+
+    fun onQueryChange(value: String) = _state.update { it.copy(query = value) }
+
+    /**
+     * Close-friend membership and the pending-request badge, best-effort —
+     * a graph blip degrades the tab to empty and the badge to zero, never
+     * to an error screen over a loaded list.
+     */
+    private suspend fun refreshEdges() {
+        (profileRepository.closeFriends() as? AppResult.Success)?.data?.let { ids ->
+            _state.update { it.copy(closeFriendIds = ids.toSet()) }
+        }
+        (profileRepository.pendingConnectionRequests() as? AppResult.Success)?.data?.let { reqs ->
+            _state.update { it.copy(pendingRequestCount = reqs.size) }
         }
     }
 

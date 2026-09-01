@@ -234,3 +234,18 @@ data class RelationshipDto(
     @SerialName("is_connection") val isConnection: Boolean = false,
     @SerialName("connection_status") val connectionStatus: String = "",
 )
+
+/**
+ * One pending friend request, from `GET /v1/graph/connection-requests` (and
+ * `/sent`). Names only ids — the screen hydrates display names via profiles.
+ */
+@Serializable
+data class ConnectionRequestDto(
+    @SerialName("sender_id") val senderId: String = "",
+    @SerialName("receiver_id") val receiverId: String = "",
+    val status: String = "",
+    /** How the request came to be: e.g. `suggestion`. Display hint only. */
+    val source: String = "",
+    val message: String? = null,
+    @SerialName("created_at") val createdAt: String = "",
+)

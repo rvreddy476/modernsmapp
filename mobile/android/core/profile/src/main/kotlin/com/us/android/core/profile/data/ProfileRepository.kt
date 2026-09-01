@@ -9,6 +9,7 @@ import com.us.android.core.model.ProfileRelationship
 import com.us.android.core.model.ProfileStats
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
+import com.us.android.core.profile.data.dto.ConnectionRequestDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
@@ -80,6 +81,23 @@ class ProfileRepository @Inject constructor(
                     connectionStatus = it.connectionStatus.ifBlank { "none" },
                 )
             }
+
+    /** The viewer's pending incoming friend requests, as the server orders them. */
+    suspend fun pendingConnectionRequests(): AppResult<List<ConnectionRequest>> =
+        apiCall(errorMapper) { api.pendingConnectionRequests() }.map { list -> list.map { it.toDomain() } }
+
+    suspend fun sentConnectionRequests(): AppResult<List<ConnectionRequest>> =
+        apiCall(errorMapper) { api.sentConnectionRequests() }.map { list -> list.map { it.toDomain() } }
+
+    /** Close-friend ids — the Friends screen's second tab. */
+    suspend fun closeFriends(): AppResult<List<String>> =
+        apiCall(errorMapper) { api.closeFriends() }.map { it }
+
+    suspend fun declineConnectionRequest(senderUserId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.declineConnectionRequest(GraphUserIdRequest(senderUserId)) }.map { }
+
+    suspend fun cancelConnectionRequest(receiverUserId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.cancelConnectionRequest(GraphUserIdRequest(receiverUserId)) }.map { }
 
     suspend fun sendConnectionRequest(userId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.sendConnectionRequest(GraphUserIdRequest(userId)) }.map { }
@@ -221,4 +239,22 @@ private fun ProfileStatsDto.toDomain() = ProfileStats(
     ),
     totalSparks = totalSparks,
     isCreator = isCreator,
+)
+
+/** A pending friend request as the product understands it. */
+data class ConnectionRequest(
+    val senderId: String,
+    val receiverId: String,
+    /** `suggestion` earns the design's badge; anything else renders plain. */
+    val source: String,
+    val message: String?,
+    val createdAt: String,
+)
+
+private fun ConnectionRequestDto.toDomain() = ConnectionRequest(
+    senderId = senderId,
+    receiverId = receiverId,
+    source = source,
+    message = message?.takeIf { it.isNotBlank() },
+    createdAt = createdAt,
 )

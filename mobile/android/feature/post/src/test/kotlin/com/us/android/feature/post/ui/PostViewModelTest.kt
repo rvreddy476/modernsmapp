@@ -94,6 +94,13 @@ class PostViewModelTest {
             error("post screen must not read relationships")
         override suspend fun sendConnectionRequest(body: GraphUserIdRequest): Nothing =
             error("post screen must not send friend requests")
+        override suspend fun pendingConnectionRequests(): Nothing = error("not used")
+        override suspend fun sentConnectionRequests(): Nothing = error("not used")
+        override suspend fun closeFriends(): Nothing = error("not used")
+        override suspend fun declineConnectionRequest(body: GraphUserIdRequest): Nothing =
+            error("not used")
+        override suspend fun cancelConnectionRequest(body: GraphUserIdRequest): Nothing =
+            error("not used")
         override suspend fun acceptConnectionRequest(body: GraphUserIdRequest): Nothing =
             error("post screen must not accept friend requests")
         override suspend fun follow(body: GraphUserIdRequest): Nothing =
