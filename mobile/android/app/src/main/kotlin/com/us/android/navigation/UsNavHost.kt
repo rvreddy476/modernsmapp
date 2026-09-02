@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
@@ -86,6 +87,10 @@ import com.us.android.feature.profile.navigation.navigateToSettings
 import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
 import com.us.android.feature.profile.navigation.settingsScreens
+import com.us.android.feature.settings.navigation.OnboardingRoute
+import com.us.android.feature.settings.navigation.modulesSettingsScreen
+import com.us.android.feature.settings.navigation.navigateToModulesSettings
+import com.us.android.feature.settings.navigation.onboardingScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -107,6 +112,15 @@ data class VerifyEmailRoute(
     val verificationToken: String,
     val email: String,
 )
+
+/**
+ * The brand mark, shown while the shell is [ShellState.Loading]: signed in,
+ * module choices not yet known. It exists so that a signed-in launch never
+ * shows Login or Onboarding for a frame while the cache is read — the two
+ * screens whose flash would read as "you've been signed out". No bar.
+ */
+@Serializable
+data object SplashRoute
 
 // ── Top-level (tab) destinations ───────────────────────────────────────
 //
@@ -130,10 +144,16 @@ data object GalleryRoute
 /**
  * The app's navigation graph.
  *
- * Routing is driven by [SessionState], which resolves synchronously on the
- * first frame — the graph **never awaits** session restore. That is the whole
- * point of the design and what closes finding F5: the Flutter router blocks
- * every navigation on a 3-second `sessionReady` await ([router.dart:128]).
+ * Routing is driven by [ShellState], which combines the session (resolved
+ * synchronously on the first frame — the graph **never awaits** session
+ * restore; that is what closes finding F5, the Flutter router's 3-second
+ * `sessionReady` await at [router.dart:128]) with the user's module choices.
+ * The four shell states map to four start destinations: sign-in, the splash,
+ * the module picker, or the user's home tab.
+ *
+ * The bottom bar is built from the same choices: only the tabs whose module
+ * is switched on, the home module's tab first, and the Reels chip raised
+ * only when Reels is among them.
  *
  * Routes are `@Serializable` objects rather than strings, so arguments become
  * compile-checked instead of stringly-typed.
@@ -141,13 +161,17 @@ data object GalleryRoute
 @Composable
 fun UsNavHost(
     sessionState: SessionState,
+    shellState: ShellState,
     pool: PlayerPool,
     pushDestination: com.us.android.push.PushDestination? = null,
     onPushDestinationConsumed: () -> Unit = {},
     callState: com.us.android.core.call.CallState = com.us.android.core.call.CallState.Idle,
     navController: NavHostController = rememberNavController(),
 ) {
-    val startDestination = if (sessionState.isAuthenticated) FeedRoute else LoginRoute
+    val tabs = remember(shellState) {
+        (shellState as? ShellState.Ready)?.let { TabResolver.resolve(it.prefs) }.orEmpty()
+    }
+    val startDestination = shellState.startDestination(tabs)
 
     // An incoming ring fronts the call surface (foreground path; background
     // rings arrive via the full-screen CALLS notification whose tap lands in
@@ -170,17 +194,7 @@ fun UsNavHost(
         val destination = pushDestination ?: return@LaunchedEffect
         if (!sessionState.isAuthenticated) return@LaunchedEffect
         onPushDestinationConsumed()
-        when (destination.type) {
-            "dm" -> if (destination.entityId.isNotBlank()) {
-                navController.navigateToChatThread(destination.entityId, title = "")
-            }
-            "message_request" -> navController.navigateToTopLevel(TopLevelDestination.MESSAGES)
-            // Call pushes: the ring tap attaches to the live call state; a
-            // missed-call tap opens the history.
-            "incoming_call", "incoming_video_call" -> navController.navigateToCallSurface()
-            "missed_call" -> navController.navigateToCallHistory()
-            else -> Unit // not a chat push; existing surfaces handle their own
-        }
+        navController.openPushDestination(destination)
     }
 
     // The bar lives OUTSIDE the NavHost so it survives destination changes
@@ -193,14 +207,17 @@ fun UsNavHost(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             // Null tab means the current screen is not a tab root — an auth
-            // screen, or a pushed profile. No bar there.
-            if (currentTab != null) {
+            // screen, the splash, the picker, or a pushed profile. No bar
+            // there. An empty tab list means the shell is not Ready yet.
+            if (currentTab != null && tabs.isNotEmpty()) {
                 UsNavigationBar(
-                    items = TopLevelDestination.entries.map { it.item },
-                    selectedIndex = currentTab.ordinal,
-                    onSelect = { index ->
-                        navController.navigateToTopLevel(TopLevelDestination.entries[index])
-                    },
+                    items = tabs.map { it.item },
+                    // -1 when a push landed on a tab whose module is off
+                    // (a message-request tap with Chat disabled): the bar
+                    // shows with nothing selected rather than lying.
+                    selectedIndex = tabs.indexOf(currentTab),
+                    onSelect = { index -> navController.navigateToTopLevel(tabs[index]) },
+                    centerIndex = tabs.indexOf(TopLevelDestination.REELS).takeIf { it >= 0 },
                 )
             }
         },
@@ -213,8 +230,66 @@ fun UsNavHost(
                 .padding(shellPadding),
         ) {
             authDestinations(navController)
+            shellDestinations()
             tabDestinations(navController, pool)
         }
+    }
+}
+
+/**
+ * The two start destinations between sign-in and the tabs.
+ *
+ * Neither takes a callback: both are LEFT by a shell-state change (the cache
+ * or the network answering; the onboarding save landing), never by a
+ * navigation call. That is what keeps them free of Back — there is nothing
+ * behind either to go back to.
+ */
+private fun NavGraphBuilder.shellDestinations() {
+    composable<SplashRoute> { SplashScreen() }
+    onboardingScreen()
+}
+
+@Composable
+private fun SplashScreen() {
+    UsScaffold {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = "US",
+                style = MaterialTheme.typography.headlineMedium,
+                color = UsTheme.extended.textPrimary,
+            )
+        }
+    }
+}
+
+/**
+ * The graph's start for a shell state. [tabs] is the resolved bar, non-empty
+ * exactly when the state is [ShellState.Ready], and its first entry is the
+ * user's home — so a user whose home is Reels opens on the reels route.
+ */
+private fun ShellState.startDestination(tabs: List<TopLevelDestination>): Any = when (this) {
+    ShellState.Unauthenticated -> LoginRoute
+    ShellState.Loading -> SplashRoute
+    ShellState.NeedsOnboarding -> OnboardingRoute
+    is ShellState.Ready -> tabs.first().rootRoute
+}
+
+/** Where a notification tap lands, by push type. Unknown types route nowhere. */
+private fun NavHostController.openPushDestination(destination: com.us.android.push.PushDestination) {
+    when (destination.type) {
+        "dm" -> if (destination.entityId.isNotBlank()) {
+            navigateToChatThread(destination.entityId, title = "")
+        }
+        "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
+        // Call pushes: the ring tap attaches to the live call state; a
+        // missed-call tap opens the history.
+        "incoming_call", "incoming_video_call" -> navigateToCallSurface()
+        "missed_call" -> navigateToCallHistory()
+        else -> Unit // not a chat push; existing surfaces handle their own
     }
 }
 
@@ -491,19 +566,28 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 onPrivacy = { navController.navigate(PrivacySettingsRoute) },
                 onNotifications = { navController.navigate(NotificationSettingsRoute) },
                 onSecurity = { navController.navigate(SecuritySettingsRoute) },
+                // The module picker is `:feature:settings`; the hub only
+                // asks for "modules" and this is where that resolves.
+                onModules = { navController.navigateToModulesSettings() },
             ),
         ),
     )
+    // The same picker as onboarding, pushed with a back arrow. Saving pops:
+    // the shell re-resolves the tabs from the repository's new state, so the
+    // hub the user returns to already sits under the bar they just chose.
+    modulesSettingsScreen(onBack = { navController.popBackStack() })
 }
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */
 @Composable
 fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
+    val shellState by viewModel.shellState.collectAsStateWithLifecycle()
     val pushDestination by viewModel.pushDestination.collectAsStateWithLifecycle()
     val callState by viewModel.callState.collectAsStateWithLifecycle()
     UsNavHost(
         sessionState = sessionState,
+        shellState = shellState,
         pool = pool,
         pushDestination = pushDestination,
         onPushDestinationConsumed = viewModel::consumePushDestination,
@@ -514,21 +598,7 @@ fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
 @Preview(name = "Splash", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
 private fun SplashPreview() {
-    UsTheme {
-        UsScaffold {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    text = "US",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = UsTheme.extended.textPrimary,
-                )
-            }
-        }
-    }
+    UsTheme { SplashScreen() }
 }
 
 /**

@@ -78,6 +78,48 @@ class SettingsDataStore @Inject constructor(
         store.edit { it[KEY_NOTIFICATION_PERMISSION_ASKED] = true }
     }
 
+    /**
+     * The last server-confirmed module preferences, so a relaunch renders the
+     * user's chosen tabs on the first resolved frame instead of a splash that
+     * waits on the network. `null` module ids means "never cached" — an empty
+     * string is a real value (a user who chose no optional modules).
+     *
+     * Raw strings rather than a typed model: this module cannot see
+     * `:core:profile`, which owns the [com.us.android.core.profile] types.
+     */
+    val cachedModuleIds: Flow<String?> = store.data
+        .safe()
+        .map { it[KEY_MODULE_IDS] }
+
+    val cachedHomeModuleId: Flow<String?> = store.data
+        .safe()
+        .map { it[KEY_HOME_MODULE_ID] }
+
+    val cachedModuleOnboardingCompleted: Flow<Boolean> = store.data
+        .safe()
+        .map { it[KEY_MODULE_ONBOARDING_COMPLETED] ?: false }
+
+    suspend fun setCachedModulePreferences(
+        moduleIds: String,
+        homeModuleId: String,
+        onboardingCompleted: Boolean,
+    ) {
+        store.edit {
+            it[KEY_MODULE_IDS] = moduleIds
+            it[KEY_HOME_MODULE_ID] = homeModuleId
+            it[KEY_MODULE_ONBOARDING_COMPLETED] = onboardingCompleted
+        }
+    }
+
+    /** Sign-out: the next account must not inherit this one's module choices. */
+    suspend fun clearCachedModulePreferences() {
+        store.edit {
+            it.remove(KEY_MODULE_IDS)
+            it.remove(KEY_HOME_MODULE_ID)
+            it.remove(KEY_MODULE_ONBOARDING_COMPLETED)
+        }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -94,5 +136,8 @@ class SettingsDataStore @Inject constructor(
         val KEY_LAST_EVENT_ID = stringPreferencesKey("last_notification_event_id")
         val KEY_DATA_SAVER = booleanPreferencesKey("data_saver_enabled")
         val KEY_NOTIFICATION_PERMISSION_ASKED = booleanPreferencesKey("notification_permission_asked")
+        val KEY_MODULE_IDS = stringPreferencesKey("module_ids")
+        val KEY_HOME_MODULE_ID = stringPreferencesKey("home_module_id")
+        val KEY_MODULE_ONBOARDING_COMPLETED = booleanPreferencesKey("module_onboarding_completed")
     }
 }

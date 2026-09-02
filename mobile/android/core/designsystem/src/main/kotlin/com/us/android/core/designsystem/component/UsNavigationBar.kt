@@ -58,6 +58,11 @@ data class UsNavItem(
  * callback. It knows nothing about routes, the back stack or which feature
  * owns a tab. Selection is passed as an index rather than a route so the
  * design system never gains a dependency on the navigation library.
+ *
+ * [centerIndex] names the raised brand-chip destination, or null for a bar
+ * of plain tabs. It is the caller's decision because the item list is now
+ * the user's own choice of modules: when Reels is off there is no reel to
+ * raise, and promoting whatever landed in the middle would be arbitrary.
  */
 @Composable
 fun UsNavigationBar(
@@ -65,6 +70,7 @@ fun UsNavigationBar(
     selectedIndex: Int,
     onSelect: (index: Int) -> Unit,
     modifier: Modifier = Modifier,
+    centerIndex: Int? = null,
 ) {
     Box(
         modifier = modifier
@@ -86,7 +92,7 @@ fun UsNavigationBar(
         ) {
             items.forEachIndexed { index, item ->
                 val selected = index == selectedIndex
-                if (index == items.size / 2) {
+                if (index == centerIndex) {
                     CenterTab(item = item, selected = selected, onClick = { onSelect(index) })
                 } else {
                     PillTab(item = item, selected = selected, onClick = { onSelect(index) })
@@ -162,15 +168,12 @@ private fun CenterTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
 }
 
 /**
- * The product's five top-level destinations, in order.
+ * The full five-tab bar, for the previews below.
  *
- * Lives here rather than in `:app` so the preview below renders the real bar
- * rather than a sample, and so the labels have one definition. The mapping
- * from an index to a route stays in the shell — this list is presentation.
- *
- * The order survives from the Flutter shell (migration plan §1); the Figma
- * pill (81:138) happens to put Reels dead centre, which is index 2 here — so
- * the raised circle and the existing muscle memory agree.
+ * Presentation only. The shell (`:app`) builds the real list from the user's
+ * module choices and pairs each item with a route; this sample exists so the
+ * pill renders at its widest in the design-system previews. Index 2 is the
+ * raised Reels chip from the Figma pill (81:138).
  */
 val UsDefaultNavItems: List<UsNavItem> = listOf(
     UsNavItem("Home", UsIcons.Home),
@@ -190,7 +193,7 @@ private val CENTER_GLYPH = 24.dp
 @Composable
 private fun UsNavigationBarPreview() {
     UsTheme {
-        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 0, onSelect = {})
+        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 0, onSelect = {}, centerIndex = 2)
     }
 }
 
@@ -198,6 +201,14 @@ private fun UsNavigationBarPreview() {
 @Composable
 private fun UsNavigationBarLastPreview() {
     UsTheme {
-        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 4, onSelect = {})
+        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 4, onSelect = {}, centerIndex = 2)
+    }
+}
+
+@Preview(name = "Navigation pill — no raised centre", showBackground = true)
+@Composable
+private fun UsNavigationBarFlatPreview() {
+    UsTheme {
+        UsNavigationBar(items = UsDefaultNavItems.take(4), selectedIndex = 1, onSelect = {})
     }
 }

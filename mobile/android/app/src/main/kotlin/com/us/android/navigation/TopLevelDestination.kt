@@ -5,8 +5,9 @@ import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.navOptions
-import com.us.android.core.designsystem.component.UsDefaultNavItems
 import com.us.android.core.designsystem.component.UsNavItem
+import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.profile.data.AppModule
 import com.us.android.feature.chat.navigation.ChatInboxRoute
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.ReelsRoute
@@ -14,26 +15,32 @@ import com.us.android.feature.profile.navigation.OwnProfileRoute
 import kotlin.reflect.KClass
 
 /**
- * The five tabs, paired with the routes they select.
+ * Every tab this build can show, paired with the route it selects and the
+ * module that switches it on.
  *
  * The pairing lives in `:app` because it is the only module allowed to know
  * both the design system's presentation of a tab and the feature that owns its
- * destination. `:core:designsystem` supplies the labels and icons and knows
- * nothing about navigation; the features supply routes and know nothing about
- * the bar.
+ * destination. Each entry carries its own [item] rather than indexing into a
+ * shared list, because the bar is no longer a fixed five: [TabResolver] picks
+ * and orders entries from the user's module choices, and an ordinal-indexed
+ * lookup would break the moment one tab is left out.
  *
- * Order must match [UsDefaultNavItems], and the test in this module asserts it
- * rather than trusting the two lists to stay in step by inspection.
+ * [module] is null for the tabs every user has (Explore, Me). Home maps to
+ * [AppModule.FEED], which [ModulePreferences.includes] always answers yes to,
+ * so it too is always present — the mapping exists so the feed can be the
+ * user's *home*, not so it can be switched off.
  */
-enum class TopLevelDestination(val route: KClass<*>) {
-    HOME(FeedRoute::class),
-    MESSAGES(ChatInboxRoute::class),
-    REELS(ReelsRoute::class),
-    EXPLORE(ExploreRoute::class),
-    ME(OwnProfileRoute::class),
+enum class TopLevelDestination(
+    val route: KClass<*>,
+    val item: UsNavItem,
+    val module: AppModule?,
+) {
+    HOME(FeedRoute::class, UsNavItem("Home", UsIcons.Home), AppModule.FEED),
+    MESSAGES(ChatInboxRoute::class, UsNavItem("Messages", UsIcons.Comment), AppModule.CHAT),
+    REELS(ReelsRoute::class, UsNavItem("Reels", UsIcons.Reels), AppModule.REELS),
+    EXPLORE(ExploreRoute::class, UsNavItem("Explore", UsIcons.Explore), null),
+    ME(OwnProfileRoute::class, UsNavItem("Me", UsIcons.Profile, contentDescription = "My profile"), null),
     ;
-
-    val item: UsNavItem get() = UsDefaultNavItems[ordinal]
 
     companion object {
         /**
@@ -56,6 +63,20 @@ private val NavDestination.hierarchy: Sequence<NavDestination>
     get() = generateSequence(this) { it.parent }
 
 /**
+ * The serializable route object a tab navigates to, and the graph starts at
+ * when the tab is the user's home. Exhaustive: a new tab without a route is a
+ * compile error, not a runtime "no destination found".
+ */
+val TopLevelDestination.rootRoute: Any
+    get() = when (this) {
+        TopLevelDestination.HOME -> FeedRoute
+        TopLevelDestination.MESSAGES -> ChatInboxRoute
+        TopLevelDestination.REELS -> ReelsRoute
+        TopLevelDestination.EXPLORE -> ExploreRoute
+        TopLevelDestination.ME -> OwnProfileRoute
+    }
+
+/**
  * Switches tabs the way a bottom bar is expected to behave.
  *
  * Three flags, each load-bearing:
@@ -74,11 +95,5 @@ fun NavController.navigateToTopLevel(destination: TopLevelDestination) {
         launchSingleTop = true
         restoreState = true
     }
-    when (destination) {
-        TopLevelDestination.HOME -> navigate(FeedRoute, options)
-        TopLevelDestination.MESSAGES -> navigate(ChatInboxRoute, options)
-        TopLevelDestination.REELS -> navigate(ReelsRoute, options)
-        TopLevelDestination.EXPLORE -> navigate(ExploreRoute, options)
-        TopLevelDestination.ME -> navigate(OwnProfileRoute, options)
-    }
+    navigate(destination.rootRoute, options)
 }

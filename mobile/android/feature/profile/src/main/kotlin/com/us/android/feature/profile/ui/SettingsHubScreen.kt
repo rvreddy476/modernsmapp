@@ -22,6 +22,7 @@ fun SettingsHubScreen(
     onPrivacy: () -> Unit,
     onNotifications: () -> Unit,
     onSecurity: () -> Unit,
+    onModules: () -> Unit,
 ) {
     UsScaffold(
         topBar = { UsTopBar(title = "Settings", onBack = onBack) },
@@ -48,6 +49,11 @@ fun SettingsHubScreen(
                 )
             }
             UsSettingsSection("Controls") {
+                UsSettingsLinkRow(
+                    "Modules and home page",
+                    onClick = onModules,
+                    description = "Which parts of the app you use, and which one opens first"
+                )
                 UsSettingsLinkRow(
                     "Privacy and safety",
                     onClick = onPrivacy,

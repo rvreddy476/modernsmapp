@@ -156,6 +156,7 @@ fun NavGraphBuilder.settingsScreens(
             destinations.sections.onPrivacy,
             destinations.sections.onNotifications,
             destinations.sections.onSecurity,
+            destinations.sections.onModules,
         )
     }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
@@ -178,6 +179,11 @@ data class SettingsSections(
     val onPrivacy: () -> Unit,
     val onNotifications: () -> Unit,
     val onSecurity: () -> Unit,
+    /**
+     * The module picker lives in `:feature:settings`; `:app` owns which
+     * destination that is, so this feature never imports it.
+     */
+    val onModules: () -> Unit,
 )
 
 /** Type-safe navigation to another user's profile. */

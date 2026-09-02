@@ -1,7 +1,10 @@
 package com.us.android.core.profile.di
 
 import com.us.android.core.profile.data.AccountSecurityApi
+import com.us.android.core.profile.data.DataStoreModulePreferencesCache
 import com.us.android.core.profile.data.DeviceSecurityApi
+import com.us.android.core.profile.data.ModulePreferencesApi
+import com.us.android.core.profile.data.ModulePreferencesCache
 import com.us.android.core.profile.data.NotificationSettingsApi
 import com.us.android.core.profile.data.PrivacySettingsApi
 import com.us.android.core.profile.data.ProfileApi
@@ -54,4 +57,15 @@ object ProfileModule {
     @Singleton
     fun provideProfileDetailsApi(retrofit: Retrofit): ProfileDetailsApi =
         retrofit.create(ProfileDetailsApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideModulePreferencesApi(retrofit: Retrofit): ModulePreferencesApi =
+        retrofit.create(ModulePreferencesApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideModulePreferencesCache(
+        cache: DataStoreModulePreferencesCache,
+    ): ModulePreferencesCache = cache
 }

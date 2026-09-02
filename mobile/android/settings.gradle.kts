@@ -88,3 +88,8 @@ include(":feature:live")
 // read-state, and putting it in the feed would make the feed depend on
 // :core:notifications for a surface it does not render.
 include(":feature:notifications")
+
+// The module picker: first-login onboarding and its settings-hub twin. Its
+// own feature so neither :feature:profile nor :app carries a screen that has
+// to appear BEFORE the tabs exist.
+include(":feature:settings")

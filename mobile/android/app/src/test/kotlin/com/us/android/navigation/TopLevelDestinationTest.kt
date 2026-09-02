@@ -1,41 +1,56 @@
 package com.us.android.navigation
 
 import com.google.common.truth.Truth.assertThat
-import com.us.android.core.designsystem.component.UsDefaultNavItems
+import com.us.android.core.profile.data.AppModule
+import com.us.android.feature.chat.navigation.ChatInboxRoute
+import com.us.android.feature.feed.navigation.FeedRoute
+import com.us.android.feature.feed.navigation.ReelsRoute
+import com.us.android.feature.profile.navigation.OwnProfileRoute
 import org.junit.Test
 
 /**
- * The tab enum and the design system's item list are two parallel ordered
- * lists, and the bottom bar maps between them by INDEX. Nothing in the type
- * system stops someone adding a tab to one and not the other, and the symptom
- * would be a bar where tapping "Reels" opens Explore — a bug that looks like a
- * navigation fault rather than a list-length mismatch.
+ * Each tab carries its own presentation, route and module. The bar is built
+ * from a resolved subset of these, so the invariants worth asserting are per
+ * entry — not that two parallel lists happen to line up.
  */
 class TopLevelDestinationTest {
 
     @Test
-    fun `every tab has a matching nav item`() {
-        assertThat(UsDefaultNavItems).hasSize(TopLevelDestination.entries.size)
+    fun `every tab maps to a distinct route`() {
+        assertThat(TopLevelDestination.entries.map { it.route }).containsNoDuplicates()
     }
 
     @Test
-    fun `each tab resolves the nav item at its own ordinal`() {
-        TopLevelDestination.entries.forEach { destination ->
-            assertThat(destination.item).isEqualTo(UsDefaultNavItems[destination.ordinal])
+    fun `every tab's root route is an instance of its route class`() {
+        TopLevelDestination.entries.forEach { tab ->
+            assertThat(tab.rootRoute).isInstanceOf(tab.route.java)
         }
     }
 
     @Test
-    fun `tab order matches the product's shell order`() {
-        assertThat(UsDefaultNavItems.map { it.label })
-            .containsExactly("Home", "Messages", "Reels", "Explore", "Me")
-            .inOrder()
+    fun `the root routes are the feature objects`() {
+        assertThat(TopLevelDestination.HOME.rootRoute).isEqualTo(FeedRoute)
+        assertThat(TopLevelDestination.MESSAGES.rootRoute).isEqualTo(ChatInboxRoute)
+        assertThat(TopLevelDestination.REELS.rootRoute).isEqualTo(ReelsRoute)
+        assertThat(TopLevelDestination.EXPLORE.rootRoute).isEqualTo(ExploreRoute)
+        assertThat(TopLevelDestination.ME.rootRoute).isEqualTo(OwnProfileRoute)
     }
 
     @Test
-    fun `every tab maps to a distinct route`() {
-        val routes = TopLevelDestination.entries.map { it.route }
-        assertThat(routes).containsNoDuplicates()
+    fun `tabs map to the module that switches them on`() {
+        assertThat(TopLevelDestination.HOME.module).isEqualTo(AppModule.FEED)
+        assertThat(TopLevelDestination.MESSAGES.module).isEqualTo(AppModule.CHAT)
+        assertThat(TopLevelDestination.REELS.module).isEqualTo(AppModule.REELS)
+        assertThat(TopLevelDestination.EXPLORE.module).isNull()
+        assertThat(TopLevelDestination.ME.module).isNull()
+    }
+
+    /** A tab for a module this build cannot render would open nothing. */
+    @Test
+    fun `every module-backed tab has a screen`() {
+        TopLevelDestination.entries.mapNotNull { it.module }.forEach { module ->
+            assertThat(module.hasScreen).isTrue()
+        }
     }
 
     /**
@@ -50,10 +65,11 @@ class TopLevelDestinationTest {
 
     /** Labels are user-visible; an accidental blank ships to the launcher. */
     @Test
-    fun `no nav item has a blank label or description`() {
-        UsDefaultNavItems.forEach { item ->
-            assertThat(item.label).isNotEmpty()
-            assertThat(item.contentDescription).isNotEmpty()
+    fun `no tab has a blank label or description`() {
+        TopLevelDestination.entries.forEach { tab ->
+            assertThat(tab.item.label).isNotEmpty()
+            assertThat(tab.item.contentDescription).isNotEmpty()
         }
+        assertThat(TopLevelDestination.entries.map { it.item.label }).containsNoDuplicates()
     }
 }

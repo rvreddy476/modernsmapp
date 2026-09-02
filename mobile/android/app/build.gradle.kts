@@ -39,6 +39,8 @@ dependencies {
     // Production chat pass: the chat lock lifecycle hooks.
     implementation(projects.core.chat)
     implementation(projects.core.call)
+    // The shell gates on module preferences (which tabs, which home).
+    implementation(projects.core.profile)
     implementation(projects.feature.auth)
     implementation(projects.feature.call)
     implementation(projects.feature.chat)
@@ -46,6 +48,7 @@ dependencies {
     implementation(projects.feature.live)
     implementation(projects.feature.post)
     implementation(projects.feature.profile)
+    implementation(projects.feature.settings)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.coil.compose)

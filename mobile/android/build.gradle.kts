@@ -169,7 +169,8 @@ tasks.register("moduleGraphCheck") {
     // number makes an unplanned module a build failure rather than a surprise
     // six weeks later. Update this deliberately when a module is authorised.
     // 28 = 26 + :core:call and :feature:call (calling P0).
-    val expectedModuleCount = 28
+    // 29 = 28 + :feature:settings (module picker / onboarding).
+    val expectedModuleCount = 29
 
     doLast {
         val allViolations = buildList {
