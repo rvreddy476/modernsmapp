@@ -143,18 +143,14 @@ func (s *Service) callPushTargets(ctx context.Context, userID uuid.UUID) ([]call
 		// and nothing to fail on.
 		return nil, false, nil
 	}
-	prefs, err := s.pgStore.GetPreferences(ctx, userID)
+	// Calls ride the SAME master gate as every other push (masterPushAllowed:
+	// push_enabled + quiet hours) and deliberately NO category toggle — a
+	// ring the user "turned off" would be a missed human, not a muted like.
+	prefs, err := s.pgStore.GetNotificationPreferences(ctx, userID.String())
 	if err != nil {
 		return nil, false, fmt.Errorf("preferences: %w", err)
 	}
-	quietStart, quietEnd := "", ""
-	if prefs.QuietHoursStart != nil {
-		quietStart = *prefs.QuietHoursStart
-	}
-	if prefs.QuietHoursEnd != nil {
-		quietEnd = *prefs.QuietHoursEnd
-	}
-	if !prefs.PushEnabled || isQuietHours(quietStart, quietEnd) {
+	if allowed, _ := masterPushAllowed(prefs); !allowed {
 		return nil, false, nil
 	}
 	devices, err := s.pgStore.GetUserDevices(ctx, userID)

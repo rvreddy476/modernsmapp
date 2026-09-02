@@ -18,6 +18,12 @@ func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
+// Pool exposes the underlying pgx pool for callers (delivery resolution)
+// that predate the Store abstraction.
+func (s *Store) Pool() *pgxpool.Pool {
+	return s.db
+}
+
 // NotificationPreferences stores per-user notification settings.
 type NotificationPreferencesLegacy struct {
 	UserID          uuid.UUID       `json:"user_id"`

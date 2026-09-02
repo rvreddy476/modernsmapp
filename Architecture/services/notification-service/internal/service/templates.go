@@ -55,6 +55,34 @@ var Templates = map[string]NotificationTemplate{
 		Icon: "echo", Priority: "medium", PushEligible: true,
 		CanAggregate: true, AggregateWindow: 15 * time.Minute,
 	},
+	// Reposts — both the registry name and the legacy short name the
+	// social consumer emits (events/consumer.go "post_reposted").
+	"post.reposted": {
+		EventType: "post.reposted", TitleTemplate: "{actor} reposted your post",
+		BodyTemplate: "{post_preview}", AggregateTitle: "{count} people reposted your post",
+		Icon: "echo", Priority: "medium", PushEligible: true,
+		CanAggregate: true, AggregateWindow: 15 * time.Minute,
+	},
+	"post_reposted": {
+		EventType: "post_reposted", TitleTemplate: "{actor} reposted your post",
+		BodyTemplate: "{post_preview}", AggregateTitle: "{count} people reposted your post",
+		Icon: "echo", Priority: "medium", PushEligible: true,
+		CanAggregate: true, AggregateWindow: 15 * time.Minute,
+	},
+
+	// LIVE — follower fan-out when a creator goes live (events/consumer.go
+	// "creator_went_live"). Never aggregated: each stream is its own moment.
+	"live.started": {
+		EventType: "live.started", TitleTemplate: "{actor} is LIVE now",
+		BodyTemplate: "Tap to watch before it ends",
+		Icon:         "live", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	"creator_went_live": {
+		EventType: "creator_went_live", TitleTemplate: "{actor} is LIVE now",
+		BodyTemplate: "Tap to watch before it ends",
+		Icon:         "live", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+
 	"user.followed": {
 		EventType: "user.followed", TitleTemplate: "{actor} followed you",
 		AggregateTitle: "{count} new followers",

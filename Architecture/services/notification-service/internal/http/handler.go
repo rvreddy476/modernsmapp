@@ -430,30 +430,122 @@ func (h *Handler) GetNotifPreferences(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, prefs, nil)
 }
 
-// UpdateNotifPreferencesRequest is the request body for PUT /v1/notifications/preferences (granular).
+// UpdateNotifPreferencesRequest is the request body for PUT /v1/notifications/preferences/detailed.
+// Every field is a pointer: absent keys leave the stored value untouched
+// (PATCH semantics on a PUT route, kept for the existing Android client).
+//
+// Category keys come in In-app / Push pairs (migration 005): `inapp_<cat>`
+// gates the inbox row + realtime event, `push_<cat>` gates the device push.
 type UpdateNotifPreferencesRequest struct {
-	PushEnabled           *bool   `json:"push_enabled"`
-	EmailEnabled          *bool   `json:"email_enabled"`
-	QuietHoursEnabled     *bool   `json:"quiet_hours_enabled"`
-	QuietHoursStart       *string `json:"quiet_hours_start"`
-	QuietHoursEnd         *string `json:"quiet_hours_end"`
-	QuietHoursTZ          *string `json:"quiet_hours_tz"`
-	PushLikes             *bool   `json:"push_likes"`
-	PushSuperLikes        *bool   `json:"push_super_likes"`
-	PushComments          *bool   `json:"push_comments"`
-	PushReplies           *bool   `json:"push_replies"`
-	PushMentions          *bool   `json:"push_mentions"`
-	PushFollows           *bool   `json:"push_follows"`
-	PushFriendRequests    *bool   `json:"push_friend_requests"`
-	PushGroupPosts        *bool   `json:"push_group_posts"`
-	PushGroupMentions     *bool   `json:"push_group_mentions"`
-	PushChannelUpdates    *bool   `json:"push_channel_updates"`
-	PushChannelUrgent     *bool   `json:"push_channel_urgent"`
-	PushCommunityPosts    *bool   `json:"push_community_posts"`
-	PushCommunityMentions *bool   `json:"push_community_mentions"`
-	PushEventReminders    *bool   `json:"push_event_reminders"`
-	PushSystem            *bool   `json:"push_system"`
-	EmailDigest           *string `json:"email_digest"`
+	PushEnabled       *bool   `json:"push_enabled"`
+	EmailEnabled      *bool   `json:"email_enabled"`
+	QuietHoursEnabled *bool   `json:"quiet_hours_enabled"`
+	QuietHoursStart   *string `json:"quiet_hours_start"`
+	QuietHoursEnd     *string `json:"quiet_hours_end"`
+	QuietHoursTZ      *string `json:"quiet_hours_tz"`
+
+	PushLikes             *bool `json:"push_likes"`
+	PushSuperLikes        *bool `json:"push_super_likes"`
+	PushComments          *bool `json:"push_comments"`
+	PushReplies           *bool `json:"push_replies"`
+	PushMentions          *bool `json:"push_mentions"`
+	PushFollows           *bool `json:"push_follows"`
+	PushFriendRequests    *bool `json:"push_friend_requests"`
+	PushGroupPosts        *bool `json:"push_group_posts"`
+	PushGroupMentions     *bool `json:"push_group_mentions"`
+	PushChannelUpdates    *bool `json:"push_channel_updates"`
+	PushChannelUrgent     *bool `json:"push_channel_urgent"`
+	PushCommunityPosts    *bool `json:"push_community_posts"`
+	PushCommunityMentions *bool `json:"push_community_mentions"`
+	PushEventReminders    *bool `json:"push_event_reminders"`
+	PushSystem            *bool `json:"push_system"`
+	PushReposts           *bool `json:"push_reposts"`
+	PushLive              *bool `json:"push_live"`
+	PushMessages          *bool `json:"push_messages"`
+
+	InappLikes             *bool `json:"inapp_likes"`
+	InappSuperLikes        *bool `json:"inapp_super_likes"`
+	InappComments          *bool `json:"inapp_comments"`
+	InappReplies           *bool `json:"inapp_replies"`
+	InappMentions          *bool `json:"inapp_mentions"`
+	InappFollows           *bool `json:"inapp_follows"`
+	InappFriendRequests    *bool `json:"inapp_friend_requests"`
+	InappGroupPosts        *bool `json:"inapp_group_posts"`
+	InappGroupMentions     *bool `json:"inapp_group_mentions"`
+	InappChannelUpdates    *bool `json:"inapp_channel_updates"`
+	InappChannelUrgent     *bool `json:"inapp_channel_urgent"`
+	InappCommunityPosts    *bool `json:"inapp_community_posts"`
+	InappCommunityMentions *bool `json:"inapp_community_mentions"`
+	InappEventReminders    *bool `json:"inapp_event_reminders"`
+	InappSystem            *bool `json:"inapp_system"`
+	InappReposts           *bool `json:"inapp_reposts"`
+	InappLive              *bool `json:"inapp_live"`
+	InappMessages          *bool `json:"inapp_messages"`
+
+	EmailDigest *string `json:"email_digest"`
+}
+
+// applyNotifPreferencesPatch merges the non-nil fields of req into current.
+func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *UpdateNotifPreferencesRequest) {
+	setBool := func(dst *bool, src *bool) {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	setBool(&current.PushEnabled, req.PushEnabled)
+	setBool(&current.EmailEnabled, req.EmailEnabled)
+	setBool(&current.QuietHoursEnabled, req.QuietHoursEnabled)
+	if req.QuietHoursStart != nil {
+		current.QuietHoursStart = req.QuietHoursStart
+	}
+	if req.QuietHoursEnd != nil {
+		current.QuietHoursEnd = req.QuietHoursEnd
+	}
+	if req.QuietHoursTZ != nil {
+		current.QuietHoursTZ = req.QuietHoursTZ
+	}
+
+	setBool(&current.PushLikes, req.PushLikes)
+	setBool(&current.PushSuperLikes, req.PushSuperLikes)
+	setBool(&current.PushComments, req.PushComments)
+	setBool(&current.PushReplies, req.PushReplies)
+	setBool(&current.PushMentions, req.PushMentions)
+	setBool(&current.PushFollows, req.PushFollows)
+	setBool(&current.PushFriendRequests, req.PushFriendRequests)
+	setBool(&current.PushGroupPosts, req.PushGroupPosts)
+	setBool(&current.PushGroupMentions, req.PushGroupMentions)
+	setBool(&current.PushChannelUpdates, req.PushChannelUpdates)
+	setBool(&current.PushChannelUrgent, req.PushChannelUrgent)
+	setBool(&current.PushCommunityPosts, req.PushCommunityPosts)
+	setBool(&current.PushCommunityMentions, req.PushCommunityMentions)
+	setBool(&current.PushEventReminders, req.PushEventReminders)
+	setBool(&current.PushSystem, req.PushSystem)
+	setBool(&current.PushReposts, req.PushReposts)
+	setBool(&current.PushLive, req.PushLive)
+	setBool(&current.PushMessages, req.PushMessages)
+
+	setBool(&current.InappLikes, req.InappLikes)
+	setBool(&current.InappSuperLikes, req.InappSuperLikes)
+	setBool(&current.InappComments, req.InappComments)
+	setBool(&current.InappReplies, req.InappReplies)
+	setBool(&current.InappMentions, req.InappMentions)
+	setBool(&current.InappFollows, req.InappFollows)
+	setBool(&current.InappFriendRequests, req.InappFriendRequests)
+	setBool(&current.InappGroupPosts, req.InappGroupPosts)
+	setBool(&current.InappGroupMentions, req.InappGroupMentions)
+	setBool(&current.InappChannelUpdates, req.InappChannelUpdates)
+	setBool(&current.InappChannelUrgent, req.InappChannelUrgent)
+	setBool(&current.InappCommunityPosts, req.InappCommunityPosts)
+	setBool(&current.InappCommunityMentions, req.InappCommunityMentions)
+	setBool(&current.InappEventReminders, req.InappEventReminders)
+	setBool(&current.InappSystem, req.InappSystem)
+	setBool(&current.InappReposts, req.InappReposts)
+	setBool(&current.InappLive, req.InappLive)
+	setBool(&current.InappMessages, req.InappMessages)
+
+	if req.EmailDigest != nil {
+		current.EmailDigest = *req.EmailDigest
+	}
 }
 
 // UpdateNotifPreferences handles PUT /v1/notifications/preferences (granular)
@@ -477,72 +569,7 @@ func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 		return
 	}
 
-	if req.PushEnabled != nil {
-		current.PushEnabled = *req.PushEnabled
-	}
-	if req.EmailEnabled != nil {
-		current.EmailEnabled = *req.EmailEnabled
-	}
-	if req.QuietHoursEnabled != nil {
-		current.QuietHoursEnabled = *req.QuietHoursEnabled
-	}
-	if req.QuietHoursStart != nil {
-		current.QuietHoursStart = req.QuietHoursStart
-	}
-	if req.QuietHoursEnd != nil {
-		current.QuietHoursEnd = req.QuietHoursEnd
-	}
-	if req.QuietHoursTZ != nil {
-		current.QuietHoursTZ = req.QuietHoursTZ
-	}
-	if req.PushLikes != nil {
-		current.PushLikes = *req.PushLikes
-	}
-	if req.PushSuperLikes != nil {
-		current.PushSuperLikes = *req.PushSuperLikes
-	}
-	if req.PushComments != nil {
-		current.PushComments = *req.PushComments
-	}
-	if req.PushReplies != nil {
-		current.PushReplies = *req.PushReplies
-	}
-	if req.PushMentions != nil {
-		current.PushMentions = *req.PushMentions
-	}
-	if req.PushFollows != nil {
-		current.PushFollows = *req.PushFollows
-	}
-	if req.PushFriendRequests != nil {
-		current.PushFriendRequests = *req.PushFriendRequests
-	}
-	if req.PushGroupPosts != nil {
-		current.PushGroupPosts = *req.PushGroupPosts
-	}
-	if req.PushGroupMentions != nil {
-		current.PushGroupMentions = *req.PushGroupMentions
-	}
-	if req.PushChannelUpdates != nil {
-		current.PushChannelUpdates = *req.PushChannelUpdates
-	}
-	if req.PushChannelUrgent != nil {
-		current.PushChannelUrgent = *req.PushChannelUrgent
-	}
-	if req.PushCommunityPosts != nil {
-		current.PushCommunityPosts = *req.PushCommunityPosts
-	}
-	if req.PushCommunityMentions != nil {
-		current.PushCommunityMentions = *req.PushCommunityMentions
-	}
-	if req.PushEventReminders != nil {
-		current.PushEventReminders = *req.PushEventReminders
-	}
-	if req.PushSystem != nil {
-		current.PushSystem = *req.PushSystem
-	}
-	if req.EmailDigest != nil {
-		current.EmailDigest = *req.EmailDigest
-	}
+	applyNotifPreferencesPatch(current, &req)
 	current.UserID = userID
 	if err := validateDetailedNotificationPreferences(current); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PREFERENCES", err.Error(), nil)

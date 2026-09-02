@@ -117,10 +117,44 @@ func (s *Service) CreateNotificationIdempotent(ctx context.Context, userID, acto
 	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity, false)
 }
 
+// resolveGeneralDelivery consults the user's channel preferences (in-app vs
+// push, per category, master toggle, quiet hours) for one notification.
+// Without a Postgres store there are no preferences to consult, so every
+// channel stays on — the pre-existing dev/test posture.
+func (s *Service) resolveGeneralDelivery(ctx context.Context, userID uuid.UUID, notifType string) DeliveryDecision {
+	if s.pgStore == nil || s.pgStore.Pool() == nil {
+		return DeliveryDecision{CreateInbox: true, SendWebSocket: true, SendPush: true}
+	}
+	return ResolveDelivery(ctx, s.pgStore.Pool(), s.rdb, userID.String(), notifType, "", "", false)
+}
+
 func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string, suppressPush bool) error {
+	// 0. Preferences FIRST. Previously this path stored + published
+	// unconditionally and only checked the master push toggle at the very
+	// end, so per-category and in-app toggles were dead letters.
+	decision := s.resolveGeneralDelivery(ctx, userID, notifType)
+	if suppressPush {
+		// Per-conversation mute (CreateNotificationWithoutPush): inbox and
+		// realtime per the decision, device stays quiet.
+		decision.SendPush = false
+		decision.DeferPush = false
+	}
+	return s.deliverWithDecision(ctx, decision, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity)
+}
+
+// deliverWithDecision applies an already-resolved DeliveryDecision. Split
+// from createNotification so the channel gating is unit-testable without
+// live stores.
+func (s *Service) deliverWithDecision(ctx context.Context, decision DeliveryDecision, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string) error {
+	if !decision.CreateInbox && !decision.SendWebSocket && !decision.SendPush {
+		return nil
+	}
+
 	id := uuid.New()
 
-	// 1. Save to Scylla (Inbox)
+	// 1. Save to Scylla (Inbox) — only when the category's in-app toggle
+	// allows it. With in-app off but push on, the device is still told (a
+	// TikTok-style "push only" category) and nothing lands in the inbox.
 	n := &scylla.Notification{
 		UserID:         userID,
 		NotificationID: id,
@@ -139,77 +173,72 @@ func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.U
 		id = n.NotificationID
 	}
 
-	if identity != "" {
-		// Idempotent path: conditional insert. `applied=false` means this
-		// notification already exists, so every downstream side effect
-		// below must be skipped — otherwise a retry re-publishes realtime
-		// and re-sends push for a notification the user already has.
-		applied, err := s.scyllaStore.CreateNotificationIfNotExists(ctx, n)
-		if err != nil {
+	if decision.CreateInbox {
+		if identity != "" {
+			// Idempotent path: conditional insert. `applied=false` means this
+			// notification already exists, so every downstream side effect
+			// below must be skipped — otherwise a retry re-publishes realtime
+			// and re-sends push for a notification the user already has.
+			applied, err := s.scyllaStore.CreateNotificationIfNotExists(ctx, n)
+			if err != nil {
+				return fmt.Errorf("failed to create notification in scylla: %w", err)
+			}
+			if !applied {
+				return nil
+			}
+		} else if err := s.scyllaStore.CreateNotification(ctx, n); err != nil {
 			return fmt.Errorf("failed to create notification in scylla: %w", err)
 		}
-		if !applied {
-			return nil
-		}
-	} else if err := s.scyllaStore.CreateNotification(ctx, n); err != nil {
-		return fmt.Errorf("failed to create notification in scylla: %w", err)
 	}
+	// NOTE: with the inbox row skipped (in-app off, push on) the idempotent
+	// path loses its `applied` dedup gate, so a redelivered event may push
+	// again. The collapse key bounds that to a device-side replace.
 
-	// 2. Push to Redis (Realtime)
+	// 2. Push to Redis (Realtime) — follows the in-app decision.
 	// Channel: notify:{user_id}
-	channel := fmt.Sprintf("notify:%s", userID.String())
-	payload, _ := json.Marshal(map[string]interface{}{
-		"type":    "notification",
-		"payload": n,
-	})
-
-	if err := s.rdb.Publish(ctx, channel, payload).Err(); err != nil {
-		// Log error but don't fail the operation
-		fmt.Printf("failed to publish to redis: %v\n", err)
+	if decision.SendWebSocket {
+		channel := fmt.Sprintf("notify:%s", userID.String())
+		payload, _ := json.Marshal(map[string]interface{}{
+			"type":    "notification",
+			"payload": n,
+		})
+		if err := s.rdb.Publish(ctx, channel, payload).Err(); err != nil {
+			// Log error but don't fail the operation
+			fmt.Printf("failed to publish to redis: %v\n", err)
+		}
 	}
 
-	// 3. Send push notification if pusher is configured — unless this
-	// delivery is silenced (per-conversation mute).
-	if suppressPush {
+	// 3. Device push — the decision already applied the master toggle,
+	// quiet hours (DeferPush ⇒ SendPush=false; there is no defer queue yet,
+	// the inbox row is what the user finds after quiet hours) and the
+	// category's push_* toggle.
+	if !decision.SendPush {
 		return nil
 	}
 	if s.pusher != nil && s.pgStore != nil {
 		tokens, err := s.pgStore.GetUserDevices(ctx, userID)
 		if err == nil && len(tokens) > 0 {
-			prefs, _ := s.pgStore.GetPreferences(ctx, userID)
-			quietStart := ""
-			quietEnd := ""
-			if prefs != nil {
-				if prefs.QuietHoursStart != nil {
-					quietStart = *prefs.QuietHoursStart
-				}
-				if prefs.QuietHoursEnd != nil {
-					quietEnd = *prefs.QuietHoursEnd
-				}
-				if prefs.PushEnabled && !isQuietHours(quietStart, quietEnd) {
-					title, body := notifTitleBody(notifType)
-					// entity_id and deep_link ride the data payload so the
-					// client can open the exact destination from a tap —
-					// including background taps, where FCM hands these keys
-					// to the launch intent as extras. No message content is
-					// ever included here: chat pushes stay generic by
-					// construction, which is what keeps previews and lock
-					// screens privacy-safe regardless of client settings.
-					pushData := map[string]string{
-						"type":      notifType,
-						"entity_id": entityID.String(),
-						"deep_link": deepLink,
-					}
-					// Compute collapse key so repeated notifications (e.g. many likes)
-					// replace each other on the device instead of flooding.
-					if ck := GetCollapseKey(notifType, entityID.String(), userID.String()); ck != "" {
-						pushData["collapse_key"] = ck
-					}
-					for _, t := range tokens {
-						if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body, pushData); err != nil {
-							slog.Warn("push: send failed", "error", err, "platform", t.Platform)
-						}
-					}
+			title, body := notifTitleBody(notifType)
+			// entity_id and deep_link ride the data payload so the
+			// client can open the exact destination from a tap —
+			// including background taps, where FCM hands these keys
+			// to the launch intent as extras. No message content is
+			// ever included here: chat pushes stay generic by
+			// construction, which is what keeps previews and lock
+			// screens privacy-safe regardless of client settings.
+			pushData := map[string]string{
+				"type":      notifType,
+				"entity_id": entityID.String(),
+				"deep_link": deepLink,
+			}
+			// Compute collapse key so repeated notifications (e.g. many likes)
+			// replace each other on the device instead of flooding.
+			if ck := GetCollapseKey(notifType, entityID.String(), userID.String()); ck != "" {
+				pushData["collapse_key"] = ck
+			}
+			for _, t := range tokens {
+				if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body, pushData); err != nil {
+					slog.Warn("push: send failed", "error", err, "platform", t.Platform)
 				}
 			}
 		}
@@ -259,6 +288,12 @@ func notifTitleBody(notifType string) (string, string) {
 		return "New Message", "You have a new message"
 	case "message_request":
 		return "Message Request", "You have a new message request"
+	case "post_reposted":
+		return "New Repost", "Someone reposted your post"
+	case "creator_went_live":
+		return "LIVE now", "Someone you follow just went live"
+	case "missed_call":
+		return "Missed Call", "You missed a call"
 	default:
 		return "New Notification", "You have a new notification"
 	}
