@@ -25,11 +25,30 @@ data class NotificationsUiState(
     val isLoadingMore: Boolean = false,
     /** Set when the first page failed. Later pages fail quietly. */
     val error: String? = null,
+    /**
+     * Conversations still waiting on this user's decision — the server's
+     * answer, fetched alongside the page. A message-request row offers
+     * Accept / Decline / Block only while its conversation is in here.
+     */
+    val pendingRequestIds: Set<String> = emptySet(),
+    /** Actors the viewer already follows; their Follow rows show "Following". */
+    val followingIds: Set<String> = emptySet(),
+    /** Per-row action progress and outcome, keyed by notification id. */
+    val rowActions: Map<String, RowActionState> = emptyMap(),
 ) {
     val isEmpty: Boolean get() = items.isEmpty() && !isLoading && error == null
     val hasMore: Boolean get() = nextCursor != null
     val hasUnread: Boolean get() = unreadCount > 0
 }
+
+/**
+ * Where one row's inline action stands.
+ *
+ * The terminal states are kept rather than the row being removed: the user
+ * just did something to that notification, and a row that vanishes under the
+ * finger reads as a bug, not a success.
+ */
+enum class RowActionState { Busy, Failed, Followed, Accepted, Declined, Blocked }
 
 /**
  * The inbox's rules, as pure functions — Slice D.
@@ -49,6 +68,7 @@ data class NotificationsUiState(
  * These are decisions, not plumbing, so they live here and are table-tested.
  * The ViewModel owns effects only.
  */
+@Suppress("TooManyFunctions") // One rule per state transition, table-tested; splitting it would hide the table.
 object NotificationsReducer {
 
     fun onLoadStarted(state: NotificationsUiState): NotificationsUiState =
@@ -152,4 +172,44 @@ object NotificationsReducer {
      * inspecting [items] can recover that number.
      */
     fun onMarkAllReadFailed(previous: NotificationsUiState): NotificationsUiState = previous
+
+    // ── Inline row actions ───────────────────────────────────────────────
+
+    fun onPendingRequests(state: NotificationsUiState, ids: Set<String>): NotificationsUiState =
+        state.copy(pendingRequestIds = ids)
+
+    fun onFollowing(state: NotificationsUiState, ids: Set<String>): NotificationsUiState =
+        state.copy(followingIds = state.followingIds + ids)
+
+    fun onActionStarted(state: NotificationsUiState, notificationId: String): NotificationsUiState =
+        state.copy(rowActions = state.rowActions + (notificationId to RowActionState.Busy))
+
+    fun onActionFailed(state: NotificationsUiState, notificationId: String): NotificationsUiState =
+        state.copy(rowActions = state.rowActions + (notificationId to RowActionState.Failed))
+
+    /**
+     * A confirmed outcome. The pending set and the following set are updated
+     * HERE, from the same fact, so a row can never show "Accepted" and still
+     * offer Accept.
+     */
+    fun onActionDone(
+        state: NotificationsUiState,
+        notification: Notification,
+        outcome: RowActionState,
+    ): NotificationsUiState = state.copy(
+        rowActions = state.rowActions + (notification.id to outcome),
+        pendingRequestIds = when (outcome) {
+            RowActionState.Accepted,
+            RowActionState.Declined,
+            RowActionState.Blocked,
+            -> state.pendingRequestIds - notification.entityId
+
+            else -> state.pendingRequestIds
+        },
+        followingIds = if (outcome == RowActionState.Followed) {
+            state.followingIds + notification.actorUserId
+        } else {
+            state.followingIds
+        },
+    )
 }

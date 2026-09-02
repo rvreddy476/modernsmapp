@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.model.Notification
 import com.us.android.core.model.NotificationAddress
+import com.us.android.core.model.NotificationKind
 import com.us.android.core.notifications.data.NotificationsRepository
 import com.us.android.core.notifications.data.UnreadBadge
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -29,6 +30,12 @@ import javax.inject.Inject
  * the authority: every refresh re-reads the count rather than trusting the
  * local arithmetic, so a client that drifted is corrected on the next load
  * instead of staying wrong until reinstall.
+ *
+ * ## ROW ACTIONS ARE NOT OPTIMISTIC
+ *
+ * Accept / Decline / Block / Follow wait for the server. Read-state can be
+ * guessed and quietly corrected; "you are now connected to a stranger" cannot.
+ * The row shows a busy state until the answer arrives, then the outcome.
  */
 @HiltViewModel
 class NotificationsViewModel @Inject constructor(
@@ -41,6 +48,7 @@ class NotificationsViewModel @Inject constructor(
      * to refetch, which reads as the app being broken.
      */
     private val badge: UnreadBadge,
+    private val actions: NotificationActions,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(NotificationsUiState())
@@ -71,6 +79,7 @@ class NotificationsViewModel @Inject constructor(
                         result.data.items,
                         result.data.nextCursor,
                     )
+                    hydrateRowActions(result.data.items, includeRequests = true)
                 }
 
                 is AppResult.Failure -> {
@@ -103,6 +112,9 @@ class NotificationsViewModel @Inject constructor(
                         result.data.items,
                         result.data.nextCursor,
                     )
+                    // The pending set is whole-inbox and already loaded; only
+                    // the follow edges are per-actor.
+                    hydrateRowActions(result.data.items, includeRequests = false)
                 }
 
                 is AppResult.Failure -> {
@@ -155,6 +167,80 @@ class NotificationsViewModel @Inject constructor(
                 _state.value = NotificationsReducer.onMarkAllReadFailed(before)
             }
             publishBadge()
+        }
+    }
+
+    // ── Inline row actions ───────────────────────────────────────────────
+
+    /** Follow back the account that followed you. */
+    fun follow(notification: Notification) = runRowAction(notification, RowActionState.Followed) {
+        actions.follow(notification.actorUserId)
+    }
+
+    /** Accept a message request: the conversation opens and the two connect. */
+    fun acceptRequest(notification: Notification) =
+        runRowAction(notification, RowActionState.Accepted) {
+            actions.acceptRequest(notification.entityId)
+        }
+
+    fun declineRequest(notification: Notification) =
+        runRowAction(notification, RowActionState.Declined) {
+            actions.declineRequest(notification.entityId)
+        }
+
+    fun blockRequest(notification: Notification) =
+        runRowAction(notification, RowActionState.Blocked) {
+            actions.blockRequest(notification.entityId)
+        }
+
+    /**
+     * One row, one action at a time. Acting on a row also reads it: the user
+     * has clearly seen it, and a badge that still counts a request they just
+     * accepted is wrong in the direction people notice.
+     */
+    private fun runRowAction(
+        notification: Notification,
+        outcome: RowActionState,
+        call: suspend () -> AppResult<Unit>,
+    ) {
+        if (_state.value.rowActions[notification.id] == RowActionState.Busy) return
+        _state.value = NotificationsReducer.onActionStarted(_state.value, notification.id)
+        markRead(notification.address)
+
+        viewModelScope.launch {
+            _state.value = when (call()) {
+                is AppResult.Success -> NotificationsReducer.onActionDone(_state.value, notification, outcome)
+                is AppResult.Failure -> NotificationsReducer.onActionFailed(_state.value, notification.id)
+            }
+        }
+    }
+
+    /**
+     * Fills in what the rows need to offer the right button: which requests
+     * are still pending, which followers are already followed back. Both are
+     * the server's answers; both are best-effort. A row that cannot learn its
+     * state renders without a button rather than with a wrong one.
+     */
+    private fun hydrateRowActions(items: List<Notification>, includeRequests: Boolean) {
+        if (includeRequests && items.any { it.kind == NotificationKind.MessageRequest }) {
+            viewModelScope.launch {
+                when (val pending = actions.pendingRequestIds()) {
+                    is AppResult.Success ->
+                        _state.value = NotificationsReducer.onPendingRequests(_state.value, pending.data)
+                    is AppResult.Failure -> Unit
+                }
+            }
+        }
+        val followers = items
+            .filter { it.kind == NotificationKind.Follow && it.actorUserId.isNotBlank() }
+            .mapTo(mutableSetOf()) { it.actorUserId }
+        if (followers.isNotEmpty()) {
+            viewModelScope.launch {
+                val following = actions.alreadyFollowing(followers)
+                if (following.isNotEmpty()) {
+                    _state.value = NotificationsReducer.onFollowing(_state.value, following)
+                }
+            }
         }
     }
 

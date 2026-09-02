@@ -127,7 +127,16 @@ internal fun NotificationDto.toDomain(): Notification = Notification(
     actorName = actor?.displayName.orEmpty(),
     entityType = entityType,
     entityId = entityId,
-    target = NotificationTarget.parse(deepLink),
+    // A conversation row targets ITS conversation. The server's deep link for
+    // these is the requests folder, which would lose the one id that matters.
+    target = if (entityType == ENTITY_CONVERSATION && entityId.isNotBlank()) {
+        NotificationTarget.Conversation(entityId)
+    } else {
+        NotificationTarget.parse(deepLink)
+    },
     isRead = isRead,
     createdAt = createdAt,
 )
+
+/** `entity_type` the chat consumer writes for message-request notifications. */
+private const val ENTITY_CONVERSATION = "conversation"

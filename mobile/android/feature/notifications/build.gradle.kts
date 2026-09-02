@@ -23,6 +23,11 @@ dependencies {
     implementation(projects.core.ui)
     implementation(projects.core.network)
     implementation(projects.core.notifications)
+    // Inline row actions: Accept / Decline / Block a message request, follow
+    // back. The data layers only; the inbox still never sees another feature.
+    implementation(projects.core.chat)
+    implementation(projects.core.profile)
+    implementation(projects.core.auth)
     // The "have we asked for the notification permission" flag (D-D2). The
     // platform cannot tell us; see NotificationPermissionPolicy.
     implementation(projects.core.datastore)

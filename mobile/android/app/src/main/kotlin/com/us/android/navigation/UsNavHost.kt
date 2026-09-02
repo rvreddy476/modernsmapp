@@ -552,6 +552,8 @@ private fun NavHostController.openNotificationTarget(target: NotificationTarget)
         is NotificationTarget.Post -> navigateToPost(target.postId)
         is NotificationTarget.PostComment -> navigateToPost(target.postId)
         is NotificationTarget.Profile -> navigateToProfile(target.userId)
+        is NotificationTarget.Conversation -> navigateToChatThread(target.conversationId, title = "")
+        is NotificationTarget.MessageRequest -> navigateToChatRequest(target.conversationId, target.title)
         NotificationTarget.None -> Unit
     }
 }

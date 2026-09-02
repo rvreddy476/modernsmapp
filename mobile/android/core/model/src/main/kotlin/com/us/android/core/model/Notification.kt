@@ -79,6 +79,15 @@ sealed interface NotificationKind {
     /** A call rang and nobody answered. Written by the call consumer. */
     data object MissedCall : NotificationKind
 
+    /**
+     * A stranger's first message landed as a request. The row carries the
+     * conversation id in `entityId`; Accept / Decline / Block act on it.
+     */
+    data object MessageRequest : NotificationKind
+
+    /** Someone sent you a direct message. Written by the chat consumer. */
+    data object DirectMessage : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
@@ -95,6 +104,8 @@ sealed interface NotificationKind {
             "friend_accepted" -> ConnectionAccepted
             "new_subscriber" -> NewSubscriber
             "missed_call" -> MissedCall
+            "message_request" -> MessageRequest
+            "dm" -> DirectMessage
             else -> Unknown(raw)
         }
     }
@@ -118,6 +129,20 @@ sealed interface NotificationTarget {
     data class Post(val postId: String) : NotificationTarget
     data class PostComment(val postId: String, val commentId: String) : NotificationTarget
     data class Profile(val userId: String) : NotificationTarget
+
+    /**
+     * A conversation the user is already part of. Not parsed from the deep
+     * link: the server links message notifications to the requests folder,
+     * and the row knows better — it carries the conversation id itself.
+     */
+    data class Conversation(val conversationId: String) : NotificationTarget
+
+    /**
+     * A message request still waiting on this user's decision. The inbox
+     * decides between this and [Conversation] from the live request state,
+     * which is why both exist rather than one target with a flag.
+     */
+    data class MessageRequest(val conversationId: String, val title: String) : NotificationTarget
 
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget

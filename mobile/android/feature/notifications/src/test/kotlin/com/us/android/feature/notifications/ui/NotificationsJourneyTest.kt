@@ -110,6 +110,16 @@ class NotificationsJourneyTest {
         }
     }
 
+    /** The journeys here never act on a row; a call is a wrong turn, not a fixture. */
+    private class NoActions : NotificationActions {
+        override suspend fun pendingRequestIds(): AppResult<Set<String>> = AppResult.Success(emptySet())
+        override suspend fun alreadyFollowing(actorIds: Set<String>): Set<String> = emptySet()
+        override suspend fun follow(userId: String): AppResult<Unit> = error("not used")
+        override suspend fun acceptRequest(conversationId: String): AppResult<Unit> = error("not used")
+        override suspend fun declineRequest(conversationId: String): AppResult<Unit> = error("not used")
+        override suspend fun blockRequest(conversationId: String): AppResult<Unit> = error("not used")
+    }
+
     private class UnusedApi : NotificationsApi {
         override suspend fun list(limit: Int, cursor: String?) = error("not used")
         override suspend fun unreadCount() = error("not used")
@@ -118,7 +128,7 @@ class NotificationsJourneyTest {
     }
 
     private fun launch(repository: FakeRepository) {
-        val viewModel = NotificationsViewModel(repository, UnreadBadge(repository))
+        val viewModel = NotificationsViewModel(repository, UnreadBadge(repository), NoActions())
 
         composeRule.setContent {
             navController = rememberNavController()
@@ -138,7 +148,10 @@ class NotificationsJourneyTest {
                                     -> navController.navigate(PostStub)
 
                                     is NotificationTarget.Profile -> navController.navigate(ProfileStub)
-                                    NotificationTarget.None -> Unit
+                                    is NotificationTarget.Conversation,
+                                    is NotificationTarget.MessageRequest,
+                                    NotificationTarget.None,
+                                    -> Unit
                                 }
                             },
                             onOpenPreferences = { preferencesOpened++ },

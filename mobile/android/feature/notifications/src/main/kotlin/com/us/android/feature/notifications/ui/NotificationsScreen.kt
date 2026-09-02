@@ -1,23 +1,32 @@
 package com.us.android.feature.notifications.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,6 +39,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -46,9 +59,13 @@ import com.us.android.core.model.NotificationKind
 import com.us.android.core.model.NotificationTarget
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.feature.notifications.permission.NotificationPermissionPrompt
+import java.time.Duration
+import java.time.Instant
 
 /**
- * The notification inbox — Slice D.
+ * The notification inbox — Slice D, redesigned per the Figma notifications
+ * frame (157:138): a plain list with the actor's name in bold, the time
+ * inline and muted, and the one action a row can take sitting ON the row.
  *
  * Renders [NotificationsUiState] and calls back. It performs no network work
  * and keeps no parallel copy of read-state.
@@ -97,6 +114,21 @@ fun NotificationsScreen(
         if (shouldLoadMore) viewModel.loadMore()
     }
 
+    val callbacks = remember(viewModel, onOpenTarget) {
+        RowCallbacks(
+            onOpen = { notification, target ->
+                viewModel.onNotificationOpened(notification)
+                // NOT gated on the mark-read request. Making someone wait for
+                // a write they can already see succeed is the wrong trade.
+                if (target != NotificationTarget.None) onOpenTarget(target)
+            },
+            onFollow = viewModel::follow,
+            onAccept = viewModel::acceptRequest,
+            onDecline = viewModel::declineRequest,
+            onBlock = viewModel::blockRequest,
+        )
+    }
+
     UsScaffold(
         topBar = { NotificationsTopBar(onBack = onBack, onOpenPreferences = onOpenPreferences) },
         applyPageGutter = false,
@@ -115,10 +147,7 @@ fun NotificationsScreen(
                         .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s),
                     horizontalArrangement = Arrangement.End,
                 ) {
-                    UsSecondaryButton(
-                        text = "Mark all read",
-                        onClick = viewModel::markAllRead,
-                    )
+                    UsSecondaryButton(text = "Mark all read", onClick = viewModel::markAllRead)
                 }
             }
 
@@ -133,72 +162,78 @@ fun NotificationsScreen(
 
                 state.isEmpty -> UsEmptyState(
                     title = "Nothing yet",
-                    detail = "Reactions, comments and follows will show up here.",
+                    detail = "Reactions, comments, follows and message requests will show up here.",
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                else -> SectionedNotificationList(
-                    items = state.items,
-                    isLoadingMore = state.isLoadingMore,
-                    listState = listState,
-                    onOpen = { notification ->
-                        viewModel.onNotificationOpened(notification)
-                        // NOT gated on the mark-read request. Making someone
-                        // wait for a write they can already see succeed is the
-                        // wrong trade.
-                        if (notification.target != NotificationTarget.None) {
-                            onOpenTarget(notification.target)
-                        }
-                    },
-                )
+                else -> SectionedNotificationList(state = state, listState = listState, callbacks = callbacks)
             }
         }
     }
 }
 
+/** Everything a row can do, bundled so the list and the row share one signature. */
+private data class RowCallbacks(
+    val onOpen: (Notification, NotificationTarget) -> Unit,
+    val onFollow: (Notification) -> Unit,
+    val onAccept: (Notification) -> Unit,
+    val onDecline: (Notification) -> Unit,
+    val onBlock: (Notification) -> Unit,
+)
+
 /**
- * TODAY / EARLIER sections, per the Figma notifications frame (4:854). The
- * list arrives newest-first, so a single partition keeps that order within
- * each section.
+ * Three age bands, per the Figma frame: today's rows sit at the top with no
+ * heading, then "Last 30 days", then "Older". The list arrives newest-first,
+ * so grouping preserves the order within each band.
  */
+private enum class AgeBand(val label: String?) { Today(null), Month("Last 30 days"), Older("Older") }
+
 @Composable
 private fun SectionedNotificationList(
-    items: List<Notification>,
-    isLoadingMore: Boolean,
-    listState: androidx.compose.foundation.lazy.LazyListState,
-    onOpen: (Notification) -> Unit,
+    state: NotificationsUiState,
+    listState: LazyListState,
+    callbacks: RowCallbacks,
 ) {
-    val (today, earlier) = items.partition { isToday(it.createdAt) }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        if (today.isNotEmpty()) {
-            item(key = "section-today") { SectionHeader("Today") }
+    val now = remember(state.items) { Instant.now() }
+    val bands = remember(state.items, now) { state.items.groupBy { ageBand(it.createdAt, now) } }
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        AgeBand.entries.forEach { band ->
+            val rows = bands[band].orEmpty()
+            if (rows.isNotEmpty()) {
+                band.label?.let { label -> item(key = "section-${band.name}") { SectionHeader(label) } }
+                notificationRows(rows, state, callbacks)
+            }
         }
-        items(today, key = { it.id }) { notification ->
-            NotificationRow(notification = notification, onClick = { onOpen(notification) })
-        }
-        if (earlier.isNotEmpty()) {
-            item(key = "section-earlier") { SectionHeader("Earlier") }
-        }
-        items(earlier, key = { it.id }) { notification ->
-            NotificationRow(notification = notification, onClick = { onOpen(notification) })
-        }
-
-        if (isLoadingMore) {
+        if (state.isLoadingMore) {
             item { LoadingBlock() }
         }
     }
 }
 
-/** Section label — the muted TODAY/EARLIER dividers from the Figma frame. */
+private fun LazyListScope.notificationRows(
+    rows: List<Notification>,
+    state: NotificationsUiState,
+    callbacks: RowCallbacks,
+) {
+    items(rows, key = { it.id }) { notification ->
+        NotificationRow(
+            notification = notification,
+            action = state.rowActions[notification.id],
+            requestPending = notification.entityId in state.pendingRequestIds,
+            alreadyFollowing = notification.actorUserId in state.followingIds,
+            callbacks = callbacks,
+        )
+    }
+}
+
+/** Section label — the bold "Last 30 days" / "Older" dividers from the frame. */
 @Composable
 private fun SectionHeader(label: String) {
     Text(
-        text = label.uppercase(),
-        style = MaterialTheme.typography.labelSmall,
-        color = UsTheme.extended.textMuted,
+        text = label,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+        color = UsTheme.extended.textPrimary,
         modifier = Modifier.padding(
             horizontal = UsTheme.spacing.pageHorizontal,
             vertical = UsTheme.spacing.m,
@@ -206,94 +241,217 @@ private fun SectionHeader(label: String) {
     )
 }
 
-/** Whether an ISO timestamp falls on the device's current calendar day. */
-private fun isToday(isoInstant: String): Boolean = runCatching {
-    java.time.Instant.parse(isoInstant)
-        .atZone(java.time.ZoneId.systemDefault())
-        .toLocalDate() == java.time.LocalDate.now()
-}.getOrDefault(false)
+private fun ageBand(isoInstant: String, now: Instant): AgeBand {
+    val then = runCatching { Instant.parse(isoInstant) }.getOrNull() ?: return AgeBand.Older
+    val age = Duration.between(then, now)
+    return when {
+        age < Duration.ofDays(1) -> AgeBand.Today
+        age < Duration.ofDays(MONTH_DAYS) -> AgeBand.Month
+        else -> AgeBand.Older
+    }
+}
 
-// Figma notifications row (4:854): actor avatar, sentence + relative time,
-// unread dot on the trailing edge. A missed call sits on a red-tinted band
-// with a phone badge instead of an avatar — the one row type whose absence
+// Figma notifications row (157:138): 48dp avatar, one line of text with the
+// actor in bold and the time inline and muted, the row's action trailing.
+// A missed call keeps its red phone badge — the one row type whose absence
 // costs the user something, so it must not look like one more like.
 @Composable
-private fun NotificationRow(notification: Notification, onClick: () -> Unit) {
-    val text = notification.describe()
+private fun NotificationRow(
+    notification: Notification,
+    action: RowActionState?,
+    requestPending: Boolean,
+    alreadyFollowing: Boolean,
+    callbacks: RowCallbacks,
+) {
+    val sentence = notification.describe()
     val missedCall = notification.kind == NotificationKind.MissedCall
+    // A pending request opens the decision screen; anything else opens what
+    // the row points at. The inbox knows which because the server told it.
+    val target = if (requestPending) {
+        NotificationTarget.MessageRequest(notification.entityId, notification.actorName)
+    } else {
+        notification.target
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .then(
-                if (missedCall) Modifier.background(MISSED_CALL_BAND) else Modifier,
-            )
-            .padding(
-                horizontal = UsTheme.spacing.pageHorizontal,
-                vertical = UsTheme.spacing.l,
-            )
-            // ONE node to a screen reader, carrying the sentence and the
-            // unread state. Without merging, the dot and the text are read as
-            // two unrelated items and "unread" arrives detached from what is
-            // unread.
-            .clearAndSetSemantics {
-                contentDescription = if (notification.isRead) text else "Unread. $text"
-            },
+            .clickable { callbacks.onOpen(notification, target) }
+            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = ROW_VERTICAL),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
         if (missedCall) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(ROW_BADGE)
-                    .clip(CircleShape)
-                    .background(MISSED_CALL_BAND),
-            ) {
-                Icon(
-                    imageVector = UsIcons.Phone,
-                    contentDescription = null,
-                    tint = UsTheme.extended.liveRed,
-                    modifier = Modifier.size(ROW_BADGE_GLYPH),
-                )
-            }
+            MissedCallBadge()
         } else {
-            // Named when hydration supplied an actor; the seed keeps one
-            // stable colour per actor either way.
             UsAvatar(
                 name = notification.actorName,
-                size = UsAvatarSize.Medium,
+                size = UsAvatarSize.Chat,
                 seed = notification.actorUserId,
             )
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = text,
+                text = notification.rowText(sentence),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (missedCall) UsTheme.extended.liveRed else UsTheme.extended.textPrimary,
+                // ONE node to a screen reader, carrying the sentence and the
+                // unread state. The time is decoration; the buttons speak for
+                // themselves.
+                modifier = Modifier.clearAndSetSemantics {
+                    contentDescription = if (notification.isRead) sentence else "Unread. $sentence"
+                },
             )
-            Text(
-                text = formatRelativeTime(notification.createdAt),
-                style = MaterialTheme.typography.bodySmall,
-                color = UsTheme.extended.textMuted,
-            )
+            if (notification.kind == NotificationKind.MessageRequest) {
+                RequestActions(notification, action, requestPending, callbacks)
+            }
+            if (action == RowActionState.Failed) {
+                Text(
+                    text = "Couldn't do that. Try again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.liveRed,
+                )
+            }
         }
-        // The unread mark is a dot, not bold text: weight is already used for
-        // the sentence and a second meaning for it would be ambiguous.
-        Box(
-            modifier = Modifier
-                .size(UNREAD_DOT)
-                .clip(CircleShape)
-                .then(
-                    if (notification.isRead) {
-                        Modifier
-                    } else {
-                        Modifier.background(MaterialTheme.colorScheme.primary)
-                    },
-                ),
+        if (notification.kind == NotificationKind.Follow) {
+            FollowAction(notification, action, alreadyFollowing, callbacks.onFollow)
+        }
+        UnreadDot(notification.isRead)
+    }
+}
+
+/** Accept / Decline / Block under a message request, or the outcome once decided. */
+@Composable
+private fun RequestActions(
+    notification: Notification,
+    action: RowActionState?,
+    requestPending: Boolean,
+    callbacks: RowCallbacks,
+) {
+    val outcome = when (action) {
+        RowActionState.Accepted -> "Accepted"
+        RowActionState.Declined -> "Declined"
+        RowActionState.Blocked -> "Blocked"
+        else -> null
+    }
+    when {
+        outcome != null -> Text(
+            text = outcome,
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.padding(top = UsTheme.spacing.xs),
+        )
+
+        requestPending -> {
+            val busy = action == RowActionState.Busy
+            Row(
+                modifier = Modifier.padding(top = UsTheme.spacing.s),
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            ) {
+                RowButton("Accept", filled = true, busy = busy) { callbacks.onAccept(notification) }
+                RowButton("Decline", filled = false, busy = busy) { callbacks.onDecline(notification) }
+                RowButton("Block", filled = false, busy = busy) { callbacks.onBlock(notification) }
+            }
+        }
+    }
+}
+
+/** Follow back, or "Following" once the graph says so. */
+@Composable
+private fun FollowAction(
+    notification: Notification,
+    action: RowActionState?,
+    alreadyFollowing: Boolean,
+    onFollow: (Notification) -> Unit,
+) {
+    if (alreadyFollowing || action == RowActionState.Followed) {
+        RowButton("Following", filled = false, busy = false, enabled = false) {}
+    } else {
+        RowButton("Follow", filled = true, busy = action == RowActionState.Busy) { onFollow(notification) }
+    }
+}
+
+/**
+ * The 32dp row button from the frame. Filled is the accent green — the
+ * founder's call over the frame's orange — outlined is the neutral choice.
+ */
+@Composable
+private fun RowButton(
+    text: String,
+    filled: Boolean,
+    busy: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(BUTTON_RADIUS)
+    val modifier = Modifier.height(BUTTON_HEIGHT)
+    val padding = PaddingValues(horizontal = UsTheme.spacing.l, vertical = 0.dp)
+    if (filled) {
+        Button(
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled && !busy,
+            shape = shape,
+            contentPadding = padding,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = UsTheme.extended.chatAccent,
+                contentColor = Color.White,
+                disabledContainerColor = UsTheme.extended.chatAccent.copy(alpha = DISABLED_ALPHA),
+                disabledContentColor = Color.White,
+            ),
+        ) { ButtonLabel(text, busy) }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled && !busy,
+            shape = shape,
+            contentPadding = padding,
+            border = BorderStroke(1.dp, UsTheme.extended.borderMedium),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = UsTheme.extended.textPrimary,
+                disabledContentColor = UsTheme.extended.textMuted,
+            ),
+        ) { ButtonLabel(text, busy) }
+    }
+}
+
+@Composable
+private fun ButtonLabel(text: String, busy: Boolean) {
+    if (busy) {
+        CircularProgressIndicator(modifier = Modifier.size(BUTTON_SPINNER), strokeWidth = 2.dp)
+    } else {
+        Text(text = text, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+@Composable
+private fun MissedCallBadge() {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(UsAvatarSize.Chat.diameter)
+            .clip(CircleShape)
+            .background(MISSED_CALL_BAND),
+    ) {
+        Icon(
+            imageVector = UsIcons.Phone,
+            contentDescription = null,
+            tint = UsTheme.extended.liveRed,
+            modifier = Modifier.size(ROW_BADGE_GLYPH),
         )
     }
+}
+
+/** The unread mark is a dot, not bold text: weight already means "the actor". */
+@Composable
+private fun UnreadDot(isRead: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(UNREAD_DOT)
+            .clip(CircleShape)
+            .then(if (isRead) Modifier else Modifier.background(UsTheme.extended.chatAccent)),
+    )
 }
 
 @Composable
@@ -303,6 +461,26 @@ private fun LoadingBlock() {
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator()
+    }
+}
+
+/**
+ * The row's visible text: the actor in bold, the rest plain, the relative
+ * time trailing in the muted colour — exactly the frame's one-line layout.
+ * [sentence] is [describe]'s output, so the two can never disagree.
+ */
+@Composable
+private fun Notification.rowText(sentence: String) = buildAnnotatedString {
+    val who = actorName.ifBlank { "Someone" }
+    if (sentence.startsWith(who)) {
+        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(who) }
+        append(sentence.removePrefix(who))
+    } else {
+        append(sentence)
+    }
+    val time = formatRelativeTime(createdAt)
+    if (time.isNotBlank()) {
+        withStyle(SpanStyle(color = UsTheme.extended.textMuted)) { append("  $time") }
     }
 }
 
@@ -318,6 +496,7 @@ private fun LoadingBlock() {
  * client WILL receive types it has no screen for, and a silently missing row is
  * worse than a vague one.
  */
+@Suppress("CyclomaticComplexMethod") // One branch per kind: a lookup table, not logic.
 internal fun Notification.describe(): String {
     val who = actorName.ifBlank { "Someone" }
     return when (kind) {
@@ -330,6 +509,8 @@ internal fun Notification.describe(): String {
         NotificationKind.ConnectionRequest -> "$who sent you a connection request"
         NotificationKind.ConnectionAccepted -> "$who accepted your connection request"
         NotificationKind.NewSubscriber -> "$who subscribed to you"
+        NotificationKind.MessageRequest -> "$who sent you a message request"
+        NotificationKind.DirectMessage -> "$who sent you a message"
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
         is NotificationKind.Unknown -> "You have a new notification"
@@ -338,12 +519,17 @@ internal fun Notification.describe(): String {
 
 /** How many rows from the end to start fetching the next page. */
 private const val LOAD_MORE_THRESHOLD = 3
+private const val MONTH_DAYS = 30L
+private const val DISABLED_ALPHA = 0.6f
 
 private val UNREAD_DOT = 8.dp
-private val ROW_BADGE = 44.dp
+private val ROW_VERTICAL = 12.dp
 private val ROW_BADGE_GLYPH = 20.dp
+private val BUTTON_HEIGHT = 32.dp
+private val BUTTON_RADIUS = 8.dp
+private val BUTTON_SPINNER = 16.dp
 
-/** The red-tinted band and badge fill behind a missed call. */
+/** The red-tinted badge fill behind a missed call. */
 @Suppress("MagicNumber")
 private val MISSED_CALL_BAND = Color(0x1FFF3B30)
 

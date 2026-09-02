@@ -34,14 +34,20 @@ class NotificationsViewModelTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
 
-    private fun row(id: String, isRead: Boolean = false) = Notification(
+    private fun row(
+        id: String,
+        isRead: Boolean = false,
+        kind: NotificationKind = NotificationKind.Comment,
+        entityType: String = "post",
+        entityId: String = "post-1",
+    ) = Notification(
         id = id,
         bucket = 202608,
         ts = "ts-$id",
-        kind = NotificationKind.Comment,
+        kind = kind,
         actorUserId = "actor",
-        entityType = "post",
-        entityId = "post-1",
+        entityType = entityType,
+        entityId = entityId,
         target = NotificationTarget.Post("post-1"),
         isRead = isRead,
         createdAt = "2026-08-22T17:10:21.526Z",
@@ -93,12 +99,45 @@ class NotificationsViewModelTest {
         override suspend fun markAllRead() = error("not used")
     }
 
+    /** Row actions whose every answer the test dictates. */
+    private class FakeActions : NotificationActions {
+        var pending: AppResult<Set<String>> = AppResult.Success(emptySet())
+        var following: Set<String> = emptySet()
+        var result: AppResult<Unit> = AppResult.Success(Unit)
+        val calls = mutableListOf<String>()
+        val followLookups = mutableListOf<Set<String>>()
+
+        override suspend fun pendingRequestIds(): AppResult<Set<String>> = pending
+
+        override suspend fun alreadyFollowing(actorIds: Set<String>): Set<String> {
+            followLookups += actorIds
+            return following
+        }
+
+        override suspend fun follow(userId: String) = result.also { calls += "follow($userId)" }
+
+        override suspend fun acceptRequest(conversationId: String) =
+            result.also { calls += "accept($conversationId)" }
+
+        override suspend fun declineRequest(conversationId: String) =
+            result.also { calls += "decline($conversationId)" }
+
+        override suspend fun blockRequest(conversationId: String) =
+            result.also { calls += "block($conversationId)" }
+    }
+
     private fun badge(repository: FakeRepository) = UnreadBadge(repository)
 
     private fun viewModel(
         repository: FakeRepository = FakeRepository(),
         badge: UnreadBadge = badge(repository),
-    ) = NotificationsViewModel(repository, badge)
+        actions: FakeActions = FakeActions(),
+    ) = NotificationsViewModel(repository, badge, actions)
+
+    private fun request(id: String, conversationId: String) =
+        row(id, kind = NotificationKind.MessageRequest, entityType = "conversation", entityId = conversationId)
+
+    private fun failure() = AppResult.Failure(AppError.Unknown(code = "INTERNAL_ERROR", statusCode = null))
 
     // ── Loading ─────────────────────────────────────────────────────────
 
@@ -373,5 +412,128 @@ class NotificationsViewModelTest {
         advanceUntilIdle()
 
         assertThat(badge.count.value).isEqualTo(4)
+    }
+
+    // ── Inline row actions ──────────────────────────────────────────────
+
+    /**
+     * The request buttons are offered from the SERVER's pending set, not from
+     * the notification's existence: a request accepted from the messages inbox
+     * must not still offer Accept here.
+     */
+    @Test
+    fun `a message-request row learns from the server whether it is still pending`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(
+                AppResult.Success(NotificationPage(listOf(request("n1", "conv-1"), request("n2", "conv-2")), null)),
+            )
+        }
+        val actions = FakeActions().apply { pending = AppResult.Success(setOf("conv-2")) }
+
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.pendingRequestIds).containsExactly("conv-2")
+    }
+
+    @Test
+    fun `a page without requests never asks for the pending set`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(row("n1")), null)))
+        }
+        val actions = FakeActions().apply { pending = failure() }
+
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.pendingRequestIds).isEmpty()
+    }
+
+    /** Accept is NOT optimistic: the row waits for the server, then settles. */
+    @Test
+    fun `accepting a request calls the server, reads the row and drops it from pending`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(request("n1", "conv-1")), null)))
+            count = AppResult.Success(1)
+        }
+        val actions = FakeActions().apply { pending = AppResult.Success(setOf("conv-1")) }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.acceptRequest(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("accept(conv-1)")
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Accepted)
+        assertThat(vm.state.value.pendingRequestIds).isEmpty()
+        assertThat(repo.markedRead).containsExactly(NotificationAddress(202608, "ts-n1"))
+        assertThat(vm.state.value.unreadCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `a failed decline leaves the request pending and says so on the row`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(request("n1", "conv-1")), null)))
+        }
+        val actions = FakeActions().apply {
+            pending = AppResult.Success(setOf("conv-1"))
+            result = failure()
+        }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.declineRequest(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Failed)
+        assertThat(vm.state.value.pendingRequestIds).containsExactly("conv-1")
+    }
+
+    @Test
+    fun `blocking from a request row calls block, not decline`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(request("n1", "conv-1")), null)))
+        }
+        val actions = FakeActions().apply { pending = AppResult.Success(setOf("conv-1")) }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.blockRequest(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("block(conv-1)")
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Blocked)
+    }
+
+    /** Follow rows look up the graph so a follower already followed back shows "Following". */
+    @Test
+    fun `follow rows learn which actors are already followed`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(row("n1", kind = NotificationKind.Follow)), null)))
+        }
+        val actions = FakeActions().apply { following = setOf("actor") }
+
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        assertThat(actions.followLookups).containsExactly(setOf("actor"))
+        assertThat(vm.state.value.followingIds).containsExactly("actor")
+    }
+
+    @Test
+    fun `following back settles the row on the server's answer`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(row("n1", kind = NotificationKind.Follow)), null)))
+        }
+        val actions = FakeActions()
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.follow(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("follow(actor)")
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Followed)
+        assertThat(vm.state.value.followingIds).contains("actor")
     }
 }
