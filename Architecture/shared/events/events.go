@@ -1572,3 +1572,121 @@ type StoryModerationDecidedPayload struct {
 	ExpiresAtUnix   int64  `json:"expires_at_unix"`
 	Capability      string `json:"capability"`
 }
+
+// ── Account control — deactivate / delete / purge (auth-service) ────────────
+//
+// TikTok-style account lifecycle, emitted by identity auth-service via its
+// transactional outbox onto identity.events.v1.
+//
+// Deactivation is fully reversible: the account stops being usable (sessions
+// revoked, status 'deactivated') and the next successful password login
+// reactivates it. Consumers should HIDE the user's presence, not erase data.
+//
+// Deletion is a scheduled purge with a 30-day recovery window. At request
+// time ONLY user.deletion_scheduled is emitted — deliberately NOT
+// user.deletion_requested, whose existing consumers (graph/post/user/dating)
+// erase edges immediately and would turn a cancellable request into partial
+// irreversible erasure. Consumers of user.deletion_scheduled should hide the
+// account, and must be prepared for user.deletion_cancelled to undo that.
+//
+// user.purge_requested is the point of no return: emitted by the auth-side
+// purge worker once the 30-day window has elapsed. Every service in the
+// required set erases its slice and acks onto the purge-acks topic
+// (platform.purge-acks.v1) with {"user_id","service","purged_at"}. Only when
+// EVERY required service has acked does auth anonymise credentials and emit
+// user.purged. Purge consumers must be idempotent: the worker re-emits
+// user.purge_requested every 24h until the acks arrive.
+const (
+	EventUserDeactivated       = "user.deactivated"        // payload: UserDeactivatedPayload
+	EventUserReactivated       = "user.reactivated"        // payload: UserReactivatedPayload
+	EventUserDeletionScheduled = "user.deletion_scheduled" // payload: UserDeletionScheduledPayload
+	EventUserDeletionCancelled = "user.deletion_cancelled" // payload: UserDeletionCancelledPayload
+	EventUserPurgeRequested    = "user.purge_requested"    // payload: UserPurgeRequestedPayload
+	EventUserPurged            = "user.purged"             // payload: UserPurgedPayload
+)
+
+// UserDeactivatedPayload — the user chose "Deactivate". Hide, don't erase.
+type UserDeactivatedPayload struct {
+	UserID        string    `json:"user_id"`
+	DeactivatedAt time.Time `json:"deactivated_at"`
+}
+
+// UserReactivatedPayload — a deactivated user logged back in. Unhide.
+type UserReactivatedPayload struct {
+	UserID        string    `json:"user_id"`
+	ReactivatedAt time.Time `json:"reactivated_at"`
+}
+
+// UserDeletionScheduledPayload — deletion requested; purge is scheduled, not
+// begun. Reversible until ScheduledPurgeDate by the user logging in.
+type UserDeletionScheduledPayload struct {
+	UserID             string    `json:"user_id"`
+	RequestedAt        time.Time `json:"requested_at"`
+	ScheduledPurgeDate time.Time `json:"scheduled_purge_date"`
+}
+
+// UserDeletionCancelledPayload — the user logged in during the recovery
+// window. Consumers that hid the account on user.deletion_scheduled unhide it.
+type UserDeletionCancelledPayload struct {
+	UserID      string    `json:"user_id"`
+	CancelledAt time.Time `json:"cancelled_at"`
+}
+
+// UserPurgeRequestedPayload — the 30-day window elapsed. Each required
+// service erases its slice and acks {"user_id","service","purged_at"} onto
+// the purge-acks topic. Idempotent: may be re-delivered every 24h until acked.
+type UserPurgeRequestedPayload struct {
+	UserID      string    `json:"user_id"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
+// UserPurgedPayload — every required service acked and auth anonymised the
+// credential row. Terminal; the user id will never be seen again.
+type UserPurgedPayload struct {
+	UserID   string    `json:"user_id"`
+	PurgedAt time.Time `json:"purged_at"`
+}
+
+// ── Private accounts — follow requests (graph-service) ──────────────────────
+//
+// A follow of a PRIVATE account becomes a follow REQUEST. Both events are
+// written to graph_outbox_events in the same transaction as the row change,
+// so they carry the outbox delivery guarantee. On accept, the canonical
+// UserFollowed event is emitted alongside GraphFollowRequestAccepted — the
+// accept IS the moment the follow edge becomes real.
+const (
+	GraphFollowRequested       = "graph.follow_requested"        // payload: FollowRequestedPayload
+	GraphFollowRequestAccepted = "graph.follow_request_accepted" // payload: FollowRequestAcceptedPayload
+)
+
+// FollowRequestedPayload announces a new (or re-sent) pending follow request
+// toward a private account. notification-service surfaces it in the target's
+// request inbox.
+type FollowRequestedPayload struct {
+	RequesterID string    `json:"requester_id"`
+	TargetID    string    `json:"target_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// FollowRequestAcceptedPayload announces that the target approved the
+// request. The matching UserFollowed event carries the new edge itself.
+type FollowRequestAcceptedPayload struct {
+	RequesterID string    `json:"requester_id"`
+	TargetID    string    `json:"target_id"`
+	AcceptedAt  time.Time `json:"accepted_at"`
+}
+
+// Module 3 — module preferences and account visibility enforcement.
+const (
+	// UserModulesChanged is emitted by the identity user-service when a user
+	// changes their module selection or home surface.
+	// Payload: user_id, modules, home_module, occurred_at.
+	UserModulesChanged = "user.modules_changed"
+
+	// UserSettingsChanged is the identity user-service settings-changed
+	// signal ({event_type, payload} envelope on identity.events.v1).
+	// Payload: user_id, privacy_version, account_visibility (the NEW value),
+	// occurred_at — graph-service uses account_visibility to auto-accept
+	// pending follow requests on a private→public flip.
+	UserSettingsChanged = "user.settings_changed"
+)

@@ -13,9 +13,12 @@ import (
 )
 
 type stubUserService struct {
-	getUserFn     func(id uuid.UUID) (*store.User, error)
-	getSettingsFn func(id uuid.UUID) (*store.UserSettings, error)
-	updateFn      func(settings *store.UserSettings) (*store.UserSettings, error)
+	getUserFn       func(id uuid.UUID) (*store.User, error)
+	getSettingsFn   func(id uuid.UUID) (*store.UserSettings, error)
+	updateFn        func(settings *store.UserSettings) (*store.UserSettings, error)
+	getModulesFn    func(id uuid.UUID) (*store.ModulePreferences, error)
+	updateModulesFn func(id uuid.UUID, modules []string, homeModule string, completeOnboarding bool) (*store.ModulePreferences, error)
+	setRegionFn     func(id uuid.UUID, countryCode string) (string, error)
 }
 
 func (s *stubUserService) GetUser(ctx context.Context, id uuid.UUID) (*store.User, error) {
@@ -41,6 +44,27 @@ func (s *stubUserService) UpdateSettings(ctx context.Context, settings *store.Us
 		return nil, nil
 	}
 	return s.updateFn(settings)
+}
+
+func (s *stubUserService) GetModulePreferences(ctx context.Context, id uuid.UUID) (*store.ModulePreferences, error) {
+	if s.getModulesFn == nil {
+		return nil, nil
+	}
+	return s.getModulesFn(id)
+}
+
+func (s *stubUserService) UpdateModulePreferences(ctx context.Context, id uuid.UUID, modules []string, homeModule string, completeOnboarding bool) (*store.ModulePreferences, error) {
+	if s.updateModulesFn == nil {
+		return nil, nil
+	}
+	return s.updateModulesFn(id, modules, homeModule, completeOnboarding)
+}
+
+func (s *stubUserService) SetRegion(ctx context.Context, id uuid.UUID, countryCode string) (string, error) {
+	if s.setRegionFn == nil {
+		return "", nil
+	}
+	return s.setRegionFn(id, countryCode)
 }
 
 func TestGetUserInvalidID(t *testing.T) {

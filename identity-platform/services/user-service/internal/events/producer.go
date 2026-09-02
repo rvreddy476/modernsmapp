@@ -11,25 +11,45 @@ import (
 )
 
 // EventUserSettingsChanged announces that a user's privacy settings snapshot
-// changed. Payload carries the NEW privacy_version, never the values — the
-// event is an invalidation signal, and consumers that need the values fetch
-// the authoritative snapshot (which also closes the lost-event race: a fetch
-// always returns the current row).
+// changed. Payload carries the NEW privacy_version and, as of Module 3, the
+// NEW account_visibility — the one value graph-service must act on directly
+// (auto-accepting pending follow requests on a private→public flip) rather
+// than merely invalidate a cache for. Everything else stays an invalidation
+// signal: consumers that need other values fetch the authoritative snapshot
+// (which also closes the lost-event race: a fetch always returns the current
+// row).
 //
 // Consumers (production chat pass, directive §5.1):
 //   - graph-service drops its privacy:<user_id> Redis cache entry so the next
 //     permission check re-reads the canonical snapshot instead of waiting out
-//     the 3-second TTL;
+//     the 3-second TTL, and reads account_visibility for the private→public
+//     auto-accept;
 //   - chat message-service refreshes its local chat.user_policy projection so
 //     the hot send/typing/receipt paths see chat pause and receipt changes
 //     without an HTTP call per message.
 const EventUserSettingsChanged = "user.settings_changed"
 
+// EventUserModulesChanged announces that a user changed their module
+// selection or home surface (Module 3). Registered in
+// Architecture/shared/events/events.go as UserModulesChanged.
+const EventUserModulesChanged = "user.modules_changed"
+
 // UserSettingsChangedPayload is the wire payload for EventUserSettingsChanged.
 type UserSettingsChangedPayload struct {
 	UserID         string    `json:"user_id"`
 	PrivacyVersion int       `json:"privacy_version"`
-	OccurredAt     time.Time `json:"occurred_at"`
+	// AccountVisibility is the NEW value after the committed write. Additive
+	// field: old consumers that ignore it are unaffected.
+	AccountVisibility string    `json:"account_visibility,omitempty"`
+	OccurredAt        time.Time `json:"occurred_at"`
+}
+
+// UserModulesChangedPayload is the wire payload for EventUserModulesChanged.
+type UserModulesChangedPayload struct {
+	UserID     string    `json:"user_id"`
+	Modules    []string  `json:"modules"`
+	HomeModule string    `json:"home_module"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 // envelope matches the identity topic's {event_type, payload} shape consumed
@@ -71,23 +91,48 @@ func NewProducer(brokers []string, topic string, logger *slog.Logger) *Producer 
 }
 
 // PublishSettingsChanged emits user.settings_changed keyed by user id (so all
-// events for one user stay ordered on one partition).
-func (p *Producer) PublishSettingsChanged(ctx context.Context, userID uuid.UUID, privacyVersion int) {
+// events for one user stay ordered on one partition). accountVisibility is
+// the committed NEW value.
+func (p *Producer) PublishSettingsChanged(ctx context.Context, userID uuid.UUID, privacyVersion int, accountVisibility string) {
 	if p == nil {
 		return
 	}
 	payload, err := json.Marshal(UserSettingsChangedPayload{
-		UserID:         userID.String(),
-		PrivacyVersion: privacyVersion,
-		OccurredAt:     time.Now().UTC(),
+		UserID:            userID.String(),
+		PrivacyVersion:    privacyVersion,
+		AccountVisibility: accountVisibility,
+		OccurredAt:        time.Now().UTC(),
 	})
 	if err != nil {
 		p.log.Warn("marshal settings-changed payload failed", "err", err, "user_id", userID)
 		return
 	}
-	value, err := json.Marshal(producerEnvelope{EventType: EventUserSettingsChanged, Payload: payload})
+	p.publish(ctx, userID, EventUserSettingsChanged, payload)
+}
+
+// PublishModulesChanged emits user.modules_changed keyed by user id.
+func (p *Producer) PublishModulesChanged(ctx context.Context, userID uuid.UUID, modules []string, homeModule string) {
+	if p == nil {
+		return
+	}
+	payload, err := json.Marshal(UserModulesChangedPayload{
+		UserID:     userID.String(),
+		Modules:    modules,
+		HomeModule: homeModule,
+		OccurredAt: time.Now().UTC(),
+	})
 	if err != nil {
-		p.log.Warn("marshal settings-changed envelope failed", "err", err, "user_id", userID)
+		p.log.Warn("marshal modules-changed payload failed", "err", err, "user_id", userID)
+		return
+	}
+	p.publish(ctx, userID, EventUserModulesChanged, payload)
+}
+
+// publish wraps a payload in the identity envelope and writes it, best-effort.
+func (p *Producer) publish(ctx context.Context, userID uuid.UUID, eventType string, payload json.RawMessage) {
+	value, err := json.Marshal(producerEnvelope{EventType: eventType, Payload: payload})
+	if err != nil {
+		p.log.Warn("marshal event envelope failed", "err", err, "event_type", eventType, "user_id", userID)
 		return
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -96,8 +141,8 @@ func (p *Producer) PublishSettingsChanged(ctx context.Context, userID uuid.UUID,
 		Key:   []byte(userID.String()),
 		Value: value,
 	}); err != nil {
-		p.log.Warn("publish settings-changed failed — consumers fall back to TTL",
-			"err", err, "user_id", userID)
+		p.log.Warn("publish event failed — consumers fall back to TTL",
+			"err", err, "event_type", eventType, "user_id", userID)
 	}
 }
 

@@ -133,6 +133,11 @@ func main() {
 		// MUST stay above `/v1/users` — matching walks this slice in order and
 		// takes the first prefix that fits.
 		{"/v1/users/me/settings", env("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110")},
+		// Module preferences and region are settings too: same authority,
+		// same ordering rule. The Architecture user-service would otherwise
+		// answer these with an empty 200.
+		{"/v1/users/me/modules", env("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110")},
+		{"/v1/users/me/region", env("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110")},
 		// Self-service filter keywords live in trust-safety (the table and
 		// the feed-side consumer are there). MUST stay above `/v1/users`.
 		{"/v1/users/me/keyword-filters", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},

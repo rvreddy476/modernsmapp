@@ -14,7 +14,11 @@ name: Module 3 — Profile and discovery safety
 #
 #   SR-5  `account_visibility` accepted "private", stored it, and no service
 #         read it. The account stayed followable and its posts still reached
-#         the public feed and search.
+#         the public feed and search. Launch refused "private" outright; as of
+#         Module 3 private accounts are a REAL feature — the validator accepts
+#         {public, private}, the settings-changed event carries the new value,
+#         and graph-service enforces it. The gate below asserts THAT, so the
+#         launch-era refusal cannot quietly come back.
 #
 #   SR-7  suggestion-service filtered NOTHING for blocks — the comment claimed
 #         it did — and the cache-hit path returned before any filtering could
@@ -90,8 +94,8 @@ jobs:
             exit 1
           fi
 
-  public-accounts-only:
-    name: Private accounts are refused, not stored (SR-5)
+  private-accounts-enforced:
+    name: Private accounts are validated and accepted (SR-5, Module 3)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -102,33 +106,63 @@ jobs:
           go-version: '1.25'
           cache: false
 
-      # A privacy control that records the user's choice and changes no
-      # behaviour is a false promise. Both user-services accept the field, so
-      # both must refuse it — enforcing in one would leave the other open.
-      - name: identity user-service refuses a non-public visibility
+      # The service validator is the single authority for the value. It must
+      # accept exactly {public, private} — "private" because the feature is
+      # now enforced downstream, and nothing else because an unknown value
+      # would be stored and honoured by nobody.
+      - name: identity user-service validator accepts private
         working-directory: identity-platform/services/user-service
         run: |
-          go build ./...
-          go test -count=1 -v ./internal/http/ \
-            -run 'PrivateAccountIsRefused|PublicIsAccepted|OmittingAccountVisibility|AccountVisibilityRejectedPredicate'
-
-      - name: app user-service builds with the same refusal
-        working-directory: Architecture/services/user-service
-        run: |
-          go build ./...
-          go test -count=1 ./...
-
-      # SR-5: follow_requests must NOT be created. A table implying a
-      # privacy control the product does not have is worse than no table.
-      - name: migration 009 does not create follow_requests
-        run: |
           set -euo pipefail
-          f=Architecture/services/graph-service/database/migrations/009_graph_outbox_and_follow_requests.sql
-          if grep -q 'CREATE TABLE IF NOT EXISTS follow_requests' "$f"; then
-            echo "::error file=$f::follow_requests is back. Launch is public-accounts-only; a pending-request table implies a control the product does not have."
+          go build ./...
+          go vet ./...
+          if ! grep -q '"account_visibility": {' internal/service/user.go; then
+            echo "::error::account_visibility is no longer validated in internal/service/user.go."
             exit 1
           fi
-          echo "OK: follow_requests is not created."
+          if ! grep -A1 '"account_visibility": {' internal/service/user.go | grep -q '"private": true'; then
+            echo "::error::The validator no longer accepts \"private\". Private accounts are an enforced feature; refusing the value is the launch-era behaviour this gate retires."
+            exit 1
+          fi
+          if [ -f internal/http/public_accounts_only.go ] || [ -f internal/store/account_visibility.go ]; then
+            echo "::error::The launch-era public-accounts-only refusal/clamp is back."
+            exit 1
+          fi
+          go test -count=1 -v ./internal/service/ \
+            -run 'AccountVisibilityValidationAcceptsPrivate|AllowCommentsFromValidation|NormalizeModulePreferences|ValidRegionCode'
+          go test -count=1 -v ./internal/http/ \
+            -run 'PrivateAccountIsAcceptedByTheHandler|InvalidVisibilityStillMapsTo400|UpdateMyModules|UpdateMyRegion|GetMyModules'
+
+      # The settings-changed event is how graph-service learns about a
+      # private→public flip (to auto-accept pending requests). It must carry
+      # the value, not just the version.
+      - name: settings-changed event carries account_visibility
+        working-directory: identity-platform/services/user-service
+        run: |
+          set -euo pipefail
+          if ! grep -q 'json:"account_visibility' internal/events/producer.go; then
+            echo "::error::user.settings_changed no longer carries account_visibility; graph-service cannot react to a private→public flip."
+            exit 1
+          fi
+          echo "OK: settings-changed payload carries account_visibility."
+
+      # The app user-service's settings route is retired (410). Its store must
+      # no longer clamp the column back to "public".
+      - name: app user-service builds without the clamp
+        working-directory: Architecture/services/user-service
+        run: |
+          set -euo pipefail
+          go build ./...
+          go test -count=1 ./...
+          if [ -f internal/http/public_accounts_only.go ]; then
+            echo "::error::The launch-era refusal is back in the app user-service."
+            exit 1
+          fi
+          if grep -q '_ = requested' internal/store/account_visibility.go; then
+            echo "::error::ClampAccountVisibility ignores its input again — a stored \"private\" would be rewritten to \"public\"."
+            exit 1
+          fi
+          echo "OK: no clamp."
 
   suggestion-block-safety:
     name: Suggestions never surface a blocked account (SR-7)

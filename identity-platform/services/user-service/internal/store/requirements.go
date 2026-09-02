@@ -21,7 +21,10 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// usr.user_settings is keyed `user_id`. Spelling either one wrong here
 	// would refuse a boot that should have succeeded, so both are taken from
 	// the live catalog rather than assumed to match.
-	{Table: "usr.users", Columns: []string{"id", "status"}},
+	// region is added by THIS service's setup.sql (additive ALTER), which
+	// runs before this guard, so asserting it here is safe and catches a
+	// bootstrap that silently stopped applying.
+	{Table: "usr.users", Columns: []string{"id", "status", "region"}},
 
 	// EVERY column in userSettingsColumns, not a sample.
 	//
@@ -55,4 +58,9 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// Consumer idempotency. Its absence would not fail a request — it would
 	// make redelivered Kafka events reapply, silently.
 	{Table: "usr.inbox_events", Columns: []string{"consumer_name", "event_id"}},
+
+	// Module preferences (Module 3). Owned by this service's setup.sql.
+	{Table: "usr.module_preferences", Columns: []string{
+		"user_id", "modules", "home_module", "onboarding_completed_at", "updated_at",
+	}},
 }

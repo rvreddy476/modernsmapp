@@ -26,3 +26,34 @@ CREATE TABLE IF NOT EXISTS usr.inbox_events (
 -- a cleanup path indexed by time it grows forever.
 CREATE INDEX IF NOT EXISTS idx_usr_inbox_cleanup
     ON usr.inbox_events (processed_at);
+
+-- Module 3 — user region for server-driven module availability.
+--
+-- usr.users is provisioned by auth-service's setup.sql, which does not know
+-- about region. The column is added here, idempotently, because this service
+-- is the one that reads and writes it. ADD COLUMN IF NOT EXISTS is additive
+-- DDL, safe to re-run on every boot.
+ALTER TABLE usr.users ADD COLUMN IF NOT EXISTS region TEXT;
+
+-- Module 3 — per-user module preferences (privacy-first, server-driven).
+--
+-- No row means "defaults": all modules on, home is the feed, onboarding not
+-- completed. The CHECK constraints keep the column in the vocabulary the
+-- server understands — an unknown module name can never be stored, however
+-- the table is reached.
+CREATE TABLE IF NOT EXISTS usr.module_preferences (
+    user_id                 UUID PRIMARY KEY,
+    modules                 TEXT[] NOT NULL,
+    home_module             TEXT NOT NULL DEFAULT 'feed',
+    onboarding_completed_at TIMESTAMPTZ NULL,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Every element of modules must be a known module name. <@ is
+    -- "is contained by": vacuously true for the empty array, which is a
+    -- legitimate privacy-first choice (feed only).
+    CONSTRAINT module_preferences_modules_known CHECK (
+        modules <@ ARRAY['reels','commerce','chat','dating','food','qa','posttube']::TEXT[]
+    ),
+    CONSTRAINT module_preferences_home_module_known CHECK (
+        home_module IN ('feed','reels','commerce','chat','dating','food','qa','posttube')
+    )
+);

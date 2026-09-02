@@ -25,6 +25,9 @@ type UserService interface {
 	ListUsers(ctx context.Context, limit, offset int) ([]store.User, int, error)
 	GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSettings, error)
 	UpdateSettings(ctx context.Context, settings *store.UserSettings) (*store.UserSettings, error)
+	GetModulePreferences(ctx context.Context, id uuid.UUID) (*store.ModulePreferences, error)
+	UpdateModulePreferences(ctx context.Context, id uuid.UUID, modules []string, homeModule string, completeOnboarding bool) (*store.ModulePreferences, error)
+	SetRegion(ctx context.Context, id uuid.UUID, countryCode string) (string, error)
 }
 
 func New(svc UserService, logger *slog.Logger) *Handler {
@@ -62,6 +65,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		protected.GET("/me", h.GetMe)
 		protected.GET("/me/settings", h.GetMySettings)
 		protected.PUT("/me/settings", csrf, h.UpdateMySettings)
+		// Module 3 — server-driven module preferences and region.
+		protected.GET("/me/modules", h.GetMyModules)
+		protected.PUT("/me/modules", csrf, h.UpdateMyModules)
+		protected.PUT("/me/region", csrf, h.UpdateMyRegion)
 	}
 }
 
@@ -317,15 +324,11 @@ func (h *Handler) UpdateMySettings(c *gin.Context) {
 		return
 	}
 
-	// SR-5: public accounts only. Storing "private" here changed nothing —
-	// the follow path never read it — so the user was shown a privacy control
-	// that did not protect them. Refuse it rather than store a false promise.
-	if req.AccountVisibility != nil && AccountVisibilityRejected(*req.AccountVisibility) {
-		api.Error(c.Writer, http.StatusBadRequest, "UNSUPPORTED_ACCOUNT_VISIBILITY",
-			PublicAccountsOnlyMessage,
-			map[string]any{"supported": []string{SupportedAccountVisibility}}, nil)
-		return
-	}
+	// Module 3: private accounts are now a real, enforced feature. The
+	// launch-era public-accounts-only refusal is gone; account_visibility is
+	// validated in the service layer against {public, private} and the
+	// settings-changed event carries the new value so graph-service can
+	// enforce it (and auto-accept pending requests on private→public).
 
 	// Read-modify-write: load current settings, merge the patch, persist.
 	cur, err := h.svc.GetSettings(c.Request.Context(), userID)

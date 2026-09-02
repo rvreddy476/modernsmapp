@@ -317,12 +317,10 @@ func (s *Store) GetSettings(ctx context.Context, userID uuid.UUID) (*UserSetting
 
 // UpdateSettings updates user privacy settings.
 //
-// SR-5: account_visibility is CLAMPED to "public" here as well as refused at
-// the handler. The handler check is what tells a client the feature does not
-// exist; this is what guarantees the database can never hold a value the
-// platform does not enforce, however the store is reached — an internal
-// caller, a backfill, a future handler. A stored "private" that nothing
-// honours is the exact false promise SR-5 removes.
+// account_visibility is normalised, not clamped: private accounts are
+// enforced by graph-service (follow requests) and the read paths, and the
+// settings authority is the identity user-service. This store only backs
+// the retired local route.
 func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*UserSettings, error) {
 	settings.AccountVisibility = ClampAccountVisibility(settings.AccountVisibility)
 	var us UserSettings

@@ -58,6 +58,12 @@ type UserSettings struct {
 	SendTypingIndicators bool   `json:"send_typing_indicators"`
 	ShowMessagePreview   bool   `json:"show_message_preview"`
 
+	// Region is READ-ONLY through the settings surface. It lives on
+	// usr.users (ISO-3166-1 alpha-2, uppercase) and is written only via
+	// PUT /v1/users/me/region; it is joined into settings reads so clients
+	// see it alongside the rest of the account state.
+	Region string `json:"region"`
+
 	PrivacyVersion int `json:"privacy_version"`
 
 	CreatedAt time.Time `json:"created_at"`
@@ -164,6 +170,14 @@ func (s *Store) GetSettings(ctx context.Context, userID uuid.UUID) (*UserSetting
 		}
 		return nil, err
 	}
+	// Region lives on usr.users, not usr.user_settings. Fetched separately
+	// rather than joined so userSettingsColumns stays a single unambiguous
+	// list (both tables have created_at/updated_at).
+	region, err := s.getRegion(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	us.Region = region
 	return &us, nil
 }
 
@@ -208,11 +222,10 @@ func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]User, int, 
 // caches (spec §6.2) can be keyed by it — a privacy change invalidates a
 // stale cache on the next read without an explicit delete.
 func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*UserSettings, error) {
-	// SR-5: the column can only ever hold a value the platform enforces. See
-	// account_visibility.go — a stored "private" that nothing honours is the
-	// false promise this removes.
-	settings.AccountVisibility = ClampAccountVisibility(settings.AccountVisibility)
-
+	// Private accounts are now a real, enforced feature (Module 3): the
+	// launch-era ClampAccountVisibility that forced this column to "public"
+	// is gone. The service layer validates the value against
+	// {public, private} before the write reaches here.
 	var us UserSettings
 	row := s.db.QueryRow(ctx, `
 		UPDATE usr.user_settings SET
@@ -256,5 +269,12 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 	if err := scanUserSettings(row, &us); err != nil {
 		return nil, err
 	}
+	// Keep the response shape consistent with GetSettings: region is
+	// read-only here but still part of what the client sees.
+	region, err := s.getRegion(ctx, settings.UserID)
+	if err != nil {
+		return nil, err
+	}
+	us.Region = region
 	return &us, nil
 }

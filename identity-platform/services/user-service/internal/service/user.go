@@ -19,9 +19,20 @@ import (
 var ErrInvalidPrivacySetting = errors.New("invalid privacy setting value")
 
 // allowedPrivacyValues lists the accepted enum values per spec §5.2 for each
-// privacy field. Legacy columns (account_visibility, allow_messages_from,
-// allow_comments_from) are intentionally not validated here.
+// privacy field. account_visibility and allow_comments_from are now validated
+// here too (Module 3 — private accounts are a real, enforced feature); the
+// one remaining legacy column, allow_messages_from, is intentionally not
+// validated (WhoCanMessage is the authoritative messaging field).
 var allowedPrivacyValues = map[string]map[string]bool{
+	// Module 3: "private" is accepted and enforced. graph-service consumes
+	// the settings-changed event (which carries the new value) to gate
+	// follows and auto-accept pending requests on private→public.
+	"account_visibility": {
+		"public": true, "private": true,
+	},
+	"allow_comments_from": {
+		"everyone": true, "friends": true,
+	},
 	"who_can_message": {
 		"no_one": true, "connections_only": true, "connections_and_mutual_followers": true,
 		"followers_message_requests": true, "everyone_message_requests": true,
@@ -57,6 +68,8 @@ var allowedPrivacyValues = map[string]map[string]bool{
 // validatePrivacySettings rejects any enum field with an out-of-range value.
 func validatePrivacySettings(s *store.UserSettings) error {
 	checks := []struct{ field, value string }{
+		{"account_visibility", s.AccountVisibility},
+		{"allow_comments_from", s.AllowCommentsFrom},
 		{"who_can_message", s.WhoCanMessage},
 		{"who_can_send_connection_request", s.WhoCanSendConnectionRequest},
 		{"who_can_call", s.WhoCanCall},
@@ -95,10 +108,15 @@ func applyStrictMode(s *store.UserSettings) {
 	s.DiscoverableByPhoneToContacts = false
 }
 
-// SettingsChangedPublisher announces a committed settings write to downstream
+// SettingsChangedPublisher announces committed writes to downstream
 // permission caches. Implemented by events.Producer; nil-safe by contract.
+//
+// PublishSettingsChanged carries accountVisibility (the NEW value) so
+// graph-service can act on a private→public flip — auto-accepting pending
+// follow requests — without a synchronous read-back.
 type SettingsChangedPublisher interface {
-	PublishSettingsChanged(ctx context.Context, userID uuid.UUID, privacyVersion int)
+	PublishSettingsChanged(ctx context.Context, userID uuid.UUID, privacyVersion int, accountVisibility string)
+	PublishModulesChanged(ctx context.Context, userID uuid.UUID, modules []string, homeModule string)
 }
 
 type Service struct {
@@ -224,7 +242,7 @@ func (s *Service) UpdateSettings(ctx context.Context, settings *store.UserSettin
 	// consumers re-fetch the snapshot, so a duplicate or late event is
 	// harmless and a lost one is bounded by their TTL fallbacks.
 	if s.producer != nil && us != nil {
-		s.producer.PublishSettingsChanged(ctx, us.UserID, us.PrivacyVersion)
+		s.producer.PublishSettingsChanged(ctx, us.UserID, us.PrivacyVersion, us.AccountVisibility)
 	}
 
 	return us, nil
