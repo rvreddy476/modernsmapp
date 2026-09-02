@@ -54,6 +54,21 @@ func TestLoginRateLimitNilRedis(t *testing.T) {
 	}
 }
 
+func TestRefreshRateLimitNilRedis(t *testing.T) {
+	r := newTestEngine(RefreshRateLimit(nil), "/refresh")
+
+	body := []byte(`{"refresh_token":"rt-abc"}`)
+	req := httptest.NewRequest(http.MethodPost, "/refresh", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+}
+
 // TestAllowHelperLogic confirms that when rdb is nil the middleware returns 200
 // (indirectly verifying that the nil guard runs before any Redis call, so no panic occurs).
 func TestAllowHelperLogic(t *testing.T) {

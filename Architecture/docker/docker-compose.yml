@@ -350,6 +350,8 @@ services:
       HTTP_PORT: "8081"
       POSTGRES_DSN: *identity_postgres_dsn
       REDIS_ADDR: redis:6379
+      # Gateway is the only peer; trust its X-Forwarded-For so per-IP limits key on the real client.
+      TRUSTED_PROXIES: 172.16.0.0/12
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       RATE_LIMIT_ENABLED: "false"

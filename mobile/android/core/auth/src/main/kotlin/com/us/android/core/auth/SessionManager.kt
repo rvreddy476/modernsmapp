@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import retrofit2.HttpException
 import java.time.Instant
 import java.time.format.DateTimeParseException
 import javax.inject.Inject
@@ -127,29 +128,40 @@ class SessionManager @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            // A failed refresh is terminal: the stored credential no longer
-            // works, so drop it and let the nav graph react to the state
-            // change. The network layer never navigates.
+            // Only a DEFINITIVE rejection of the refresh token ends the
+            // session. A 429, a 5xx, or no network says nothing about the
+            // credential — it is the server or the connection that is
+            // unavailable — and signing the user out on those turns every
+            // outage into a forced re-login. The request that triggered the
+            // refresh simply fails; the next one refreshes again.
             //
             // The cause is not rethrown — an exception escaping into OkHttp's
             // Authenticator would surface as an opaque crash on whichever
             // request happened to 401 first. It is REPORTED instead, so a
             // silent logout is visible in telemetry rather than being
             // something users complain about and nobody can reproduce.
+            val rejected = e.isDefinitiveRejection()
             telemetry.recordError(
-                event = "auth.refresh.failed",
+                event = if (rejected) "auth.refresh.failed" else "auth.refresh.transient",
                 cause = e,
-                attributes = mapOf("session.cleared" to "true"),
+                attributes = mapOf("session.cleared" to rejected.toString()),
             )
             telemetry.recordOperation(
                 Operation.AuthRefresh,
                 StatusClass.ServerError,
                 0,
             )
-            clearSession()
+            if (rejected) clearSession()
             null
         }
     }
+
+    /**
+     * True when the server has actually refused the credential: 401 or 403.
+     * Everything else — 429, 5xx, malformed body, IO — is transient.
+     */
+    private fun Throwable.isDefinitiveRejection(): Boolean =
+        this is HttpException && (code() == HTTP_UNAUTHORIZED || code() == HTTP_FORBIDDEN)
 
     /**
      * True when the access token is past 80% of its lifetime.
@@ -234,6 +246,9 @@ class SessionManager @Inject constructor(
     }
 
     private companion object {
+        const val HTTP_UNAUTHORIZED = 401
+        const val HTTP_FORBIDDEN = 403
+
         /**
          * The server does not advertise the token lifetime, only its expiry
          * instant, so proactive refresh assumes a 15-minute window. Worst

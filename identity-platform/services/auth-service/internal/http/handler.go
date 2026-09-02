@@ -156,7 +156,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// H2: refresh-token flood is unlikely (long opaque tokens) but a
 		// stolen refresh could DoS the service before fingerprint mismatch
 		// burns the session. IP-only cap is cheap defence in depth.
-		v1.POST("/refresh", middleware.LoginRateLimit(h.rdb), h.Refresh)
+		// Per-token, not per-IP: behind the gateway every user shares one IP.
+		v1.POST("/refresh", middleware.RefreshRateLimit(h.rdb), h.Refresh)
 		v1.POST("/logout", h.Logout)
 		v1.GET("/health", h.Health)
 

@@ -3,6 +3,8 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -187,6 +189,59 @@ func LoginRateLimit(rdb *redis.Client) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// RefreshRateLimit bounds token refreshes PER REFRESH TOKEN, not per IP.
+//
+// Refresh used to sit behind LoginRateLimit (10 per IP per 15 min). Every
+// request reaches this service through the API gateway, so without trusted
+// proxies "the IP" is the gateway itself and the whole user base shared one
+// ten-refresh bucket: the eleventh user to open the app in a quarter hour
+// was answered 429, and the client treated that as a revoked session. A
+// refresh token is a 256-bit secret, so guessing is not the threat here;
+// the useful bound is on a single token being replayed in a tight loop.
+// 60 per token per 15 min is far above any legitimate client (the app
+// collapses concurrent refreshes into one call) and far below a replay
+// storm. A request without a token falls through to the handler's 401.
+func RefreshRateLimit(rdb *redis.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if rdb == nil {
+			c.Next()
+			return
+		}
+		bodyBytes, _ := io.ReadAll(c.Request.Body)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		var req struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+		json.Unmarshal(bodyBytes, &req)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		token := req.RefreshToken
+		if token == "" {
+			if cookie, err := c.Cookie("refresh_token"); err == nil {
+				token = cookie
+			}
+		}
+		if token == "" {
+			c.Next()
+			return
+		}
+		// Hash, never the raw token, in a Redis key.
+		sum := sha256.Sum256([]byte(token))
+		key := fmt.Sprintf("refresh_rl_tok:%s", hex.EncodeToString(sum[:8]))
+		if !allow(c.Request.Context(), rdb, key, refreshLimitPerToken, 900*time.Second) {
+			c.Header("Retry-After", "900")
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": gin.H{"code": "RATE_LIMITED", "message": "Too many refresh attempts. Try again later."},
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// refreshLimitPerToken is the per-token refresh budget per 15-minute window.
+const refreshLimitPerToken = 60
 
 // allow returns true if the action is within rate limit using Redis INCR + EXPIRE.
 //

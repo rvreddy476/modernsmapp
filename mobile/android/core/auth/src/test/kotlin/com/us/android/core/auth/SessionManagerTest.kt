@@ -222,6 +222,34 @@ class SessionManagerTest {
         assertThat(tokenStore.clearCount).isEqualTo(1)
     }
 
+    /**
+     * A 429 says the SERVER is busy, not that the credential is bad. The
+     * regression this pins: a shared refresh limiter answered 429 and the
+     * client signed the user out of a perfectly valid session.
+     */
+    @Test
+    fun `a rate-limited refresh keeps the session`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "good-rt")
+        val sm = manager(this)
+        enqueue(429, """{"error":{"code":"RATE_LIMITED","message":"Too many refresh attempts."}}""")
+
+        assertThat(sm.refresh()).isNull()
+        assertThat(sm.state.value.isAuthenticated).isTrue()
+        assertThat(tokenStore.hasRefreshToken()).isTrue()
+        assertThat(tokenStore.clearCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `a server error during refresh keeps the session`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "good-rt")
+        val sm = manager(this)
+        enqueue(503, """{"error":{"code":"UNAVAILABLE","message":"try later"}}""")
+
+        assertThat(sm.refresh()).isNull()
+        assertThat(sm.state.value.isAuthenticated).isTrue()
+        assertThat(tokenStore.clearCount).isEqualTo(0)
+    }
+
     @Test
     fun `refresh with no stored token fails fast without a network call`() = runTest {
         val sm = manager(this)
