@@ -128,6 +128,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal := r.Group("/v1/internal/graph")
 	internal.GET("/blocked-and-muted", h.GetBlockedAndMutedInternal)
 	internal.POST("/blocked-any", h.BlockedAnyInternal)
+	internal.POST("/connections/ensure", h.EnsureConnectionInternal)
 
 	// Permission check API (spec §9.8). Single source of truth for
 	// "can actor do X to target" — used by clients to render buttons
@@ -1276,4 +1277,24 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// EnsureConnectionInternal makes two users connections idempotently.
+// Service-to-service only: chat calls it when a message request is accepted,
+// because accepting a chat is now what makes two people connections.
+func (h *Handler) EnsureConnectionInternal(c *gin.Context) {
+	var req struct {
+		UserA uuid.UUID `json:"user_a" binding:"required"`
+		UserB uuid.UUID `json:"user_b" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	created, err := h.svc.EnsureConnection(c.Request.Context(), req.UserA, req.UserB)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"created": created}, nil)
 }

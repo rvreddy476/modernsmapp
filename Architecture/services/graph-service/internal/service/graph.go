@@ -919,3 +919,17 @@ func (s *Service) RemoveFavorite(ctx context.Context, userID, targetID uuid.UUID
 func (s *Service) GetFavorites(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	return s.store.GetFavorites(ctx, userID)
 }
+
+// EnsureConnection is the internal, idempotent "make these two connections"
+// used by chat when a message request is accepted. See store.EnsureConnection.
+func (s *Service) EnsureConnection(ctx context.Context, a, b uuid.UUID) (bool, error) {
+	created, err := s.store.EnsureConnection(ctx, a, b)
+	if err != nil {
+		return false, err
+	}
+	if created {
+		s.invalidateRel(ctx, a, b)
+		s.invalidateCounts(ctx, a, b)
+	}
+	return created, nil
+}

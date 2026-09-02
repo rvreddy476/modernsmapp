@@ -76,7 +76,7 @@ fun ChatInboxScreen(
     onCreateGroup: () -> Unit,
     onOpenLockSettings: () -> Unit = {},
     onOpenCallHistory: () -> Unit = {},
-    onBack: () -> Unit,
+    onBack: (() -> Unit)? = null,
     viewModel: ChatInboxViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -131,7 +131,7 @@ fun ChatInboxScreen(
 @Composable
 private fun InboxHeader(
     state: InboxUiState,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
     onOpenRequests: () -> Unit,
     onOpenCallHistory: () -> Unit,
     onOpenLockSettings: () -> Unit,
@@ -147,12 +147,15 @@ private fun InboxHeader(
                 vertical = UsTheme.spacing.s,
             ),
     ) {
-        IconButton(onClick = onBack) {
-            Icon(
-                imageVector = UsIcons.Back,
-                contentDescription = "Back",
-                tint = UsTheme.extended.textPrimary,
-            )
+        // The Messages TAB has no arrow; the Requests view keeps one back to Chats.
+        if (onBack != null) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = UsIcons.Back,
+                    contentDescription = "Back",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
         }
         Text(
             text = if (state.tab == InboxTab.Chats) "Messages" else "Requests",

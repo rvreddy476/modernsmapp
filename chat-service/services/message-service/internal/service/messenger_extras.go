@@ -250,6 +250,11 @@ func (s *Service) AcceptRequest(ctx context.Context, userID, convID uuid.UUID) e
 	}
 	if mr != nil {
 		_ = s.convStore.UpdateMessageRequestStatus(ctx, convID, "accepted")
+		// Accepting the chat is what makes them connections now (see
+		// ensureGraphConnection). Best-effort; the accept itself stands.
+		if err := s.ensureGraphConnection(ctx, mr.SenderID, mr.ReceiverID); err != nil {
+			s.log.Warn("accept: could not ensure graph connection", "conversation_id", convID, "err", err)
+		}
 		_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageRequestAccepted, sharedEvents.MessageRequestPayload{
 			ConversationID: convID.String(),
 			SenderID:       mr.SenderID.String(),

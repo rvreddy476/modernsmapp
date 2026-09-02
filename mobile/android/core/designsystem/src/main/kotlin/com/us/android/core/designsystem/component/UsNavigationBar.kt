@@ -174,7 +174,7 @@ private fun CenterTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
  */
 val UsDefaultNavItems: List<UsNavItem> = listOf(
     UsNavItem("Home", UsIcons.Home),
-    UsNavItem("Friends", UsIcons.Friends),
+    UsNavItem("Messages", UsIcons.Comment, contentDescription = "Messages"),
     UsNavItem("Reels", UsIcons.Reels),
     UsNavItem("Explore", UsIcons.Explore),
     UsNavItem("Me", UsIcons.Profile, contentDescription = "My profile"),

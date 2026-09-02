@@ -44,15 +44,11 @@ import com.us.android.feature.chat.navigation.chatInboxScreen
 import com.us.android.feature.chat.navigation.chatLockSettingsScreen
 import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
-import com.us.android.feature.chat.navigation.friendRequestsScreen
-import com.us.android.feature.chat.navigation.friendsScreen
 import com.us.android.feature.chat.navigation.groupCreateScreen
 import com.us.android.feature.chat.navigation.groupInfoScreen
-import com.us.android.feature.chat.navigation.navigateToChatInbox
 import com.us.android.feature.chat.navigation.navigateToChatLockSettings
 import com.us.android.feature.chat.navigation.navigateToChatRequest
 import com.us.android.feature.chat.navigation.navigateToChatThread
-import com.us.android.feature.chat.navigation.navigateToFriendRequests
 import com.us.android.feature.chat.navigation.navigateToGroupCreate
 import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.feed.navigation.FeedRoute
@@ -178,7 +174,7 @@ fun UsNavHost(
             "dm" -> if (destination.entityId.isNotBlank()) {
                 navController.navigateToChatThread(destination.entityId, title = "")
             }
-            "message_request" -> navController.navigateToChatInbox()
+            "message_request" -> navController.navigateToTopLevel(TopLevelDestination.MESSAGES)
             // Call pushes: the ring tap attaches to the live call state; a
             // missed-call tap opens the history.
             "incoming_call", "incoming_video_call" -> navController.navigateToCallSurface()
@@ -292,7 +288,7 @@ private fun NavGraphBuilder.tabDestinations(
     feedScreen(
         onOpenPost = { postId -> navController.navigateToPost(postId) },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenMessages = { navController.navigateToChatInbox() },
+        onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
         onOpenNotifications = { navController.navigateToNotifications() },
         onCreatePost = { navController.navigateToCreate() },
     )
@@ -370,8 +366,9 @@ private fun NavGraphBuilder.tabDestinations(
     // name on its first frame. Deriving it inside the thread would need the
     // viewer's own id, which the thread does not have — every direct
     // conversation would open with a blank header until its member list loaded.
+    // The Messages TAB. No onBack: a tab root has no back arrow.
     chatInboxScreen(
-        onBack = { navController.popBackStack() },
+        onBack = null,
         onOpenThread = { conversationId, title, isGroup ->
             navController.navigateToChatThread(conversationId, title, isGroup)
         },
@@ -382,17 +379,6 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenLockSettings = { navController.navigateToChatLockSettings() },
         onOpenCallHistory = { navController.navigateToCallHistory() },
     )
-    // The Friends TAB — no onBack, so the top bar renders no back control.
-    friendsScreen(
-        onOpenThread = { conversationId, title ->
-            navController.navigateToChatThread(conversationId, title)
-        },
-        onOpenRequests = { navController.navigateToFriendRequests() },
-        // The frame (140:210) puts a back arrow on the tab; as a tab root,
-        // popping lands on Home — the same place system back goes.
-        onBack = { navController.popBackStack() },
-    )
-    friendRequestsScreen(onBack = { navController.popBackStack() })
     chatLockSettingsScreen(onBack = { navController.popBackStack() })
     chatThreadScreen(
         onBack = { navController.popBackStack() },
@@ -427,7 +413,7 @@ private fun NavGraphBuilder.tabDestinations(
     groupInfoScreen(
         onBack = { navController.popBackStack() },
         // Leaving a group closes its info AND its thread.
-        onLeft = { navController.navigateToChatInbox() },
+        onLeft = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
     )
     composable<GalleryRoute> {
         // The gallery is still reachable from Explore so the design tokens stay

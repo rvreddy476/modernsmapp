@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS usr.user_settings (
 -- surface and were proven against 'everyone'. Tightening it is a product
 -- decision, not a schema repair, and does not belong in a chat pass.
 ALTER TABLE usr.user_settings
-    ADD COLUMN IF NOT EXISTS who_can_message                   TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_message                   TEXT    NOT NULL DEFAULT 'everyone_message_requests',
     ADD COLUMN IF NOT EXISTS who_can_send_connection_request   TEXT    NOT NULL DEFAULT 'everyone',
     ADD COLUMN IF NOT EXISTS who_can_call                      TEXT    NOT NULL DEFAULT 'connections_only',
     ADD COLUMN IF NOT EXISTS who_can_add_to_groups             TEXT    NOT NULL DEFAULT 'connections_only',
@@ -511,3 +511,14 @@ CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expiry
 
 COMMENT ON TABLE auth.idempotency_keys IS
     'Short-lived record of completed responses so a client retry replays the original result instead of duplicating the write.';
+
+-- Messaging opens up (2026-09-02, founder decision): anyone may start a
+-- conversation, and the first message lands as a MESSAGE REQUEST the
+-- recipient accepts, declines or blocks. Accepting is what makes the pair
+-- connections; the standalone friend-request flow is retired. New accounts
+-- therefore default to everyone_message_requests. EXISTING rows are left
+-- alone here on purpose — a boot-time UPDATE would also overwrite anyone who
+-- later chose a stricter value. Migrate existing accounts once, deliberately:
+--   UPDATE usr.user_settings SET who_can_message = 'everyone_message_requests'
+--   WHERE who_can_message = 'connections_only';
+ALTER TABLE usr.user_settings ALTER COLUMN who_can_message SET DEFAULT 'everyone_message_requests';

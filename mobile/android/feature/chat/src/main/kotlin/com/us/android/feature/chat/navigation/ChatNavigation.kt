@@ -13,8 +13,6 @@ import com.us.android.feature.chat.ui.ChatLockGate
 import com.us.android.feature.chat.ui.ChatLockSettingsScreen
 import com.us.android.feature.chat.ui.ChatRequestScreen
 import com.us.android.feature.chat.ui.ChatThreadScreen
-import com.us.android.feature.chat.ui.FriendRequestsScreen
-import com.us.android.feature.chat.ui.FriendsScreen
 import com.us.android.feature.chat.ui.GroupCreateScreen
 import com.us.android.feature.chat.ui.GroupInfoScreen
 import kotlinx.serialization.Serializable
@@ -48,14 +46,6 @@ data class ChatRequestRoute(
     val title: String,
 )
 
-/** All the viewer's friends (accepted connections), each one tap from a thread. */
-@Serializable
-data object FriendsRoute
-
-/** Pending friend requests — received and sent (Figma 140:104). */
-@Serializable
-data object FriendRequestsRoute
-
 /** The new-group flow. */
 @Serializable
 data object GroupCreateRoute
@@ -72,7 +62,8 @@ data class GroupInfoRoute(val conversationId: String)
  * member — which the inbox has and `:app` does not.
  */
 fun NavGraphBuilder.chatInboxScreen(
-    onBack: () -> Unit,
+    /** Null when the inbox is the Messages TAB — a tab root has no back arrow. */
+    onBack: (() -> Unit)?,
     onOpenThread: (conversationId: String, title: String, isGroup: Boolean) -> Unit,
     onOpenRequest: (conversationId: String, title: String) -> Unit,
     onCreateGroup: () -> Unit,
@@ -138,37 +129,6 @@ fun NavGraphBuilder.chatRequestScreen(
     }
 }
 
-/**
- * Registers the friends list.
- *
- * [onBack] is null when Friends is registered as a TAB root — the top bar
- * then renders no back control.
- */
-fun NavGraphBuilder.friendsScreen(
-    onOpenThread: (conversationId: String, title: String) -> Unit,
-    onOpenRequests: () -> Unit = {},
-    onBack: (() -> Unit)? = null,
-) {
-    composable<FriendsRoute> {
-        ChatLockGate {
-            FriendsScreen(
-                onOpenThread = onOpenThread,
-                onOpenRequests = onOpenRequests,
-                onBack = onBack,
-            )
-        }
-    }
-}
-
-/** Registers the friend-requests screen. */
-fun NavGraphBuilder.friendRequestsScreen(onBack: () -> Unit) {
-    composable<FriendRequestsRoute> {
-        ChatLockGate {
-            FriendRequestsScreen(onBack = onBack)
-        }
-    }
-}
-
 /** Registers the new-group flow. */
 fun NavGraphBuilder.groupCreateScreen(
     onBack: () -> Unit,
@@ -219,12 +179,6 @@ fun NavController.navigateToChatThread(
 /** Type-safe navigation to a request decision. */
 fun NavController.navigateToChatRequest(conversationId: String, title: String) =
     navigate(ChatRequestRoute(conversationId, title))
-
-/** Type-safe navigation to the friends list. */
-fun NavController.navigateToFriends() = navigate(FriendsRoute)
-
-/** Type-safe navigation to friend requests. */
-fun NavController.navigateToFriendRequests() = navigate(FriendRequestsRoute)
 
 /** Type-safe navigation to the new-group flow. */
 fun NavController.navigateToGroupCreate() = navigate(GroupCreateRoute)

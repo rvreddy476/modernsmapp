@@ -28,7 +28,7 @@ class TopLevelDestinationTest {
     @Test
     fun `tab order matches the product's shell order`() {
         assertThat(UsDefaultNavItems.map { it.label })
-            .containsExactly("Home", "Friends", "Reels", "Explore", "Me")
+            .containsExactly("Home", "Messages", "Reels", "Explore", "Me")
             .inOrder()
     }
 

@@ -1,7 +1,6 @@
 package com.us.android.core.profile.data
 
 import com.us.android.core.network.ApiEnvelope
-import com.us.android.core.profile.data.dto.ConnectionRequestDto
 import com.us.android.core.profile.data.dto.GraphStatusDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
@@ -88,32 +87,6 @@ interface ProfileApi {
         @Query("user_id") userId: String,
         @Query("other_id") otherId: String,
     ): ApiEnvelope<RelationshipDto>
-
-    /** The viewer's pending INCOMING friend requests, newest first. */
-    @GET("v1/graph/connection-requests")
-    suspend fun pendingConnectionRequests(): ApiEnvelope<List<ConnectionRequestDto>>
-
-    /** The viewer's pending OUTGOING friend requests. */
-    @GET("v1/graph/connection-requests/sent")
-    suspend fun sentConnectionRequests(): ApiEnvelope<List<ConnectionRequestDto>>
-
-    /** The viewer's close friends — bare ids, same shape as connections. */
-    @GET("v1/graph/close-friends")
-    suspend fun closeFriends(): ApiEnvelope<List<String>>
-
-    /** Decline names the SENDER; cancel names the RECEIVER. */
-    @POST("v1/graph/connection-request/decline")
-    suspend fun declineConnectionRequest(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>
-
-    @POST("v1/graph/connection-request/cancel")
-    suspend fun cancelConnectionRequest(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>
-
-    /** Friend request: send names the TARGET, accept names the SENDER. */
-    @POST("v1/graph/connection-request")
-    suspend fun sendConnectionRequest(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>
-
-    @POST("v1/graph/connection-request/accept")
-    suspend fun acceptConnectionRequest(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>
 
     @POST("v1/graph/follow")
     suspend fun follow(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>

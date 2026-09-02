@@ -75,17 +75,6 @@ class PostViewerStateContractTest {
         override suspend fun getStats(userId: String): Nothing = error("not used")
         override suspend fun relationship(userId: String, otherId: String): Nothing =
             error("not used")
-        override suspend fun sendConnectionRequest(body: GraphUserIdRequest): Nothing =
-            error("not used")
-        override suspend fun pendingConnectionRequests(): Nothing = error("not used")
-        override suspend fun sentConnectionRequests(): Nothing = error("not used")
-        override suspend fun closeFriends(): Nothing = error("not used")
-        override suspend fun declineConnectionRequest(body: GraphUserIdRequest): Nothing =
-            error("not used")
-        override suspend fun cancelConnectionRequest(body: GraphUserIdRequest): Nothing =
-            error("not used")
-        override suspend fun acceptConnectionRequest(body: GraphUserIdRequest): Nothing =
-            error("not used")
         override suspend fun follow(body: GraphUserIdRequest): Nothing = error("not used")
         override suspend fun unfollow(body: GraphUserIdRequest): Nothing = error("not used")
         override suspend fun block(body: GraphUserIdRequest): Nothing = error("not used")

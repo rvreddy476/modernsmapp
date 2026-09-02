@@ -7,7 +7,6 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.ProfileApi
 import com.us.android.core.profile.data.ProfileRepository
-import com.us.android.core.profile.data.dto.ConnectionRequestDto
 import com.us.android.core.profile.data.dto.GraphStatusDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
@@ -74,26 +73,6 @@ class EditProfileViewModelTest {
 
         override suspend fun relationship(userId: String, otherId: String) =
             ApiEnvelope(RelationshipDto())
-
-        override suspend fun sendConnectionRequest(body: GraphUserIdRequest) =
-            ApiEnvelope(GraphStatusDto("requested"))
-
-        override suspend fun pendingConnectionRequests() =
-            ApiEnvelope<List<ConnectionRequestDto>>(emptyList())
-
-        override suspend fun sentConnectionRequests() =
-            ApiEnvelope<List<ConnectionRequestDto>>(emptyList())
-
-        override suspend fun closeFriends() = ApiEnvelope<List<String>>(emptyList())
-
-        override suspend fun declineConnectionRequest(body: GraphUserIdRequest) =
-            ApiEnvelope(GraphStatusDto("declined"))
-
-        override suspend fun cancelConnectionRequest(body: GraphUserIdRequest) =
-            ApiEnvelope(GraphStatusDto("cancelled"))
-
-        override suspend fun acceptConnectionRequest(body: GraphUserIdRequest) =
-            ApiEnvelope(GraphStatusDto("accepted"))
 
         override suspend fun follow(body: GraphUserIdRequest) = ApiEnvelope(GraphStatusDto("followed"))
 

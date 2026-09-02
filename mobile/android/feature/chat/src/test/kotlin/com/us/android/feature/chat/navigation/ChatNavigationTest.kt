@@ -89,7 +89,6 @@ class ChatNavigationTest {
             NavHost(navController = navController, startDestination = ProfileStub) {
                 composable<ProfileStub> { Text(PROFILE_MARKER) }
                 composable<ChatInboxRoute> { Text(INBOX_MARKER) }
-                composable<FriendsRoute> { Text(FRIENDS_MARKER) }
                 composable<ChatThreadRoute> { entry ->
                     val route = entry.toRoute<ChatThreadRoute>()
                     Text("thread:${route.conversationId}:${route.title}")
@@ -135,28 +134,6 @@ class ChatNavigationTest {
         assertThat(route.conversationId).isEqualTo("conv-42")
         assertThat(route.title).isEqualTo("Bravo Closure")
         composeRule.onNodeWithText("thread:conv-42:Bravo Closure").assertExists()
-    }
-
-    /**
-     * Inbox → Friends → thread: the friends list is a chat surface, so a
-     * Message tap there pushes the same thread route the inbox uses, and back
-     * from the thread lands on Friends, not the inbox.
-     */
-    @Test
-    fun `friends opens from the inbox and a message tap pushes the thread`() {
-        setUpGraph()
-
-        navigate { navigateToChatInbox() }
-        navigate { navigateToFriends() }
-        assertThat(currentRoute).contains(FriendsRoute::class.qualifiedName)
-        val friendsEntryId = currentEntryId
-
-        navigate { navigateToChatThread("conv-7", "Raghuvaran") }
-        navigate { popBackStack() }
-
-        assertThat(currentRoute).contains(FriendsRoute::class.qualifiedName)
-        assertThat(currentEntryId).isEqualTo(friendsEntryId)
-        composeRule.onNodeWithText(FRIENDS_MARKER).assertExists()
     }
 
     /**
@@ -232,7 +209,6 @@ class ChatNavigationTest {
 
     private companion object {
         const val INBOX_MARKER = "inbox"
-        const val FRIENDS_MARKER = "friends"
         const val PROFILE_MARKER = "Message"
     }
 }

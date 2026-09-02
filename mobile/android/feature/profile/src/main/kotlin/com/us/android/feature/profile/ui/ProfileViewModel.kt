@@ -136,51 +136,6 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    /**
-     * The friend-edge action, keyed on the CURRENT status: `none` sends a
-     * request, `pending_received` accepts the other side's. `pending_sent`
-     * and `accepted` render as facts, not buttons — cancel/unfriend are
-     * later work. Optimistic with rollback, same shape as follow.
-     */
-    fun onConnectionAction() {
-        val current = _state.value as? ProfileUiState.Content ?: return
-        if (current.relationshipBusy || current.profile.isOwnProfile) return
-        val target = current.profile.userId
-        val was = current.relationship.connectionStatus
-        val optimistic = when (was) {
-            "none", "" -> "pending_sent"
-            "pending_received" -> "accepted"
-            else -> return
-        }
-
-        _state.update {
-            (it as? ProfileUiState.Content)?.copy(
-                relationship = it.relationship.copy(connectionStatus = optimistic),
-                relationshipBusy = true,
-                actionError = null,
-            ) ?: it
-        }
-
-        viewModelScope.launch {
-            val result = if (was == "pending_received") {
-                repository.acceptConnectionRequest(target)
-            } else {
-                repository.sendConnectionRequest(target)
-            }
-            _state.update { state ->
-                val content = state as? ProfileUiState.Content ?: return@update state
-                when (result) {
-                    is AppResult.Success -> content.copy(relationshipBusy = false)
-                    is AppResult.Failure -> content.copy(
-                        relationship = content.relationship.copy(connectionStatus = was),
-                        relationshipBusy = false,
-                        actionError = ProfileErrorText.forRelationshipAction(result.error),
-                    )
-                }
-            }
-        }
-    }
-
     fun onBlockToggle() {
         val current = _state.value as? ProfileUiState.Content ?: return
         if (current.relationshipBusy || current.profile.isOwnProfile) return

@@ -7,7 +7,7 @@ import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.navOptions
 import com.us.android.core.designsystem.component.UsDefaultNavItems
 import com.us.android.core.designsystem.component.UsNavItem
-import com.us.android.feature.chat.navigation.FriendsRoute
+import com.us.android.feature.chat.navigation.ChatInboxRoute
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.ReelsRoute
 import com.us.android.feature.profile.navigation.OwnProfileRoute
@@ -27,7 +27,7 @@ import kotlin.reflect.KClass
  */
 enum class TopLevelDestination(val route: KClass<*>) {
     HOME(FeedRoute::class),
-    FRIENDS(FriendsRoute::class),
+    MESSAGES(ChatInboxRoute::class),
     REELS(ReelsRoute::class),
     EXPLORE(ExploreRoute::class),
     ME(OwnProfileRoute::class),
@@ -76,7 +76,7 @@ fun NavController.navigateToTopLevel(destination: TopLevelDestination) {
     }
     when (destination) {
         TopLevelDestination.HOME -> navigate(FeedRoute, options)
-        TopLevelDestination.FRIENDS -> navigate(FriendsRoute, options)
+        TopLevelDestination.MESSAGES -> navigate(ChatInboxRoute, options)
         TopLevelDestination.REELS -> navigate(ReelsRoute, options)
         TopLevelDestination.EXPLORE -> navigate(ExploreRoute, options)
         TopLevelDestination.ME -> navigate(OwnProfileRoute, options)

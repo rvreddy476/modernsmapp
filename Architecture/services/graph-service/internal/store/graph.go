@@ -1407,3 +1407,58 @@ func (s *Store) GetFavorites(ctx context.Context, userID uuid.UUID) ([]uuid.UUID
 	}
 	return ids, rows.Err()
 }
+
+// EnsureConnection makes a and b connections if they are not already —
+// idempotently. Returns true when a NEW edge was written, in which case the
+// friend counts moved; a repeat call is a no-op that returns false. Any
+// pending connection request between the pair is closed as accepted, so an
+// old friend request cannot linger over an edge that already exists.
+//
+// Introduced for chat: accepting a MESSAGE request is now the act that
+// makes two people connections (the founder retired the separate
+// friend-request flow), so message-service calls this on accept.
+func (s *Store) EnsureConnection(ctx context.Context, a, b uuid.UUID) (bool, error) {
+	if a == b {
+		return false, fmt.Errorf("cannot connect a user to themselves")
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	userA, userB := normalizePair(a, b)
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO connections (user_a, user_b, created_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (user_a, user_b) DO NOTHING
+	`, userA, userB)
+	if err != nil {
+		return false, err
+	}
+	created := tag.RowsAffected() > 0
+
+	if created {
+		for _, uid := range []uuid.UUID{a, b} {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO counts (user_id, follower_count, following_count, friend_count, updated_at)
+				VALUES ($1, 0, 0, 1, NOW())
+				ON CONFLICT (user_id) DO UPDATE SET friend_count = counts.friend_count + 1, updated_at = NOW()
+			`, uid); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	// Either direction: whichever of them had asked, the answer is now yes.
+	if _, err := tx.Exec(ctx, `
+		UPDATE connection_requests
+		SET status = 'accepted', responded_at = NOW(), updated_at = NOW()
+		WHERE status = 'pending'
+		  AND ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
+	`, a, b); err != nil {
+		return false, err
+	}
+
+	return created, tx.Commit(ctx)
+}

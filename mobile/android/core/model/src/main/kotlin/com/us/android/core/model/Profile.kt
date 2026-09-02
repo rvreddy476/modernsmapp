@@ -124,12 +124,4 @@ data class ProfileStats(
 data class ProfileRelationship(
     val isFollowing: Boolean = false,
     val isBlocked: Boolean = false,
-    /**
-     * The friend edge: `none`, `pending_sent`, `pending_received` or
-     * `accepted` — graph-service's words, not the client's. Empty when the
-     * relationship has not been fetched.
-     */
-    val connectionStatus: String = "",
-) {
-    val isFriend: Boolean get() = connectionStatus == "accepted"
-}
+)
