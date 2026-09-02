@@ -270,16 +270,43 @@ func (s *Store) GetWellbeing(ctx context.Context, userID uuid.UUID) (*DigitalWel
 	return &w, nil
 }
 
-// UpsertScreenTimeLog adds minutes/sessions to today's log using ON CONFLICT upsert.
+// UpsertScreenTimeLog stores the day's totals for (user, date). The client
+// owns the day's total, so a repeat upsert for the same date REPLACES
+// minutes/session_count (idempotent) rather than adding to them.
 func (s *Store) UpsertScreenTimeLog(ctx context.Context, userID uuid.UUID, date time.Time, minutes, sessions int) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO screen_time_log (user_id, date, minutes, session_count)
-		VALUES ($1, $2, $3, $4)
+		VALUES ($1, $2::date, $3, $4)
 		ON CONFLICT (user_id, date) DO UPDATE
-		SET minutes       = screen_time_log.minutes + EXCLUDED.minutes,
-		    session_count = screen_time_log.session_count + EXCLUDED.session_count
+		SET minutes       = EXCLUDED.minutes,
+		    session_count = EXCLUDED.session_count
 	`, userID, date, minutes, sessions)
 	return err
+}
+
+// GetScreenTimeBetween returns the rows with from <= date <= to (ascending).
+// Days with no row are simply absent; the handler fills zeros.
+func (s *Store) GetScreenTimeBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]ScreenTimeLog, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, user_id, date, minutes, session_count
+		FROM screen_time_log
+		WHERE user_id = $1 AND date >= $2::date AND date <= $3::date
+		ORDER BY date ASC
+	`, userID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []ScreenTimeLog
+	for rows.Next() {
+		var l ScreenTimeLog
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Date, &l.Minutes, &l.SessionCount); err != nil {
+			return nil, err
+		}
+		logs = append(logs, l)
+	}
+	return logs, rows.Err()
 }
 
 // GetScreenTimeLog returns the last N days of screen time for a user.

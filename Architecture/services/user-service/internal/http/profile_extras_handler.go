@@ -28,11 +28,12 @@ func (h *Handler) registerProfileExtrasRoutes(r *gin.Engine) {
 	v1.GET("/me/qr", h.GetMyQRCode)
 	v1.POST("/:userId/qr/scan", h.TrackQRScan)
 
-	// Digital Wellbeing
-	v1.GET("/me/wellbeing", h.GetWellbeing)
-	v1.PUT("/me/wellbeing", h.UpdateWellbeing)
-	v1.POST("/me/screen-time", h.LogScreenTime)
-	v1.GET("/me/screen-time", h.GetScreenTime)
+	// Digital Wellbeing (validated handlers in wellbeing_handler.go)
+	wh := newWellbeingHandler(h.store)
+	v1.GET("/me/wellbeing", wh.Get)
+	v1.PUT("/me/wellbeing", wh.Update)
+	v1.POST("/me/screen-time", wh.LogScreenTime)
+	v1.GET("/me/screen-time", wh.GetScreenTime)
 }
 
 // --- Pins ---
@@ -266,86 +267,7 @@ func (h *Handler) TrackQRScan(c *gin.Context) {
 }
 
 // --- Digital Wellbeing ---
-
-func (h *Handler) GetWellbeing(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	w, err := h.svc.GetWellbeing(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, w, nil)
-}
-
-func (h *Handler) UpdateWellbeing(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var req store.DigitalWellbeing
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	req.UserID = userID
-
-	if err := h.svc.UpdateWellbeing(c.Request.Context(), &req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, req, nil)
-}
-
-type LogScreenTimeRequest struct {
-	Minutes  int `json:"minutes" binding:"required,min=1"`
-	Sessions int `json:"sessions"`
-}
-
-func (h *Handler) LogScreenTime(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var req LogScreenTimeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	if err := h.svc.LogScreenTime(c.Request.Context(), userID, req.Minutes, req.Sessions); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "logged"}, nil)
-}
-
-func (h *Handler) GetScreenTime(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	logs, err := h.svc.GetScreenTime(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if logs == nil {
-		logs = []store.ScreenTimeLog{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, logs, nil)
-}
+//
+// The wellbeing/screen-time handlers live in wellbeing_handler.go and
+// wellbeing_validate.go; they validate input and speak a stable JSON contract
+// (bedtimes as "HH:MM" or null, screen-time upserts idempotent per day).
