@@ -45,6 +45,10 @@ type messageCreatedPayload struct {
 	Type           string    `json:"type"`
 	CreatedAt      time.Time `json:"created_at"`
 	RecipientIDs   []string  `json:"recipient_ids"`
+	// IsRequest marks the first message of a message request. The
+	// MessageRequestCreated event that follows carries the notification for
+	// it; a "dm" row on top would tell the recipient about one message twice.
+	IsRequest bool `json:"is_request"`
 	// Recipients who muted this conversation. Chat owns that setting, so it
 	// arrives on the event; absent means nobody muted it.
 	MutedRecipientIDs []string `json:"muted_recipient_ids,omitempty"`
@@ -154,6 +158,14 @@ func (c *ChatConsumer) processMessage(ctx context.Context, m kafka.Message) erro
 // "conversation" so the collapse-key logic groups every message in one
 // conversation into a single device notification.
 func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreatedPayload) error {
+	// The first message of a message request is announced by the
+	// MessageRequestCreated event, with the Accept / Decline / Block row. A
+	// "dm" notification on top would tell the recipient twice about one
+	// message — and push a "new message" for a conversation they have not
+	// agreed to yet.
+	if e.IsRequest {
+		return nil
+	}
 	senderID, err := uuid.Parse(e.SenderID)
 	if err != nil {
 		return nil // bad payload — don't retry

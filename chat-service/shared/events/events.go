@@ -138,6 +138,11 @@ type MessageCreatedPayload struct {
 	ConversationID string `json:"conversation_id"`
 	SenderID       string `json:"sender_id"`
 	Type           string `json:"type"`
+	// IsRequest marks the FIRST message of a message request. It rides the
+	// event so notification-service can leave the "new message" notification
+	// to the MessageRequestCreated event that follows — the recipient asked
+	// to be told about the request, not buzzed twice for one message.
+	IsRequest bool `json:"is_request,omitempty"`
 	// RecipientIDs lists every conversation member except the sender so that
 	// notification-service can fan out without re-querying chat-service.
 	RecipientIDs []string `json:"recipient_ids"`

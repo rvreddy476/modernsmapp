@@ -126,6 +126,7 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		ConversationID: intent.ConversationID.String(),
 		SenderID:       intent.SenderID.String(),
 		Type:           intent.MessageType,
+		IsRequest:      intent.FirstRequest,
 		RecipientIDs:   recipients,
 		// Per-conversation mute is chat's state; it rides the event so the
 		// notifier never has to ask across the service boundary.
