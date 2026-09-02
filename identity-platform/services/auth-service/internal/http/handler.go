@@ -62,7 +62,9 @@ type AuthService interface {
 	LogoutAll(ctx context.Context, userID uuid.UUID) (int64, error)
 	ListSessions(ctx context.Context, userID uuid.UUID) ([]store.Session, error)
 	RevokeSessionByID(ctx context.Context, userID, sessionID uuid.UUID) error
-	DeleteAccount(ctx context.Context, userID uuid.UUID) error
+	// Account control — both re-verify the password (ErrInvalidPassword).
+	DeactivateAccount(ctx context.Context, userID uuid.UUID, password string) error
+	DeleteAccount(ctx context.Context, userID uuid.UUID, password string) (*service.DeletionSchedule, error)
 	// RBAC role management (superadmin-gated in the service layer)
 	GrantRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
 	RevokeRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
@@ -226,6 +228,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.POST("/logout-all", h.LogoutAll)
 			protected.GET("/sessions", h.ListSessions)
 			protected.DELETE("/sessions/:id", h.RevokeSessionByID)
+			// Account control (see account_control.go). Deactivate is
+			// reversible by logging in; DELETE schedules a purge 30 days out
+			// that a login inside the window cancels. Both re-verify the
+			// password and revoke every session.
+			protected.POST("/account/deactivate", h.DeactivateAccount)
 			protected.DELETE("/account", h.DeleteAccount)
 
 			// RBAC role management — authorization (superadmin) is enforced in
@@ -330,8 +337,13 @@ func (h *Handler) Me(c *gin.Context) {
 		"account_type":       user.AccountType,
 		"account_status":     user.AccountStatus,
 		"age_verification":   user.AgeVerification,
-		"last_login_at":      user.LastLoginAt,
-		"created_at":         user.CreatedAt,
+		// Account control: null unless the account is deactivated /
+		// pending deletion respectively. A client renders "Your account is
+		// scheduled for deletion on <date>; log in to cancel" from these.
+		"deactivated_at":       user.DeactivatedAt,
+		"scheduled_purge_date": user.ScheduledPurgeDate,
+		"last_login_at":        user.LastLoginAt,
+		"created_at":           user.CreatedAt,
 	}, nil)
 }
 
@@ -745,6 +757,16 @@ func (h *Handler) Login(c *gin.Context) {
 				"This sign-in looks unusual and your account has no recovery channel set up. Please contact support.", nil, nil)
 			return
 		}
+		// Account control: terminal / past-window states. Only reachable
+		// after the password matched, so they reveal nothing to a guesser.
+		if errors.Is(err, service.ErrAccountPurged) {
+			api.Error(c.Writer, http.StatusForbidden, "ACCOUNT_PURGED", err.Error(), nil, nil)
+			return
+		}
+		if errors.Is(err, service.ErrAccountPendingPurge) {
+			api.Error(c.Writer, http.StatusForbidden, "ACCOUNT_PENDING_PURGE", err.Error(), nil, nil)
+			return
+		}
 		h.log.Warn("login failed", "err", err, "identifier", maskIdentifier(identifier), "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "Authentication failed", nil, nil)
 		return
@@ -924,31 +946,7 @@ func (h *Handler) AcknowledgeMyAnomaly(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
 }
 
-func (h *Handler) DeleteAccount(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
-		return
-	}
-
-	// LB-6: this endpoint makes NO mutation.
-	//
-	// It previously called DeleteAccount, which marked the account
-	// `pending_deletion` and emitted `user.deletion_requested`. Nothing in
-	// this repository purges a pending_deletion account, but that event does
-	// reach other services — so some could erase their slice while the rest
-	// of the data stays, producing PARTIAL IRREVERSIBLE erasure. That is
-	// worse than either finishing the pipeline or not starting it.
-	//
-	// The user stays signed in: revoking sessions here would be a real,
-	// user-visible effect on an endpoint that is meant to do nothing.
-	h.log.Info("self-service deletion requested while disabled",
-		"user_id", userID, "request_id", RequestIDFromContext(c))
-
-	api.Error(c.Writer, http.StatusServiceUnavailable,
-		DeletionUnavailableCode, DeletionUnavailableMessage,
-		CurrentDeletionDetails(), nil)
-}
+// DeleteAccount and DeactivateAccount live in account_control.go.
 
 // --- Password Reset ---
 

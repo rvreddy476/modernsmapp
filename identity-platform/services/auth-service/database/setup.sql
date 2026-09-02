@@ -522,3 +522,31 @@ COMMENT ON TABLE auth.idempotency_keys IS
 --   UPDATE usr.user_settings SET who_can_message = 'everyone_message_requests'
 --   WHERE who_can_message = 'connections_only';
 ALTER TABLE usr.user_settings ALTER COLUMN who_can_message SET DEFAULT 'everyone_message_requests';
+
+-- ---------------------------------------------------------------------------
+-- Account control (2026-09-02): deactivate + delete-with-30-day-window + purge
+-- state machine. See internal/store/lifecycle.go and internal/purge/worker.go.
+--
+--   deactivated_at     — set while account_status = 'deactivated'; cleared on
+--                        the login that reactivates.
+--   purge_requested_at — last time the purge worker emitted
+--                        user.purge_requested for this user; throttles the
+--                        re-request loop to once per 24h.
+--   purge_completed_at — set in the same transaction that anonymises the row
+--                        and flips account_status to 'purged'. Terminal.
+-- ---------------------------------------------------------------------------
+ALTER TABLE auth.users
+    ADD COLUMN IF NOT EXISTS deactivated_at     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS purge_requested_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS purge_completed_at TIMESTAMPTZ;
+
+-- One row per (user, service) that has confirmed erasing its slice of a
+-- purged user's data. The purge worker only anonymises the auth row once the
+-- acked set covers REQUIRED_PURGE_SERVICES — NEVER on partial acks, because a
+-- partial purge is irreversible erasure of some data with the rest retained.
+CREATE TABLE IF NOT EXISTS auth.account_purge_acks (
+    user_id  UUID NOT NULL,
+    service  TEXT NOT NULL,
+    acked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, service)
+);

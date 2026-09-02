@@ -88,7 +88,12 @@ type Store interface {
 	GetUserByEmail(ctx context.Context, email string) (*store.User, error)
 	GetUserByID(ctx context.Context, userID uuid.UUID) (*store.User, error)
 	UpdateLastLogin(ctx context.Context, userID uuid.UUID) error
-	SoftDeleteUser(ctx context.Context, userID uuid.UUID) error
+	// Account control — deactivate / delete-with-window / purge rescue.
+	// Each pairs the row change with its outbox event in one transaction.
+	DeactivateUser(ctx context.Context, userID uuid.UUID) error
+	ReactivateUser(ctx context.Context, userID uuid.UUID) (bool, error)
+	ScheduleDeletion(ctx context.Context, userID uuid.UUID) (time.Time, error)
+	CancelDeletion(ctx context.Context, userID uuid.UUID) (bool, error)
 	UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
 	MarkEmailVerified(ctx context.Context, userID uuid.UUID) error
 	MarkPhoneVerified(ctx context.Context, userID uuid.UUID) error
@@ -611,6 +616,19 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 		}, ErrEmailNotVerified
 	}
 
+	// Account-control state machine (deactivate / delete / purge). Runs
+	// AFTER the verification gate and the password check, so only the
+	// account's owner can trigger a transition, and a wrong password stays
+	// the same generic "invalid credentials" regardless of lifecycle state.
+	//
+	//	deactivated                     → reactivate, continue login
+	//	pending_deletion, window open   → cancel deletion, continue login
+	//	pending_deletion, window closed → ErrAccountPendingPurge (403)
+	//	purged                          → ErrAccountPurged (403)
+	if err := s.applyLoginLifecycle(ctx, user); err != nil {
+		return nil, err
+	}
+
 	// Route through createSessionForUser so both the 2FA gate (A6) and
 	// the A13 anomaly gate are applied centrally. The step-up sentinel
 	// is forwarded to the handler so the 401-with-body can render.
@@ -722,6 +740,18 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 	}
 	if user == nil {
 		return nil, errors.New("user not found")
+	}
+
+	// Account-control guard. Deactivate/delete/purge all revoke every
+	// session, so a live refresh token for such an account should be
+	// impossible — but the account_status check is asserted here anyway so
+	// a missed revocation (or a session created in a race with the flip)
+	// cannot quietly resurrect a deactivated, deleting, suspended or purged
+	// account. Reactivation happens ONLY through a full password login.
+	if user.AccountStatus != store.AccountStatusActive {
+		_ = s.store.RevokeSession(ctx, sess.ID)
+		s.cacheRevoke(ctx, sess.ID)
+		return nil, fmt.Errorf("refresh denied: account status is %q — please sign in again", user.AccountStatus)
 	}
 
 	newRefreshToken, err := generateOpaqueToken(32)
@@ -973,26 +1003,7 @@ func (s *Service) cacheRevoke(ctx context.Context, sessionID uuid.UUID) {
 	}
 }
 
-// DeleteAccount soft-deletes a user account with 30-day grace period.
-//
-// Audit A14: previously revoked sessions AFTER the soft-delete flip and
-// silently dropped the revoke error. A late attacker holding a stolen
-// access token (15-min TTL window) could keep using it post-deletion
-// because the access-token check doesn't re-fetch user state on every
-// call — only refresh does. Now we revoke first so the refresh window
-// closes immediately, and surface the revoke error so we don't leave
-// the user in a half-deleted state.
-func (s *Service) DeleteAccount(ctx context.Context, userID uuid.UUID) error {
-	if revoked, err := s.store.RevokeAllSessions(ctx, userID); err != nil {
-		return fmt.Errorf("account deletion: failed to revoke sessions: %w", err)
-	} else {
-		s.log.Info("account deletion: revoked sessions", "user_id", userID, "revoked", revoked)
-	}
-	if err := s.store.SoftDeleteUser(ctx, userID); err != nil {
-		return fmt.Errorf("failed to soft delete user: %w", err)
-	}
-	return nil
-}
+// DeleteAccount / DeactivateAccount live in account_lifecycle.go.
 
 // DataExport holds all personal data for a user, for GDPR data portability.
 type DataExport struct {

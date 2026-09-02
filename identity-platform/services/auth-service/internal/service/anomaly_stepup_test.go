@@ -288,6 +288,9 @@ type fakeAnomalyStore struct {
 	users     map[uuid.UUID]*store.User
 	anomalies []store.LoginAnomaly
 	sessions  []storeSessionRecord
+	// Account-control instrumentation (account_lifecycle_test.go).
+	revokeAllCalls int
+	lifecycle      []string // "deactivate" | "reactivate" | "schedule" | "cancel"
 }
 
 func (f *fakeAnomalyStore) DB() *pgxpool.Pool { return nil }
@@ -316,7 +319,12 @@ func (f *fakeAnomalyStore) CreateUserWithPassword(_ context.Context, _, _, _ str
 func (f *fakeAnomalyStore) CreateUserWithPasswordTx(_ context.Context, _ pgx.Tx, _, _, _ string) (*store.User, error) {
 	panic("not implemented")
 }
-func (f *fakeAnomalyStore) GetUserByEmail(_ context.Context, _ string) (*store.User, error) {
+func (f *fakeAnomalyStore) GetUserByEmail(_ context.Context, email string) (*store.User, error) {
+	for _, u := range f.users {
+		if u.Email != nil && *u.Email == email {
+			return u, nil
+		}
+	}
 	return nil, nil
 }
 func (f *fakeAnomalyStore) GetUserByID(_ context.Context, id uuid.UUID) (*store.User, error) {
@@ -326,7 +334,57 @@ func (f *fakeAnomalyStore) GetUserByID(_ context.Context, id uuid.UUID) (*store.
 	return nil, nil
 }
 func (f *fakeAnomalyStore) UpdateLastLogin(_ context.Context, _ uuid.UUID) error { return nil }
-func (f *fakeAnomalyStore) SoftDeleteUser(_ context.Context, _ uuid.UUID) error  { return nil }
+
+// Account-control lifecycle. The fake mirrors the real guards (status
+// preconditions) so the service-level state-machine test exercises the same
+// transitions the SQL enforces.
+func (f *fakeAnomalyStore) DeactivateUser(_ context.Context, id uuid.UUID) error {
+	u := f.users[id]
+	if u == nil || u.AccountStatus != store.AccountStatusActive {
+		return store.ErrLifecycleConflict
+	}
+	now := time.Now()
+	u.AccountStatus = store.AccountStatusDeactivated
+	u.DeactivatedAt = &now
+	f.lifecycle = append(f.lifecycle, "deactivate")
+	return nil
+}
+func (f *fakeAnomalyStore) ReactivateUser(_ context.Context, id uuid.UUID) (bool, error) {
+	u := f.users[id]
+	if u == nil || u.AccountStatus != store.AccountStatusDeactivated {
+		return false, nil
+	}
+	u.AccountStatus = store.AccountStatusActive
+	u.DeactivatedAt = nil
+	f.lifecycle = append(f.lifecycle, "reactivate")
+	return true, nil
+}
+func (f *fakeAnomalyStore) ScheduleDeletion(_ context.Context, id uuid.UUID) (time.Time, error) {
+	u := f.users[id]
+	if u == nil || (u.AccountStatus != store.AccountStatusActive && u.AccountStatus != store.AccountStatusDeactivated) {
+		return time.Time{}, store.ErrLifecycleConflict
+	}
+	now := time.Now()
+	purge := now.Add(store.DeletionGracePeriod)
+	u.AccountStatus = store.AccountStatusPendingDeletion
+	u.DeletionRequestedAt = &now
+	u.ScheduledPurgeDate = &purge
+	u.DeactivatedAt = nil
+	f.lifecycle = append(f.lifecycle, "schedule")
+	return purge, nil
+}
+func (f *fakeAnomalyStore) CancelDeletion(_ context.Context, id uuid.UUID) (bool, error) {
+	u := f.users[id]
+	if u == nil || u.AccountStatus != store.AccountStatusPendingDeletion ||
+		u.ScheduledPurgeDate == nil || !u.ScheduledPurgeDate.After(time.Now()) {
+		return false, nil
+	}
+	u.AccountStatus = store.AccountStatusActive
+	u.DeletionRequestedAt = nil
+	u.ScheduledPurgeDate = nil
+	f.lifecycle = append(f.lifecycle, "cancel")
+	return true, nil
+}
 func (f *fakeAnomalyStore) UpdatePassword(_ context.Context, _ uuid.UUID, _ string) error {
 	return nil
 }
@@ -367,6 +425,7 @@ func (f *fakeAnomalyStore) RotateSessionWithFingerprint(_ context.Context, _ uui
 }
 func (f *fakeAnomalyStore) RevokeSession(_ context.Context, _ uuid.UUID) error { return nil }
 func (f *fakeAnomalyStore) RevokeAllSessions(_ context.Context, _ uuid.UUID) (int64, error) {
+	f.revokeAllCalls++
 	return 0, nil
 }
 func (f *fakeAnomalyStore) RecordLoginAnomaly(_ context.Context, userID uuid.UUID, atype, ip, ua, deviceID, country string, risk int, challenged bool, metadata map[string]any) error {

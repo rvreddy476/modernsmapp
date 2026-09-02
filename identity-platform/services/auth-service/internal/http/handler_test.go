@@ -92,7 +92,12 @@ func (s *stubAuthService) IssueSessionForUser(_ context.Context, _ uuid.UUID, _,
 	return &service.AuthResponse{}, nil
 }
 func (s *stubAuthService) RevokeSessionByID(_ context.Context, _, _ uuid.UUID) error { return nil }
-func (s *stubAuthService) DeleteAccount(_ context.Context, _ uuid.UUID) error        { return nil }
+func (s *stubAuthService) DeactivateAccount(_ context.Context, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (s *stubAuthService) DeleteAccount(_ context.Context, _ uuid.UUID, _ string) (*service.DeletionSchedule, error) {
+	return &service.DeletionSchedule{}, nil
+}
 
 // RBAC stubs
 func (s *stubAuthService) GrantRole(_ context.Context, _, _ uuid.UUID, _ string) error  { return nil }

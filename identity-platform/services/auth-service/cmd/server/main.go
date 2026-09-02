@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/events"
 	internalhttp "github.com/atpost/identity-auth-service/internal/http"
+	"github.com/atpost/identity-auth-service/internal/purge"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
 	authcrypto "github.com/atpost/identity-shared/crypto"
@@ -223,6 +224,24 @@ func main() {
 		10*time.Second,
 	)
 	go emailRelay.Start(ctx)
+
+	// 4c. Account purge worker + purge-acks consumer.
+	//
+	// DELETE /v1/auth/account only schedules; this worker is the sole thing
+	// that escalates a pending_deletion account past its 30-day window
+	// (user.purge_requested, re-emitted every 24h) and it completes the purge
+	// ONLY when every REQUIRED_PURGE_SERVICES entry has acked on
+	// PURGE_ACKS_TOPIC. Never on partial acks. See internal/purge.
+	purgeCfg := purge.ConfigFromEnv()
+	purgeWorker := purge.NewWorker(authStore, logger, purgeCfg)
+	go purgeWorker.Start(ctx)
+	purgeAcks := purge.NewAcksConsumer(cfg.KafkaBrokers, purgeCfg.AcksTopic, purgeCfg.AcksGroupID, kafkaDialer, authStore, logger)
+	defer func() {
+		if err := purgeAcks.Close(); err != nil {
+			logger.Warn("failed to close purge acks consumer", "err", err)
+		}
+	}()
+	go purgeAcks.Run(ctx)
 
 	// 5. Server
 	r := gin.New()

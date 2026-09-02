@@ -34,6 +34,8 @@ type User struct {
 	ConsentAge          bool       `json:"consent_age"`
 	DeletionRequestedAt *time.Time `json:"deletion_requested_at,omitempty"`
 	ScheduledPurgeDate  *time.Time `json:"scheduled_purge_date,omitempty"`
+	DeactivatedAt       *time.Time `json:"deactivated_at,omitempty"`
+	PurgeCompletedAt    *time.Time `json:"-"`
 	LastLoginAt         *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
@@ -131,7 +133,8 @@ const allUserCols = `user_id, COALESCE(phone, ''), email, password_hash,
 	email_verified, phone_verified, two_factor_enabled, two_factor_secret,
 	account_type, account_status, login_provider, recovery_email, recovery_phone,
 	age_verification, consent_terms, consent_privacy, consent_age,
-	deletion_requested_at, scheduled_purge_date, last_login_at,
+	deletion_requested_at, scheduled_purge_date, deactivated_at,
+	purge_completed_at, last_login_at,
 	created_at, updated_at`
 
 func scanUser(row pgx.Row) (*User, error) {
@@ -141,7 +144,8 @@ func scanUser(row pgx.Row) (*User, error) {
 		&u.EmailVerified, &u.PhoneVerified, &u.TwoFactorEnabled, &u.TwoFactorSecret,
 		&u.AccountType, &u.AccountStatus, &u.LoginProvider, &u.RecoveryEmail, &u.RecoveryPhone,
 		&u.AgeVerification, &u.ConsentTerms, &u.ConsentPrivacy, &u.ConsentAge,
-		&u.DeletionRequestedAt, &u.ScheduledPurgeDate, &u.LastLoginAt,
+		&u.DeletionRequestedAt, &u.ScheduledPurgeDate, &u.DeactivatedAt,
+		&u.PurgeCompletedAt, &u.LastLoginAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
@@ -291,47 +295,13 @@ func (s *Store) UpdateLastLogin(ctx context.Context, userID uuid.UUID) error {
 	return err
 }
 
-func (s *Store) SoftDeleteUser(ctx context.Context, userID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	// SR-7: `scheduled_purge_date` is no longer set.
-	//
-	// It used to be NOW() + 30 days, and nothing in this repository ever read
-	// it: there is no purge worker and no consumer of
-	// `user.deletion_requested` that erases anything. A date in that column is
-	// a commitment the platform does not keep, and a future operator reading
-	// the table would reasonably conclude the purge had run.
-	//
-	// The status stays `pending_deletion` because that IS what the account is:
-	// deactivated and awaiting a manual erasure process. The user-facing
-	// message now says exactly that (see internal/http/deletion_truth.go).
-	_, err = tx.Exec(ctx, `
-		UPDATE auth.users
-		SET account_status = 'pending_deletion',
-		    deletion_requested_at = NOW(),
-		    scheduled_purge_date = NULL,
-		    updated_at = NOW()
-		WHERE user_id = $1
-	`, userID)
-	if err != nil {
-		return err
-	}
-
-	payload := fmt.Sprintf(`{"user_id":"%s","requested_at":"%s"}`, userID.String(), time.Now().UTC().Format(time.RFC3339))
-	_, err = tx.Exec(ctx,
-		`INSERT INTO auth.outbox_events (event_type, partition_key, payload) VALUES ($1, $2, $3::jsonb)`,
-		"user.deletion_requested", userID.String(), payload,
-	)
-	if err != nil {
-		return fmt.Errorf("outbox insert failed: %w", err)
-	}
-
-	return tx.Commit(ctx)
-}
+// SoftDeleteUser was removed with the account-control workstream: it emitted
+// `user.deletion_requested` at REQUEST time, whose consumers erase graph/post/
+// user/dating slices immediately — incompatible with a cancellable 30-day
+// window. The replacement is ScheduleDeletion (internal/store/lifecycle.go),
+// which emits `user.deletion_scheduled`; the irreversible
+// `user.purge_requested` is only emitted by the purge worker after the window
+// has elapsed.
 
 // --- auth.otp_codes ---
 

@@ -24,8 +24,20 @@ var SchemaRequirements = []schemaguard.Requirement{
 			// account_status vanished, a suspended account would read as
 			// active. Both are wrong in the dangerous direction.
 			"email_verified", "account_status",
+			// Account control (deactivate / delete / purge). Read on every
+			// login and by the purge worker; a missing scheduled_purge_date
+			// would make a pending-deletion account read as past its window,
+			// and a missing purge_completed_at would let the worker re-purge.
+			"deactivated_at", "scheduled_purge_date",
+			"purge_requested_at", "purge_completed_at",
 		},
 	},
+	// Purge coordination: the worker completes a purge only when this table
+	// holds an ack from every required service. If it vanished, GetPurgeAcks
+	// would fail loudly at the first tick — listed anyway because the INSERT
+	// path (Kafka acks consumer) drops messages on error and would otherwise
+	// silently discard every ack.
+	{Table: "auth.account_purge_acks", Columns: []string{"user_id", "service", "acked_at"}},
 	{Table: "auth.sessions"},
 	{Table: "auth.otp_codes", Columns: []string{"otp_hash", "attempts", "expires_at"}},
 	{Table: "auth.verification_transactions", Columns: []string{"token_hash", "consumed_at", "expires_at"}},
