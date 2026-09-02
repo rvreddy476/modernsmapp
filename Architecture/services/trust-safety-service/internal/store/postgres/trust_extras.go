@@ -267,6 +267,60 @@ func (s *TrustExtrasStore) DeleteKeywordFilter(ctx context.Context, id, addedBy 
 	return err
 }
 
+// ListUserHideKeywords returns the user's own self-service hide list —
+// scope='user', scope_id=userID, action='hide' — in a stable order.
+func (s *TrustExtrasStore) ListUserHideKeywords(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT keyword FROM trust.keyword_filters
+		WHERE scope = 'user' AND scope_id = $1 AND action = 'hide'
+		ORDER BY created_at ASC, keyword ASC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keywords := []string{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		keywords = append(keywords, k)
+	}
+	return keywords, rows.Err()
+}
+
+// ReplaceUserHideKeywords atomically replaces the user's self-service hide
+// list (scope='user', action='hide') inside one transaction: either the new
+// set is fully in place or the old set is untouched. Rows the user did not
+// write (other scopes, other actions) are never touched.
+func (s *TrustExtrasStore) ReplaceUserHideKeywords(ctx context.Context, userID uuid.UUID, keywords []string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM trust.keyword_filters
+		WHERE scope = 'user' AND scope_id = $1 AND action = 'hide'
+	`, userID); err != nil {
+		return err
+	}
+	// NOW() is transaction-stable, so stagger created_at by the submission
+	// index — the list read back in created_at order is the list submitted.
+	for i, k := range keywords {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO trust.keyword_filters (id, scope, scope_id, keyword, action, added_by, created_at)
+			VALUES ($1, 'user', $2, $3, 'hide', $2, NOW() + ($4 * interval '1 microsecond'))
+		`, uuid.New(), userID, k, i); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *TrustExtrasStore) MatchKeywords(ctx context.Context, scope string, scopeID *uuid.UUID, text string) ([]KeywordFilter, error) {
 	filters, err := s.GetKeywordFilters(ctx, scope, scopeID)
 	if err != nil {

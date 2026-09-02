@@ -29,6 +29,7 @@ type Service struct {
 	profileServiceURL string
 	mediaServiceURL   string
 	userServiceURL    string
+	trustSafetyURL    string
 	ranker            *ranking.Ranker
 	// Per-upstream HTTP clients with timeouts + circuit breakers. One
 	// breaker per remote service so a slow graph-service doesn't open
@@ -38,6 +39,10 @@ type Service struct {
 	profileClient *http.Client
 	mediaClient   *http.Client
 	userClient    *http.Client
+	trustClient   *http.Client
+	// Viewer keyword-filter cache (60s TTL) — see keywordfilter.go.
+	kwMu    sync.Mutex
+	kwCache map[uuid.UUID]keywordCacheEntry
 	// lvTiers is the long-video frequency configuration (P0-4), loaded
 	// once at construction from defaults + env overrides.
 	lvTiers map[string]lvTier
@@ -64,6 +69,10 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	if userServiceURL == "" {
 		userServiceURL = "http://identity-user:8110"
 	}
+	trustSafetyURL := os.Getenv("TRUST_SAFETY_SERVICE_URL")
+	if trustSafetyURL == "" {
+		trustSafetyURL = "http://trust-safety-service:8091"
+	}
 	return &Service{
 		scyllaStore:       scylla,
 		pgStore:           pg,
@@ -73,11 +82,14 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		profileServiceURL: profileServiceURL,
 		mediaServiceURL:   mediaServiceURL,
 		userServiceURL:    userServiceURL,
+		trustSafetyURL:    trustSafetyURL,
 		graphClient:       httpclient.NewWithBreaker(5*time.Second, "feed->graph"),
 		postClient:        httpclient.NewWithBreaker(5*time.Second, "feed->post"),
 		profileClient:     httpclient.NewWithBreaker(5*time.Second, "feed->profile"),
 		mediaClient:       httpclient.NewWithBreaker(5*time.Second, "feed->media"),
 		userClient:        httpclient.NewWithBreaker(5*time.Second, "feed->user"),
+		trustClient:       httpclient.NewWithBreaker(5*time.Second, "feed->trust-safety"),
+		kwCache:           make(map[uuid.UUID]keywordCacheEntry),
 		lvTiers:           loadLVTiers(),
 	}
 }

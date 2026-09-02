@@ -54,6 +54,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		keywords.GET("", h.GetKeywordFilters)
 	}
 
+	// Self-service filter keywords (Content preferences → Filter keywords).
+	myKeywords := r.Group("/v1/users/me/keyword-filters")
+	{
+		myKeywords.GET("", h.GetMyKeywordFilters)
+		myKeywords.PUT("", h.PutMyKeywordFilters)
+	}
+
+	// Peer services (feed-service) read a user's hide keywords here. The
+	// whole router is behind RequireInternalKey already.
+	r.GET("/v1/internal/keyword-filters", h.InternalGetKeywordFilters)
+
 	teen := r.Group("/v1/teen-accounts")
 	{
 		teen.POST("", h.UpsertTeenAccount)

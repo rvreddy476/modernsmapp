@@ -133,6 +133,9 @@ func main() {
 		// MUST stay above `/v1/users` — matching walks this slice in order and
 		// takes the first prefix that fits.
 		{"/v1/users/me/settings", env("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110")},
+		// Self-service filter keywords live in trust-safety (the table and
+		// the feed-side consumer are there). MUST stay above `/v1/users`.
+		{"/v1/users/me/keyword-filters", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/users", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/graph", env("GRAPH_SERVICE_URL", "http://graph-service:8083")},
 		// Post service: videos, reels, posts, comments, stories, reactions, saved, hashtags, uploads

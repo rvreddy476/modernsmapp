@@ -123,10 +123,6 @@ type addKeywordFilterRequest struct {
 }
 
 func (h *Handler) AddKeywordFilter(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
-		return
-	}
 	addedBy, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
@@ -149,6 +145,15 @@ func (h *Handler) AddKeywordFilter(c *gin.Context) {
 		}
 		scopeID = &id
 	}
+	// Non-admins may only write their OWN user-scope filters. scope_id used
+	// to be caller-supplied and unvalidated, which let any authenticated
+	// caller plant filters on another user's list (or platform-wide).
+	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+		if req.Scope != "user" || scopeID == nil || *scopeID != addedBy {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Only your own user-scope filters may be written", nil)
+			return
+		}
+	}
 	filter, err := h.svc.AddKeywordFilter(c.Request.Context(), req.Scope, scopeID, req.Keyword, req.Action, addedBy)
 	if err != nil {
 		slog.Error("AddKeywordFilter", "err", err)
@@ -159,10 +164,16 @@ func (h *Handler) AddKeywordFilter(c *gin.Context) {
 }
 
 func (h *Handler) GetKeywordFilters(c *gin.Context) {
-	scope := c.Query("scope")
-	if scope == "" {
-		scope = "platform"
+	// This endpoint used to answer with no auth at all. It now requires a
+	// caller identity, and non-admins can read only their own user scope.
+	callerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
 	}
+	isAdmin := hasScope(c.GetHeader("X-Scopes"), "admin")
+
+	scope := c.Query("scope")
 	var scopeID *uuid.UUID
 	if sid := c.Query("scope_id"); sid != "" {
 		id, err := uuid.Parse(sid)
@@ -172,6 +183,22 @@ func (h *Handler) GetKeywordFilters(c *gin.Context) {
 		}
 		scopeID = &id
 	}
+
+	if isAdmin {
+		if scope == "" {
+			scope = "platform"
+		}
+	} else {
+		// Non-admins see exactly their own user scope. An explicit request
+		// for anything else is refused rather than silently rewritten.
+		if (scope != "" && scope != "user") || (scopeID != nil && *scopeID != callerID) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Only your own user-scope filters may be read", nil)
+			return
+		}
+		scope = "user"
+		scopeID = &callerID
+	}
+
 	filters, err := h.svc.GetKeywordFilters(c.Request.Context(), scope, scopeID)
 	if err != nil {
 		slog.Error("GetKeywordFilters", "err", err)

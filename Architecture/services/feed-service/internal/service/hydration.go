@@ -164,6 +164,16 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	if len(ids) == 0 {
 		// Entire batch served from cache — skip the HTTP call.
 		merged := s.mergeHydratedItems(items, envelopeData, nil)
+		// Viewer keyword filter ("Filter keywords"): every surface — home,
+		// reels, flicks, videos, watch — funnels through HydratePosts, so
+		// applying it here is the one place no surface can bypass. It runs
+		// before render enrichment so dropped posts cost no profile/media
+		// fetches, and it FAILS CLOSED like block/mute: a failed lookup is
+		// an error, never an unfiltered page.
+		merged, err := s.applyKeywordHideFilter(ctx, viewerID, merged)
+		if err != nil {
+			return nil, err
+		}
 		s.enrichViewCounts(ctx, merged)
 		if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
 			return nil, err
@@ -225,6 +235,12 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	s.storeHydratedCache(viewerID, envelope.Data)
 
 	merged := s.mergeHydratedItems(items, envelopeData, nil)
+	// Viewer keyword filter — same step as the cache-only path above; see
+	// that comment. Fail-closed by design.
+	merged, err = s.applyKeywordHideFilter(ctx, viewerID, merged)
+	if err != nil {
+		return nil, err
+	}
 	s.enrichViewCounts(ctx, merged)
 	if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
 		return nil, err

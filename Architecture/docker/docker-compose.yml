@@ -731,6 +731,8 @@ services:
       MEDIA_SERVICE_URL: http://media-service:8087
       # Reads tc_close_friends_posts to gate close-friends ("trusted") fanout.
       USER_SERVICE_URL: http://identity-user:8110
+      # Reads the viewer's self-service filter keywords (hidden posts).
+      TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
