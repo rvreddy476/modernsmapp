@@ -344,6 +344,7 @@ type BlockResult struct {
 	RemovedFollowReverse bool // blocked -> blocker
 	RemovedConnection    bool
 	RemovedRequest       int
+	RemovedFollowRequest int
 	RemovedCloseFriend   int
 	RemovedCircleMember  int
 	RemovedFavorite      int
@@ -417,6 +418,7 @@ func (s *Store) BlockAtomic(ctx context.Context, blockerID, blockedID uuid.UUID)
 		for _, name := range []string{
 			"close_friends", "circle_members", "circles", "favorites",
 			"relationship_labels", "connections", "connection_requests",
+			"follow_requests",
 		} {
 			var reg *string
 			if err := tx.QueryRow(ctx, `SELECT to_regclass($1)::text`, "public."+name).Scan(&reg); err != nil {
@@ -452,6 +454,19 @@ func (s *Store) BlockAtomic(ctx context.Context, blockerID, blockedID uuid.UUID)
 			return fmt.Errorf("block: remove connection requests: %w", err)
 		} else {
 			res.RemovedRequest = n
+		}
+
+		// Follow requests (private accounts): a pending request that survives
+		// a block keeps a "Requested" affordance alive between two people the
+		// block just severed, and an accept would recreate the edge. Removed
+		// in both directions, same as connection_requests.
+		if n, err := sweep("follow_requests", `
+			DELETE FROM follow_requests
+			WHERE (requester_id = $1 AND target_id = $2) OR (requester_id = $2 AND target_id = $1)`,
+			blockerID, blockedID); err != nil {
+			return fmt.Errorf("block: remove follow requests: %w", err)
+		} else {
+			res.RemovedFollowRequest = n
 		}
 
 		if n, err := sweep("close_friends", `
@@ -516,7 +531,7 @@ func (s *Store) BlockAtomic(ctx context.Context, blockerID, blockedID uuid.UUID)
 		//    IS a transition downstream consumers need to hear about.
 		changed := res.Created ||
 			res.RemovedFollowForward || res.RemovedFollowReverse || res.RemovedConnection ||
-			res.RemovedRequest > 0 || res.RemovedCloseFriend > 0 ||
+			res.RemovedRequest > 0 || res.RemovedFollowRequest > 0 || res.RemovedCloseFriend > 0 ||
 			res.RemovedCircleMember > 0 || res.RemovedFavorite > 0 || res.RemovedLabel > 0
 		if !changed {
 			return nil

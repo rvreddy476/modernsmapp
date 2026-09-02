@@ -126,27 +126,76 @@ type Relationship struct {
 	// Do NOT substitute IsConnection — it is strictly broader.
 	IsCloseFriend    bool   `json:"is_close_friend"`
 	ConnectionStatus string `json:"connection_status"` // none, pending_sent, pending_received, accepted
+	// FollowRequestStatus tracks private-account follow requests: none,
+	// pending_sent (actor asked to follow target), pending_received (target
+	// asked to follow actor).
+	FollowRequestStatus string `json:"follow_request_status"`
+	// IsPrivate: the target's account_visibility is "private". Resolved from
+	// the privacy snapshot on every read (3s cache), never from the 60s
+	// relationship cache, so a visibility flip shows up quickly.
+	IsPrivate bool `json:"is_private"`
 }
 
 // --- Follows ---
 
-func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) error {
+// FollowStatusFollowed / FollowStatusRequested are the two outcomes of a
+// follow: the edge exists now, or (private target) a pending request was
+// created and the edge exists only after the target approves it.
+const (
+	FollowStatusFollowed  = "followed"
+	FollowStatusRequested = "requested"
+)
+
+// Follow creates the follow edge — or, when the target is a PRIVATE account
+// the follower does not already follow, converts the action into a pending
+// follow request and returns FollowStatusRequested. POST /v1/graph/follow
+// keeps its shape for public targets ({"status":"followed"}) and answers
+// {"status":"requested"} for private ones.
+func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) (string, error) {
 	// Product pivot 2026-06-12 (FB model): users AND pages are both
 	// followable; friendship is the mutual layer on top. Only unknown
 	// targets are rejected. (Supersedes relationship-separation §2.3.)
 	et, err := s.store.LookupEntityType(ctx, followeeID)
 	if err != nil {
-		return fmt.Errorf("lookup followee entity type: %w", err)
+		return "", fmt.Errorf("lookup followee entity type: %w", err)
 	}
 	if et != store.EntityTypePage && et != store.EntityTypeUser {
-		return ErrWrongEntityType
+		return "", ErrWrongEntityType
 	}
 
 	// Per-action rate limit (spec §10.4): 200 follows / 24h / user.
 	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionFollow, followerID); !allowed {
-		return ErrRateLimited
+		return "", ErrRateLimited
 	}
 
+	// Private accounts (TikTok model): a follow of a private USER becomes a
+	// follow request. Pages have no visibility setting and stay direct. The
+	// branch fires only on an EXPLICIT "private" — a privacy-fetch outage
+	// falls back to the public path, matching the pre-private-accounts
+	// behaviour rather than stranding public follows as pending requests.
+	if et == store.EntityTypeUser && followerID != followeeID &&
+		s.fetchPrivacy(ctx, followeeID).AccountVisibility == "private" {
+		already, err := s.store.CheckFollow(ctx, followerID, followeeID)
+		if err != nil {
+			return "", err
+		}
+		if !already {
+			if err := s.createFollowRequest(ctx, followerID, followeeID); err != nil {
+				return "", err
+			}
+			return FollowStatusRequested, nil
+		}
+	}
+
+	if err := s.followDirect(ctx, followerID, followeeID); err != nil {
+		return "", err
+	}
+	return FollowStatusFollowed, nil
+}
+
+// followDirect is the pre-private-accounts follow body: the atomic edge
+// insert, the counter bumps and the cache invalidation.
+func (s *Service) followDirect(ctx context.Context, followerID, followeeID uuid.UUID) error {
 	// SR-2: the block check and the insert happen together, inside the pair
 	// lock, in FollowAtomic.
 	//
@@ -325,6 +374,13 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 	if err == nil {
 		var rel Relationship
 		if err := json.Unmarshal([]byte(val), &rel); err == nil {
+			if rel.FollowRequestStatus == "" {
+				rel.FollowRequestStatus = "none" // entry cached by a pre-010 build
+			}
+			// is_private is resolved fresh on every read: the privacy
+			// snapshot has its own 3s cache + settings-changed invalidation,
+			// and a visibility flip must not hide behind this 60s entry.
+			rel.IsPrivate = s.fetchPrivacy(ctx, targetID).AccountVisibility == "private"
 			return &rel, nil
 		}
 	}
@@ -347,22 +403,37 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 		connectionStatus = "pending_received"
 	}
 
-	rel := &Relationship{
-		Follows:          full.Follows,
-		FollowedBy:       full.FollowedBy,
-		Blocked:          full.Blocked,
-		BlockedBy:        full.BlockedBy,
-		IsMuted:          full.IsMuted,
-		IsConnection:     full.IsConnection,
-		IsCloseFriend:    full.IsCloseFriend,
-		ConnectionStatus: connectionStatus,
+	followRequestStatus := "none"
+	switch {
+	case full.FollowRequestSent:
+		followRequestStatus = "pending_sent"
+	case full.FollowRequestReceived:
+		followRequestStatus = "pending_received"
 	}
 
-	go func() {
-		data, _ := json.Marshal(rel)
-		s.rdb.Set(context.Background(), cacheKey, data, 60*time.Second)
-	}()
+	rel := &Relationship{
+		Follows:             full.Follows,
+		FollowedBy:          full.FollowedBy,
+		Blocked:             full.Blocked,
+		BlockedBy:           full.BlockedBy,
+		IsMuted:             full.IsMuted,
+		IsConnection:        full.IsConnection,
+		IsCloseFriend:       full.IsCloseFriend,
+		ConnectionStatus:    connectionStatus,
+		FollowRequestStatus: followRequestStatus,
+	}
 
+	// Cache the graph facts only; is_private is layered on after the cache
+	// read so it tracks the privacy snapshot, not this entry's TTL. The
+	// snapshot is marshalled BEFORE IsPrivate is set (and before the
+	// goroutine) so the write below cannot race the encoder.
+	if data, err := json.Marshal(rel); err == nil {
+		go func() {
+			s.rdb.Set(context.Background(), cacheKey, data, 60*time.Second)
+		}()
+	}
+
+	rel.IsPrivate = s.fetchPrivacy(ctx, targetID).AccountVisibility == "private"
 	return rel, nil
 }
 
@@ -674,7 +745,17 @@ func (s *Service) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, 
 	// 101st author was reported unblocked. Silent truncation of a safety
 	// answer is worse than no answer; the store now rejects an oversized
 	// batch and the caller chunks.
-	return s.store.GetRelationshipBatch(ctx, viewerID, targetIDs)
+	rels, err := s.store.GetRelationshipBatch(ctx, viewerID, targetIDs)
+	if err != nil {
+		return nil, err
+	}
+	// is_private per target from the privacy snapshot (3s Redis cache, so a
+	// 100-target batch is 100 Redis GETs in steady state, not 100 HTTP calls).
+	for id, r := range rels {
+		r.IsPrivate = s.fetchPrivacy(ctx, id).AccountVisibility == "private"
+		rels[id] = r
+	}
+	return rels, nil
 }
 
 // --- Cache Invalidation ---

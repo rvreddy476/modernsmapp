@@ -81,6 +81,12 @@ func strictPrivacyDefaults() permission.Privacy {
 		// chose. This stays 'enabled' purely so the pause-specific reason
 		// codes remain truthful.
 		ChatAvailability: "enabled",
+		// AccountVisibility / AllowCommentsFrom stay EMPTY (unknown), not
+		// "public"/"everyone". The matrix fails closed on unknown for
+		// view_posts (follower-only) and comment (deny), while the follow
+		// path only converts to a request on an EXPLICIT "private" — so an
+		// identity outage neither exposes a private account's posts nor
+		// strands public follows as pending requests.
 	}
 }
 
@@ -168,10 +174,22 @@ func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.U
 			WhoCanSeeLastSeen           string `json:"who_can_see_last_seen"`
 			WhoCanSeeProfilePhoto       string `json:"who_can_see_profile_photo"`
 			ChatAvailability            string `json:"chat_availability"`
+			AccountVisibility           string `json:"account_visibility"`
+			AllowCommentsFrom           string `json:"allow_comments_from"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return permission.Privacy{}, fmt.Errorf("decode privacy response: %w", err)
+	}
+	// A SUCCESSFUL fetch that omits the private-accounts fields is a
+	// pre-migration identity build; the product defaults are public/everyone.
+	// This is distinct from a FAILED fetch, which keeps the strict-default
+	// unknowns above.
+	if envelope.Data.AccountVisibility == "" {
+		envelope.Data.AccountVisibility = "public"
+	}
+	if envelope.Data.AllowCommentsFrom == "" {
+		envelope.Data.AllowCommentsFrom = "everyone"
 	}
 	return permission.Privacy{
 		WhoCanMessage:               envelope.Data.WhoCanMessage,
@@ -183,5 +201,7 @@ func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.U
 		WhoCanSeeLastSeen:           envelope.Data.WhoCanSeeLastSeen,
 		WhoCanSeeProfilePhoto:       envelope.Data.WhoCanSeeProfilePhoto,
 		ChatAvailability:            envelope.Data.ChatAvailability,
+		AccountVisibility:           envelope.Data.AccountVisibility,
+		AllowCommentsFrom:           envelope.Data.AllowCommentsFrom,
 	}, nil
 }

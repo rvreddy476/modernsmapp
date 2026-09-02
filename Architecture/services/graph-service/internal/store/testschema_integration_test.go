@@ -89,6 +89,16 @@ CREATE TABLE IF NOT EXISTS connection_requests (
     PRIMARY KEY (sender_id, receiver_id)
 );
 
+-- ── migration 010: private-account follow requests ──
+CREATE TABLE IF NOT EXISTS follow_requests (
+    requester_id UUID NOT NULL,
+    target_id    UUID NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled')),
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at  TIMESTAMPTZ NULL,
+    PRIMARY KEY (requester_id, target_id)
+);
+
 -- ── migration 004 + 007: the tables that were MISSING from the last run ──
 CREATE TABLE IF NOT EXISTS close_friends (
     user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -165,9 +175,9 @@ CREATE TABLE IF NOT EXISTS graph_pair_seq (
     PRIMARY KEY (lo_id, hi_id)
 );
 
--- SR-5: follow_requests is deliberately NOT created. Launch is
--- public-accounts-only. If this table reappears, BlockAtomic must sweep it.
-DROP TABLE IF EXISTS follow_requests;
+-- SR-5 note retired: follow_requests is back (migration 010, private
+-- accounts) and is created above; BlockAtomic sweeps it and
+-- allRelationshipTables asserts that it does.
 `
 
 // allRelationshipTables is the closed list a block must leave empty for the
@@ -184,6 +194,8 @@ var allRelationshipTables = []struct {
 		WHERE (user_a = $1 AND user_b = $2) OR (user_a = $2 AND user_b = $1)`},
 	{"connection_requests", `SELECT COUNT(*) FROM connection_requests
 		WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)`},
+	{"follow_requests", `SELECT COUNT(*) FROM follow_requests
+		WHERE (requester_id = $1 AND target_id = $2) OR (requester_id = $2 AND target_id = $1)`},
 	{"close_friends", `SELECT COUNT(*) FROM close_friends
 		WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`},
 	{"favorites", `SELECT COUNT(*) FROM favorites

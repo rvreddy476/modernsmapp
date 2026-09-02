@@ -3,9 +3,11 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 
 	"github.com/atpost/shared/events"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
@@ -20,6 +22,17 @@ type Consumer struct {
 	reader *kafka.Reader
 	db     *pgxpool.Pool
 	rdb    *redis.Client
+	// onAccountPublic runs when a user.settings_changed event reports
+	// account_visibility=public: the service auto-accepts every pending follow
+	// request toward that user. A callback rather than a *service.Service
+	// because service imports this package (import cycle).
+	onAccountPublic func(ctx context.Context, userID uuid.UUID) error
+}
+
+// WithAccountPublicHook wires the private→public auto-accept.
+func (c *Consumer) WithAccountPublicHook(fn func(ctx context.Context, userID uuid.UUID) error) *Consumer {
+	c.onAccountPublic = fn
+	return c
 }
 
 // NewConsumer builds the identity-events consumer.
@@ -92,17 +105,36 @@ func (c *Consumer) handleUserDeletionRequested(ctx context.Context, payload json
 // handleUserSettingsChanged drops the cached privacy snapshot so permission
 // checks stop serving pre-change values. Idempotent — a duplicate or late
 // event deletes an already-absent key.
+//
+// Private accounts: when the event carries account_visibility=public, every
+// pending follow request toward the user is auto-accepted (chunks of 100,
+// each producing UserFollowed). The event does not carry the OLD value, so
+// this runs on every public-visibility event; a public account has no
+// pending requests, so a redundant run is a single empty SELECT.
 func (c *Consumer) handleUserSettingsChanged(ctx context.Context, payload json.RawMessage) error {
 	var p struct {
-		UserID string `json:"user_id"`
+		UserID            string `json:"user_id"`
+		AccountVisibility string `json:"account_visibility"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return err
 	}
-	if p.UserID == "" || c.rdb == nil {
+	if p.UserID == "" {
 		return nil
 	}
-	return c.rdb.Del(ctx, "privacy:"+p.UserID).Err()
+	if c.rdb != nil {
+		if err := c.rdb.Del(ctx, "privacy:"+p.UserID).Err(); err != nil {
+			return err
+		}
+	}
+	if p.AccountVisibility != "public" || c.onAccountPublic == nil {
+		return nil
+	}
+	userID, err := uuid.Parse(p.UserID)
+	if err != nil {
+		return fmt.Errorf("settings_changed: bad user_id %q: %w", p.UserID, err)
+	}
+	return c.onAccountPublic(ctx, userID)
 }
 
 func (c *Consumer) Close() error {

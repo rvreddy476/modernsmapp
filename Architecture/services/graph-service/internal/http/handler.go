@@ -96,6 +96,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/connection-requests/filtered", h.GetFilteredConnectionRequests)
 		v1.GET("/connection-requests/sent", h.GetSentConnectionRequests)
 
+		// Follow requests (private accounts). Same middleware + write-source
+		// guard as the connection-request routes above: POST/DELETE mutate
+		// and must name an approved writer; the GET is unguarded like every
+		// other read.
+		v1.POST("/follow-requests", h.RequestFollow)
+		v1.GET("/follow-requests/incoming", h.ListIncomingFollowRequests)
+		v1.POST("/follow-requests/:requesterId/accept", h.AcceptFollowRequest)
+		v1.POST("/follow-requests/:requesterId/decline", h.DeclineFollowRequest)
+		v1.DELETE("/follow-requests/:targetId", h.CancelFollowRequest)
+
 		// Close Friends
 		cfGroup := v1.Group("/close-friends")
 		cfGroup.GET("", h.GetCloseFriends)
@@ -129,6 +139,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal.GET("/blocked-and-muted", h.GetBlockedAndMutedInternal)
 	internal.POST("/blocked-any", h.BlockedAnyInternal)
 	internal.POST("/connections/ensure", h.EnsureConnectionInternal)
+	// Content gating for post/feed/comment services: may viewer view_posts /
+	// comment against each target. Internal-key only; the gateway does not
+	// proxy /v1/internal.
+	internal.POST("/can", h.CanInternal)
 
 	// Permission check API (spec §9.8). Single source of truth for
 	// "can actor do X to target" — used by clients to render buttons
@@ -298,7 +312,10 @@ func (h *Handler) Follow(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.Follow(c.Request.Context(), followerID, followeeID); err != nil {
+	// status is "followed" (edge created, public target) or "requested"
+	// (private target — a pending follow request was created instead).
+	status, err := h.svc.Follow(c.Request.Context(), followerID, followeeID)
+	if err != nil {
 		if errors.Is(err, service.ErrRateLimited) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
 			return
@@ -310,7 +327,177 @@ func (h *Handler) Follow(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "followed"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": status}, nil)
+}
+
+// ── Follow requests (private accounts) ───────────────────────
+
+// RequestFollow handles POST /v1/graph/follow-requests {user_id: target}.
+// X-User-Id is the requester. Public target → "following"; private target
+// → "requested".
+func (h *Handler) RequestFollow(c *gin.Context) {
+	requesterID, targetID, ok := parseAuthAndBody(c)
+	if !ok {
+		return
+	}
+	status, err := h.svc.RequestFollow(c.Request.Context(), requesterID, targetID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrRateLimited):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+		case errors.Is(err, service.ErrWrongEntityType):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "follow request is only valid against a user or page", nil)
+		case errors.Is(err, service.ErrCannotFollowSelf):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANNOT_FOLLOW_SELF", err.Error(), nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": status}, nil)
+}
+
+// parseFollowRequestParty extracts the X-User-Id caller and the counterparty
+// named by the given path param.
+func parseFollowRequestParty(c *gin.Context, param string) (uuid.UUID, uuid.UUID, bool) {
+	callerID, ok := getUserID(c)
+	if !ok {
+		return uuid.Nil, uuid.Nil, false
+	}
+	otherID, err := uuid.Parse(c.Param(param))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid "+param, nil)
+		return uuid.Nil, uuid.Nil, false
+	}
+	return callerID, otherID, true
+}
+
+func writeFollowRequestError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrNoPendingFollowRequest) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		return
+	}
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+}
+
+// AcceptFollowRequest handles POST /v1/graph/follow-requests/:requesterId/accept.
+// X-User-Id is the target approving the request.
+func (h *Handler) AcceptFollowRequest(c *gin.Context) {
+	targetID, requesterID, ok := parseFollowRequestParty(c, "requesterId")
+	if !ok {
+		return
+	}
+	if err := h.svc.AcceptFollowRequest(c.Request.Context(), targetID, requesterID); err != nil {
+		writeFollowRequestError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "accepted"}, nil)
+}
+
+// DeclineFollowRequest handles POST /v1/graph/follow-requests/:requesterId/decline.
+func (h *Handler) DeclineFollowRequest(c *gin.Context) {
+	targetID, requesterID, ok := parseFollowRequestParty(c, "requesterId")
+	if !ok {
+		return
+	}
+	if err := h.svc.DeclineFollowRequest(c.Request.Context(), targetID, requesterID); err != nil {
+		writeFollowRequestError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "declined"}, nil)
+}
+
+// CancelFollowRequest handles DELETE /v1/graph/follow-requests/:targetId.
+// X-User-Id is the requester withdrawing their own request.
+func (h *Handler) CancelFollowRequest(c *gin.Context) {
+	requesterID, targetID, ok := parseFollowRequestParty(c, "targetId")
+	if !ok {
+		return
+	}
+	if err := h.svc.CancelFollowRequest(c.Request.Context(), requesterID, targetID); err != nil {
+		writeFollowRequestError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "cancelled"}, nil)
+}
+
+// followRequestItem is the incoming-inbox row shape.
+type followRequestItem struct {
+	RequesterID uuid.UUID `json:"requester_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// ListIncomingFollowRequests handles GET /v1/graph/follow-requests/incoming
+// ?limit=&cursor= for the X-User-Id caller, newest first.
+// Response: {"data":[{"requester_id","created_at"}],"meta":{"next_cursor"}}.
+func (h *Handler) ListIncomingFollowRequests(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	limit := 20
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
+		limit = l
+	}
+	reqs, next, err := h.svc.ListIncomingFollowRequests(c.Request.Context(), userID, limit, c.Query("cursor"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	items := make([]followRequestItem, 0, len(reqs))
+	for _, r := range reqs {
+		items = append(items, followRequestItem{RequesterID: r.RequesterID, CreatedAt: r.CreatedAt})
+	}
+	api.JSON(c.Writer, http.StatusOK, items, &api.Meta{NextCursor: next})
+}
+
+// CanInternal handles POST /v1/internal/graph/can
+// {"viewer_id","action":"view_posts"|"comment","target_ids":[...]}
+// → {"data":{"<target_id>":true|false}}. Fails closed: a privacy-fetch
+// failure resolves to deny inside the service; a graph-store failure is a
+// 500 the caller must treat as deny.
+func (h *Handler) CanInternal(c *gin.Context) {
+	var req struct {
+		ViewerID  string   `json:"viewer_id" binding:"required"`
+		Action    string   `json:"action" binding:"required"`
+		TargetIDs []string `json:"target_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	viewerID, err := uuid.Parse(req.ViewerID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
+		return
+	}
+	actions := permission.ParseActions([]string{req.Action})
+	if len(actions) != 1 || (actions[0] != permission.ActionViewPosts && actions[0] != permission.ActionComment) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "action must be view_posts or comment", nil)
+		return
+	}
+	if len(req.TargetIDs) > store.MaxRelationshipBatch {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BATCH_TOO_LARGE",
+			fmt.Sprintf("at most %d target_ids per call", store.MaxRelationshipBatch), nil)
+		return
+	}
+	targetIDs := make([]uuid.UUID, 0, len(req.TargetIDs))
+	for _, raw := range req.TargetIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			// Same rule as the relationship batch: a malformed id fails the
+			// request rather than silently vanishing from a safety answer.
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target_id", nil)
+			return
+		}
+		targetIDs = append(targetIDs, id)
+	}
+	result, err := h.svc.CanBatch(c.Request.Context(), viewerID, actions[0], targetIDs)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
 func (h *Handler) Unfollow(c *gin.Context) {

@@ -20,6 +20,12 @@ const (
 	ActionSeeReadReceipts Action = "see_read_receipts"
 	ActionSeeLastSeen     Action = "see_last_seen"
 	ActionViewProfile     Action = "view_profile"
+	// ActionComment gates commenting on the target's content
+	// (allow_comments_from: everyone | friends).
+	ActionComment Action = "comment"
+	// ActionViewPosts gates reading the target's post surfaces
+	// (account_visibility: public | private).
+	ActionViewPosts Action = "view_posts"
 )
 
 // Facts is the relationship snapshot between an actor and a target.
@@ -54,7 +60,21 @@ type Privacy struct {
 	// and suppresses the target's presence/receipt disclosures (chat
 	// directive §3.2). Empty means 'enabled' (older snapshots).
 	ChatAvailability string
+	// AccountVisibility is "public" or "private" (TikTok-style private
+	// accounts). Empty means UNKNOWN and fails closed for view_posts (treated
+	// like private: follower-only) while leaving the follow path public, so a
+	// privacy-fetch outage neither leaks a private account's posts nor turns
+	// every follow into a lingering request.
+	AccountVisibility string
+	// AllowCommentsFrom is "everyone" or "friends". Empty means UNKNOWN and
+	// denies (fail closed).
+	AllowCommentsFrom string
 }
+
+// privateAccount reports whether the target has EXPLICITLY chosen a private
+// account. Unknown ("") is deliberately not private here — this drives the
+// follow→request conversion, which must not fire on a fetch failure.
+func (p Privacy) privateAccount() bool { return p.AccountVisibility == "private" }
 
 // chatPaused reports whether the target has paused chat entirely.
 func (p Privacy) chatPaused() bool { return p.ChatAvailability == "paused" }
@@ -82,9 +102,20 @@ func Resolve(action Action, f Facts, p Privacy) Decision {
 	case ActionConnect:
 		return resolveConnect(f, p)
 	case ActionFollow:
-		// Public-account follow is always allowed; private-account
-		// follow-requests are reserved for a later phase (spec §3.1).
+		// Public-account follow is always allowed. A PRIVATE account is
+		// followable too, but through the request channel: the follow endpoint
+		// (POST /v1/graph/follow) converts the follow into a pending
+		// follow_request and returns {"status":"requested"} instead of
+		// creating the edge. Fallback names that channel so clients can render
+		// "Requested" instead of "Following".
+		if p.privateAccount() && !f.ActorFollowsTarget {
+			return Decision{Allowed: true, Fallback: "follow_request", Reason: "private_account"}
+		}
 		return Decision{Allowed: true}
+	case ActionComment:
+		return resolveComment(f, p)
+	case ActionViewPosts:
+		return resolveViewPosts(f, p)
 	case ActionAddToGroup:
 		return resolveAddToGroup(f, p)
 	case ActionSeeOnlineStatus:
@@ -184,6 +215,44 @@ func resolveConnect(f Facts, p Privacy) Decision {
 	return Decision{Allowed: true}
 }
 
+// resolveComment implements the allow_comments_from row. A block in either
+// direction is already fatal at the top of Resolve.
+//
+//	everyone → allow
+//	friends  → mutual follow OR an accepted connection
+//	unknown  → deny (fail closed; an unreadable setting is not "everyone")
+func resolveComment(f Facts, p Privacy) Decision {
+	switch p.AllowCommentsFrom {
+	case "everyone":
+		return Decision{Allowed: true}
+	case "friends":
+		if f.IsConnection || f.mutualFollow() {
+			return Decision{Allowed: true}
+		}
+		return Decision{Allowed: false, Reason: "privacy_friends_only"}
+	default:
+		return Decision{Allowed: false, Reason: "privacy_disallows"}
+	}
+}
+
+// resolveViewPosts implements the account_visibility row.
+//
+//	public            → allow
+//	private / unknown → only a follower may view (the owner's self-view is
+//	                    short-circuited by the caller before the matrix runs)
+//
+// Unknown deliberately takes the private branch: during a privacy-fetch
+// outage a private account's posts must not open up.
+func resolveViewPosts(f Facts, p Privacy) Decision {
+	if p.AccountVisibility == "public" {
+		return Decision{Allowed: true}
+	}
+	if f.ActorFollowsTarget {
+		return Decision{Allowed: true}
+	}
+	return Decision{Allowed: false, Reason: "private_account"}
+}
+
 // resolveAddToGroup implements the group-add row (chat directive §3.4).
 //
 // Allowed=true means a DIRECT add is permitted (the target consented in
@@ -255,6 +324,8 @@ func ParseActions(names []string) []Action {
 		"see_read_receipts": ActionSeeReadReceipts,
 		"see_last_seen":     ActionSeeLastSeen,
 		"view_profile":      ActionViewProfile,
+		"comment":           ActionComment,
+		"view_posts":        ActionViewPosts,
 	}
 	out := make([]Action, 0, len(names))
 	for _, n := range names {

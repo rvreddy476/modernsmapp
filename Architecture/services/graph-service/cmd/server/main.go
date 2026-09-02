@@ -100,8 +100,6 @@ func main() {
 	identityTopic := env("IDENTITY_KAFKA_TOPIC", "identity.events.v1")
 	identityConsumer := events.NewConsumer(strings.Split(kafkaBrokers, ","), identityTopic, kafkaDialer, dbPool, rdb)
 	defer identityConsumer.Close()
-	go identityConsumer.Start(ctx)
-	slog.Info("identity events consumer started", "topic", identityTopic)
 
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("graph-service")
@@ -124,6 +122,21 @@ func main() {
 	// Wire read-through repair of the app.users projection for close-friends.
 	graphSvc.WithUserEnsurer(userclient.New(appUserURL, internalKey))
 	graphHandler := graphHttp.New(graphSvc)
+
+	// Private accounts: a private→public flip auto-accepts every pending
+	// follow request toward the user (chunks of 100, each a UserFollowed via
+	// the outbox). Wired here because the consumer is built before the
+	// service exists.
+	identityConsumer.WithAccountPublicHook(func(ctx context.Context, userID uuid.UUID) error {
+		n, err := graphSvc.AutoAcceptPendingFollowRequests(ctx, userID)
+		if n > 0 {
+			slog.Info("auto-accepted pending follow requests after account went public",
+				"user_id", userID, "accepted", n)
+		}
+		return err
+	})
+	go identityConsumer.Start(ctx)
+	slog.Info("identity events consumer started", "topic", identityTopic)
 
 	// Module 3 SR-2 — the outbox relay.
 	//

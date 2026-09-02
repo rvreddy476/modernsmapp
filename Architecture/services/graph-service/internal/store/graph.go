@@ -59,6 +59,13 @@ type Relationship struct {
 	// Answering it with IsCloseFriend would let anyone walk into someone
 	// else's close-friends audience by adding that person to their own list.
 	ViewerIsCloseFriendOfTarget bool `json:"viewer_is_close_friend_of_target"`
+	// FollowRequestStatus: "none", "pending_sent" (viewer requested to follow
+	// the target) or "pending_received" (target requested to follow the
+	// viewer). Private-accounts parity with the single-relationship contract.
+	FollowRequestStatus string `json:"follow_request_status"`
+	// IsPrivate: the target's account_visibility is "private". Filled at the
+	// service layer from the privacy snapshot, not by the store.
+	IsPrivate bool `json:"is_private"`
 }
 
 type Block struct {
@@ -927,6 +934,10 @@ type RelationshipFull struct {
 	IsCloseFriend             bool
 	ConnectionRequestSent     bool // actor → target row exists with status='pending'
 	ConnectionRequestReceived bool // target → actor row exists with status='pending'
+	// Follow requests (private accounts, migration 010). Same shape as the
+	// connection-request pair above.
+	FollowRequestSent     bool // actor → target follow_requests row, status='pending'
+	FollowRequestReceived bool // target → actor follow_requests row, status='pending'
 }
 
 // GetRelationshipFull collapses CheckFollow (×2) + CheckBlock + CheckMute
@@ -955,7 +966,9 @@ func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.
 			EXISTS(SELECT 1 FROM connections WHERE user_a = $3 AND user_b = $4),
 			EXISTS(SELECT 1 FROM close_friends WHERE user_id = $2 AND friend_id = $1),
 			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'),
-			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $2 AND receiver_id = $1 AND status = 'pending')
+			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $2 AND receiver_id = $1 AND status = 'pending'),
+			EXISTS(SELECT 1 FROM follow_requests WHERE requester_id = $1 AND target_id = $2 AND status = 'pending'),
+			EXISTS(SELECT 1 FROM follow_requests WHERE requester_id = $2 AND target_id = $1 AND status = 'pending')
 	`, actorID, targetID, connA, connB)
 
 	var r RelationshipFull
@@ -969,6 +982,8 @@ func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.
 		&r.IsCloseFriend,
 		&r.ConnectionRequestSent,
 		&r.ConnectionRequestReceived,
+		&r.FollowRequestSent,
+		&r.FollowRequestReceived,
 	); err != nil {
 		return nil, err
 	}
@@ -1078,7 +1093,7 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 	}
 	result := make(map[uuid.UUID]Relationship, len(targetIDs))
 	for _, id := range targetIDs {
-		result[id] = Relationship{}
+		result[id] = Relationship{FollowRequestStatus: "none"}
 	}
 	if len(targetIDs) == 0 {
 		return result, nil
@@ -1137,6 +1152,23 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 			"viewer_is_close_friend_of_target",
 			`SELECT user_id FROM close_friends WHERE friend_id = $1 AND user_id = ANY($2)`,
 			func(r *Relationship) { r.ViewerIsCloseFriendOfTarget = true },
+		},
+		{
+			// Private accounts: the viewer's pending follow request toward the
+			// target. Sent wins over received when both somehow exist, matching
+			// the single-relationship contract's precedence.
+			"follow_request_sent",
+			`SELECT target_id FROM follow_requests WHERE requester_id = $1 AND target_id = ANY($2) AND status = 'pending'`,
+			func(r *Relationship) { r.FollowRequestStatus = "pending_sent" },
+		},
+		{
+			"follow_request_received",
+			`SELECT requester_id FROM follow_requests WHERE target_id = $1 AND requester_id = ANY($2) AND status = 'pending'`,
+			func(r *Relationship) {
+				if r.FollowRequestStatus == "none" {
+					r.FollowRequestStatus = "pending_received"
+				}
+			},
 		},
 	}
 
