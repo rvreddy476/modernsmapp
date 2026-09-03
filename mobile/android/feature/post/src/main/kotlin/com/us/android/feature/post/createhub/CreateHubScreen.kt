@@ -1,5 +1,7 @@
 package com.us.android.feature.post.createhub
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +45,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -208,16 +212,17 @@ private fun ImageSourceSurface(onClose: () -> Unit, onOpenStudio: (uris: List<St
         ActivityResultContracts.TakePicture(),
     ) { saved -> if (saved) cameraTarget?.let { onOpenStudio(listOf(it.toString())) } }
 
+    val openCamera = rememberCameraLaunch {
+        val target = captureUri(context, "jpg")
+        cameraTarget = target
+        takePicture.launch(target)
+    }
     MediaGallerySurface(
         kind = GalleryKind.Photos,
         title = "New photo post",
         subtitle = "Up to ten photos. Editing opens next.",
         onClose = onClose,
-        onCamera = {
-            val target = captureUri(context, "jpg")
-            cameraTarget = target
-            takePicture.launch(target)
-        },
+        onCamera = openCamera,
         onPicked = { uris -> onOpenStudio(uris.map { it.toString() }) },
         onSystemPicker = {
             pickImages.launch(
@@ -225,6 +230,32 @@ private fun ImageSourceSurface(onClose: () -> Unit, onOpenStudio: (uris: List<St
             )
         },
     )
+}
+
+/**
+ * Runs [capture] once the CAMERA permission is held, asking for it first when
+ * it is not.
+ *
+ * Delegated capture (ACTION_IMAGE_CAPTURE / ACTION_VIDEO_CAPTURE) needs no
+ * permission on its own — but this app DECLARES android.permission.CAMERA
+ * (`:core:call` needs it for video calls), and once a manifest declares it
+ * Android insists the runtime grant exists before the camera intent may
+ * start; without it the launch throws a SecurityException and the app dies.
+ * The emulator happened to have the grant, the founder's phone did not.
+ * A refusal leaves the gallery and system picker as the way in.
+ */
+@Composable
+private fun rememberCameraLaunch(capture: () -> Unit): () -> Unit {
+    val context = LocalContext.current
+    val latest = rememberUpdatedState(capture)
+    val request = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) latest.value() }
+    return {
+        val held = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (held) latest.value() else request.launch(Manifest.permission.CAMERA)
+    }
 }
 
 /** A grantable cache URI for the system camera to write into. */
@@ -259,17 +290,18 @@ private fun ReelSurface(
         ActivityResultContracts.CaptureVideo(),
     ) { saved -> if (saved) cameraTarget?.let(viewModel::onVideoPicked) }
 
+    val openCamera = rememberCameraLaunch {
+        val target = captureUri(context, "mp4")
+        cameraTarget = target
+        captureVideo.launch(target)
+    }
     if (state.videoUri == null) {
         MediaGallerySurface(
             kind = GalleryKind.Videos,
             title = "New reel",
             subtitle = "Pick a video — it posts to Reels.",
             onClose = onClose,
-            onCamera = {
-                val target = captureUri(context, "mp4")
-                cameraTarget = target
-                captureVideo.launch(target)
-            },
+            onCamera = openCamera,
             onPicked = { uris -> uris.firstOrNull()?.let(viewModel::onVideoPicked) },
             onSystemPicker = {
                 pickVideo.launch(
