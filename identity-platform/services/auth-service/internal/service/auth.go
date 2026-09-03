@@ -1127,7 +1127,7 @@ func (s *Service) ForgotPassword(ctx context.Context, identifier string) error {
 	}
 	if err := s.email.Send(ctx, EmailMessage{
 		To:      otpKey,
-		Subject: "Your atPost password reset code",
+		Subject: "Your Momentum password reset code",
 		TextBody: fmt.Sprintf(
 			"Your password reset code is %s.\n\n"+
 				"It expires in %d minutes. If you did not request a password reset, "+
@@ -1260,11 +1260,11 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID
 	}
 	if err := s.email.Send(ctx, EmailMessage{
 		To:      *user.Email,
-		Subject: "Verify your atPost email address",
+		Subject: "Verify your Momentum email address",
 		TextBody: fmt.Sprintf(
 			"Your verification code is %s.\n\n"+
 				"It expires in %d minutes. Enter it in the app to finish setting up "+
-				"your account.\n\nIf you did not create an atPost account, you can "+
+				"your account.\n\nIf you did not create a Momentum account, you can "+
 				"ignore this email — the address will not be used.\n",
 			otp, int(s.cfg.OTPExpiry.Minutes())),
 	}); err != nil {

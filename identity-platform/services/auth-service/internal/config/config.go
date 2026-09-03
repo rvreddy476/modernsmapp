@@ -209,7 +209,7 @@ func Load() *Config {
 		Production:               IsProductionEnv(),
 		RequireMFAForPrivileged:  getEnvBool("REQUIRE_MFA_FOR_PRIVILEGED", false),
 		WebAuthnRPID:             getEnv("WEBAUTHN_RP_ID", "localhost"),
-		WebAuthnRPDisplayName:    getEnv("WEBAUTHN_RP_NAME", "atPost"),
+		WebAuthnRPDisplayName:    getEnv("WEBAUTHN_RP_NAME", "Momentum"),
 		WebAuthnRPOrigins:        splitAndClean(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:3000")),
 	}
 	return cfg
