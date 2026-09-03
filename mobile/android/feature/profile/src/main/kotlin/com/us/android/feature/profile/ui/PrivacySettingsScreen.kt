@@ -180,10 +180,9 @@ private fun ContactPermissionSection(
     locked: Boolean,
     viewModel: PrivacySettingsViewModel,
 ) {
+    // Messaging audience lives under Interactions → Direct messages; a second
+    // control for the same setting here would only invite disagreement.
     UsSettingsSection("Contact permissions") {
-        PrivacySelect("Who can message you", value.whoCanMessage, MESSAGE_OPTIONS, locked) {
-            viewModel.select(PrivacyEnumField.MESSAGE, it)
-        }
         PrivacySelect("Who can add you to groups", value.whoCanAddToGroups, GROUP_ADD_OPTIONS, locked) {
             viewModel.select(PrivacyEnumField.GROUP_ADD, it)
         }
@@ -272,15 +271,6 @@ private fun PrivacySelect(
 
 private fun options(vararg pairs: Pair<String, String>) =
     pairs.map { UsSettingsOption(it.first, it.second) }
-
-private val MESSAGE_OPTIONS = options(
-    "no_one" to "No one",
-    "connections_only" to "Connections",
-    "connections_and_mutual_followers" to "Connections + mutual followers",
-    "friends_of_friends_requests" to "Friends of friends via requests",
-    "followers_message_requests" to "Followers via requests",
-    "everyone_message_requests" to "Everyone via requests",
-)
 
 private val VISIBILITY_OPTIONS = options(
     "no_one" to "No one",

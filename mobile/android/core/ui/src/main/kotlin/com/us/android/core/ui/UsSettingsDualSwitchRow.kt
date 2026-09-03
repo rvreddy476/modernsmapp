@@ -57,7 +57,7 @@ fun UsSettingsDualSwitchRow(
                 .semantics { contentDescription = "$title, in-app" },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Switch(checked = inApp, onCheckedChange = onInAppChange, enabled = enabled)
+            Switch(checked = inApp, onCheckedChange = onInAppChange, enabled = enabled, colors = usSwitchColors())
         }
         Column(
             modifier = Modifier
@@ -65,7 +65,7 @@ fun UsSettingsDualSwitchRow(
                 .semantics { contentDescription = "$title, push" },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Switch(checked = push, onCheckedChange = onPushChange, enabled = pushEnabled)
+            Switch(checked = push, onCheckedChange = onPushChange, enabled = pushEnabled, colors = usSwitchColors())
         }
     }
 }

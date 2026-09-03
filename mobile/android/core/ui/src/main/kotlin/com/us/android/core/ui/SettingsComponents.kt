@@ -11,6 +11,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -74,7 +76,12 @@ fun UsSettingsSwitchRow(
                 )
             }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            colors = usSwitchColors(),
+        )
     }
 }
 
@@ -136,7 +143,9 @@ fun UsSettingsSelectRow(
     enabled: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val label = options.firstOrNull { it.value == selected }?.label ?: selected
+    // An empty selection is a real state (nothing chosen yet), and a row with
+    // no value on it reads as broken rather than unset.
+    val label = options.firstOrNull { it.value == selected }?.label ?: selected.ifBlank { "Not set" }
     Column(modifier = modifier.fillMaxWidth()) {
         UsSettingsLinkRow(
             title = title,
@@ -158,3 +167,17 @@ fun UsSettingsSelectRow(
         }
     }
 }
+
+/**
+ * Switch colours for every settings toggle.
+ *
+ * Material's default paints a checked track in the theme primary, which is
+ * the brand orange. Settings toggles read as state, not as calls to action,
+ * so they take the green accent the chat surfaces already use; the thumb
+ * stays white so the on/off contrast survives both themes.
+ */
+@Composable
+fun usSwitchColors(): SwitchColors = SwitchDefaults.colors(
+    checkedTrackColor = UsTheme.extended.chatAccent,
+    checkedThumbColor = androidx.compose.ui.graphics.Color.White,
+)
