@@ -36,8 +36,12 @@ type Store interface {
 }
 
 // DefaultRequiredServices is every service that holds user data and must
-// confirm erasure before auth anonymises the credential row.
-const DefaultRequiredServices = "graph,post,feed,user,profile,message,call,notification,media,search,live,trust-safety"
+// confirm erasure before auth anonymises the credential row. Names are the
+// ack `service` strings each consumer emits: the identity user-service acks
+// as "user", the Architecture user-service (wellbeing, pages, portfolio) as
+// "user-extras", the two live services as "live" and "live-v2". Leaving one
+// out means a purge can complete while that slice still holds data.
+const DefaultRequiredServices = "graph,post,feed,user,user-extras,profile,message,call,notification,media,search,live,live-v2,trust-safety,dating"
 
 const (
 	// DefaultTickInterval — how often the worker scans for due accounts.
