@@ -4,6 +4,8 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.profile.data.WellbeingApi
+import com.us.android.core.profile.data.WellbeingGuardCache
+import com.us.android.core.profile.data.WellbeingGuardSnapshot
 import com.us.android.core.profile.data.WellbeingRepository
 import com.us.android.core.profile.data.dto.ScreenTimeDayDto
 import com.us.android.core.profile.data.dto.ScreenTimeReportRequest
@@ -11,6 +13,7 @@ import com.us.android.core.profile.data.dto.ScreenTimeWeekDto
 import com.us.android.core.profile.data.dto.UpdateWellbeingRequest
 import com.us.android.core.profile.data.dto.WellbeingDto
 import com.us.android.core.testing.MainDispatcherRule
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -56,8 +59,16 @@ class ScreenTimeViewModelTest {
         }
     }
 
-    private fun buildViewModel(api: FakeApi = FakeApi()) =
-        ScreenTimeViewModel(WellbeingRepository(api, ErrorMapper(json))) to api
+    private class FakeGuardCache : WellbeingGuardCache {
+        var stored: WellbeingGuardSnapshot? = null
+        override suspend fun read() = stored
+        override suspend fun write(snapshot: WellbeingGuardSnapshot) {
+            stored = snapshot
+        }
+    }
+
+    private fun TestScope.buildViewModel(api: FakeApi = FakeApi()) =
+        ScreenTimeViewModel(WellbeingRepository(api, ErrorMapper(json), FakeGuardCache(), backgroundScope)) to api
 
     private fun ScreenTimeViewModel.editing() = state.value as ScreenTimeUiState.Editing
 
@@ -129,5 +140,22 @@ class ScreenTimeViewModelTest {
         assertThat((api.lastRequest?.bedtimeStart as? JsonPrimitive)?.content).isEqualTo("23:00")
         assertThat((api.lastRequest?.bedtimeEnd as? JsonPrimitive)?.content).isEqualTo("07:00")
         assertThat(viewModel.editing().dirty).isFalse()
+    }
+
+    @Test
+    fun `save adopts the result into the repository's shared guard snapshot`() = runTest {
+        // ScreenTimeGuardCoordinator reads WellbeingRepository.guardSnapshot
+        // rather than polling the network itself, so a save here must be
+        // visible there immediately — this is what makes that true.
+        val api = FakeApi().apply { loaded = loaded.copy(dailyLimitMins = 60) }
+        val cache = FakeGuardCache()
+        val repository = WellbeingRepository(api, ErrorMapper(json), cache, backgroundScope)
+        val viewModel = ScreenTimeViewModel(repository)
+
+        viewModel.setDailyLimit(90)
+        viewModel.save()
+
+        assertThat(repository.guardSnapshot.value?.dailyLimitMins).isEqualTo(90)
+        assertThat(cache.stored?.dailyLimitMins).isEqualTo(90)
     }
 }

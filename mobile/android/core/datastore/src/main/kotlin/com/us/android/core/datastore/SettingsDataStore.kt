@@ -153,6 +153,23 @@ class SettingsDataStore @Inject constructor(
         store.edit { it[KEY_USAGE_LEDGER] = encoded }
     }
 
+    /**
+     * The last server-confirmed daily-limit / sleep-window pair the
+     * screen-time guard resolves against — not the full wellbeing settings
+     * object, just what [com.us.android.screentime.ScreenTimeGuardCoordinator]
+     * needs. Lets a cold start show a correct nudge in the ~60 seconds before
+     * the first per-session fetch answers, instead of nudging blind. Opaque
+     * here for the same reason [usageLedger] is: this module cannot see
+     * `:core:profile`'s types.
+     */
+    val wellbeingGuardCache: Flow<String?> = store.data
+        .safe()
+        .map { it[KEY_WELLBEING_GUARD_CACHE] }
+
+    suspend fun setWellbeingGuardCache(encoded: String) {
+        store.edit { it[KEY_WELLBEING_GUARD_CACHE] = encoded }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -174,6 +191,7 @@ class SettingsDataStore @Inject constructor(
         val KEY_MODULE_ONBOARDING_COMPLETED = booleanPreferencesKey("module_onboarding_completed")
         val KEY_KEYWORD_FILTERS = stringPreferencesKey("keyword_filters")
         val KEY_USAGE_LEDGER = stringPreferencesKey("usage_ledger")
+        val KEY_WELLBEING_GUARD_CACHE = stringPreferencesKey("wellbeing_guard_cache")
         const val KEYWORD_SEPARATOR = ","
     }
 }

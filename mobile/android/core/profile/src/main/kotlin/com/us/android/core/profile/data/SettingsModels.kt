@@ -124,6 +124,23 @@ data class WellbeingSettings(
     val sleepHoursEnabled: Boolean get() = bedtimeStart != null && bedtimeEnd != null
 }
 
+/**
+ * The subset of [WellbeingSettings] [com.us.android.screentime.ScreenTimeGuardCoordinator]
+ * resolves against. A separate, smaller type rather than reusing
+ * [WellbeingSettings] directly so the guard's cache — and what gets persisted
+ * for a cold start — carries only the fields it actually reads.
+ */
+data class WellbeingGuardSnapshot(
+    val dailyLimitMins: Int?,
+    val bedtimeStart: String?,
+    val bedtimeEnd: String?,
+) {
+    val sleepHoursEnabled: Boolean get() = bedtimeStart != null && bedtimeEnd != null
+}
+
+fun WellbeingSettings.toGuardSnapshot(): WellbeingGuardSnapshot =
+    WellbeingGuardSnapshot(dailyLimitMins, bedtimeStart, bedtimeEnd)
+
 data class ScreenTimeDay(val date: String, val minutes: Int, val sessions: Int)
 
 data class ScreenTimeWeek(

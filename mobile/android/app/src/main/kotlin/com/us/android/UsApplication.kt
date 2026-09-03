@@ -84,7 +84,7 @@ class UsApplication : Application(), Configuration.Provider {
      */
     @Inject lateinit var screenTimeSync: com.us.android.screentime.ScreenTimeSyncCoordinator
 
-    /** Polls for the daily-limit / sleep-hours nudge; see the class doc. */
+    /** Local daily-limit / sleep-hours nudge, fetched once per foreground session; see the class doc. */
     @Inject lateinit var screenTimeGuard: com.us.android.screentime.ScreenTimeGuardCoordinator
 
     override fun onCreate() {
@@ -96,12 +96,17 @@ class UsApplication : Application(), Configuration.Provider {
                     appForegroundState.isForeground = false
                     chatLockManager.onAppBackgrounded()
                     screenTimeSync.onBackground()
+                    screenTimeGuard.onAppBackground()
                 }
 
                 override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
                     appForegroundState.isForeground = true
                     chatLockManager.onAppForegrounded()
                     screenTimeSync.onForeground()
+                    // One wellbeing fetch for this foreground session; see
+                    // ScreenTimeGuardCoordinator's class doc for why this
+                    // replaced fetching on every per-minute tick.
+                    screenTimeGuard.onAppForeground()
                 }
             },
         )
@@ -117,9 +122,10 @@ class UsApplication : Application(), Configuration.Provider {
         // Adoption of a migrated legacy draft — no-op on every start after the
         // first successful run.
         legacyAdoption.start()
-        // Once-a-minute poll for the screen-time nudge; a no-op call once
-        // already started (e.g. a config-change recreation of Application
-        // never happens, but the guard is defensive regardless).
+        // Once-a-minute LOCAL check for the screen-time nudge (no network —
+        // see the class doc); a no-op call once already started (e.g. a
+        // config-change recreation of Application never happens, but the
+        // guard is defensive regardless).
         screenTimeGuard.start()
         // setSafe, not setUnsafe: this is a lambda, so the loader — and the
         // OkHttp client behind it — is built on first image request rather

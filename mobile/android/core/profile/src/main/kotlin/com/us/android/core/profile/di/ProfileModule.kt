@@ -3,6 +3,7 @@ package com.us.android.core.profile.di
 import com.us.android.core.profile.data.AccountSecurityApi
 import com.us.android.core.profile.data.DataStoreKeywordFiltersCache
 import com.us.android.core.profile.data.DataStoreModulePreferencesCache
+import com.us.android.core.profile.data.DataStoreWellbeingGuardCache
 import com.us.android.core.profile.data.DeviceSecurityApi
 import com.us.android.core.profile.data.KeywordFiltersApi
 import com.us.android.core.profile.data.KeywordFiltersCache
@@ -14,6 +15,7 @@ import com.us.android.core.profile.data.PrivacySettingsApi
 import com.us.android.core.profile.data.ProfileApi
 import com.us.android.core.profile.data.ProfileDetailsApi
 import com.us.android.core.profile.data.WellbeingApi
+import com.us.android.core.profile.data.WellbeingGuardCache
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -102,4 +104,8 @@ object LaunchSafetySettingsModule {
     @Provides
     @Singleton
     fun provideKeywordFiltersCache(cache: DataStoreKeywordFiltersCache): KeywordFiltersCache = cache
+
+    @Provides
+    @Singleton
+    fun provideWellbeingGuardCache(cache: DataStoreWellbeingGuardCache): WellbeingGuardCache = cache
 }
