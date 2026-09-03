@@ -1,6 +1,7 @@
 package com.us.android.core.profile.data
 
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.profile.data.dto.FollowRequestDto
 import com.us.android.core.profile.data.dto.GraphStatusDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
@@ -11,6 +12,7 @@ import com.us.android.core.profile.data.dto.RelationshipDto
 import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.HTTP
 import retrofit2.http.POST
@@ -114,6 +116,29 @@ interface ProfileApi {
      */
     @HTTP(method = "DELETE", path = "v1/graph/block", hasBody = true)
     suspend fun unblock(@Body body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto>
+
+    /**
+     * Cancels the VIEWER'S OWN pending request to follow [targetId].
+     *
+     * `404 NOT_FOUND` when there is no pending request — the same shape as
+     * every other "there was nothing to act on" response on this platform, so
+     * it goes through the normal [ErrorMapper] path rather than a special case.
+     */
+    @DELETE("v1/graph/follow-requests/{targetId}")
+    suspend fun cancelFollowRequest(@Path("targetId") targetId: String): ApiEnvelope<GraphStatusDto>
+
+    /** Requests to follow the SIGNED-IN user's own private account, newest first. */
+    @GET("v1/graph/follow-requests/incoming")
+    suspend fun incomingFollowRequests(
+        @Query("limit") limit: Int,
+        @Query("cursor") cursor: String?,
+    ): ApiEnvelope<List<FollowRequestDto>>
+
+    @POST("v1/graph/follow-requests/{requesterId}/accept")
+    suspend fun acceptFollowRequest(@Path("requesterId") requesterId: String): ApiEnvelope<GraphStatusDto>
+
+    @POST("v1/graph/follow-requests/{requesterId}/decline")
+    suspend fun declineFollowRequest(@Path("requesterId") requesterId: String): ApiEnvelope<GraphStatusDto>
 
     // Deliberately absent: GET /v1/graph/blocked-and-muted.
     //

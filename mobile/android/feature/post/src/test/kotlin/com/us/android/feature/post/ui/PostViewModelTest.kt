@@ -100,6 +100,14 @@ class PostViewModelTest {
             error("post screen must not block")
         override suspend fun unblock(body: GraphUserIdRequest): Nothing =
             error("post screen must not unblock")
+        override suspend fun cancelFollowRequest(targetId: String): Nothing =
+            error("post screen must not cancel a follow request")
+        override suspend fun incomingFollowRequests(limit: Int, cursor: String?): Nothing =
+            error("post screen must not read follow requests")
+        override suspend fun acceptFollowRequest(requesterId: String): Nothing =
+            error("post screen must not accept a follow request")
+        override suspend fun declineFollowRequest(requesterId: String): Nothing =
+            error("post screen must not decline a follow request")
     }
 
     /**

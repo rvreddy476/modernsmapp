@@ -31,6 +31,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.us.android.core.common.error.AppError
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsSecondaryButton
@@ -210,7 +211,7 @@ private fun Composer(
     ) {
         state.submitError?.let {
             Text(
-                text = "Your comment wasn't posted. Tap send to try again.",
+                text = commentSubmitErrorMessage(it),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -258,6 +259,24 @@ private fun Composer(
         }
     }
 }
+
+/**
+ * What the composer says under a failed submit.
+ *
+ * `COMMENTS_RESTRICTED` is a friends-only refusal, not a transient failure —
+ * `state.draft` already keeps the typed text (see [CommentsController.submit]),
+ * so nothing here needs to re-save it, only word the message honestly: no
+ * "tap send to try again" for a request that will keep failing until the
+ * audience changes.
+ */
+internal fun commentSubmitErrorMessage(error: AppError): String =
+    if (error is AppError.Forbidden && error.code == CODE_COMMENTS_RESTRICTED) {
+        "Only friends can comment on this post"
+    } else {
+        "Your comment wasn't posted. Tap send to try again."
+    }
+
+private const val CODE_COMMENTS_RESTRICTED = "COMMENTS_RESTRICTED"
 
 private fun commentsHeading(count: Int): String = when (count) {
     0 -> "Comments"

@@ -423,6 +423,25 @@ object UsIcons {
         moveTo(6f, 6f)
         lineTo(18f, 18f)
     }
+
+    /** A padlock — marks a private account, next to its name. */
+    val Lock: ImageVector = stroked("Lock") {
+        moveTo(6.5f, 10.5f)
+        horizontalLineTo(17.5f)
+        curveTo(18.6f, 10.5f, 19.5f, 11.4f, 19.5f, 12.5f)
+        verticalLineTo(19f)
+        curveTo(19.5f, 20.1f, 18.6f, 21f, 17.5f, 21f)
+        horizontalLineTo(6.5f)
+        curveTo(5.4f, 21f, 4.5f, 20.1f, 4.5f, 19f)
+        verticalLineTo(12.5f)
+        curveTo(4.5f, 11.4f, 5.4f, 10.5f, 6.5f, 10.5f)
+        close()
+        moveTo(8f, 10.5f)
+        verticalLineTo(7.5f)
+        curveTo(8f, 5.3f, 9.8f, 3.5f, 12f, 3.5f)
+        curveTo(14.2f, 3.5f, 16f, 5.3f, 16f, 7.5f)
+        verticalLineTo(10.5f)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -2,13 +2,18 @@ package com.us.android.core.profile.data
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.model.FollowRequest
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.PersonalProfile
 import com.us.android.core.model.Profile
 import com.us.android.core.model.ProfileCounts
 import com.us.android.core.model.ProfileRelationship
 import com.us.android.core.model.ProfileStats
 import com.us.android.core.network.ErrorMapper
+import com.us.android.core.network.Paged
 import com.us.android.core.network.apiCall
+import com.us.android.core.network.pagedApiCall
+import com.us.android.core.profile.data.dto.FollowRequestDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
@@ -77,11 +82,23 @@ class ProfileRepository @Inject constructor(
                 ProfileRelationship(
                     isFollowing = it.follows,
                     isBlocked = it.blockedBy,
+                    isPrivate = it.isPrivate,
+                    followStatus = if (it.follows) {
+                        FollowStatus.FOLLOWING
+                    } else {
+                        FollowStatus.fromWire(it.followRequestStatus)
+                    },
                 )
             }
 
-    suspend fun follow(userId: String): AppResult<Unit> =
-        apiCall(errorMapper) { api.follow(GraphUserIdRequest(userId)) }.map { }
+    /**
+     * Follows [userId]. Returns the server's `status` — `"followed"` or
+     * `"requested"` — rather than [Unit], because a private target answers
+     * `"requested"` and the caller needs that to know the button settled on
+     * [FollowStatus.REQUESTED] rather than [FollowStatus.FOLLOWING].
+     */
+    suspend fun follow(userId: String): AppResult<String> =
+        apiCall(errorMapper) { api.follow(GraphUserIdRequest(userId)) }.map { it.status }
 
     suspend fun unfollow(userId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.unfollow(GraphUserIdRequest(userId)) }.map { }
@@ -91,7 +108,31 @@ class ProfileRepository @Inject constructor(
 
     suspend fun unblock(userId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.unblock(GraphUserIdRequest(userId)) }.map { }
+
+    /** Cancels the viewer's own pending request to follow [targetId]. */
+    suspend fun cancelFollowRequest(targetId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.cancelFollowRequest(targetId) }.map { }
+
+    /** Requests to follow the signed-in user's own private account. */
+    suspend fun incomingFollowRequests(
+        limit: Int = FOLLOW_REQUESTS_PAGE_SIZE,
+        cursor: String? = null,
+    ): AppResult<Paged<FollowRequest>> =
+        pagedApiCall(errorMapper) { api.incomingFollowRequests(limit, cursor) }
+            .map { page -> Paged(page.items.map { it.toDomain() }, page.nextCursor) }
+
+    suspend fun acceptFollowRequest(requesterId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.acceptFollowRequest(requesterId) }.map { }
+
+    suspend fun declineFollowRequest(requesterId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.declineFollowRequest(requesterId) }.map { }
+
+    companion object {
+        const val FOLLOW_REQUESTS_PAGE_SIZE = 20
+    }
 }
+
+private fun FollowRequestDto.toDomain() = FollowRequest(requesterId = requesterId, createdAt = createdAt)
 
 /**
  * The one and only place an [UpdateProfileRequest] is constructed.
@@ -156,6 +197,8 @@ private fun PublicProfileDto.toDomain() = Profile(
         posts = postCount,
     ),
     createdAt = createdAt,
+    isPrivate = isPrivate,
+    followStatus = FollowStatus.fromWire(followStatus),
     // Null, and that is the whole point: the server did not disclose these
     // fields, which is different from the user not having filled them in.
     personal = null,
@@ -192,6 +235,8 @@ private fun OwnProfileDto.toDomain() = Profile(
         posts = postCount,
     ),
     createdAt = createdAt,
+    isPrivate = isPrivate,
+    // FollowStatus has no meaning toward yourself; left at its NONE default.
     personal = PersonalProfile(
         firstName = firstName,
         lastName = lastName,

@@ -7,12 +7,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,6 +39,7 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.PersonalProfile
 import com.us.android.core.model.Profile
 import com.us.android.core.model.ProfileCounts
@@ -95,6 +99,8 @@ fun ProfileScreen(
             onFollowToggle = viewModel::onFollowToggle,
             onBlockToggle = viewModel::onBlockToggle,
             onDismissActionError = viewModel::dismissActionError,
+            onConfirmCancelRequest = viewModel::onConfirmCancelRequest,
+            onDismissCancelRequestConfirm = viewModel::onDismissCancelRequestConfirm,
             onMessage = if (destinations.onOpenChat == null) {
                 null
             } else {
@@ -114,6 +120,12 @@ data class ProfileDestinations(
     val onEditProfile: (() -> Unit)? = null,
     val onOpenSettings: (() -> Unit)? = null,
     val onOpenChat: ((conversationId: String, title: String) -> Unit)? = null,
+    /**
+     * Opens the incoming follow-requests screen. Only ever supplied to the
+     * OWN-profile registration — approving strangers into someone else's
+     * private account is not a control a viewer of that profile could reach.
+     */
+    val onOpenFollowRequests: (() -> Unit)? = null,
 )
 
 internal data class ProfileActions(
@@ -121,6 +133,8 @@ internal data class ProfileActions(
     val onFollowToggle: () -> Unit,
     val onBlockToggle: () -> Unit,
     val onDismissActionError: () -> Unit,
+    val onConfirmCancelRequest: () -> Unit = {},
+    val onDismissCancelRequestConfirm: () -> Unit = {},
     val onMessage: ((userId: String, displayName: String) -> Unit)? = null,
     val onDismissChatError: () -> Unit = {},
 )
@@ -228,6 +242,16 @@ private fun LoadedProfile(
             )
         }
 
+        // Same gating as Edit profile, and for the same reason: approving
+        // someone into THIS account only makes sense on the account's own
+        // screen.
+        if (profile.isOwnProfile && destinations.onOpenFollowRequests != null) {
+            RequestsPill(
+                count = state.incomingFollowRequestCount,
+                onClick = destinations.onOpenFollowRequests,
+            )
+        }
+
         if (!profile.isOwnProfile) {
             MessageControls(
                 profile = profile,
@@ -245,33 +269,89 @@ private fun LoadedProfile(
         }
 
         state.actionError?.let { error ->
-            // Transient and dismissible: a failed unfollow must not replace a
-            // successfully loaded profile with an error screen.
-            Text(
-                text = error,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { }
-                    .padding(bottom = UsTheme.spacing.m),
-            )
-            UsSecondaryButton(
-                text = "Dismiss",
-                onClick = actions.onDismissActionError,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            ActionErrorBanner(message = error, onDismiss = actions.onDismissActionError)
         }
 
-        // The post grid is not built here. `/v1/posts/by-author/:id` was not
-        // part of the verified capture, and inventing its list DTO is exactly
-        // the failure this project keeps paying for.
+        PostsPlaceholder(profile = profile, followStatus = state.relationship.followStatus)
+    }
+
+    if (state.showCancelRequestConfirm) {
+        CancelRequestDialog(
+            onConfirm = actions.onConfirmCancelRequest,
+            onDismiss = actions.onDismissCancelRequestConfirm,
+        )
+    }
+}
+
+/** The "Requests" pill on the own-profile header — a count once the first page has one. */
+@Composable
+private fun RequestsPill(count: Int?, onClick: () -> Unit) {
+    UsSecondaryButton(
+        text = count?.takeIf { it > 0 }?.let { "Requests ($it)" } ?: "Requests",
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/**
+ * A failed relationship action, transient and dismissible.
+ *
+ * Losing a successfully loaded profile to an error screen because an unfollow
+ * failed would be a worse outcome than the failure itself.
+ */
+@Composable
+private fun ActionErrorBanner(message: String, onDismiss: () -> Unit) {
+    Text(
+        text = message,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.error,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { }
+            .padding(bottom = UsTheme.spacing.m),
+    )
+    UsSecondaryButton(text = "Dismiss", onClick = onDismiss, modifier = Modifier.fillMaxWidth())
+}
+
+/**
+ * The post grid ITSELF is not built here. `/v1/posts/by-author/:id` was not
+ * part of the original verified capture, and inventing its list DTO is
+ * exactly the failure this project keeps paying for. What IS decidable
+ * without that contract is which EMPTY state belongs here: a private account
+ * the viewer cannot see into reads "no posts" as a lie — there may be plenty,
+ * just not to this viewer.
+ */
+@Composable
+private fun PostsPlaceholder(profile: Profile, followStatus: FollowStatus) {
+    if (!profile.isOwnProfile && profile.isPrivate && followStatus != FollowStatus.FOLLOWING) {
+        UsEmptyState(
+            title = "This account is private",
+            detail = "Follow to see their posts.",
+            modifier = Modifier.fillMaxWidth(),
+        )
+    } else {
         UsEmptyState(
             title = "Posts coming soon",
             detail = "This surface lands once the post list contract is captured.",
             modifier = Modifier.fillMaxWidth(),
         )
     }
+}
+
+/** "Cancel your follow request?" — the one relationship action that confirms before it acts. */
+@Composable
+private fun CancelRequestDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cancel follow request?") },
+        text = { Text("They won't be notified that you asked.") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Cancel request") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Keep waiting") }
+        },
+    )
 }
 
 /**
@@ -379,6 +459,9 @@ private fun ProfileHeader(
                         color = UsTheme.extended.statusSuccess,
                     )
                 }
+                if (profile.isPrivate) {
+                    PrivateBadge()
+                }
             }
 
             profile.subtitle()?.let {
@@ -400,6 +483,29 @@ private fun ProfileHeader(
         }
     }
 }
+
+/** Lock icon + "Private", next to the name — the account-level flag, not a relationship. */
+@Composable
+private fun PrivateBadge() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        Icon(
+            imageVector = UsIcons.Lock,
+            contentDescription = null,
+            tint = UsTheme.extended.textMuted,
+            modifier = Modifier.size(PRIVATE_BADGE_ICON),
+        )
+        Text(
+            text = "Private",
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.textMuted,
+        )
+    }
+}
+
+private val PRIVATE_BADGE_ICON = 14.dp
 
 /**
  * Profession and location, joined only when both exist.
@@ -433,15 +539,18 @@ private fun RelationshipControls(
                 modifier = Modifier.fillMaxWidth(),
             )
         } else {
-            if (relationship.isFollowing) {
-                UsSecondaryButton(
-                    text = "Following",
+            when (relationship.followStatus) {
+                // A tap here does not unfollow — it arms the cancel-request
+                // confirmation. The button itself does not know that; it only
+                // reports the tap, same as every other state.
+                FollowStatus.FOLLOWING, FollowStatus.REQUESTED -> UsSecondaryButton(
+                    text = if (relationship.followStatus == FollowStatus.FOLLOWING) "Following" else "Requested",
                     onClick = onFollowToggle,
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 )
-            } else {
-                UsButton(
+
+                FollowStatus.NONE -> UsButton(
                     text = "Follow",
                     onClick = onFollowToggle,
                     loading = busy,
@@ -515,13 +624,45 @@ private fun ProfileOtherPreview() = PreviewHost(previewState())
 
 @Preview(name = "Other user — following", showBackground = true, heightDp = 640)
 @Composable
-private fun ProfileFollowingPreview() =
-    PreviewHost(previewState(relationship = ProfileRelationship(isFollowing = true)))
+private fun ProfileFollowingPreview() = PreviewHost(
+    previewState(relationship = ProfileRelationship(isFollowing = true, followStatus = FollowStatus.FOLLOWING)),
+)
 
 @Preview(name = "Other user — blocked", showBackground = true, heightDp = 640)
 @Composable
 private fun ProfileBlockedPreview() =
     PreviewHost(previewState(relationship = ProfileRelationship(isBlocked = true)))
+
+@Preview(name = "Private account — not following", showBackground = true, heightDp = 640)
+@Composable
+private fun ProfilePrivateNotFollowingPreview() = PreviewHost(
+    previewState(
+        profile = previewProfile.copy(isPrivate = true),
+        relationship = ProfileRelationship(isPrivate = true),
+    ),
+)
+
+@Preview(name = "Private account — requested", showBackground = true, heightDp = 640)
+@Composable
+private fun ProfilePrivateRequestedPreview() = PreviewHost(
+    previewState(
+        profile = previewProfile.copy(isPrivate = true),
+        relationship = ProfileRelationship(isPrivate = true, followStatus = FollowStatus.REQUESTED),
+    ),
+)
+
+@Preview(name = "Private account — following", showBackground = true, heightDp = 640)
+@Composable
+private fun ProfilePrivateFollowingPreview() = PreviewHost(
+    previewState(
+        profile = previewProfile.copy(isPrivate = true),
+        relationship = ProfileRelationship(
+            isFollowing = true,
+            isPrivate = true,
+            followStatus = FollowStatus.FOLLOWING,
+        ),
+    ),
+)
 
 @Preview(name = "Own profile", showBackground = true, heightDp = 640)
 @Composable

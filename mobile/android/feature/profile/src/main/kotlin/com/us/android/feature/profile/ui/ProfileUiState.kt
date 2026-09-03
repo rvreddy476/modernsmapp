@@ -43,7 +43,7 @@ sealed interface ProfileUiState {
          */
         val stats: ProfileStats?,
         val relationship: ProfileRelationship,
-        /** True while a follow/block mutation is in flight. */
+        /** True while a follow/block/cancel-request mutation is in flight. */
         val relationshipBusy: Boolean = false,
         /**
          * Set when a relationship action failed. Surfaced as transient
@@ -52,6 +52,23 @@ sealed interface ProfileUiState {
          * failure itself.
          */
         val actionError: String? = null,
+        /**
+         * True while the screen is asking "cancel your follow request?"
+         * before it actually cancels one.
+         *
+         * A tap on "Requested" is destructive in a way Follow/Unfollow are
+         * not — it discards a pending ask the other person may already be
+         * about to approve — so it gets a confirmation the plain toggle
+         * never needed.
+         */
+        val showCancelRequestConfirm: Boolean = false,
+        /**
+         * The count from the FIRST PAGE of `GET /v1/graph/follow-requests/incoming`,
+         * fetched alongside the profile only when this is the signed-in user's
+         * own. Null on someone else's profile, where the "Requests" pill never
+         * renders.
+         */
+        val incomingFollowRequestCount: Int? = null,
     ) : ProfileUiState {
 
         /** Stats when available, profile counts otherwise. Never both. */

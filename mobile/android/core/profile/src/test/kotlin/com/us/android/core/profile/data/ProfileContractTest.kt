@@ -9,6 +9,7 @@ package com.us.android.core.profile.data
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -166,11 +167,127 @@ class ProfileContractTest {
         val result = repository.follow("e872a073-e1b6-4e5b-94ca-0dd31f12d93f")
 
         assertThat(result).isInstanceOf(AppResult.Success::class.java)
+        assertThat((result as AppResult.Success).data).isEqualTo("followed")
         val request = server.takeRequest()
         assertThat(request.method).isEqualTo("POST")
         assertThat(request.target).isEqualTo("/v1/graph/follow")
         assertThat(request.body?.utf8())
             .isEqualTo("""{"user_id":"e872a073-e1b6-4e5b-94ca-0dd31f12d93f"}""")
+    }
+
+    /** A private target answers "requested" instead of "followed" — the client must not flatten the two. */
+    @Test
+    fun `following a private target returns the requested status`() = runTest {
+        enqueue(200, """{"data":{"status":"requested"}}""")
+
+        val result = repository.follow("e872a073-e1b6-4e5b-94ca-0dd31f12d93f")
+
+        assertThat((result as AppResult.Success).data).isEqualTo("requested")
+    }
+
+    @Test
+    fun `is_private and follow_status on the profile payload map onto the domain model`() = runTest {
+        enqueue(
+            200,
+            """{"data":{"user_id":"u","display_name":"A","is_private":true,"follow_status":"requested"}}""",
+        )
+
+        val profile = (repository.getProfile("u") as AppResult.Success).data
+
+        assertThat(profile.isPrivate).isTrue()
+        assertThat(profile.followStatus).isEqualTo(FollowStatus.REQUESTED)
+    }
+
+    /** Public and anonymous viewers never see `follow_status`; it must degrade to NONE, not crash. */
+    @Test
+    fun `an absent follow_status degrades to NONE`() = runTest {
+        enqueue(200, """{"data":{"user_id":"u","display_name":"A","is_private":false}}""")
+
+        val profile = (repository.getProfile("u") as AppResult.Success).data
+
+        assertThat(profile.followStatus).isEqualTo(FollowStatus.NONE)
+    }
+
+    @Test
+    fun `the relationship endpoint's follow_request_status maps to a pending follow`() = runTest {
+        enqueue(
+            200,
+            """{"data":{"follows":false,"followed_by":false,"blocked":false,"blocked_by":false,"is_connection":false,"connection_status":"","follow_request_status":"pending_sent","is_private":true}}""",
+        )
+
+        val relationship = (repository.relationship("viewer", "u") as AppResult.Success).data
+
+        assertThat(relationship.followStatus).isEqualTo(FollowStatus.REQUESTED)
+        assertThat(relationship.isPrivate).isTrue()
+        assertThat(relationship.isFollowing).isFalse()
+    }
+
+    /** `follows: true` wins over any request-status string the server also sends. */
+    @Test
+    fun `an established follow reports FOLLOWING regardless of follow_request_status`() = runTest {
+        enqueue(200, """{"data":{"follows":true,"follow_request_status":"pending_sent"}}""")
+
+        val relationship = (repository.relationship("viewer", "u") as AppResult.Success).data
+
+        assertThat(relationship.followStatus).isEqualTo(FollowStatus.FOLLOWING)
+    }
+
+    @Test
+    fun `cancelling a follow request deletes the captured path`() = runTest {
+        enqueue(200, """{"data":{"status":"cancelled"}}""")
+
+        val result = repository.cancelFollowRequest("e872a073-e1b6-4e5b-94ca-0dd31f12d93f")
+
+        assertThat(result).isInstanceOf(AppResult.Success::class.java)
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("DELETE")
+        assertThat(request.target).isEqualTo("/v1/graph/follow-requests/e872a073-e1b6-4e5b-94ca-0dd31f12d93f")
+    }
+
+    @Test
+    fun `cancelling a request that does not exist maps to NotFound`() = runTest {
+        enqueue(404, """{"error":{"code":"NOT_FOUND","message":"no pending request"}}""")
+
+        val result = repository.cancelFollowRequest("u")
+
+        assertThat((result as AppResult.Failure).error).isInstanceOf(AppError.NotFound::class.java)
+    }
+
+    @Test
+    fun `incoming follow requests page and map to the domain model`() = runTest {
+        enqueue(
+            200,
+            """{"data":[{"requester_id":"r1","created_at":"2026-08-16T17:53:05Z"}],"meta":{"next_cursor":"c1"}}""",
+        )
+
+        val result = repository.incomingFollowRequests()
+
+        assertThat(result).isInstanceOf(AppResult.Success::class.java)
+        val page = (result as AppResult.Success).data
+        assertThat(page.items.single().requesterId).isEqualTo("r1")
+        assertThat(page.nextCursor).isEqualTo("c1")
+    }
+
+    @Test
+    fun `accepting a follow request posts to the requester's path`() = runTest {
+        enqueue(200, """{"data":{"status":"accepted"}}""")
+
+        repository.acceptFollowRequest("r1")
+
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("POST")
+        assertThat(request.target).isEqualTo("/v1/graph/follow-requests/r1/accept")
+    }
+
+    @Test
+    fun `declining a follow request posts to the requester's path`() = runTest {
+        enqueue(200, """{"data":{"status":"declined"}}""")
+
+        repository.declineFollowRequest("r1")
+
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("POST")
+        assertThat(request.target).isEqualTo("/v1/graph/follow-requests/r1/decline")
     }
 
     /**

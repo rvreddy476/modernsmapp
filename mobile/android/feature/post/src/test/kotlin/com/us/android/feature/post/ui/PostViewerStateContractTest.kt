@@ -79,6 +79,10 @@ class PostViewerStateContractTest {
         override suspend fun unfollow(body: GraphUserIdRequest): Nothing = error("not used")
         override suspend fun block(body: GraphUserIdRequest): Nothing = error("not used")
         override suspend fun unblock(body: GraphUserIdRequest): Nothing = error("not used")
+        override suspend fun cancelFollowRequest(targetId: String): Nothing = error("not used")
+        override suspend fun incomingFollowRequests(limit: Int, cursor: String?): Nothing = error("not used")
+        override suspend fun acceptFollowRequest(requesterId: String): Nothing = error("not used")
+        override suspend fun declineFollowRequest(requesterId: String): Nothing = error("not used")
     }
 
     private class FakeMediaApi : MediaApi {

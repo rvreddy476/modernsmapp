@@ -60,6 +60,13 @@ data class PublicProfileDto(
     @SerialName("friend_count") val friendCount: Int = 0,
     @SerialName("post_count") val postCount: Int = 0,
     @SerialName("created_at") val createdAt: String = "",
+    /** Present for every viewer, owner included. */
+    @SerialName("is_private") val isPrivate: Boolean = false,
+    /**
+     * `"none"|"requested"|"following"` — present only for a signed-in
+     * non-owner viewer; omitted (so null here) for anonymous or the owner.
+     */
+    @SerialName("follow_status") val followStatus: String? = null,
 )
 
 /**
@@ -109,6 +116,8 @@ data class OwnProfileDto(
     @SerialName("post_count") val postCount: Int = 0,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
+    /** Whether the OWNER'S OWN account is private. No `follow_status`: that has no meaning toward yourself. */
+    @SerialName("is_private") val isPrivate: Boolean = false,
 )
 
 /**
@@ -233,4 +242,14 @@ data class RelationshipDto(
     @SerialName("blocked_by") val blockedBy: Boolean = false,
     @SerialName("is_connection") val isConnection: Boolean = false,
     @SerialName("connection_status") val connectionStatus: String = "",
+    /** `"none"|"pending_sent"|"pending_received"`. */
+    @SerialName("follow_request_status") val followRequestStatus: String = "",
+    @SerialName("is_private") val isPrivate: Boolean = false,
+)
+
+/** One row of `GET /v1/graph/follow-requests/incoming`. */
+@Serializable
+data class FollowRequestDto(
+    @SerialName("requester_id") val requesterId: String = "",
+    @SerialName("created_at") val createdAt: String = "",
 )

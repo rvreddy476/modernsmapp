@@ -194,6 +194,22 @@ class NotificationsViewModel @Inject constructor(
         }
 
     /**
+     * Approves an incoming follow request. The requester is
+     * [Notification.actorUserId] — the person who asked, not the signed-in
+     * user who is deciding — the same id the "follow back" row already keys
+     * off for [NotificationKind.Follow].
+     */
+    fun acceptFollowRequest(notification: Notification) =
+        runRowAction(notification, RowActionState.Accepted) {
+            actions.acceptFollowRequest(notification.actorUserId)
+        }
+
+    fun declineFollowRequest(notification: Notification) =
+        runRowAction(notification, RowActionState.Declined) {
+            actions.declineFollowRequest(notification.actorUserId)
+        }
+
+    /**
      * One row, one action at a time. Acting on a row also reads it: the user
      * has clearly seen it, and a badge that still counts a request they just
      * accepted is wrong in the direction people notice.

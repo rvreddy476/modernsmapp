@@ -126,6 +126,8 @@ fun NotificationsScreen(
             onAccept = viewModel::acceptRequest,
             onDecline = viewModel::declineRequest,
             onBlock = viewModel::blockRequest,
+            onAcceptFollow = viewModel::acceptFollowRequest,
+            onDeclineFollow = viewModel::declineFollowRequest,
         )
     }
 
@@ -179,6 +181,8 @@ private data class RowCallbacks(
     val onAccept: (Notification) -> Unit,
     val onDecline: (Notification) -> Unit,
     val onBlock: (Notification) -> Unit,
+    val onAcceptFollow: (Notification) -> Unit,
+    val onDeclineFollow: (Notification) -> Unit,
 )
 
 /**
@@ -305,6 +309,9 @@ private fun NotificationRow(
             if (notification.kind == NotificationKind.MessageRequest) {
                 RequestActions(notification, action, requestPending, callbacks)
             }
+            if (notification.kind == NotificationKind.FollowRequest) {
+                FollowRequestActions(notification, action, callbacks)
+            }
             if (action == RowActionState.Failed) {
                 Text(
                     text = "Couldn't do that. Try again.",
@@ -352,6 +359,45 @@ private fun RequestActions(
                 RowButton("Decline", filled = false, busy = busy) { callbacks.onDecline(notification) }
                 RowButton("Block", filled = false, busy = busy) { callbacks.onBlock(notification) }
             }
+        }
+    }
+}
+
+/**
+ * Accept / Decline under an incoming follow request, or the outcome once
+ * decided.
+ *
+ * No Block here, unlike [RequestActions]: a follow request is not a stranger
+ * message landing in the inbox — declining it is the whole boundary this
+ * control offers, and the account's existing block control lives on their
+ * profile for the case where more than "no" is warranted.
+ */
+@Composable
+private fun FollowRequestActions(
+    notification: Notification,
+    action: RowActionState?,
+    callbacks: RowCallbacks,
+) {
+    val outcome = when (action) {
+        RowActionState.Accepted -> "Accepted"
+        RowActionState.Declined -> "Declined"
+        else -> null
+    }
+    if (outcome != null) {
+        Text(
+            text = outcome,
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.padding(top = UsTheme.spacing.xs),
+        )
+    } else {
+        val busy = action == RowActionState.Busy
+        Row(
+            modifier = Modifier.padding(top = UsTheme.spacing.s),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        ) {
+            RowButton("Accept", filled = true, busy = busy) { callbacks.onAcceptFollow(notification) }
+            RowButton("Decline", filled = false, busy = busy) { callbacks.onDeclineFollow(notification) }
         }
     }
 }
@@ -511,6 +557,8 @@ internal fun Notification.describe(): String {
         NotificationKind.NewSubscriber -> "$who subscribed to you"
         NotificationKind.MessageRequest -> "$who sent you a message request"
         NotificationKind.DirectMessage -> "$who sent you a message"
+        NotificationKind.FollowRequest -> "$who requested to follow you"
+        NotificationKind.FollowRequestAccepted -> "$who accepted your follow request"
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
         is NotificationKind.Unknown -> "You have a new notification"

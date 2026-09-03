@@ -88,11 +88,21 @@ sealed interface NotificationKind {
     /** Someone sent you a direct message. Written by the chat consumer. */
     data object DirectMessage : NotificationKind
 
+    /**
+     * Someone asked to follow your PRIVATE account. The row carries the
+     * requester in `actorUserId`; Accept / Decline act on that id.
+     */
+    data object FollowRequest : NotificationKind
+
+    /** The account you asked to follow approved your request. */
+    data object FollowRequestAccepted : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
     companion object {
         /** Wire values, from `notification-service/internal/events/consumer.go`. */
+        @Suppress("CyclomaticComplexMethod") // One branch per wire type: a lookup table, not logic.
         fun fromWire(raw: String): NotificationKind = when (raw) {
             "reaction" -> Reaction
             "comment" -> Comment
@@ -106,6 +116,8 @@ sealed interface NotificationKind {
             "missed_call" -> MissedCall
             "message_request" -> MessageRequest
             "dm" -> DirectMessage
+            "follow_request" -> FollowRequest
+            "follow_request_accepted" -> FollowRequestAccepted
             else -> Unknown(raw)
         }
     }

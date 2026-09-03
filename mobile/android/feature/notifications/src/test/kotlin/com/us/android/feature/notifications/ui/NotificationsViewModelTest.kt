@@ -124,6 +124,12 @@ class NotificationsViewModelTest {
 
         override suspend fun blockRequest(conversationId: String) =
             result.also { calls += "block($conversationId)" }
+
+        override suspend fun acceptFollowRequest(requesterId: String) =
+            result.also { calls += "acceptFollow($requesterId)" }
+
+        override suspend fun declineFollowRequest(requesterId: String) =
+            result.also { calls += "declineFollow($requesterId)" }
     }
 
     private fun badge(repository: FakeRepository) = UnreadBadge(repository)
@@ -535,5 +541,46 @@ class NotificationsViewModelTest {
         assertThat(actions.calls).containsExactly("follow(actor)")
         assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Followed)
         assertThat(vm.state.value.followingIds).contains("actor")
+    }
+
+    // ── Follow requests (private accounts) ─────────────────────────────
+
+    /** The requester is the notification's actor, not its entity. */
+    @Test
+    fun `accepting a follow request calls the server with the requester's id`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(
+                AppResult.Success(NotificationPage(listOf(row("n1", kind = NotificationKind.FollowRequest)), null)),
+            )
+            count = AppResult.Success(1)
+        }
+        val actions = FakeActions()
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.acceptFollowRequest(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("acceptFollow(actor)")
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Accepted)
+        assertThat(repo.markedRead).containsExactly(NotificationAddress(202608, "ts-n1"))
+    }
+
+    @Test
+    fun `a failed decline on a follow request row says so and can be retried`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(
+                AppResult.Success(NotificationPage(listOf(row("n1", kind = NotificationKind.FollowRequest)), null)),
+            )
+        }
+        val actions = FakeActions().apply { result = failure() }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.declineFollowRequest(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("declineFollow(actor)")
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Failed)
     }
 }

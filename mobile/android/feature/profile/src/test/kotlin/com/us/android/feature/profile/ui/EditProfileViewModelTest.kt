@@ -7,6 +7,7 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.ProfileApi
 import com.us.android.core.profile.data.ProfileRepository
+import com.us.android.core.profile.data.dto.FollowRequestDto
 import com.us.android.core.profile.data.dto.GraphStatusDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
@@ -81,6 +82,15 @@ class EditProfileViewModelTest {
         override suspend fun block(body: GraphUserIdRequest) = ApiEnvelope(GraphStatusDto("blocked"))
 
         override suspend fun unblock(body: GraphUserIdRequest) = ApiEnvelope(GraphStatusDto("unblocked"))
+
+        override suspend fun cancelFollowRequest(targetId: String) = ApiEnvelope(GraphStatusDto("cancelled"))
+
+        override suspend fun incomingFollowRequests(limit: Int, cursor: String?) =
+            ApiEnvelope(emptyList<FollowRequestDto>())
+
+        override suspend fun acceptFollowRequest(requesterId: String) = ApiEnvelope(GraphStatusDto("accepted"))
+
+        override suspend fun declineFollowRequest(requesterId: String) = ApiEnvelope(GraphStatusDto("declined"))
 
         companion object {
             /** The 2026-08-17 repair viewer's `/me` payload. */

@@ -10,6 +10,7 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.us.android.feature.profile.ui.DirectMessagesScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
+import com.us.android.feature.profile.ui.FollowRequestsScreen
 import com.us.android.feature.profile.ui.NotificationSettingsScreen
 import com.us.android.feature.profile.ui.PrivacySettingsScreen
 import com.us.android.feature.profile.ui.ProfileDestinations
@@ -89,6 +90,7 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenFollowing: (userId: String) -> Unit,
     onEditProfile: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenFollowRequests: () -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -100,10 +102,34 @@ fun NavGraphBuilder.ownProfileScreen(
                 // on a screen whose subject the viewer has no right to change.
                 onEditProfile = onEditProfile,
                 onOpenSettings = onOpenSettings,
+                // Same reasoning as onEditProfile: approving someone into an
+                // account is only ever offered on that account's own screen.
+                onOpenFollowRequests = onOpenFollowRequests,
             ),
         )
     }
 }
+
+/**
+ * Incoming follow requests for the signed-in user's own private account.
+ *
+ * Carries no arguments for the same reason [EditProfileRoute] does not: the
+ * endpoints behind it — `GET /v1/graph/follow-requests/incoming` and its
+ * accept/decline actions — are all keyed off the access token, never a path
+ * id, so there is no "whose requests" to parameterize.
+ */
+@Serializable data object FollowRequestsRoute
+
+fun NavGraphBuilder.followRequestsScreen(
+    onBack: () -> Unit,
+    onOpenProfile: (userId: String) -> Unit,
+) {
+    composable<FollowRequestsRoute> {
+        FollowRequestsScreen(onBack = onBack, onOpenProfile = onOpenProfile)
+    }
+}
+
+fun NavController.navigateToFollowRequests() = navigate(FollowRequestsRoute)
 
 /**
  * Editing the signed-in user's own profile.

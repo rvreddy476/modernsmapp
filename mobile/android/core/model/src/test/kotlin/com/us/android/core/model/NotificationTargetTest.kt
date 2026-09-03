@@ -126,6 +126,11 @@ class NotificationTargetTest {
             "friend_request" to NotificationKind.ConnectionRequest,
             "friend_accepted" to NotificationKind.ConnectionAccepted,
             "new_subscriber" to NotificationKind.NewSubscriber,
+            "message_request" to NotificationKind.MessageRequest,
+            "dm" to NotificationKind.DirectMessage,
+            "missed_call" to NotificationKind.MissedCall,
+            "follow_request" to NotificationKind.FollowRequest,
+            "follow_request_accepted" to NotificationKind.FollowRequestAccepted,
         )
 
         for ((wire, kind) in expected) {

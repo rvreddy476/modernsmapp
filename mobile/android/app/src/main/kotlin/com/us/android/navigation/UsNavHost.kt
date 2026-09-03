@@ -82,7 +82,9 @@ import com.us.android.feature.profile.navigation.SecuritySettingsRoute
 import com.us.android.feature.profile.navigation.SettingsDestinations
 import com.us.android.feature.profile.navigation.SettingsSections
 import com.us.android.feature.profile.navigation.editProfileScreen
+import com.us.android.feature.profile.navigation.followRequestsScreen
 import com.us.android.feature.profile.navigation.navigateToEditProfile
+import com.us.android.feature.profile.navigation.navigateToFollowRequests
 import com.us.android.feature.profile.navigation.navigateToProfile
 import com.us.android.feature.profile.navigation.navigateToSettings
 import com.us.android.feature.profile.navigation.ownProfileScreen
@@ -553,6 +555,7 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onOpenFollowing = {},
         onEditProfile = { navController.navigateToEditProfile() },
         onOpenSettings = { navController.navigateToSettings() },
+        onOpenFollowRequests = { navController.navigateToFollowRequests() },
     )
     profileScreen(
         onOpenFollowers = {},
@@ -567,6 +570,12 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     editProfileScreen(
         onBack = { navController.popBackStack() },
         onSaved = { navController.popBackStack() },
+    )
+    // The private-account owner's approval queue. Opening a row is the same
+    // destination a Follow-back or any other profile link uses.
+    followRequestsScreen(
+        onBack = { navController.popBackStack() },
+        onOpenProfile = { userId -> navController.navigateToProfile(userId) },
     )
     // Signing-out destination shared by sign-out, deactivation and deletion:
     // all three end the session the same way, so all three land on the same

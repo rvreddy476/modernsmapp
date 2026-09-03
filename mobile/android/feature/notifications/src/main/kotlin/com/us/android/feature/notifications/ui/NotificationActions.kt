@@ -3,6 +3,7 @@ package com.us.android.feature.notifications.ui
 import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.common.result.map
 import com.us.android.core.model.SessionState
 import com.us.android.core.profile.data.ProfileRepository
 import kotlinx.coroutines.async
@@ -33,6 +34,10 @@ interface NotificationActions {
     suspend fun acceptRequest(conversationId: String): AppResult<Unit>
     suspend fun declineRequest(conversationId: String): AppResult<Unit>
     suspend fun blockRequest(conversationId: String): AppResult<Unit>
+
+    /** Approves an incoming follow request — a private account's owner only. */
+    suspend fun acceptFollowRequest(requesterId: String): AppResult<Unit>
+    suspend fun declineFollowRequest(requesterId: String): AppResult<Unit>
 }
 
 class DefaultNotificationActions @Inject constructor(
@@ -65,7 +70,10 @@ class DefaultNotificationActions @Inject constructor(
         }
     }
 
-    override suspend fun follow(userId: String): AppResult<Unit> = profiles.follow(userId)
+    // The row cannot tell "followed" from "requested" apart — and does not
+    // need to; a follow-back from the inbox settles on whichever the server
+    // decided, and the row just needs to know the write succeeded.
+    override suspend fun follow(userId: String): AppResult<Unit> = profiles.follow(userId).map { }
 
     override suspend fun acceptRequest(conversationId: String): AppResult<Unit> =
         chat.acceptRequest(conversationId)
@@ -75,6 +83,12 @@ class DefaultNotificationActions @Inject constructor(
 
     override suspend fun blockRequest(conversationId: String): AppResult<Unit> =
         chat.blockRequest(conversationId)
+
+    override suspend fun acceptFollowRequest(requesterId: String): AppResult<Unit> =
+        profiles.acceptFollowRequest(requesterId)
+
+    override suspend fun declineFollowRequest(requesterId: String): AppResult<Unit> =
+        profiles.declineFollowRequest(requesterId)
 
     private companion object {
         /** One page of follow notifications, not the whole graph. */

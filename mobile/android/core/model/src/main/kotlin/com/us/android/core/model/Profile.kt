@@ -52,6 +52,22 @@ data class Profile(
     val counts: ProfileCounts,
     val createdAt: String,
     /**
+     * `is_private` off the profile payload itself — present for EVERY viewer,
+     * owner included, unlike [followStatus] below. This is what the header
+     * badge and the locked-posts placeholder key off when the graph
+     * relationship call has not answered yet (or never will, e.g. the own
+     * profile screen never issues one).
+     */
+    val isPrivate: Boolean = false,
+    /**
+     * `follow_status` off the profile payload — present only for a signed-in
+     * non-owner viewer, [FollowStatus.NONE] otherwise. A FALLBACK only:
+     * [ProfileRelationship.followStatus] from `GET /v1/graph/relationship` is
+     * the authoritative answer once that call returns, the same way [counts]
+     * defers to [ProfileStats] once stats loads.
+     */
+    val followStatus: FollowStatus = FollowStatus.NONE,
+    /**
      * Present only for the signed-in user's own profile. Null for everyone
      * else — and null means "not disclosed to this viewer", never "empty".
      */
@@ -124,4 +140,59 @@ data class ProfileStats(
 data class ProfileRelationship(
     val isFollowing: Boolean = false,
     val isBlocked: Boolean = false,
+    /**
+     * Whether the PROFILE (not the viewer) is private. Carried on the
+     * relationship rather than only on [Profile] because the graph endpoint
+     * re-answers it on every fetch, the same way [followStatus] does — and a
+     * screen that only ever read [Profile.isPrivate] would miss a privacy
+     * change that happened between page loads.
+     */
+    val isPrivate: Boolean = false,
+    /**
+     * The tri-state the button actually renders: NONE ("Follow"), REQUESTED
+     * (a private target the viewer already asked to follow), or FOLLOWING.
+     * [isFollowing] is kept alongside it — rather than derived — because
+     * call sites outside the profile screen (the notification inbox's
+     * "follow back" row) only ever cared about the boolean and have no
+     * reason to learn about private accounts.
+     */
+    val followStatus: FollowStatus = FollowStatus.NONE,
 )
+
+/**
+ * The three states a follow control can be in.
+ *
+ * A private target answers `POST /v1/graph/follow` with `"requested"` instead
+ * of `"followed"` — the request needs the account owner's approval before
+ * [FOLLOWING] is real. Modelled as a closed set rather than a second boolean
+ * bolted onto [ProfileRelationship.isFollowing], because "requested but not
+ * following" and "not requested and not following" are genuinely different
+ * button states, not the same one with an extra flag.
+ */
+enum class FollowStatus {
+    NONE,
+    REQUESTED,
+    FOLLOWING,
+    ;
+
+    companion object {
+        /**
+         * `follow_status` on the profile payload (`"none"|"requested"|"following"`),
+         * or `follow_request_status` on the relationship (`"none"|"pending_sent"|"pending_received"`).
+         *
+         * `pending_received` deliberately maps to [NONE]: it means the OTHER
+         * account asked to follow the viewer, which says nothing about
+         * whether the viewer follows them — the direction this status
+         * describes.
+         */
+        fun fromWire(raw: String?): FollowStatus = when (raw) {
+            "following" -> FOLLOWING
+            "requested", "pending_sent" -> REQUESTED
+            else -> NONE
+        }
+
+        /** The `status` a successful `POST /v1/graph/follow` answers with. */
+        fun fromFollowResponse(status: String): FollowStatus =
+            if (status == "requested") REQUESTED else FOLLOWING
+    }
+}
