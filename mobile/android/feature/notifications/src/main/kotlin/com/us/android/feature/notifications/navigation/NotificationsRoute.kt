@@ -34,12 +34,19 @@ fun NavGraphBuilder.notificationsScreen(
      * `:app` owns which destination that is, so this feature never imports it.
      */
     onOpenPreferences: () -> Unit,
+    /**
+     * The Momentum redesign's Follow Requests panel opens the same approval
+     * queue `:feature:profile` already owns (`navigateToFollowRequests`).
+     * `:app` decides that, exactly like [onOpenPreferences].
+     */
+    onOpenFollowRequests: () -> Unit,
 ) {
     composable<NotificationsRoute> {
         NotificationsScreen(
             onBack = onBack,
             onOpenTarget = onOpenTarget,
             onOpenPreferences = onOpenPreferences,
+            onOpenFollowRequests = onOpenFollowRequests,
         )
     }
 }

@@ -31,7 +31,8 @@ fun NavGraphBuilder.feedScreen(
     onOpenMessages: () -> Unit,
     /** Slice D: the feed's top bar is the entry point to the inbox. */
     onOpenNotifications: () -> Unit,
-    onCreatePost: () -> Unit,
+    /** Momentum's header search glyph. `:app` decides where search lives. */
+    onOpenSearch: () -> Unit,
 ) {
     composable<FeedRoute> {
         FeedScreen(
@@ -39,7 +40,7 @@ fun NavGraphBuilder.feedScreen(
             onOpenAuthor = onOpenAuthor,
             onOpenMessages = onOpenMessages,
             onOpenNotifications = onOpenNotifications,
-            onCreatePost = onCreatePost,
+            onOpenSearch = onOpenSearch,
         )
     }
 }

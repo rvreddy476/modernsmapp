@@ -39,15 +39,48 @@ val OutfitFontFamily = FontFamily(
 )
 
 /**
- * Maps the Flutter type ramp onto Material 3 slots.
+ * Bodoni Moda, bundled as a variable font asset — the Momentum wordmark's
+ * typeface. Only the Black (900) instance is ever drawn: [UsWordmark] is the
+ * one call site, so this stays a single weight rather than the full family
+ * [OutfitFontFamily] and [FigtreeFontFamily] carry.
+ */
+@OptIn(ExperimentalTextApi::class)
+val MomentumWordmarkFontFamily = FontFamily(
+    Font(
+        resId = R.font.bodoni_moda_variable,
+        weight = FontWeight.Black,
+        variationSettings = FontVariation.Settings(FontVariation.weight(900)),
+    ),
+)
+
+/**
+ * Figtree, bundled as a variable font asset — Momentum's body/label
+ * typeface. Outfit remains the heading face (see [UsTypography]); Figtree is
+ * what a reader spends the most time actually reading, and the Momentum
+ * frames draw it noticeably rounder and quieter than Outfit's geometric
+ * headings.
+ */
+@OptIn(ExperimentalTextApi::class)
+private fun figtree(weight: Int) = Font(
+    resId = R.font.figtree_variable,
+    weight = FontWeight(weight),
+    variationSettings = FontVariation.Settings(FontVariation.weight(weight)),
+)
+
+val FigtreeFontFamily = FontFamily(
+    figtree(400),
+    figtree(500),
+    figtree(600),
+    figtree(700),
+)
+
+/**
+ * Maps the type ramp onto Material 3 slots.
  *
- * Flutter name -> M3 slot (from app_text_styles.dart):
- *   h1   28/w900 -> headlineMedium      logo 26/w900 -> headlineSmall
- *   h2   17/w700 -> titleLarge          h3   15/w700 -> titleMedium
- *   body 14.5/w400 (1.55 line) -> bodyLarge
- *   bodyMedium 14/w500 -> bodyMedium    bodySmall 13/w500 -> bodySmall
- *   label 13/w600 -> labelLarge         labelSmall 11/w600 -> labelMedium
- *   labelTiny 10/w700 -> labelSmall
+ * Headings stay Outfit (ExtraBold/Bold); body and label steps moved to
+ * Figtree with the Momentum redesign (2026-09-03) — bodyLarge 15/400,
+ * bodyMedium 13/500, bodySmall 11/500, labelSmall 10/700, per the Figma type
+ * ramp. Weight mapping: Regular 400, Medium 500, SemiBold 600, Bold 700.
  *
  * Colours are NOT baked into these styles. Flutter's text styles carry a
  * colour; in Compose that fights LocalContentColor and makes components
@@ -68,9 +101,9 @@ val UsTypography = Typography(
     ),
     titleLarge = TextStyle(
         fontFamily = OutfitFontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = 17.sp,
-        lineHeight = 22.sp,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
     ),
     titleMedium = TextStyle(
         fontFamily = OutfitFontFamily,
@@ -79,38 +112,37 @@ val UsTypography = Typography(
         lineHeight = 20.sp,
     ),
     bodyLarge = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.Normal,
-        fontSize = 14.5.sp,
-        // Flutter height: 1.55 is a multiplier -> 14.5 * 1.55 ~= 22.5sp
-        lineHeight = 22.5.sp,
+        fontSize = 15.sp,
+        lineHeight = 21.sp,
     ),
     bodyMedium = TextStyle(
-        fontFamily = OutfitFontFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = 14.sp,
-        lineHeight = 20.sp,
-    ),
-    bodySmall = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.Medium,
         fontSize = 13.sp,
         lineHeight = 18.sp,
     ),
+    bodySmall = TextStyle(
+        fontFamily = FigtreeFontFamily,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 15.sp,
+    ),
     labelLarge = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 13.sp,
         lineHeight = 17.sp,
     ),
     labelMedium = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 11.sp,
         lineHeight = 15.sp,
     ),
     labelSmall = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = FigtreeFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 10.sp,
         lineHeight = 14.sp,

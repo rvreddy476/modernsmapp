@@ -2,11 +2,11 @@ package com.us.android.core.designsystem.component
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -146,10 +148,8 @@ fun UsRootTopBar(
 }
 
 /**
- * The modern top bar for the home feed screen.
- *
- * Features the Home / brand symbol on the top left, removes the bare "Home" text,
- * and provides action slots for search, new post creation, and direct messages on the right.
+ * Momentum's home top bar: the wordmark on the left, action slots on the
+ * right (search, messages, and the bell with its [UsBadgedIcon] count).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -159,38 +159,16 @@ fun UsHomeTopBar(
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     TopAppBar(
-        // Figma redesign (home 4:8): the brand row replaces the bare home
-        // glyph — a white rounded-square "at" chip beside the ExtraBold
-        // wordmark. Still one tappable block, same scroll-to-top contract.
+        // Momentum redesign: the brand row is the wordmark alone — no
+        // logo chip. Still one tappable block, same scroll-to-top contract.
         title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(UsTheme.radii.small))
                     .clickable(onClick = onHomeClick)
-                    .semantics { contentDescription = "atPost home" },
+                    .semantics { contentDescription = "Momentum home" },
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(BRAND_CHIP)
-                        .clip(RoundedCornerShape(UsTheme.radii.small))
-                        .background(UsTheme.extended.brandChip),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "at",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = UsTheme.extended.onBrandChip,
-                    )
-                }
-                Text(
-                    text = "atPost",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = UsTheme.extended.textPrimary,
-                )
+                UsWordmark(size = UsWordmarkSize.TopBar)
             }
         },
         actions = actions,
@@ -201,9 +179,6 @@ fun UsHomeTopBar(
         modifier = modifier,
     )
 }
-
-/** Figma home top bar: the rounded-square "at" logo chip. */
-private val BRAND_CHIP = 30.dp
 
 @Preview(name = "Top bar — home feed", showBackground = true)
 @Composable
@@ -220,19 +195,59 @@ private fun UsHomeTopBarPreview() {
                 }
                 IconButton(onClick = {}) {
                     Icon(
-                        imageVector = UsIcons.Create,
-                        contentDescription = "New post",
-                        tint = UsTheme.extended.textPrimary,
-                    )
-                }
-                IconButton(onClick = {}) {
-                    Icon(
                         imageVector = UsIcons.Comment,
                         contentDescription = "Messages",
                         tint = UsTheme.extended.textPrimary,
                     )
                 }
+                IconButton(onClick = {}) {
+                    UsBadgedIcon(icon = UsIcons.Notifications, count = 3)
+                }
             },
         )
     }
 }
+
+/**
+ * A header glyph with Momentum's count badge: a 16dp WHITE disc on the
+ * icon's top-right corner carrying the count at 9sp bold in the deep accent
+ * red. Zero (or less) draws the bare icon. The badge is decorative to a
+ * screen reader — put the count in the enclosing button's own description.
+ */
+@Composable
+fun UsBadgedIcon(
+    icon: ImageVector,
+    count: Int,
+    modifier: Modifier = Modifier,
+    tint: Color = UsTheme.extended.textPrimary,
+) {
+    Box(modifier = modifier) {
+        Icon(imageVector = icon, contentDescription = null, tint = tint)
+        if (count > 0) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = BADGE_OFFSET, y = -BADGE_OFFSET)
+                    .size(BADGE_SIZE)
+                    .background(Color.White, CircleShape),
+            ) {
+                Text(
+                    text = if (count > BADGE_MAX) "$BADGE_MAX+" else "$count",
+                    fontSize = BADGE_TEXT,
+                    lineHeight = BADGE_TEXT,
+                    fontWeight = FontWeight.Bold,
+                    color = UsTheme.extended.accentDeep,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+private val BADGE_SIZE = 16.dp
+private val BADGE_OFFSET = 4.dp
+private val BADGE_TEXT = 9.sp
+
+/** Above this the exact number stops being useful and stops fitting. */
+private const val BADGE_MAX = 99

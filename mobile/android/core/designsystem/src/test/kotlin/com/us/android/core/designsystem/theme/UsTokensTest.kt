@@ -4,20 +4,52 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Guards the token port from the Flutter reference.
+ * Guards the Momentum token port (Figma YsWb936muw8pwIxgb0je2A, 2026-09-03).
  *
- * These are not tautologies: they pin the exact ARGB values from
- * mobile/atpost_app/lib/core/theme/app_colors.dart. If someone "tidies" a
- * colour, this fails and the divergence from the reference app is caught
- * before it ships rather than in review-by-eyeball.
+ * These are not tautologies: they pin the exact ARGB values the design
+ * specifies. If someone "tidies" a colour, this fails and the divergence
+ * from the design is caught before it ships rather than in review-by-eyeball.
  */
 class UsTokensTest {
 
     @Test
-    fun `background ramp matches the Flutter reference`() {
-        assertThat(UsColorTokens.BgPrimary.value.toString(16)).startsWith("ff000000")
-        assertThat(UsColorTokens.BgSecondary.value.toString(16)).startsWith("ff121212")
-        assertThat(UsColorTokens.BgTertiary.value.toString(16)).startsWith("ff1c1c1e")
+    fun `dark surface ramp matches the Momentum frames`() {
+        assertThat(UsColorTokens.BgPrimary.hex()).isEqualTo("ff041122")
+        assertThat(UsColorTokens.BgSecondary.hex()).isEqualTo("ff0b1b2e")
+        assertThat(UsColorTokens.BgTertiary.hex()).isEqualTo("ff071d33")
+        assertThat(UsColorTokens.UnreadRow.hex()).isEqualTo("ff072440")
+        assertThat(UsColorTokens.BorderMedium.hex()).isEqualTo("ff0e2d4a")
+        assertThat(UsColorTokens.TextPrimary.hex()).isEqualTo("ffffffff")
+        assertThat(UsColorTokens.TextMuted.hex()).isEqualTo("ff8aa3c2")
+    }
+
+    @Test
+    fun `light surface ramp is the derived Momentum palette`() {
+        assertThat(UsColorTokens.Light.BgPrimary.hex()).isEqualTo("fff7f9fc")
+        assertThat(UsColorTokens.Light.BgSecondary.hex()).isEqualTo("ffffffff")
+        assertThat(UsColorTokens.Light.BgTertiary.hex()).isEqualTo("ffeef3f9")
+        assertThat(UsColorTokens.Light.UnreadRow.hex()).isEqualTo("fffff4ec")
+        assertThat(UsColorTokens.Light.BorderMedium.hex()).isEqualTo("ffdce4ef")
+        assertThat(UsColorTokens.Light.TextPrimary.hex()).isEqualTo("ff041122")
+        assertThat(UsColorTokens.Light.TextMuted.hex()).isEqualTo("ff5b6e88")
+    }
+
+    /** The accent is one identity across both themes, never re-derived. */
+    @Test
+    fun `accent gradient ends are the Momentum orange and red`() {
+        assertThat(UsColorTokens.AccentOrange.hex()).isEqualTo("fffb923c")
+        assertThat(UsColorTokens.AccentRed.hex()).isEqualTo("ffdc2626")
+        assertThat(DarkExtendedColors.accentSolid).isEqualTo(UsColorTokens.AccentOrange)
+        assertThat(LightExtendedColors.accentSolid).isEqualTo(UsColorTokens.AccentOrange)
+        assertThat(LightExtendedColors.accentDeep).isEqualTo(UsColorTokens.AccentRed)
+        assertThat(LightExtendedColors.ctaGradient).isEqualTo(DarkExtendedColors.ctaGradient)
+    }
+
+    /** Chat keeps its green on purpose — the brief carves it out of the accent. */
+    @Test
+    fun `chat accent stays green in both themes`() {
+        assertThat(UsColorTokens.ChatAccent.hex()).isEqualTo("ff22c55e")
+        assertThat(LightExtendedColors.chatAccent).isEqualTo(DarkExtendedColors.chatAccent)
     }
 
     @Test
@@ -57,11 +89,19 @@ class UsTokensTest {
     }
 
     @Test
-    fun `radii match the Flutter scale`() {
+    fun `radii match the Momentum scale`() {
         val radii = UsRadii()
+        assertThat(radii.card.value).isEqualTo(24f)
+        assertThat(radii.media.value).isEqualTo(16f)
+        assertThat(radii.panel.value).isEqualTo(14f)
+        assertThat(radii.pill.value).isEqualTo(6f)
+        // The legacy Flutter steps stay for the screens still on them.
         assertThat(radii.small.value).isEqualTo(8f)
         assertThat(radii.medium.value).isEqualTo(12f)
         assertThat(radii.large.value).isEqualTo(16f)
         assertThat(radii.extraLarge.value).isEqualTo(20f)
     }
+
+    private fun androidx.compose.ui.graphics.Color.hex(): String =
+        "%08x".format(value.shr(32).toLong() and 0xFFFFFFFFL)
 }

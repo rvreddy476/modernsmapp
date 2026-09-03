@@ -10,8 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +33,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.time.formatRelativeTime
+import com.us.android.core.designsystem.component.UsBadgedIcon
 import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
@@ -69,7 +68,8 @@ fun FeedScreen(
     onOpenAuthor: (userId: String) -> Unit,
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
-    onCreatePost: () -> Unit,
+    /** Momentum's header search glyph — :app decides it opens the Explore tab. */
+    onOpenSearch: () -> Unit,
     viewModel: FeedViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
@@ -96,29 +96,20 @@ fun FeedScreen(
     }
 
     UsScaffold(
-        // TWO actions: Create and Messages, both of which work.
-        //
-        // Search, New post and Messages were all rendered here once with empty
-        // click handlers, because the navigation host only ever supplied
-        // onOpenPost and onOpenAuthor. All three were removed on the rule that
-        // a visible primary control which does nothing is worse than an absent
-        // one — the user blames themselves for the missed tap.
-        //
-        // Each returns only once it has somewhere to go, and each callback is a
-        // REQUIRED parameter so neither can be re-added inert. Search stays out;
-        // it is a bottom-nav destination.
+        // Momentum's header: search, Messages, the bell. Every one of them
+        // works — Search, New post and Messages were all rendered here once
+        // with empty click handlers, and were removed on the rule that a
+        // visible primary control which does nothing is worse than an absent
+        // one. Each callback is a REQUIRED parameter so none can be re-added
+        // inert. Create moved to the bottom bar's centre button.
         topBar = {
             UsHomeTopBar(
                 onHomeClick = { },
                 actions = {
-                    // Create sits beside Messages. Like Messages, its callback
-                    // is REQUIRED rather than defaulted: this control was once
-                    // rendered with an empty handler and shipped inert, and a
-                    // required parameter is what stops that recurring.
-                    IconButton(onClick = onCreatePost) {
+                    IconButton(onClick = onOpenSearch) {
                         Icon(
-                            imageVector = UsIcons.Create,
-                            contentDescription = "New post",
+                            imageVector = UsIcons.Search,
+                            contentDescription = "Search",
                             tint = UsTheme.extended.textPrimary,
                         )
                     }
@@ -338,6 +329,7 @@ private fun FeedItem.toCardState(
 ) = PostCardState(
     postId = id,
     authorId = author.id,
+    authorHandle = author.username?.let { "@$it" },
     // Real author identity, embedded by the server as of 2026-08-17. This was
     // a truncated user id until the feed carried `author` — resolving it
     // per-row would have been an N+1 fired from inside a scrolling list.
@@ -413,7 +405,7 @@ internal fun FeedMedia.aspectRatio(): Float =
  * ## WHY THE BADGE IS A COUNT AND NOT A DOT
  *
  * A dot says "something happened". A number says how much, which is what
- * decides whether the user opens it now or later. Above [BADGE_MAX] it becomes
+ * decides whether the user opens it now or later. Above 99 the badge shows
  * "99+": the exact number stops being useful long before it stops being
  * renderable, and a four-digit badge overflows the icon.
  *
@@ -443,23 +435,7 @@ private fun NotificationsAction(
             }
         },
     ) {
-        BadgedBox(
-            badge = {
-                if (count > 0) {
-                    Badge {
-                        Text(if (count > BADGE_MAX) "$BADGE_MAX+" else "$count")
-                    }
-                }
-            },
-        ) {
-            Icon(
-                imageVector = UsIcons.Notifications,
-                contentDescription = null,
-                tint = UsTheme.extended.textPrimary,
-            )
-        }
+        // Momentum's white 16dp badge with the count in the deep accent red.
+        UsBadgedIcon(icon = UsIcons.Notifications, count = count)
     }
 }
-
-/** Above this the exact number stops being useful and stops fitting. */
-private const val BADGE_MAX = 99

@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
@@ -32,50 +33,30 @@ import androidx.compose.ui.unit.dp
  */
 object UsIcons {
 
-    /** Outline heart. The resting state of a like. */
-    val HeartOutline: ImageVector = stroked("HeartOutline") { heart() }
+    /** Outline heart, Lucide `heart`. The resting state of a like. */
+    val HeartOutline: ImageVector = lucideStroked("HeartOutline", HEART_PATH)
 
-    /** Solid heart. Reacted. */
-    val HeartFilled: ImageVector = filled("HeartFilled") { heart() }
-
-    /**
-     * A speech bubble, not an envelope.
-     *
-     * The tail is the whole reason the shape means "someone said this" — a
-     * plain rounded rectangle reads as a card.
-     */
-    val Comment: ImageVector = stroked("Comment") {
-        moveTo(21f, 11.5f)
-        curveTo(21f, 16.2f, 17f, 19.6f, 12f, 19.6f)
-        curveTo(10.9f, 19.6f, 9.8f, 19.4f, 8.8f, 19.1f)
-        lineTo(4.2f, 20.8f)
-        lineTo(5.7f, 16.6f)
-        curveTo(4f, 15.2f, 3f, 13.5f, 3f, 11.5f)
-        curveTo(3f, 6.8f, 7f, 3.4f, 12f, 3.4f)
-        curveTo(17f, 3.4f, 21f, 6.8f, 21f, 11.5f)
-        close()
-    }
+    /** Solid heart, Lucide `heart`. Reacted. */
+    val HeartFilled: ImageVector = lucideFilled("HeartFilled", HEART_PATH)
 
     /**
-     * A bell — the notification inbox.
-     *
-     * Stroked to match the rest of the top-bar set. The clapper is a separate
-     * short arc rather than part of the body path: a single closed outline
-     * reads as a dome at 24dp, and the gap under the bell is what makes it
-     * recognisable at that size.
+     * A speech bubble, Lucide `message-circle` — used for both the inline
+     * "Comment" action and the Messages tab (they are the same field, so both
+     * pick up the swap for free).
      */
-    val Notifications: ImageVector = stroked("Notifications") {
-        moveTo(18f, 8.6f)
-        curveTo(18f, 5.3f, 15.3f, 2.6f, 12f, 2.6f)
-        curveTo(8.7f, 2.6f, 6f, 5.3f, 6f, 8.6f)
-        curveTo(6f, 14.4f, 3.5f, 16.1f, 3.5f, 16.1f)
-        lineTo(20.5f, 16.1f)
-        curveTo(20.5f, 16.1f, 18f, 14.4f, 18f, 8.6f)
-        close()
-        moveTo(13.7f, 19.4f)
-        curveTo(13.4f, 20.4f, 12.5f, 21f, 11.5f, 21f)
-        curveTo(10.5f, 21f, 9.6f, 20.4f, 9.3f, 19.4f)
-    }
+    val Comment: ImageVector = lucideStroked(
+        "Comment",
+        "M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 " +
+            "1.099.092 10 10 0 1 0-4.777-4.719",
+    )
+
+    /** A bell, Lucide `bell` — the notification inbox. */
+    val Notifications: ImageVector = lucideStroked(
+        "Notifications",
+        "M10.268 21a2 2 0 0 0 3.464 0",
+        "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 " +
+            "4.499-1.411 5.956-2.738 7.326",
+    )
 
     /**
      * Two arrows chasing each other.
@@ -101,34 +82,21 @@ object UsIcons {
     }
 
     /** Outline bookmark. The resting state of a save. */
-    val BookmarkOutline: ImageVector = stroked("BookmarkOutline") { bookmark() }
+    val BookmarkOutline: ImageVector = lucideStroked("BookmarkOutline", BOOKMARK_PATH)
 
-    /** Solid bookmark. Saved. */
-    val BookmarkFilled: ImageVector = filled("BookmarkFilled") { bookmark() }
+    /** Solid bookmark, Lucide `bookmark`. Saved. */
+    val BookmarkFilled: ImageVector = lucideFilled("BookmarkFilled", BOOKMARK_PATH)
 
     /**
-     * Share: a paper plane.
+     * Share, Lucide `arrow-right`.
      *
-     * Replaced a tray-with-arrow, which was the technically correct "share
-     * out" mark and looked like a system affordance rather than something you
-     * send to a friend. In a social feed the plane is the one everybody
-     * already reads as send, and the crease down the middle is what stops it
-     * flattening into a plain triangle at 24dp.
+     * Replaced the hand-drawn paper plane with the Momentum design's own mark
+     * for the same action: leaving this surface for somewhere else.
      *
      * It does not collide with [Repost]: that is a closed loop of two arrows
      * and means "put this on my own timeline". This one leaves.
      */
-    val Share: ImageVector = stroked("Share") {
-        // Outline of the plane.
-        moveTo(21.2f, 2.8f)
-        lineTo(2.8f, 10.2f)
-        lineTo(10.4f, 13.6f)
-        lineTo(13.8f, 21.2f)
-        close()
-        // The crease: the near wing folded back under the body.
-        moveTo(21.2f, 2.8f)
-        lineTo(10.4f, 13.6f)
-    }
+    val Share: ImageVector = lucideStroked("Share", "M5 12h14", "m12 5 7 7-7 7")
 
     /** Upload. The same tray, arrow reversed into it. */
     val Upload: ImageVector = stroked("Upload") {
@@ -140,20 +108,16 @@ object UsIcons {
         tray()
     }
 
-    /** Compose. A plus, nothing more — every other reading is noise. */
-    val Create: ImageVector = stroked("Create") {
-        moveTo(12f, 4.8f)
-        verticalLineTo(19.2f)
-        moveTo(4.8f, 12f)
-        horizontalLineTo(19.2f)
-    }
+    /** Compose, Lucide `plus`. A plus, nothing more — every other reading is noise. */
+    val Create: ImageVector = lucideStroked("Create", "M5 12h14", "M12 5v14")
 
-    /** Overflow. */
-    val More: ImageVector = filled("More") {
-        dot(12f, 5.2f)
-        dot(12f, 12f)
-        dot(12f, 18.8f)
-    }
+    /** Overflow, Lucide `ellipsis-vertical`. */
+    val More: ImageVector = lucideFilled(
+        "More",
+        "M12,12 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0",
+        "M12,5 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0",
+        "M12,19 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0",
+    )
 
     /** Settings sliders: adjustable controls, without borrowing a platform glyph. */
     val Settings: ImageVector = stroked("Settings") {
@@ -188,56 +152,29 @@ object UsIcons {
     }
 
     /** Solid play triangle. */
-    val Play: ImageVector = filled("Play") {
-        moveTo(7.5f, 4.6f)
-        lineTo(19.5f, 12f)
-        lineTo(7.5f, 19.4f)
-        close()
-    }
+    val Play: ImageVector = lucideFilled(
+        "Play",
+        "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z",
+    )
 
-    val Home: ImageVector = stroked("Home") {
-        moveTo(3.2f, 10.8f)
-        lineTo(12f, 3.4f)
-        lineTo(20.8f, 10.8f)
-        verticalLineTo(19.6f)
-        curveTo(20.8f, 20.4f, 20.2f, 21f, 19.4f, 21f)
-        horizontalLineTo(15f)
-        verticalLineTo(14.2f)
-        horizontalLineTo(9f)
-        verticalLineTo(21f)
-        horizontalLineTo(4.6f)
-        curveTo(3.8f, 21f, 3.2f, 20.4f, 3.2f, 19.6f)
-        close()
-    }
+    /** Lucide `house` — the Home tab. */
+    val Home: ImageVector = lucideStroked(
+        "Home",
+        "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8",
+        "M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+    )
 
-    /** Two figures — the social graph, not a single account. */
-    val Friends: ImageVector = stroked("Friends") {
-        circle(9.2f, 8.2f, 3.4f)
-        moveTo(2.8f, 20.4f)
-        curveTo(2.8f, 16.9f, 5.7f, 14.6f, 9.2f, 14.6f)
-        curveTo(12.7f, 14.6f, 15.6f, 16.9f, 15.6f, 20.4f)
-        circle(17.4f, 8.8f, 2.6f)
-        moveTo(17.2f, 14.8f)
-        curveTo(19.7f, 15.2f, 21.4f, 17.3f, 21.4f, 20.4f)
-    }
+    /** Two figures, Lucide `users` — the social graph, not a single account. */
+    val Friends: ImageVector = lucideStroked(
+        "Friends",
+        "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+        "M16 3.128a4 4 0 0 1 0 7.744",
+        "M22 21v-2a4 4 0 0 0-3-3.87",
+        "M9,7 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0",
+    )
 
-    /** Reels: a frame with a play mark, distinct from the bare [Play]. */
-    val Reels: ImageVector = stroked("Reels") {
-        moveTo(6.6f, 3.6f)
-        horizontalLineTo(17.4f)
-        curveTo(19.4f, 3.6f, 21f, 5.2f, 21f, 7.2f)
-        verticalLineTo(16.8f)
-        curveTo(21f, 18.8f, 19.4f, 20.4f, 17.4f, 20.4f)
-        horizontalLineTo(6.6f)
-        curveTo(4.6f, 20.4f, 3f, 18.8f, 3f, 16.8f)
-        verticalLineTo(7.2f)
-        curveTo(3f, 5.2f, 4.6f, 3.6f, 6.6f, 3.6f)
-        close()
-        moveTo(10.4f, 8.8f)
-        lineTo(15.2f, 12f)
-        lineTo(10.4f, 15.2f)
-        close()
-    }
+    /** Reels: the Momentum bottom bar shows the bare [Play] mark for this tab. */
+    val Reels: ImageVector get() = Play
 
     /** A phone handset — the calling vocabulary (missed-call rows, call UI). */
     val Phone: ImageVector = stroked("Phone") {
@@ -355,18 +292,23 @@ object UsIcons {
         horizontalLineTo(15f)
     }
 
-    val Explore: ImageVector = stroked("Explore") {
-        circle(10.8f, 10.8f, 6.6f)
-        moveTo(15.6f, 15.6f)
-        lineTo(21f, 21f)
-    }
+    /** Lucide `search`. The Explore tab is the app's discover-and-search surface. */
+    val Explore: ImageVector = lucideStroked(
+        "Explore",
+        "m21 21-4.34-4.34",
+        "M11,11 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0",
+    )
 
-    val Profile: ImageVector = stroked("Profile") {
-        circle(12f, 8f, 3.8f)
-        moveTo(4.4f, 20.6f)
-        curveTo(4.4f, 16.5f, 7.8f, 13.8f, 12f, 13.8f)
-        curveTo(16.2f, 13.8f, 19.6f, 16.5f, 19.6f, 20.6f)
-    }
+    /** The header search action — same glyph as [Explore], different call site. */
+    val Search: ImageVector get() = Explore
+
+    /** Lucide `circle-user` — the Me tab and profile headers. */
+    val Profile: ImageVector = lucideStroked(
+        "Profile",
+        "M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662",
+        "M12,12 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0",
+        "M12,10 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0",
+    )
 
     /** A smiling face — the emoji panel's own face. */
     val Smile: ImageVector = stroked("Smile") {
@@ -381,16 +323,17 @@ object UsIcons {
     }
 
     /** A figure with a plus — invitations and friend requests. */
-    val UserPlus: ImageVector = stroked("UserPlus") {
-        circle(9f, 8f, 3.6f)
-        moveTo(2.6f, 20.6f)
-        curveTo(2.6f, 16.7f, 5.6f, 14.2f, 9f, 14.2f)
-        curveTo(12.4f, 14.2f, 15.4f, 16.7f, 15.4f, 20.6f)
-        moveTo(19f, 7f)
-        verticalLineTo(13f)
-        moveTo(16f, 10f)
-        horizontalLineTo(22f)
-    }
+    /** Lucide `user-plus` — the follow-requests panel. */
+    val UserPlus: ImageVector = lucideStroked(
+        "UserPlus",
+        "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+        "M9,7 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0",
+        "M19,8 L19,14",
+        "M22,11 L16,11",
+    )
+
+    /** Alias for the follow-requests panel — same glyph as [UserPlus]. */
+    val Requests: ImageVector get() = UserPlus
 
     /** A right arrow — the chat send glyph (the design's circular send). */
     val Forward: ImageVector = stroked("Forward") {
@@ -446,34 +389,7 @@ object UsIcons {
 
 // ---------------------------------------------------------------------------
 // Shapes shared between variants.
-//
-// Kept as functions rather than duplicated path data so an outline and its
-// filled twin can never drift — a filled heart a hair wider than the outline
-// makes the icon appear to jump at the moment it is tapped.
 // ---------------------------------------------------------------------------
-
-private fun PathBuilder.heart() {
-    moveTo(12f, 20.6f)
-    curveTo(12f, 20.6f, 3f, 14.6f, 3f, 8.9f)
-    curveTo(3f, 5.8f, 5.4f, 3.4f, 8.4f, 3.4f)
-    curveTo(10.1f, 3.4f, 11.4f, 4.3f, 12f, 5.3f)
-    curveTo(12.6f, 4.3f, 13.9f, 3.4f, 15.6f, 3.4f)
-    curveTo(18.6f, 3.4f, 21f, 5.8f, 21f, 8.9f)
-    curveTo(21f, 14.6f, 12f, 20.6f, 12f, 20.6f)
-    close()
-}
-
-private fun PathBuilder.bookmark() {
-    moveTo(6.4f, 3.2f)
-    horizontalLineTo(17.6f)
-    curveTo(18.3f, 3.2f, 18.8f, 3.7f, 18.8f, 4.4f)
-    verticalLineTo(20.8f)
-    lineTo(12f, 16.2f)
-    lineTo(5.2f, 20.8f)
-    verticalLineTo(4.4f)
-    curveTo(5.2f, 3.7f, 5.7f, 3.2f, 6.4f, 3.2f)
-    close()
-}
 
 private fun PathBuilder.tray() {
     moveTo(4.8f, 12.6f)
@@ -501,8 +417,6 @@ private fun PathBuilder.circle(cx: Float, cy: Float, r: Float) {
     close()
 }
 
-private fun PathBuilder.dot(cx: Float, cy: Float) = circle(cx, cy, DOT_RADIUS)
-
 // ---------------------------------------------------------------------------
 
 /**
@@ -528,7 +442,19 @@ private fun stroked(name: String, block: PathBuilder.() -> Unit): ImageVector =
         )
     }.build()
 
-private fun filled(name: String, block: PathBuilder.() -> Unit): ImageVector =
+/**
+ * Lucide icons ported straight from their upstream SVG `d` attributes via
+ * [addPathNodes] rather than hand-translated into [PathBuilder] calls — the
+ * path syntax is the same grammar, so this is a faithful copy, not a redraw.
+ * Each string is one `<path>`/`<circle>`/`<line>` element from the source SVG
+ * (a circle becomes the usual two-arc path trick).
+ *
+ * Momentum (Figma YsWb936muw8pwIxgb0je2A) specifies Lucide's own 2px stroke
+ * on a 24 viewport, which is why this ignores [STROKE_WEIGHT] — matching the
+ * rest of the hand-drawn set here would blur the vocabulary the design
+ * actually asked for.
+ */
+private fun lucideStroked(name: String, vararg pathData: String): ImageVector =
     ImageVector.Builder(
         name = name,
         defaultWidth = ICON_SIZE.dp,
@@ -536,15 +462,47 @@ private fun filled(name: String, block: PathBuilder.() -> Unit): ImageVector =
         viewportWidth = ICON_SIZE,
         viewportHeight = ICON_SIZE,
     ).apply {
-        path(fill = SolidColor(Color.Black), pathBuilder = block)
+        pathData.forEach { d ->
+            addPath(
+                pathData = addPathNodes(d),
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = LUCIDE_STROKE_WEIGHT,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            )
+        }
     }.build()
+
+/** The filled twin of [lucideStroked] — same source paths, solid fill. */
+private fun lucideFilled(name: String, vararg pathData: String): ImageVector =
+    ImageVector.Builder(
+        name = name,
+        defaultWidth = ICON_SIZE.dp,
+        defaultHeight = ICON_SIZE.dp,
+        viewportWidth = ICON_SIZE,
+        viewportHeight = ICON_SIZE,
+    ).apply {
+        pathData.forEach { d ->
+            addPath(pathData = addPathNodes(d), fill = SolidColor(Color.Black))
+        }
+    }.build()
+
+/** Lucide `heart`, shared by [UsIcons.HeartOutline] and [UsIcons.HeartFilled]. */
+private const val HEART_PATH = "M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 " +
+    "9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"
+
+/** Lucide `bookmark`, shared by [UsIcons.BookmarkOutline] and [UsIcons.BookmarkFilled]. */
+private const val BOOKMARK_PATH = "M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 " +
+    "0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z"
 
 private const val ICON_SIZE = 24f
 
 /**
- * One weight across the whole set. Mixed stroke widths are the most visible
- * sign of an icon set assembled from different sources.
+ * One weight across the hand-drawn portion of the set. Mixed stroke widths
+ * are the most visible sign of an icon set assembled from different sources.
  */
 private const val STROKE_WEIGHT = 1.9f
 
-private const val DOT_RADIUS = 1.7f
+/** Lucide's own stroke weight on a 24 viewport — see [lucideStroked]. */
+private const val LUCIDE_STROKE_WEIGHT = 2f

@@ -83,7 +83,7 @@ private fun UsScaffoldPreview() {
     UsTheme {
         UsScaffold {
             Text(
-                text = "US",
+                text = "Momentum",
                 style = MaterialTheme.typography.headlineMedium,
                 color = UsTheme.extended.textPrimary,
             )

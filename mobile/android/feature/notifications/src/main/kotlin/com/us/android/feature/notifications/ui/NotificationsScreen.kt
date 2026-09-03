@@ -1,16 +1,13 @@
 package com.us.android.feature.notifications.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,14 +17,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -39,19 +37,21 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
-import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.Notification
@@ -63,9 +63,11 @@ import java.time.Duration
 import java.time.Instant
 
 /**
- * The notification inbox — Slice D, redesigned per the Figma notifications
- * frame (157:138): a plain list with the actor's name in bold, the time
- * inline and muted, and the one action a row can take sitting ON the row.
+ * The notification inbox — Slice D, restyled as Momentum's "Activity"
+ * screen (Figma YsWb936muw8pwIxgb0je2A): a Follow Requests panel above the
+ * list, rows banded New / This Week / Earlier, unread rows on the highlight
+ * surface with a gradient avatar ring, and the one action a row can take
+ * sitting ON the row as a gradient pill.
  *
  * Renders [NotificationsUiState] and calls back. It performs no network work
  * and keeps no parallel copy of read-state.
@@ -87,6 +89,8 @@ fun NotificationsScreen(
      * so the two features stay independent.
      */
     onOpenPreferences: () -> Unit,
+    /** Opens the profile module's approval queue — the Follow Requests panel. */
+    onOpenFollowRequests: () -> Unit = {},
     viewModel: NotificationsViewModel = hiltViewModel(),
     /**
      * The runtime permission prompt — Slice D, D-D2.
@@ -132,7 +136,14 @@ fun NotificationsScreen(
     }
 
     UsScaffold(
-        topBar = { NotificationsTopBar(onBack = onBack, onOpenPreferences = onOpenPreferences) },
+        topBar = {
+            ActivityTopBar(
+                onBack = onBack,
+                onOpenPreferences = onOpenPreferences,
+                hasUnread = state.hasUnread,
+                onMarkAllRead = viewModel::markAllRead,
+            )
+        },
         applyPageGutter = false,
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -142,15 +153,18 @@ fun NotificationsScreen(
             // first launch. Renders nothing unless there is something to say.
             permissionPrompt()
 
-            if (state.hasUnread) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    UsSecondaryButton(text = "Mark all read", onClick = viewModel::markAllRead)
-                }
+            // Momentum's Follow Requests panel — a raised shortcut to the
+            // approval queue, derived from the SAME rows the list below
+            // already loaded rather than a second fetch.
+            val followRequests = remember(state.items) {
+                state.items.filter { it.kind == NotificationKind.FollowRequest }
+            }
+            if (followRequests.isNotEmpty()) {
+                FollowRequestsPanel(
+                    count = followRequests.size,
+                    hasUnread = followRequests.any { !it.isRead },
+                    onClick = onOpenFollowRequests,
+                )
             }
 
             when {
@@ -174,6 +188,129 @@ fun NotificationsScreen(
     }
 }
 
+/**
+ * The "Activity" header: back, the screen title (Outfit ExtraBold 22 —
+ * `titleLarge`), and on the right "Mark all read" as an accent text link
+ * whenever anything is unread, then the route to notification PREFERENCES
+ * (Slice D, D-D7 — they live in `:feature:profile`; the inbox is where
+ * someone actually forms the thought "this is too many notifications").
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActivityTopBar(
+    onBack: () -> Unit,
+    onOpenPreferences: () -> Unit,
+    hasUnread: Boolean,
+    onMarkAllRead: () -> Unit,
+) {
+    TopAppBar(
+        title = {
+            Text(
+                text = "Activity",
+                style = MaterialTheme.typography.titleLarge,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier.semantics { heading() },
+            )
+        },
+        navigationIcon = {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = UsIcons.Back,
+                    contentDescription = "Back",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+        },
+        actions = {
+            // Rendered only while something is unread: a "Mark all read" that
+            // can do nothing would be a promise the screen cannot keep.
+            if (hasUnread) {
+                TextButton(onClick = onMarkAllRead) {
+                    Text(
+                        text = "Mark all read",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontSize = HEADER_LINK_SIZE,
+                        fontWeight = FontWeight.Bold,
+                        color = UsTheme.extended.accentSolid,
+                    )
+                }
+            }
+            IconButton(onClick = onOpenPreferences) {
+                Icon(
+                    imageVector = UsIcons.Settings,
+                    contentDescription = "Notification settings",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Transparent,
+            scrolledContainerColor = Color.Transparent,
+        ),
+    )
+}
+
+/**
+ * The Momentum Follow Requests panel: a raised shortcut above the list that
+ * opens the same approval queue a profile's own entry point does. Derived
+ * from the loaded rows rather than a dedicated count endpoint — Momentum's
+ * server-driven behaviour (what a request IS, how it is decided) is
+ * unchanged; only where the shortcut lives is new.
+ */
+@Composable
+private fun FollowRequestsPanel(count: Int, hasUnread: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s)
+            .clip(RoundedCornerShape(UsTheme.radii.panel))
+            .background(UsTheme.extended.bgRaised)
+            .clickable(onClick = onClick)
+            .padding(UsTheme.spacing.l),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(REQUEST_ICON_CIRCLE)
+                .clip(CircleShape)
+                .background(UsTheme.extended.ctaGradient),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = UsIcons.Requests,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(ROW_BADGE_GLYPH),
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Follow Requests",
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = PANEL_TITLE_SIZE,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.textPrimary,
+            )
+            Text(
+                text = "Approve or ignore requests",
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = PANEL_SUBTITLE_SIZE,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+        if (hasUnread) {
+            UnreadDot(isRead = false)
+        }
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.textMuted,
+        )
+    }
+}
+
 /** Everything a row can do, bundled so the list and the row share one signature. */
 private data class RowCallbacks(
     val onOpen: (Notification, NotificationTarget) -> Unit,
@@ -186,11 +323,11 @@ private data class RowCallbacks(
 )
 
 /**
- * Three age bands, per the Figma frame: today's rows sit at the top with no
- * heading, then "Last 30 days", then "Older". The list arrives newest-first,
- * so grouping preserves the order within each band.
+ * Three age bands, per the Momentum activity frame: "New" (today), "This
+ * Week", then "Earlier". The list arrives newest-first, so grouping
+ * preserves the order within each band.
  */
-private enum class AgeBand(val label: String?) { Today(null), Month("Last 30 days"), Older("Older") }
+private enum class AgeBand(val label: String) { New("New"), Week("This Week"), Older("Earlier") }
 
 @Composable
 private fun SectionedNotificationList(
@@ -204,7 +341,7 @@ private fun SectionedNotificationList(
         AgeBand.entries.forEach { band ->
             val rows = bands[band].orEmpty()
             if (rows.isNotEmpty()) {
-                band.label?.let { label -> item(key = "section-${band.name}") { SectionHeader(label) } }
+                item(key = "section-${band.name}") { SectionHeader(band.label) }
                 notificationRows(rows, state, callbacks)
             }
         }
@@ -230,14 +367,15 @@ private fun LazyListScope.notificationRows(
     }
 }
 
-/** Section label — the bold "Last 30 days" / "Older" dividers from the frame. */
+/** Section label — 14sp bold in the muted step, per the frame. */
 @Composable
 private fun SectionHeader(label: String) {
     Text(
         text = label,
-        style = MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.bodyMedium,
+        fontSize = SECTION_SIZE,
         fontWeight = FontWeight.Bold,
-        color = UsTheme.extended.textPrimary,
+        color = UsTheme.extended.textMuted,
         modifier = Modifier.padding(
             horizontal = UsTheme.spacing.pageHorizontal,
             vertical = UsTheme.spacing.m,
@@ -249,16 +387,17 @@ private fun ageBand(isoInstant: String, now: Instant): AgeBand {
     val then = runCatching { Instant.parse(isoInstant) }.getOrNull() ?: return AgeBand.Older
     val age = Duration.between(then, now)
     return when {
-        age < Duration.ofDays(1) -> AgeBand.Today
-        age < Duration.ofDays(MONTH_DAYS) -> AgeBand.Month
+        age < Duration.ofDays(1) -> AgeBand.New
+        age < Duration.ofDays(WEEK_DAYS) -> AgeBand.Week
         else -> AgeBand.Older
     }
 }
 
-// Figma notifications row (157:138): 48dp avatar, one line of text with the
-// actor in bold and the time inline and muted, the row's action trailing.
-// A missed call keeps its red phone badge — the one row type whose absence
-// costs the user something, so it must not look like one more like.
+// Momentum activity row: 36dp avatar (gradient-ringed while unread), one
+// line of text with the actor in bold and the time inline and muted, the
+// row's action trailing, and an unread row sitting on the highlight
+// surface. A missed call keeps its red phone badge — the one row type whose
+// absence costs the user something, so it must not look like one more like.
 @Composable
 private fun NotificationRow(
     notification: Notification,
@@ -276,23 +415,30 @@ private fun NotificationRow(
     } else {
         notification.target
     }
+    val rowSurface = if (notification.isRead) Color.Transparent else UsTheme.extended.unreadRow
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(rowSurface)
             .clickable { callbacks.onOpen(notification, target) }
             .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = ROW_VERTICAL),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        if (missedCall) {
-            MissedCallBadge()
-        } else {
-            UsAvatar(
-                name = notification.actorName,
-                size = UsAvatarSize.Chat,
-                seed = notification.actorUserId,
-            )
+        // A fixed slot the ring grows INTO, so read and unread rows keep the
+        // same text column rather than shifting by the ring's width.
+        Box(modifier = Modifier.size(AVATAR_SLOT), contentAlignment = Alignment.Center) {
+            if (missedCall) {
+                MissedCallBadge()
+            } else {
+                UsAvatar(
+                    name = notification.actorName,
+                    size = UsAvatarSize.Post,
+                    seed = notification.actorUserId,
+                    hasRing = !notification.isRead,
+                )
+            }
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -342,12 +488,7 @@ private fun RequestActions(
         else -> null
     }
     when {
-        outcome != null -> Text(
-            text = outcome,
-            style = MaterialTheme.typography.bodySmall,
-            color = UsTheme.extended.textMuted,
-            modifier = Modifier.padding(top = UsTheme.spacing.xs),
-        )
+        outcome != null -> OutcomeLabel(outcome)
 
         requestPending -> {
             val busy = action == RowActionState.Busy
@@ -355,9 +496,9 @@ private fun RequestActions(
                 modifier = Modifier.padding(top = UsTheme.spacing.s),
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
             ) {
-                RowButton("Accept", filled = true, busy = busy) { callbacks.onAccept(notification) }
-                RowButton("Decline", filled = false, busy = busy) { callbacks.onDecline(notification) }
-                RowButton("Block", filled = false, busy = busy) { callbacks.onBlock(notification) }
+                UsPillButton("Accept", busy = busy, onClick = { callbacks.onAccept(notification) })
+                UsPillButton("Decline", filled = false, busy = busy, onClick = { callbacks.onDecline(notification) })
+                UsPillButton("Block", filled = false, busy = busy, onClick = { callbacks.onBlock(notification) })
             }
         }
     }
@@ -384,22 +525,32 @@ private fun FollowRequestActions(
         else -> null
     }
     if (outcome != null) {
-        Text(
-            text = outcome,
-            style = MaterialTheme.typography.bodySmall,
-            color = UsTheme.extended.textMuted,
-            modifier = Modifier.padding(top = UsTheme.spacing.xs),
-        )
+        OutcomeLabel(outcome)
     } else {
         val busy = action == RowActionState.Busy
         Row(
             modifier = Modifier.padding(top = UsTheme.spacing.s),
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
         ) {
-            RowButton("Accept", filled = true, busy = busy) { callbacks.onAcceptFollow(notification) }
-            RowButton("Decline", filled = false, busy = busy) { callbacks.onDeclineFollow(notification) }
+            UsPillButton("Accept", busy = busy, onClick = { callbacks.onAcceptFollow(notification) })
+            UsPillButton(
+                "Decline",
+                filled = false,
+                busy = busy,
+                onClick = { callbacks.onDeclineFollow(notification) },
+            )
         }
     }
+}
+
+@Composable
+private fun OutcomeLabel(outcome: String) {
+    Text(
+        text = outcome,
+        style = MaterialTheme.typography.bodySmall,
+        color = UsTheme.extended.textMuted,
+        modifier = Modifier.padding(top = UsTheme.spacing.xs),
+    )
 }
 
 /** Follow back, or "Following" once the graph says so. */
@@ -411,63 +562,9 @@ private fun FollowAction(
     onFollow: (Notification) -> Unit,
 ) {
     if (alreadyFollowing || action == RowActionState.Followed) {
-        RowButton("Following", filled = false, busy = false, enabled = false) {}
+        UsPillButton("Following", filled = false, enabled = false, onClick = {})
     } else {
-        RowButton("Follow", filled = true, busy = action == RowActionState.Busy) { onFollow(notification) }
-    }
-}
-
-/**
- * The 32dp row button from the frame. Filled is the accent green — the
- * founder's call over the frame's orange — outlined is the neutral choice.
- */
-@Composable
-private fun RowButton(
-    text: String,
-    filled: Boolean,
-    busy: Boolean,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-) {
-    val shape = RoundedCornerShape(BUTTON_RADIUS)
-    val modifier = Modifier.height(BUTTON_HEIGHT)
-    val padding = PaddingValues(horizontal = UsTheme.spacing.l, vertical = 0.dp)
-    if (filled) {
-        Button(
-            onClick = onClick,
-            modifier = modifier,
-            enabled = enabled && !busy,
-            shape = shape,
-            contentPadding = padding,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = UsTheme.extended.chatAccent,
-                contentColor = Color.White,
-                disabledContainerColor = UsTheme.extended.chatAccent.copy(alpha = DISABLED_ALPHA),
-                disabledContentColor = Color.White,
-            ),
-        ) { ButtonLabel(text, busy) }
-    } else {
-        OutlinedButton(
-            onClick = onClick,
-            modifier = modifier,
-            enabled = enabled && !busy,
-            shape = shape,
-            contentPadding = padding,
-            border = BorderStroke(1.dp, UsTheme.extended.borderMedium),
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = UsTheme.extended.textPrimary,
-                disabledContentColor = UsTheme.extended.textMuted,
-            ),
-        ) { ButtonLabel(text, busy) }
-    }
-}
-
-@Composable
-private fun ButtonLabel(text: String, busy: Boolean) {
-    if (busy) {
-        CircularProgressIndicator(modifier = Modifier.size(BUTTON_SPINNER), strokeWidth = 2.dp)
-    } else {
-        Text(text = text, style = MaterialTheme.typography.labelLarge)
+        UsPillButton("Follow back", busy = action == RowActionState.Busy, onClick = { onFollow(notification) })
     }
 }
 
@@ -476,7 +573,7 @@ private fun MissedCallBadge() {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(UsAvatarSize.Chat.diameter)
+            .size(UsAvatarSize.Post.diameter)
             .clip(CircleShape)
             .background(MISSED_CALL_BAND),
     ) {
@@ -489,14 +586,14 @@ private fun MissedCallBadge() {
     }
 }
 
-/** The unread mark is a dot, not bold text: weight already means "the actor". */
+/** The unread mark is an 8dp accent-gradient dot, not bold text: weight already means "the actor". */
 @Composable
 private fun UnreadDot(isRead: Boolean) {
     Box(
         modifier = Modifier
             .size(UNREAD_DOT)
             .clip(CircleShape)
-            .then(if (isRead) Modifier else Modifier.background(UsTheme.extended.chatAccent)),
+            .then(if (isRead) Modifier else Modifier.background(UsTheme.extended.ctaGradient)),
     )
 }
 
@@ -519,7 +616,7 @@ private fun LoadingBlock() {
 private fun Notification.rowText(sentence: String) = buildAnnotatedString {
     val who = actorName.ifBlank { "Someone" }
     if (sentence.startsWith(who)) {
-        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(who) }
+        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(who) }
         append(sentence.removePrefix(who))
     } else {
         append(sentence)
@@ -567,41 +664,20 @@ internal fun Notification.describe(): String {
 
 /** How many rows from the end to start fetching the next page. */
 private const val LOAD_MORE_THRESHOLD = 3
-private const val MONTH_DAYS = 30L
-private const val DISABLED_ALPHA = 0.6f
+private const val WEEK_DAYS = 7L
 
 private val UNREAD_DOT = 8.dp
 private val ROW_VERTICAL = 12.dp
-private val ROW_BADGE_GLYPH = 20.dp
-private val BUTTON_HEIGHT = 32.dp
-private val BUTTON_RADIUS = 8.dp
-private val BUTTON_SPINNER = 16.dp
+private val ROW_BADGE_GLYPH = 18.dp
+private val REQUEST_ICON_CIRCLE = 36.dp
+
+/** The 36dp avatar plus its 2dp ring and 2dp gap on each side. */
+private val AVATAR_SLOT = 44.dp
+private val HEADER_LINK_SIZE = 13.sp
+private val SECTION_SIZE = 14.sp
+private val PANEL_TITLE_SIZE = 14.sp
+private val PANEL_SUBTITLE_SIZE = 12.sp
 
 /** The red-tinted badge fill behind a missed call. */
 @Suppress("MagicNumber")
 private val MISSED_CALL_BAND = Color(0x1FFF3B30)
-
-/**
- * The inbox top bar.
- *
- * Carries the route to notification PREFERENCES — Slice D, D-D7. They live in
- * `:feature:profile` and were previously reachable only through Settings; the
- * inbox is where someone actually forms the thought "this is too many
- * notifications", so the control belongs here too.
- */
-@Composable
-private fun NotificationsTopBar(onBack: () -> Unit, onOpenPreferences: () -> Unit) {
-    UsTopBar(
-        title = "Notifications",
-        onBack = onBack,
-        actions = {
-            IconButton(onClick = onOpenPreferences) {
-                Icon(
-                    imageVector = UsIcons.Settings,
-                    contentDescription = "Notification settings",
-                    tint = UsTheme.extended.textPrimary,
-                )
-            }
-        },
-    )
-}

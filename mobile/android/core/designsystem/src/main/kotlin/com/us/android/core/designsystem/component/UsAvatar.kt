@@ -9,6 +9,7 @@ package com.us.android.core.designsystem.component
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
@@ -34,6 +35,9 @@ import kotlin.math.absoluteValue
 /** The sizes the product actually uses. A free-form Dp invites one-off sizes. */
 enum class UsAvatarSize(val diameter: Dp, val initialsSize: TextUnit) {
     Small(32.dp, 13.sp),
+
+    /** Momentum's feed-card header and activity rows. */
+    Post(36.dp, 14.sp),
     Medium(44.dp, 17.sp),
 
     /** Chat list rows and the online rail (Figma messages-inbox 136:86). */
@@ -61,36 +65,68 @@ fun UsAvatar(
     seed: String = name,
     imageUrl: String? = null,
     contentDescription: String? = null,
+    /**
+     * Momentum's 2dp gradient ring — unread activity, a new story, or any
+     * other "look at this" state a surface wants to put on an avatar. Drawn
+     * as a gradient circle behind the avatar with a canvas-coloured gap, the
+     * same technique the design-system gallery's story ring already used.
+     */
+    hasRing: Boolean = false,
 ) {
-    val background = avatarColor(seed)
-    Box(
-        modifier = modifier
-            .size(size.diameter)
-            .clip(CircleShape)
-            .background(background)
-            .clearAndSetSemantics {
-                if (contentDescription != null) this.contentDescription = contentDescription
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        if (imageUrl.isNullOrBlank()) {
-            Text(
-                text = initialsOf(name),
-                color = Color.White,
-                fontSize = size.initialsSize,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center,
-            )
-        } else {
-            AsyncImage(
-                model = imageUrl,
-                contentDescription = null,
-                modifier = Modifier.matchParentSize(),
-                contentScale = ContentScale.Crop,
-            )
+    val avatarContent = @Composable {
+        Box(
+            modifier = Modifier
+                .size(size.diameter)
+                .clip(CircleShape)
+                .background(avatarColor(seed))
+                .clearAndSetSemantics {
+                    if (contentDescription != null) this.contentDescription = contentDescription
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (imageUrl.isNullOrBlank()) {
+                Text(
+                    text = initialsOf(name),
+                    color = Color.White,
+                    fontSize = size.initialsSize,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                AsyncImage(
+                    model = imageUrl,
+                    contentDescription = null,
+                    modifier = Modifier.matchParentSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
         }
     }
+
+    if (hasRing) {
+        Box(
+            modifier = modifier
+                .size(size.diameter + RING_WIDTH * 2 + RING_GAP * 2)
+                .clip(CircleShape)
+                .background(UsTheme.extended.ctaGradient)
+                .padding(RING_WIDTH)
+                .clip(CircleShape)
+                .background(UsTheme.extended.bgCanvas)
+                .padding(RING_GAP),
+            contentAlignment = Alignment.Center,
+        ) {
+            avatarContent()
+        }
+    } else {
+        Box(modifier = modifier) { avatarContent() }
+    }
 }
+
+/** Momentum ring width — see [UsAvatar]'s `hasRing`. */
+private val RING_WIDTH = 2.dp
+
+/** The canvas-coloured gap between the avatar and its ring. */
+private val RING_GAP = 2.dp
 
 /**
  * Up to two initials.

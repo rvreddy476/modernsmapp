@@ -27,9 +27,9 @@ data class UsExtendedColors(
     val bgCard: Color,
     val bgCardHover: Color,
     /**
-     * Figma redesign (2026-08-29): the SOLID card surface (`bg/card`,
-     * #1A1A1A) and its canvas (`bg/surface`, #0D0D0D), plus the body-text
-     * step (#CCC) the feed card uses between textPrimary and textMuted.
+     * Momentum: the SOLID card surface (`#0B1B2E`) and its canvas
+     * (`#041122`), plus the body-text step the feed card uses between
+     * textPrimary and textMuted.
      */
     val bgCardSolid: Color,
     val bgCanvas: Color,
@@ -52,7 +52,26 @@ data class UsExtendedColors(
     val postgramGradient: Brush,
     val posttubeGradient: Brush,
     val storyRingGradient: Brush,
+    /** Momentum's orange→red accent gradient. The CTA fill, and every other gradient use. */
     val ctaGradient: Brush,
+    /**
+     * The unread/highlight row surface (Momentum: `#072440` dark, `#FFF4EC`
+     * light) — notification and message rows sit on this while unread.
+     */
+    val unreadRow: Color,
+    /**
+     * Momentum's solid accent orange (`#FB923C`), for the places the design
+     * uses a flat colour rather than the gradient: the active tab label and
+     * icon, and header text links like "Mark all read".
+     */
+    val accentSolid: Color,
+    /**
+     * The deep end of the accent gradient (`#DC2626`): the create button's
+     * drop shadow and the count inside the header's white badge.
+     */
+    val accentDeep: Color,
+    /** The raised inline-panel surface (`#071D33` dark, `#EEF3F9` light). */
+    val bgRaised: Color,
 )
 
 /** Corner radii, ported from app_spacing.dart. */
@@ -63,6 +82,14 @@ data class UsRadii(
     val large: Dp = 16.dp,
     val extraLarge: Dp = 20.dp,
     val full: Dp = 9999.dp,
+    /** Momentum card radius — the feed card and other primary surfaces. */
+    val card: Dp = 24.dp,
+    /** Momentum media radius — image/video attachments inside a card. */
+    val media: Dp = 16.dp,
+    /** Momentum panel radius — raised inline panels (the requests panel). */
+    val panel: Dp = 14.dp,
+    /** Momentum pill radius — small chips like "Follow back". */
+    val pill: Dp = 6.dp,
 )
 
 /**
@@ -136,15 +163,21 @@ internal val DarkExtendedColors = UsExtendedColors(
             UsColorTokens.PostbookPrimary,
         ),
     ),
+    // Momentum's brand identity: the centre create button, primary pills,
+    // avatar rings and the unread dot all pull from this one gradient.
     ctaGradient = Brush.horizontalGradient(
-        listOf(UsColorTokens.PostbookPrimary, UsColorTokens.PostgramPrimary),
+        listOf(UsColorTokens.AccentOrange, UsColorTokens.AccentRed),
     ),
+    unreadRow = UsColorTokens.UnreadRow,
+    accentSolid = UsColorTokens.AccentOrange,
+    accentDeep = UsColorTokens.AccentRed,
+    bgRaised = UsColorTokens.BgTertiary,
 )
 
 /**
- * The light palette, from the Figma light frames (81:*). Brand gradients and
- * presence/status colours are shared with dark — the surfaces and text ramp
- * invert, the identity does not.
+ * The light palette — derived, since Momentum's Figma is dark-only. Brand
+ * gradients and presence/status colours are shared with dark — the surfaces
+ * and text ramp invert, the identity does not.
  */
 internal val LightExtendedColors = DarkExtendedColors.copy(
     textPrimary = UsColorTokens.Light.TextPrimary,
@@ -165,4 +198,6 @@ internal val LightExtendedColors = DarkExtendedColors.copy(
     glassBorder = UsColorTokens.Light.GlassBorder,
     brandChip = UsColorTokens.Light.BrandChip,
     onBrandChip = UsColorTokens.Light.OnBrandChip,
+    unreadRow = UsColorTokens.Light.UnreadRow,
+    bgRaised = UsColorTokens.Light.BgTertiary,
 )

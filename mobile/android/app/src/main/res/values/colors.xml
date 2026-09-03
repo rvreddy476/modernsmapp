@@ -1,6 +1,12 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Light canvas (Figma 81:*). The dark value lives in values-night. -->
-    <color name="us_background">#FFFAFAFA</color>
-    <color name="us_brand">#FFFF6B35</color>
+    <!--
+      Momentum (Figma YsWb936muw8pwIxgb0je2A) is dark-native: the splash and
+      window background are the navy ground even for a light-mode launch, so
+      the pre-Compose window matches the brand mark rather than flashing a
+      light canvas the theme is about to replace. values-night carries the
+      same value on purpose — see UsColorTokens.BgPrimary.
+    -->
+    <color name="us_background">#FF041122</color>
+    <color name="us_brand">#FFFB923C</color>
 </resources>

@@ -3,42 +3,54 @@ package com.us.android.core.designsystem.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Colour tokens. The dark ramp is ported 1:1 from the Flutter reference at
- * mobile/atpost_app/lib/core/theme/app_colors.dart; the light ramp arrived
- * with the Figma light frames (81:*, 2026-09-01) — canvas #FAFAFA, card
- * #F0F0F0, ink #0D0D0D, muted #666.
+ * Colour tokens for Momentum (Figma YsWb936muw8pwIxgb0je2A, 2026-09-03).
+ *
+ * The dark ramp is the design's native theme, lifted directly from the Figma
+ * frames: navy ground, a two-step surface stack, and the orange→red accent
+ * gradient. The light ramp has no Figma frame to port — it is this port's own
+ * derivation, keeping the same structure (ground / surface / raised /
+ * highlight / border / text) at light values, with the identical accent.
  */
 internal object UsColorTokens {
     // ── Backgrounds ────────────────────────────────────────────────────
-    val BgPrimary = Color(0xFF000000)
-    val BgSecondary = Color(0xFF121212)
-    val BgTertiary = Color(0xFF1C1C1E)
+    // Momentum: ground #041122, card/surface #0B1B2E, raised surface #071D33.
+    val BgPrimary = Color(0xFF041122)
+    val BgSecondary = Color(0xFF0B1B2E)
+    val BgTertiary = Color(0xFF071D33)
     val BgCard = Color(0x0AFFFFFF)
     val BgCardHover = Color(0x0FFFFFFF)
 
-    // ── Figma redesign tokens (atPost design file, 2026-08-29) ─────────
-    // Extracted from the feed-card spec: bg/surface, bg/card, and the body
-    // text step that sits between TextPrimary and TextMuted. These are the
-    // SOLID card surfaces of the new design language, distinct from the
-    // translucent BgCard above which the older ported screens still use.
-    val FeedCanvas = Color(0xFF0D0D0D)
-    val FeedCard = Color(0xFF1A1A1A)
-    val TextBody = Color(0xFFCCCCCC)
+    // ── Figma redesign tokens (Momentum feed-card spec) ─────────────────
+    // bg/surface (canvas) and bg/card (the solid card surface), plus the
+    // body text step that sits between TextPrimary and TextMuted.
+    val FeedCanvas = Color(0xFF041122)
+    val FeedCard = Color(0xFF0B1B2E)
+    val TextBody = Color(0xFFC7D4E4)
+
+    // ── Unread / highlight row ───────────────────────────────────────────
+    // The notification-row and message-row highlight surface a row sits on
+    // while unread.
+    val UnreadRow = Color(0xFF072440)
 
     // ── Borders ────────────────────────────────────────────────────────
-    val BorderSubtle = Color(0x0FFFFFFF)
-    val BorderMedium = Color(0x14FFFFFF)
+    val BorderSubtle = Color(0x800E2D4A)
+    val BorderMedium = Color(0xFF0E2D4A)
 
     // ── Text ramp (7 steps) ────────────────────────────────────────────
     val TextPrimary = Color(0xFFFFFFFF)
-    val TextSecondary = Color(0xFFE5E5EA)
-    val TextTertiary = Color(0xFFD1D1D6)
-    val TextMuted = Color(0xFF8E8E93)
-    val TextDim = Color(0xFF636366)
-    val TextDimmest = Color(0xFF48484A)
-    val TextGhost = Color(0xFF2C2C2E)
+    val TextSecondary = Color(0xFFC7D4E4)
+    val TextTertiary = Color(0xFFA9BBD1)
+    val TextMuted = Color(0xFF8AA3C2)
+    val TextDim = Color(0xFF6C84A0)
+    val TextDimmest = Color(0xFF4C6280)
+    val TextGhost = Color(0xFF33455E)
 
-    // ── Brand ──────────────────────────────────────────────────────────
+    // ── Accent — Momentum's orange→red gradient identity ────────────────
+    val AccentOrange = Color(0xFFFB923C)
+    val AccentRed = Color(0xFFDC2626)
+
+    // ── Brand (legacy per-product gradients, kept for the story ring and
+    // surfaces that have not moved to the single Momentum accent) ───────
     val PostbookPrimary = Color(0xFFFF6B35)
     val PostbookSecondary = Color(0xFFFF8F65)
     val PostgramPrimary = Color(0xFFFF3366)
@@ -62,50 +74,51 @@ internal object UsColorTokens {
 
     // ── Chat (Figma chat tour 98:*) ────────────────────────────────────
     // The chat vertical's own accent: outgoing bubbles, send, unread
-    // badges. Shared across themes — green IS the chat identity.
+    // badges. Shared across themes — green IS the chat identity, and
+    // Momentum's brief keeps it untouched on purpose.
     val ChatAccent = Color(0xFF22C55E)
     val ChatOnline = Color(0xFF4ADE80)
 
-    // ── Brand chip (the "at" logo square) ──────────────────────────────
+    // ── Brand chip (legacy "at" logo square, superseded by the Momentum
+    // wordmark but kept so nothing still reading it goes unthemed) ──────
     val BrandChip = Color(0xFFFFFFFF)
-    val OnBrandChip = Color(0xFF000000)
+    val OnBrandChip = Color(0xFF041122)
 
     /**
-     * The light palette, from the Figma light frames (81:*).
-     *
-     * Brand, presence and status colours are shared with dark — the ramp
-     * inverts, the identity does not. LightTextBody deviates from the
-     * frame's literal #CCC on purpose: that value is the dark theme's body
-     * step left unswapped in the design file, and it is illegible on
-     * #F0F0F0.
+     * The light palette — this port's own derivation, not a Figma frame.
+     * Same structure as dark (ground / surface / raised / highlight /
+     * border / text), and the identical accent gradient, so a screen never
+     * has to special-case which theme it is in beyond reading the token.
      */
     object Light {
-        val BgPrimary = Color(0xFFFAFAFA)
+        val BgPrimary = Color(0xFFF7F9FC)
         val BgSecondary = Color(0xFFFFFFFF)
-        val BgTertiary = Color(0xFFF0F0F0)
+        val BgTertiary = Color(0xFFEEF3F9)
         val BgCard = Color(0x0A000000)
         val BgCardHover = Color(0x0F000000)
 
-        val FeedCanvas = Color(0xFFFAFAFA)
-        val FeedCard = Color(0xFFF0F0F0)
-        val TextBody = Color(0xFF444444)
+        val FeedCanvas = Color(0xFFF7F9FC)
+        val FeedCard = Color(0xFFFFFFFF)
+        val TextBody = Color(0xFF35506F)
 
-        val BorderSubtle = Color(0x0F000000)
-        val BorderMedium = Color(0x14000000)
+        val UnreadRow = Color(0xFFFFF4EC)
 
-        val TextPrimary = Color(0xFF0D0D0D)
-        val TextSecondary = Color(0xFF3A3A3C)
-        val TextTertiary = Color(0xFF48484A)
-        val TextMuted = Color(0xFF666666)
-        val TextDim = Color(0xFF8E8E93)
-        val TextDimmest = Color(0xFFAEAEB2)
-        val TextGhost = Color(0xFFD1D1D6)
+        val BorderSubtle = Color(0x80DCE4EF)
+        val BorderMedium = Color(0xFFDCE4EF)
+
+        val TextPrimary = Color(0xFF041122)
+        val TextSecondary = Color(0xFF1C3350)
+        val TextTertiary = Color(0xFF35506F)
+        val TextMuted = Color(0xFF5B6E88)
+        val TextDim = Color(0xFF7C8CA3)
+        val TextDimmest = Color(0xFFA6B2C2)
+        val TextGhost = Color(0xFFCBD4E0)
 
         val GlassBg = Color(0x1A000000)
         val GlassBorder = Color(0x14000000)
 
-        /** Figma light brand chip: cream, per the 81:2 logo-icon. */
+        /** Legacy "at" logo chip, light variant — cream on ink. */
         val BrandChip = Color(0xFFF5EEE4)
-        val OnBrandChip = Color(0xFF0D0D0D)
+        val OnBrandChip = Color(0xFF041122)
     }
 }

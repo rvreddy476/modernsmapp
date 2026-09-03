@@ -18,6 +18,9 @@ import com.us.android.core.profile.data.ModulePreferences
 object TabResolver {
     fun resolve(prefs: ModulePreferences): List<TopLevelDestination> {
         val visible = TopLevelDestination.entries.filter { tab ->
+            // Explore is reached from the header's search glyph, as in the
+            // Momentum frame; the bar keeps four destinations around the "+".
+            if (tab == TopLevelDestination.EXPLORE) return@filter false
             val module = tab.module
             module == null || (module.hasScreen && prefs.includes(module))
         }

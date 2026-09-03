@@ -32,9 +32,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.us.android.BuildConfig
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
+import com.us.android.core.designsystem.component.UsWordmark
 import com.us.android.core.designsystem.theme.UsTheme
 
 /**
@@ -81,10 +83,16 @@ fun DesignSystemGalleryScreen(onOpenOwnProfile: () -> Unit = {}) {
 
             SectionTitle("Surfaces & radii")
             Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
-                SurfaceChip("8dp", UsTheme.radii.small)
-                SurfaceChip("12dp", UsTheme.radii.medium)
-                SurfaceChip("16dp", UsTheme.radii.large)
-                SurfaceChip("20dp", UsTheme.radii.extraLarge)
+                SurfaceChip("pill 6", UsTheme.radii.pill)
+                SurfaceChip("panel 14", UsTheme.radii.panel)
+                SurfaceChip("media 16", UsTheme.radii.media)
+                SurfaceChip("card 24", UsTheme.radii.card)
+            }
+
+            SectionTitle("Pills")
+            Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+                UsPillButton(text = "Follow back", onClick = {})
+                UsPillButton(text = "Decline", onClick = {}, filled = false)
             }
 
             SectionTitle("Buttons")
@@ -118,13 +126,9 @@ fun DesignSystemGalleryScreen(onOpenOwnProfile: () -> Unit = {}) {
 @Composable
 private fun Header() {
     Spacer(Modifier.height(UsTheme.spacing.xxl))
+    UsWordmark()
     Text(
-        text = "US",
-        style = MaterialTheme.typography.headlineMedium,
-        color = UsTheme.extended.textPrimary,
-    )
-    Text(
-        text = "Unified Services · design system",
+        text = "Momentum · design system",
         style = MaterialTheme.typography.bodyLarge,
         color = UsTheme.extended.textMuted,
     )
@@ -156,7 +160,7 @@ private fun BrandSection() {
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = "US",
+            text = "M",
             style = MaterialTheme.typography.titleLarge,
             color = UsTheme.extended.textPrimary,
         )
@@ -240,11 +244,11 @@ private fun TypeScale() {
     val rows = listOf(
         "headlineMedium 28/900" to t.headlineMedium,
         "headlineSmall 26/900" to t.headlineSmall,
-        "titleLarge 17/700" to t.titleLarge,
+        "titleLarge 22/800" to t.titleLarge,
         "titleMedium 15/700" to t.titleMedium,
-        "bodyLarge 14.5/400" to t.bodyLarge,
-        "bodyMedium 14/500" to t.bodyMedium,
-        "bodySmall 13/500" to t.bodySmall,
+        "bodyLarge 15/400 Figtree" to t.bodyLarge,
+        "bodyMedium 13/500 Figtree" to t.bodyMedium,
+        "bodySmall 11/500 Figtree" to t.bodySmall,
         "labelLarge 13/600" to t.labelLarge,
         "labelMedium 11/600" to t.labelMedium,
         "labelSmall 10/700" to t.labelSmall,

@@ -14,7 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -22,7 +23,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -50,19 +54,19 @@ data class UsNavItem(
 )
 
 /**
- * The app's bottom navigation — the FLOATING PILL from the Figma home frames
- * (81:138): a rounded card-dark bar hovering over the canvas, tiny labels
- * under each glyph, and the CENTER destination raised on a brand-chip circle.
+ * The app's bottom navigation — Momentum's FLAT bar: ground-coloured, a 1dp
+ * top border, plain labelled items, and — when [centerAction] is supplied —
+ * a raised gradient "+" between the middle two items.
  *
  * Deliberately dumb: it receives the item list, the selected index and a
  * callback. It knows nothing about routes, the back stack or which feature
  * owns a tab. Selection is passed as an index rather than a route so the
  * design system never gains a dependency on the navigation library.
  *
- * [centerIndex] names the raised brand-chip destination, or null for a bar
- * of plain tabs. It is the caller's decision because the item list is now
- * the user's own choice of modules: when Reels is off there is no reel to
- * raise, and promoting whatever landed in the middle would be arbitrary.
+ * This replaced the earlier floating-pill bar with a raised centre TAB (see
+ * git history for `centerIndex`): Momentum's centre slot is always the
+ * create action, never a selectable destination, so it is a callback rather
+ * than an index into [items].
  */
 @Composable
 fun UsNavigationBar(
@@ -70,52 +74,77 @@ fun UsNavigationBar(
     selectedIndex: Int,
     onSelect: (index: Int) -> Unit,
     modifier: Modifier = Modifier,
-    centerIndex: Int? = null,
+    /** The raised centre "+" action, or null for a bar of plain tabs only. */
+    centerAction: (() -> Unit)? = null,
 ) {
-    Box(
+    val border = UsTheme.extended.borderMedium
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(top = UsTheme.spacing.xs, bottom = UsTheme.spacing.l),
-        contentAlignment = Alignment.Center,
+            .background(UsTheme.extended.bgCanvas)
+            // Top edge only: the bar is flush with the screen's sides and
+            // bottom, so a full border would draw a visible box.
+            .drawBehind {
+                val stroke = BAR_BORDER.toPx()
+                drawLine(
+                    color = border,
+                    start = Offset(0f, stroke / 2),
+                    end = Offset(size.width, stroke / 2),
+                    strokeWidth = stroke,
+                )
+            }
+            .navigationBarsPadding(),
     ) {
+        // The create button is a SLOT in the row, the same width as a tab,
+        // placed after the first half of the tabs — exactly the Figma frame
+        // (two tabs, "+", two tabs). Overlaying it at the row's midpoint
+        // instead looked right only for an even count and sat on top of a
+        // label otherwise.
         Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(PILL_ITEM_GAP),
-            modifier = Modifier
-                .clip(CircleShape)
-                .background(UsTheme.extended.bgCardSolid)
-                .padding(
-                    horizontal = UsTheme.spacing.xxl,
-                    vertical = UsTheme.spacing.m,
-                ),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.Bottom,
         ) {
+            val split = items.size / 2
             items.forEachIndexed { index, item ->
-                val selected = index == selectedIndex
-                if (index == centerIndex) {
-                    CenterTab(item = item, selected = selected, onClick = { onSelect(index) })
-                } else {
-                    PillTab(item = item, selected = selected, onClick = { onSelect(index) })
+                if (centerAction != null && index == split) {
+                    CenterSlot(onClick = centerAction)
                 }
+                FlatTab(
+                    item = item,
+                    selected = index == selectedIndex,
+                    onClick = { onSelect(index) },
+                )
+            }
+            if (centerAction != null && items.size <= split) {
+                CenterSlot(onClick = centerAction)
             }
         }
     }
 }
 
-/** A regular destination: glyph over a tiny label. */
+/** The create button in a tab-width slot so the row spaces it like a tab. */
 @Composable
-private fun PillTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
-    val tint = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.textMuted
+private fun CenterSlot(onClick: () -> Unit) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier.width(TAB_WIDTH).padding(vertical = BAR_VERTICAL),
+    ) {
+        CenterCreateButton(onClick = onClick)
+    }
+}
+
+/** A regular destination: glyph over a tiny label, 64dp wide per the frame. */
+@Composable
+private fun FlatTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
+    val tint = if (selected) UsTheme.extended.accentSolid else UsTheme.extended.textMuted
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
         modifier = Modifier
-            .clip(CircleShape)
+            .width(TAB_WIDTH)
             .clickable(onClick = onClick)
-            .padding(
-                horizontal = UsTheme.spacing.m,
-                vertical = UsTheme.spacing.s,
-            )
+            .padding(vertical = BAR_VERTICAL)
             .semantics {
                 contentDescription = item.contentDescription
                 role = Role.Tab
@@ -126,42 +155,48 @@ private fun PillTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
             imageVector = item.icon,
             contentDescription = null,
             tint = tint,
-            modifier = Modifier.size(PILL_GLYPH),
+            modifier = Modifier.size(TAB_GLYPH),
         )
         Text(
             text = item.label,
             style = MaterialTheme.typography.labelSmall,
-            fontSize = PILL_LABEL_SIZE,
-            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold,
+            fontSize = TAB_LABEL_SIZE,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             color = tint,
         )
     }
 }
 
 /**
- * The raised middle destination — the brand-chip circle from the frame. The
- * chip colour flips with the theme (white on dark, cream on light), so the
- * one label-less tab is also the one that cannot be missed.
+ * The raised centre create button — a 40dp gradient square with 14dp
+ * corners and the design's red drop shadow (`0 3 5 #DC2626`), floating
+ * above the flat bar rather than sitting in its row.
  */
 @Composable
-private fun CenterTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
+private fun CenterCreateButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(CENTER_BUTTON_RADIUS)
+    val shadow = UsTheme.extended.accentDeep
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(CENTER_TAB)
-            .clip(CircleShape)
-            .background(UsTheme.extended.brandChip)
+        modifier = modifier
+            .size(CENTER_BUTTON)
+            .shadow(
+                elevation = CENTER_SHADOW,
+                shape = shape,
+                ambientColor = shadow,
+                spotColor = shadow,
+            )
+            .background(UsTheme.extended.ctaGradient, shape)
             .clickable(onClick = onClick)
             .semantics {
-                contentDescription = item.contentDescription
-                role = Role.Tab
-                this.selected = selected
+                contentDescription = "Create"
+                role = Role.Button
             },
     ) {
         Icon(
-            imageVector = item.icon,
+            imageVector = UsIcons.Create,
             contentDescription = null,
-            tint = UsTheme.extended.onBrandChip,
+            tint = Color.White,
             modifier = Modifier.size(CENTER_GLYPH),
         )
     }
@@ -172,8 +207,7 @@ private fun CenterTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
  *
  * Presentation only. The shell (`:app`) builds the real list from the user's
  * module choices and pairs each item with a route; this sample exists so the
- * pill renders at its widest in the design-system previews. Index 2 is the
- * raised Reels chip from the Figma pill (81:138).
+ * bar renders at its widest in the design-system previews.
  */
 val UsDefaultNavItems: List<UsNavItem> = listOf(
     UsNavItem("Home", UsIcons.Home),
@@ -183,29 +217,33 @@ val UsDefaultNavItems: List<UsNavItem> = listOf(
     UsNavItem("Me", UsIcons.Profile, contentDescription = "My profile"),
 )
 
-private val PILL_ITEM_GAP = 10.dp
-private val PILL_GLYPH = 22.dp
-private val PILL_LABEL_SIZE = 10.sp
-private val CENTER_TAB = 52.dp
-private val CENTER_GLYPH = 24.dp
+private val TAB_WIDTH = 64.dp
+private val TAB_GLYPH = 24.dp
+private val TAB_LABEL_SIZE = 10.sp
+private val BAR_VERTICAL = 10.dp
+private val BAR_BORDER = 1.dp
+private val CENTER_BUTTON = 40.dp
+private val CENTER_BUTTON_RADIUS = 14.dp
+private val CENTER_SHADOW = 5.dp
+private val CENTER_GLYPH = 22.dp
 
-@Preview(name = "Navigation pill", showBackground = true)
+@Preview(name = "Navigation bar — with create button", showBackground = true)
 @Composable
 private fun UsNavigationBarPreview() {
     UsTheme {
-        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 0, onSelect = {}, centerIndex = 2)
+        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 0, onSelect = {}, centerAction = {})
     }
 }
 
-@Preview(name = "Navigation pill — last tab", showBackground = true)
+@Preview(name = "Navigation bar — last tab selected", showBackground = true)
 @Composable
 private fun UsNavigationBarLastPreview() {
     UsTheme {
-        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 4, onSelect = {}, centerIndex = 2)
+        UsNavigationBar(items = UsDefaultNavItems, selectedIndex = 4, onSelect = {}, centerAction = {})
     }
 }
 
-@Preview(name = "Navigation pill — no raised centre", showBackground = true)
+@Preview(name = "Navigation bar — no create button", showBackground = true)
 @Composable
 private fun UsNavigationBarFlatPreview() {
     UsTheme {

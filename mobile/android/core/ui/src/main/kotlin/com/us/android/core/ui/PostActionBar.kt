@@ -89,6 +89,12 @@ fun PostActionBar(
     onBookmark: () -> Unit,
     onShare: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Momentum's feed card writes "N likes" and "View all N comments" as
+     * lines UNDER the row, so it passes false and the glyphs stand alone;
+     * post detail and reels keep the inline counts.
+     */
+    showCounts: Boolean = true,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -99,7 +105,7 @@ fun PostActionBar(
         ActionButton(
             icon = if (state.hasReacted) UsIcons.HeartFilled else UsIcons.HeartOutline,
             label = "Like",
-            count = state.likeCount,
+            count = state.likeCount.takeIf { showCounts },
             active = state.hasReacted,
             enabled = state.canReact && !state.busy,
             activeTint = UsTheme.extended.liveRed,
@@ -108,7 +114,7 @@ fun PostActionBar(
         ActionButton(
             icon = UsIcons.Comment,
             label = "Comment",
-            count = state.commentCount,
+            count = state.commentCount.takeIf { showCounts },
             active = false,
             enabled = state.canComment && !state.busy,
             onClick = onComment,
@@ -116,7 +122,7 @@ fun PostActionBar(
         ActionButton(
             icon = UsIcons.Repost,
             label = "Repost",
-            count = state.repostCount,
+            count = state.repostCount.takeIf { showCounts },
             active = state.hasReposted,
             enabled = state.canRepost && !state.busy,
             activeTint = UsTheme.extended.statusSuccess,
@@ -158,7 +164,7 @@ private fun ActionButton(
     onClick: () -> Unit,
     activeTint: Color = Color.Unspecified,
 ) {
-    // Resting tint is the MUTED step (#8E8E93), per the Figma action row —
+    // Resting tint is the MUTED step, per the Momentum action row —
     // the actions are quieter than the content until they are active.
     val tint = when {
         !enabled -> UsTheme.extended.textGhost

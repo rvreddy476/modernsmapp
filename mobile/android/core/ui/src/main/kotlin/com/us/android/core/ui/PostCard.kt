@@ -30,19 +30,25 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -57,6 +63,8 @@ data class PostCardState(
     val postId: String,
     val authorId: String,
     val authorName: String,
+    /** "@handle", shown under the name when the surface has one; else the time goes there. */
+    val authorHandle: String? = null,
     val text: String,
     val timestamp: String,
     /** `text`, `image`, `video`, … */
@@ -254,111 +262,22 @@ fun PostCard(
     /** Casts a vote in this card's poll. Null on surfaces that cannot vote. */
     onVotePoll: ((optionId: String) -> Unit)? = null,
 ) {
-    // Figma redesign (feed-card 4:186): a CONTAINED card — solid #1A1A1A
-    // surface, 20dp corners, 16dp padding, 14dp internal rhythm — instead of
-    // the previous full-bleed row with a divider. Separation between cards is
-    // the list's spacing, not a rule line.
+    // Momentum (Figma YsWb936muw8pwIxgb0je2A): a CONTAINED card — the solid
+    // card surface, 24dp corners, a 1dp border and a soft drop shadow, 16dp
+    // padding. Separation between cards is the list's spacing, not a rule.
+    val shape = RoundedCornerShape(UsTheme.radii.card)
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(CARD_CORNER))
+            .shadow(CARD_SHADOW, shape, ambientColor = CARD_SHADOW_COLOR, spotColor = CARD_SHADOW_COLOR)
+            .clip(shape)
             .background(UsTheme.extended.bgCardSolid)
+            .border(HAIRLINE_FULL, UsTheme.extended.borderMedium, shape)
             .clickable(onClick = onClick)
             .padding(UsTheme.spacing.xxl),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        // Author header row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .clickable(onClick = onAuthorClick),
-            ) {
-                UsAvatar(
-                    name = state.authorName,
-                    size = UsAvatarSize.Medium,
-                )
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-                    ) {
-                        Text(
-                            text = state.authorName,
-                            style = MaterialTheme.typography.titleSmall,
-                            // ExtraBold 15 in the Figma card — the name is
-                            // the card's strongest text.
-                            fontWeight = FontWeight.ExtraBold,
-                            color = UsTheme.extended.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (state.isPinned) {
-                            Text(
-                                text = "• Pinned",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        }
-                    }
-                    Text(
-                        text = state.timestamp,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = UsTheme.extended.textSecondary,
-                    )
-                }
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (onFollow != null) {
-                    // Inverted chip: ink-on-light and light-on-ink both come
-                    // from the ramp, so the control reads in either theme.
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(UsTheme.radii.full))
-                            .background(UsTheme.extended.textPrimary)
-                            .clickable(onClick = onFollow)
-                            .padding(horizontal = UsTheme.spacing.l, vertical = 6.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = "Follow",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = UsTheme.extended.bgCanvas,
-                        )
-                    }
-                }
-                if (onOptionClick != null) {
-                    IconButton(onClick = onOptionClick) {
-                        Icon(
-                            imageVector = UsIcons.More,
-                            contentDescription = "Post options",
-                            tint = UsTheme.extended.textSecondary,
-                        )
-                    }
-                }
-            }
-        }
-
-        // Post body text — the design's dedicated body step (#CCC), one
-        // notch quieter than the author name so the header stays the anchor.
-        if (state.text.isNotBlank()) {
-            Text(
-                text = state.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textBody,
-                maxLines = MAX_LINES,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        PostCardHeader(state, onAuthorClick, onFollow, onOptionClick)
 
         // Poll block — ballots until the viewer votes (or the poll ends),
         // results after.
@@ -366,13 +285,14 @@ fun PostCard(
             PostPollBlock(poll = poll, onVote = onVotePoll)
         }
 
-        // Media attachment
+        // Media sits directly under the header: it is the card's centre of
+        // gravity, and the caption stack below reads as commentary on it.
         if (state.mediaCount > 0) {
             PostMediaCarousel(state)
         }
 
-        // Social action bar. No trailing divider: the contained card ends
-        // itself, and the list's spacing separates neighbours.
+        // Social action bar, glyphs only — the counts are written out as
+        // lines in the caption stack below, per the Momentum card.
         PostActionBar(
             state = state.actions,
             onReact = onReact,
@@ -380,13 +300,157 @@ fun PostCard(
             onRepost = onRepost,
             onBookmark = onBookmark,
             onShare = onShare,
+            showCounts = false,
             modifier = Modifier.fillMaxWidth(),
+        )
+
+        PostCardCaption(state, onComment)
+    }
+}
+
+/**
+ * The author row: a 36dp avatar with a 2dp ring, the name at 14sp bold,
+ * the handle (or the time, when the surface has no handle) at 11sp under
+ * it, and the Follow pill / overflow trailing.
+ */
+@Composable
+private fun PostCardHeader(
+    state: PostCardState,
+    onAuthorClick: () -> Unit,
+    onFollow: (() -> Unit)?,
+    onOptionClick: (() -> Unit)?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .clickable(onClick = onAuthorClick),
+        ) {
+            UsAvatar(
+                name = state.authorName,
+                size = UsAvatarSize.Post,
+                // The design's white ring; in the derived light theme white
+                // on a white card vanishes, so it takes the text colour there.
+                modifier = Modifier
+                    .border(AVATAR_RING, UsTheme.extended.textPrimary, CircleShape)
+                    .padding(AVATAR_RING),
+            )
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                ) {
+                    Text(
+                        text = state.authorName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = NAME_SIZE,
+                        fontWeight = FontWeight.Bold,
+                        color = UsTheme.extended.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (state.isPinned) {
+                        Text(
+                            text = "• Pinned",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = UsTheme.extended.accentSolid,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+                Text(
+                    text = state.authorHandle ?: state.timestamp,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onFollow != null) {
+                UsPillButton(text = "Follow", onClick = onFollow)
+            }
+            if (onOptionClick != null) {
+                IconButton(onClick = onOptionClick) {
+                    Icon(
+                        imageVector = UsIcons.More,
+                        contentDescription = "Post options",
+                        tint = UsTheme.extended.textMuted,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The caption stack under the action row: "N likes" (14sp bold), the caption
+ * with the author's name in bold (13sp), "View all N comments" (12sp
+ * muted, opens the comments), and the timestamp in 10sp uppercase.
+ *
+ * Zero counts are not information: the lines appear the moment there is
+ * something to count, so a fresh post is not three rows of "0".
+ */
+@Composable
+private fun PostCardCaption(state: PostCardState, onComment: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
+        val likes = state.actions.likeCount
+        if (likes > 0) {
+            Text(
+                text = formatCount(likes) + if (likes == 1) " like" else " likes",
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = NAME_SIZE,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.textPrimary,
+            )
+        }
+        if (state.text.isNotBlank()) {
+            Text(
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(state.authorName) }
+                    append(" ")
+                    append(state.text)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textBody,
+                maxLines = MAX_LINES,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        val comments = state.actions.commentCount
+        if (comments > 0) {
+            Text(
+                text = "View all " + formatCount(comments) + if (comments == 1) " comment" else " comments",
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = COMMENTS_SIZE,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier.clickable(onClick = onComment),
+            )
+        }
+        Text(
+            text = state.timestamp.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.textMuted,
         )
     }
 }
 
-/** Figma feed-card corner radius (between UsRadii.large 16 and xl 20). */
-private val CARD_CORNER = 20.dp
+/** Momentum card shadow: `0 10 24 -8 rgba(0,0,0,.2)`, approximated by elevation. */
+private val CARD_SHADOW = 10.dp
+
+@Suppress("MagicNumber") // rgba(0,0,0,.2) from the design, as one ARGB literal.
+private val CARD_SHADOW_COLOR = Color(0x33000000)
+private val AVATAR_RING = 2.dp
+private val NAME_SIZE = 14.sp
+private val COMMENTS_SIZE = 12.sp
 
 /**
  * Full-screen immersive post page used by VerticalPager for immersive media/video feeds.
@@ -678,19 +742,18 @@ fun PostMedia(
      */
     contentDescription: String?,
 ) {
-    // 14dp per the Figma feed-card media container (between radii.medium 12
-    // and radii.large 16).
-    val mediaShape = RoundedCornerShape(MEDIA_CORNER)
+    // Momentum media radius (16dp), on the canvas colour with the token border.
+    val mediaShape = RoundedCornerShape(UsTheme.radii.media)
 
     Box(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(aspectRatio)
             .clip(mediaShape)
-            .background(Color(0xFF14141A))
+            .background(UsTheme.extended.bgCanvas)
             .border(
                 width = HAIRLINE,
-                color = Color(0x14FFFFFF),
+                color = UsTheme.extended.borderMedium,
                 shape = mediaShape,
             ),
     ) {
@@ -888,7 +951,6 @@ const val DEFAULT_MEDIA_ASPECT = 16f / 9f
 
 const val VIDEO_POST = "video"
 private val HAIRLINE = 0.5.dp
-private val MEDIA_CORNER = 14.dp
 private val REEL_GLYPH = 14.dp
 private const val COUNT_PILL_ALPHA = 0.6f
 

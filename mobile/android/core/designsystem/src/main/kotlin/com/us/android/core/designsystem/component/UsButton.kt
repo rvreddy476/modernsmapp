@@ -1,10 +1,13 @@
 package com.us.android.core.designsystem.component
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -20,8 +23,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.theme.UsTheme
 
 /**
@@ -135,6 +143,84 @@ private fun UsButtonPreview() {
                 enabled = false,
             )
             UsSecondaryButton(text = "Not now", onClick = {}, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+/**
+ * Momentum's small inline pill — "Follow back", Accept, Decline.
+ *
+ * Gradient-filled by default (6dp corners, 12x6 padding, 11sp bold); pass
+ * [filled] = false for the neutral outlined twin that sits beside it. Kept
+ * separate from [UsButton] on purpose: that is a full-width 48dp CTA, and
+ * shrinking it into a row would have meant a control that is neither.
+ */
+@Composable
+fun UsPillButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    filled: Boolean = true,
+    enabled: Boolean = true,
+    busy: Boolean = false,
+) {
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.pill)
+    val active = enabled && !busy
+    val fill = when {
+        !filled -> Modifier.border(1.dp, UsTheme.extended.borderMedium, shape)
+        active -> Modifier.background(UsTheme.extended.ctaGradient, shape)
+        else -> Modifier.background(UsTheme.extended.bgCardHover, shape)
+    }
+    val labelColor = when {
+        !filled && active -> UsTheme.extended.textPrimary
+        !filled -> UsTheme.extended.textMuted
+        active -> Color.White
+        else -> UsTheme.extended.textDim
+    }
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .then(fill)
+            .clickable(enabled = active, onClick = onClick)
+            .semantics { role = Role.Button }
+            .padding(horizontal = PILL_HORIZONTAL, vertical = PILL_VERTICAL),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (busy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(PILL_SPINNER),
+                strokeWidth = 2.dp,
+                color = labelColor,
+            )
+        } else {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = PILL_TEXT,
+                fontWeight = FontWeight.Bold,
+                color = labelColor,
+            )
+        }
+    }
+}
+
+private val PILL_HORIZONTAL = 12.dp
+private val PILL_VERTICAL = 6.dp
+private val PILL_TEXT = 11.sp
+private val PILL_SPINNER = 12.dp
+
+@Preview(name = "Pills", showBackground = true, backgroundColor = 0xFF041122)
+@Composable
+private fun UsPillButtonPreview() {
+    UsTheme {
+        Row(
+            modifier = Modifier.padding(UsTheme.spacing.l),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        ) {
+            UsPillButton(text = "Follow back", onClick = {})
+            UsPillButton(text = "Decline", onClick = {}, filled = false)
+            UsPillButton(text = "Busy", onClick = {}, busy = true)
+            UsPillButton(text = "Following", onClick = {}, filled = false, enabled = false)
         }
     }
 }

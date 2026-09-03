@@ -14,10 +14,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 private val UsDarkColorScheme = darkColorScheme(
-    primary = UsColorTokens.PostbookPrimary,
-    onPrimary = Color.Black,
-    primaryContainer = UsColorTokens.PostbookSecondary,
-    onPrimaryContainer = Color.Black,
+    primary = UsColorTokens.AccentOrange,
+    onPrimary = Color.White,
+    primaryContainer = UsColorTokens.AccentRed,
+    onPrimaryContainer = Color.White,
     secondary = UsColorTokens.PostgramPrimary,
     onSecondary = Color.White,
     secondaryContainer = UsColorTokens.PostgramSecondary,
@@ -38,10 +38,10 @@ private val UsDarkColorScheme = darkColorScheme(
 )
 
 private val UsLightColorScheme = lightColorScheme(
-    primary = UsColorTokens.PostbookPrimary,
+    primary = UsColorTokens.AccentOrange,
     onPrimary = Color.White,
-    primaryContainer = UsColorTokens.PostbookSecondary,
-    onPrimaryContainer = Color.Black,
+    primaryContainer = UsColorTokens.AccentRed,
+    onPrimaryContainer = Color.White,
     secondary = UsColorTokens.PostgramPrimary,
     onSecondary = Color.White,
     secondaryContainer = UsColorTokens.PostgramSecondary,

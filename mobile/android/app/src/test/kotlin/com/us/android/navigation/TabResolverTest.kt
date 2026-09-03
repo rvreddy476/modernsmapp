@@ -19,7 +19,6 @@ class TabResolverTest {
                 TopLevelDestination.HOME,
                 TopLevelDestination.MESSAGES,
                 TopLevelDestination.REELS,
-                TopLevelDestination.EXPLORE,
                 TopLevelDestination.ME,
             )
             .inOrder()
@@ -32,20 +31,26 @@ class TabResolverTest {
         assertThat(tabs).containsExactly(
             TopLevelDestination.HOME,
             TopLevelDestination.MESSAGES,
-            TopLevelDestination.EXPLORE,
             TopLevelDestination.ME,
         ).inOrder()
     }
 
     @Test
-    fun `explore, me and home survive every choice`() {
+    fun `me and home survive every choice`() {
         val tabs = TabResolver.resolve(prefs(modules = emptySet()))
 
         assertThat(tabs).containsExactly(
             TopLevelDestination.HOME,
-            TopLevelDestination.EXPLORE,
             TopLevelDestination.ME,
         ).inOrder()
+    }
+
+    /** Explore lives behind the header's search glyph, never in the bar. */
+    @Test
+    fun `explore is never a tab`() {
+        val tabs = TabResolver.resolve(prefs(modules = AppModule.selectable.toSet()))
+
+        assertThat(tabs).doesNotContain(TopLevelDestination.EXPLORE)
     }
 
     @Test
@@ -57,7 +62,6 @@ class TabResolverTest {
             TopLevelDestination.REELS,
             TopLevelDestination.HOME,
             TopLevelDestination.MESSAGES,
-            TopLevelDestination.EXPLORE,
             TopLevelDestination.ME,
         ).inOrder()
     }

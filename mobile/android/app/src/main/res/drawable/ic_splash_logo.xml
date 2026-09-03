@@ -1,7 +1,25 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Momentum's splash mark. The system splash clips the icon to a circle, so a
+  navy disc is drawn first: the "M" then reads identically whether the
+  splash window is the brand ground (it is — see values/colors.xml) or a
+  launcher-tinted surface. Same monogram and gradient as the launcher.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#FF6B35"
-        android:pathData="M54,30m-18,0a18,18 0,1 1,36 0a18,18 0,1 1,-36 0" />
+    <path android:fillColor="#FF041122"
+        android:pathData="M54,54 m-40,0 a40,40 0 1,1 80,0 a40,40 0 1,1 -80,0" />
+    <path android:pathData="M31,75 V33 H41 L54,55 L67,33 H77 V75 H67.5 V50.5 L56.5,69 H51.5 L40.5,50.5 V75 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="31" android:startY="54"
+                android:endX="77" android:endY="54">
+                <item android:offset="0" android:color="#FFFB923C" />
+                <item android:offset="1" android:color="#FFDC2626" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

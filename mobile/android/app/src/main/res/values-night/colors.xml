@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Night keeps the original dark window; the base values/ variant is now the
-     light canvas so a light-mode launch does not flash black first. -->
+<!-- Momentum's ground is the same navy in both modes — see values/colors.xml. -->
 <resources>
-    <color name="us_background">#FF000000</color>
+    <color name="us_background">#FF041122</color>
 </resources>

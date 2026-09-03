@@ -8,8 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,6 +21,8 @@ import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
+import com.us.android.core.designsystem.component.UsWordmark
+import com.us.android.core.designsystem.component.UsWordmarkSize
 import com.us.android.core.designsystem.theme.UsTheme
 
 @Composable
@@ -88,16 +88,7 @@ private fun LoginBody(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(
-            text = "US",
-            style = MaterialTheme.typography.headlineMedium,
-            color = UsTheme.extended.textPrimary,
-        )
-        Text(
-            text = "Unified Services",
-            style = MaterialTheme.typography.bodyLarge,
-            color = UsTheme.extended.textMuted,
-        )
+        UsWordmark(size = UsWordmarkSize.Hero)
         Spacer(Modifier.height(UsTheme.spacing.xxxxl))
 
         UsTextField(

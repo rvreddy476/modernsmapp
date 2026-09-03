@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,6 +24,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.us.android.core.designsystem.component.UsNavigationBar
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsWordmark
+import com.us.android.core.designsystem.component.UsWordmarkSize
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.model.NotificationTarget
@@ -228,7 +229,9 @@ fun UsNavHost(
                     // shows with nothing selected rather than lying.
                     selectedIndex = tabs.indexOf(currentTab),
                     onSelect = { index -> navController.navigateToTopLevel(tabs[index]) },
-                    centerIndex = tabs.indexOf(TopLevelDestination.REELS).takeIf { it >= 0 },
+                    // Momentum's raised centre button is always Create, not a
+                    // tab — the feed's own "+" action lands in the same hub.
+                    centerAction = { navController.navigateToCreate() },
                 )
             }
         },
@@ -275,11 +278,7 @@ private fun SplashScreen() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text(
-                text = "US",
-                style = MaterialTheme.typography.headlineMedium,
-                color = UsTheme.extended.textPrimary,
-            )
+            UsWordmark(size = UsWordmarkSize.Hero)
         }
     }
 }
@@ -383,10 +382,12 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
         onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
         onOpenNotifications = { navController.navigateToNotifications() },
-        onCreatePost = { navController.navigateToCreate() },
+        // Search is the Explore tab until a dedicated surface exists; the
+        // create action left the header for the bar's centre button.
+        onOpenSearch = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
     )
 
-    // The Create hub — the feed's "+" lands here; the footer rail switches
+    // The Create hub — the bar's centre "+" lands here; the footer rail switches
     // between Text, Image, Reel and Poll. On success the created post REPLACES
     // the hub in the back stack: Back from the new post returns to the feed,
     // not to a creator whose content is already published.
@@ -449,6 +450,9 @@ private fun NavGraphBuilder.tabDestinations(
         // Preferences are a `:feature:profile` destination. The inbox asks
         // for "settings"; :app decides that means this route.
         onOpenPreferences = { navController.navigate(NotificationSettingsRoute) },
+        // The Momentum Follow Requests panel opens the same approval queue
+        // a profile's own entry point does.
+        onOpenFollowRequests = { navController.navigateToFollowRequests() },
     )
 
     // Messages. The entry point is the feed's top bar; a profile's Message
