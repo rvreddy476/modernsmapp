@@ -135,6 +135,15 @@ func (s *Store) initEntityIndices() {
 	s.putPrivacyMapping(ctx, IndexUsers, "is_private")
 	s.putPrivacyMapping(ctx, IndexPosts, "author_is_private")
 
+	// Account control (auth-service deactivate / 30-day scheduled
+	// deletion): is_hidden is UNCONDITIONAL suppression, distinct from
+	// is_private. Same additive, idempotent put-mapping as the privacy
+	// fields above; a document written before this field existed has no
+	// value, which every query treats as "not hidden" until the lifecycle
+	// consumer (or a reindex) stamps the real value.
+	s.putPrivacyMapping(ctx, IndexUsers, "is_hidden")
+	s.putPrivacyMapping(ctx, IndexPosts, "is_hidden")
+
 	// Hashtags index — one doc per hashtag, keyed by the lowercase tag.
 	s.createIndexIfNotExists(ctx, IndexHashtags, `{
 		"settings": `+settings+`,

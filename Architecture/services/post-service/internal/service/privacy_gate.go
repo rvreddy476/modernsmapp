@@ -51,6 +51,19 @@ type privacyGateState struct {
 	privacyCache map[string]privacyGateEntry
 	// privacyNow is swapped by tests to drive the TTL.
 	privacyNow func() time.Time
+	// hiddenAuthors answers the auth-service account-lifecycle question
+	// (deactivated / pending-delete). A narrow interface — rather than the
+	// concrete *postgres.Store already on Service.pgStore — so tests can
+	// swap in a fake without a live database, the same way canViewPosts is
+	// tested against an httptest fake for graph-service. New() sets this to
+	// pgStore, which satisfies it via AnyHidden
+	// (internal/store/postgres/purge.go).
+	hiddenAuthors hiddenAuthorsStore
+}
+
+// hiddenAuthorsStore is satisfied by *postgres.Store.
+type hiddenAuthorsStore interface {
+	AnyHidden(ctx context.Context, authorIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
 type privacyGateEntry struct {
@@ -166,12 +179,54 @@ func (s *Service) graphCan(ctx context.Context, viewerID uuid.UUID, action strin
 
 // canViewPosts reports, per author, whether viewerID may read that author's
 // post surfaces (account_visibility). A nil viewer is the anonymous stranger.
+//
+// This is also where the auth-service account-lifecycle gate lives
+// (Architecture/shared/events/events.go "Account control"): a deactivated
+// author, or one inside the 30-day deletion recovery window, has a row in
+// post_hidden_authors (internal/store/postgres/purge.go SetUserHidden) and is
+// denied here regardless of what the follow/privacy graph answer says.
+// Every existing caller of canViewPosts/canViewAuthor — GetPostsByIDs,
+// by-author listing, GetRecentPosts, comments, etc. — picks this up for
+// free because they all funnel through this one function.
 func (s *Service) canViewPosts(ctx context.Context, viewerID *uuid.UUID, authorIDs []uuid.UUID) map[uuid.UUID]bool {
 	viewer := anonymousViewerID
 	if viewerID != nil {
 		viewer = *viewerID
 	}
-	return s.graphCan(ctx, viewer, graphclient.ActionViewPosts, authorIDs)
+	out := s.graphCan(ctx, viewer, graphclient.ActionViewPosts, authorIDs)
+	return s.denyHiddenAuthors(ctx, viewer, out)
+}
+
+// denyHiddenAuthors forces false onto every target in `answers` whose author
+// is currently hidden, leaving self-view (viewer == author) untouched. Same
+// fail-closed shape as graphCan: a lookup error denies the checked authors
+// rather than silently falling back to the graph's answer.
+func (s *Service) denyHiddenAuthors(ctx context.Context, viewer uuid.UUID, answers map[uuid.UUID]bool) map[uuid.UUID]bool {
+	if s.hiddenAuthors == nil || len(answers) == 0 {
+		return answers
+	}
+	toCheck := make([]uuid.UUID, 0, len(answers))
+	for id := range answers {
+		if id == viewer {
+			continue // self-view is never gated by hidden
+		}
+		toCheck = append(toCheck, id)
+	}
+	if len(toCheck) == 0 {
+		return answers
+	}
+	hidden, err := s.hiddenAuthors.AnyHidden(ctx, toCheck)
+	if err != nil {
+		log.Printf("Warning: hidden-authors lookup unresolved for %d authors; denying: %v", len(toCheck), err)
+		for _, id := range toCheck {
+			answers[id] = false
+		}
+		return answers
+	}
+	for id := range hidden {
+		answers[id] = false
+	}
+	return answers
 }
 
 // canViewAuthor is the single-author form of canViewPosts.

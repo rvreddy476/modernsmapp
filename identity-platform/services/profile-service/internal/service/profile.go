@@ -100,6 +100,14 @@ func (s *Service) FindProfileMediaOwner(
 	return s.store.FindProfileMediaOwner(ctx, mediaID)
 }
 
+// IsHidden reports whether userID is currently hidden by the account
+// lifecycle consumer (auth-service deactivate / scheduled-deletion — see
+// internal/purge and internal/store/purge.go). Backs the profile read gate in
+// internal/http/hidden_denial_gate.go.
+func (s *Service) IsHidden(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return s.store.IsHidden(ctx, userID)
+}
+
 // ListProfiles returns a paginated list of all profiles.
 func (s *Service) ListProfiles(ctx context.Context, limit, offset int) ([]store.Profile, int64, error) {
 	return s.store.ListProfiles(ctx, limit, offset)

@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
@@ -17,13 +18,26 @@ import (
 type Consumer struct {
 	reader *kafka.Reader
 	db     *pgxpool.Pool
+	// lifecycle handles user.deactivated / deletion_scheduled / reactivated /
+	// deletion_cancelled / purge_requested (see internal/purge). Optional.
+	lifecycle *purge.Handler
 }
 
+// WithLifecycleHandler wires the account-control (hide / purge) handler.
+func (c *Consumer) WithLifecycleHandler(h *purge.Handler) *Consumer {
+	c.lifecycle = h
+	return c
+}
+
+// NewConsumer builds the identity-events consumer. The group id is distinct
+// from every other post-service consumer group (e.g. the engagement topic's
+// "post-service-group") so this subscription's offsets never collide with
+// an unrelated one on the same broker.
 func NewConsumer(brokers []string, topic string, db *pgxpool.Pool) *Consumer {
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: brokers,
 		Topic:   topic,
-		GroupID: "post-service-group",
+		GroupID: "post-service-identity-group",
 	})
 	return &Consumer{reader: r, db: db}
 }
@@ -83,6 +97,15 @@ func (c *Consumer) handleUntilDurable(ctx context.Context, m kafka.Message) bool
 	}
 
 	if envelope.EventType != events.EventUserDeletionRequested {
+		// Not the legacy (kept-for-compatibility, no longer emitted)
+		// deletion event. If it's one of the account-lifecycle events
+		// (deactivate/delete-schedule/reactivate/cancel/purge), the
+		// lifecycle handler retries it in place with its own backoff —
+		// same "never advance the offset past an unresolved event"
+		// guarantee this loop gives handleUserDeletionRequested below.
+		if c.lifecycle != nil && purge.Handles(envelope.EventType) {
+			return c.lifecycle.HandleUntilDurable(ctx, envelope.EventType, envelope.Payload)
+		}
 		return true // not ours; nothing to do
 	}
 

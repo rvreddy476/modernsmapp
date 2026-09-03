@@ -122,6 +122,15 @@ func encodeQuery(ctx context.Context, q map[string]interface{}, idField string) 
 			applyPrivateAuthorMustNot(q, scope.allowedPrivateAuthors())
 		}
 	}
+	// Account control (auth-service deactivate / 30-day scheduled
+	// deletion): a hidden user, and every post by a hidden author, must
+	// never surface in search for ANY viewer — unconditional, unlike the
+	// private-account exclusion above, and block-list resolution aside.
+	// Applied to every query regardless of idField: is_hidden is mapped
+	// only on users_v1/posts_v1, so this term is a harmless no-op against
+	// indices (hashtags/communities/channels/products/messages) that never
+	// set it.
+	applyHiddenMustNot(q)
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(q); err != nil {
 		return nil, fmt.Errorf("encode search query: %w", err)
@@ -166,6 +175,15 @@ func ownerFieldForIndex(index string) string {
 	default:
 		return ""
 	}
+}
+
+// applyHiddenMustNot injects `must_not: [{term: {is_hidden: true}}]`,
+// unconditionally excluding deactivated / scheduled-for-deletion accounts
+// and their posts from every query this store runs.
+func applyHiddenMustNot(q map[string]interface{}) {
+	appendMustNot(q, map[string]interface{}{
+		"term": map[string]interface{}{"is_hidden": true},
+	})
 }
 
 // applyBlockMustNot injects `must_not: [{terms: {<idField>: ids}}]` into

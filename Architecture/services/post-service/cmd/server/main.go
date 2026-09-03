@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/post-service/internal/engagement/consumers"
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/http"
+	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -201,6 +202,25 @@ func main() {
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 	engTopic := "social.events.v1"
+
+	// Account-control lifecycle (auth-service deactivate/delete/purge
+	// contract — Architecture/shared/events/events.go "Account control").
+	// On user.deactivated/user.deletion_scheduled the author is hidden
+	// (internal/service/privacy_gate.go canViewPosts denies every read
+	// regardless of the follow graph); user.reactivated/
+	// user.deletion_cancelled unhides; user.purge_requested erases every
+	// post-service row keyed by the user in one transaction
+	// (internal/store/postgres/purge.go PurgeUser) and acks as "post" onto
+	// platform.purge-acks.v1. This consumer previously existed only for the
+	// legacy user.deletion_requested path and was never started — it is
+	// now the identity-topic subscription for both.
+	purgeAcks := purge.NewKafkaAckPublisher(brokers, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	identityConsumer := postEvents.NewConsumer(brokers, env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), dbPool).
+		WithLifecycleHandler(purge.NewHandler("post", pgStore, purgeAcks, pgStore, slog.Default()))
+	go identityConsumer.Start(consumerCtx)
+	defer identityConsumer.Close()
+	slog.Info("account lifecycle (deactivate/delete/purge) consumer started")
 
 	scyllaConsumer := consumers.NewScyllaLikeConsumer(scyllaSession, rdb)
 	go scyllaConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)

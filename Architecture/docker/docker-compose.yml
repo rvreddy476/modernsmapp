@@ -499,6 +499,9 @@ services:
       # are resolved by graph-service's permission matrix.
       USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Account control (deactivate/delete/purge): ack topic for the
+      # existing identity-topic consumer's user.purge_requested handling.
+      PURGE_ACKS_TOPIC: platform.purge-acks.v1
       # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16 this
       # service does not migrate its own database: it applies its own additive
       # schema file (services/*/database/setup.sql) and then VERIFIES its
@@ -652,6 +655,11 @@ services:
       SCYLLA_HOSTS: scylla
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      # Account control (deactivate/delete/purge): the identity-topic
+      # consumer that hides/unhides authors and, on user.purge_requested,
+      # erases their posts and acks onto platform.purge-acks.v1.
+      IDENTITY_KAFKA_TOPIC: identity.events.v1
+      PURGE_ACKS_TOPIC: platform.purge-acks.v1
       USER_SERVICE_URL: http://identity-user:8110
       REVIEWER_SERVICE_URL: http://reviewer-service:8120
       # Local media uses the non-production stub scanner and has no human
@@ -735,6 +743,11 @@ services:
       USER_SERVICE_URL: http://identity-user:8110
       # Reads the viewer's self-service filter keywords (hidden posts).
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
+      # Account control (deactivate/delete/purge): standalone identity-topic
+      # consumer that hides/unhides authors and, on user.purge_requested,
+      # erases their feed rows and acks onto platform.purge-acks.v1.
+      IDENTITY_KAFKA_TOPIC: identity.events.v1
+      PURGE_ACKS_TOPIC: platform.purge-acks.v1
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
@@ -933,6 +946,9 @@ services:
       # Source of truth for the users_v1 reindex / startup auto-heal.
       PROFILE_SERVICE_URL: http://identity-profile:8098
       IDENTITY_KAFKA_TOPIC: identity.events.v1
+      # Account control (deactivate/delete/purge): ack topic for the
+      # existing identity-topic consumer's user.purge_requested handling.
+      PURGE_ACKS_TOPIC: platform.purge-acks.v1
       # Private accounts: follow-set scope for the posts query, and the
       # account_visibility authority stamped into is_private / author_is_private.
       GRAPH_SERVICE_URL: http://graph-service:8083

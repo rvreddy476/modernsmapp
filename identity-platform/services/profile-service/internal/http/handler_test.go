@@ -138,6 +138,9 @@ func (s *stubProfileService) GetProfileStats(ctx context.Context, userID uuid.UU
 func (s *stubProfileService) RecalculateProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error) {
 	return nil, nil
 }
+func (s *stubProfileService) IsHidden(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return false, nil
+}
 
 func TestGetProfileInvalidID(t *testing.T) {
 	gin.SetMode(gin.TestMode)

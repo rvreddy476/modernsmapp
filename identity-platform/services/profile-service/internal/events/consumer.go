@@ -3,8 +3,10 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 
+	"github.com/atpost/identity-profile-service/internal/purge"
 	sharedEvents "github.com/atpost/identity-shared/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,9 +24,29 @@ type Consumer struct {
 	db      *pgxpool.Pool
 	handler ProfileHandler
 	log     *slog.Logger
+	// lifecycle handles user.deactivated / deletion_scheduled / reactivated /
+	// deletion_cancelled / purge_requested (see internal/purge). Optional —
+	// nil means those event types fall through dispatch's default branch and
+	// are ignored, same as any other event this service does not act on.
+	lifecycle *purge.Handler
 }
 
 const profileConsumerName = "profile-service"
+
+// errLifecycleNotDurable marks a lifecycle event (almost always a purge) that
+// HandleUntilDurable gave up on because ctx was cancelled — i.e. the process
+// is shutting down mid-retry, not that the event failed permanently.
+// handle() returns this BEFORE the inbox-dedup row is written, so the
+// unresolved event is reprocessed on the next delivery (and, regardless,
+// auth-service re-emits user.purge_requested every 24h until it sees this
+// service's ack).
+var errLifecycleNotDurable = errors.New("lifecycle event not durable before shutdown")
+
+// WithLifecycleHandler wires the account-control (hide / purge) handler.
+func (c *Consumer) WithLifecycleHandler(h *purge.Handler) *Consumer {
+	c.lifecycle = h
+	return c
+}
 
 // NewConsumer constructs a Kafka consumer for the profile-service.
 func NewConsumer(brokers []string, topic, groupID string, db *pgxpool.Pool, handler ProfileHandler, logger *slog.Logger) *Consumer {
@@ -121,6 +143,12 @@ func (c *Consumer) dispatch(ctx context.Context, env sharedEvents.EventEnvelope)
 		}
 		c.log.Info("created profile for new user", "user_id", userID)
 	default:
+		if c.lifecycle != nil && purge.Handles(env.EventType) {
+			if c.lifecycle.HandleUntilDurable(ctx, env.EventType, env.Payload) {
+				return nil
+			}
+			return errLifecycleNotDurable
+		}
 		// Ignore event types not relevant to profile-service
 	}
 	return nil

@@ -45,4 +45,10 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// make redelivered Kafka events reapply, so a counter drifts upward and
 	// nothing ever reports an error.
 	{Table: "profile.inbox_events", Columns: []string{"consumer_name", "event_id"}},
+
+	// Account lifecycle (auth-service 30-day deletion flow): the hide/unhide
+	// marker consulted by every profile read gate. Its absence would not fail
+	// a request either — it would make a deactivated account's profile
+	// readable by everyone, silently.
+	{Table: "profile.hidden_profiles", Columns: []string{"user_id", "reason", "hidden_at"}},
 }

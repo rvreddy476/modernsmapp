@@ -110,6 +110,9 @@ type ProfileService interface {
 	// Profile Stats
 	GetProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error)
 	RecalculateProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error)
+	// Account lifecycle (auth-service 30-day deletion flow). See
+	// internal/purge and internal/http/hidden_denial_gate.go.
+	IsHidden(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
 func New(svc ProfileService, logger *slog.Logger) *Handler {
@@ -314,6 +317,11 @@ func (h *Handler) GetProfile(c *gin.Context) {
 		writeProfileNotFound(c)
 		return
 	}
+	// Account lifecycle: a deactivated / deletion-scheduled account is hidden
+	// from everyone except itself, same 404 as a missing profile.
+	if h.deniedByHidden(c, p.UserID) {
+		return
+	}
 	// SR-4: a blocked viewer gets the same answer as a missing profile.
 	if h.deniedByBlock(c, p.UserID) {
 		return
@@ -340,6 +348,11 @@ func (h *Handler) GetProfileByUsername(c *gin.Context) {
 	}
 	if p == nil {
 		writeProfileNotFound(c)
+		return
+	}
+	// Account lifecycle: same hidden gate as GetProfile, on the surface a
+	// caller reaches for first when they only know the handle.
+	if h.deniedByHidden(c, p.UserID) {
 		return
 	}
 	// SR-4: username lookup is the surface a harasser reaches for first —
@@ -1322,8 +1335,10 @@ func (h *Handler) GetProfilesBatch(c *gin.Context) {
 	// SR-4: batch lookup was the widest leak of all — a caller could post 100
 	// user IDs and receive 100 full dates of birth in one response. Blocked
 	// entries are omitted rather than refused: denying the whole request
-	// because one entry is blocked lets a caller probe by bisection.
-	publicProfiles := h.filterBlockedProfileMap(c, ToPublicProfileMap(profiles))
+	// because one entry is blocked lets a caller probe by bisection. Hidden
+	// entries (account lifecycle) get the same silent-omission treatment,
+	// except the caller's own entry, which is never omitted.
+	publicProfiles := h.filterBlockedProfileMap(c, h.filterHiddenProfileMap(c, ToPublicProfileMap(profiles)))
 	c.JSON(http.StatusOK, h.applyProfilePrivacyMap(c, h.applyProfilePhotoPrivacyMap(c, publicProfiles)))
 }
 

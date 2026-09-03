@@ -170,9 +170,11 @@ func TestPostService_AccountDeletionIsRedeliveredUntilItSucceeds(t *testing.T) {
 	brokers := testBrokers(t)
 	pool := testPool(t)
 
-	// NOTE: the consumer hardcodes the group id "post-service-group", so
-	// both instances below share it and the second resumes where the first
-	// refused to commit.
+	// NOTE: the consumer hardcodes the group id "post-service-identity-group"
+	// (distinct from the engagement-topic "post-service-group" — this
+	// consumer now also carries the account-lifecycle/purge handler, see
+	// WithLifecycleHandler), so both instances below share it and the
+	// second resumes where the first refused to commit.
 	topic := newTopic(t, brokers, "ps-deletion")
 
 	author := uuid.New()
@@ -269,7 +271,7 @@ func TestPostService_SuccessfulDeletionCommitsTheOffset(t *testing.T) {
 	}
 
 	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: brokers, GroupID: "post-service-group", Topic: topic,
+		Brokers: brokers, GroupID: "post-service-identity-group", Topic: topic,
 		MinBytes: 1, MaxBytes: 10e6,
 	})
 	defer r.Close()

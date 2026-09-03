@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -268,6 +269,128 @@ func TestViewerMayViewPost_PrivateAccountHidesPublicPost(t *testing.T) {
 	}
 	if calls != before {
 		t.Fatalf("self-view made a graph call")
+	}
+}
+
+// ── Account control (auth-service deactivate/delete/purge lifecycle) ───────
+//
+// post_hidden_authors is post-service's mirror of "this account is deactivated
+// or inside the 30-day deletion recovery window" (see
+// internal/store/postgres/purge.go and internal/purge). denyHiddenAuthors
+// is the seam canViewPosts uses to consult it; these tests exercise that
+// seam with a fake rather than a live database, mirroring how canViewPosts
+// itself is tested against an httptest fake graph-service.
+
+type fakeHiddenAuthors struct {
+	hidden map[uuid.UUID]bool
+	err    error
+	calls  int
+	seen   []uuid.UUID
+}
+
+func (f *fakeHiddenAuthors) AnyHidden(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	f.calls++
+	f.seen = append(f.seen, ids...)
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		if f.hidden[id] {
+			out[id] = true
+		}
+	}
+	return out, nil
+}
+
+// A hidden author is denied even though the graph would allow the read —
+// the account-lifecycle gate overrides the follow/privacy answer, not the
+// other way around.
+func TestCanViewPosts_HiddenAuthorDeniedDespiteGraphAllowing(t *testing.T) {
+	viewer, hiddenAuthor, normalAuthor := uuid.New(), uuid.New(), uuid.New()
+	var calls int32
+	srv := fakeGraphCan(t, map[string]bool{hiddenAuthor.String(): true, normalAuthor.String(): true}, &calls, nil)
+	defer srv.Close()
+	s := newGatedService(srv.URL)
+	s.hiddenAuthors = &fakeHiddenAuthors{hidden: map[uuid.UUID]bool{hiddenAuthor: true}}
+
+	got := s.canViewPosts(context.Background(), &viewer, []uuid.UUID{hiddenAuthor, normalAuthor})
+	if got[hiddenAuthor] {
+		t.Fatalf("hidden author allowed even though graph said yes")
+	}
+	if !got[normalAuthor] {
+		t.Fatalf("normal author denied")
+	}
+}
+
+// Unhide (deletion cancelled / reactivated — post_hidden_authors row removed)
+// restores exactly the graph's own answer; the gate has nothing further to
+// say once the row is gone.
+func TestCanViewPosts_UnhideRestoresGraphAnswer(t *testing.T) {
+	viewer, author := uuid.New(), uuid.New()
+	var calls int32
+	srv := fakeGraphCan(t, map[string]bool{author.String(): true}, &calls, nil)
+	defer srv.Close()
+	s := newGatedService(srv.URL)
+	fake := &fakeHiddenAuthors{hidden: map[uuid.UUID]bool{author: true}}
+	s.hiddenAuthors = fake
+
+	if s.canViewAuthor(context.Background(), &viewer, author) {
+		t.Fatalf("hidden author allowed")
+	}
+
+	// Simulate user.reactivated / user.deletion_cancelled: the row is gone.
+	delete(fake.hidden, author)
+	if !s.canViewAuthor(context.Background(), &viewer, author) {
+		t.Fatalf("unhidden author still denied")
+	}
+}
+
+// Self-view is never gated by hidden — the deactivated user themself is not
+// asked about, matching graphCan's existing self-view short circuit.
+func TestCanViewPosts_SelfViewSkipsHiddenLookup(t *testing.T) {
+	viewer := uuid.New()
+	var calls int32
+	srv := fakeGraphCan(t, map[string]bool{}, &calls, nil)
+	defer srv.Close()
+	s := newGatedService(srv.URL)
+	fake := &fakeHiddenAuthors{hidden: map[uuid.UUID]bool{viewer: true}}
+	s.hiddenAuthors = fake
+
+	if !s.canViewAuthor(context.Background(), &viewer, viewer) {
+		t.Fatalf("self-view denied")
+	}
+	if fake.calls != 0 {
+		t.Fatalf("hidden lookup ran for a self-view target, calls=%d", fake.calls)
+	}
+}
+
+// A nil hiddenAuthors (dev rigs with no store wired, and every existing test
+// in this file that constructs Service{} directly) must not change behavior
+// — canViewPosts falls back to the graph's own answer.
+func TestCanViewPosts_NilHiddenStoreIsANoOp(t *testing.T) {
+	viewer, author := uuid.New(), uuid.New()
+	var calls int32
+	srv := fakeGraphCan(t, map[string]bool{author.String(): true}, &calls, nil)
+	defer srv.Close()
+	s := newGatedService(srv.URL) // hiddenAuthors left nil
+	if !s.canViewAuthor(context.Background(), &viewer, author) {
+		t.Fatalf("nil hidden store changed the graph's allow into a deny")
+	}
+}
+
+// Fail-closed: a lookup error denies rather than silently falling back to
+// the graph's answer, matching this file's stated "Failure shape: DENY".
+func TestCanViewPosts_HiddenLookupErrorDenies(t *testing.T) {
+	viewer, author := uuid.New(), uuid.New()
+	var calls int32
+	srv := fakeGraphCan(t, map[string]bool{author.String(): true}, &calls, nil)
+	defer srv.Close()
+	s := newGatedService(srv.URL)
+	s.hiddenAuthors = &fakeHiddenAuthors{err: errors.New("db down")}
+
+	if s.canViewAuthor(context.Background(), &viewer, author) {
+		t.Fatalf("hidden-lookup error must deny, not fall back to the graph's allow")
 	}
 }
 

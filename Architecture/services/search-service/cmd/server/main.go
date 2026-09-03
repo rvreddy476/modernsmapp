@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
 	"github.com/atpost/search-service/internal/privacyclient"
+	"github.com/atpost/search-service/internal/purge"
 	"github.com/atpost/search-service/internal/reindex"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
@@ -74,6 +75,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 4b. Postgres analytics store (search_queries + search_clicks) +
+	// extras store (saved searches + history). Both optional; built ahead
+	// of the Kafka consumers below because the account-lifecycle purge
+	// handler needs them wired (when present) before user.purge_requested
+	// can ever arrive.
+	var analyticsStore *postgres.AnalyticsStore
+	var extrasStore *postgres.SearchExtrasStore
+	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
+		pgPool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			slog.Warn("search-service: postgres pool init failed; analytics + extras disabled", "err", err)
+		} else if err := pgPool.Ping(ctx); err != nil {
+			slog.Warn("search-service: postgres ping failed; analytics + extras disabled", "err", err)
+			pgPool.Close()
+		} else {
+			if err := postgres.BootstrapSchema(ctx, pgPool, database.SetupSQL, database.Migrations); err != nil {
+				slog.Warn("search-service: schema bootstrap failed; analytics + extras may misbehave", "err", err)
+			} else {
+				slog.Info("search-service: schema ready")
+			}
+			analyticsStore = postgres.NewAnalyticsStore(pgPool)
+			extrasStore = postgres.NewExtrasStore(pgPool)
+			slog.Info("search-service: analytics + extras stores wired")
+		}
+	}
+
 	// 5. Kafka Consumers — search-service indexes events from BOTH the
 	// social events topic (post/feed/graph publish here) AND the
 	// identity events topic (auth-service publishes UserRegistered /
@@ -106,9 +133,21 @@ func main() {
 	go socialConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", socialTopic, "group", "search-service-group")
 
+	// Account control (auth-service 30-day deletion): on user.deactivated /
+	// user.deletion_scheduled the author's presence is hidden (unconditional
+	// is_hidden, see blockfilter.go) rather than erased; user.reactivated /
+	// user.deletion_cancelled unhide; user.purge_requested erases the
+	// author's content behind the permanent fence, the user doc, and (when
+	// wired) the Postgres extras/analytics rows, then acks as "search" onto
+	// platform.purge-acks.v1.
+	purgeAcks := purge.NewKafkaAckPublisher(brokerList, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	purgeStore := events.NewPurgeStore(searchStore, analyticsStore, extrasStore)
+	lifecycleHandler := purge.NewHandler("search", purgeStore, purgeAcks, purgeStore, slog.Default())
+
 	identityConsumer := events.NewConsumerWithDialer(
 		brokerList, "search-service-identity-group", identityTopic, searchStore, kafkaDialer,
-	).WithPrivacyLookup(privacyLookup)
+	).WithPrivacyLookup(privacyLookup).WithLifecycleHandler(lifecycleHandler)
 	go identityConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", identityTopic, "group", "search-service-identity-group")
 
@@ -159,25 +198,13 @@ func main() {
 	handler.WithPrivacyLookup(privacyLookup)
 	slog.Info("search-service: graph client wired", "url", graphServiceURL)
 
-	// Postgres analytics store (search_queries + search_clicks) +
-	// extras store (saved searches + history). Both optional.
-	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
-		pgPool, err := pgxpool.New(ctx, dsn)
-		if err != nil {
-			slog.Warn("search-service: postgres pool init failed; analytics + extras disabled", "err", err)
-		} else if err := pgPool.Ping(ctx); err != nil {
-			slog.Warn("search-service: postgres ping failed; analytics + extras disabled", "err", err)
-			pgPool.Close()
-		} else {
-			if err := postgres.BootstrapSchema(ctx, pgPool, database.SetupSQL, database.Migrations); err != nil {
-				slog.Warn("search-service: schema bootstrap failed; analytics + extras may misbehave", "err", err)
-			} else {
-				slog.Info("search-service: schema ready")
-			}
-			handler.WithAnalyticsStore(postgres.NewAnalyticsStore(pgPool))
-			handler.WithExtrasStore(postgres.NewExtrasStore(pgPool))
-			slog.Info("search-service: analytics + extras stores wired")
-		}
+	// Postgres analytics + extras stores built in step 4b above; wire them
+	// into the HTTP handler here if present.
+	if analyticsStore != nil {
+		handler.WithAnalyticsStore(analyticsStore)
+	}
+	if extrasStore != nil {
+		handler.WithExtrasStore(extrasStore)
 	}
 
 	// Startup auto-heal: if users_v1 is empty (wiped index / fresh

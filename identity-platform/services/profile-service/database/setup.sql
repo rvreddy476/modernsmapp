@@ -202,3 +202,23 @@ CREATE TABLE IF NOT EXISTS profile.inbox_events (
 -- a cleanup path indexed by time it grows forever.
 CREATE INDEX IF NOT EXISTS idx_profile_inbox_cleanup
     ON profile.inbox_events (processed_at);
+
+-- ---------------------------------------------------------------------------
+-- Account lifecycle: hide / unhide (auth-service 30-day deletion flow)
+-- ---------------------------------------------------------------------------
+
+-- Marks a profile hidden because auth-service reported user.deactivated or
+-- user.deletion_scheduled. Reversible: user.reactivated / deletion_cancelled
+-- deletes the row again. See internal/purge and internal/store/purge.go.
+--
+-- ON DELETE CASCADE: when user.purge_requested erases profile.profiles, this
+-- marker must go with it rather than dangling on a user_id nothing references
+-- anymore.
+CREATE TABLE IF NOT EXISTS profile.hidden_profiles (
+    user_id   UUID PRIMARY KEY REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    reason    TEXT NOT NULL,
+    hidden_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE profile.hidden_profiles IS
+    'Accounts hidden by auth-service deactivate/scheduled-deletion; reversible, never erases.';

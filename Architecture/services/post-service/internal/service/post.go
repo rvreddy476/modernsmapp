@@ -124,6 +124,9 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		spam:        spam.New(rdb),
 		httpClient:  &http.Client{Timeout: 5 * time.Second},
 	}
+	if pg != nil {
+		svc.hiddenAuthors = pg
+	}
 	if rdb != nil {
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
 		svc.commentCounter = counters.New(rdb, counters.Config{EntityKind: "post_comment_count", Shards: 32})
@@ -1492,14 +1495,40 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 }
 
 // GetRecentPosts returns recent public posts from all users with engagement counts.
-func (s *Service) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, limit int, cursor string) ([]PostDetail, string, error) {
+//
+// Audit: this explore/recent surface previously went straight from the store
+// query to hydration, never calling canViewPosts — the one privacy_gate.go
+// choke point every other read path (GetPostsByIDs, GetPostsByAuthor,
+// comments, ...) funnels through. That let a private author's posts, and a
+// deactivated/pending-delete author's posts (post_hidden_authors), surface here
+// even though every other surface correctly hid them. viewerID is now
+// threaded through so the same fail-closed gate applies.
+func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, excludeAuthor *uuid.UUID, limit int, cursor string) ([]PostDetail, string, error) {
 	posts, nextCursor, err := s.pgStore.GetRecentPosts(ctx, excludeAuthor, limit, cursor)
 	if err != nil {
 		return nil, "", err
 	}
 
-	details := make([]PostDetail, len(posts))
-	for i, p := range posts {
+	authorSet := make(map[uuid.UUID]struct{}, len(posts))
+	authorIDs := make([]uuid.UUID, 0, len(posts))
+	for _, p := range posts {
+		if viewerID != nil && *viewerID == p.AuthorID {
+			continue
+		}
+		if _, ok := authorSet[p.AuthorID]; !ok {
+			authorSet[p.AuthorID] = struct{}{}
+			authorIDs = append(authorIDs, p.AuthorID)
+		}
+	}
+	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
+
+	details := make([]PostDetail, 0, len(posts))
+	for _, p := range posts {
+		if viewerID == nil || *viewerID != p.AuthorID {
+			if !viewableAuthor[p.AuthorID] {
+				continue
+			}
+		}
 		post := p
 		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
 		if post.ContentType == "poll" {
@@ -1508,7 +1537,7 @@ func (s *Service) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, 
 				post.Poll = poll
 			}
 		}
-		details[i] = PostDetail{Post: &post, Counts: counts}
+		details = append(details, PostDetail{Post: &post, Counts: counts})
 	}
 
 	return details, nextCursor, nil

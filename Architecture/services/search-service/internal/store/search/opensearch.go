@@ -248,7 +248,12 @@ type UserDoc struct {
 	// accounts REMAIN searchable (TikTok shows private profiles in search);
 	// this is a display flag so the client can render the lock and the
 	// "Requested" affordance, not a filter.
-	IsPrivate       bool    `json:"is_private"`
+	IsPrivate bool `json:"is_private"`
+	// IsHidden is UNCONDITIONAL suppression: set while the account is
+	// deactivated or scheduled for deletion (auth-service 30-day flow).
+	// Unlike IsPrivate, a hidden account is excluded from every search
+	// surface for every viewer, public or not. See blockfilter.go.
+	IsHidden        bool    `json:"is_hidden"`
 	FollowerCount   int     `json:"follower_count,omitempty"`
 	PostCount       int     `json:"post_count,omitempty"`
 	EngagementScore float64 `json:"engagement_score"`
@@ -263,10 +268,14 @@ type PostDoc struct {
 	// author_id). Every posts query excludes documents where this is true
 	// unless the author is the viewer or someone the viewer follows —
 	// see blockfilter.go.
-	AuthorIsPrivate bool     `json:"author_is_private"`
-	Text            string   `json:"text"`
-	Hashtags        []string `json:"hashtags,omitempty"`
-	Visibility      string   `json:"visibility,omitempty"`
+	AuthorIsPrivate bool `json:"author_is_private"`
+	// IsHidden mirrors the author's account_lifecycle hidden state (see
+	// UserDoc.IsHidden): true while the author is deactivated or
+	// scheduled for deletion, kept fresh by UpdatePostsAuthorHidden.
+	IsHidden   bool     `json:"is_hidden"`
+	Text       string   `json:"text"`
+	Hashtags   []string `json:"hashtags,omitempty"`
+	Visibility string   `json:"visibility,omitempty"`
 	// ReviewStatus is the canonical moderation state (Module 2 M2-P0-1).
 	// Indexed so every query path can apply a mandatory
 	// review_status=approved filter as defence in depth — the index-time
@@ -1160,6 +1169,64 @@ func (s *Store) UpdatePostsAuthorPrivacy(ctx context.Context, authorID string, i
 	defer res.Body.Close()
 	if res.IsError() {
 		return fmt.Errorf("opensearch update_by_query author privacy error: %s", res.String())
+	}
+	return nil
+}
+
+// UpdateUserHidden flips is_hidden on one users_v1 document. Account
+// control (auth-service deactivate / 30-day scheduled deletion): a missing
+// document is not an error — nothing is indexed for a user who never wrote
+// content, and unhide on a still-missing document is a no-op.
+func (s *Store) UpdateUserHidden(ctx context.Context, userID string, hidden bool) error {
+	if userID == "" {
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{"doc": map[string]any{"is_hidden": hidden}})
+	req := opensearchapi.UpdateRequest{
+		Index:      IndexUsers,
+		DocumentID: userID,
+		Body:       bytes.NewReader(body),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() && res.StatusCode != 404 {
+		return fmt.Errorf("opensearch update user hidden error: %s", res.String())
+	}
+	return nil
+}
+
+// UpdatePostsAuthorHidden rewrites is_hidden on EVERY posts_v1 document by
+// the author in one update_by_query, mirroring UpdatePostsAuthorPrivacy.
+// Conflicts proceed: a post re-indexed concurrently already carries the
+// fresh flag from its own lookup, so losing the race on that one document
+// is not a loss.
+func (s *Store) UpdatePostsAuthorHidden(ctx context.Context, authorID string, hidden bool) error {
+	if authorID == "" {
+		return fmt.Errorf("update posts author hidden: empty author id")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"query": map[string]any{"term": map[string]any{"author_id": authorID}},
+		"script": map[string]any{
+			"source": "ctx._source.is_hidden = params.v",
+			"lang":   "painless",
+			"params": map[string]any{"v": hidden},
+		},
+	})
+	req := opensearchapi.UpdateByQueryRequest{
+		Index:     []string{IndexPosts},
+		Body:      bytes.NewReader(body),
+		Conflicts: "proceed",
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("opensearch update_by_query author hidden error: %s", res.String())
 	}
 	return nil
 }

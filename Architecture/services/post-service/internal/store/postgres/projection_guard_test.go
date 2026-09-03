@@ -30,6 +30,7 @@ var exemptFromOrdering = map[string]string{
 	"PostIDsByMediaID":   "reverse lookup: returns post ids, not carousel order",
 	"PostIDsByMediaIDs":  "reverse lookup: returns post ids, not carousel order",
 	"OrphanedDraftMedia": "NOT EXISTS existence check: selects no post_media column and returns none",
+	"PurgeUser":          "DELETE, not a read: erases post_media rows for a purged user, returns nothing to order",
 }
 
 var (

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/atpost/search-service/internal/privacyclient"
+	"github.com/atpost/search-service/internal/purge"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/events"
 	"github.com/segmentio/kafka-go"
@@ -52,12 +53,22 @@ type Consumer struct {
 	// public and a startup warning is logged — acceptable only on a dev
 	// rig without the identity user-service.
 	privacy privacyclient.Lookup
+	// lifecycle handles user.deactivated / deletion_scheduled / reactivated
+	// / deletion_cancelled / purge_requested (see internal/purge). Wired
+	// onto the identity-topic consumer only. Optional.
+	lifecycle *purge.Handler
 }
 
 // WithPrivacyLookup wires the identity settings lookup used to stamp
 // is_private / author_is_private on every (re)indexed document.
 func (c *Consumer) WithPrivacyLookup(l privacyclient.Lookup) *Consumer {
 	c.privacy = l
+	return c
+}
+
+// WithLifecycleHandler wires the account-control (hide / purge) handler.
+func (c *Consumer) WithLifecycleHandler(h *purge.Handler) *Consumer {
+	c.lifecycle = h
 	return c
 }
 
@@ -717,6 +728,21 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		return nil
 
 	default:
+		// Account control (auth-service 30-day deletion flow): hide /
+		// unhide / purge. These never dead-letter — HandleUntilDurable
+		// blocks this call, retrying with its own escalating backoff,
+		// until it succeeds, the payload is permanently undecodable, or
+		// ctx is cancelled. On cancellation it returns false and this
+		// returns ctx.Err(), which the outer handleUntilDurable() loop
+		// recognises as "shutting down" (via ctx.Err() != nil) and leaves
+		// the offset uncommitted for redelivery, rather than routing an
+		// unresolved purge/hide to the DLQ.
+		if c.lifecycle != nil && purge.Handles(envelope.EventType) {
+			if !c.lifecycle.HandleUntilDurable(ctx, envelope.EventType, envelope.Payload) {
+				return ctx.Err()
+			}
+			return nil
+		}
 		return nil
 	}
 }

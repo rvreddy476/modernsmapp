@@ -147,13 +147,14 @@ func TestEncodeQuery_PreservesExistingMustNot(t *testing.T) {
 	}
 }
 
-// No blocks and no scope must leave the query byte-identical, so this
-// change cannot perturb ranking for the overwhelmingly common case.
+// No blocks and no scope must leave the query identical but for the
+// unconditional account-control exclusion, so this change cannot perturb
+// ranking beyond that for the overwhelmingly common case.
 //
 // For a NON-posts index that holds for every scope. For posts, a resolved
 // scope — anonymous included — now always carries the private-author
 // exclusion (see TestEncodeQuery_PrivateAuthors*), so only the unscoped
-// context is byte-identical there.
+// context matches this baseline there.
 func TestEncodeQuery_NoBlocksLeavesQueryUnchanged(t *testing.T) {
 	freshQuery := func() map[string]interface{} {
 		return map[string]interface{}{
@@ -161,7 +162,16 @@ func TestEncodeQuery_NoBlocksLeavesQueryUnchanged(t *testing.T) {
 			"query": map[string]interface{}{"bool": map[string]interface{}{"must": []interface{}{}}},
 		}
 	}
-	baseline, _ := json.Marshal(freshQuery())
+	// Account control (auth-service deactivate / scheduled deletion): the
+	// is_hidden exclusion (blockfilter.go) applies unconditionally, so it
+	// is present even when there is nothing else to exclude.
+	hiddenBaseline := func() map[string]interface{} {
+		q := freshQuery()
+		q["query"].(map[string]interface{})["bool"].(map[string]interface{})["must_not"] =
+			[]interface{}{map[string]interface{}{"term": map[string]interface{}{"is_hidden": true}}}
+		return q
+	}
+	baseline, _ := json.Marshal(hiddenBaseline())
 
 	cases := []struct {
 		name    string
@@ -331,16 +341,77 @@ func TestOwnerFieldForIndex(t *testing.T) {
 }
 
 // Hashtag documents have no owner, so passing an empty field must be a
-// no-op rather than producing `terms: {"": [...]}`, which would match
-// nothing and quietly disable the filter it looks like it applies.
+// no-op for the BLOCK exclusion rather than producing `terms: {"": [...]}`,
+// which would match nothing and quietly disable the filter it looks like it
+// applies. The unconditional is_hidden exclusion (account control) still
+// applies regardless — it targets a field name, not the viewer's block
+// scope, and is a no-op on indices that never set it.
 func TestEncodeQuery_EmptyIDFieldAppliesNoFilter(t *testing.T) {
 	ctx := WithBlockedIDs(context.Background(), []string{"blocked-1"})
 	q := map[string]interface{}{"size": 20, "query": map[string]interface{}{"bool": map[string]interface{}{}}}
 
 	encoded := decodeQuery(t, ctx, q, "")
 	raw, _ := json.Marshal(encoded)
-	if strings.Contains(string(raw), "must_not") {
-		t.Fatalf("no owner field means no exclusion clause; got %s", raw)
+	if strings.Contains(string(raw), "blocked-1") {
+		t.Fatalf("no owner field means no block exclusion clause; got %s", raw)
+	}
+	if !strings.Contains(string(raw), "is_hidden") {
+		t.Fatalf("is_hidden exclusion must still apply with no owner field; got %s", raw)
+	}
+}
+
+// hasHiddenExclusion reports whether the encoded query's top-level bool
+// must_not carries the unconditional {"term":{"is_hidden":true}} clause.
+func hasHiddenExclusion(t *testing.T, encoded map[string]interface{}) bool {
+	t.Helper()
+	for _, c := range mustNotClauses(t, encoded) {
+		m, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		term, ok := m["term"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if v, ok := term["is_hidden"]; ok && v == true {
+			return true
+		}
+	}
+	return false
+}
+
+// Account control (auth-service deactivate / 30-day scheduled deletion):
+// every query — posts and users alike — must exclude is_hidden documents,
+// unconditionally, regardless of viewer scope. This is the query-side half
+// of hide/unhide: PurgeStore.SetUserHidden (purge_adapter.go) flips the
+// flag, this exclusion keeps a hidden user/their posts out of results while
+// it is true, and unhide (flag back to false) makes them match again since
+// the exclusion only ever targets is_hidden == true.
+func TestEncodeQuery_HiddenAccountsExcludedFromPostsAndUsers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		idField string
+	}{
+		{"posts", "author_id"},
+		{"users", "user_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := map[string]interface{}{"query": map[string]interface{}{"bool": map[string]interface{}{}}}
+			encoded := decodeQuery(t, context.Background(), q, tc.idField)
+			if !hasHiddenExclusion(t, encoded) {
+				t.Fatalf("%s query missing the unconditional is_hidden exclusion: %v", tc.name, encoded)
+			}
+		})
+	}
+}
+
+// The exclusion applies even to an anonymous, unscoped viewer — hide/unhide
+// is not gated on block-list or private-account resolution.
+func TestEncodeQuery_HiddenExclusionAppliesRegardlessOfScope(t *testing.T) {
+	q := map[string]interface{}{"query": map[string]interface{}{"bool": map[string]interface{}{}}}
+	encoded := decodeQuery(t, WithBlockedIDs(context.Background(), nil), q, "author_id")
+	if !hasHiddenExclusion(t, encoded) {
+		t.Fatal("is_hidden exclusion must apply even for an anonymous viewer with an empty block list")
 	}
 }
 

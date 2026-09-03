@@ -180,6 +180,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	}
 	blockedSet := blockedSetOf(blockedMuted)
 	candidates = applyBlockFilter(candidates, blockedSet)
+	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 
 	// Filter to circle-only (friends) if requested
 	if circleOnly && len(candidates) > 0 {
@@ -242,7 +243,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			// candidates — this is the path most likely to surface a
 			// stranger who blocked the viewer, because it is precisely the
 			// path used for viewers with no graph of their own.
-			for _, item := range applyBlockFilter(coldItems, blockedSet) {
+			for _, item := range s.applyHiddenAuthorFilter(ctx, applyBlockFilter(coldItems, blockedSet)) {
 				if excludeSelf && item.AuthorID == userID {
 					continue
 				}
@@ -325,6 +326,7 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 		return nil, "", err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
+	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 
 	window, next := keysetWindow(candidates, limit)
 	return scoreReels(window), next, nil
@@ -361,6 +363,7 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 		return nil, "", err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
+	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 	candidates, next := keysetWindow(candidates, limit)
 
 	if s.ranker != nil && len(candidates) > 0 {
@@ -423,6 +426,7 @@ func (s *Service) GetVideoFeedPage(ctx context.Context, userID uuid.UUID, limit 
 		return nil, "", err
 	}
 	candidates = applyBlockFilter(candidates, blocked)
+	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 
 	// Subscriptions filter (Module 1 P0-3): the PostTube Subscriptions tab
 	// is driven by real CHANNEL SUBSCRIPTIONS, not the social follow

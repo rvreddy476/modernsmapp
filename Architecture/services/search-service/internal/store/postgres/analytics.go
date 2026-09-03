@@ -67,3 +67,16 @@ func (s *AnalyticsStore) LogClick(
 	`, queryID, viewer, entityType, entityID, position, time.Now().UTC())
 	return err
 }
+
+// PurgeUser deletes every search_queries/search_clicks row keyed by
+// userID as a viewer (auth-service 30-day scheduled-deletion flow).
+// Idempotent: a second call finds nothing left to delete and returns nil.
+func (s *AnalyticsStore) PurgeUser(ctx context.Context, userID uuid.UUID) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM search_clicks WHERE viewer_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM search_queries WHERE viewer_id = $1`, userID); err != nil {
+		return err
+	}
+	return nil
+}

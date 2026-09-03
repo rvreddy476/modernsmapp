@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/feed-service/internal/events"
 	"github.com/atpost/feed-service/internal/http"
 	"github.com/atpost/feed-service/internal/pipeline"
+	"github.com/atpost/feed-service/internal/purge"
 	"github.com/atpost/feed-service/internal/ranking"
 	"github.com/atpost/feed-service/internal/service"
 	"github.com/atpost/feed-service/internal/store/postgres"
@@ -193,6 +194,23 @@ func main() {
 	)
 	go qaConsumer.Start(ctx)
 	defer qaConsumer.Close()
+
+	// 11d. Account control (auth-service 30-day deletion): hide the
+	// author's posts across every feed surface on user.deactivated /
+	// user.deletion_scheduled, unhide on the reverse, and on
+	// user.purge_requested erase the Postgres slice + the author's own
+	// Scylla timeline rows, acking as "feed" onto platform.purge-acks.v1.
+	// See Architecture/shared/events/events.go ("Account control") and
+	// internal/purge.
+	purgeAcks := purge.NewKafkaAckPublisher([]string{kafkaBrokers},
+		env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	lifecycle := purge.NewConsumer([]string{kafkaBrokers},
+		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), "feed-service-identity-group", kafkaDialer,
+		purge.NewHandler("feed", purge.NewEraser(timelineStore, pgStore), purgeAcks, pgStore, slog.Default()),
+		slog.Default())
+	defer lifecycle.Close()
+	go lifecycle.Start(ctx)
 
 	// 12. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

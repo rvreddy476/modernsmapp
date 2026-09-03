@@ -168,3 +168,16 @@ func (s *SearchExtrasStore) ClearSearchHistory(ctx context.Context, userID uuid.
 	_, err := s.db.Exec(ctx, `DELETE FROM search_history WHERE user_id = $1`, userID)
 	return err
 }
+
+// PurgeUser deletes every saved_searches and search_history row owned by
+// userID (auth-service 30-day scheduled-deletion flow). Idempotent: a
+// second call finds nothing left to delete and returns nil.
+func (s *SearchExtrasStore) PurgeUser(ctx context.Context, userID uuid.UUID) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM saved_searches WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM search_history WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	return nil
+}

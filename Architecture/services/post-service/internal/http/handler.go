@@ -751,7 +751,14 @@ func (h *Handler) GetRecentPosts(c *gin.Context) {
 		limit = l
 	}
 
-	posts, nextCursor, err := h.svc.GetRecentPosts(c.Request.Context(), nil, limit, cursor)
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+
+	posts, nextCursor, err := h.svc.GetRecentPosts(c.Request.Context(), viewerID, nil, limit, cursor)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

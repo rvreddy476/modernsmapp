@@ -275,6 +275,19 @@ CREATE TABLE IF NOT EXISTS post_draft_media (
     PRIMARY KEY (draft_id, media_id)
 );
 CREATE INDEX IF NOT EXISTS idx_post_draft_media_media ON post_draft_media (media_id);
+-- Account control (auth-service lifecycle, Architecture/shared/events/events.go
+-- "Account control — deactivate / delete / purge"). A row here means the
+-- author is deactivated or in the 30-day deletion recovery window; every read
+-- and write path funnels through internal/service/privacy_gate.go's
+-- canViewPosts/graphCan, which denies viewing that author's posts regardless
+-- of what the graph-service follow/privacy answer would otherwise allow.
+-- Purge (user.purge_requested) deletes this row too — see
+-- internal/store/postgres/purge.go PurgeUser.
+CREATE TABLE IF NOT EXISTS post_hidden_authors (
+    user_id   UUID PRIMARY KEY,
+    reason    TEXT,
+    hidden_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 -- Module 1 fixes-v4 / LB-1.1 — media reference integrity.
 --
 -- The authoritative definition of these foreign keys lives in
