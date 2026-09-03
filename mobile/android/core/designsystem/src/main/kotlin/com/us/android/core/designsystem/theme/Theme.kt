@@ -1,6 +1,5 @@
 package com.us.android.core.designsystem.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -73,13 +72,15 @@ private val UsShapes = Shapes(
 /**
  * The single theme entry point. Every screen and every @Preview wraps in this.
  *
- * [darkTheme] defaults to the system setting — the Figma light frames (81:*,
- * 2026-09-01) are the sign-off the old dark-only rule was waiting for.
- * Dynamic colour stays deliberately off — the brand ramp is the identity.
+ * [darkTheme] defaults to TRUE: the Momentum system (Figma YsWb936…, 2026-09-03)
+ * is a navy-only design, so the app wears it whatever the device's night
+ * setting says. The light palette stays available for previews and a future
+ * user-facing switch; nothing selects it by default. Dynamic colour stays
+ * deliberately off — the brand ramp is the identity.
  */
 @Composable
 fun UsTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val extendedColors = remember(darkTheme) {

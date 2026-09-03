@@ -186,7 +186,9 @@ private fun CenterCreateButton(onClick: () -> Unit, modifier: Modifier = Modifie
                 ambientColor = shadow,
                 spotColor = shadow,
             )
-            .background(UsTheme.extended.ctaGradient, shape)
+            // The home frame: a WHITE tile with the navy plus and the ember
+            // glow underneath — white on navy, whatever the surface.
+            .background(Color.White, shape)
             .clickable(onClick = onClick)
             .semantics {
                 contentDescription = "Create"
@@ -196,11 +198,14 @@ private fun CenterCreateButton(onClick: () -> Unit, modifier: Modifier = Modifie
         Icon(
             imageVector = UsIcons.Create,
             contentDescription = null,
-            tint = Color.White,
+            tint = CREATE_GLYPH_NAVY,
             modifier = Modifier.size(CENTER_GLYPH),
         )
     }
 }
+
+/** Momentum ground navy; the plus reads as a cut-out in the white tile. */
+private val CREATE_GLYPH_NAVY = Color(0xFF041122)
 
 /**
  * The full five-tab bar, for the previews below.
