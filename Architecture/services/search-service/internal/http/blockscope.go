@@ -31,13 +31,23 @@ import (
 //
 // Anonymous viewers (no X-User-Id) have no block relationships, so they
 // pass through with an empty scope. They only ever see public, approved
-// content, which the index-time gate already guarantees.
+// content, which the index-time gate already guarantees — and, with the
+// private-account rule below, never a private author's posts.
+//
+// PRIVATE ACCOUNTS: the scope also carries the viewer's follow set, which
+// the posts query uses to let a follower through a private author's
+// `author_is_private` exclusion. FollowingIDs is best-effort and cached
+// 60s; when it cannot be resolved the follow set is EMPTY, which hides
+// more, never less — a follower may briefly miss a private friend's post
+// during a graph blip, but a stranger can never gain one. (It is capped at
+// 500 follows; a viewer following more private accounts than that will not
+// see the overflow in search.)
 func (h *Handler) resolveBlockScope() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := c.GetHeader("X-User-Id")
 		if raw == "" {
 			c.Request = c.Request.WithContext(
-				search.WithBlockedIDs(c.Request.Context(), nil))
+				search.WithViewerScope(c.Request.Context(), "", nil, nil))
 			c.Next()
 			return
 		}
@@ -63,8 +73,10 @@ func (h *Handler) resolveBlockScope() gin.HandlerFunc {
 			return
 		}
 
+		following := h.graphClient.FollowingIDs(c.Request.Context(), viewerID, 500)
+
 		c.Request = c.Request.WithContext(
-			search.WithBlockedIDs(c.Request.Context(), blocked))
+			search.WithViewerScope(c.Request.Context(), viewerID.String(), blocked, following))
 		c.Next()
 	}
 }

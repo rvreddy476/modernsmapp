@@ -24,6 +24,20 @@ func (s *Service) GetReelReaction(ctx context.Context, reelID, userID uuid.UUID)
 
 // AddReelComment adds a comment to a reel.
 func (s *Service) AddReelComment(ctx context.Context, reelID, userID uuid.UUID, text string) (uuid.UUID, error) {
+	// Reels are posts rows; the same read gate (per-post visibility AND the
+	// author's account_visibility) and the same comments-audience gate apply
+	// as on CreateCommentPG. This path used to write straight to Scylla with
+	// no policy at all.
+	post, err := s.loadPostForEngagement(ctx, reelID, userID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if post.NoComments {
+		return uuid.Nil, ErrCommentsDisabled
+	}
+	if !s.canComment(ctx, userID, post.AuthorID) {
+		return uuid.Nil, ErrCommentsRestricted
+	}
 	return s.scyllaStore.AddReelComment(ctx, reelID, userID, text)
 }
 

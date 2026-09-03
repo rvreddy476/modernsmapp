@@ -149,3 +149,41 @@ func (c *Client) RelationshipBatch(ctx context.Context, viewerID string, targetI
 	}
 	return out, nil
 }
+
+// Action names accepted by graph-service's POST /v1/internal/graph/can.
+const (
+	ActionViewPosts = "view_posts"
+	ActionComment   = "comment"
+)
+
+// MaxCanBatch mirrors graph-service's per-call ceiling; a larger batch is
+// rejected with 400 BATCH_TOO_LARGE rather than truncated.
+const MaxCanBatch = 100
+
+// Can asks graph-service whether viewerID may perform action against each
+// target. The answer is the §4 permission matrix resolved against the
+// target's CURRENT privacy settings (account_visibility for view_posts,
+// allow_comments_from for comment) and the live follow/connection graph.
+//
+// A target missing from the result is unresolved and must be treated as
+// denied by the caller; this function never invents an answer. Callers chunk
+// at MaxCanBatch.
+func (c *Client) Can(ctx context.Context, viewerID, action string, targetIDs []string) (map[string]bool, error) {
+	if len(targetIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+	if len(targetIDs) > MaxCanBatch {
+		return nil, fmt.Errorf("can: %d targets exceeds the %d per-call limit", len(targetIDs), MaxCanBatch)
+	}
+	var out struct {
+		Data map[string]bool `json:"data"`
+	}
+	body := map[string]any{"viewer_id": viewerID, "action": action, "target_ids": targetIDs}
+	if err := c.do(ctx, http.MethodPost, "/v1/internal/graph/can", body, &out); err != nil {
+		return nil, err
+	}
+	if out.Data == nil {
+		return map[string]bool{}, nil
+	}
+	return out.Data, nil
+}

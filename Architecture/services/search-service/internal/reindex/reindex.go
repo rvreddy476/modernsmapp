@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/store/search"
 )
 
@@ -75,11 +76,17 @@ type UsersResult struct {
 // profileServiceURL is the base URL (e.g. http://identity-profile:8098);
 // internalKey is forwarded as X-Internal-Service-Key so the call passes
 // profile-service's internal gate.
+//
+// privacy stamps is_private from the identity settings (private accounts);
+// BulkIndexUsers is a full replace, so omitting it would reset every
+// private account to public. A nil lookup indexes everyone as public and is
+// only acceptable on a dev rig without the identity user-service.
 func ReindexUsers(
 	ctx context.Context,
 	httpClient *http.Client,
 	profileServiceURL, internalKey string,
 	store *search.Store,
+	privacy privacyclient.Lookup,
 	log *slog.Logger,
 ) (UsersResult, error) {
 	var res UsersResult
@@ -111,6 +118,17 @@ func ReindexUsers(
 			}
 			if p.AvatarMediaID != nil {
 				doc.AvatarMediaID = *p.AvatarMediaID
+			}
+			if privacy != nil {
+				private, err := privacy.IsPrivate(ctx, p.UserID)
+				if err != nil {
+					// Do not guess "public" for a user we could not resolve:
+					// skip the document and let the next run (or the
+					// settings-changed event) write it with the real value.
+					log.Warn("reindex: account_visibility unresolved; skipping user", "user_id", p.UserID, "err", err)
+					continue
+				}
+				doc.IsPrivate = private
 			}
 			docs = append(docs, doc)
 		}
@@ -176,6 +194,7 @@ func AutoHealUsersOnStartup(
 	httpClient *http.Client,
 	profileServiceURL, internalKey string,
 	store *search.Store,
+	privacy privacyclient.Lookup,
 	log *slog.Logger,
 ) {
 	count, err := store.CountUsers(ctx)
@@ -191,7 +210,7 @@ func AutoHealUsersOnStartup(
 	go func() {
 		healCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if _, err := ReindexUsers(healCtx, httpClient, profileServiceURL, internalKey, store, log); err != nil {
+		if _, err := ReindexUsers(healCtx, httpClient, profileServiceURL, internalKey, store, privacy, log); err != nil {
 			log.Error("reindex: startup auto-heal failed", "err", err)
 		}
 	}()

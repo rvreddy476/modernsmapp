@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/events"
 	"github.com/segmentio/kafka-go"
@@ -46,6 +47,33 @@ type Consumer struct {
 	groupID  string
 	topic    string
 	retry    retryPolicy
+	// privacy resolves an author's account_visibility at index time
+	// (private accounts). Nil means unconfigured: documents index as
+	// public and a startup warning is logged — acceptable only on a dev
+	// rig without the identity user-service.
+	privacy privacyclient.Lookup
+}
+
+// WithPrivacyLookup wires the identity settings lookup used to stamp
+// is_private / author_is_private on every (re)indexed document.
+func (c *Consumer) WithPrivacyLookup(l privacyclient.Lookup) *Consumer {
+	c.privacy = l
+	return c
+}
+
+// authorIsPrivate resolves the flag for one user. A lookup FAILURE is an
+// error, which makes the message retry (and eventually dead-letter) rather
+// than indexing a private account's post as public — the durable-outcome
+// rule this consumer already applies to every other write.
+func (c *Consumer) authorIsPrivate(ctx context.Context, userID string) (bool, error) {
+	if c.privacy == nil {
+		return false, nil
+	}
+	private, err := c.privacy.IsPrivate(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("resolve account_visibility for %s: %w", userID, err)
+	}
+	return private, nil
 }
 
 func NewConsumer(brokers []string, groupID string, topic string, store *search.Store) *Consumer {
@@ -273,9 +301,16 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			displayName = "New User"
 		}
 
+		// IndexUser is a full-document replace, so every user write must
+		// carry is_private or a profile edit would silently reset it.
+		isPrivate, err := c.authorIsPrivate(ctx, p.UserID)
+		if err != nil {
+			return err
+		}
 		return c.store.IndexUser(ctx, search.UserDoc{
 			UserID:      p.UserID,
 			DisplayName: displayName,
+			IsPrivate:   isPrivate,
 		})
 
 	case events.UserProfileUpdated:
@@ -284,6 +319,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 
+		isPrivate, err := c.authorIsPrivate(ctx, p.UserID)
+		if err != nil {
+			return err
+		}
 		return c.store.IndexUser(ctx, search.UserDoc{
 			UserID:        p.UserID,
 			Username:      p.Username,
@@ -291,7 +330,53 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			Bio:           p.Bio,
 			AvatarMediaID: p.AvatarMediaID,
 			IsVerified:    p.IsVerified,
+			IsPrivate:     isPrivate,
 		})
+
+	case events.UserSettingsChanged:
+		// Private accounts: the identity user-service announces every
+		// committed settings write with the NEW account_visibility. Flip
+		// the user document's flag and rewrite author_is_private across
+		// every post by that author in one update_by_query, so a "go
+		// private" takes effect in search within the refresh interval.
+		var p struct {
+			UserID            string `json:"user_id"`
+			AccountVisibility string `json:"account_visibility"`
+		}
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		if p.UserID == "" {
+			return nil // malformed; nothing addressable
+		}
+		var isPrivate bool
+		switch strings.ToLower(p.AccountVisibility) {
+		case "private":
+			isPrivate = true
+		case "public":
+			isPrivate = false
+		default:
+			// Older producers omit the field: read the current value.
+			if c.privacy != nil {
+				c.privacy.Invalidate(p.UserID)
+			}
+			v, err := c.authorIsPrivate(ctx, p.UserID)
+			if err != nil {
+				return err
+			}
+			isPrivate = v
+		}
+		if primer, ok := c.privacy.(interface{ Prime(string, bool) }); ok && c.privacy != nil {
+			primer.Prime(p.UserID, isPrivate)
+		}
+		if err := c.store.UpdateUserPrivacy(ctx, p.UserID, isPrivate); err != nil {
+			return fmt.Errorf("settings_changed: update user %s privacy: %w", p.UserID, err)
+		}
+		if err := c.store.UpdatePostsAuthorPrivacy(ctx, p.UserID, isPrivate); err != nil {
+			return fmt.Errorf("settings_changed: update posts by %s privacy: %w", p.UserID, err)
+		}
+		slog.Info("search: account visibility applied", "user_id", p.UserID, "is_private", isPrivate)
+		return nil
 
 	case events.PostCreated:
 		var p events.PostCreatedPayload
@@ -339,18 +424,23 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		// M2-P0-7 / re-review P0-2: IndexPostUnlessAuthorErased wraps that
 		// with a fence check AND a recheck, so an account erased while
 		// this write is in flight cannot end up with a surviving post.
+		authorPrivate, err := c.authorIsPrivate(ctx, p.AuthorID)
+		if err != nil {
+			return err
+		}
 		return c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
 			PostID: p.PostID,
 			Rev:    rev,
 			Doc: search.PostDoc{
-				PostID:       p.PostID,
-				AuthorID:     p.AuthorID,
-				Text:         p.Text,
-				Hashtags:     extractHashtags(p.Text),
-				Visibility:   p.Visibility,
-				ReviewStatus: p.ReviewStatus,
-				SearchRev:    rev,
-				CreatedAt:    p.CreatedAt,
+				PostID:          p.PostID,
+				AuthorID:        p.AuthorID,
+				AuthorIsPrivate: authorPrivate,
+				Text:            p.Text,
+				Hashtags:        extractHashtags(p.Text),
+				Visibility:      p.Visibility,
+				ReviewStatus:    p.ReviewStatus,
+				SearchRev:       rev,
+				CreatedAt:       p.CreatedAt,
 			},
 		})
 

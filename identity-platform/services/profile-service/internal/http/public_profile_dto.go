@@ -75,6 +75,14 @@ type PublicProfile struct {
 	FriendCount    int64 `json:"friend_count"`
 	PostCount      int64 `json:"post_count"`
 
+	// IsPrivate mirrors identity user-service account_visibility. Display
+	// only: the profile stays reachable; post-service gates the posts.
+	IsPrivate bool `json:"is_private"`
+	// FollowStatus is the viewer-side edge toward this profile: "none",
+	// "requested" (pending follow request) or "following". Present only when
+	// a signed-in viewer who is not the owner reads a single profile.
+	FollowStatus string `json:"follow_status,omitempty"`
+
 	// CreatedAt supports the "member since" affordance the product shows.
 	CreatedAt time.Time `json:"created_at"`
 }

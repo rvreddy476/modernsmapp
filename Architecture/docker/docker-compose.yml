@@ -933,6 +933,10 @@ services:
       # Source of truth for the users_v1 reindex / startup auto-heal.
       PROFILE_SERVICE_URL: http://identity-profile:8098
       IDENTITY_KAFKA_TOPIC: identity.events.v1
+      # Private accounts: follow-set scope for the posts query, and the
+      # account_visibility authority stamped into is_private / author_is_private.
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      IDENTITY_USER_SERVICE_URL: http://identity-user:8110
     ports:
       - "8089:8089"
     # Wait for OpenSearch to actually serve, not merely to have started —

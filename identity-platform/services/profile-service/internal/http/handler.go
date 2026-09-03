@@ -27,6 +27,9 @@ type Handler struct {
 	// references. Nil is fail-closed on those writes.
 	media  ProfileMediaAuthority
 	photos ProfilePhotoAccessChecker
+	// Private-account display facts (is_private, follow_status). Nil means
+	// the fields render as their zero values; see profile_privacy.go.
+	privacy ProfilePrivacyResolver
 }
 
 // WithBlockChecker wires block denial on every profile read surface.
@@ -319,7 +322,7 @@ func (h *Handler) GetProfile(c *gin.Context) {
 	// SR-4: never serialise store.Profile to a viewer. This route is
 	// UNAUTHENTICATED and that struct carries the exact date of birth,
 	// gender and timezone.
-	api.JSON(c.Writer, http.StatusOK, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p)), nil)
+	api.JSON(c.Writer, http.StatusOK, h.applyProfilePrivacy(c, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p))), nil)
 }
 
 func (h *Handler) GetProfileByUsername(c *gin.Context) {
@@ -345,7 +348,7 @@ func (h *Handler) GetProfileByUsername(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p)), nil)
+	api.JSON(c.Writer, http.StatusOK, h.applyProfilePrivacy(c, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p))), nil)
 }
 
 // GetMe returns the caller's OWN profile, in full. The private fields are
@@ -1321,7 +1324,7 @@ func (h *Handler) GetProfilesBatch(c *gin.Context) {
 	// entries are omitted rather than refused: denying the whole request
 	// because one entry is blocked lets a caller probe by bisection.
 	publicProfiles := h.filterBlockedProfileMap(c, ToPublicProfileMap(profiles))
-	c.JSON(http.StatusOK, h.applyProfilePhotoPrivacyMap(c, publicProfiles))
+	c.JSON(http.StatusOK, h.applyProfilePrivacyMap(c, h.applyProfilePhotoPrivacyMap(c, publicProfiles)))
 }
 
 // ---------------------------------------------------------------

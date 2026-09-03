@@ -29,7 +29,7 @@ func (h *Handler) ReindexUsers(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		res, err := reindex.ReindexUsers(
-			ctx, h.httpClient, h.profileServiceURL, h.internalKey, h.store, slog.Default(),
+			ctx, h.httpClient, h.profileServiceURL, h.internalKey, h.store, h.privacy, slog.Default(),
 		)
 		if err != nil {
 			slog.Error("admin reindex/users failed", "err", err,

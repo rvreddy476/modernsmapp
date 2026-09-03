@@ -158,6 +158,24 @@ func (s *Store) putEngagementMapping(ctx context.Context, index string) {
 	}
 }
 
+// putPrivacyMapping idempotently adds a boolean privacy field to an index.
+func (s *Store) putPrivacyMapping(ctx context.Context, index, field string) {
+	body := fmt.Sprintf(`{"properties":{%q:{"type":"boolean"}}}`, field)
+	req := opensearchapi.IndicesPutMappingRequest{
+		Index: []string{index},
+		Body:  strings.NewReader(body),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		slog.Warn("opensearch: put privacy mapping failed", "index", index, "field", field, "err", err)
+		return
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		slog.Warn("opensearch: put privacy mapping rejected", "index", index, "field", field, "status", res.StatusCode)
+	}
+}
+
 // opensearchSettingsJSON returns the per-index settings block. Reads
 // OPENSEARCH_INDEX_SHARDS / OPENSEARCH_INDEX_REPLICAS / OPENSEARCH_INDEX_REFRESH
 // with safe dev defaults (1/0/1s).
@@ -220,24 +238,35 @@ func (s *Store) createIndexIfNotExists(ctx context.Context, index, body string) 
 
 // Structs for Documents
 type UserDoc struct {
-	UserID          string  `json:"user_id"`
-	Username        string  `json:"username"`
-	DisplayName     string  `json:"display_name"`
-	Bio             string  `json:"bio"`
-	AvatarMediaID   string  `json:"avatar_media_id,omitempty"`
-	IsVerified      bool    `json:"is_verified"`
+	UserID        string `json:"user_id"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"display_name"`
+	Bio           string `json:"bio"`
+	AvatarMediaID string `json:"avatar_media_id,omitempty"`
+	IsVerified    bool   `json:"is_verified"`
+	// IsPrivate mirrors identity user-service account_visibility. Private
+	// accounts REMAIN searchable (TikTok shows private profiles in search);
+	// this is a display flag so the client can render the lock and the
+	// "Requested" affordance, not a filter.
+	IsPrivate       bool    `json:"is_private"`
 	FollowerCount   int     `json:"follower_count,omitempty"`
 	PostCount       int     `json:"post_count,omitempty"`
 	EngagementScore float64 `json:"engagement_score"`
 }
 
 type PostDoc struct {
-	PostID         string   `json:"post_id"`
-	AuthorID       string   `json:"author_id"`
-	AuthorUsername string   `json:"author_username,omitempty"`
-	Text           string   `json:"text"`
-	Hashtags       []string `json:"hashtags,omitempty"`
-	Visibility     string   `json:"visibility,omitempty"`
+	PostID         string `json:"post_id"`
+	AuthorID       string `json:"author_id"`
+	AuthorUsername string `json:"author_username,omitempty"`
+	// AuthorIsPrivate is the author's account_visibility at index time,
+	// kept fresh by the user.settings_changed consumer (update_by_query on
+	// author_id). Every posts query excludes documents where this is true
+	// unless the author is the viewer or someone the viewer follows —
+	// see blockfilter.go.
+	AuthorIsPrivate bool     `json:"author_is_private"`
+	Text            string   `json:"text"`
+	Hashtags        []string `json:"hashtags,omitempty"`
+	Visibility      string   `json:"visibility,omitempty"`
 	// ReviewStatus is the canonical moderation state (Module 2 M2-P0-1).
 	// Indexed so every query path can apply a mandatory
 	// review_status=approved filter as defence in depth — the index-time
@@ -1078,6 +1107,59 @@ func (s *Store) UpdateUserUsername(ctx context.Context, userID, newUsername stri
 		err = fmt.Errorf("opensearch update user error: %s", res.String())
 		slog.Error("opensearch: failed to update user username", "user_id", userID, "error", err)
 		return err
+	}
+	return nil
+}
+
+// UpdateUserPrivacy flips is_private on one users_v1 document. A missing
+// document is not an error — the profile event that creates it carries the
+// current flag itself.
+func (s *Store) UpdateUserPrivacy(ctx context.Context, userID string, isPrivate bool) error {
+	body, _ := json.Marshal(map[string]any{"doc": map[string]any{"is_private": isPrivate}})
+	req := opensearchapi.UpdateRequest{
+		Index:      IndexUsers,
+		DocumentID: userID,
+		Body:       bytes.NewReader(body),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() && res.StatusCode != 404 {
+		return fmt.Errorf("opensearch update user privacy error: %s", res.String())
+	}
+	return nil
+}
+
+// UpdatePostsAuthorPrivacy rewrites author_is_private on EVERY posts_v1
+// document by the author in one update_by_query. Conflicts proceed: a post
+// re-indexed concurrently already carries the fresh flag from its own
+// lookup, so losing the race on that one document is not a loss.
+func (s *Store) UpdatePostsAuthorPrivacy(ctx context.Context, authorID string, isPrivate bool) error {
+	if authorID == "" {
+		return fmt.Errorf("update posts author privacy: empty author id")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"query": map[string]any{"term": map[string]any{"author_id": authorID}},
+		"script": map[string]any{
+			"source": "ctx._source.author_is_private = params.v",
+			"lang":   "painless",
+			"params": map[string]any{"v": isPrivate},
+		},
+	})
+	req := opensearchapi.UpdateByQueryRequest{
+		Index:     []string{IndexPosts},
+		Body:      bytes.NewReader(body),
+		Conflicts: "proceed",
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("opensearch update_by_query author privacy error: %s", res.String())
 	}
 	return nil
 }

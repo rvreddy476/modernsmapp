@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/search-service/internal/graphclient"
+	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/api"
@@ -26,6 +27,14 @@ type Handler struct {
 	graphClient       *graphclient.Client
 	profileServiceURL string
 	httpClient        *http.Client
+	// privacy stamps is_private during the admin users reindex.
+	privacy privacyclient.Lookup
+}
+
+// WithPrivacyLookup wires the identity settings lookup the reindex uses.
+func (h *Handler) WithPrivacyLookup(l privacyclient.Lookup) *Handler {
+	h.privacy = l
+	return h
 }
 
 func New(store *search.Store, rdb *redis.Client) *Handler {

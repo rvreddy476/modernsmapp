@@ -43,6 +43,11 @@ type Service struct {
 	// Viewer keyword-filter cache (60s TTL) — see keywordfilter.go.
 	kwMu    sync.Mutex
 	kwCache map[uuid.UUID]keywordCacheEntry
+	// Author privacy (private accounts) cache, 3s TTL per (viewer, author)
+	// — see privacyfilter.go. apNow is swapped by tests to drive the TTL.
+	apMu    sync.Mutex
+	apCache map[string]authorPrivacyEntry
+	apNow   func() time.Time
 	// lvTiers is the long-video frequency configuration (P0-4), loaded
 	// once at construction from defaults + env overrides.
 	lvTiers map[string]lvTier

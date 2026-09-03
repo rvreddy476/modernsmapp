@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/atpost/search-service/internal/graphclient"
@@ -160,5 +161,54 @@ func TestResolveBlockScope_MalformedViewerIDIsRejected(t *testing.T) {
 	}
 	if *reached {
 		t.Fatal("a request with an unparseable viewer id must not be served")
+	}
+}
+
+// Private accounts: the scope must carry the viewer's identity and follow
+// set so a posts query can let a follower through a private author's
+// exclusion. FollowingIDs is best-effort, so a failing lookup leaves the
+// follow set EMPTY (hides more, never less) and still serves the request.
+func TestResolveBlockScope_AttachesViewerAndFollowing(t *testing.T) {
+	viewer := uuid.New()
+	friend := uuid.New().String()
+	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/following-ids"):
+			_, _ = w.Write([]byte(`{"data":{"items":["` + friend + `"]}}`))
+		default:
+			_, _ = w.Write([]byte(`{"user_ids":[]}`))
+		}
+	}))
+	defer graph.Close()
+
+	h := &Handler{graphClient: graphclient.New(graph.URL, "", nil)}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	var gotViewer string
+	var gotFollowing []string
+	r.GET("/probe", h.resolveBlockScope(), func(c *gin.Context) {
+		gotViewer = search.ViewerIDForTest(c.Request.Context())
+		gotFollowing = search.FollowingIDsForTest(c.Request.Context())
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
+	req.Header.Set("X-User-Id", viewer.String())
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if gotViewer != viewer.String() || len(gotFollowing) != 1 || gotFollowing[0] != friend {
+		t.Fatalf("viewer=%q following=%v", gotViewer, gotFollowing)
+	}
+
+	// Anonymous: no viewer, no follow set, still resolved.
+	gotViewer, gotFollowing = "x", []string{"x"}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/probe", nil))
+	if w.Code != http.StatusOK || gotViewer != "" || len(gotFollowing) != 0 {
+		t.Fatalf("anonymous scope: viewer=%q following=%v status=%d", gotViewer, gotFollowing, w.Code)
 	}
 }

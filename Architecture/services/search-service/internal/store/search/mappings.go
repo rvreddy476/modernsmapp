@@ -127,6 +127,14 @@ func (s *Store) initEntityIndices() {
 	s.putEngagementMapping(ctx, IndexPosts)
 	s.putEngagementMapping(ctx, IndexProducts)
 
+	// Private accounts: is_private on users, author_is_private on posts.
+	// Additive put-mapping, idempotent on every boot. Documents written
+	// before this field existed have no value, which every query treats
+	// as "not private" — the settings-changed consumer and the reindex
+	// paths stamp the real value.
+	s.putPrivacyMapping(ctx, IndexUsers, "is_private")
+	s.putPrivacyMapping(ctx, IndexPosts, "author_is_private")
+
 	// Hashtags index — one doc per hashtag, keyed by the lowercase tag.
 	s.createIndexIfNotExists(ctx, IndexHashtags, `{
 		"settings": `+settings+`,

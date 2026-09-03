@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/search-service/internal/events"
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
+	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/reindex"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
@@ -88,15 +89,26 @@ func main() {
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
+	// Private accounts: the identity user-service is the authority for
+	// account_visibility. Every user/post (re)index stamps the flag from
+	// here (cached 60s), and user.settings_changed on the identity topic
+	// keeps it fresh. IDENTITY_USER_SERVICE_URL, with USER_SERVICE_URL as
+	// the older alias other services use for the same address.
+	identityUserURL := env("IDENTITY_USER_SERVICE_URL", env("USER_SERVICE_URL", "http://identity-user:8110"))
+	privacyLookup := privacyclient.New(identityUserURL, os.Getenv("INTERNAL_SERVICE_KEY"))
+	if !privacyLookup.Configured() {
+		slog.Warn("search-service: IDENTITY_USER_SERVICE_URL not set — private accounts index as public. Do not run this in production.")
+	}
+
 	socialConsumer := events.NewConsumerWithDialer(
 		brokerList, "search-service-group", socialTopic, searchStore, kafkaDialer,
-	)
+	).WithPrivacyLookup(privacyLookup)
 	go socialConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", socialTopic, "group", "search-service-group")
 
 	identityConsumer := events.NewConsumerWithDialer(
 		brokerList, "search-service-identity-group", identityTopic, searchStore, kafkaDialer,
-	)
+	).WithPrivacyLookup(privacyLookup)
 	go identityConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", identityTopic, "group", "search-service-identity-group")
 
@@ -144,6 +156,7 @@ func main() {
 	// is unreachable, search degrades to engagement × recency.
 	gc := graphclient.New(graphServiceURL, internalKey, rdb)
 	handler.WithGraphClient(gc)
+	handler.WithPrivacyLookup(privacyLookup)
 	slog.Info("search-service: graph client wired", "url", graphServiceURL)
 
 	// Postgres analytics store (search_queries + search_clicks) +
@@ -171,7 +184,7 @@ func main() {
 	// OpenSearch volume / events lost beyond Kafka retention), rebuild
 	// it from profile-service rather than waiting for users to
 	// re-register. A populated index is left alone.
-	reindex.AutoHealUsersOnStartup(ctx, nil, profileServiceURL, internalKey, searchStore, slog.Default())
+	reindex.AutoHealUsersOnStartup(ctx, nil, profileServiceURL, internalKey, searchStore, privacyLookup, slog.Default())
 
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

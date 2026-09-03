@@ -177,6 +177,10 @@ func main() {
 			),
 		)
 		logger.Info("profile-service: profile-photo privacy authority enabled")
+		profileHandler.WithProfilePrivacy(
+			http.NewProfilePrivacyResolver(graphURL, identityUserURL, os.Getenv("INTERNAL_SERVICE_KEY")),
+		)
+		logger.Info("profile-service: private-account facts (is_private, follow_status) enabled")
 	} else {
 		logger.Error("profile-service: GRAPH_SERVICE_URL and USER_SERVICE_URL are required; profile media delivery will fail closed")
 	}

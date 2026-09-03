@@ -74,19 +74,27 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 	// for posts that were indexed at erasure time; the fence check covers
 	// posts that were not; and the recheck inside this helper covers an
 	// erasure that lands while this very write is in flight.
+	// The projection script replaces the whole _source, so the author's
+	// current account_visibility must ride along or a re-approval would
+	// reset a private author's post to public.
+	authorPrivate, err := c.authorIsPrivate(ctx, p.AuthorID)
+	if err != nil {
+		return err
+	}
 	if err := c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
 		PostID: p.PostID,
 		Rev:    p.SearchRev,
 		Doc: search.PostDoc{
-			PostID:       p.PostID,
-			AuthorID:     p.AuthorID,
-			Text:         p.Text,
-			Hashtags:     extractHashtags(p.Text),
-			Visibility:   p.Visibility,
-			ReviewStatus: p.ReviewStatus,
-			SearchRev:    p.SearchRev,
-			PostType:     p.ContentType,
-			CreatedAt:    p.CreatedAt,
+			PostID:          p.PostID,
+			AuthorID:        p.AuthorID,
+			AuthorIsPrivate: authorPrivate,
+			Text:            p.Text,
+			Hashtags:        extractHashtags(p.Text),
+			Visibility:      p.Visibility,
+			ReviewStatus:    p.ReviewStatus,
+			SearchRev:       p.SearchRev,
+			PostType:        p.ContentType,
+			CreatedAt:       p.CreatedAt,
 		},
 	}); err != nil {
 		return fmt.Errorf("eligibility: index %s: %w", p.PostID, err)

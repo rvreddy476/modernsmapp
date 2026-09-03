@@ -149,30 +149,166 @@ func TestEncodeQuery_PreservesExistingMustNot(t *testing.T) {
 
 // No blocks and no scope must leave the query byte-identical, so this
 // change cannot perturb ranking for the overwhelmingly common case.
+//
+// For a NON-posts index that holds for every scope. For posts, a resolved
+// scope — anonymous included — now always carries the private-author
+// exclusion (see TestEncodeQuery_PrivateAuthors*), so only the unscoped
+// context is byte-identical there.
 func TestEncodeQuery_NoBlocksLeavesQueryUnchanged(t *testing.T) {
-	q := map[string]interface{}{
-		"size":  20,
-		"query": map[string]interface{}{"bool": map[string]interface{}{"must": []interface{}{}}},
+	freshQuery := func() map[string]interface{} {
+		return map[string]interface{}{
+			"size":  20,
+			"query": map[string]interface{}{"bool": map[string]interface{}{"must": []interface{}{}}},
+		}
 	}
-	baseline, _ := json.Marshal(q)
+	baseline, _ := json.Marshal(freshQuery())
 
-	for _, ctx := range []context.Context{
-		context.Background(),                             // no scope resolved
-		WithBlockedIDs(context.Background(), nil),        // anonymous viewer
-		WithBlockedIDs(context.Background(), []string{}), // viewer blocks nobody
-	} {
-		buf, err := encodeQuery(ctx, q, "author_id")
-		if err != nil {
-			t.Fatalf("encodeQuery: %v", err)
+	cases := []struct {
+		name    string
+		ctx     context.Context
+		idField string
+	}{
+		{"posts, no scope resolved", context.Background(), "author_id"},
+		{"users, no scope resolved", context.Background(), "user_id"},
+		{"users, anonymous viewer", WithBlockedIDs(context.Background(), nil), "user_id"},
+		{"users, viewer blocks nobody", WithBlockedIDs(context.Background(), []string{}), "user_id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf, err := encodeQuery(tc.ctx, freshQuery(), tc.idField)
+			if err != nil {
+				t.Fatalf("encodeQuery: %v", err)
+			}
+			var round map[string]interface{}
+			if err := json.Unmarshal(buf.Bytes(), &round); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := json.Marshal(round)
+			if string(got) != string(baseline) {
+				t.Fatalf("query changed when there is nothing to exclude:\n got %s\nwant %s", got, baseline)
+			}
+		})
+	}
+}
+
+// --- private accounts --------------------------------------------------------
+
+// mustNotClauses returns the raw must_not list of the top-level bool.
+func mustNotClauses(t *testing.T, encoded map[string]interface{}) []interface{} {
+	t.Helper()
+	query, _ := encoded["query"].(map[string]interface{})
+	boolClause, _ := query["bool"].(map[string]interface{})
+	raw, _ := boolClause["must_not"].([]interface{})
+	return raw
+}
+
+// findPrivateAuthorClause locates the private-author exclusion and returns
+// the author ids it lets through (nil when it is the bare term form).
+func findPrivateAuthorClause(t *testing.T, encoded map[string]interface{}) (found bool, allowed []string) {
+	t.Helper()
+	for _, c := range mustNotClauses(t, encoded) {
+		m, _ := c.(map[string]interface{})
+		if term, ok := m["term"].(map[string]interface{}); ok {
+			if _, ok := term["author_is_private"]; ok {
+				return true, nil
+			}
 		}
-		var round map[string]interface{}
-		if err := json.Unmarshal(buf.Bytes(), &round); err != nil {
-			t.Fatal(err)
+		if b, ok := m["bool"].(map[string]interface{}); ok {
+			filters, _ := b["filter"].([]interface{})
+			if len(filters) != 1 {
+				continue
+			}
+			f, _ := filters[0].(map[string]interface{})
+			term, _ := f["term"].(map[string]interface{})
+			if _, ok := term["author_is_private"]; !ok {
+				continue
+			}
+			inner, _ := b["must_not"].([]interface{})
+			for _, i := range inner {
+				im, _ := i.(map[string]interface{})
+				terms, _ := im["terms"].(map[string]interface{})
+				for _, v := range terms["author_id"].([]interface{}) {
+					allowed = append(allowed, v.(string))
+				}
+			}
+			return true, allowed
 		}
-		got, _ := json.Marshal(round)
-		if string(got) != string(baseline) {
-			t.Fatalf("query changed when there is nothing to exclude:\n got %s\nwant %s", got, baseline)
+	}
+	return false, nil
+}
+
+// An anonymous viewer follows nobody: every private author's posts are
+// excluded outright.
+func TestEncodeQuery_PrivateAuthorsHiddenFromAnonymous(t *testing.T) {
+	ctx := WithViewerScope(context.Background(), "", nil, nil)
+	q := map[string]interface{}{"query": map[string]interface{}{"bool": map[string]interface{}{}}}
+	found, allowed := findPrivateAuthorClause(t, decodeQuery(t, ctx, q, "author_id"))
+	if !found {
+		t.Fatal("anonymous posts query carries no private-author exclusion")
+	}
+	if len(allowed) != 0 {
+		t.Fatalf("anonymous viewer was allowed private authors: %v", allowed)
+	}
+}
+
+// A signed-in viewer sees private authors they follow, and themselves.
+func TestEncodeQuery_PrivateAuthorsAllowFollowingAndSelf(t *testing.T) {
+	ctx := WithViewerScope(context.Background(), "me", []string{"blocked-1"}, []string{"friend-1", "friend-2", "me", ""})
+	q := map[string]interface{}{"query": map[string]interface{}{"bool": map[string]interface{}{}}}
+	encoded := decodeQuery(t, ctx, q, "author_id")
+
+	found, allowed := findPrivateAuthorClause(t, encoded)
+	if !found {
+		t.Fatal("posts query carries no private-author exclusion")
+	}
+	want := map[string]bool{"me": true, "friend-1": true, "friend-2": true}
+	if len(allowed) != len(want) {
+		t.Fatalf("allowed = %v, want exactly %v", allowed, want)
+	}
+	for _, id := range allowed {
+		if !want[id] {
+			t.Fatalf("unexpected allowed author %q", id)
 		}
+	}
+	// The block exclusion must still be there alongside it.
+	if got := mustNotTerms(t, encoded, "author_id"); len(got) != 1 || got[0] != "blocked-1" {
+		t.Fatalf("block exclusion lost: %v", got)
+	}
+}
+
+// The exclusion is a posts rule. Users remain searchable (a private
+// profile is findable, its posts are not), and other owner fields are
+// untouched.
+func TestEncodeQuery_PrivateAuthorsClauseOnlyOnPosts(t *testing.T) {
+	ctx := WithViewerScope(context.Background(), "me", nil, nil)
+	for _, field := range []string{"user_id", "owner_id", "seller_id"} {
+		q := map[string]interface{}{"query": map[string]interface{}{"bool": map[string]interface{}{}}}
+		if found, _ := findPrivateAuthorClause(t, decodeQuery(t, ctx, q, field)); found {
+			t.Fatalf("private-author clause applied to %s", field)
+		}
+	}
+}
+
+// A non-bool posts query (function_score) is wrapped so its scoring
+// survives and the exclusion still applies.
+func TestEncodeQuery_PrivateAuthorsWrapNonBoolQuery(t *testing.T) {
+	ctx := WithViewerScope(context.Background(), "", nil, nil)
+	q := map[string]interface{}{"query": map[string]interface{}{"function_score": map[string]interface{}{"query": map[string]interface{}{"match_all": map[string]interface{}{}}}}}
+	encoded := decodeQuery(t, ctx, q, "author_id")
+	if found, _ := findPrivateAuthorClause(t, encoded); !found {
+		t.Fatal("exclusion missing after wrapping")
+	}
+	query := encoded["query"].(map[string]interface{})["bool"].(map[string]interface{})
+	must, _ := query["must"].([]interface{})
+	if len(must) != 1 {
+		t.Fatalf("original function_score not preserved: %v", query)
+	}
+}
+
+func TestViewerScopeAccessors(t *testing.T) {
+	ctx := WithViewerScope(context.Background(), "me", []string{"b"}, []string{"f"})
+	if ViewerIDForTest(ctx) != "me" || len(FollowingIDsForTest(ctx)) != 1 || len(BlockedIDsForTest(ctx)) != 1 {
+		t.Fatal("scope accessors did not round-trip")
 	}
 }
 

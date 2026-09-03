@@ -941,6 +941,8 @@ func (h *Handler) AddComment(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comments, please slow down", nil)
 		case errors.Is(err, service.ErrCommentsDisabled):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
+		case errors.Is(err, service.ErrCommentsRestricted):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
 		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
 		default:

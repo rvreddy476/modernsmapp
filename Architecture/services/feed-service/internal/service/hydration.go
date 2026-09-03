@@ -174,6 +174,14 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		if err != nil {
 			return nil, err
 		}
+		// Private accounts: the cached rows above were hydrated up to five
+		// minutes ago, so they may pre-date an author going private or this
+		// viewer being removed as a follower. Same fail-closed policy as
+		// block/mute and keywords — see privacyfilter.go.
+		merged, err = s.applyAuthorPrivacyFilter(ctx, viewerID, merged)
+		if err != nil {
+			return nil, err
+		}
 		s.enrichViewCounts(ctx, merged)
 		if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
 			return nil, err
@@ -238,6 +246,11 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	// Viewer keyword filter — same step as the cache-only path above; see
 	// that comment. Fail-closed by design.
 	merged, err = s.applyKeywordHideFilter(ctx, viewerID, merged)
+	if err != nil {
+		return nil, err
+	}
+	// Private accounts — same step as the cache-only path above.
+	merged, err = s.applyAuthorPrivacyFilter(ctx, viewerID, merged)
 	if err != nil {
 		return nil, err
 	}

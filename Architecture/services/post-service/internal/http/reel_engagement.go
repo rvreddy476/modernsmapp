@@ -1,10 +1,12 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -152,7 +154,17 @@ func (h *Handler) AddReelComment(c *gin.Context) {
 
 	commentID, err := h.svc.AddReelComment(c.Request.Context(), reelID, userID, req.Text)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		switch {
+		case errors.Is(err, service.ErrCommentsRestricted):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
+		case errors.Is(err, service.ErrCommentsDisabled):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			// Non-enumerating: a denial that confirms existence is a leak.
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		}
 		return
 	}
 

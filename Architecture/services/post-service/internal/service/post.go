@@ -53,6 +53,12 @@ var (
 	// DIFFERENT payload (C-LB-3.5). Distinct from a replay, which succeeds.
 	ErrCreateKeyReused  = errors.New("idempotency key already used with different content")
 	ErrCommentsDisabled = errors.New("comments are disabled on this post")
+
+	// ErrCommentsRestricted: the author's comments audience
+	// (allow_comments_from = friends) excludes this viewer. Distinct from
+	// ErrCommentsDisabled — the post accepts comments, just not from
+	// strangers — so the client can render "Only friends can comment".
+	ErrCommentsRestricted = errors.New("only friends can comment on this post")
 )
 
 type Service struct {
@@ -104,6 +110,9 @@ type Service struct {
 	// story can take 1M+ views in 24h, all UPDATE-ing the same row.
 	// Sharded counter pattern matches the other use-counts.
 	storyViewCounter *counters.Counter
+
+	// Private-account / comments-audience gate state (privacy_gate.go).
+	privacyGateState
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -1421,6 +1430,13 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 // shows in their own profile grid); every other viewer sees only approved.
 func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
 	isAuthor := viewerID != nil && *viewerID == authorID
+	// Private account: the whole grid is follower-only. An empty page — not
+	// an error — is the honest answer for a stranger: the profile itself
+	// stays reachable (with is_private=true) and the client renders the
+	// "This account is private" state. Fail-closed on an unresolved graph.
+	if !isAuthor && !s.canViewAuthor(ctx, viewerID, authorID) {
+		return []PostDetail{}, "", nil
+	}
 	posts, nextCursor, err := s.pgStore.GetPostsByAuthor(ctx, authorID, contentType, limit, cursor, isAuthor)
 	if err != nil {
 		return nil, "", err
@@ -1542,9 +1558,33 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		}
 	}
 
+	// Private accounts: ONE graph round trip for the page's distinct authors
+	// (≤100 per call, 3s cache). Fanout wrote these timeline rows without
+	// consulting the author's account_visibility, and a follower who was
+	// removed — or a viewer who never followed a since-private author —
+	// must not read them here. Fail-closed: an unresolved author is dropped.
+	authorSet := make(map[uuid.UUID]struct{}, len(posts))
+	authorIDs := make([]uuid.UUID, 0, len(posts))
+	for _, p := range posts {
+		if viewerID != nil && *viewerID == p.AuthorID {
+			continue
+		}
+		if _, ok := authorSet[p.AuthorID]; !ok {
+			authorSet[p.AuthorID] = struct{}{}
+			authorIDs = append(authorIDs, p.AuthorID)
+		}
+	}
+	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
+
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
+
+		if viewerID == nil || *viewerID != post.AuthorID {
+			if !viewableAuthor[post.AuthorID] {
+				continue
+			}
+		}
 
 		// Audit CF1: defense-in-depth visibility filter on the batch
 		// path. Feed-service's fanout writes recipient timelines without
@@ -2261,6 +2301,12 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 	if post.NoComments {
 		return nil, ErrCommentsDisabled
 	}
+	// Comments audience (allow_comments_from: everyone | friends). Resolved
+	// by graph-service against the post author's CURRENT setting and the
+	// live connection/mutual-follow graph; fail-closed (privacy_gate.go).
+	if !s.canComment(ctx, authorID, post.AuthorID) {
+		return nil, ErrCommentsRestricted
+	}
 
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:comment:%s", authorID), engagement.CommentLimitPerMin, time.Minute) {
 		return nil, fmt.Errorf("RATE_LIMITED")
@@ -2542,6 +2588,11 @@ func (s *Service) loadPostForEngagement(ctx context.Context, postID, viewerID uu
 	if post.AuthorID == viewerID {
 		return post, nil
 	}
+	// Account-level gate (private accounts) before the per-post one; see
+	// viewerMayViewPost. Fail-closed.
+	if !s.canViewAuthor(ctx, &viewerID, post.AuthorID) {
+		return nil, ErrPostNotVisible
+	}
 	switch strings.ToLower(post.Visibility) {
 	case "", "public":
 		return post, nil
@@ -2571,6 +2622,12 @@ func (s *Service) loadPostForEngagement(ctx context.Context, postID, viewerID uu
 func (s *Service) viewerMayViewPost(ctx context.Context, post *postgres.Post, viewerID *uuid.UUID) bool {
 	if viewerID != nil && *viewerID == post.AuthorID {
 		return true
+	}
+	// Account-level gate first: a private account's posts are follower-only
+	// whatever the per-post visibility says, and an anonymous viewer is a
+	// stranger to every private account (privacy_gate.go, fail-closed).
+	if !s.canViewAuthor(ctx, viewerID, post.AuthorID) {
+		return false
 	}
 	switch strings.ToLower(post.Visibility) {
 	case "", "public", "unlisted":
