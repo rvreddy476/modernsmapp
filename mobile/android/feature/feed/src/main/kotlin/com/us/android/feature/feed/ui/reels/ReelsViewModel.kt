@@ -6,7 +6,7 @@ import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
-import com.us.android.core.model.FeedSurface
+import com.us.android.core.model.FeedQuery
 import com.us.android.feature.feed.data.FeedRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
@@ -26,7 +26,7 @@ class ReelsViewModel @Inject constructor(
      * page one and drops the user back to the first reel.
      */
     val items: Flow<PagingData<FeedItem>> =
-        repository.feed(FeedSurface.Reels).cachedIn(viewModelScope)
+        repository.feed(FeedQuery.Reels).cachedIn(viewModelScope)
 
     private val _muted = MutableStateFlow(true)
 

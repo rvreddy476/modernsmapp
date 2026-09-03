@@ -132,3 +132,25 @@ data class FeedDeltaDto(
     @SerialName("newest_anchor") val newestAnchor: String = "",
     @SerialName("has_more") val hasMore: Boolean = false,
 )
+
+/**
+ * `GET /v1/hashtags/trending` — the `data` object.
+ *
+ * Captured from the dev gateway on 2026-09-04: `{"data":{"hashtags":[]}}`.
+ * The list is keyed, not top-level, so this wrapper exists; a non-empty day
+ * fills each entry from post-service's `HashtagTrending24h`
+ * (`normalized_name`, `display_name`, `post_count`).
+ */
+@Serializable
+data class TrendingHashtagsDto(
+    val hashtags: List<TrendingHashtagDto> = emptyList(),
+)
+
+@Serializable
+data class TrendingHashtagDto(
+    /** The tag without `#`, as the posts-by-tag path takes it. */
+    @SerialName("normalized_name") val normalizedName: String = "",
+    /** `#tag` — what the server wants shown. */
+    @SerialName("display_name") val displayName: String = "",
+    @SerialName("post_count") val postCount: Long = 0,
+)

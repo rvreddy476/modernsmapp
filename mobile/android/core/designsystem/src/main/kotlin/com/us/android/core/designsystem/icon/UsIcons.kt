@@ -173,6 +173,12 @@ object UsIcons {
         "M9,7 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0",
     )
 
+    /** Lucide `chevron-right` — a row that opens another screen. */
+    val ChevronRight: ImageVector = lucideStroked(
+        "ChevronRight",
+        "m9 18 6-6-6-6",
+    )
+
     /** Reels: the Momentum bottom bar shows the bare [Play] mark for this tab. */
     val Reels: ImageVector get() = Play
 

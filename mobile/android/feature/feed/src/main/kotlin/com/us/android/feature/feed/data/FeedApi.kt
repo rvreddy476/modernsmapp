@@ -3,6 +3,7 @@ package com.us.android.feature.feed.data
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.feed.data.dto.FeedDeltaDto
 import com.us.android.feature.feed.data.dto.FeedItemDto
+import com.us.android.feature.feed.data.dto.TrendingHashtagsDto
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.Body
@@ -35,12 +36,21 @@ interface FeedApi {
      * [cursor] is `meta.next_cursor` from the previous page: an RFC3339
      * timestamp on home. It is passed back opaquely and never parsed or
      * constructed.
+     *
+     * [followingOnly] and [circleOnly] are home's two narrowings
+     * (feed-service handler.go reads `following_only` / `circle_only` as the
+     * literal string `true`). Null OMITS the parameter — Retrofit drops a null
+     * query — which the server reads as "the whole timeline". They are never
+     * sent as `false`, so the request for the plain feed is byte-identical to
+     * what it was before the tabs existed.
      */
     @GET("v1/feed/{surface}")
     suspend fun getFeed(
         @Path("surface") surface: String,
         @Query("limit") limit: Int,
         @Query("cursor") cursor: String? = null,
+        @Query("following_only") followingOnly: Boolean? = null,
+        @Query("circle_only") circleOnly: Boolean? = null,
     ): ApiEnvelope<List<FeedItemDto>>
 
     /**
@@ -66,6 +76,45 @@ interface FeedApi {
         @Path("postId") postId: String,
         @Body body: PollVoteRequest,
     ): ApiEnvelope<Map<String, Boolean>>
+
+    /**
+     * Today's most-used hashtags — post-service `GetTrendingHashtagsFeed`.
+     *
+     * Not a list at the top level: the body is `{"data":{"hashtags":[…]}}`,
+     * verified on the dev gateway on 2026-09-04 (an empty day answers
+     * `{"data":{"hashtags":[]}}` with 200, not an absent key). [limit] is
+     * clamped to 30 server-side.
+     */
+    @GET("v1/hashtags/trending")
+    suspend fun getTrendingHashtags(
+        @Query("limit") limit: Int,
+    ): ApiEnvelope<TrendingHashtagsDto>
+
+    /**
+     * The posts carrying one tag — post-service `GetPostsByHashtag`.
+     *
+     * The rows are post-service's `PostDetail`, not feed-service's hydrated
+     * item: the same field names for everything a card renders, but NO
+     * embedded `author` and media as bare `{media_id, kind, position, alt_*}`
+     * references with no delivery URLs. [FeedItemDto] decodes it because every
+     * field defaults; the missing author and delivery are filled in by
+     * [HashtagPostHydrator] before a row reaches the card.
+     *
+     * The server strips a leading `#` from [tag] itself. `meta.next_cursor`
+     * is present only when a further page exists, exactly like home.
+     */
+    @GET("v1/hashtags/{tag}/posts")
+    suspend fun getPostsByHashtag(
+        @Path("tag") tag: String,
+        @Query("limit") limit: Int,
+        @Query("cursor") cursor: String? = null,
+        @Query("sort") sort: String = HASHTAG_SORT_RECENT,
+    ): ApiEnvelope<List<FeedItemDto>>
+
+    companion object {
+        /** The server's default; `top` is the other accepted value. */
+        const val HASHTAG_SORT_RECENT = "recent"
+    }
 }
 
 @Serializable

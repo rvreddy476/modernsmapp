@@ -8,7 +8,6 @@ import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPoll
 import com.us.android.core.model.FeedPollOption
-import com.us.android.core.model.FeedSurface
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
@@ -17,7 +16,32 @@ import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Pages a feed surface by cursor.
+ * One page of a feed as the paging source consumes it: already mapped to the
+ * domain, with the cursor for the page after it.
+ *
+ * [errorCode] carries a 200-with-`error` envelope — the platform's way of
+ * reporting a handled failure — so the source can surface it as a typed
+ * [AppError] without every loader repeating the check.
+ */
+data class FeedPage(
+    val items: List<FeedItem>,
+    val nextCursor: String?,
+    val errorCode: String? = null,
+)
+
+/**
+ * Fetches one page. The ONLY thing that differs between the home timeline,
+ * its Following and Friends narrowings, reels, and a hashtag's posts is which
+ * request produces the rows; everything else — de-duplication, the cursor
+ * rules, error mapping, cancellation — is shared and lives in
+ * [FeedPagingSource]. A new surface is a new loader, never a new source.
+ */
+fun interface FeedPageLoader {
+    suspend fun load(limit: Int, cursor: String?): FeedPage
+}
+
+/**
+ * Pages a feed by cursor.
  *
  * Network-only, with no Room layer yet. That is a deliberate first step, not
  * an oversight: offline-first needs a `RemoteMediator` over a Room schema, and
@@ -29,15 +53,15 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * TWO PAGINATION REGIMES, ONE SOURCE
  *
- * Only [FeedSurface.Home] returns `meta.next_cursor`. Reels, videos and watch
- * returned a full page with NO cursor and no `meta` at all. The capture is
- * explicit that a cursor must not be invented for them, so this source reports
- * a single terminal page on those surfaces rather than looping forever on a
- * null key or fabricating an offset the server never offered.
+ * Only [com.us.android.core.model.FeedSurface.Home] returns `meta.next_cursor`.
+ * Reels, videos and watch returned a full page with NO cursor and no `meta`
+ * at all. The capture is explicit that a cursor must not be invented for
+ * them, so this source reports a single terminal page on those surfaces
+ * rather than looping forever on a null key or fabricating an offset the
+ * server never offered.
  */
 class FeedPagingSource(
-    private val api: FeedApi,
-    private val surface: FeedSurface,
+    private val loader: FeedPageLoader,
     private val errorMapper: ErrorMapper,
 ) : PagingSource<String, FeedItem>() {
 
@@ -66,25 +90,22 @@ class FeedPagingSource(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun load(params: LoadParams<String>): LoadResult<String, FeedItem> = try {
-        val envelope = api.getFeed(
-            surface = surface.path,
+        val page = loader.load(
             limit = params.loadSize.coerceAtMost(MAX_LIMIT),
             cursor = params.key,
         )
-        envelope.error?.let { error ->
+        page.errorCode?.let { code ->
             LoadResult.Error(
-                AppErrorException(AppError.Unknown(code = error.code, statusCode = null)),
+                AppErrorException(AppError.Unknown(code = code, statusCode = null)),
             )
         } ?: LoadResult.Page(
-            // De-duplicated by post id — see `dropDuplicates`. A repeated id is a
+            // De-duplicated by post id — see `emittedIds`. A repeated id is a
             // CRASH in Compose, not a cosmetic issue, because LazyColumn keys
             // must be unique.
             // First occurrence wins, so ordering is untouched.
-            data = (envelope.data ?: emptyList())
-                .map { it.toDomain() }
-                .filter { emittedIds.add(it.id) },
+            data = page.items.filter { emittedIds.add(it.id) },
             prevKey = null, // Feeds are forward-only; there is no previous page.
-            nextKey = envelope.nextKey(),
+            nextKey = page.nextCursor,
         )
     } catch (e: CancellationException) {
         // Rethrown before the generic branch: swallowing it here would break
@@ -120,12 +141,8 @@ class FeedPagingSource(
 }
 
 /**
- * Only the paginated surface yields a next key, and only when the page was
- * full. A short page means the end regardless of what `meta` says — otherwise
- * a server that always echoes a cursor would page forever.
- */
-/**
- * The cursor for the next page, or null at the end.
+ * The server's page as a [FeedPage]: rows mapped to the domain, the cursor
+ * resolved by the rules below, a handled error carried through.
  *
  * All four surfaces paginate as of the 2026-08-17 hydration closure. Home
  * returns an RFC3339 timestamp and the ranked surfaces return an opaque
@@ -136,10 +153,13 @@ class FeedPagingSource(
  * treated as the end regardless of what `meta` says — otherwise a server that
  * always echoed a cursor would page forever.
  */
-private fun ApiEnvelope<List<FeedItemDto>>.nextKey(): String? {
-    val items = data ?: return null
-    if (items.isEmpty()) return null
-    return meta?.nextCursor?.takeIf { it.isNotBlank() }
+internal fun ApiEnvelope<List<FeedItemDto>>.toFeedPage(): FeedPage {
+    val items = data.orEmpty()
+    return FeedPage(
+        items = items.map { it.toDomain() },
+        nextCursor = if (items.isEmpty()) null else meta?.nextCursor?.takeIf { it.isNotBlank() },
+        errorCode = error?.code,
+    )
 }
 
 /** Carries a typed [AppError] through Paging's `Throwable`-shaped error channel. */

@@ -37,8 +37,18 @@ class ReelsViewModelTest {
     )
 
     private object UnusedApi : FeedApi {
-        override suspend fun getFeed(surface: String, limit: Int, cursor: String?) =
-            error("the reels view model must not fetch in these tests")
+        override suspend fun getFeed(
+            surface: String,
+            limit: Int,
+            cursor: String?,
+            followingOnly: Boolean?,
+            circleOnly: Boolean?,
+        ): Nothing = error("the reels view model must not fetch in these tests")
+
+        override suspend fun getTrendingHashtags(limit: Int): Nothing = error("unused")
+
+        override suspend fun getPostsByHashtag(tag: String, limit: Int, cursor: String?, sort: String): Nothing =
+            error("unused")
 
         override suspend fun getDelta(
             feedType: String,
@@ -53,7 +63,7 @@ class ReelsViewModelTest {
     }
 
     private fun viewModel() = ReelsViewModel(
-        repository = FeedRepository(UnusedApi, ErrorMapper(Json { ignoreUnknownKeys = true })),
+        repository = FeedRepository(UnusedApi, ErrorMapper(Json { ignoreUnknownKeys = true })) { it },
         urlResolver = resolver,
     )
 

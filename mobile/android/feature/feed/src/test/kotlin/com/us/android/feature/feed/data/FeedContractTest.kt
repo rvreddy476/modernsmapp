@@ -7,6 +7,7 @@ package com.us.android.feature.feed.data
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.feed.data.dto.FeedItemDto
+import com.us.android.feature.feed.data.dto.TrendingHashtagsDto
 import kotlinx.serialization.json.Json
 import org.junit.Test
 
@@ -139,7 +140,81 @@ class FeedContractTest {
         assertThat(item.media.single().isVertical).isFalse()
     }
 
+    // ── Hashtags: post-service, through the gateway ─────────────────────
+
+    /**
+     * Captured from https://api-dev.cleestudio.com on 2026-09-04 as call_b:
+     * a quiet day answers an EMPTY keyed list with 200, not an absent key
+     * and not an error. The screen's "No trending tags yet" is this case.
+     */
+    @Test
+    fun `trending hashtags decodes the captured empty day`() {
+        val envelope: ApiEnvelope<TrendingHashtagsDto> = json.decodeFromString(TRENDING_EMPTY)
+
+        assertThat(envelope.error).isNull()
+        assertThat(envelope.data!!.hashtags).isEmpty()
+    }
+
+    /**
+     * The non-empty shape follows post-service's `HashtagTrending24h`
+     * (`normalized_name`, `display_name`, `post_count`) — the fixture is
+     * derived from the Go struct's JSON tags, since dev had no tags to
+     * capture. The `#` is the server's; the client does not add a second.
+     */
+    @Test
+    fun `trending hashtags decodes a populated day`() {
+        val envelope: ApiEnvelope<TrendingHashtagsDto> = json.decodeFromString(TRENDING_POPULATED)
+        val first = envelope.data!!.hashtags.first()
+
+        assertThat(first.normalizedName).isEqualTo("android")
+        assertThat(first.displayName).isEqualTo("#android")
+        assertThat(first.postCount).isEqualTo(3)
+    }
+
+    /** Captured 2026-09-04: a tag with no posts is `{"data":[]}`, 200. */
+    @Test
+    fun `posts by hashtag decodes the captured empty list`() {
+        val page = decode(HASHTAG_POSTS_EMPTY).toFeedPage()
+
+        assertThat(page.items).isEmpty()
+        assertThat(page.nextCursor).isNull()
+        assertThat(page.errorCode).isNull()
+    }
+
+    /**
+     * A populated row is post-service's `PostDetail`: the feed item's field
+     * names, but NO `author` object and media as bare references. The same
+     * DTO must decode it (author defaults to empty, delivery fields to
+     * zero) so the hydrator has something to fill in.
+     */
+    @Test
+    fun `posts by hashtag decodes a bare post-service row`() {
+        val page = decode(HASHTAG_POSTS_ROW).toFeedPage()
+        val item = page.items.single()
+
+        assertThat(item.id).isEqualTo("b2f7d0c1-5c1e-4a0e-9d1a-0c7f6f1e2a33")
+        assertThat(item.authorId).isEqualTo("66668bc2-a3f6-40a5-9cdd-c998dcf72f29")
+        // No author object on the wire: the id carries through, the name is blank.
+        assertThat(item.author.id).isEqualTo(item.authorId)
+        assertThat(item.author.displayName).isEmpty()
+        assertThat(item.media.single().mediaId).isEqualTo("509571d6-d5dd-4d0c-9d8e-2b1f3c4d5e6f")
+        assertThat(item.media.single().variants).isEmpty()
+        assertThat(item.counts.likes).isEqualTo(2)
+        assertThat(item.viewer.hasReacted).isTrue()
+        assertThat(page.nextCursor).isEqualTo("djE6ZTcwZWU4ODAtOTlhYS0xMWYxLTkyMzMtZmU0NWFjOWU0MDIx")
+    }
+
     private companion object {
+        const val TRENDING_EMPTY = """{"data":{"hashtags":[]}}"""
+
+        const val TRENDING_POPULATED =
+            """{"data":{"hashtags":[{"normalized_name":"android","display_name":"#android","post_count":3},{"normalized_name":"momentum","display_name":"#momentum","post_count":1}]}}"""
+
+        const val HASHTAG_POSTS_EMPTY = """{"data":[]}"""
+
+        const val HASHTAG_POSTS_ROW =
+            """{"data":[{"id":"b2f7d0c1-5c1e-4a0e-9d1a-0c7f6f1e2a33","author_id":"66668bc2-a3f6-40a5-9cdd-c998dcf72f29","text":"first #android post","visibility":"public","content_type":"post","is_pinned":false,"no_comments":false,"no_likes":false,"hashtags":["android"],"post_type":"image","app_origin":"postbook","share_to_postbook":true,"review_status":"approved","paid_promotion":false,"altered_content":false,"is_made_for_kids":false,"allow_embedding":false,"publish_to_feed":true,"original_audio_volume":0,"overlay_audio_volume":0,"distribution_rev":0,"created_at":"2026-09-04T09:00:00.000000Z","updated_at":"2026-09-04T09:00:00.000000Z","media":[{"media_id":"509571d6-d5dd-4d0c-9d8e-2b1f3c4d5e6f","kind":"image","alt_text":"","alt_decorative":false,"position":0}],"counts":{"likes":2,"comments":0},"view_count":5,"viewer_reaction":"like","has_reacted":true,"is_bookmarked":false,"repost_count":0,"has_reposted":false,"is_repostable":true}],"meta":{"next_cursor":"djE6ZTcwZWU4ODAtOTlhYS0xMWYxLTkyMzMtZmU0NWFjOWU0MDIx"}}"""
+
         const val HOME_PAGE_1 =
             """{"data":[{"id":"c1604d02-a4fe-44f2-91a6-feebd0ac814f","author_id":"71851843-a69f-4d2f-a2f8-9f6eea629609","text":"Evidence pass fixture 3","visibility":"public","content_type":"post","is_pinned":false,"created_at":"2026-08-17T10:16:51.278089Z","updated_at":"2026-08-17T10:16:51.278089Z","counts":{"likes":0,"comments":0},"view_count":0,"has_reacted":false,"is_bookmarked":false,"repost_count":0,"has_reposted":false,"is_repostable":true,"post_type":"text","app_origin":"postbook","share_to_postbook":true,"feed_content_type":"post","author":{"id":"71851843-a69f-4d2f-a2f8-9f6eea629609","display_name":"Android Evidence"}}],"meta":{"next_cursor":"2026-08-17T10:16:51.224Z"}}"""
 

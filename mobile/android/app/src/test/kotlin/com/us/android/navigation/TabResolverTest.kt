@@ -12,65 +12,107 @@ class TabResolverTest {
         home: AppModule = AppModule.FEED,
     ) = ModulePreferences(modules = modules, homeModule = home, onboardingCompleted = true)
 
+    /** The Figma bar: Home, Reels, "+", Friends, Me. */
     @Test
-    fun `every module on yields the full bar in shell order`() {
+    fun `every module on yields the full bar in fixed order`() {
         assertThat(TabResolver.resolve(prefs()))
             .containsExactly(
                 TopLevelDestination.HOME,
-                TopLevelDestination.MESSAGES,
                 TopLevelDestination.REELS,
+                TopLevelDestination.FRIENDS,
                 TopLevelDestination.ME,
             )
             .inOrder()
     }
 
+    /** Reels is the only module-gated tab; switching it off drops it and nothing else. */
     @Test
-    fun `a module switched off drops its tab and nothing else`() {
+    fun `reels off drops its tab and nothing else`() {
         val tabs = TabResolver.resolve(prefs(modules = setOf(AppModule.CHAT)))
 
         assertThat(tabs).containsExactly(
             TopLevelDestination.HOME,
-            TopLevelDestination.MESSAGES,
+            TopLevelDestination.FRIENDS,
             TopLevelDestination.ME,
         ).inOrder()
     }
 
     @Test
-    fun `me and home survive every choice`() {
+    fun `home, friends and me survive every choice`() {
         val tabs = TabResolver.resolve(prefs(modules = emptySet()))
 
         assertThat(tabs).containsExactly(
             TopLevelDestination.HOME,
+            TopLevelDestination.FRIENDS,
             TopLevelDestination.ME,
         ).inOrder()
     }
 
-    /** Explore lives behind the header's search glyph, never in the bar. */
+    /** The inbox and search live behind header glyphs, never in the bar. */
     @Test
-    fun `explore is never a tab`() {
+    fun `messages and explore are never tabs`() {
         val tabs = TabResolver.resolve(prefs(modules = AppModule.selectable.toSet()))
 
-        assertThat(tabs).doesNotContain(TopLevelDestination.EXPLORE)
+        assertThat(tabs).containsNoneOf(TopLevelDestination.MESSAGES, TopLevelDestination.EXPLORE)
     }
 
+    /**
+     * The "+" slot sits after the first half of the tabs, so four tabs put it
+     * between Reels and Friends — the frame's two-"+"-two.
+     */
     @Test
-    fun `the home module's tab comes first`() {
+    fun `the create slot splits the full bar between reels and friends`() {
+        val tabs = TabResolver.resolve(prefs())
+        val split = tabs.size / 2
+
+        assertThat(tabs.take(split)).containsExactly(TopLevelDestination.HOME, TopLevelDestination.REELS).inOrder()
+        assertThat(tabs.drop(split)).containsExactly(TopLevelDestination.FRIENDS, TopLevelDestination.ME).inOrder()
+    }
+
+    /** The home module no longer reorders the bar; it only picks the first screen. */
+    @Test
+    fun `the home module does not move its tab`() {
         val tabs = TabResolver.resolve(prefs(home = AppModule.REELS))
 
-        assertThat(tabs.first()).isEqualTo(TopLevelDestination.REELS)
         assertThat(tabs).containsExactly(
-            TopLevelDestination.REELS,
             TopLevelDestination.HOME,
-            TopLevelDestination.MESSAGES,
+            TopLevelDestination.REELS,
+            TopLevelDestination.FRIENDS,
             TopLevelDestination.ME,
         ).inOrder()
     }
 
     @Test
-    fun `a home module with no tab leaves the order alone`() {
-        val tabs = TabResolver.resolve(prefs(home = AppModule.COMMERCE))
+    fun `a reels home opens on reels`() {
+        assertThat(TabResolver.startDestination(prefs(home = AppModule.REELS)))
+            .isEqualTo(TopLevelDestination.REELS)
+    }
 
-        assertThat(tabs.first()).isEqualTo(TopLevelDestination.HOME)
+    @Test
+    fun `a feed home opens on home`() {
+        assertThat(TabResolver.startDestination(prefs(home = AppModule.FEED)))
+            .isEqualTo(TopLevelDestination.HOME)
+    }
+
+    /** Chat is a module with a root but no bar item; Commerce has no screen at all. */
+    @Test
+    fun `a home module without a bar tab opens on home`() {
+        assertThat(TabResolver.startDestination(prefs(home = AppModule.CHAT))).isEqualTo(TopLevelDestination.HOME)
+        assertThat(TabResolver.startDestination(prefs(home = AppModule.COMMERCE)))
+            .isEqualTo(TopLevelDestination.HOME)
+    }
+
+    /** The start tab is always in the bar, so something is selected on frame one. */
+    @Test
+    fun `the start destination is always a resolved tab`() {
+        AppModule.entries.forEach { home ->
+            val p = prefs(home = home)
+            assertThat(TabResolver.resolve(p)).contains(TabResolver.startDestination(p))
+        }
+        // Reels chosen as home but then switched off: the bar has no Reels,
+        // so the start falls back to Home rather than a tab that is not there.
+        val reelsOff = prefs(modules = emptySet(), home = AppModule.REELS)
+        assertThat(TabResolver.startDestination(reelsOff)).isEqualTo(TopLevelDestination.HOME)
     }
 
     /**

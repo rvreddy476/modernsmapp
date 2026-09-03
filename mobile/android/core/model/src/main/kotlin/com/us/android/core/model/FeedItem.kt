@@ -188,3 +188,45 @@ enum class FeedSurface(val path: String) {
     Videos("videos"),
     Watch("watch"),
 }
+
+/**
+ * One request's worth of feed: which surface, and which server-side narrowing
+ * of it.
+ *
+ * Both flags are `GET /v1/feed/home` query parameters (`following_only`,
+ * `circle_only`) and both are OFF by default — the server reads either as
+ * "the whole home timeline" when absent. They exist as one value rather than
+ * two extra parameters on every paging call so the feed's tabs, the Friends
+ * tab and reels all describe what they load with a single type, and the
+ * paging source stays one class.
+ */
+data class FeedQuery(
+    val surface: FeedSurface,
+    /** Only authors the viewer follows — the "Following" tab. */
+    val followingOnly: Boolean = false,
+    /** Only mutual follows (the viewer's circle) — the Friends tab. */
+    val circleOnly: Boolean = false,
+) {
+    companion object {
+        /** The home timeline as the server ranks it — "For You". */
+        val ForYou = FeedQuery(FeedSurface.Home)
+        val Following = FeedQuery(FeedSurface.Home, followingOnly = true)
+        val Friends = FeedQuery(FeedSurface.Home, circleOnly = true)
+        val Reels = FeedQuery(FeedSurface.Reels)
+    }
+}
+
+/**
+ * One row of `GET /v1/hashtags/trending`.
+ *
+ * [name] is the normalized tag without its `#` and is what the posts-by-tag
+ * endpoint takes; [displayName] is what the server wants shown (`#tag`).
+ */
+data class TrendingHashtag(
+    val name: String,
+    val displayName: String,
+    val postCount: Long,
+) {
+    /** Always `#`-prefixed for display, whatever the server sent. */
+    val label: String get() = displayName.ifBlank { "#$name" }.let { if (it.startsWith("#")) it else "#$it" }
+}

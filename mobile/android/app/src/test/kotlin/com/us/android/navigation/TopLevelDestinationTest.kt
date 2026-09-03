@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.profile.data.AppModule
 import com.us.android.feature.chat.navigation.ChatInboxRoute
 import com.us.android.feature.feed.navigation.FeedRoute
+import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.ReelsRoute
 import com.us.android.feature.profile.navigation.OwnProfileRoute
 import org.junit.Test
@@ -32,6 +33,7 @@ class TopLevelDestinationTest {
         assertThat(TopLevelDestination.HOME.rootRoute).isEqualTo(FeedRoute)
         assertThat(TopLevelDestination.MESSAGES.rootRoute).isEqualTo(ChatInboxRoute)
         assertThat(TopLevelDestination.REELS.rootRoute).isEqualTo(ReelsRoute)
+        assertThat(TopLevelDestination.FRIENDS.rootRoute).isEqualTo(FriendsFeedRoute)
         assertThat(TopLevelDestination.EXPLORE.rootRoute).isEqualTo(ExploreRoute)
         assertThat(TopLevelDestination.ME.rootRoute).isEqualTo(OwnProfileRoute)
     }
@@ -41,6 +43,7 @@ class TopLevelDestinationTest {
         assertThat(TopLevelDestination.HOME.module).isEqualTo(AppModule.FEED)
         assertThat(TopLevelDestination.MESSAGES.module).isEqualTo(AppModule.CHAT)
         assertThat(TopLevelDestination.REELS.module).isEqualTo(AppModule.REELS)
+        assertThat(TopLevelDestination.FRIENDS.module).isNull()
         assertThat(TopLevelDestination.EXPLORE.module).isNull()
         assertThat(TopLevelDestination.ME.module).isNull()
     }

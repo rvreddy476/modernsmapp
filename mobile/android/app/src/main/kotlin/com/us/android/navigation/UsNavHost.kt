@@ -55,6 +55,9 @@ import com.us.android.feature.chat.navigation.navigateToGroupCreate
 import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
+import com.us.android.feature.feed.navigation.friendsFeedScreen
+import com.us.android.feature.feed.navigation.hashtagPostsScreen
+import com.us.android.feature.feed.navigation.navigateToHashtagPosts
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.live.navigation.liveScreens
 import com.us.android.feature.live.navigation.navigateToGoLive
@@ -163,9 +166,9 @@ data object GalleryRoute
  * The four shell states map to four start destinations: sign-in, the splash,
  * the module picker, or the user's home tab.
  *
- * The bottom bar is built from the same choices: only the tabs whose module
- * is switched on, the home module's tab first, and the Reels chip raised
- * only when Reels is among them.
+ * The bottom bar is built from the same choices, in a FIXED order — Home,
+ * Reels, "+", Friends, Me — with Reels present only when its module is on.
+ * The home module decides which of those opens first, never their order.
  *
  * Routes are `@Serializable` objects rather than strings, so arguments become
  * compile-checked instead of stringly-typed.
@@ -183,7 +186,7 @@ fun UsNavHost(
     val tabs = remember(shellState) {
         (shellState as? ShellState.Ready)?.let { TabResolver.resolve(it.prefs) }.orEmpty()
     }
-    val startDestination = shellState.startDestination(tabs)
+    val startDestination = shellState.startDestination()
 
     // An incoming ring fronts the call surface (foreground path; background
     // rings arrive via the full-screen CALLS notification whose tap lands in
@@ -218,15 +221,15 @@ fun UsNavHost(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            // Null tab means the current screen is not a tab root — an auth
-            // screen, the splash, the picker, or a pushed profile. No bar
-            // there. An empty tab list means the shell is not Ready yet.
-            if (currentTab != null && tabs.isNotEmpty()) {
+            // Null tab means the current screen is not a top-level root — an
+            // auth screen, the splash, the picker, or a pushed profile. No
+            // bar there. A root that is not IN the bar — the inbox, Explore —
+            // hides it too: those open from the header and leave by Back, and
+            // a bar with nothing selected under them would only say "you are
+            // nowhere". An empty tab list means the shell is not Ready yet.
+            if (currentTab != null && currentTab in tabs) {
                 UsNavigationBar(
                     items = tabs.map { it.item },
-                    // -1 when a push landed on a tab whose module is off
-                    // (a message-request tap with Chat disabled): the bar
-                    // shows with nothing selected rather than lying.
                     selectedIndex = tabs.indexOf(currentTab),
                     onSelect = { index -> navController.navigateToTopLevel(tabs[index]) },
                     // Momentum's raised centre button is always Create, not a
@@ -284,15 +287,15 @@ private fun SplashScreen() {
 }
 
 /**
- * The graph's start for a shell state. [tabs] is the resolved bar, non-empty
- * exactly when the state is [ShellState.Ready], and its first entry is the
- * user's home — so a user whose home is Reels opens on the reels route.
+ * The graph's start for a shell state. When Ready, the home module's tab —
+ * Reels for a Reels home, Home for everything else — without touching the
+ * bar's order; see [TabResolver.startDestination].
  */
-private fun ShellState.startDestination(tabs: List<TopLevelDestination>): Any = when (this) {
+private fun ShellState.startDestination(): Any = when (this) {
     ShellState.Unauthenticated -> LoginRoute
     ShellState.Loading -> SplashRoute
     ShellState.NeedsOnboarding -> OnboardingRoute
-    is ShellState.Ready -> tabs.first().rootRoute
+    is ShellState.Ready -> TabResolver.startDestination(prefs).rootRoute
 }
 
 /** Where a notification tap lands, by push type. Unknown types route nowhere. */
@@ -385,6 +388,21 @@ private fun NavGraphBuilder.tabDestinations(
         // Search is the Explore tab until a dedicated surface exists; the
         // create action left the header for the bar's centre button.
         onOpenSearch = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
+        onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
+    )
+
+    // The Friends tab: the same feed narrowed to mutual follows. A tab root,
+    // so no back arrow; its own route so the bar knows which item is lit.
+    friendsFeedScreen(
+        onOpenPost = { postId -> navController.navigateToPost(postId) },
+        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+    )
+
+    // A trending tag's posts, pushed over Home from the HashTag tab.
+    hashtagPostsScreen(
+        onBack = { navController.popBackStack() },
+        onOpenPost = { postId -> navController.navigateToPost(postId) },
+        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
 
     // The Create hub — the bar's centre "+" lands here; the footer rail switches
@@ -463,9 +481,12 @@ private fun NavGraphBuilder.tabDestinations(
     // name on its first frame. Deriving it inside the thread would need the
     // viewer's own id, which the thread does not have — every direct
     // conversation would open with a blank header until its member list loaded.
-    // The Messages TAB. No onBack: a tab root has no back arrow.
+    // The inbox is a top-level root (so a pushed thread still counts as
+    // "inside Messages") but no longer a bar item: it opens from the header's
+    // message glyph and the bar hides under it, so it carries a back arrow
+    // the way Notifications does. Back pops to the tab it was opened from.
     chatInboxScreen(
-        onBack = null,
+        onBack = { navController.popBackStack() },
         onOpenThread = { conversationId, title, isGroup ->
             navController.navigateToChatThread(conversationId, title, isGroup)
         },

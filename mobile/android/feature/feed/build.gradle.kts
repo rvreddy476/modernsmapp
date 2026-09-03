@@ -19,6 +19,10 @@ dependencies {
     // shares the whole data layer with home, so a separate Gradle module would
     // be fragmentation without reuse.
     implementation(projects.core.media)
+    // Posts-by-hashtag arrive from post-service without an embedded author,
+    // so the feed resolves one per row through the shared profile repository.
+    // A core module: no feature-to-feature edge.
+    implementation(projects.core.profile)
     implementation(projects.core.engagement)
     // Slice D: the top-bar badge observes the SHARED unread count so the feed
     // and the inbox can never disagree about it. A core module, so no

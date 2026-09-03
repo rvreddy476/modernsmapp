@@ -53,6 +53,8 @@ class FeedPagingDeduplicationTest {
             surface: String,
             limit: Int,
             cursor: String?,
+            followingOnly: Boolean?,
+            circleOnly: Boolean?,
         ): ApiEnvelope<List<FeedItemDto>> {
             val index = calls++
             val isLast = index == pages.lastIndex
@@ -72,13 +74,26 @@ class FeedPagingDeduplicationTest {
             postId: String,
             body: PollVoteRequest,
         ) = error("the paging source never votes")
+
+        override suspend fun getTrendingHashtags(limit: Int) = error("the paging source never lists tags")
+
+        override suspend fun getPostsByHashtag(
+            tag: String,
+            limit: Int,
+            cursor: String?,
+            sort: String,
+        ) = error("these pages are the home surface")
     }
 
-    private fun source(pages: List<List<FeedItemDto>>) = FeedPagingSource(
-        api = FakeFeedApi(pages),
-        surface = FeedSurface.Home,
-        errorMapper = ErrorMapper(json),
-    )
+    // The home loader exactly as the repository builds it: the source itself
+    // no longer knows which surface it pages.
+    private fun source(pages: List<List<FeedItemDto>>): FeedPagingSource {
+        val api = FakeFeedApi(pages)
+        return FeedPagingSource(
+            loader = { limit, cursor -> api.getFeed(FeedSurface.Home.path, limit, cursor).toFeedPage() },
+            errorMapper = ErrorMapper(json),
+        )
+    }
 
     private suspend fun load(source: FeedPagingSource, cursor: String?) =
         source.load(

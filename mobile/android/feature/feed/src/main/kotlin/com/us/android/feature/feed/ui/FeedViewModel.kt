@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
+import com.us.android.core.common.error.AppError
+import com.us.android.core.common.result.AppResult
 import com.us.android.core.datastore.SettingsDataStore
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementFailure
@@ -14,28 +16,63 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
-import com.us.android.core.model.FeedSurface
+import com.us.android.core.model.FeedQuery
+import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.KeywordFilter
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedFactory
+import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import javax.inject.Inject
 
-@HiltViewModel
-class FeedViewModel @Inject constructor(
+/**
+ * What one [FeedViewModel] serves. Decided by the destination, not by a
+ * setter after the fact, so the first page requested is the right one.
+ */
+sealed interface FeedMode {
+    /** The Home tab: For You / Following under the header, HashTag alongside. */
+    data object Home : FeedMode
+
+    /** The Friends tab: the home timeline narrowed to mutual follows. */
+    data object Friends : FeedMode
+
+    /** One tag's posts, pushed from the HashTag list. */
+    data class Hashtag(val tag: String) : FeedMode
+}
+
+/** The HashTag tab's list, as the screen renders it. */
+sealed interface TrendingState {
+    data object Loading : TrendingState
+    data class Content(val tags: List<TrendingHashtag>) : TrendingState
+    data class Error(val error: AppError) : TrendingState
+}
+
+@HiltViewModel(assistedFactory = FeedViewModel.Factory::class)
+class FeedViewModel @AssistedInject constructor(
+    @Assisted private val mode: FeedMode,
     private val repository: FeedRepository,
     private val urlResolver: MediaUrlResolver,
     private val engagement: EngagementStore,
     private val shares: EngagementRepository,
+    private val tabState: FeedTabState,
     settings: SettingsDataStore? = null,
 ) : ViewModel() {
+
+    @AssistedFactory
+    interface Factory {
+        fun create(mode: FeedMode): FeedViewModel
+    }
 
     /**
      * The image to show for a row.
@@ -82,6 +119,11 @@ class FeedViewModel @Inject constructor(
                 ?: urlResolver.thumbnail(media.variants)
         }
 
+    /** The home header's tab. Meaningful only in [FeedMode.Home]. */
+    val tab: StateFlow<FeedTab> = tabState.selected
+
+    fun selectTab(tab: FeedTab) = tabState.select(tab)
+
     /**
      * `cachedIn(viewModelScope)` is not optional here.
      *
@@ -89,19 +131,64 @@ class FeedViewModel @Inject constructor(
      * and every recomposition that resubscribes, which refetches page one and
      * throws away the user's scroll position. With it the loaded pages survive
      * rotation.
+     *
+     * Home holds one cached stream PER TAB rather than rebuilding on switch:
+     * `cachedIn` is lazy, so Following costs nothing until it is first shown,
+     * and after that flipping back to For You replays its pages instead of
+     * refetching them and dropping the reader to the top.
      */
-    val items: Flow<PagingData<FeedItem>> =
-        repository.feed(FeedSurface.Home)
-            .cachedIn(viewModelScope)
-            .let { flow ->
-                if (settings != null) {
-                    flow.combine(settings.keywordFilters) { page, keywords ->
-                        if (keywords.isEmpty()) page else page.filter { !KeywordFilter.hides(it, keywords) }
-                    }
-                } else {
-                    flow
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val items: Flow<PagingData<FeedItem>> = when (mode) {
+        FeedMode.Home -> {
+            val pages = mapOf(
+                FeedTab.FOR_YOU to cached(FeedQuery.ForYou),
+                FeedTab.FOLLOWING to cached(FeedQuery.Following),
+            )
+            // The HashTag tab has no timeline: the screen shows the trending
+            // list instead, and this stream simply goes quiet.
+            tab.flatMapLatest { pages[it] ?: emptyFlow() }
+        }
+        FeedMode.Friends -> cached(FeedQuery.Friends)
+        is FeedMode.Hashtag -> repository.hashtagPosts(mode.tag).cachedIn(viewModelScope)
+    }.let { flow ->
+        if (settings != null) {
+            flow.combine(settings.keywordFilters) { page, keywords ->
+                if (keywords.isEmpty()) page else page.filter { !KeywordFilter.hides(it, keywords) }
+            }
+        } else {
+            flow
+        }
+    }
+
+    private fun cached(query: FeedQuery) = repository.feed(query).cachedIn(viewModelScope)
+
+    private val _trending = MutableStateFlow<TrendingState>(TrendingState.Loading)
+
+    /** The HashTag tab's rows. Fetched the first time the tab is shown, not at launch. */
+    val trending: StateFlow<TrendingState> = _trending.asStateFlow()
+
+    private var trendingRequested = false
+
+    init {
+        if (mode == FeedMode.Home) {
+            viewModelScope.launch {
+                tab.collect { selected ->
+                    if (selected == FeedTab.HASHTAG && !trendingRequested) refreshTrending()
                 }
             }
+        }
+    }
+
+    fun refreshTrending() {
+        trendingRequested = true
+        _trending.value = TrendingState.Loading
+        viewModelScope.launch {
+            _trending.value = when (val result = repository.trendingHashtags()) {
+                is AppResult.Success -> TrendingState.Content(result.data)
+                is AppResult.Failure -> TrendingState.Error(result.error)
+            }
+        }
+    }
 
     /**
      * Optimistic engagement, layered over the immutable page.

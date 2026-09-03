@@ -10,25 +10,32 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.profile.data.AppModule
 import com.us.android.feature.chat.navigation.ChatInboxRoute
 import com.us.android.feature.feed.navigation.FeedRoute
+import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.ReelsRoute
 import com.us.android.feature.profile.navigation.OwnProfileRoute
 import kotlin.reflect.KClass
 
 /**
- * Every tab this build can show, paired with the route it selects and the
- * module that switches it on.
+ * Every top-level root this build can show, paired with the route it selects
+ * and the module that switches it on.
  *
  * The pairing lives in `:app` because it is the only module allowed to know
  * both the design system's presentation of a tab and the feature that owns its
  * destination. Each entry carries its own [item] rather than indexing into a
- * shared list, because the bar is no longer a fixed five: [TabResolver] picks
- * and orders entries from the user's module choices, and an ordinal-indexed
+ * shared list, because the bar is not a fixed five: [TabResolver] picks
+ * entries from the user's module choices in ITS order, and an ordinal-indexed
  * lookup would break the moment one tab is left out.
  *
- * [module] is null for the tabs every user has (Explore, Me). Home maps to
- * [AppModule.FEED], which [ModulePreferences.includes] always answers yes to,
- * so it too is always present — the mapping exists so the feed can be the
- * user's *home*, not so it can be switched off.
+ * Two entries are roots but never bar items: [MESSAGES] (the inbox, opened
+ * from the header's message glyph) and [EXPLORE] (the header's search glyph).
+ * They stay here so [forDestination] recognises them as roots — a pushed
+ * screen over the inbox is still "inside Messages" — while [TabResolver]
+ * leaves them out of the bar.
+ *
+ * [module] is null for the tabs every user has (Friends, Explore, Me). Home
+ * maps to [AppModule.FEED], which [ModulePreferences.includes] always answers
+ * yes to, so it too is always present — the mapping exists so the feed can be
+ * the user's *home*, not so it can be switched off.
  */
 enum class TopLevelDestination(
     val route: KClass<*>,
@@ -36,16 +43,17 @@ enum class TopLevelDestination(
     val module: AppModule?,
 ) {
     HOME(FeedRoute::class, UsNavItem("Home", UsIcons.Home), AppModule.FEED),
-    MESSAGES(ChatInboxRoute::class, UsNavItem("Messages", UsIcons.Comment), AppModule.CHAT),
     REELS(ReelsRoute::class, UsNavItem("Reels", UsIcons.Reels), AppModule.REELS),
-    EXPLORE(ExploreRoute::class, UsNavItem("Explore", UsIcons.Explore), null),
+    FRIENDS(FriendsFeedRoute::class, UsNavItem("Friends", UsIcons.Friends), null),
     ME(OwnProfileRoute::class, UsNavItem("Me", UsIcons.Profile, contentDescription = "My profile"), null),
+    MESSAGES(ChatInboxRoute::class, UsNavItem("Messages", UsIcons.Comment), AppModule.CHAT),
+    EXPLORE(ExploreRoute::class, UsNavItem("Explore", UsIcons.Explore), null),
     ;
 
     companion object {
         /**
-         * The tab that owns [destination], or null when the current screen is
-         * not a tab root.
+         * The root that owns [destination], or null when the current screen is
+         * not a top-level root.
          *
          * Null is what hides the bottom bar. A pushed screen — another user's
          * profile, a post, a settings page — is not a tab, and showing the bar
@@ -70,10 +78,11 @@ private val NavDestination.hierarchy: Sequence<NavDestination>
 val TopLevelDestination.rootRoute: Any
     get() = when (this) {
         TopLevelDestination.HOME -> FeedRoute
-        TopLevelDestination.MESSAGES -> ChatInboxRoute
         TopLevelDestination.REELS -> ReelsRoute
-        TopLevelDestination.EXPLORE -> ExploreRoute
+        TopLevelDestination.FRIENDS -> FriendsFeedRoute
         TopLevelDestination.ME -> OwnProfileRoute
+        TopLevelDestination.MESSAGES -> ChatInboxRoute
+        TopLevelDestination.EXPLORE -> ExploreRoute
     }
 
 /**

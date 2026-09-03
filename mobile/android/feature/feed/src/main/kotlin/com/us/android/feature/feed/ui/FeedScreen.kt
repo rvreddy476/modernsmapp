@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
@@ -19,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -31,7 +33,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
-import com.us.android.core.common.error.AppError
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsBadgedIcon
 import com.us.android.core.designsystem.component.UsHomeTopBar
@@ -59,9 +60,17 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberPostSharer
-import com.us.android.feature.feed.data.AppErrorException
 import com.us.android.feature.feed.ui.comments.CommentsSheet
 
+/**
+ * The Home tab.
+ *
+ * Momentum's header, then the "For You | Following | HashTag" row, then
+ * whichever the row selects: a timeline for the first two, the trending-tag
+ * list for the third. Friends and a tag's posts are the SAME timeline body
+ * ([FeedContent]) under a different top bar — see [FriendsFeedScreen] and
+ * [HashtagPostsScreen].
+ */
 @Composable
 fun FeedScreen(
     onOpenPost: (postId: String) -> Unit,
@@ -70,30 +79,18 @@ fun FeedScreen(
     onOpenNotifications: () -> Unit,
     /** Momentum's header search glyph — :app decides it opens the Explore tab. */
     onOpenSearch: () -> Unit,
-    viewModel: FeedViewModel = hiltViewModel(),
+    /** A trending tag was tapped; :app pushes that tag's posts. */
+    onOpenHashtag: (tag: String) -> Unit,
+    viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
+        creationCallback = { factory -> factory.create(FeedMode.Home) },
+    ),
 ) {
-    val items = viewModel.items.collectAsLazyPagingItems()
-    val overlays by viewModel.overlays.collectAsStateWithLifecycle()
-    val pollVotes by viewModel.pollVotes.collectAsStateWithLifecycle()
-    val failures by viewModel.failures.collectAsStateWithLifecycle()
-    var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
-
-    // Two effects, deliberately. A refresh replaces the whole list with values
-    // just fetched, so all of them are server authority. An append leaves the
-    // earlier pages in the snapshot exactly as they were loaded — including a
-    // `has_reacted=false` captured before the viewer liked the row — so those
-    // rows must NOT be reprocessed. Reconciling the whole snapshot on append
-    // is what made a confirmed like revert on scroll.
-    LaunchedEffect(items.loadState.refresh) {
-        if (items.loadState.refresh is LoadState.NotLoading && items.itemCount > 0) {
-            viewModel.onRefreshHydrated(items.itemSnapshotList.items)
-        }
-    }
-    LaunchedEffect(items.loadState.append, items.itemCount) {
-        if (items.loadState.append is LoadState.NotLoading && items.itemCount > 0) {
-            viewModel.onAppendHydrated(items.itemSnapshotList.items)
-        }
-    }
+    val tab by viewModel.tab.collectAsStateWithLifecycle()
+    val trending by viewModel.trending.collectAsStateWithLifecycle()
+    // One scroll position per timeline. For You's offset applied to
+    // Following's rows would land the reader mid-list in a feed they have
+    // not scrolled.
+    val listStates = remember { FeedTab.entries.associateWith { LazyListState() } }
 
     UsScaffold(
         // Momentum's header: search, Messages, the bell. Every one of them
@@ -127,27 +124,99 @@ fun FeedScreen(
         applyPageGutter = false,
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
-            EngagementFailureBar(
-                failures = failures,
-                onRetry = viewModel::retryFailure,
-                onDismiss = viewModel::dismissFailure,
-            )
-            FeedList(
-                items = items,
-                overlays = overlays,
-                pollVotes = pollVotes,
-                onOpenPost = onOpenPost,
-                onOpenAuthor = onOpenAuthor,
-                onOpenComments = { commentsFor = it },
-                onReact = viewModel::onReact,
-                onBookmark = viewModel::onBookmark,
-                onRepost = viewModel::onRepost,
-                onVotePoll = viewModel::onVotePoll,
-                onExternalShared = viewModel::onExternalShared,
-                posterUrl = viewModel::posterUrl,
-                mediaPages = viewModel::mediaPages,
-            )
+            FeedTabsRow(selected = tab, onSelect = viewModel::selectTab)
+            when (tab) {
+                FeedTab.HASHTAG -> TrendingHashtagsList(
+                    state = trending,
+                    onOpenHashtag = onOpenHashtag,
+                    onRetry = viewModel::refreshTrending,
+                )
+
+                FeedTab.FOR_YOU, FeedTab.FOLLOWING -> FeedContent(
+                    viewModel = viewModel,
+                    onOpenPost = onOpenPost,
+                    onOpenAuthor = onOpenAuthor,
+                    empty = if (tab == FeedTab.FOLLOWING) FOLLOWING_EMPTY else FOR_YOU_EMPTY,
+                    listState = listStates.getValue(tab),
+                )
+            }
         }
+    }
+}
+
+/** What an empty timeline says. Each surface has its own honest reason. */
+internal data class FeedEmptyCopy(val title: String, val detail: String)
+
+private val FOR_YOU_EMPTY = FeedEmptyCopy(
+    title = "Nothing here yet",
+    detail = "Posts from people you follow will show up here.",
+)
+
+private val FOLLOWING_EMPTY = FeedEmptyCopy(
+    title = "Nothing from people you follow yet",
+    detail = "Follow a few accounts and their posts will show up here.",
+)
+
+/**
+ * A timeline body: the engagement failure bar, the paged card list, and the
+ * comments sheet over it — everything below a top bar that every feed
+ * surface shares. The ViewModel decides WHICH timeline; this only renders it.
+ */
+@Composable
+internal fun FeedContent(
+    viewModel: FeedViewModel,
+    onOpenPost: (postId: String) -> Unit,
+    onOpenAuthor: (userId: String) -> Unit,
+    empty: FeedEmptyCopy,
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
+) {
+    val items = viewModel.items.collectAsLazyPagingItems()
+    val overlays by viewModel.overlays.collectAsStateWithLifecycle()
+    val pollVotes by viewModel.pollVotes.collectAsStateWithLifecycle()
+    val failures by viewModel.failures.collectAsStateWithLifecycle()
+    var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Two effects, deliberately. A refresh replaces the whole list with values
+    // just fetched, so all of them are server authority. An append leaves the
+    // earlier pages in the snapshot exactly as they were loaded — including a
+    // `has_reacted=false` captured before the viewer liked the row — so those
+    // rows must NOT be reprocessed. Reconciling the whole snapshot on append
+    // is what made a confirmed like revert on scroll.
+    LaunchedEffect(items.loadState.refresh) {
+        if (items.loadState.refresh is LoadState.NotLoading && items.itemCount > 0) {
+            viewModel.onRefreshHydrated(items.itemSnapshotList.items)
+        }
+    }
+    LaunchedEffect(items.loadState.append, items.itemCount) {
+        if (items.loadState.append is LoadState.NotLoading && items.itemCount > 0) {
+            viewModel.onAppendHydrated(items.itemSnapshotList.items)
+        }
+    }
+
+    Column(modifier = modifier) {
+        EngagementFailureBar(
+            failures = failures,
+            onRetry = viewModel::retryFailure,
+            onDismiss = viewModel::dismissFailure,
+        )
+        FeedList(
+            items = items,
+            overlays = overlays,
+            pollVotes = pollVotes,
+            onOpenPost = onOpenPost,
+            onOpenAuthor = onOpenAuthor,
+            onOpenComments = { commentsFor = it },
+            onReact = viewModel::onReact,
+            onBookmark = viewModel::onBookmark,
+            onRepost = viewModel::onRepost,
+            onVotePoll = viewModel::onVotePoll,
+            onExternalShared = viewModel::onExternalShared,
+            posterUrl = viewModel::posterUrl,
+            mediaPages = viewModel::mediaPages,
+            listState = listState,
+            empty = empty,
+        )
     }
 
     // Comments open over the feed rather than navigating away, so the reader
@@ -176,6 +245,8 @@ private fun FeedList(
     onExternalShared: (String) -> Unit,
     posterUrl: (FeedItem) -> String?,
     mediaPages: (FeedItem) -> List<PostCardMediaPage>,
+    listState: LazyListState,
+    empty: FeedEmptyCopy,
     modifier: Modifier = Modifier,
 ) {
     val refresh = items.loadState.refresh
@@ -197,8 +268,8 @@ private fun FeedList(
         )
 
         refresh is LoadState.NotLoading && items.itemCount == 0 -> UsEmptyState(
-            title = "Nothing here yet",
-            detail = "Posts from people you follow will show up here.",
+            title = empty.title,
+            detail = empty.detail,
             modifier = modifier,
         )
 
@@ -210,7 +281,7 @@ private fun FeedList(
         // mixed feed unreadable. ImmersivePostPage remains available in
         // :core:ui for the surfaces that genuinely want it.
         else -> LazyColumn(
-            state = rememberLazyListState(),
+            state = listState,
             modifier = modifier.fillMaxSize(),
             // contentPadding, not Modifier.padding: padding the list shrinks
             // the scroll viewport so cards are clipped at a hard inset edge
@@ -305,17 +376,6 @@ private fun AppendState(state: LoadState, onRetry: () -> Unit) {
 }
 
 /**
- * Paging carries errors as `Throwable`, so the typed [AppError] the network
- * layer produced is re-read here rather than reduced to a generic message.
- */
-private fun Throwable.feedMessage(): String = when ((this as? AppErrorException)?.error) {
-    is AppError.NoNetwork -> "You're offline. Check your connection and try again."
-    is AppError.Timeout -> "That took too long. Try again."
-    is AppError.AuthFailed -> "Please sign in again to see your feed."
-    else -> "We couldn't load the feed."
-}
-
-/**
  * Layers this session's local taps over the server's reported state.
  *
  * Membership in the set means "the user changed this since the page loaded",
@@ -383,8 +443,8 @@ private fun FeedItem.toCardState(
 private fun FeedEmptyPreview() {
     UsTheme {
         UsEmptyState(
-            title = "Nothing here yet",
-            detail = "Posts from people you follow will show up here.",
+            title = FOR_YOU_EMPTY.title,
+            detail = FOR_YOU_EMPTY.detail,
         )
     }
 }

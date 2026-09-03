@@ -85,10 +85,12 @@ class FeedHydrationTest {
             isDebug = true,
         )
         return FeedViewModel(
-            repository = FeedRepository(UnusedFeedApi(), ErrorMapper(json)),
+            mode = FeedMode.Home,
+            repository = FeedRepository(UnusedFeedApi(), ErrorMapper(json)) { it },
             urlResolver = MediaUrlResolver(config),
             engagement = store,
             shares = EngagementRepository(UnusedEngagementApi(), ErrorMapper(json)),
+            tabState = FeedTabState(),
         )
     }
 
@@ -193,8 +195,18 @@ class FeedHydrationTest {
  * claims to.
  */
 private class UnusedFeedApi : com.us.android.feature.feed.data.FeedApi {
-    override suspend fun getFeed(surface: String, limit: Int, cursor: String?): Nothing =
-        error("feed loading is not under test")
+    override suspend fun getFeed(
+        surface: String,
+        limit: Int,
+        cursor: String?,
+        followingOnly: Boolean?,
+        circleOnly: Boolean?,
+    ): Nothing = error("feed loading is not under test")
+
+    override suspend fun getTrendingHashtags(limit: Int): Nothing = error("trending is not under test")
+
+    override suspend fun getPostsByHashtag(tag: String, limit: Int, cursor: String?, sort: String): Nothing =
+        error("hashtag pages are not under test")
 
     override suspend fun getDelta(feedType: String, anchor: String, limit: Int): Nothing =
         error("feed delta is not under test")
