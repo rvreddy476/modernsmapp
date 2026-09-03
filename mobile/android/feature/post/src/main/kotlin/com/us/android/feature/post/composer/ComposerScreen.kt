@@ -104,9 +104,14 @@ fun ComposerScreen(
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
     viewModel: ComposerViewModel = hiltViewModel(),
+    mode: ComposerMode = ComposerMode.Post,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val focusRequester = remember { FocusRequester() }
+
+    // The shape is decided on the Create sheet and fixed here; the ViewModel
+    // learns it once so the request builder knows whether to send a title.
+    LaunchedEffect(mode) { viewModel.onModeChanged(mode) }
 
     // Navigation happens on the SERVER's id, once, after the create returned.
     LaunchedEffect(state.phase) {
@@ -143,6 +148,7 @@ fun ComposerScreen(
         topBar = {
             ComposerTopBar(
                 state = state,
+                title = mode.title,
                 onClose = { viewModel.onDiscardRequested() },
                 onPost = viewModel::onPostPressed,
             )
@@ -162,10 +168,21 @@ fun ComposerScreen(
                     onVisibilityChanged = viewModel::onVisibilityChanged,
                 )
 
+                if (mode == ComposerMode.Article) {
+                    TitleField(
+                        title = state.title,
+                        onTitleChanged = viewModel::onTitleChanged,
+                        focusRequester = focusRequester,
+                    )
+                }
+
                 PostCanvas(
                     text = state.text,
                     onTextChanged = viewModel::onTextChanged,
-                    focusRequester = focusRequester,
+                    // The article's body takes focus second: the title is the
+                    // first thing an article needs, so the cursor starts there.
+                    focusRequester = if (mode == ComposerMode.Article) null else focusRequester,
+                    longForm = mode == ComposerMode.Article,
                 )
 
                 if (state.hasImage) {
@@ -217,6 +234,7 @@ fun ComposerScreen(
 @Composable
 private fun ComposerTopBar(
     state: ComposerUiState,
+    title: String,
     onClose: () -> Unit,
     onPost: () -> Unit,
 ) {
@@ -246,16 +264,58 @@ private fun ComposerTopBar(
 
         Spacer(Modifier.width(UsTheme.spacing.s))
 
+        // The type name, per the Create sheet's tile — Outfit Bold 17.
         Text(
-            text = "New post",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
+            text = title,
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = TOP_BAR_TITLE_SIZE),
             color = UsTheme.extended.textPrimary,
         )
 
         Spacer(Modifier.weight(1f))
 
         PostAction(state = state, onPost = onPost)
+    }
+}
+
+/**
+ * The article's headline: a large, borderless single line above the body —
+ * the same canvas idea as [PostCanvas], one size up. Required; the reducer
+ * blocks Post without it.
+ */
+@Composable
+private fun TitleField(
+    title: String,
+    onTitleChanged: (String) -> Unit,
+    focusRequester: FocusRequester,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = UsTheme.spacing.m),
+    ) {
+        if (title.isEmpty()) {
+            Text(
+                text = "Title",
+                style = MaterialTheme.typography.titleLarge,
+                fontSize = TITLE_TEXT_SIZE,
+                color = UsTheme.extended.textDim,
+            )
+        }
+        BasicTextField(
+            value = title,
+            onValueChange = { onTitleChanged(it.replace('\n', ' ')) },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.titleLarge.copy(
+                fontSize = TITLE_TEXT_SIZE,
+                color = UsTheme.extended.textPrimary,
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester)
+                .testTag("composer-title")
+                .semantics { contentDescription = "Article title" },
+        )
     }
 }
 
@@ -392,12 +452,13 @@ private fun audienceDot(value: String) = when (value) {
 private fun PostCanvas(
     text: String,
     onTextChanged: (String) -> Unit,
-    focusRequester: FocusRequester,
+    focusRequester: FocusRequester?,
+    longForm: Boolean = false,
 ) {
     Box(modifier = Modifier.fillMaxWidth()) {
         if (text.isEmpty()) {
             Text(
-                text = "What's happening?",
+                text = if (longForm) "Write your article…" else "What's happening?",
                 style = MaterialTheme.typography.bodyLarge,
                 fontSize = CANVAS_TEXT_SIZE,
                 color = UsTheme.extended.textDim,
@@ -406,6 +467,9 @@ private fun PostCanvas(
         BasicTextField(
             value = text,
             onValueChange = onTextChanged,
+            // An article opens twelve lines tall so it reads as a page to
+            // write on, not a caption box that happens to grow.
+            minLines = if (longForm) ARTICLE_MIN_LINES else 1,
             textStyle = MaterialTheme.typography.bodyLarge.copy(
                 fontSize = CANVAS_TEXT_SIZE,
                 lineHeight = CANVAS_LINE_HEIGHT,
@@ -415,7 +479,7 @@ private fun PostCanvas(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = CANVAS_MIN_HEIGHT)
-                .focusRequester(focusRequester)
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .semantics { contentDescription = "Post text" },
         )
     }
@@ -758,6 +822,7 @@ private fun PostAction(state: ComposerUiState, onPost: () -> Unit) {
 
                 PostBlockedReason.MediaNotReady -> "Post. Unavailable: the photo is still uploading."
                 PostBlockedReason.Busy -> "Post. In progress."
+                PostBlockedReason.MissingTitle -> "Post. Unavailable: add a title first."
                 null -> "Post"
             }
         },
@@ -873,6 +938,11 @@ private val LANGUAGE_FIELD = 110.dp
 private val CANVAS_MIN_HEIGHT = 120.dp
 private val CANVAS_TEXT_SIZE = 19.sp
 private val CANVAS_LINE_HEIGHT = 27.sp
+private val TITLE_TEXT_SIZE = 26.sp
+private val TOP_BAR_TITLE_SIZE = 17.sp
+
+/** The article body's opening height, in lines of [CANVAS_LINE_HEIGHT]. */
+private const val ARTICLE_MIN_LINES = 12
 private const val IMAGE_ASPECT = 4f / 5f
 
 /**

@@ -25,6 +25,8 @@ dependencies {
     // SavedStateHandle does not. See ComposerDraftStore.
     implementation(projects.core.database)
     implementation(projects.core.engagement)
+    // The Create sheet remembers its "Compact view" choice.
+    implementation(projects.core.datastore)
 
     // The composer previews the picked photo as a card. The ImageLoader itself
     // is configured in :app on the authenticated client; this module renders only.

@@ -274,29 +274,80 @@ object UsIcons {
         circle(12f, 13f, 3f)
     }
 
-    /** Three rising bars — a poll's results, which is what a poll becomes. */
-    val Poll: ImageVector = stroked("Poll") {
-        moveTo(5f, 21f)
-        verticalLineTo(15f)
-        moveTo(12f, 21f)
-        verticalLineTo(3f)
-        moveTo(19f, 21f)
-        verticalLineTo(9f)
-    }
+    /** Lucide `chart-column` — a poll's results, which is what a poll becomes. */
+    val Poll: ImageVector = lucideStroked(
+        "Poll",
+        "M3 3v16a2 2 0 0 0 2 2h16",
+        "M18 17V9",
+        "M13 17V5",
+        "M8 17v-3",
+    )
 
-    /** A serifed capital T — typography, the mark for a text post. */
-    val Type: ImageVector = stroked("Type") {
-        moveTo(12f, 4f)
-        verticalLineTo(20f)
-        moveTo(4f, 7f)
-        verticalLineTo(5f)
-        curveTo(4f, 4.45f, 4.45f, 4f, 5f, 4f)
-        horizontalLineTo(19f)
-        curveTo(19.55f, 4f, 20f, 4.45f, 20f, 5f)
-        verticalLineTo(7f)
-        moveTo(9f, 20f)
-        horizontalLineTo(15f)
-    }
+    /** Lucide `type` — the mark for a text post. */
+    val Type: ImageVector = lucideStroked(
+        "Type",
+        "M12 4v16",
+        "M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2",
+        "M9 20h6",
+    )
+
+    /** Lucide `image` — a photo post, on the Create sheet. */
+    val Image: ImageVector = lucideStroked(
+        "Image",
+        "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+        "M9,9 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0",
+        "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21",
+    )
+
+    /** Lucide `film` — a reel, on the Create sheet. */
+    val Film: ImageVector = lucideStroked(
+        "Film",
+        "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+        "M7 3v18",
+        "M3 7.5h4",
+        "M3 12h18",
+        "M3 16.5h4",
+        "M17 3v18",
+        "M17 7.5h4",
+        "M17 16.5h4",
+    )
+
+    /** Lucide `mic` — a voice note, on the Create sheet and the record button. */
+    val Mic: ImageVector = lucideStroked(
+        "Mic",
+        "M12 19v3",
+        "M19 10v2a7 7 0 0 1-14 0v-2",
+        "M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z",
+    )
+
+    /** Lucide `file-text` — a long-form article, on the Create sheet. */
+    val FileText: ImageVector = lucideStroked(
+        "FileText",
+        "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 " +
+            "20 8v12a2 2 0 0 1-2 2z",
+        "M14 2v5a1 1 0 0 0 1 1h5",
+        "M10 9H8",
+        "M16 13H8",
+        "M16 17H8",
+    )
+
+    /** Lucide `radio` — Go Live, on the Create sheet. */
+    val Radio: ImageVector = lucideStroked(
+        "Radio",
+        "M16.247 7.761a6 6 0 0 1 0 8.478",
+        "M19.075 4.933a10 10 0 0 1 0 14.134",
+        "M4.925 19.067a10 10 0 0 1 0-14.134",
+        "M7.753 16.239a6 6 0 0 1 0-8.478",
+        "M12,12 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0",
+    )
+
+    /** Lucide `square-pen` — an edit affordance. */
+    val SquarePen: ImageVector = lucideStroked(
+        "SquarePen",
+        "M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7",
+        "M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62" +
+            "l.84-2.873a2 2 0 0 1 .506-.852z",
+    )
 
     /** Lucide `search`. The Explore tab is the app's discover-and-search surface. */
     val Explore: ImageVector = lucideStroked(

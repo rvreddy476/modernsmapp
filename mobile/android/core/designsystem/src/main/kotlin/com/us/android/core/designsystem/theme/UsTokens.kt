@@ -72,6 +72,31 @@ data class UsExtendedColors(
     val accentDeep: Color,
     /** The raised inline-panel surface (`#071D33` dark, `#EEF3F9` light). */
     val bgRaised: Color,
+    /** The Create sheet's per-type circle gradients. See [UsCreateColors]. */
+    val create: UsCreateColors,
+)
+
+/**
+ * The Create sheet's tile circles — one gradient per thing you can make.
+ *
+ * Named tokens rather than colours inside `:feature:post`, because feature
+ * modules never carry raw hex: the design owns these pairs (founder render,
+ * 2026-09-04) and a screen only asks for "the audio gradient". [text] and
+ * [live] are the ember accent itself — Text is the default create and ember
+ * is the live colour — so both are the same brush as
+ * [UsExtendedColors.ctaGradient]. The other five are vertical light → deep
+ * pairs that read well on the navy ground. Shared across themes: the identity
+ * does not invert.
+ */
+@Immutable
+data class UsCreateColors(
+    val text: Brush,
+    val photo: Brush,
+    val reel: Brush,
+    val audio: Brush,
+    val poll: Brush,
+    val article: Brush,
+    val live: Brush,
 )
 
 /** Corner radii, ported from app_spacing.dart. */
@@ -121,6 +146,20 @@ internal val LocalUsRadii = staticCompositionLocalOf { UsRadii() }
 
 internal val LocalUsSpacing = staticCompositionLocalOf { UsSpacing() }
 
+/**
+ * Momentum's brand identity: the centre create button, primary pills, avatar
+ * rings, the unread dot and the Text/Go Live create circles all pull from
+ * this one gradient. Declared BEFORE the palettes that read it — top-level
+ * properties initialise in file order.
+ */
+private val EmberGradient: Brush = Brush.horizontalGradient(
+    listOf(UsColorTokens.AccentOrange, UsColorTokens.AccentRed),
+)
+
+/** A create-tile circle: light at the top, deep at the bottom. */
+private fun createGradient(light: Color, deep: Color): Brush =
+    Brush.verticalGradient(listOf(light, deep))
+
 internal val DarkExtendedColors = UsExtendedColors(
     textPrimary = UsColorTokens.TextPrimary,
     textSecondary = UsColorTokens.TextSecondary,
@@ -163,15 +202,20 @@ internal val DarkExtendedColors = UsExtendedColors(
             UsColorTokens.PostbookPrimary,
         ),
     ),
-    // Momentum's brand identity: the centre create button, primary pills,
-    // avatar rings and the unread dot all pull from this one gradient.
-    ctaGradient = Brush.horizontalGradient(
-        listOf(UsColorTokens.AccentOrange, UsColorTokens.AccentRed),
-    ),
+    ctaGradient = EmberGradient,
     unreadRow = UsColorTokens.UnreadRow,
     accentSolid = UsColorTokens.AccentOrange,
     accentDeep = UsColorTokens.AccentRed,
     bgRaised = UsColorTokens.BgTertiary,
+    create = UsCreateColors(
+        text = EmberGradient,
+        photo = createGradient(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
+        reel = createGradient(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
+        audio = createGradient(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
+        poll = createGradient(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
+        article = createGradient(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
+        live = EmberGradient,
+    ),
 )
 
 /**

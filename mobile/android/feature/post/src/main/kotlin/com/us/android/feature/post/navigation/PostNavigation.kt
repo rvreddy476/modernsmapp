@@ -9,6 +9,7 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
 import com.us.android.feature.post.composer.ComposerScreen
+import com.us.android.feature.post.createhub.CreateSurface
 import com.us.android.feature.post.ui.CommentsScreen
 import com.us.android.feature.post.ui.PostScreen
 import kotlinx.serialization.Serializable
@@ -135,30 +136,40 @@ fun NavController.navigateToStudio(initialUris: List<String> = emptyList()) =
     navigate(StudioRoute(initialUris))
 
 /**
- * The Create hub — ONE entry for making anything.
+ * A create composer, opened directly on one surface.
  *
- * The feed's "+" lands here. A footer rail switches the surface (Text, Image,
- * Reel, Poll); nothing else on the screen selects a format, which is the whole
- * point: no extra plus buttons, no dropdowns.
+ * The bar's "+" opens the Create SHEET over the current screen; picking a tile
+ * pushes this route with that tile's [CreateSurface.routeKey], and the hub
+ * opens on exactly that composer with nothing to switch to afterwards. There
+ * is no rail any more: choosing what to make happens on the sheet, once.
+ *
+ * A string rather than the enum so the argument is a plain, stable token in
+ * the saved back stack; [CreateSurface.fromRouteKey] maps it back and falls
+ * to Text for anything it does not recognise.
  */
 @Serializable
-data object CreateRoute
+data class CreateRoute(val surface: String = CreateSurface.Text.routeKey) {
+    companion object {
+        /** The route for a sheet tile — the ONLY way a tile becomes a destination. */
+        fun of(surface: CreateSurface): CreateRoute = CreateRoute(surface.routeKey)
+    }
+}
 
 fun NavGraphBuilder.createHubScreen(
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
     onOpenStudio: (uris: List<String>) -> Unit,
-    onOpenLive: () -> Unit = {},
 ) {
-    composable<CreateRoute> {
+    composable<CreateRoute> { entry ->
+        val route = entry.toRoute<CreateRoute>()
         com.us.android.feature.post.createhub.CreateHubScreen(
+            surface = CreateSurface.fromRouteKey(route.surface),
             onClose = onClose,
             onPublished = onPublished,
             onOpenStudio = onOpenStudio,
-            onOpenLive = onOpenLive,
         )
     }
 }
 
-/** Type-safe navigation to the Create hub. */
-fun NavController.navigateToCreate() = navigate(CreateRoute)
+/** Type-safe navigation to one create surface. */
+fun NavController.navigateToCreate(surface: CreateSurface) = navigate(CreateRoute.of(surface))

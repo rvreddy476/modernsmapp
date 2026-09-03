@@ -68,6 +68,22 @@ internal object UsColorTokens {
     val StatusWarning = Color(0xFFFFAB00)
     val StatusSuccess = Color(0xFF2ED573)
 
+    // ── Create sheet (founder render, 2026-09-04) ───────────────────────
+    // Each create type's own two-stop gradient, light → deep, so the tile
+    // circles sit well on the navy ground. Text keeps the ember accent
+    // (AccentOrange → AccentRed) and so does Go Live — ember IS the live
+    // colour. The five below are the only per-type colours in the app.
+    val CreatePhotoLight = Color(0xFF34D399)
+    val CreatePhotoDeep = Color(0xFF059669)
+    val CreateReelLight = Color(0xFFFB7185)
+    val CreateReelDeep = Color(0xFFE11D48)
+    val CreateAudioLight = Color(0xFFC084FC)
+    val CreateAudioDeep = Color(0xFF7C3AED)
+    val CreatePollLight = Color(0xFFFCD34D)
+    val CreatePollDeep = Color(0xFFD97706)
+    val CreateArticleLight = Color(0xFF22D3EE)
+    val CreateArticleDeep = Color(0xFF0891B2)
+
     // ── Glass ──────────────────────────────────────────────────────────
     val GlassBg = Color(0x1AFFFFFF)
     val GlassBorder = Color(0x14FFFFFF)

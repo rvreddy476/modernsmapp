@@ -68,6 +68,9 @@ enum class PostBlockedReason {
 
     /** A publish is already in flight. Single-flight guard. */
     Busy,
+
+    /** An article with no title. Only reachable in long-form mode. */
+    MissingTitle,
 }
 
 /**
@@ -101,6 +104,15 @@ data class FrozenPublish(
  */
 data class ComposerUiState(
     val text: String = "",
+    /**
+     * The article title. Only meaningful — and only sent — when [longForm];
+     * a short post ignores it entirely. Not part of the durable draft: the
+     * draft row has no column for it, and adding one is a Room migration
+     * that this change deliberately does not make.
+     */
+    val title: String = "",
+    /** True for the Article surface: a title is required and goes on the wire. */
+    val longForm: Boolean = false,
     /** Content URI of the picked image, as a string so it survives persistence. */
     val imageUri: String? = null,
     val altText: String = "",
@@ -156,7 +168,12 @@ data class ComposerUiState(
         }
 
     /** True when there is content worth confirming a discard for. */
-    val hasContent: Boolean get() = text.isNotBlank() || hasImage
+    val hasContent: Boolean get() = text.isNotBlank() || hasImage || (longForm && title.isNotBlank())
+
+    /** An article without a title is not an article. */
+    val titleMissing: Boolean get() = longForm && title.isBlank()
+
+    val titleTooLong: Boolean get() = title.length > MAX_TITLE_LENGTH
 
     /**
      * Why Post cannot be pressed, or null when it can.
@@ -169,7 +186,8 @@ data class ComposerUiState(
         get() = when {
             isBusy -> PostBlockedReason.Busy
             text.isBlank() && !hasImage -> PostBlockedReason.Empty
-            textTooLong -> PostBlockedReason.TextTooLong
+            titleMissing -> PostBlockedReason.MissingTitle
+            textTooLong || titleTooLong -> PostBlockedReason.TextTooLong
             !altDecisionMade -> PostBlockedReason.MissingAltDecision
             hasImage && mediaId == null -> PostBlockedReason.MediaNotReady
             else -> null
@@ -187,6 +205,14 @@ data class ComposerUiState(
  * makes the two agree on the boundary instead of disagreeing by script.
  */
 const val MAX_TEXT_CODE_POINTS = 5000
+
+/**
+ * A ceiling for the article title. Post-service binds `title` with no
+ * length rule of its own, so this is a product cap — a headline, not a
+ * paragraph — and it is counted in UTF-16 units because that is what the
+ * field's own length is.
+ */
+const val MAX_TITLE_LENGTH = 200
 
 /** Largest image the media service accepts. */
 const val MAX_IMAGE_BYTES = 20L * 1024L * 1024L

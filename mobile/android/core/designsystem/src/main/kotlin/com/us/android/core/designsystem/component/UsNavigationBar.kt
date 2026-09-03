@@ -4,6 +4,7 @@
 
 package com.us.android.core.designsystem.component
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,9 +22,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -76,6 +79,11 @@ fun UsNavigationBar(
     modifier: Modifier = Modifier,
     /** The raised centre "+" action, or null for a bar of plain tabs only. */
     centerAction: (() -> Unit)? = null,
+    /**
+     * True while the Create sheet is open: the "+" turns 45° into a "×", so
+     * the same tile reads as the way to close what it opened.
+     */
+    centerActive: Boolean = false,
 ) {
     val border = UsTheme.extended.borderMedium
     Column(
@@ -108,7 +116,7 @@ fun UsNavigationBar(
             val split = items.size / 2
             items.forEachIndexed { index, item ->
                 if (centerAction != null && index == split) {
-                    CenterSlot(onClick = centerAction)
+                    CenterSlot(onClick = centerAction, active = centerActive)
                 }
                 FlatTab(
                     item = item,
@@ -117,7 +125,7 @@ fun UsNavigationBar(
                 )
             }
             if (centerAction != null && items.size <= split) {
-                CenterSlot(onClick = centerAction)
+                CenterSlot(onClick = centerAction, active = centerActive)
             }
         }
     }
@@ -125,12 +133,12 @@ fun UsNavigationBar(
 
 /** The create button in a tab-width slot so the row spaces it like a tab. */
 @Composable
-private fun CenterSlot(onClick: () -> Unit) {
+private fun CenterSlot(onClick: () -> Unit, active: Boolean) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier.width(TAB_WIDTH).padding(vertical = BAR_VERTICAL),
     ) {
-        CenterCreateButton(onClick = onClick)
+        CenterCreateButton(onClick = onClick, active = active)
     }
 }
 
@@ -173,13 +181,24 @@ private fun FlatTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
  * above the flat bar rather than sitting in its row.
  */
 @Composable
-private fun CenterCreateButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun CenterCreateButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+) {
     val shape = RoundedCornerShape(CENTER_BUTTON_RADIUS)
     val shadow = UsTheme.extended.accentDeep
+    // The whole tile turns, not just the glyph, so the square's corners say
+    // "this is the same button" while the plus becomes a cross.
+    val rotation by animateFloatAsState(
+        targetValue = if (active) CENTER_ACTIVE_ROTATION else 0f,
+        label = "createRotation",
+    )
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .size(CENTER_BUTTON)
+            .rotate(rotation)
             .shadow(
                 elevation = CENTER_SHADOW,
                 shape = shape,
@@ -191,7 +210,7 @@ private fun CenterCreateButton(onClick: () -> Unit, modifier: Modifier = Modifie
             .background(Color.White, shape)
             .clickable(onClick = onClick)
             .semantics {
-                contentDescription = "Create"
+                contentDescription = if (active) "Close create" else "Create"
                 role = Role.Button
             },
     ) {
@@ -203,6 +222,9 @@ private fun CenterCreateButton(onClick: () -> Unit, modifier: Modifier = Modifie
         )
     }
 }
+
+/** A quarter-turn less a bit: "+" read as "×". */
+private const val CENTER_ACTIVE_ROTATION = 45f
 
 /** Momentum ground navy; the plus reads as a cut-out in the white tile. */
 private val CREATE_GLYPH_NAVY = Color(0xFF041122)

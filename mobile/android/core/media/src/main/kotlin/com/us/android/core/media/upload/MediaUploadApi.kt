@@ -162,6 +162,53 @@ data class MediaStatusDto(
 
 const val FILE_TYPE_IMAGE = "image"
 const val FILE_TYPE_VIDEO = "video"
+
+/**
+ * Voice posts — media-service Module 1 P0-6.
+ *
+ * The SERVICE layer accepts this: `ValidateUploadMIME` has an `audio` branch
+ * over `allowedAudioMIME` (`internal/service/validation.go:52-84`) and
+ * `ValidateUpload` bounds it at `MaxVoiceSizeBytes` (`media.go:226`), and a
+ * confirmed audio asset surfaces to post-service as kind `audio`, which is
+ * what classifies a post as `voice`. The HTTP binding in front of it has not
+ * caught up: `InitUploadRequest.FileType` is still `oneof=image video`
+ * (`internal/http/handler.go:129`), so until that string gains `audio` the
+ * gateway answers every audio init with 400 BAD_REQUEST. The client sends the
+ * value the service layer defines; the voice composer reports that refusal
+ * word for word rather than pretending an upload happened.
+ */
+const val FILE_TYPE_AUDIO = "audio"
+
+/**
+ * The audio MIME types media-service will accept for a voice upload —
+ * transcribed from `allowedAudioMIME`, `internal/service/validation.go:52-64`.
+ * Checked client-side before any bytes move, the same way the composer checks
+ * images: it saves the user an upload that cannot succeed; enforcement stays
+ * on the server.
+ */
+val AudioUploadMimeTypes: Set<String> = setOf(
+    "audio/mp4",
+    "audio/m4a",
+    "audio/aac",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/opus",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/webm",
+    "audio/flac",
+    "audio/amr",
+)
+
+/** True when [mimeType] (ignoring parameters and case) is an accepted voice upload type. */
+fun isSupportedAudioUpload(mimeType: String): Boolean =
+    mimeType.substringBefore(';').trim().lowercase() in AudioUploadMimeTypes
+
+/** `MaxVoiceSizeBytes`, `internal/service/validation.go:23` — 25 MB. */
+const val MAX_VOICE_UPLOAD_BYTES: Long = 25L * 1024L * 1024L
+
+/** `MaxVoiceDurationSec`, `internal/service/validation.go:19` — three minutes. */
+const val MAX_VOICE_DURATION_SECONDS: Int = 180
 const val SUBTYPE_GENERAL = "general"
 const val SUBTYPE_AVATAR = "avatar"
 const val SUBTYPE_COVER = "cover"

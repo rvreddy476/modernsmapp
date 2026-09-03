@@ -9,7 +9,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
@@ -65,6 +68,7 @@ import com.us.android.feature.live.navigation.navigateToLiveHub
 import com.us.android.feature.live.navigation.navigateToLiveWatch
 import com.us.android.feature.notifications.navigation.navigateToNotifications
 import com.us.android.feature.notifications.navigation.notificationsScreen
+import com.us.android.feature.post.createhub.CreateSheet
 import com.us.android.feature.post.navigation.ComposerRoute
 import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
@@ -217,6 +221,10 @@ fun UsNavHost(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentTab = TopLevelDestination.forDestination(backStackEntry?.destination)
 
+    // The Create sheet opens OVER the current tab; nothing is pushed until a
+    // tile is picked. Saveable so a rotation mid-choice keeps it open.
+    var createSheetOpen by rememberSaveable { mutableStateOf(false) }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -233,8 +241,10 @@ fun UsNavHost(
                     selectedIndex = tabs.indexOf(currentTab),
                     onSelect = { index -> navController.navigateToTopLevel(tabs[index]) },
                     // Momentum's raised centre button is always Create, not a
-                    // tab — the feed's own "+" action lands in the same hub.
-                    centerAction = { navController.navigateToCreate() },
+                    // tab. It opens the Create SHEET over the current screen;
+                    // while the sheet is up the "+" reads as "×" and closes it.
+                    centerAction = { createSheetOpen = !createSheetOpen },
+                    centerActive = createSheetOpen,
                 )
             }
         },
@@ -250,6 +260,17 @@ fun UsNavHost(
             shellDestinations()
             tabDestinations(navController, pool)
         }
+    }
+
+    // The Create sheet: six typed tiles and Go Live. A tile pushes the hub
+    // opened on that surface; Go Live opens the live hub, which is where the
+    // old create rail's LIVE slot went too.
+    if (createSheetOpen) {
+        CreateSheet(
+            onPick = { surface -> navController.navigateToCreate(surface) },
+            onOpenLive = { navController.navigateToLiveHub() },
+            onDismiss = { createSheetOpen = false },
+        )
     }
 
     // Screen-time nudge, over whatever is on screen. Gated on an authenticated
@@ -405,10 +426,10 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
 
-    // The Create hub — the bar's centre "+" lands here; the footer rail switches
-    // between Text, Image, Reel and Poll. On success the created post REPLACES
-    // the hub in the back stack: Back from the new post returns to the feed,
-    // not to a creator whose content is already published.
+    // The Create hub — one composer, opened on the surface the Create sheet
+    // chose (Text, Photo, Reel, Audio, Poll, Article). On success the created
+    // post REPLACES the hub in the back stack: Back from the new post returns
+    // to the feed, not to a creator whose content is already published.
     createHubScreen(
         onClose = { navController.popBackStack() },
         onPublished = { postId ->
@@ -417,7 +438,6 @@ private fun NavGraphBuilder.tabDestinations(
             }
         },
         onOpenStudio = { uris -> navController.navigateToStudio(uris) },
-        onOpenLive = { navController.navigateToLiveHub() },
     )
 
     // Live streaming: the hub (live now + go live), the broadcaster surface

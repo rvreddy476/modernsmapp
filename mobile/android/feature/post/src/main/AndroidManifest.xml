@@ -9,4 +9,9 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!-- The Audio create surface records a voice note with MediaRecorder.
+         Runtime-requested with a rationale on the first tap of Record, never
+         on open: the surface also offers picking an existing file, which
+         needs no microphone at all. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 </manifest>

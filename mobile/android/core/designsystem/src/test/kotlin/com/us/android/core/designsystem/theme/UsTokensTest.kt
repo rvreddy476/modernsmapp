@@ -45,6 +45,35 @@ class UsTokensTest {
         assertThat(LightExtendedColors.ctaGradient).isEqualTo(DarkExtendedColors.ctaGradient)
     }
 
+    /**
+     * The Create sheet's five per-type gradients (founder render, 2026-09-04):
+     * light → deep pairs, pinned so a "tidy" cannot drift them from the design.
+     */
+    @Test
+    fun `create tile colours are the founder's five gradient pairs`() {
+        assertThat(UsColorTokens.CreatePhotoLight.hex()).isEqualTo("ff34d399")
+        assertThat(UsColorTokens.CreatePhotoDeep.hex()).isEqualTo("ff059669")
+        assertThat(UsColorTokens.CreateReelLight.hex()).isEqualTo("fffb7185")
+        assertThat(UsColorTokens.CreateReelDeep.hex()).isEqualTo("ffe11d48")
+        assertThat(UsColorTokens.CreateAudioLight.hex()).isEqualTo("ffc084fc")
+        assertThat(UsColorTokens.CreateAudioDeep.hex()).isEqualTo("ff7c3aed")
+        assertThat(UsColorTokens.CreatePollLight.hex()).isEqualTo("fffcd34d")
+        assertThat(UsColorTokens.CreatePollDeep.hex()).isEqualTo("ffd97706")
+        assertThat(UsColorTokens.CreateArticleLight.hex()).isEqualTo("ff22d3ee")
+        assertThat(UsColorTokens.CreateArticleDeep.hex()).isEqualTo("ff0891b2")
+    }
+
+    /** Text and Go Live ARE the ember accent; the set is shared across themes. */
+    @Test
+    fun `text and live create circles are the ember accent and the set does not invert`() {
+        val create = DarkExtendedColors.create
+        assertThat(create.text).isEqualTo(DarkExtendedColors.ctaGradient)
+        assertThat(create.live).isEqualTo(DarkExtendedColors.ctaGradient)
+        assertThat(LightExtendedColors.create).isEqualTo(create)
+        val distinct = setOf(create.text, create.photo, create.reel, create.audio, create.poll, create.article)
+        assertThat(distinct).hasSize(6)
+    }
+
     /** Chat keeps its green on purpose — the brief carves it out of the accent. */
     @Test
     fun `chat accent stays green in both themes`() {

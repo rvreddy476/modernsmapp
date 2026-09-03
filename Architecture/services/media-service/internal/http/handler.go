@@ -126,7 +126,7 @@ func (h *Handler) HealthCheck(c *gin.Context) {
 }
 
 type InitUploadRequest struct {
-	FileType      string `json:"file_type" binding:"required,oneof=image video"`
+	FileType      string `json:"file_type" binding:"required,oneof=image video audio"`
 	MediaSubtype  string `json:"media_subtype"`
 	MimeType      string `json:"mime_type" binding:"required"`
 	FileSizeBytes int64  `json:"file_size_bytes" binding:"required,min=1"`

@@ -75,7 +75,11 @@ class ComposerViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             drafts.load()?.let { restored ->
-                _state.value = restored
+                // The draft row carries neither the mode nor the title; the
+                // screen may already have set both, and a restore that lands
+                // afterwards must not undo them.
+                val current = _state.value
+                _state.value = restored.copy(longForm = current.longForm, title = current.title)
                 // Resume whatever the process death interrupted. Without this
                 // the user comes back to an image that will never become
                 // attachable, with Post disabled as MediaNotReady and no Retry
@@ -92,6 +96,21 @@ class ComposerViewModel @Inject constructor(
 
     fun onTextChanged(text: String) = update {
         ComposerEdits.onTextChanged(ComposerReducer.onEditAfterFailure(it), text)
+    }
+
+    fun onTitleChanged(title: String) = update {
+        ComposerEdits.onTitleChanged(ComposerReducer.onEditAfterFailure(it), title)
+    }
+
+    /**
+     * The surface's shape — Article or not — set by the screen on open.
+     *
+     * Deliberately NOT through [update]: that persists, and opening the
+     * composer must not write an empty draft row. The mode is not stored
+     * anyway — the route decides it every time.
+     */
+    fun onModeChanged(mode: ComposerMode) {
+        _state.value = ComposerEdits.onLongFormChanged(_state.value, mode == ComposerMode.Article)
     }
 
     fun onVisibilityChanged(visibility: String) = update {

@@ -135,6 +135,36 @@ class MediaUploadWireTest {
         assertThat(body).contains("\"upload_purpose\":\"composer\"")
     }
 
+    /**
+     * A voice upload reserves with `file_type: audio` — the value the
+     * media-service SERVICE layer defines (`validation.go:80`,
+     * `media.go:226`) — and the audio MIME type unchanged.
+     */
+    @Test
+    fun `an audio reservation puts file_type audio and the audio mime on the wire`() = runBlocking {
+        enqueueJson("""{"data":{"media_id":"m9","upload_url":"https://obj/put","object_key":"k"}}""")
+
+        MediaUploader(api, PresignedUploader(client), com.us.android.core.network.ErrorMapper(json))
+            .reserve(mimeType = "audio/mp4", sizeBytes = 48_000, fileType = FILE_TYPE_AUDIO)
+
+        val sent = json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+        assertThat(sent["file_type"]!!.jsonPrimitive.content).isEqualTo("audio")
+        assertThat(sent["mime_type"]!!.jsonPrimitive.content).isEqualTo("audio/mp4")
+        assertThat(sent["upload_purpose"]!!.jsonPrimitive.content).isEqualTo("composer")
+    }
+
+    /** The client allow-list is the server's, so a rejected type never costs an upload. */
+    @Test
+    fun `the audio allow-list mirrors media-service and ignores mime parameters`() {
+        assertThat(isSupportedAudioUpload("audio/mp4")).isTrue()
+        assertThat(isSupportedAudioUpload("audio/MP4; codecs=mp4a.40.2")).isTrue()
+        assertThat(isSupportedAudioUpload("audio/mpeg")).isTrue()
+        assertThat(isSupportedAudioUpload("audio/amr")).isTrue()
+        assertThat(isSupportedAudioUpload("audio/x-unknown")).isFalse()
+        assertThat(isSupportedAudioUpload("image/jpeg")).isFalse()
+        assertThat(isSupportedAudioUpload("video/mp4")).isFalse()
+    }
+
     // ── confirm and alt-text ────────────────────────────────────────────
 
     @Test

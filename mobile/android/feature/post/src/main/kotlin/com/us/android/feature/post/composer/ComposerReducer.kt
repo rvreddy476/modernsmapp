@@ -20,6 +20,18 @@ object ComposerEdits {
     fun onTextChanged(state: ComposerUiState, text: String): ComposerUiState =
         if (!isEditable(state)) state else state.copy(text = text)
 
+    /** The article title, same gate as the body. */
+    fun onTitleChanged(state: ComposerUiState, title: String): ComposerUiState =
+        if (!isEditable(state)) state else state.copy(title = title)
+
+    /**
+     * The surface's shape, set once when the screen opens. Not gated on
+     * editability: it arrives before any edit and must land even if a
+     * restored draft is mid-way through something.
+     */
+    fun onLongFormChanged(state: ComposerUiState, longForm: Boolean): ComposerUiState =
+        state.copy(longForm = longForm)
+
     fun onImagePicked(state: ComposerUiState, uri: String): ComposerUiState =
         if (!isEditable(state)) {
             state
@@ -218,7 +230,9 @@ object ComposerReducer {
      *
      * `post_type` mirrors what is actually attached, so an image post is never
      * announced as text. `content_type` stays the canonical `post` — Slice C
-     * adds no new semantics to either field.
+     * adds no new semantics to either field. An article is the same request
+     * plus `title`; a short post never carries one, so its bytes are exactly
+     * what they were before long-form existed.
      */
     fun buildRequest(state: ComposerUiState): CreatePostRequest = CreatePostRequest(
         text = state.text.trim(),
@@ -227,6 +241,7 @@ object ComposerReducer {
         mediaIds = listOfNotNull(state.mediaId),
         language = state.language,
         distribution = DistributionRequest(),
+        title = state.title.trim().takeIf { state.longForm && it.isNotEmpty() },
     )
 }
 

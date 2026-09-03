@@ -167,9 +167,20 @@ const val VISIBILITY_PRIVATE = "private"
 const val CONTENT_TYPE_POST = "post"
 const val CONTENT_TYPE_POLL = "poll"
 const val CONTENT_TYPE_FLICK = "flick"
+
+/**
+ * A voice post — `post-service/internal/service/post.go:562`
+ * (`validContentTypes` carries `"voice"`). One audio media id plus optional
+ * text; the server re-derives the type from the attached asset's kind and
+ * holds the post out of public surfaces until audio safety passes.
+ */
+const val CONTENT_TYPE_VOICE = "voice"
 const val POST_TYPE_TEXT = "text"
 const val POST_TYPE_IMAGE = "image"
 const val POST_TYPE_VIDEO = "video"
+
+/** The legacy shape hint for a voice post: what is attached is audio. */
+const val POST_TYPE_AUDIO = "audio"
 const val APP_ORIGIN_POSTBOOK = "postbook"
 const val DISTRIBUTION_VERSION = 1
 
