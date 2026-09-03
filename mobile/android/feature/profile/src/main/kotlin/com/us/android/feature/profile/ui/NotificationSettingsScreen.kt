@@ -19,9 +19,13 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.profile.data.NotificationCategory
 import com.us.android.core.profile.data.NotificationSettings
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.UsSettingsDualSwitchHeader
+import com.us.android.core.ui.UsSettingsDualSwitchRow
+import com.us.android.core.ui.UsSettingsLinkRow
 import com.us.android.core.ui.UsSettingsOption
 import com.us.android.core.ui.UsSettingsSection
 import com.us.android.core.ui.UsSettingsSelectRow
@@ -34,7 +38,7 @@ fun NotificationSettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     UsScaffold(
-        topBar = { UsTopBar("Notifications", onBack = onBack) },
+        topBar = { UsTopBar("Push notifications", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         when (val current = state) {
@@ -73,8 +77,8 @@ private fun NotificationForm(
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
     ) {
         DeliverySection(value, vm)
-        SocialSection(value, vm)
-        CommunitySection(value, vm)
+        InteractionsSection(value, state, vm)
+        MoreSection(value, state, vm)
         state.message?.let {
             Text(
                 it,
@@ -98,14 +102,21 @@ private fun NotificationForm(
 @Composable
 private fun DeliverySection(value: NotificationSettings, vm: NotificationSettingsViewModel) {
     UsSettingsSection("Delivery") {
-        Toggle("Push notifications", value.pushEnabled, NotificationToggle.PUSH, vm)
-        Toggle("Email notifications", value.emailEnabled, NotificationToggle.EMAIL, vm)
-        Toggle(
+        UsSettingsSwitchRow(
+            "Push notifications",
+            value.pushEnabled,
+            { vm.toggleGlobal(push = it) },
+        )
+        UsSettingsSwitchRow(
+            "Email notifications",
+            value.emailEnabled,
+            { vm.toggleGlobal(email = it) },
+        )
+        UsSettingsSwitchRow(
             "Quiet hours",
             value.quietHoursEnabled,
-            NotificationToggle.QUIET,
-            vm,
-            "Suppresses non-urgent delivery during the selected local window.",
+            { vm.toggleGlobal(quiet = it) },
+            description = "Suppresses non-urgent delivery during the selected local window.",
         )
         if (value.quietHoursEnabled) QuietHoursFields(value, vm)
         UsSettingsSelectRow(
@@ -146,51 +157,63 @@ private fun QuietHoursFields(
     )
 }
 
+/**
+ * The TikTok-style "Interactions" block: one row per primary category, each
+ * with its own In-app and Push switches side by side.
+ */
 @Composable
-private fun SocialSection(value: NotificationSettings, vm: NotificationSettingsViewModel) {
-    UsSettingsSection("Social") {
-        Toggle("Likes", value.pushLikes, NotificationToggle.LIKES, vm)
-        Toggle("Super likes", value.pushSuperLikes, NotificationToggle.SUPER_LIKES, vm)
-        Toggle("Comments", value.pushComments, NotificationToggle.COMMENTS, vm)
-        Toggle("Replies", value.pushReplies, NotificationToggle.REPLIES, vm)
-        Toggle("Mentions", value.pushMentions, NotificationToggle.MENTIONS, vm)
-        Toggle("New followers", value.pushFollows, NotificationToggle.FOLLOWS, vm)
-        Toggle("Connection requests", value.pushFriendRequests, NotificationToggle.FRIEND_REQUESTS, vm)
-    }
-}
-
-@Composable
-private fun CommunitySection(
+private fun InteractionsSection(
     value: NotificationSettings,
+    state: NotificationSettingsUiState.Editing,
     vm: NotificationSettingsViewModel,
 ) {
-    UsSettingsSection("Groups, channels and communities") {
-        Toggle("Group posts", value.pushGroupPosts, NotificationToggle.GROUP_POSTS, vm)
-        Toggle("Group mentions", value.pushGroupMentions, NotificationToggle.GROUP_MENTIONS, vm)
-        Toggle("Channel updates", value.pushChannelUpdates, NotificationToggle.CHANNEL_UPDATES, vm)
-        Toggle("Urgent channel updates", value.pushChannelUrgent, NotificationToggle.CHANNEL_URGENT, vm)
-        Toggle("Community posts", value.pushCommunityPosts, NotificationToggle.COMMUNITY_POSTS, vm)
-        Toggle("Community mentions", value.pushCommunityMentions, NotificationToggle.COMMUNITY_MENTIONS, vm)
-        Toggle("Event reminders", value.pushEventReminders, NotificationToggle.EVENTS, vm)
-        Toggle(
-            "Security and system",
-            value.pushSystem,
-            NotificationToggle.SYSTEM,
-            vm,
-            "We may still deliver essential security notices when ordinary push is off.",
+    UsSettingsSection("Interactions") {
+        UsSettingsDualSwitchHeader()
+        NotificationCategory.primaries.forEach { category ->
+            CategoryRow(category, value, state.saving, vm)
+        }
+    }
+}
+
+/** The remaining, lower-traffic categories, collapsed behind one link row. */
+@Composable
+private fun MoreSection(
+    value: NotificationSettings,
+    state: NotificationSettingsUiState.Editing,
+    vm: NotificationSettingsViewModel,
+) {
+    UsSettingsSection("More") {
+        UsSettingsLinkRow(
+            title = if (state.moreExpanded) "Hide more categories" else "Show more categories",
+            onClick = vm::toggleMore,
         )
+        if (state.moreExpanded) {
+            UsSettingsDualSwitchHeader()
+            NotificationCategory.secondaries.forEach { category ->
+                CategoryRow(category, value, state.saving, vm)
+            }
+        }
     }
 }
 
 @Composable
-private fun Toggle(
-    title: String,
-    checked: Boolean,
-    field: NotificationToggle,
+private fun CategoryRow(
+    category: NotificationCategory,
+    value: NotificationSettings,
+    saving: Boolean,
     vm: NotificationSettingsViewModel,
-    description: String? = null,
-) =
-    UsSettingsSwitchRow(title, checked, { vm.toggle(field, it) }, description = description)
+) {
+    val channels = value.channels(category)
+    UsSettingsDualSwitchRow(
+        title = category.label,
+        inApp = channels.inApp,
+        push = channels.push,
+        onInAppChange = { vm.setChannel(category, inApp = it) },
+        onPushChange = { vm.setChannel(category, push = it) },
+        enabled = !saving,
+        pushEnabled = !saving && value.pushEnabled,
+    )
+}
 
 private fun timeError(value: String): String? =
     if (NotificationSettingsUiState.Editing.TIME.matches(value)) null else "Use HH:mm"

@@ -80,6 +80,10 @@ object AuthErrorText {
         "STEP_UP_UNAVAILABLE" ->
             "This sign-in looks unusual and your account has no recovery option set up. " +
                 "Please contact support."
+        ErrorMapperCodes.ACCOUNT_PENDING_PURGE ->
+            "This account is being deleted. It can't be used until the deletion is cancelled."
+        ErrorMapperCodes.ACCOUNT_PURGED ->
+            "This account has been deleted. Create a new account to continue."
         else -> "You don't have access to that right now."
     }
 
@@ -92,4 +96,6 @@ object AuthErrorText {
 /** Codes referenced here but owned by `:core:network`'s ErrorMapper. */
 internal object ErrorMapperCodes {
     const val EMAIL_NOT_VERIFIED = "EMAIL_NOT_VERIFIED"
+    const val ACCOUNT_PENDING_PURGE = "ACCOUNT_PENDING_PURGE"
+    const val ACCOUNT_PURGED = "ACCOUNT_PURGED"
 }

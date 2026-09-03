@@ -26,7 +26,7 @@ sealed interface PrivacySettingsUiState {
     }
 }
 
-enum class PrivacyEnumField { MESSAGE, PHOTO, GROUP_ADD, ONLINE, LAST_SEEN, READ_RECEIPTS, CHAT_AVAILABILITY }
+enum class PrivacyEnumField { MESSAGE, PHOTO, GROUP_ADD, ONLINE, LAST_SEEN, READ_RECEIPTS, CHAT_AVAILABILITY, COMMENTS }
 enum class PrivacyToggleField { STRICT, TC_POSTS, TYPING, MESSAGE_PREVIEW }
 
 @HiltViewModel
@@ -56,7 +56,20 @@ class PrivacySettingsViewModel @Inject constructor(
             PrivacyEnumField.LAST_SEEN -> current.copy(whoCanSeeLastSeen = value)
             PrivacyEnumField.READ_RECEIPTS -> current.copy(whoCanSeeReadReceipts = value)
             PrivacyEnumField.CHAT_AVAILABILITY -> current.copy(chatAvailability = value)
+            PrivacyEnumField.COMMENTS -> current.copy(allowCommentsFrom = value)
         }
+    }
+
+    /**
+     * "Private account". Kept separate from [select] because the caller (the
+     * confirm dialog) only ever turns this ON with an explicit confirmation —
+     * turning it back OFF needs none — and folding a boolean into the generic
+     * string setter would hide that asymmetry.
+     */
+    fun setPrivateAccount(private: Boolean) = edit { current ->
+        current.copy(
+            accountVisibility = if (private) PrivacySettings.VISIBILITY_PRIVATE else PrivacySettings.VISIBILITY_PUBLIC,
+        )
     }
 
     fun toggle(field: PrivacyToggleField, enabled: Boolean) = edit { current ->

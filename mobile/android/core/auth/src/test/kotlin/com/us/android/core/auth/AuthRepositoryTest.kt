@@ -203,4 +203,78 @@ class AuthRepositoryTest {
         // One task failing must not skip the others.
         assertThat(secondTaskRan).isTrue()
     }
+
+    // ── Account control ─────────────────────────────────────────────────
+
+    @Test
+    fun `deactivation clears the local session once the server has revoked it`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        var teardownRan = false
+        repository = buildRepository(this, teardownTasks = setOf(SessionTeardownTask { teardownRan = true }))
+        enqueue(
+            200,
+            """{"data":{"account_status":"deactivated","reactivate_by_logging_in":true,""" +
+                """"sessions_revoked":true}}""",
+        )
+
+        val result = repository.deactivateAccount("hunter2")
+
+        assertThat(result).isInstanceOf(AppResult.Success::class.java)
+        assertThat(server.takeRequest().body?.utf8()).isEqualTo("""{"password":"hunter2"}""")
+        assertThat(teardownRan).isTrue()
+        assertThat(repository.sessionState.value).isEqualTo(SessionState.Unauthenticated)
+        assertThat(tokenStore.hasRefreshToken()).isFalse()
+    }
+
+    @Test
+    fun `a wrong password keeps the session and surfaces as AuthFailed`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        repository = buildRepository(this)
+        enqueue(401, """{"error":{"code":"INVALID_PASSWORD","message":"invalid password"}}""")
+
+        val result = repository.deactivateAccount("nope")
+
+        assertThat((result as AppResult.Failure).error).isInstanceOf(AppError.AuthFailed::class.java)
+        assertThat(repository.sessionState.value).isEqualTo(SessionState.Authenticated("u1", ""))
+        assertThat(tokenStore.hasRefreshToken()).isTrue()
+    }
+
+    @Test
+    fun `a state conflict keeps its code so the screen can explain it`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        repository = buildRepository(this)
+        enqueue(409, """{"error":{"code":"ACCOUNT_STATE_CONFLICT","message":"already deactivated"}}""")
+
+        val error = (repository.deleteAccount("hunter2") as AppResult.Failure).error
+
+        assertThat((error as AppError.Unknown).code).isEqualTo("ACCOUNT_STATE_CONFLICT")
+        assertThat(tokenStore.hasRefreshToken()).isTrue()
+    }
+
+    @Test
+    fun `deletion is a DELETE with a body, returns the purge date and ends the session`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        repository = buildRepository(this)
+        enqueue(
+            200,
+            """{"data":{"account_status":"pending_deletion",""" +
+                """"scheduled_purge_date":"2026-10-03T00:00:00Z","cancel_by_logging_in":true}}""",
+        )
+
+        val result = repository.deleteAccount("hunter2")
+
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("DELETE")
+        assertThat(request.target).isEqualTo("/v1/auth/account")
+        assertThat(request.body?.utf8()).isEqualTo("""{"password":"hunter2"}""")
+        assertThat((result as AppResult.Success).data).isEqualTo("2026-10-03T00:00:00Z")
+        assertThat(repository.sessionState.value).isEqualTo(SessionState.Unauthenticated)
+    }
+
+    @Test
+    fun `login on an account being deleted says so`() {
+        val text = AuthErrorText.forLogin(AppError.Forbidden(code = "ACCOUNT_PENDING_PURGE"))
+        assertThat(text).contains("being deleted")
+        assertThat(AuthErrorText.forLogin(AppError.Forbidden(code = "ACCOUNT_PURGED"))).contains("deleted")
+    }
 }

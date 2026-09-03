@@ -77,6 +77,16 @@ class UsApplication : Application(), Configuration.Provider {
      */
     @Inject lateinit var appForegroundState: com.us.android.core.notifications.AppForegroundState
 
+    /**
+     * Screen-time usage tracking: opens/closes a foreground session in the
+     * local ledger and reports it to the server. See the class doc for why
+     * this lives in `:app` rather than `:core:datastore` or `:core:profile`.
+     */
+    @Inject lateinit var screenTimeSync: com.us.android.screentime.ScreenTimeSyncCoordinator
+
+    /** Polls for the daily-limit / sleep-hours nudge; see the class doc. */
+    @Inject lateinit var screenTimeGuard: com.us.android.screentime.ScreenTimeGuardCoordinator
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
@@ -85,11 +95,13 @@ class UsApplication : Application(), Configuration.Provider {
                 override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
                     appForegroundState.isForeground = false
                     chatLockManager.onAppBackgrounded()
+                    screenTimeSync.onBackground()
                 }
 
                 override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
                     appForegroundState.isForeground = true
                     chatLockManager.onAppForegrounded()
+                    screenTimeSync.onForeground()
                 }
             },
         )
@@ -105,6 +117,10 @@ class UsApplication : Application(), Configuration.Provider {
         // Adoption of a migrated legacy draft — no-op on every start after the
         // first successful run.
         legacyAdoption.start()
+        // Once-a-minute poll for the screen-time nudge; a no-op call once
+        // already started (e.g. a config-change recreation of Application
+        // never happens, but the guard is defensive regardless).
+        screenTimeGuard.start()
         // setSafe, not setUnsafe: this is a lambda, so the loader — and the
         // OkHttp client behind it — is built on first image request rather
         // than on the cold-start path.

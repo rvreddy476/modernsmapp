@@ -7,7 +7,11 @@ package com.us.android.feature.settings.navigation
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import com.us.android.feature.settings.account.AccountControlScreen
+import com.us.android.feature.settings.account.ManageAccountScreen
+import com.us.android.feature.settings.content.ContentPreferencesScreen
 import com.us.android.feature.settings.onboarding.OnboardingScreen
+import com.us.android.feature.settings.screentime.ScreenTimeScreen
 import kotlinx.serialization.Serializable
 
 /**
@@ -53,3 +57,41 @@ fun NavGraphBuilder.modulesSettingsScreen(onBack: () -> Unit) {
 
 /** Type-safe navigation to the module picker from the settings hub. */
 fun NavController.navigateToModulesSettings() = navigate(ModulesSettingsRoute)
+
+// ── Manage account ────────────────────────────────────────────────────
+
+@Serializable data object ManageAccountRoute
+
+/** Deactivate / delete, one level under Manage account. */
+@Serializable data object AccountControlRoute
+
+fun NavGraphBuilder.manageAccountScreen(onBack: () -> Unit, onAccountControl: () -> Unit) {
+    composable<ManageAccountRoute> { ManageAccountScreen(onBack, onAccountControl) }
+}
+
+fun NavGraphBuilder.accountControlScreen(onBack: () -> Unit, onSignedOut: () -> Unit) {
+    composable<AccountControlRoute> { AccountControlScreen(onBack, onSignedOut) }
+}
+
+fun NavController.navigateToManageAccount() = navigate(ManageAccountRoute)
+fun NavController.navigateToAccountControl() = navigate(AccountControlRoute)
+
+// ── Screen time ────────────────────────────────────────────────────────
+
+@Serializable data object ScreenTimeRoute
+
+fun NavGraphBuilder.screenTimeScreen(onBack: () -> Unit) {
+    composable<ScreenTimeRoute> { ScreenTimeScreen(onBack) }
+}
+
+fun NavController.navigateToScreenTime() = navigate(ScreenTimeRoute)
+
+// ── Content preferences ───────────────────────────────────────────────
+
+@Serializable data object ContentPreferencesRoute
+
+fun NavGraphBuilder.contentPreferencesScreen(onBack: () -> Unit) {
+    composable<ContentPreferencesRoute> { ContentPreferencesScreen(onBack) }
+}
+
+fun NavController.navigateToContentPreferences() = navigate(ContentPreferencesRoute)

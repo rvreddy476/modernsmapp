@@ -1,8 +1,11 @@
 package com.us.android.core.auth
 
+import com.us.android.core.auth.dto.AccountDeactivatedDto
+import com.us.android.core.auth.dto.AccountDeletionScheduledDto
 import com.us.android.core.auth.dto.AuthResponseDto
 import com.us.android.core.auth.dto.LoginRequestDto
 import com.us.android.core.auth.dto.MessageDto
+import com.us.android.core.auth.dto.PasswordRequestDto
 import com.us.android.core.auth.dto.RefreshRequestDto
 import com.us.android.core.auth.dto.RegisterRequestDto
 import com.us.android.core.auth.dto.ResendVerificationRequestDto
@@ -10,6 +13,7 @@ import com.us.android.core.auth.dto.VerifyEmailRequestDto
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.retry.Retryable
 import retrofit2.http.Body
+import retrofit2.http.HTTP
 import retrofit2.http.Header
 import retrofit2.http.POST
 
@@ -66,4 +70,21 @@ interface AuthApi {
 
     @POST("v1/auth/logout")
     suspend fun logout(): ApiEnvelope<Unit>
+
+    /**
+     * Deactivates the account. Every session is revoked server-side on
+     * success, so the caller must clear the local one too. 401
+     * `INVALID_PASSWORD`; 409 `ACCOUNT_STATE_CONFLICT` when already
+     * deactivated or pending deletion.
+     */
+    @POST("v1/auth/account/deactivate")
+    suspend fun deactivateAccount(@Body body: PasswordRequestDto): ApiEnvelope<AccountDeactivatedDto>
+
+    /**
+     * Schedules deletion 30 days out. Retrofit's `@DELETE` refuses a body, so
+     * this is the explicit form. Same revocation and error codes as
+     * [deactivateAccount].
+     */
+    @HTTP(method = "DELETE", path = "v1/auth/account", hasBody = true)
+    suspend fun deleteAccount(@Body body: PasswordRequestDto): ApiEnvelope<AccountDeletionScheduledDto>
 }

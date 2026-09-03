@@ -119,6 +119,26 @@ data class ResendVerificationRequestDto(
 @Serializable
 data class MessageDto(val message: String = "")
 
+/** Body for the two account-control endpoints: the current password re-proves ownership. */
+@Serializable
+data class PasswordRequestDto(val password: String)
+
+/** `POST /v1/auth/account/deactivate` on success. */
+@Serializable
+data class AccountDeactivatedDto(
+    @SerialName("account_status") val accountStatus: String = "",
+    @SerialName("reactivate_by_logging_in") val reactivateByLoggingIn: Boolean = false,
+    @SerialName("sessions_revoked") val sessionsRevoked: Boolean = false,
+)
+
+/** `DELETE /v1/auth/account` on success. */
+@Serializable
+data class AccountDeletionScheduledDto(
+    @SerialName("account_status") val accountStatus: String = "",
+    @SerialName("scheduled_purge_date") val scheduledPurgeDate: String = "",
+    @SerialName("cancel_by_logging_in") val cancelByLoggingIn: Boolean = false,
+)
+
 @Serializable
 data class AuthUserDto(
     val id: String = "",

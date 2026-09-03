@@ -11,14 +11,12 @@ import com.us.android.core.profile.data.dto.AccountSummaryDto
 import com.us.android.core.profile.data.dto.ChangeHandleRequest
 import com.us.android.core.profile.data.dto.CodeRequest
 import com.us.android.core.profile.data.dto.DisableTwoFactorRequest
-import com.us.android.core.profile.data.dto.NotificationSettingsDto
 import com.us.android.core.profile.data.dto.PrivacySettingsDto
 import com.us.android.core.profile.data.dto.ProfileLinkDto
 import com.us.android.core.profile.data.dto.SaveProfileLinkRequest
 import com.us.android.core.profile.data.dto.SecurityEventDto
 import com.us.android.core.profile.data.dto.TrustedDeviceDto
 import com.us.android.core.profile.data.dto.TwoFactorSetupDto
-import com.us.android.core.profile.data.dto.UpdateNotificationSettingsRequest
 import com.us.android.core.profile.data.dto.UpdatePrivacySettingsRequest
 import com.us.android.core.profile.data.dto.UpsertAboutItemRequest
 import kotlinx.serialization.json.JsonPrimitive
@@ -44,10 +42,12 @@ class NotificationSettingsRepository @Inject constructor(
     private val errorMapper: ErrorMapper,
 ) {
     suspend fun get(): AppResult<NotificationSettings> =
-        apiCall(errorMapper) { api.notifications() }.map { it.toDomain() }
+        apiCall(errorMapper) { api.notifications() }.map(NotificationPreferenceCodec::decode)
 
+    /** Full snapshot of every known key; the server's echo is what comes back. */
     suspend fun save(value: NotificationSettings): AppResult<NotificationSettings> =
-        apiCall(errorMapper) { api.updateNotifications(value.toRequest()) }.map { it.toDomain() }
+        apiCall(errorMapper) { api.updateNotifications(NotificationPreferenceCodec.encode(value)) }
+            .map(NotificationPreferenceCodec::decode)
 }
 
 @Singleton
@@ -150,6 +150,8 @@ private fun PrivacySettingsDto.toDomain() = PrivacySettings(
     chatAvailability,
     sendTypingIndicators,
     showMessagePreview,
+    accountVisibility,
+    allowCommentsFrom,
     privacyVersion,
 )
 
@@ -175,59 +177,12 @@ private fun PrivacySettings.toRequest() = UpdatePrivacySettingsRequest(
     chatAvailability,
     sendTypingIndicators,
     showMessagePreview,
+    accountVisibility,
+    allowCommentsFrom,
 )
 
-private fun NotificationSettingsDto.toDomain() = NotificationSettings(
-    pushEnabled,
-    emailEnabled,
-    quietHoursEnabled,
-    quietHoursStart.orEmpty(),
-    quietHoursEnd.orEmpty(),
-    quietHoursTimeZone.orEmpty(),
-    pushLikes,
-    pushSuperLikes,
-    pushComments,
-    pushReplies,
-    pushMentions,
-    pushFollows,
-    pushFriendRequests,
-    pushGroupPosts,
-    pushGroupMentions,
-    pushChannelUpdates,
-    pushChannelUrgent,
-    pushCommunityPosts,
-    pushCommunityMentions,
-    pushEventReminders,
-    pushSystem,
-    emailDigest,
-)
-
-private fun NotificationSettings.toRequest() = UpdateNotificationSettingsRequest(
-    pushEnabled,
-    emailEnabled,
-    quietHoursEnabled,
-    quietHoursStart,
-    quietHoursEnd,
-    quietHoursTimeZone,
-    pushLikes,
-    pushSuperLikes,
-    pushComments,
-    pushReplies,
-    pushMentions,
-    pushFollows,
-    pushFriendRequests,
-    pushGroupPosts,
-    pushGroupMentions,
-    pushChannelUpdates,
-    pushChannelUrgent,
-    pushCommunityPosts,
-    pushCommunityMentions,
-    pushEventReminders,
-    pushSystem,
-    emailDigest,
-)
-
-private fun AccountSummaryDto.toDomain() = AccountSummary(
+/** Shared with [ManageAccountRepository], which reads the same `/v1/auth/me`. */
+internal fun AccountSummaryDto.toAccountSummary() = AccountSummary(
     userId,
     email,
     phone,
@@ -239,7 +194,11 @@ private fun AccountSummaryDto.toDomain() = AccountSummary(
     ageVerification,
     lastLoginAt,
     createdAt,
+    deactivatedAt = deactivatedAt?.takeIf { it.isNotBlank() },
+    scheduledPurgeDate = scheduledPurgeDate?.takeIf { it.isNotBlank() },
 )
+
+private fun AccountSummaryDto.toDomain() = toAccountSummary()
 
 private fun AccountSessionDto.toDomain() = AccountSession(
     id,

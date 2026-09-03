@@ -29,6 +29,9 @@ data class PrivacySettingsDto(
     @SerialName("chat_availability") val chatAvailability: String = "enabled",
     @SerialName("send_typing_indicators") val sendTypingIndicators: Boolean = true,
     @SerialName("show_message_preview") val showMessagePreview: Boolean = true,
+    // Launch-safety pass: private accounts and comment audiences.
+    @SerialName("account_visibility") val accountVisibility: String = "public",
+    @SerialName("allow_comments_from") val allowCommentsFrom: String = "everyone",
     @SerialName("privacy_version") val privacyVersion: Int = 0,
 )
 
@@ -58,59 +61,19 @@ data class UpdatePrivacySettingsRequest(
     @SerialName("chat_availability") val chatAvailability: String,
     @SerialName("send_typing_indicators") val sendTypingIndicators: Boolean,
     @SerialName("show_message_preview") val showMessagePreview: Boolean,
+    // Launch-safety pass: `public` | `private`, and `everyone` | `friends`.
+    @SerialName("account_visibility") val accountVisibility: String,
+    @SerialName("allow_comments_from") val allowCommentsFrom: String,
 )
 
-@Serializable
-data class NotificationSettingsDto(
-    @SerialName("push_enabled") val pushEnabled: Boolean = true,
-    @SerialName("email_enabled") val emailEnabled: Boolean = false,
-    @SerialName("quiet_hours_enabled") val quietHoursEnabled: Boolean = false,
-    @SerialName("quiet_hours_start") val quietHoursStart: String? = null,
-    @SerialName("quiet_hours_end") val quietHoursEnd: String? = null,
-    @SerialName("quiet_hours_tz") val quietHoursTimeZone: String? = null,
-    @SerialName("push_likes") val pushLikes: Boolean = false,
-    @SerialName("push_super_likes") val pushSuperLikes: Boolean = true,
-    @SerialName("push_comments") val pushComments: Boolean = true,
-    @SerialName("push_replies") val pushReplies: Boolean = true,
-    @SerialName("push_mentions") val pushMentions: Boolean = true,
-    @SerialName("push_follows") val pushFollows: Boolean = true,
-    @SerialName("push_friend_requests") val pushFriendRequests: Boolean = true,
-    @SerialName("push_group_posts") val pushGroupPosts: Boolean = true,
-    @SerialName("push_group_mentions") val pushGroupMentions: Boolean = true,
-    @SerialName("push_channel_updates") val pushChannelUpdates: Boolean = true,
-    @SerialName("push_channel_urgent") val pushChannelUrgent: Boolean = true,
-    @SerialName("push_community_posts") val pushCommunityPosts: Boolean = false,
-    @SerialName("push_community_mentions") val pushCommunityMentions: Boolean = true,
-    @SerialName("push_event_reminders") val pushEventReminders: Boolean = true,
-    @SerialName("push_system") val pushSystem: Boolean = true,
-    @SerialName("email_digest") val emailDigest: String = "weekly",
-)
-
-@Serializable
-data class UpdateNotificationSettingsRequest(
-    @SerialName("push_enabled") val pushEnabled: Boolean,
-    @SerialName("email_enabled") val emailEnabled: Boolean,
-    @SerialName("quiet_hours_enabled") val quietHoursEnabled: Boolean,
-    @SerialName("quiet_hours_start") val quietHoursStart: String,
-    @SerialName("quiet_hours_end") val quietHoursEnd: String,
-    @SerialName("quiet_hours_tz") val quietHoursTimeZone: String,
-    @SerialName("push_likes") val pushLikes: Boolean,
-    @SerialName("push_super_likes") val pushSuperLikes: Boolean,
-    @SerialName("push_comments") val pushComments: Boolean,
-    @SerialName("push_replies") val pushReplies: Boolean,
-    @SerialName("push_mentions") val pushMentions: Boolean,
-    @SerialName("push_follows") val pushFollows: Boolean,
-    @SerialName("push_friend_requests") val pushFriendRequests: Boolean,
-    @SerialName("push_group_posts") val pushGroupPosts: Boolean,
-    @SerialName("push_group_mentions") val pushGroupMentions: Boolean,
-    @SerialName("push_channel_updates") val pushChannelUpdates: Boolean,
-    @SerialName("push_channel_urgent") val pushChannelUrgent: Boolean,
-    @SerialName("push_community_posts") val pushCommunityPosts: Boolean,
-    @SerialName("push_community_mentions") val pushCommunityMentions: Boolean,
-    @SerialName("push_event_reminders") val pushEventReminders: Boolean,
-    @SerialName("push_system") val pushSystem: Boolean,
-    @SerialName("email_digest") val emailDigest: String,
-)
+/*
+ * Notification preferences deliberately have NO typed DTO. The detailed
+ * endpoint carries a global block plus an `inapp_<category>` / `push_<category>`
+ * pair for every category, and the category list grows server-side. A flat
+ * data class with forty booleans would have to be edited in three places per
+ * category; [com.us.android.core.profile.data.NotificationPreferenceCodec]
+ * reads and writes the JSON object by category key instead.
+ */
 
 @Serializable
 data class AccountSummaryDto(
@@ -123,6 +86,8 @@ data class AccountSummaryDto(
     @SerialName("account_type") val accountType: String = "",
     @SerialName("account_status") val accountStatus: String = "",
     @SerialName("age_verification") val ageVerification: String = "",
+    @SerialName("deactivated_at") val deactivatedAt: String? = null,
+    @SerialName("scheduled_purge_date") val scheduledPurgeDate: String? = null,
     @SerialName("last_login_at") val lastLoginAt: String = "",
     @SerialName("created_at") val createdAt: String = "",
 )
@@ -213,3 +178,75 @@ data class SaveProfileLinkRequest(
 )
 
 @Serializable data class ChangeHandleRequest(val username: String)
+
+// ── Manage account ────────────────────────────────────────────────────
+
+/** The read-only `region` on `GET /v1/users/me/settings`. */
+@Serializable
+data class RegionDto(val region: String = "")
+
+@Serializable
+data class UpdateRegionRequest(@SerialName("country_code") val countryCode: String)
+
+// ── Screen time / wellbeing (user-service) ────────────────────────────
+
+@Serializable
+data class WellbeingDto(
+    /** Minutes per day; null means no limit. */
+    @SerialName("daily_limit_mins") val dailyLimitMins: Int? = null,
+    @SerialName("bedtime_start") val bedtimeStart: String? = null,
+    @SerialName("bedtime_end") val bedtimeEnd: String? = null,
+    @SerialName("focus_mode_enabled") val focusModeEnabled: Boolean = false,
+    @SerialName("focus_mode_until") val focusModeUntil: String? = null,
+    @SerialName("nudge_interval_mins") val nudgeIntervalMins: Int = 0,
+    @SerialName("hide_like_counts") val hideLikeCounts: Boolean = false,
+    @SerialName("detox_mode_until") val detoxModeUntil: String? = null,
+    @SerialName("updated_at") val updatedAt: String = "",
+)
+
+/**
+ * Full snapshot. The bedtime fields are [JsonElement] rather than `String?`
+ * because the shared `Json` has `explicitNulls = false`: a Kotlin null would
+ * be DROPPED from the body, and "sleep hours off" would never reach the
+ * server. `JsonNull` is a value, so it is written as a literal `null`.
+ */
+@Serializable
+data class UpdateWellbeingRequest(
+    /** 0 switches the limit off. */
+    @SerialName("daily_limit_mins") val dailyLimitMins: Int,
+    @SerialName("bedtime_start") val bedtimeStart: JsonElement,
+    @SerialName("bedtime_end") val bedtimeEnd: JsonElement,
+    @SerialName("focus_mode_enabled") val focusModeEnabled: Boolean,
+    @SerialName("nudge_interval_mins") val nudgeIntervalMins: Int,
+    @SerialName("hide_like_counts") val hideLikeCounts: Boolean,
+)
+
+@Serializable
+data class ScreenTimeReportRequest(
+    val date: String,
+    @SerialName("foreground_secs") val foregroundSecs: Long,
+    val sessions: Int,
+)
+
+@Serializable
+data class ScreenTimeDayDto(
+    val date: String = "",
+    val minutes: Int = 0,
+    val sessions: Int = 0,
+)
+
+@Serializable
+data class ScreenTimeWeekDto(
+    val range: String = "week",
+    val days: List<ScreenTimeDayDto> = emptyList(),
+    @SerialName("today_minutes") val todayMinutes: Int = 0,
+    @SerialName("daily_limit_mins") val dailyLimitMins: Int? = null,
+)
+
+// ── Content preferences ───────────────────────────────────────────────
+
+@Serializable
+data class KeywordFiltersDto(val keywords: List<String> = emptyList())
+
+@Serializable
+data class UpdateKeywordFiltersRequest(val keywords: List<String>)

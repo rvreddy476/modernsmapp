@@ -3,6 +3,8 @@ package com.us.android.feature.profile.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.profile.data.NotificationCategory
+import com.us.android.core.profile.data.NotificationChannels
 import com.us.android.core.profile.data.NotificationSettings
 import com.us.android.core.profile.data.NotificationSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -21,6 +23,8 @@ sealed interface NotificationSettingsUiState {
     data class Editing(
         val original: NotificationSettings,
         val value: NotificationSettings,
+        /** Whether the "More" section of secondary categories is expanded. */
+        val moreExpanded: Boolean = false,
         val saving: Boolean = false,
         val message: String? = null,
     ) : NotificationSettingsUiState {
@@ -35,12 +39,6 @@ sealed interface NotificationSettingsUiState {
             val TIME = Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$")
         }
     }
-}
-
-enum class NotificationToggle {
-    PUSH, EMAIL, QUIET, LIKES, SUPER_LIKES, COMMENTS, REPLIES, MENTIONS, FOLLOWS,
-    FRIEND_REQUESTS, GROUP_POSTS, GROUP_MENTIONS, CHANNEL_UPDATES, CHANNEL_URGENT,
-    COMMUNITY_POSTS, COMMUNITY_MENTIONS, EVENTS, SYSTEM,
 }
 
 @HiltViewModel
@@ -63,28 +61,26 @@ class NotificationSettingsViewModel @Inject constructor(
         }
     }
 
-    @Suppress("CyclomaticComplexMethod") // Exhaustive enum-to-setting mapping; each branch is one immutable copy.
-    fun toggle(field: NotificationToggle, enabled: Boolean) = edit { value ->
-        when (field) {
-            NotificationToggle.PUSH -> value.copy(pushEnabled = enabled)
-            NotificationToggle.EMAIL -> value.copy(emailEnabled = enabled)
-            NotificationToggle.QUIET -> value.copy(quietHoursEnabled = enabled)
-            NotificationToggle.LIKES -> value.copy(pushLikes = enabled)
-            NotificationToggle.SUPER_LIKES -> value.copy(pushSuperLikes = enabled)
-            NotificationToggle.COMMENTS -> value.copy(pushComments = enabled)
-            NotificationToggle.REPLIES -> value.copy(pushReplies = enabled)
-            NotificationToggle.MENTIONS -> value.copy(pushMentions = enabled)
-            NotificationToggle.FOLLOWS -> value.copy(pushFollows = enabled)
-            NotificationToggle.FRIEND_REQUESTS -> value.copy(pushFriendRequests = enabled)
-            NotificationToggle.GROUP_POSTS -> value.copy(pushGroupPosts = enabled)
-            NotificationToggle.GROUP_MENTIONS -> value.copy(pushGroupMentions = enabled)
-            NotificationToggle.CHANNEL_UPDATES -> value.copy(pushChannelUpdates = enabled)
-            NotificationToggle.CHANNEL_URGENT -> value.copy(pushChannelUrgent = enabled)
-            NotificationToggle.COMMUNITY_POSTS -> value.copy(pushCommunityPosts = enabled)
-            NotificationToggle.COMMUNITY_MENTIONS -> value.copy(pushCommunityMentions = enabled)
-            NotificationToggle.EVENTS -> value.copy(pushEventReminders = enabled)
-            NotificationToggle.SYSTEM -> value.copy(pushSystem = enabled)
-        }
+    fun toggleGlobal(push: Boolean? = null, email: Boolean? = null, quiet: Boolean? = null) = edit {
+        it.copy(
+            pushEnabled = push ?: it.pushEnabled,
+            emailEnabled = email ?: it.emailEnabled,
+            quietHoursEnabled = quiet ?: it.quietHoursEnabled,
+        )
+    }
+
+    /** One category's in-app and/or push switch. Null leaves that side unchanged. */
+    fun setChannel(category: NotificationCategory, inApp: Boolean? = null, push: Boolean? = null) = edit { value ->
+        val current = value.channels(category)
+        value.withChannels(
+            category,
+            NotificationChannels(inApp = inApp ?: current.inApp, push = push ?: current.push),
+        )
+    }
+
+    fun toggleMore() = _state.update { state ->
+        val editing = state as? NotificationSettingsUiState.Editing ?: return@update state
+        editing.copy(moreExpanded = !editing.moreExpanded)
     }
 
     fun quietHours(start: String? = null, end: String? = null, timezone: String? = null) = edit {
@@ -105,6 +101,7 @@ class NotificationSettingsViewModel @Inject constructor(
                 is AppResult.Success -> NotificationSettingsUiState.Editing(
                     result.data,
                     result.data,
+                    moreExpanded = current.moreExpanded,
                     message = "Notification settings saved.",
                 )
                 is AppResult.Failure -> current.copy(saving = false, message = "Nothing changed. Please try again.")

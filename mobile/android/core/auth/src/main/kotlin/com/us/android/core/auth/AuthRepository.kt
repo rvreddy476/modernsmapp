@@ -1,6 +1,7 @@
 package com.us.android.core.auth
 
 import com.us.android.core.auth.dto.LoginRequestDto
+import com.us.android.core.auth.dto.PasswordRequestDto
 import com.us.android.core.auth.dto.RegisterRequestDto
 import com.us.android.core.auth.dto.ResendVerificationRequestDto
 import com.us.android.core.auth.dto.VerifyEmailRequestDto
@@ -188,6 +189,44 @@ class AuthRepository @Inject constructor(
             is AppResult.Success -> AppResult.Success(Unit)
             is AppResult.Failure -> AppResult.Success(Unit)
         }
+    }
+
+    /**
+     * Deactivates the account. On success the server has already revoked
+     * every session, so the local one is cleared the same way sign-out clears
+     * it; the nav graph then lands on Login. A failure (wrong password, state
+     * conflict, offline) leaves the session intact — nothing changed.
+     */
+    suspend fun deactivateAccount(password: String): AppResult<Unit> {
+        val result = apiCall(errorMapper) { authApi.deactivateAccount(PasswordRequestDto(password)) }
+        if (result is AppResult.Success) endRevokedSession()
+        return result.map { }
+    }
+
+    /** Schedules deletion; returns the purge date the server chose. Same session rule as deactivation. */
+    suspend fun deleteAccount(password: String): AppResult<String> {
+        val result = apiCall(errorMapper) { authApi.deleteAccount(PasswordRequestDto(password)) }
+        if (result is AppResult.Success) endRevokedSession()
+        return result.map { it.scheduledPurgeDate }
+    }
+
+    /**
+     * The server has already revoked the session, so there is no logout call
+     * to make — only the same local teardown sign-out does, best-effort, then
+     * the clear. The push token DELETE may well be refused now; that is the
+     * same trade sign-out makes when the network is down.
+     */
+    private suspend fun endRevokedSession() {
+        for (task in teardownTasks) {
+            try {
+                task.onSignOut()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // Deliberately swallowed — see logout().
+            }
+        }
+        sessionManager.clearSession()
     }
 
     private companion object {

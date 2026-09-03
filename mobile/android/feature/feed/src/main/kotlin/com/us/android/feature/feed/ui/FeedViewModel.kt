@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import androidx.paging.filter
+import com.us.android.core.datastore.SettingsDataStore
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementFailure
 import com.us.android.core.engagement.data.EngagementOverlay
@@ -15,11 +17,13 @@ import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedSurface
 import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.feature.feed.data.FeedRepository
+import com.us.android.feature.feed.data.KeywordFilter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -30,6 +34,7 @@ class FeedViewModel @Inject constructor(
     private val urlResolver: MediaUrlResolver,
     private val engagement: EngagementStore,
     private val shares: EngagementRepository,
+    settings: SettingsDataStore? = null,
 ) : ViewModel() {
 
     /**
@@ -86,7 +91,17 @@ class FeedViewModel @Inject constructor(
      * rotation.
      */
     val items: Flow<PagingData<FeedItem>> =
-        repository.feed(FeedSurface.Home).cachedIn(viewModelScope)
+        repository.feed(FeedSurface.Home)
+            .cachedIn(viewModelScope)
+            .let { flow ->
+                if (settings != null) {
+                    flow.combine(settings.keywordFilters) { page, keywords ->
+                        if (keywords.isEmpty()) page else page.filter { !KeywordFilter.hides(it, keywords) }
+                    }
+                } else {
+                    flow
+                }
+            }
 
     /**
      * Optimistic engagement, layered over the immutable page.

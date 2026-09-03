@@ -8,6 +8,7 @@ package com.us.android.feature.profile.navigation
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import com.us.android.feature.profile.ui.DirectMessagesScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.NotificationSettingsScreen
 import com.us.android.feature.profile.ui.PrivacySettingsScreen
@@ -125,6 +126,9 @@ data object EditProfileRoute
 
 @Serializable data object ProfileDetailsRoute
 
+/** "Who can message you", the three-row picker pushed from Privacy. */
+@Serializable data object DirectMessagesRoute
+
 /**
  * Registers the edit-profile destination.
  *
@@ -153,14 +157,14 @@ fun NavGraphBuilder.settingsScreens(
             destinations.onBack,
             destinations.onEditProfile,
             destinations.onProfileDetails,
-            destinations.sections.onPrivacy,
-            destinations.sections.onNotifications,
-            destinations.sections.onSecurity,
-            destinations.sections.onModules,
+            destinations.sections,
         )
     }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
-    composable<PrivacySettingsRoute> { PrivacySettingsScreen(destinations.onBack) }
+    composable<PrivacySettingsRoute> {
+        PrivacySettingsScreen(destinations.onBack, destinations.onDirectMessages)
+    }
+    composable<DirectMessagesRoute> { DirectMessagesScreen(destinations.onBack) }
     composable<NotificationSettingsRoute> { NotificationSettingsScreen(destinations.onBack) }
     composable<SecuritySettingsRoute> {
         SecuritySettingsScreen(destinations.onBack, destinations.onSignedOut)
@@ -171,13 +175,23 @@ data class SettingsDestinations(
     val onBack: () -> Unit,
     val onEditProfile: () -> Unit,
     val onProfileDetails: () -> Unit,
+    val onDirectMessages: () -> Unit,
     val onSignedOut: () -> Unit,
     val sections: SettingsSections,
 )
 
+/**
+ * The hub's per-section entry points. `:app` owns every destination —
+ * `:feature:profile` renders the hub, but only two of these sections
+ * (Privacy, Notifications) live in this feature; the rest are `:feature:settings`
+ * pages or cross-feature targets, so the hub never imports them directly.
+ */
 data class SettingsSections(
+    val onManageAccount: () -> Unit,
     val onPrivacy: () -> Unit,
     val onNotifications: () -> Unit,
+    val onScreenTime: () -> Unit,
+    val onContentPreferences: () -> Unit,
     val onSecurity: () -> Unit,
     /**
      * The module picker lives in `:feature:settings`; `:app` owns which

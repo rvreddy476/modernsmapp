@@ -7,18 +7,26 @@ import com.us.android.core.profile.data.dto.AccountSummaryDto
 import com.us.android.core.profile.data.dto.ChangeHandleRequest
 import com.us.android.core.profile.data.dto.CodeRequest
 import com.us.android.core.profile.data.dto.DisableTwoFactorRequest
-import com.us.android.core.profile.data.dto.NotificationSettingsDto
+import com.us.android.core.profile.data.dto.KeywordFiltersDto
 import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.PrivacySettingsDto
 import com.us.android.core.profile.data.dto.ProfileLinkDto
+import com.us.android.core.profile.data.dto.RegionDto
 import com.us.android.core.profile.data.dto.SaveProfileLinkRequest
+import com.us.android.core.profile.data.dto.ScreenTimeDayDto
+import com.us.android.core.profile.data.dto.ScreenTimeReportRequest
+import com.us.android.core.profile.data.dto.ScreenTimeWeekDto
 import com.us.android.core.profile.data.dto.SecurityEventDto
 import com.us.android.core.profile.data.dto.StatusDto
 import com.us.android.core.profile.data.dto.TrustedDeviceDto
 import com.us.android.core.profile.data.dto.TwoFactorSetupDto
-import com.us.android.core.profile.data.dto.UpdateNotificationSettingsRequest
+import com.us.android.core.profile.data.dto.UpdateKeywordFiltersRequest
 import com.us.android.core.profile.data.dto.UpdatePrivacySettingsRequest
+import com.us.android.core.profile.data.dto.UpdateRegionRequest
+import com.us.android.core.profile.data.dto.UpdateWellbeingRequest
 import com.us.android.core.profile.data.dto.UpsertAboutItemRequest
+import com.us.android.core.profile.data.dto.WellbeingDto
+import kotlinx.serialization.json.JsonObject
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -26,6 +34,7 @@ import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /** Privacy preferences owned by identity user-service. */
 interface PrivacySettingsApi {
@@ -38,15 +47,52 @@ interface PrivacySettingsApi {
     ): ApiEnvelope<PrivacySettingsDto>
 }
 
-/** Notification delivery preferences owned by notification-service. */
+/**
+ * Notification delivery preferences owned by notification-service.
+ *
+ * Raw JSON objects on both sides: the category pairs are read and written by
+ * key through [NotificationPreferenceCodec], so a new server-side category is
+ * one enum entry here rather than three DTO fields.
+ */
 interface NotificationSettingsApi {
     @GET("v1/notifications/preferences/detailed")
-    suspend fun notifications(): ApiEnvelope<NotificationSettingsDto>
+    suspend fun notifications(): ApiEnvelope<JsonObject>
 
     @PUT("v1/notifications/preferences/detailed")
-    suspend fun updateNotifications(
-        @Body body: UpdateNotificationSettingsRequest,
-    ): ApiEnvelope<NotificationSettingsDto>
+    suspend fun updateNotifications(@Body body: JsonObject): ApiEnvelope<JsonObject>
+}
+
+/** Region, owned by user-service. The identity facts come from [AccountSecurityApi]. */
+interface ManageAccountApi {
+    @GET("v1/users/me/settings")
+    suspend fun region(): ApiEnvelope<RegionDto>
+
+    @PUT("v1/users/me/region")
+    suspend fun updateRegion(@Body body: UpdateRegionRequest): ApiEnvelope<RegionDto>
+}
+
+/** Screen-time controls and the usage ledger, owned by user-service. */
+interface WellbeingApi {
+    @GET("v1/users/me/wellbeing")
+    suspend fun wellbeing(): ApiEnvelope<WellbeingDto>
+
+    @PUT("v1/users/me/wellbeing")
+    suspend fun updateWellbeing(@Body body: UpdateWellbeingRequest): ApiEnvelope<WellbeingDto>
+
+    @POST("v1/users/me/screen-time")
+    suspend fun reportScreenTime(@Body body: ScreenTimeReportRequest): ApiEnvelope<ScreenTimeDayDto>
+
+    @GET("v1/users/me/screen-time")
+    suspend fun screenTime(@Query("range") range: String): ApiEnvelope<ScreenTimeWeekDto>
+}
+
+/** Muted keywords, owned by user-service. */
+interface KeywordFiltersApi {
+    @GET("v1/users/me/keyword-filters")
+    suspend fun keywordFilters(): ApiEnvelope<KeywordFiltersDto>
+
+    @PUT("v1/users/me/keyword-filters")
+    suspend fun updateKeywordFilters(@Body body: UpdateKeywordFiltersRequest): ApiEnvelope<KeywordFiltersDto>
 }
 
 /** Account identity, security events and 2FA owned by identity auth-service. */

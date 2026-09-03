@@ -74,6 +74,7 @@ import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.navigateToStudio
 import com.us.android.feature.post.navigation.postScreen
 import com.us.android.feature.post.navigation.studioScreen
+import com.us.android.feature.profile.navigation.DirectMessagesRoute
 import com.us.android.feature.profile.navigation.NotificationSettingsRoute
 import com.us.android.feature.profile.navigation.PrivacySettingsRoute
 import com.us.android.feature.profile.navigation.ProfileDetailsRoute
@@ -88,9 +89,17 @@ import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
 import com.us.android.feature.profile.navigation.settingsScreens
 import com.us.android.feature.settings.navigation.OnboardingRoute
+import com.us.android.feature.settings.navigation.accountControlScreen
+import com.us.android.feature.settings.navigation.contentPreferencesScreen
+import com.us.android.feature.settings.navigation.manageAccountScreen
 import com.us.android.feature.settings.navigation.modulesSettingsScreen
+import com.us.android.feature.settings.navigation.navigateToAccountControl
+import com.us.android.feature.settings.navigation.navigateToContentPreferences
+import com.us.android.feature.settings.navigation.navigateToManageAccount
 import com.us.android.feature.settings.navigation.navigateToModulesSettings
+import com.us.android.feature.settings.navigation.navigateToScreenTime
 import com.us.android.feature.settings.navigation.onboardingScreen
+import com.us.android.feature.settings.navigation.screenTimeScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -233,6 +242,13 @@ fun UsNavHost(
             shellDestinations()
             tabDestinations(navController, pool)
         }
+    }
+
+    // Screen-time nudge, over whatever is on screen. Gated on an authenticated
+    // session: the wellbeing endpoint it polls needs a session, and the nudge
+    // has no meaning on the sign-in screen.
+    if (sessionState.isAuthenticated) {
+        com.us.android.screentime.ScreenTimeGuardHost()
     }
 }
 
@@ -552,19 +568,27 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onBack = { navController.popBackStack() },
         onSaved = { navController.popBackStack() },
     )
+    // Signing-out destination shared by sign-out, deactivation and deletion:
+    // all three end the session the same way, so all three land on the same
+    // place — the login screen, with the whole tab stack cleared behind it.
+    val onSignedOut: () -> Unit = {
+        navController.navigate(LoginRoute) {
+            popUpTo<FeedRoute> { inclusive = true }
+        }
+    }
     settingsScreens(
         SettingsDestinations(
             onBack = { navController.popBackStack() },
             onEditProfile = { navController.navigateToEditProfile() },
             onProfileDetails = { navController.navigate(ProfileDetailsRoute) },
-            onSignedOut = {
-                navController.navigate(LoginRoute) {
-                    popUpTo<FeedRoute> { inclusive = true }
-                }
-            },
+            onDirectMessages = { navController.navigate(DirectMessagesRoute) },
+            onSignedOut = onSignedOut,
             sections = SettingsSections(
+                onManageAccount = { navController.navigateToManageAccount() },
                 onPrivacy = { navController.navigate(PrivacySettingsRoute) },
                 onNotifications = { navController.navigate(NotificationSettingsRoute) },
+                onScreenTime = { navController.navigateToScreenTime() },
+                onContentPreferences = { navController.navigateToContentPreferences() },
                 onSecurity = { navController.navigate(SecuritySettingsRoute) },
                 // The module picker is `:feature:settings`; the hub only
                 // asks for "modules" and this is where that resolves.
@@ -576,6 +600,15 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     // the shell re-resolves the tabs from the repository's new state, so the
     // hub the user returns to already sits under the bar they just chose.
     modulesSettingsScreen(onBack = { navController.popBackStack() })
+    // Manage account, one level under Settings > Account, plus its nested
+    // Account control page (deactivate / delete).
+    manageAccountScreen(
+        onBack = { navController.popBackStack() },
+        onAccountControl = { navController.navigateToAccountControl() },
+    )
+    accountControlScreen(onBack = { navController.popBackStack() }, onSignedOut = onSignedOut)
+    screenTimeScreen(onBack = { navController.popBackStack() })
+    contentPreferencesScreen(onBack = { navController.popBackStack() })
 }
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */

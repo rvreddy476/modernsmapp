@@ -7,10 +7,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -18,8 +23,10 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.profile.data.PrivacySettings
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.UsSettingsLinkRow
 import com.us.android.core.ui.UsSettingsOption
 import com.us.android.core.ui.UsSettingsSection
 import com.us.android.core.ui.UsSettingsSelectRow
@@ -33,6 +40,7 @@ import com.us.android.core.ui.UsSettingsSwitchRow
 @Composable
 fun PrivacySettingsScreen(
     onBack: () -> Unit,
+    onDirectMessages: () -> Unit,
     viewModel: PrivacySettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -48,7 +56,7 @@ fun PrivacySettingsScreen(
                 UsErrorState(current.message, Modifier.padding(padding), onRetry = viewModel::load)
 
             is PrivacySettingsUiState.Editing ->
-                PrivacySettingsForm(current, viewModel, Modifier.padding(padding))
+                PrivacySettingsForm(current, viewModel, onDirectMessages, Modifier.padding(padding))
         }
     }
 }
@@ -57,6 +65,7 @@ fun PrivacySettingsScreen(
 private fun PrivacySettingsForm(
     state: PrivacySettingsUiState.Editing,
     viewModel: PrivacySettingsViewModel,
+    onDirectMessages: () -> Unit,
     modifier: Modifier,
 ) {
     val value = state.value
@@ -74,6 +83,8 @@ private fun PrivacySettingsForm(
                 color = MaterialTheme.colorScheme.primary,
             )
         }
+        DiscoverabilitySection(state, viewModel)
+        InteractionsSection(value, state.saving, viewModel, onDirectMessages)
         ContactPermissionSection(value, policyLocked, viewModel)
         ProfileVisibilitySection(value, policyLocked, viewModel)
         ProtectionSection(state, viewModel)
@@ -98,8 +109,74 @@ private fun PrivacySettingsForm(
 }
 
 @Composable
+private fun DiscoverabilitySection(
+    state: PrivacySettingsUiState.Editing,
+    viewModel: PrivacySettingsViewModel,
+) {
+    var confirming by remember { mutableStateOf(false) }
+    val value = state.value
+    UsSettingsSection("Discoverability") {
+        UsSettingsSwitchRow(
+            title = "Private account",
+            checked = value.isPrivateAccount,
+            onCheckedChange = { turningOn ->
+                if (turningOn) confirming = true else viewModel.setPrivateAccount(false)
+            },
+            description = "With a private account, only people you approve can follow you and see " +
+                "your posts. Your existing followers are not affected.",
+            enabled = !state.saving,
+        )
+    }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Make your account private?") },
+            text = {
+                Text(
+                    "Only people you approve will be able to follow you and see your posts. " +
+                        "Your existing followers keep their access.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    viewModel.setPrivateAccount(true)
+                }) { Text("Make private") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun InteractionsSection(
+    value: PrivacySettings,
+    saving: Boolean,
+    viewModel: PrivacySettingsViewModel,
+    onDirectMessages: () -> Unit,
+) {
+    UsSettingsSection("Interactions") {
+        UsSettingsSelectRow(
+            title = "Comments",
+            selected = value.allowCommentsFrom,
+            options = COMMENTS_OPTIONS,
+            onSelected = { viewModel.select(PrivacyEnumField.COMMENTS, it) },
+            description = "Who can comment on your posts",
+            enabled = !saving,
+        )
+        UsSettingsLinkRow(
+            title = "Direct messages",
+            onClick = onDirectMessages,
+            description = "Who can send you messages",
+        )
+    }
+}
+
+@Composable
 private fun ContactPermissionSection(
-    value: com.us.android.core.profile.data.PrivacySettings,
+    value: PrivacySettings,
     locked: Boolean,
     viewModel: PrivacySettingsViewModel,
 ) {
@@ -133,7 +210,7 @@ private fun ContactPermissionSection(
 
 @Composable
 private fun ProfileVisibilitySection(
-    value: com.us.android.core.profile.data.PrivacySettings,
+    value: PrivacySettings,
     locked: Boolean,
     viewModel: PrivacySettingsViewModel,
 ) {
@@ -221,4 +298,9 @@ private val GROUP_ADD_OPTIONS = options(
 private val CHAT_AVAILABILITY_OPTIONS = options(
     "enabled" to "On",
     "paused" to "Paused — no new messages in or out",
+)
+
+private val COMMENTS_OPTIONS = options(
+    PrivacySettings.COMMENTS_EVERYONE to "Everyone",
+    PrivacySettings.COMMENTS_FRIENDS to "Friends",
 )

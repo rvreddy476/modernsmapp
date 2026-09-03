@@ -120,6 +120,39 @@ class SettingsDataStore @Inject constructor(
         }
     }
 
+    /**
+     * The last server-confirmed muted keywords, already normalised (lower
+     * case, no `#`). The feed reads this directly so a keyword the server has
+     * accepted is hidden on the very next page even before the ranking
+     * service catches up. Comma-separated: a keyword cannot contain a comma
+     * after normalisation.
+     */
+    val keywordFilters: Flow<List<String>> = store.data
+        .safe()
+        .map { prefs ->
+            prefs[KEY_KEYWORD_FILTERS]
+                ?.split(KEYWORD_SEPARATOR)
+                ?.filter { it.isNotBlank() }
+                .orEmpty()
+        }
+
+    suspend fun setKeywordFilters(keywords: List<String>) {
+        store.edit { it[KEY_KEYWORD_FILTERS] = keywords.joinToString(KEYWORD_SEPARATOR) }
+    }
+
+    /**
+     * The screen-time ledger: foreground time per local date that has not yet
+     * been confirmed by the server. Opaque here — [UsageAccumulator] owns the
+     * encoding — because this class stores strings, not domain types.
+     */
+    val usageLedger: Flow<String?> = store.data
+        .safe()
+        .map { it[KEY_USAGE_LEDGER] }
+
+    suspend fun setUsageLedger(encoded: String) {
+        store.edit { it[KEY_USAGE_LEDGER] = encoded }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -139,5 +172,8 @@ class SettingsDataStore @Inject constructor(
         val KEY_MODULE_IDS = stringPreferencesKey("module_ids")
         val KEY_HOME_MODULE_ID = stringPreferencesKey("home_module_id")
         val KEY_MODULE_ONBOARDING_COMPLETED = booleanPreferencesKey("module_onboarding_completed")
+        val KEY_KEYWORD_FILTERS = stringPreferencesKey("keyword_filters")
+        val KEY_USAGE_LEDGER = stringPreferencesKey("usage_ledger")
+        const val KEYWORD_SEPARATOR = ","
     }
 }

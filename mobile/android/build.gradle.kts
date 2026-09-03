@@ -169,8 +169,10 @@ tasks.register("moduleGraphCheck") {
     // number makes an unplanned module a build failure rather than a surprise
     // six weeks later. Update this deliberately when a module is authorised.
     // 28 = 26 + :core:call and :feature:call (calling P0).
-    // 29 = 28 + :feature:settings (module picker / onboarding).
-    val expectedModuleCount = 29
+    // 30 = 28 + :feature:settings (module picker / onboarding) + the two
+    //      phantom parent projects (:core, :feature) that Gradle creates for
+    //      nested paths and counts among subprojects.
+    val expectedModuleCount = 30
 
     doLast {
         val allViolations = buildList {

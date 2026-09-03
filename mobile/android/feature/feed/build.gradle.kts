@@ -24,6 +24,9 @@ dependencies {
     // and the inbox can never disagree about it. A core module, so no
     // feature-to-feature edge is created.
     implementation(projects.core.notifications)
+    // Muted keywords: the last server-confirmed list, applied to every page as
+    // a client-side fallback. A core module, so no feature-to-feature edge.
+    implementation(projects.core.datastore)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
