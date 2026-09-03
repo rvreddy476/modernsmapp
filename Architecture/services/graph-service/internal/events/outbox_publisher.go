@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/atpost/graph-service/internal/purge"
 	"github.com/atpost/graph-service/internal/store"
 	sharedevents "github.com/atpost/shared/events"
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -36,12 +38,38 @@ import (
 // OutboxKafkaPublisher publishes graph outbox events to Kafka.
 type OutboxKafkaPublisher struct {
 	writer *kafka.Writer
+	// acks, when set, receives user.purge_acked rows (account control): the
+	// purge ack rides the same durable outbox but lands on
+	// platform.purge-acks.v1 rather than social.events.v1.
+	acks *kafka.Writer
 }
 
 // NewOutboxPublisher reuses the producer's writer so there is one connection
 // pool and one set of broker settings.
 func NewOutboxPublisher(p *Producer) *OutboxKafkaPublisher {
 	return &OutboxKafkaPublisher{writer: p.writer}
+}
+
+// WithPurgeAcksWriter routes user.purge_acked outbox rows to w.
+func (p *OutboxKafkaPublisher) WithPurgeAcksWriter(w *kafka.Writer) *OutboxKafkaPublisher {
+	p.acks = w
+	return p
+}
+
+// OutboxAckPublisher writes the purge ack into graph_outbox_events; the relay
+// above delivers it. Satisfies purge.AckPublisher.
+type OutboxAckPublisher struct{ store *store.Store }
+
+// NewOutboxAckPublisher builds the adapter.
+func NewOutboxAckPublisher(s *store.Store) *OutboxAckPublisher { return &OutboxAckPublisher{store: s} }
+
+// PublishPurgeAck enqueues the ack. Called only after the erase committed.
+func (a *OutboxAckPublisher) PublishPurgeAck(ctx context.Context, ack purge.Ack) error {
+	uid, err := uuid.Parse(ack.UserID)
+	if err != nil {
+		return fmt.Errorf("purge ack: bad user_id: %w", err)
+	}
+	return a.store.InsertPurgeAckOutbox(ctx, uid, ack)
 }
 
 // GraphEventEnvelope is the canonical envelope plus the per-pair sequence.
@@ -59,6 +87,17 @@ type GraphEventEnvelope struct {
 }
 
 func (p *OutboxKafkaPublisher) PublishGraphEvent(ctx context.Context, ev store.OutboxEvent) error {
+	if ev.EventType == purge.EventUserPurgeAcked {
+		if p.acks == nil {
+			return fmt.Errorf("purge ack outbox row %s: no purge-acks writer configured", ev.ID)
+		}
+		// Bare ack body: auth's parser accepts either the bare shape or an
+		// envelope; bare keeps it identical to the direct-producer services.
+		return p.acks.WriteMessages(ctx, kafka.Message{
+			Key:   []byte(ev.ActorID.String()),
+			Value: ev.Payload,
+		})
+	}
 	actor := ev.ActorID.String()
 
 	// NewEnvelope generates a fresh EventID; overwrite it with the outbox row

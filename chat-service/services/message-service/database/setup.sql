@@ -391,6 +391,9 @@ CREATE TABLE IF NOT EXISTS chat.revocation_intents (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (conversation_id, user_id)
 );
+-- Account control: a hidden user (deactivated / deletion scheduled) is
+-- reported offline and their typing indicators are dropped. Never erased here.
+ALTER TABLE chat.user_profiles ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Durable preview-repair obligations (MP-LB-1): a message deletion writes
 -- this row BEFORE the Scylla soft delete, so a crash, Scylla read failure,

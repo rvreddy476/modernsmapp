@@ -47,3 +47,13 @@ CREATE TABLE IF NOT EXISTS subscriber_fanout_delivered (
     delivered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (post_id, user_id)
 );
+
+-- Account control (auth-service 30-day deletion flow). A row here means the
+-- account is deactivated or scheduled for deletion: every notification
+-- addressed to the user is dropped at creation time. Removed on
+-- user.reactivated / user.deletion_cancelled and by the purge.
+CREATE TABLE IF NOT EXISTS notification_suppressed_users (
+    user_id       UUID PRIMARY KEY,
+    reason        TEXT        NOT NULL DEFAULT '',
+    suppressed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

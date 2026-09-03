@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/media-service/internal/delivery"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	mediaHttp "github.com/atpost/media-service/internal/http"
+	"github.com/atpost/media-service/internal/purge"
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/media-service/internal/store/blob"
@@ -176,6 +177,19 @@ func main() {
 	// LB-1 requirement 7: retry blob deletions whose object keys were
 	// durably recorded before the media rows were removed.
 	mediaSvc.StartBlobReclaimWorker(ctx)
+
+	// Account control (auth-service 30-day deletion): on
+	// user.purge_requested every asset the user uploaded is removed in one
+	// transaction — blob keys go to media_blob_reclaim for the worker above —
+	// and the service acks as "media" onto platform.purge-acks.v1. Media has
+	// no user-keyed public surface of its own, so hide is a no-op here.
+	purgeAcks := purge.NewKafkaAckPublisher(brokers, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	identityConsumer := mediaEvents.NewConsumerWithDialer(brokers, "media-service-account-lifecycle",
+		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), pgStore, kafkaDialer).
+		WithLifecycleHandler(purge.NewHandler("media", pgStore, purgeAcks, nil, slog.Default()))
+	defer identityConsumer.Close()
+	go identityConsumer.Start(ctx)
 
 	// 7. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("media-service")

@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/chat-message-service/internal/config"
 	"github.com/atpost/chat-message-service/internal/events"
 	"github.com/atpost/chat-message-service/internal/http"
+	"github.com/atpost/chat-message-service/internal/purge"
 	"github.com/atpost/chat-message-service/internal/service"
 	pgStore "github.com/atpost/chat-message-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/chat-message-service/internal/store/scylla"
@@ -131,6 +132,19 @@ func main() {
 
 	// 6. Identity Event Consumer (background)
 	identityConsumer := events.NewIdentityConsumerWithDialer(cfg.KafkaBrokers, cfg.IdentityKafkaTopic, cfg.IdentityKafkaGroupID, kafkaDialer, convStore, logger)
+	// Account control (auth-service 30-day deletion): hide the user
+	// (offline, no typing) on user.deactivated / user.deletion_scheduled,
+	// unhide on the reverse, and on user.purge_requested redact their Scylla
+	// messages, erase every chat.* row, and ack as "message" through the
+	// outbox relay onto platform.purge-acks.v1.
+	purgeAckProducer := events.NewProducerWithDialer(cfg.KafkaBrokers,
+		envOr("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer func() { _ = purgeAckProducer.Close() }()
+	svc.SetPurgeAckProducer(purgeAckProducer)
+	svc.SetHiddenUserStore(convStore)
+	identityConsumer.WithLifecycleHandler(purge.NewHandler("message",
+		purge.NewEraser(purgeStoreAdapter{convStore}, msgStore), purge.NewOutboxAckPublisher(purgeStoreAdapter{convStore}),
+		convStore, logger))
 	go identityConsumer.Start(ctx)
 
 	// 6b. Social (graph) Event Consumer (background) — auto-promote message

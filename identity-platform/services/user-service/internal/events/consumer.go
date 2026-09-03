@@ -7,6 +7,7 @@ import (
 	"time"
 
 	sharedEvents "github.com/atpost/identity-shared/events"
+	"github.com/atpost/identity-user-service/internal/purge"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
@@ -37,6 +38,9 @@ type Consumer struct {
 	db      *pgxpool.Pool
 	handler UserHandler
 	log     *slog.Logger
+	// lifecycle handles the account-control events (hide / unhide / purge).
+	// Optional; see internal/purge.
+	lifecycle *purge.Handler
 }
 
 const userConsumerName = "user-service"
@@ -59,22 +63,42 @@ func NewConsumerWithDialer(brokers []string, topic, groupID string, dialer *kafk
 	return &Consumer{reader: r, db: db, handler: handler, log: logger}
 }
 
+// WithLifecycleHandler wires the account-control handler.
+func (c *Consumer) WithLifecycleHandler(h *purge.Handler) *Consumer {
+	c.lifecycle = h
+	return c
+}
+
 // Start runs the consumer loop until ctx is cancelled.
+//
+// Fetch → handle → commit. Account-control events are retried in place until
+// durable (the offset never advances past an unacked purge); the registration
+// path keeps its inbox-dedup + log-and-continue behaviour.
 func (c *Consumer) Start(ctx context.Context) {
 	c.log.Info("starting user-service kafka consumer")
 	for {
-		msg, err := c.reader.ReadMessage(ctx)
+		msg, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				c.log.Info("user-service kafka consumer stopped")
 				return
 			}
 			c.log.Error("failed to read kafka message", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
-		if err := c.handle(ctx, msg); err != nil {
-			c.log.Error("failed to handle kafka message", "err", err, "offset", msg.Offset)
+		if !c.handle(ctx, msg) {
+			return // shutting down; leave the offset for redelivery
 		}
+		commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		if err := c.reader.CommitMessages(commitCtx, msg); err != nil {
+			c.log.Warn("offset commit failed; message will be redelivered", "err", err, "offset", msg.Offset)
+		}
+		cancel()
 	}
 }
 
@@ -83,11 +107,18 @@ func (c *Consumer) Close() error {
 	return c.reader.Close()
 }
 
-func (c *Consumer) handle(ctx context.Context, msg kafka.Message) error {
+// handle processes one message. Reports false only on shutdown.
+func (c *Consumer) handle(ctx context.Context, msg kafka.Message) bool {
 	var env sharedEvents.EventEnvelope
 	if err := json.Unmarshal(msg.Value, &env); err != nil {
 		c.log.Warn("failed to unmarshal event envelope", "err", err)
-		return nil // non-retryable — skip malformed message
+		return true // non-retryable — skip malformed message
+	}
+
+	// Account control is deliberately NOT inbox-deduped: the purge must be
+	// re-runnable (auth re-emits until acked) and hide/unhide are idempotent.
+	if c.lifecycle != nil && purge.Handles(env.EventType) {
+		return c.lifecycle.HandleUntilDurable(ctx, env.EventType, env.Payload)
 	}
 
 	eventID := env.EventID
@@ -100,14 +131,15 @@ func (c *Consumer) handle(ctx context.Context, msg kafka.Message) error {
 	).Scan(&exists)
 	if err == nil && exists {
 		c.log.Debug("skipping already-processed event", "event_id", eventID, "event_type", env.EventType)
-		return nil // already processed, skip
+		return true // already processed, skip
 	}
 	if err != nil {
 		c.log.Warn("inbox dedup check failed, processing anyway", "err", err, "event_id", eventID)
 	}
 
 	if err := c.dispatch(ctx, env); err != nil {
-		return err
+		c.log.Error("failed to handle kafka message", "err", err, "offset", msg.Offset)
+		return true
 	}
 
 	// After processing: mark as done
@@ -115,7 +147,7 @@ func (c *Consumer) handle(ctx context.Context, msg kafka.Message) error {
 		"INSERT INTO usr.inbox_events(consumer_name, event_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
 		userConsumerName, eventID,
 	)
-	return nil
+	return true
 }
 
 func (c *Consumer) dispatch(ctx context.Context, env sharedEvents.EventEnvelope) error {

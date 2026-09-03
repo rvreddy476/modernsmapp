@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/transport"
@@ -17,6 +18,7 @@ import (
 	"github.com/atpost/user-service/internal/http"
 	"github.com/atpost/user-service/internal/identityclient"
 	"github.com/atpost/user-service/internal/presence"
+	"github.com/atpost/user-service/internal/purge"
 	"github.com/atpost/user-service/internal/reconcile"
 	"github.com/atpost/user-service/internal/service"
 	"github.com/atpost/user-service/internal/store"
@@ -235,6 +237,20 @@ func main() {
 	consumer := events.NewConsumerWithDialer([]string{kafkaBrokers}, "social.events.v1", userSvc, userStore, kafkaDialer)
 	userHandler.WithDLQConsumer(consumer)
 	go consumer.Start(ctx)
+
+	// Account control (auth-service 30-day deletion): hide the projection
+	// row on user.deactivated / user.deletion_scheduled, unhide on the
+	// reverse, and on user.purge_requested erase every app-side profile row
+	// and ack as "user-extras" onto platform.purge-acks.v1 (the identity
+	// user-service acks as "user").
+	purgeAcks := purge.NewKafkaAckPublisher(strings.Split(kafkaBrokers, ","),
+		env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	lifecycle := purge.NewConsumer(strings.Split(kafkaBrokers, ","),
+		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), "user-service-account-lifecycle", kafkaDialer,
+		purge.NewHandler("user-extras", userStore, purgeAcks, userStore, slog.Default()), slog.Default())
+	defer lifecycle.Close()
+	go lifecycle.Start(ctx)
 
 	// Projection reconcile — keeps app.users converged with the identity
 	// profile-service, repairing any row lost to a missed UserRegistered

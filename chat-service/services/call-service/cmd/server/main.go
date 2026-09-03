@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/chat-call-service/database"
 	"github.com/atpost/chat-call-service/internal/config"
 	callhttp "github.com/atpost/chat-call-service/internal/http"
+	"github.com/atpost/chat-call-service/internal/purge"
 	"github.com/atpost/chat-call-service/internal/service"
 	"github.com/atpost/chat-call-service/internal/sfu"
 	"github.com/atpost/chat-call-service/internal/store/postgres"
@@ -167,8 +168,27 @@ func main() {
 	handler := callhttp.New(svc, logger).WithCallsEnabled(cfg.CallsEnabled)
 
 	// 6. Outbox Relay (background)
-	outboxRelay := service.NewOutboxRelay(store, lifecycleWriter, notificationWriter, analyticsWriter, logger, cfg.OutboxPollInterval)
+	// Account control (auth-service 30-day deletion): on
+	// user.purge_requested erase every calls.* row for the user in one
+	// transaction and ack as "call" through the same outbox relay, which
+	// routes user.purge_acked rows to platform.purge-acks.v1.
+	purgeAcksWriter := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:      cfg.KafkaBrokers,
+		Topic:        cfg.PurgeAcksTopic,
+		Balancer:     &kafka.Hash{},
+		RequiredAcks: int(kafka.RequireAll),
+		WriteTimeout: 10 * time.Second,
+		Dialer:       kafkaDialer,
+	})
+	defer purgeAcksWriter.Close()
+	outboxRelay := service.NewOutboxRelay(store, lifecycleWriter, notificationWriter, analyticsWriter, logger, cfg.OutboxPollInterval).
+		WithPurgeAcksWriter(purgeAcksWriter)
 	go outboxRelay.Start(ctx)
+
+	lifecycle := purge.NewConsumer(cfg.KafkaBrokers, cfg.IdentityKafkaTopic, cfg.IdentityKafkaGroupID, kafkaDialer,
+		purge.NewHandler("call", store, service.NewOutboxAckPublisher(store), nil, logger), logger)
+	defer func() { _ = lifecycle.Close() }()
+	go lifecycle.Start(ctx)
 
 	// 7. Ringing Timeout Worker (background)
 	timeoutWorker := service.NewRingingTimeoutWorker(store, svc, logger, cfg.RingTimeoutSeconds)

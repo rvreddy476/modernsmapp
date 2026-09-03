@@ -9,6 +9,7 @@ import (
 
 	dbschema "github.com/atpost/live-service/database"
 	"github.com/atpost/live-service/internal/http"
+	"github.com/atpost/live-service/internal/purge"
 	"github.com/atpost/live-service/internal/service"
 	"github.com/atpost/live-service/internal/store/postgres"
 	"github.com/atpost/live-service/internal/workers"
@@ -126,6 +127,18 @@ func main() {
 	})
 	defer workerKafkaWriter.Close()
 	workers.StartAll(ctx, store, workerKafkaWriter)
+
+	// Account control (auth-service 30-day deletion): end the user's live
+	// streams / audio rooms on user.deactivated / user.deletion_scheduled,
+	// and on user.purge_requested erase every live row keyed by the user in
+	// one transaction and ack as "live" onto platform.purge-acks.v1.
+	purgeAcks := purge.NewKafkaAckPublisher(kafkaBrokerList, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	lifecycle := purge.NewConsumer(kafkaBrokerList, env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
+		"live-service-account-lifecycle", kafkaDialer,
+		purge.NewHandler("live", store, purgeAcks, store, slog.Default()), slog.Default())
+	defer lifecycle.Close()
+	go lifecycle.Start(ctx)
 
 	// 7. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

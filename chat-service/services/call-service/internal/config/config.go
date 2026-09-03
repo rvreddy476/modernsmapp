@@ -17,6 +17,11 @@ type Config struct {
 	KafkaLifecycleTopic    string
 	KafkaNotificationTopic string
 	KafkaAnalyticsTopic    string
+	// Account control (auth-service 30-day deletion): identity topic the
+	// purge consumer reads, its group, and the acks topic it answers on.
+	IdentityKafkaTopic   string
+	IdentityKafkaGroupID string
+	PurgeAcksTopic       string
 	JWTSecret              string
 	// C7 — kid + previous-secret rotation knobs.
 	JWTKID             string
@@ -51,6 +56,9 @@ func Load() *Config {
 		KafkaLifecycleTopic:    getEnv("KAFKA_LIFECYCLE_TOPIC", "call.lifecycle"),
 		KafkaNotificationTopic: getEnv("KAFKA_NOTIFICATION_TOPIC", "call.notifications"),
 		KafkaAnalyticsTopic:    getEnv("KAFKA_ANALYTICS_TOPIC", "call.analytics"),
+		IdentityKafkaTopic:     getEnv("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
+		IdentityKafkaGroupID:   getEnv("IDENTITY_KAFKA_GROUP_ID", "call-service-account-lifecycle"),
+		PurgeAcksTopic:         getEnv("PURGE_ACKS_TOPIC", "platform.purge-acks.v1"),
 		JWTSecret:              getEnv("JWT_SECRET", ""),
 		JWTKID:                 getEnv("JWT_KID", "v1"),
 		JWTSecretPrevious:      getEnv("JWT_SECRET_PREVIOUS", ""),

@@ -12,6 +12,7 @@ import (
 	v2events "github.com/atpost/live-service-v2/internal/events"
 	v2http "github.com/atpost/live-service-v2/internal/http"
 	"github.com/atpost/live-service-v2/internal/livekit"
+	"github.com/atpost/live-service-v2/internal/purge"
 	"github.com/atpost/live-service-v2/internal/service"
 	pgstore "github.com/atpost/live-service-v2/internal/store/postgres"
 
@@ -110,6 +111,18 @@ func main() {
 		S3Bucket:               lkCfg.S3Bucket,
 		S3Endpoint:             lkCfg.S3Endpoint,
 	})
+
+	// Account control (auth-service 30-day deletion): end the creator's live
+	// streams on user.deactivated / user.deletion_scheduled, and on
+	// user.purge_requested erase every row keyed by the user in one
+	// transaction and ack as "live-v2" onto platform.purge-acks.v1.
+	purgeAcks := purge.NewKafkaAckPublisher(kafkaBrokers, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	lifecycle := purge.NewConsumer(kafkaBrokers, env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
+		"live-service-v2-account-lifecycle", kafkaDialer,
+		purge.NewHandler("live-v2", store, purgeAcks, store, slog.Default()), slog.Default())
+	defer lifecycle.Close()
+	go lifecycle.Start(ctx)
 
 	handler := v2http.New(svc)
 	if internalKey != "" {

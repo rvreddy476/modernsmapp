@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/dating-service/internal/matcher"
 	"github.com/atpost/dating-service/internal/moderation"
 	"github.com/atpost/dating-service/internal/payments"
+	"github.com/atpost/dating-service/internal/purge"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 	_ "github.com/atpost/dating-service/internal/telemetry" // register Pulse gauges
@@ -183,6 +184,20 @@ func main() {
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")
+
+	// Account control (auth-service 30-day deletion): pause the dating
+	// profile on user.deactivated / user.deletion_scheduled, resume on the
+	// reverse, and on user.purge_requested run the DPDP erase
+	// (store.PurgeUserData via service.PurgeProfile, plus the auxiliary
+	// tables it leaves) and ack as "dating" onto platform.purge-acks.v1.
+	purgeAcks := purge.NewKafkaAckPublisher(kafkaBrokers, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	datingEraser := purge.NewEraser(datingSvc, datingStore)
+	lifecycle := purge.NewConsumer(kafkaBrokers, env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
+		"dating-service-account-lifecycle", kafkaDialer,
+		purge.NewHandler("dating", datingEraser, purgeAcks, datingEraser, slog.Default()), slog.Default())
+	defer lifecycle.Close()
+	go lifecycle.Start(consumerCtx)
 
 	datingHandler := datinghttp.New(datingSvc)
 

@@ -37,6 +37,16 @@ func (s *Service) permissionFacts(ctx context.Context, actorID, targetID uuid.UU
 	if err != nil {
 		return permission.Facts{}, err
 	}
+	// Account control: a deactivated or deletion-scheduled account (either
+	// side) answers exactly like a blocked pair until it is reactivated or
+	// the deletion is cancelled. Nothing is erased on this path.
+	hidden, err := s.store.AnyHidden(ctx, actorID, targetID)
+	if err != nil {
+		return permission.Facts{}, err
+	}
+	if hidden {
+		actorBlockedTarget = true
+	}
 	// Second degree matters only when the pair is NOT directly connected —
 	// skip the extra EXISTS for the common connected case. A lookup failure
 	// fails toward "not second degree" (the strictly safer answer for every

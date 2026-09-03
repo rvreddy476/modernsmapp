@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/chat-call-service/internal/purge"
 	"github.com/atpost/chat-call-service/internal/store/postgres"
 	events "github.com/atpost/chat-shared/events"
 	"github.com/google/uuid"
@@ -18,8 +19,17 @@ type OutboxRelay struct {
 	lifecycle    *kafka.Writer
 	notification *kafka.Writer
 	analytics    *kafka.Writer
-	log          *slog.Logger
-	interval     time.Duration
+	// purgeAcks receives user.purge_acked rows (account control): the bare
+	// ack payload goes to platform.purge-acks.v1, keyed by user_id.
+	purgeAcks *kafka.Writer
+	log       *slog.Logger
+	interval  time.Duration
+}
+
+// WithPurgeAcksWriter routes user.purge_acked outbox rows to w.
+func (r *OutboxRelay) WithPurgeAcksWriter(w *kafka.Writer) *OutboxRelay {
+	r.purgeAcks = w
+	return r
 }
 
 func NewOutboxRelay(
@@ -60,6 +70,23 @@ func (r *OutboxRelay) poll(ctx context.Context) {
 	}
 
 	for _, e := range evts {
+		if e.EventType == purge.EventUserPurgeAcked {
+			// Account control ack: bare payload, not the envelope, so the
+			// wire shape matches every other service's ack. Left unpublished
+			// (and retried) when no writer is configured — never dropped.
+			if r.purgeAcks == nil {
+				r.log.Error("purge ack outbox row has no purge-acks writer; leaving unpublished", "id", e.ID)
+				continue
+			}
+			var ack purge.Ack
+			_ = json.Unmarshal(e.Payload, &ack)
+			if err := r.purgeAcks.WriteMessages(ctx, kafka.Message{Key: []byte(ack.UserID), Value: e.Payload}); err != nil {
+				r.log.Warn("purge ack publish failed", "err", err, "id", e.ID)
+				continue
+			}
+			_ = r.store.MarkPublished(ctx, e.ID)
+			continue
+		}
 		envelope := events.EventEnvelope{
 			EventID:    uuid.New().String(),
 			EventType:  e.EventType,

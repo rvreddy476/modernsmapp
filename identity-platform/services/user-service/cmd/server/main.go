@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/identity-user-service/database"
 	"github.com/atpost/identity-user-service/internal/config"
 	"github.com/atpost/identity-user-service/internal/events"
+	"github.com/atpost/identity-user-service/internal/purge"
 	"github.com/atpost/identity-user-service/internal/http"
 	"github.com/atpost/identity-user-service/internal/service"
 	"github.com/atpost/identity-user-service/internal/store"
@@ -140,6 +141,13 @@ func main() {
 
 	// 3b. Kafka consumer (inbox-dedup enabled)
 	consumer := events.NewConsumerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, kafkaDialer, dbPool, userSvc, logger)
+	// Account control (auth-service 30-day deletion): hide usr.users on
+	// user.deactivated / user.deletion_scheduled, unhide on the reverse, and
+	// on user.purge_requested erase usr.* rows (never auth.*) and ack as
+	// "user" onto platform.purge-acks.v1.
+	purgeAcks := purge.NewKafkaAckPublisher(cfg.KafkaBrokers, envOr("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer func() { _ = purgeAcks.Close() }()
+	consumer.WithLifecycleHandler(purge.NewHandler("user", userStore, purgeAcks, userStore, logger))
 	defer func() {
 		if err := consumer.Close(); err != nil {
 			logger.Warn("failed to close kafka consumer", "err", err)

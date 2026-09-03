@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
+	"github.com/atpost/graph-service/internal/purge"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,11 +29,20 @@ type Consumer struct {
 	// request toward that user. A callback rather than a *service.Service
 	// because service imports this package (import cycle).
 	onAccountPublic func(ctx context.Context, userID uuid.UUID) error
+	// lifecycle handles user.deactivated / deletion_scheduled / reactivated /
+	// deletion_cancelled / purge_requested (see internal/purge). Optional.
+	lifecycle *purge.Handler
 }
 
 // WithAccountPublicHook wires the private→public auto-accept.
 func (c *Consumer) WithAccountPublicHook(fn func(ctx context.Context, userID uuid.UUID) error) *Consumer {
 	c.onAccountPublic = fn
+	return c
+}
+
+// WithLifecycleHandler wires the account-control (hide / purge) handler.
+func (c *Consumer) WithLifecycleHandler(h *purge.Handler) *Consumer {
+	c.lifecycle = h
 	return c
 }
 
@@ -51,34 +62,66 @@ func NewConsumer(brokers []string, topic string, dialer *kafka.Dialer, db *pgxpo
 	return &Consumer{reader: r, db: db, rdb: rdb}
 }
 
+// Start consumes the identity topic until ctx is cancelled.
+//
+// The loop fetches, handles, and commits only afterwards. Account-control
+// events (purge in particular) are retried in place until durable — the
+// offset never advances past an unacked purge, because Kafka offsets are
+// cumulative and committing a later message would silently commit the failed
+// one too. The pre-existing handlers keep their log-and-continue behaviour.
 func (c *Consumer) Start(ctx context.Context) {
 	log.Println("Starting Kafka consumer...")
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				log.Println("graph-service identity consumer shutting down")
+				return
+			}
 			log.Printf("Error reading message: %v\n", err)
-			break
-		}
-
-		var envelope events.EventEnvelope
-		if err := json.Unmarshal(m.Value, &envelope); err != nil {
-			log.Printf("Error unmarshalling event: %v\n", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
 
-		switch envelope.EventType {
-		case events.EventUserDeletionRequested:
-			if err := c.handleUserDeletionRequested(ctx, envelope.Payload); err != nil {
-				log.Printf("Error handling user.deletion_requested: %v\n", err)
-			}
-		case EventUserSettingsChanged:
-			if err := c.handleUserSettingsChanged(ctx, envelope.Payload); err != nil {
-				log.Printf("Error handling user.settings_changed: %v\n", err)
-			}
-		default:
-			// Ignore other events
+		if !c.handle(ctx, m) {
+			return // shutting down; leave the offset for redelivery
+		}
+
+		commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		if err := c.reader.CommitMessages(commitCtx, m); err != nil {
+			log.Printf("Warning: offset commit failed, message will be redelivered: %v\n", err)
+		}
+		cancel()
+	}
+}
+
+// handle processes one message. Reports false only on shutdown.
+func (c *Consumer) handle(ctx context.Context, m kafka.Message) bool {
+	var envelope events.EventEnvelope
+	if err := json.Unmarshal(m.Value, &envelope); err != nil {
+		log.Printf("Error unmarshalling event (skipping, cannot ever succeed): %v\n", err)
+		return true
+	}
+
+	switch envelope.EventType {
+	case events.EventUserDeletionRequested:
+		if err := c.handleUserDeletionRequested(ctx, envelope.Payload); err != nil {
+			log.Printf("Error handling user.deletion_requested: %v\n", err)
+		}
+	case EventUserSettingsChanged:
+		if err := c.handleUserSettingsChanged(ctx, envelope.Payload); err != nil {
+			log.Printf("Error handling user.settings_changed: %v\n", err)
+		}
+	default:
+		if c.lifecycle != nil && purge.Handles(envelope.EventType) {
+			return c.lifecycle.HandleUntilDurable(ctx, envelope.EventType, envelope.Payload)
 		}
 	}
+	return true
 }
 
 func (c *Consumer) handleUserDeletionRequested(ctx context.Context, payload json.RawMessage) error {

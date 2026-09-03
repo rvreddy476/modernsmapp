@@ -181,3 +181,9 @@ CREATE TABLE IF NOT EXISTS page_verification_documents (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_pvd_page_id ON page_verification_documents(page_id);
+
+-- Account control (auth-service 30-day deletion flow): user.deactivated /
+-- user.deletion_scheduled hide the projection row, user.purge_requested
+-- erases it. deleted_at backs the legacy user.deletion_requested soft-delete.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;

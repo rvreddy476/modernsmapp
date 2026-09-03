@@ -299,6 +299,7 @@ func (s *Store) GetFollowers(ctx context.Context, userID uuid.UUID, limit, offse
 	rows, err := s.db.Query(ctx, `
 		SELECT follower_id FROM follows
 		WHERE followee_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = follows.follower_id)
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`, userID, limit, offset)
@@ -343,6 +344,7 @@ func (s *Store) GetFollowersCursor(ctx context.Context, userID uuid.UUID, limit 
 	q := `
 		SELECT follower_id, created_at FROM follows
 		WHERE followee_id = $1` + cursorClause + `
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = follows.follower_id)
 		ORDER BY created_at DESC, follower_id DESC
 		LIMIT $` + strconv.Itoa(len(args))
 	rows, err := s.db.Query(ctx, q, args...)
@@ -413,6 +415,7 @@ func (s *Store) GetFollowingCursor(ctx context.Context, userID uuid.UUID, limit 
 	q := `
 		SELECT followee_id, created_at FROM follows
 		WHERE follower_id = $1` + cursorClause + `
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = follows.followee_id)
 		ORDER BY created_at DESC, followee_id DESC
 		LIMIT $` + strconv.Itoa(len(args))
 	rows, err := s.db.Query(ctx, q, args...)
@@ -448,6 +451,7 @@ func (s *Store) GetFollowing(ctx context.Context, userID uuid.UUID, limit, offse
 	rows, err := s.db.Query(ctx, `
 		SELECT followee_id FROM follows
 		WHERE follower_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = follows.followee_id)
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`, userID, limit, offset)

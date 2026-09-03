@@ -129,6 +129,21 @@ func (s *Service) resolveGeneralDelivery(ctx context.Context, userID uuid.UUID, 
 }
 
 func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string, suppressPush bool) error {
+	// Account control: a deactivated or deletion-scheduled recipient gets
+	// nothing at all (no inbox row, no realtime, no push). Fail closed on a
+	// lookup error — a notification that should have been suppressed is
+	// worse than one delivered late after the account comes back.
+	if s.pgStore != nil {
+		suppressed, err := s.pgStore.IsSuppressed(ctx, userID)
+		if err != nil {
+			slog.Warn("notification suppression lookup failed; dropping", "user_id", userID, "type", notifType, "err", err)
+			return nil
+		}
+		if suppressed {
+			return nil
+		}
+	}
+
 	// 0. Preferences FIRST. Previously this path stored + published
 	// unconditionally and only checked the master push toggle at the very
 	// end, so per-category and in-app toggles were dead letters.

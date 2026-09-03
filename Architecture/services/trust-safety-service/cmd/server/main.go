@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/trust-safety-service/database"
 	tsevents "github.com/atpost/trust-safety-service/internal/events"
 	"github.com/atpost/trust-safety-service/internal/http"
+	"github.com/atpost/trust-safety-service/internal/purge"
 	"github.com/atpost/trust-safety-service/internal/reconcile"
 	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
@@ -167,6 +168,21 @@ func main() {
 	)
 	go storyConsumer.Start(ctx)
 	slog.Info("story moderation evaluator consumer started", "topic", "social.events.v1")
+
+	// Account control (auth-service 30-day deletion): on
+	// user.purge_requested erase the user's trust slice (filters, appeals,
+	// teen row, trust state, strikes, grievances, verifications; reports
+	// they filed are kept as evidence with the reporter anonymised) in one
+	// transaction and ack as "trust-safety" onto platform.purge-acks.v1.
+	// Trust state is not a public surface, so hide is a no-op here.
+	purgeAcks := purge.NewKafkaAckPublisher(strings.Split(kafkaBrokers, ","),
+		env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	lifecycle := purge.NewConsumer(strings.Split(kafkaBrokers, ","),
+		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), "trust-safety-account-lifecycle", kafkaDialer,
+		purge.NewHandler("trust-safety", store, purgeAcks, nil, slog.Default()), slog.Default())
+	defer lifecycle.Close()
+	go lifecycle.Start(ctx)
 
 	// 8. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/purge"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
@@ -50,6 +51,15 @@ type IdentityConsumer struct {
 	reader *kafka.Reader
 	store  ProfileUpserter
 	log    *slog.Logger
+	// lifecycle handles account control (hide / unhide / purge + ack).
+	// Optional; see internal/purge.
+	lifecycle *purge.Handler
+}
+
+// WithLifecycleHandler wires the account-control handler.
+func (c *IdentityConsumer) WithLifecycleHandler(h *purge.Handler) *IdentityConsumer {
+	c.lifecycle = h
+	return c
 }
 
 func NewIdentityConsumer(brokers []string, topic, groupID string, store ProfileUpserter, logger *slog.Logger) *IdentityConsumer {
@@ -130,6 +140,15 @@ func (c *IdentityConsumer) processMessage(ctx context.Context, message kafka.Mes
 	case identityUserSettingsChanged:
 		return c.handleUserSettingsChanged(ctx, envelope.Payload)
 	default:
+		if c.lifecycle != nil && purge.Handles(envelope.EventType) {
+			// handleUntilDurable already retries in place; a permanent
+			// decode failure is poison and must not block the partition.
+			err := c.lifecycle.Handle(ctx, envelope.EventType, envelope.Payload)
+			if errors.Is(err, purge.ErrPermanent) {
+				return permanentEventError{err}
+			}
+			return err
+		}
 		return nil
 	}
 }

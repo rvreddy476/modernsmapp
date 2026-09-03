@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/atpost/chat-message-service/internal/purge"
 	"github.com/atpost/chat-message-service/internal/ratelimit"
 	"github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/atpost/chat-message-service/internal/store/scylla"
@@ -100,6 +101,34 @@ type EventProducer interface {
 	Close() error
 }
 
+// HiddenUserStore reports which of the given users are hidden by account
+// control (chat.user_profiles.hidden).
+type HiddenUserStore interface {
+	HiddenUsers(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
+}
+
+// SetPurgeAckProducer wires the producer the outbox relay uses for
+// user.purge_acked rows (platform.purge-acks.v1).
+func (s *Service) SetPurgeAckProducer(p EventProducer) { s.purgeAckProducer = p }
+
+// SetHiddenUserStore wires the account-control hidden lookup.
+func (s *Service) SetHiddenUserStore(h HiddenUserStore) { s.hiddenUsers = h }
+
+// isHidden reports whether one user is hidden; a lookup failure fails
+// closed (treated as hidden) because silence is always the safe answer for
+// presence and typing.
+func (s *Service) isHidden(ctx context.Context, userID uuid.UUID) bool {
+	if s.hiddenUsers == nil {
+		return false
+	}
+	m, err := s.hiddenUsers.HiddenUsers(ctx, []uuid.UUID{userID})
+	if err != nil {
+		s.log.Warn("hidden-user lookup failed; treating as hidden", "user_id", userID, "err", err)
+		return true
+	}
+	return m[userID]
+}
+
 // --- Response Types ---
 
 type MemberWithProfile struct {
@@ -180,6 +209,12 @@ type Service struct {
 	rateLimiter        *ratelimit.Limiter
 	producer           EventProducer
 	log                *slog.Logger
+	// purgeAckProducer writes user.purge_acked outbox rows to the
+	// platform purge-acks topic (account control). Optional.
+	purgeAckProducer EventProducer
+	// hiddenUsers answers "is this user deactivated / deletion-scheduled":
+	// hidden users are reported offline and never publish typing. Optional.
+	hiddenUsers HiddenUserStore
 	pollInterval       time.Duration
 	userServiceURL     string
 	identityUserURL    string
@@ -1437,6 +1472,23 @@ func (s *Service) processOutbox(ctx context.Context) {
 	}
 
 	for _, e := range events {
+		if e.EventType == purge.EventUserPurgeAcked {
+			// Account control ack rides the same durable outbox but lands on
+			// platform.purge-acks.v1. Left unpublished (retried) when no ack
+			// producer is configured — never dropped.
+			if s.purgeAckProducer == nil {
+				s.log.Error("purge ack outbox row has no purge-acks producer; leaving unpublished", "event_id", e.ID)
+				continue
+			}
+			if err := s.purgeAckProducer.PublishRaw(ctx, e.EventType, purge.AckUserID(e.Payload), e.Payload); err != nil {
+				s.log.Error("failed to publish purge ack", "err", err, "event_id", e.ID)
+				continue
+			}
+			if err := s.convStore.MarkOutboxEventPublished(ctx, e.ID); err != nil {
+				s.log.Error("failed to mark purge ack published", "err", err, "event_id", e.ID)
+			}
+			continue
+		}
 		if err := s.producer.PublishRaw(ctx, e.EventType, "", e.Payload); err != nil {
 			s.log.Error("failed to publish outbox event", "err", err, "event_id", e.ID, "event_type", e.EventType)
 			continue
@@ -1669,6 +1721,10 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 	if p := s.GetChatPolicy(ctx, userID); !p.Known || p.ChatPaused || !p.SendTypingIndicators {
 		return nil
 	}
+	// Account control: a deactivated / deletion-scheduled user is silent.
+	if s.isHidden(ctx, userID) {
+		return nil
+	}
 
 	// Set a short-lived key as typing indicator
 	typingKey := fmt.Sprintf("typing:%s:%s", conversationID, userID)
@@ -1846,9 +1902,20 @@ func (s *Service) GetPresence(ctx context.Context, requesterID uuid.UUID, userID
 		return map[string]bool{}, nil
 	}
 
+	// Account control: hidden users are always offline to everyone.
+	hidden := map[uuid.UUID]bool{}
+	if s.hiddenUsers != nil {
+		if m, err := s.hiddenUsers.HiddenUsers(ctx, userIDs); err != nil {
+			s.log.Warn("hidden-user lookup failed; reporting all offline", "err", err)
+			return map[string]bool{}, nil
+		} else {
+			hidden = m
+		}
+	}
+
 	presence := make(map[string]bool, len(userIDs))
 	for i, id := range userIDs {
-		online := results[i] != nil
+		online := results[i] != nil && !hidden[id]
 		if online && id != requesterID {
 			online = s.discloseOnlineTo(ctx, requesterID, id)
 		}

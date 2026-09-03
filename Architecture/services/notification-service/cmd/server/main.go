@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/notification-service/internal/events"
 	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/http"
+	"github.com/atpost/notification-service/internal/purge"
 	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/service"
 	"github.com/atpost/notification-service/internal/store/postgres"
@@ -369,6 +370,20 @@ func main() {
 	)
 	go foodConsumer.Start(ctx)
 	slog.Info("kafka food consumer started", "topic", foodTopic)
+
+	// 9a. Account control (auth-service 30-day deletion): suppress deliveries
+	// on user.deactivated / user.deletion_scheduled, lift on the reverse,
+	// and on user.purge_requested erase the inbox partitions + Postgres rows
+	// and ack as "notification" onto platform.purge-acks.v1.
+	purgeAcks := purge.NewKafkaAckPublisher(strings.Split(kafkaBrokers, ","),
+		env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+	defer purgeAcks.Close()
+	lifecycle := purge.NewConsumer(strings.Split(kafkaBrokers, ","),
+		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), "notification-service-account-lifecycle", kafkaDialer,
+		purge.NewHandler("notification", purge.NewEraser(scyllaStore, pgStore), purgeAcks, pgStore, slog.Default()),
+		slog.Default())
+	defer lifecycle.Close()
+	go lifecycle.Start(ctx)
 
 	// 9b. Background workers
 	go workers.StartCleanupWorker(ctx, session)

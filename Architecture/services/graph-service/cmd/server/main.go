@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/graph-service/database"
 	"github.com/atpost/graph-service/internal/events"
 	graphHttp "github.com/atpost/graph-service/internal/http"
+	"github.com/atpost/graph-service/internal/purge"
 	"github.com/atpost/graph-service/internal/reconcile"
 	"github.com/atpost/graph-service/internal/service"
 	"github.com/atpost/graph-service/internal/store"
@@ -25,6 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/segmentio/kafka-go"
 )
 
 func main() {
@@ -135,8 +137,25 @@ func main() {
 		}
 		return err
 	})
+	// Account control (auth-service 30-day deletion): hide on
+	// user.deactivated / user.deletion_scheduled, unhide on the reverse, and
+	// on user.purge_requested erase every graph row for the user in one
+	// transaction, then ack as "graph" onto platform.purge-acks.v1 through
+	// the same outbox relay that carries every other graph event.
+	purgeAcksTopic := env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic)
+	purgeAcksWriter := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:      strings.Split(kafkaBrokers, ","),
+		Topic:        purgeAcksTopic,
+		Balancer:     &kafka.Hash{},
+		RequiredAcks: int(kafka.RequireAll),
+		Dialer:       kafkaDialer,
+	})
+	defer purgeAcksWriter.Close()
+	identityConsumer.WithLifecycleHandler(purge.NewHandler(
+		"graph", graphStore, events.NewOutboxAckPublisher(graphStore), graphStore, slog.Default()))
 	go identityConsumer.Start(ctx)
-	slog.Info("identity events consumer started", "topic", identityTopic)
+	slog.Info("identity events consumer started", "topic", identityTopic,
+		"lifecycle", "hide/purge enabled", "purge_acks_topic", purgeAcksTopic)
 
 	// Module 3 SR-2 — the outbox relay.
 	//
@@ -149,7 +168,7 @@ func main() {
 	//
 	// Multiple replicas may run this concurrently — rows are leased with
 	// FOR UPDATE SKIP LOCKED, so each row is delivered by exactly one replica.
-	go graphStore.RunRelay(ctx, events.NewOutboxPublisher(producer),
+	go graphStore.RunRelay(ctx, events.NewOutboxPublisher(producer).WithPurgeAcksWriter(purgeAcksWriter),
 		store.DefaultRelayConfig(), func(format string, args ...any) {
 			slog.Warn(fmt.Sprintf(format, args...))
 		})
