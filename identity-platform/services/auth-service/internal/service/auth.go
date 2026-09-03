@@ -667,13 +667,17 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 //   - Different specific IP but same /24 subnet, same UA family:
 //     rotate but record a low-risk anomaly (legitimate — minor LAN
 //     reassignment).
-//   - Different /24 OR different UA family: HIGH risk. Refresh is
-//     denied; user must re-authenticate. A11 tightened the policy
-//     here: previously we required BOTH subnet AND UA to differ
-//     (which left obvious carrier-IP-rotation + cookie-theft replay
-//     attacks undetected). Now either signal alone is enough — a
-//     stolen refresh token replayed from a different network OR a
-//     different browser family burns the session.
+//   - Different /24 (or /48), same UA family: MEDIUM risk. Rotate, and
+//     record an anomaly the user can see in the security inbox. This is
+//     NOT a denial: a phone moves between Wi-Fi and cellular, and between
+//     IPv4 and IPv6 egress, many times a day. Once the gateway forwards
+//     real client addresses (TRUSTED_PROXIES), treating a network change
+//     as theft signed every mobile user out within hours — observed on
+//     the dev tunnel the same day it was enabled. A11's "either signal
+//     alone burns the session" is therefore narrowed to the UA signal.
+//   - Different UA family: HIGH risk. A refresh token replayed from a
+//     different client is the theft shape worth burning the session for.
+//     Refresh is denied and the session revoked.
 //   - Session previously marked anomaly_flagged: deny regardless.
 //
 // `ip` and `userAgent` come from the HTTP handler (gin.ClientIP +
@@ -704,7 +708,19 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 	ipChanged := ip != "" && sess.IP != "" && ip != sess.IP
 	subnetChanged := ip != "" && sess.IP != "" && !sameSubnet(sess.IP, ip)
 	uaChanged := userAgent != "" && sess.UserAgent != "" && !sameUserAgentFamily(sess.UserAgent, userAgent)
-	highRisk := subnetChanged || uaChanged
+	highRisk := uaChanged
+
+	if subnetChanged && !highRisk {
+		// A different network on the same client: normal for a phone.
+		// Rotate as usual, but leave a visible, non-flagging record.
+		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "new_ip",
+			ip, userAgent, sess.DeviceID, "", 40, false, map[string]any{
+				"reason":       "refresh_network_changed",
+				"original_ip":  sess.IP,
+				"presented_ip": ip,
+				"session_id":   sess.ID.String(),
+			})
+	}
 
 	if highRisk {
 		// Don't issue a new pair. Log + record an anomaly so the user
