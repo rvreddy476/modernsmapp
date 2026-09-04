@@ -3,6 +3,7 @@ package com.us.android.feature.post.data
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.post.data.dto.CreatePostRequest
 import com.us.android.feature.post.data.dto.PostDto
+import kotlinx.serialization.Serializable
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
@@ -50,3 +51,23 @@ interface PostApi {
         @Body body: CreatePostRequest,
     ): ApiEnvelope<PostDto>
 }
+
+/**
+ * The reel category list — `{"data":[{"id":"comedy","label":"Comedy"},…]}`.
+ *
+ * Its own interface rather than a method on [PostApi]: the read is
+ * reel-only, and every fake `PostApi` in the tests would otherwise grow a
+ * member it never calls. Landed server-side 2026-09-04; the reel form still
+ * keeps a fallback list for when the call fails.
+ */
+interface PostCategoriesApi {
+
+    @GET("v1/posts/categories")
+    suspend fun categories(): ApiEnvelope<List<PostCategoryDto>>
+}
+
+@Serializable
+data class PostCategoryDto(
+    val id: String = "",
+    val label: String = "",
+)

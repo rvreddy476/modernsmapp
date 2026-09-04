@@ -23,7 +23,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -75,8 +74,10 @@ import java.io.File
  *    taller body, posted as `content_type: post` with the title set.
  *  - **Photo** — the in-app gallery grid (camera as its first tile), then the
  *    Post Studio with the picks already imported. Unchanged.
- *  - **Reel** — the same grid over videos; one tap picks, then title +
- *    caption + Post; upload/transcode/publish states shown honestly.
+ *  - **Reel** — the same grid over videos; one tap picks, then the
+ *    TikTok-shaped form in [ReelSurface]: description, cover strip, tag
+ *    people, location, audience, category, switches; upload/transcode/
+ *    publish states shown honestly.
  *  - **Audio** — record a voice note or pick a track, preview, caption, post
  *    as a `voice` post. See [VoicePublishViewModel] for what the server
  *    accepts today.
@@ -245,7 +246,7 @@ private fun ImageSourceSurface(onClose: () -> Unit, onOpenStudio: (uris: List<St
  * A refusal leaves the gallery and system picker as the way in.
  */
 @Composable
-private fun rememberCameraLaunch(capture: () -> Unit): () -> Unit {
+internal fun rememberCameraLaunch(capture: () -> Unit): () -> Unit {
     val context = LocalContext.current
     val latest = rememberUpdatedState(capture)
     val request = rememberLauncherForActivityResult(
@@ -259,174 +260,10 @@ private fun rememberCameraLaunch(capture: () -> Unit): () -> Unit {
 }
 
 /** A grantable cache URI for the system camera to write into. */
-private fun captureUri(context: android.content.Context, extension: String): android.net.Uri {
+internal fun captureUri(context: android.content.Context, extension: String): android.net.Uri {
     val dir = File(context.cacheDir, "create_capture").apply { mkdirs() }
     val file = File(dir, "capture_${System.currentTimeMillis()}.$extension")
     return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-}
-
-// ════════════════════════════════════════════════════════════════════════
-// REEL — pick or record a video, then title + caption + Post
-// ════════════════════════════════════════════════════════════════════════
-
-// LongMethod/complexity: one surface, one composable — the branches ARE the
-// upload/processing/posting state machine, rendered honestly.
-@Suppress("LongMethod", "CyclomaticComplexMethod")
-@Composable
-private fun ReelSurface(
-    onClose: () -> Unit,
-    onPublished: (postId: String) -> Unit,
-    viewModel: ReelPublishViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    var cameraTarget by remember { mutableStateOf<android.net.Uri?>(null) }
-
-    val pickVideo = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let(viewModel::onVideoPicked) }
-
-    val captureVideo = rememberLauncherForActivityResult(
-        ActivityResultContracts.CaptureVideo(),
-    ) { saved -> if (saved) cameraTarget?.let(viewModel::onVideoPicked) }
-
-    val openCamera = rememberCameraLaunch {
-        val target = captureUri(context, "mp4")
-        cameraTarget = target
-        captureVideo.launch(target)
-    }
-    if (state.videoUri == null) {
-        MediaGallerySurface(
-            kind = GalleryKind.Videos,
-            title = "New reel",
-            subtitle = "Pick a video — it posts to Reels.",
-            onClose = onClose,
-            onCamera = openCamera,
-            onPicked = { uris -> uris.firstOrNull()?.let(viewModel::onVideoPicked) },
-            onSystemPicker = {
-                pickVideo.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
-                )
-            },
-        )
-        return
-    }
-
-    val busy = state.phase is ReelPublishViewModel.Phase.Uploading ||
-        state.phase is ReelPublishViewModel.Phase.Processing ||
-        state.phase is ReelPublishViewModel.Phase.Posting
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        CreateTopBar(title = CreateSurface.Reel.label, onClose = onClose) {
-            PublishPill(
-                text = if (state.phase is ReelPublishViewModel.Phase.Failure) "Try again" else "Post",
-                enabled = state.canPost && !busy,
-                busy = busy,
-                onClick = viewModel::onPost,
-                description = when {
-                    busy -> "Post reel. In progress."
-                    state.canPost -> "Post reel"
-                    else -> "Post reel. Unavailable: add a title first."
-                },
-                testTag = "reel-post",
-            )
-        }
-
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = UsTheme.spacing.pageHorizontal),
-        ) {
-            // The chosen video, stated as a fact with a way out.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(UsTheme.radii.medium))
-                    .background(UsTheme.extended.bgCard)
-                    .padding(UsTheme.spacing.m),
-            ) {
-                Icon(UsIcons.Reels, contentDescription = null, tint = UsTheme.extended.textMuted)
-                Spacer(Modifier.width(UsTheme.spacing.m))
-                Text(
-                    "Video selected",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = UsTheme.extended.textPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(
-                    onClick = {
-                        pickVideo.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
-                        )
-                    },
-                    enabled = state.phase is ReelPublishViewModel.Phase.Editing ||
-                        state.phase is ReelPublishViewModel.Phase.Failure,
-                ) { Text("Change") }
-            }
-
-            Spacer(Modifier.height(UsTheme.spacing.m))
-            OutlinedTextField(
-                value = state.title,
-                onValueChange = viewModel::onTitleChanged,
-                label = { Text("Title") },
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("reel-title"),
-            )
-            Spacer(Modifier.height(UsTheme.spacing.s))
-            OutlinedTextField(
-                value = state.caption,
-                onValueChange = viewModel::onCaptionChanged,
-                label = { Text("Caption") },
-                minLines = 2,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("reel-caption"),
-            )
-
-            Spacer(Modifier.height(UsTheme.spacing.m))
-
-            when (val phase = state.phase) {
-                is ReelPublishViewModel.Phase.Uploading -> {
-                    LinearProgressIndicator(
-                        progress = { phase.fraction },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    StatusLine("Uploading video… ${(phase.fraction * PERCENT).toInt()}%")
-                }
-                is ReelPublishViewModel.Phase.Processing ->
-                    StatusLine("Processing video — this can take a couple of minutes…")
-                is ReelPublishViewModel.Phase.Posting -> StatusLine("Posting…")
-                is ReelPublishViewModel.Phase.Failure -> {
-                    Text(
-                        phase.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    Spacer(Modifier.height(UsTheme.spacing.s))
-                }
-                is ReelPublishViewModel.Phase.Published -> {
-                    // Navigate on the SERVER's id, once.
-                    LaunchedEffect(phase.postId) { onPublished(phase.postId) }
-                }
-                is ReelPublishViewModel.Phase.Editing -> Unit
-            }
-            Spacer(Modifier.height(UsTheme.spacing.xl))
-        }
-    }
-}
-
-@Composable
-private fun StatusLine(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.bodySmall,
-        color = UsTheme.extended.textMuted,
-        modifier = Modifier.padding(vertical = UsTheme.spacing.s),
-    )
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -560,7 +397,6 @@ private fun PollSurface(
 // ── Constants ───────────────────────────────────────────────────────────
 
 private const val MAX_PICK = 10
-private const val PERCENT = 100
 private val QUESTION_TEXT_SIZE = 19.sp
 private val TOP_BAR_TITLE_SIZE = 17.sp
 private val TAP_TARGET = 40.dp

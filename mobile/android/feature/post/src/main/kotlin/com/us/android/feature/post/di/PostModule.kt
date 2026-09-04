@@ -1,6 +1,8 @@
 package com.us.android.feature.post.di
 
+import com.us.android.feature.post.data.PeopleSearchApi
 import com.us.android.feature.post.data.PostApi
+import com.us.android.feature.post.data.PostCategoriesApi
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -22,4 +24,16 @@ object PostModule {
     @Provides
     @Singleton
     fun providePostApi(retrofit: Retrofit): PostApi = retrofit.create(PostApi::class.java)
+
+    /** The reel form's category picker. */
+    @Provides
+    @Singleton
+    fun providePostCategoriesApi(retrofit: Retrofit): PostCategoriesApi =
+        retrofit.create(PostCategoriesApi::class.java)
+
+    /** The reel form's "Tag people" search — search-service through the gateway. */
+    @Provides
+    @Singleton
+    fun providePeopleSearchApi(retrofit: Retrofit): PeopleSearchApi =
+        retrofit.create(PeopleSearchApi::class.java)
 }

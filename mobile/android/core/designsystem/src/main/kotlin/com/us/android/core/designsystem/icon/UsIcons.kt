@@ -407,6 +407,32 @@ object UsIcons {
     /** Alias for the follow-requests panel — same glyph as [UserPlus]. */
     val Requests: ImageVector get() = UserPlus
 
+    /** Lucide `map-pin` — the reel form's "Add location" row. */
+    val MapPin: ImageVector = lucideStroked(
+        "MapPin",
+        "M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0",
+        "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6",
+    )
+
+    /** Lucide `globe` — audience rows. */
+    val Globe: ImageVector = lucideStroked(
+        "Globe",
+        "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20",
+        "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20",
+        "M2 12h20",
+    )
+
+    /** Lucide `tag` — category rows. */
+    val Tag: ImageVector = lucideStroked(
+        "Tag",
+        "M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 " +
+            "2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z",
+        "M7.5 8a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1",
+    )
+
+    /** Lucide `check` — a chosen option. */
+    val Check: ImageVector = lucideStroked("Check", "M20 6 9 17l-5-5")
+
     /** A right arrow — the chat send glyph (the design's circular send). */
     val Forward: ImageVector = stroked("Forward") {
         moveTo(4f, 12f)

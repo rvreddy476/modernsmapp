@@ -115,8 +115,50 @@ data class CreatePostRequest(
     /**
      * Reel title. Present exactly when [contentType] is `flick`; omitted
      * otherwise, for the same byte-stability reason as [poll].
+     *
+     * The reel form has no title field (founder, 2026-09-04): the caption is
+     * the only text, so a reel sends `""` and relies on the server's relaxed
+     * title requirement.
      */
     val title: String? = null,
+
+    // ── Reel-only fields ────────────────────────────────────────────────
+    //
+    // Every one is nullable with a null default, so a request that does not
+    // set it is byte-identical to the request before the field existed —
+    // Studio's frozen replay bytes and the wire tests depend on that. The
+    // reel form sets all four switches EXPLICITLY, including their defaults:
+    // `allow_download` omitted is "unspecified", not "true".
+
+    /** The "Allow comments" switch, inverted: `true` turns comments off. */
+    @SerialName("no_comments") val noComments: Boolean? = null,
+
+    /** The "Hide share button" switch. */
+    @SerialName("hide_share") val hideShare: Boolean? = null,
+
+    /** The "Allow download" switch. */
+    @SerialName("allow_download") val allowDownload: Boolean? = null,
+
+    /**
+     * The "Allow remix" switch, as the server's `remix_setting`:
+     * [REMIX_ALLOW] or [REMIX_DISALLOW]. There is no `allow_remix` bool.
+     */
+    @SerialName("remix_setting") val remixSetting: String? = null,
+
+    /** A category id from `GET /v1/posts/categories`; omitted when "None". */
+    val category: String? = null,
+
+    /**
+     * The chosen cover frame, uploaded as an IMAGE through the same path the
+     * composer uses for a photo and confirmed ready+passed before this is set.
+     */
+    @SerialName("cover_media_id") val coverMediaId: String? = null,
+
+    /** People tagged on the reel, by user id. Omitted when nobody is tagged. */
+    @SerialName("tagged_user_ids") val taggedUserIds: List<String>? = null,
+
+    /** A typed place name. No coordinates: this pass has no maps SDK. */
+    @SerialName("location_name") val locationName: String? = null,
 )
 
 /**
@@ -167,6 +209,10 @@ const val VISIBILITY_PRIVATE = "private"
 const val CONTENT_TYPE_POST = "post"
 const val CONTENT_TYPE_POLL = "poll"
 const val CONTENT_TYPE_FLICK = "flick"
+
+/** `remix_setting` values — the only two the create handler accepts. */
+const val REMIX_ALLOW = "allow"
+const val REMIX_DISALLOW = "disallow"
 
 /**
  * A voice post — `post-service/internal/service/post.go:562`
