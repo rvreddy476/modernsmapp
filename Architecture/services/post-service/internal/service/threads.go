@@ -164,6 +164,8 @@ func (s *Service) CreateThread(ctx context.Context, input *CreateThreadInput) ([
 			ReviewStatus: reviewStatus,
 			ThreadRootID: &root,
 			ThreadSeq:    seq,
+			// Threads have no download switch; the column default applies.
+			AllowDownload: true,
 			// created_at increments by sequence so chronological surfaces
 			// order entries deterministically even at equal timestamps.
 			CreatedAt: now.Add(time.Duration(i) * time.Millisecond),

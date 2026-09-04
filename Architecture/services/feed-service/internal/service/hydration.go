@@ -66,6 +66,30 @@ type HydratedPost struct {
 	VideoMetadata   json.RawMessage `json:"video_metadata,omitempty"`
 	RichText        json.RawMessage `json:"rich_text,omitempty"`
 
+	// Per-reel controls, category, tagged people and location (2026-09-04).
+	//
+	// This struct is decoded from post-service by field name, so anything not
+	// declared here is dropped between post-service and the feed item. These
+	// are what the reel player needs to decide which action buttons to show,
+	// and they were being thrown away.
+	//
+	// The three switches are never omitempty: the player cannot tell
+	// "downloads allowed" from "field missing", and post-service emits them
+	// on every post. `location_name` is the composer's field; the older
+	// `location` above was never populated by post-service and is kept only
+	// so an existing reader does not break.
+	Title         string      `json:"title,omitempty"`
+	NoComments    bool        `json:"no_comments"`
+	HideShare     bool        `json:"hide_share"`
+	AllowDownload bool        `json:"allow_download"`
+	RemixSetting  string      `json:"remix_setting,omitempty"`
+	Category      string      `json:"category,omitempty"`
+	Tags          []string    `json:"tags,omitempty"`
+	TaggedUserIDs []uuid.UUID `json:"tagged_user_ids,omitempty"`
+	LocationName  *string     `json:"location_name,omitempty"`
+	LocationLat   *float64    `json:"location_lat,omitempty"`
+	LocationLng   *float64    `json:"location_lng,omitempty"`
+
 	// Repost metadata — populated when this entry is a repost in someone's timeline
 	IsRepost        bool       `json:"is_repost,omitempty"`
 	RepostedBy      *uuid.UUID `json:"reposted_by,omitempty"`

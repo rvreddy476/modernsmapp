@@ -418,6 +418,14 @@ type CreatePostInput struct {
 	CoverMediaID      *uuid.UUID
 	OriginalAudioVol  float32
 	OverlayAudioVol   float32
+	// Per-reel controls (2026-09-04). AllowDownload is a plain bool like
+	// ShareToPostbook: the HANDLER resolves an omitted field to true, so
+	// every other constructor of this input must set it deliberately.
+	HideShare     bool
+	AllowDownload bool
+	// TaggedUserIDs is already parsed; NormalizeTaggedUsers decides what
+	// is stored.
+	TaggedUserIDs []uuid.UUID
 	// Distribution is the raw policy document from the client (P0-1).
 	// nil = no policy = legacy behavior. Validated by ParseDistributionPolicy.
 	Distribution json.RawMessage
@@ -705,6 +713,25 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, flick, or long_video", contentType)
 	}
 
+	// Flick category is a closed taxonomy (categories.go). Only flicks: the
+	// long-video path still carries the free-text category the video
+	// classifier and the category override route write, and changing that
+	// contract is not this pass. Empty stays allowed — a category is a
+	// choice, not a requirement, and neither is a title.
+	category := input.Category
+	if contentType == "flick" {
+		normalized, catErr := NormalizeFlickCategory(category)
+		if catErr != nil {
+			return nil, catErr
+		}
+		category = normalized
+	}
+
+	taggedUsers, tagErr := NormalizeTaggedUsers(input.AuthorID, input.TaggedUserIDs)
+	if tagErr != nil {
+		return nil, tagErr
+	}
+
 	// Trusted Circle after-hours protection. When the author has
 	// `tc_after_hours_posts` ON (default ON), posts created during the
 	// after-hours window 22:00–06:00 local time get auto-restricted to
@@ -810,7 +837,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		ShareToPostbook:   input.ShareToPostbook,
 		Title:             input.Title,
 		Tags:              input.Tags,
-		Category:          input.Category,
+		Category:          category,
 		Language:          lang,
 		SEOTitle:          input.SEOTitle,
 		PaidPromotion:     input.PaidPromotion,
@@ -827,6 +854,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		CoverMediaID:      input.CoverMediaID,
 		OriginalAudioVol:  origVol,
 		OverlayAudioVol:   overlayVol,
+		HideShare:         input.HideShare,
+		AllowDownload:     input.AllowDownload,
+		TaggedUserIDs:     taggedUsers,
 		CreatedAt:         time.Now(),
 	}
 

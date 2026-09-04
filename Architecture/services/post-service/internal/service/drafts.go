@@ -281,15 +281,17 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 	// instead of creating a second post.
 	publishPostID := draft.ID
 	input := &CreatePostInput{
-		PostID:            &publishPostID,
-		AuthorID:          authorID,
-		Text:              draft.Caption,
-		Visibility:        draft.Visibility,
-		ContentType:       "flick", // classified at upload time; legacy drafts default to flick
-		MediaIDs:          mediaIDs,
-		CoverMediaID:      draft.CoverMediaID,
-		NoComments:        !draft.CommentsEnabled,
-		NoLikes:           !draft.LikesEnabled,
+		PostID:       &publishPostID,
+		AuthorID:     authorID,
+		Text:         draft.Caption,
+		Visibility:   draft.Visibility,
+		ContentType:  "flick", // classified at upload time; legacy drafts default to flick
+		MediaIDs:     mediaIDs,
+		CoverMediaID: draft.CoverMediaID,
+		NoComments:   !draft.CommentsEnabled,
+		NoLikes:      !draft.LikesEnabled,
+		// Reel drafts have no download switch; the column default applies.
+		AllowDownload:     true,
 		PostType:          "video",
 		AppOrigin:         "posttube",
 		PublishToFeed:     draft.PublishToFeed,
@@ -378,6 +380,7 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		CoverMediaID:      draft.CoverMediaID,
 		NoComments:        !draft.CommentsEnabled,
 		NoLikes:           !draft.LikesEnabled,
+		AllowDownload:     true,
 		PostType:          "video",
 		AppOrigin:         "posttube",
 		PublishToFeed:     draft.PublishToFeed,

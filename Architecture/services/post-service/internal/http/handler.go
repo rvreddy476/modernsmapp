@@ -68,6 +68,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.POST("", h.CreatePost)
 		v1.POST("/batch", h.BatchGetPosts)
+		v1.GET("/categories", h.ListCategories)
 		v1.GET("/recent", h.GetRecentPosts)
 		v1.GET("/bookmarks", h.GetBookmarks)
 		v1.GET("/by-author/:authorId", h.GetPostsByAuthor)
@@ -336,6 +337,18 @@ type CreatePostRequest struct {
 	// create. Used by the Flicks composer's audio browser. Optional —
 	// posts without background audio leave this empty.
 	AudioTrackID *string `json:"audio_track_id"`
+	// Per-reel controls (2026-09-04). The four switches on the reel
+	// composer are no_comments, hide_share, allow_download and
+	// remix_setting. AllowDownload is presence-aware like ShareToPostbook:
+	// the column defaults to true, so only an explicit false may turn it
+	// off, and an old client that never sends the field keeps downloads on.
+	// HideShare's absent-and-false agree, so a plain bool is enough.
+	HideShare     bool  `json:"hide_share"`
+	AllowDownload *bool `json:"allow_download"`
+	// TaggedUserIDs is the composer's people picker. Strings, parsed and
+	// bounded in parseTaggedUserIDs, deduped and author-stripped in the
+	// service.
+	TaggedUserIDs []string `json:"tagged_user_ids"`
 	// Distribution is the typed, versioned scalar policy (Module 1 P0-1):
 	// {"version":1,"main_feed":bool,"notify_subscribers":bool,
 	//  "create_reel_preview":bool}. Omitted = legacy behavior. Unknown
@@ -383,10 +396,51 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_READY", err.Error(), nil)
 	case errors.Is(err, service.ErrMediaTypeMismatch):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_TYPE_MISMATCH", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidCategory):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", err.Error(), nil)
+	case errors.Is(err, service.ErrTooManyTaggedUsers):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TOO_MANY_TAGGED_USERS",
+			fmt.Sprintf("a post may tag at most %d people", service.MaxTaggedUsers), nil)
 	default:
 		return false
 	}
 	return true
+}
+
+// resolveAllowDownload is the presence-aware default for `allow_download`.
+// The column defaults TRUE; only an explicit false turns downloads off.
+func resolveAllowDownload(explicit *bool) bool {
+	if explicit == nil {
+		return true
+	}
+	return *explicit
+}
+
+// parseTaggedUserIDs turns the request's strings into ids.
+//
+// The cap is checked here as well as in the service so a 21-id request fails
+// before twenty-one parses, and so the error names the limit rather than a
+// UUID. Dedupe and dropping the author stay in the service, where every
+// creation path shares them.
+func parseTaggedUserIDs(raw []string) ([]uuid.UUID, error) {
+	if len(raw) > service.MaxTaggedUsers {
+		return nil, fmt.Errorf("a post may tag at most %d people", service.MaxTaggedUsers)
+	}
+	ids := make([]uuid.UUID, 0, len(raw))
+	for _, s := range raw {
+		id, err := uuid.Parse(strings.TrimSpace(s))
+		if err != nil {
+			return nil, fmt.Errorf("invalid tagged user id: %s", s)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// ListCategories serves the flick taxonomy so the composer never hardcodes it.
+// GET /v1/posts/categories — static, no viewer state, safe to cache.
+func (h *Handler) ListCategories(c *gin.Context) {
+	api.JSON(c.Writer, http.StatusOK, service.FlickCategories(), nil)
 }
 
 func writeDistributionError(c *gin.Context, err error) bool {
@@ -519,6 +573,13 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		shareToPostbook = *req.ShareToPostbook
 	}
 
+	taggedUserIDs, err := parseTaggedUserIDs(req.TaggedUserIDs)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+
 	// The fingerprint is taken over the WHOLE accepted request (C-P0-5).
 	// Computed before anything is written: a request whose canonical form
 	// cannot be produced cannot be safely bound to an idempotency key, and
@@ -567,6 +628,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		CoverMediaID:      coverMediaID,
 		OriginalAudioVol:  req.OriginalAudioVol,
 		OverlayAudioVol:   req.OverlayAudioVol,
+		HideShare:         req.HideShare,
+		AllowDownload:     resolveAllowDownload(req.AllowDownload),
+		TaggedUserIDs:     taggedUserIDs,
 		Distribution:      req.Distribution,
 		// P1-1: forward the explicit legacy intent so an old client's
 		// `publish_to_feed:false` is honored instead of silently

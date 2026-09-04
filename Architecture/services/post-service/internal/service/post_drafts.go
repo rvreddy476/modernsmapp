@@ -73,6 +73,13 @@ type PostDraftPayload struct {
 	PaidPromotion  bool     `json:"paid_promotion,omitempty"`
 	IsMadeForKids  bool     `json:"is_made_for_kids,omitempty"`
 	AlteredContent bool     `json:"altered_content,omitempty"`
+	// Per-reel controls and tagged people (2026-09-04), for the same
+	// reason as the block above: scheduling must not lose what the
+	// composer set. AllowDownload is a pointer so an omitted key keeps
+	// the column default at publication, exactly as on the create route.
+	HideShare     bool     `json:"hide_share,omitempty"`
+	AllowDownload *bool    `json:"allow_download,omitempty"`
+	TaggedUserIDs []string `json:"tagged_user_ids,omitempty"`
 }
 
 // DraftPoll matches CreatePollInput but with JSON tags for storage.
@@ -348,6 +355,16 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft) (*
 		PaidPromotion:  payload.PaidPromotion,
 		IsMadeForKids:  payload.IsMadeForKids,
 		AlteredContent: payload.AlteredContent,
+		HideShare:      payload.HideShare,
+		AllowDownload:  payload.AllowDownload == nil || *payload.AllowDownload,
+	}
+	// Unparseable ids were accepted at save time before this field existed
+	// on the payload; dropping one is better than failing a scheduled post
+	// the author is no longer looking at.
+	for _, raw := range payload.TaggedUserIDs {
+		if id, err := uuid.Parse(raw); err == nil {
+			input.TaggedUserIDs = append(input.TaggedUserIDs, id)
+		}
 	}
 	if payload.CoverMediaID != nil {
 		if id, err := uuid.Parse(*payload.CoverMediaID); err == nil {

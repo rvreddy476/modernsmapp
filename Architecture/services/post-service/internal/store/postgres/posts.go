@@ -53,8 +53,17 @@ type Post struct {
 	CoverMediaID      *uuid.UUID      `json:"cover_media_id,omitempty"`
 	OriginalAudioVol  float32         `json:"original_audio_volume"`
 	OverlayAudioVol   float32         `json:"overlay_audio_volume"`
-	TierRequiredID    *uuid.UUID      `json:"tier_required_id,omitempty"`
-	BodyRedacted      bool            `json:"body_redacted,omitempty"`
+	// Per-reel controls (2026-09-04). Never omitempty: a renderer must be
+	// able to tell "downloads allowed" from "field missing", and the two
+	// remaining switches — comments and remix — are NoComments and
+	// RemixSetting above.
+	HideShare     bool `json:"hide_share"`
+	AllowDownload bool `json:"allow_download"`
+	// TaggedUserIDs is the people picked in the composer, distinct from
+	// Mentions, which are parsed out of the text.
+	TaggedUserIDs  []uuid.UUID `json:"tagged_user_ids,omitempty"`
+	TierRequiredID *uuid.UUID  `json:"tier_required_id,omitempty"`
+	BodyRedacted   bool        `json:"body_redacted,omitempty"`
 	// Distribution is the typed, versioned scalar policy (Module 1 P0-1).
 	// NULL means "no policy — legacy behavior". DistributionRev increases
 	// monotonically on every policy change so consumers can drop stale
@@ -160,6 +169,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	comment_moderation, comment_access,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
+	hide_share, allow_download, tagged_user_ids,
 	tier_required_id,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
@@ -190,6 +200,7 @@ func postScanDestinations(p *Post) []any {
 		&p.CommentModeration, &p.CommentAccess,
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
+		&p.HideShare, &p.AllowDownload, &p.TaggedUserIDs,
 		&p.TierRequiredID,
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
@@ -538,6 +549,10 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 	if p.Tags == nil {
 		p.Tags = []string{}
 	}
+	// posts.tagged_user_ids is NOT NULL DEFAULT '{}' for the same reason.
+	if p.TaggedUserIDs == nil {
+		p.TaggedUserIDs = []uuid.UUID{}
+	}
 	_, err := tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
 			feeling, activity, activity_detail, rich_text,
@@ -553,6 +568,7 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			tier_required_id,
 			distribution, distribution_rev,
 			thread_root_id, thread_reply_to_id, thread_seq,
+			hide_share, allow_download, tagged_user_ids,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
@@ -565,7 +581,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			$40,
 			$41, $42,
 			$43, $44, $45,
-			$46, $46)
+			$46, $47, $48,
+			$49, $49)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -580,6 +597,7 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		p.TierRequiredID,
 		p.Distribution, p.DistributionRev,
 		p.ThreadRootID, p.ThreadReplyToID, p.ThreadSeq,
+		p.HideShare, p.AllowDownload, p.TaggedUserIDs,
 		p.CreatedAt)
 	if err != nil {
 		return err
