@@ -17,7 +17,6 @@ import com.us.android.core.designsystem.component.UsScaffold
  */
 @Composable
 fun FriendsFeedScreen(
-    onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Friends) },
@@ -29,7 +28,6 @@ fun FriendsFeedScreen(
     ) { padding ->
         FeedContent(
             viewModel = viewModel,
-            onOpenPost = onOpenPost,
             onOpenAuthor = onOpenAuthor,
             empty = FRIENDS_EMPTY,
             modifier = Modifier.padding(padding),

@@ -1,5 +1,6 @@
 package com.us.android.feature.post.createhub
 
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
@@ -19,21 +20,32 @@ import kotlin.math.min
  *
  * ## THE PIPELINE
  *
- * stash the video → upload it → wait for EXACT ready+passed → upload the
- * cover → wait for it → ONE create through the one create call site. Every
- * step that produces something durable writes it to the [ReelPublishStore]
- * before moving on, and every step is skipped when the record already has
- * its result — so a retry after a failed cover never re-uploads the video,
- * a retry after a failed create keeps both ids and the creation key, and a
- * process death mid-transcode resumes polling the confirmed id.
+ * stash the video → upload it → confirm → upload the cover (short wait) →
+ * ONE create through the one create call site, IMMEDIATELY. Every step that
+ * produces something durable writes it to the [ReelPublishStore] before
+ * moving on, and every step is skipped when the record already has its
+ * result — so a retry after a failed cover never re-uploads the video, and a
+ * retry after a failed create keeps both ids and the creation key.
  *
- * ## TIME
+ * ## WHY THERE IS NO WAIT FOR THE TRANSCODE
  *
- * A WorkManager run is stopped at ten minutes; a transcode can take thirty.
- * [run] takes a run budget and reports [Outcome.Continue] when the video is
- * still processing as the budget ends, so the worker can enqueue itself
- * again. The 30-minute readiness window runs from the moment the upload was
- * confirmed, persisted, so it is honest across runs and across restarts.
+ * Instant reels (founder, 2026-09-04): "once the user posts a video it
+ * should upload immediately, like Instagram". post-service now creates a
+ * flick as soon as the video is CONFIRMED — no `ready`, no `passed` — and
+ * shows it to its author at once with `is_processing: true`, playing the
+ * original file until the ladder exists. So the thirty-minute readiness
+ * window is gone from the happy path: the post goes out the moment the bytes
+ * and the cover are up, which on a good connection is seconds.
+ *
+ * ## THE FALLBACK
+ *
+ * A post-service that has NOT yet landed that change still answers the
+ * create with `MEDIA_NOT_READY`. That one code is not treated as terminal
+ * here: the pipeline falls back to the old behaviour — poll the confirmed
+ * id under the run budget ([Outcome.Continue] hands off to the next
+ * WorkManager run) and create again when the video is ready+passed. The
+ * fallback reports [ReelPublishState.Processing] so the pending item keeps
+ * its loader instead of showing a failure the user cannot act on.
  *
  * A cover that fails to upload FAILS THE POST with a retryable message —
  * posting without the cover the user chose would be publishing something
@@ -51,7 +63,7 @@ class ReelPublishPipeline @Inject constructor(
     sealed interface Outcome {
         data class Published(val postId: String) : Outcome
 
-        /** The video is still processing and this run's budget is spent. */
+        /** The fallback poll is still waiting and this run's budget is spent. */
         data object Continue : Outcome
         data class Failed(val message: String, val retryable: Boolean) : Outcome
     }
@@ -61,7 +73,7 @@ class ReelPublishPipeline @Inject constructor(
 
     /**
      * Run from wherever [initial] had got to. [now] and [runBudgetMillis] are
-     * parameters so the readiness window can be tested in virtual time.
+     * parameters so the fallback's window can be tested in virtual time.
      */
     suspend fun run(
         initial: PendingReelPublish,
@@ -73,9 +85,8 @@ class ReelPublishPipeline @Inject constructor(
         return try {
             pending = stashVideo(pending)
             pending = uploadVideo(pending)
-            pending = awaitVideo(pending, now, runUntil)
             pending = uploadCover(pending)
-            createFlick(pending)
+            createFlick(pending, now, runUntil)
         } catch (stop: Stop) {
             stop.outcome
         }
@@ -92,7 +103,7 @@ class ReelPublishPipeline @Inject constructor(
     }
 
     private suspend fun uploadVideo(pending: PendingReelPublish): PendingReelPublish {
-        if (pending.readyVideoId != null || pending.confirmedVideoId != null) return pending
+        if (pending.confirmedVideoId != null) return pending
         val picked = files.openVideo(pending.videoPath.orEmpty(), pending.videoMimeType.orEmpty())
             ?: fail(pending, "That video can't be read. Pick it again.", retryable = false)
         tracker.update(ReelPublishState.Uploading(0f))
@@ -114,35 +125,6 @@ class ReelPublishPipeline @Inject constructor(
         }
     }
 
-    private suspend fun awaitVideo(
-        pending: PendingReelPublish,
-        now: () -> Long,
-        runUntil: Long,
-    ): PendingReelPublish {
-        if (pending.readyVideoId != null) return pending
-        val mediaId = pending.confirmedVideoId ?: fail(pending, "The upload didn't finish. Try again.", true)
-        tracker.update(ReelPublishState.Processing)
-        // The window runs from the first poll after confirmation and is
-        // persisted, so a continuation or a restart keeps the same clock.
-        val since = pending.processingSinceMillis ?: now()
-        val current = if (pending.processingSinceMillis == null) {
-            checkpoint(pending.copy(processingSinceMillis = since))
-        } else {
-            pending
-        }
-        val windowEnds = since + ReelMediaUploads.VIDEO_READINESS_WINDOW_MILLIS
-        return when (val readiness = uploads.awaitVideoReady(mediaId, min(windowEnds, runUntil), now)) {
-            ReelMediaUploads.Readiness.Ready -> checkpoint(current.copy(readyVideoId = mediaId))
-            ReelMediaUploads.Readiness.Pending ->
-                if (now() >= windowEnds) {
-                    fail(current, "Processing is taking too long. Try again in a minute.", retryable = true)
-                } else {
-                    throw Stop(Outcome.Continue)
-                }
-            is ReelMediaUploads.Readiness.Failed -> fail(current, readiness.message, readiness.retryable)
-        }
-    }
-
     private suspend fun uploadCover(pending: PendingReelPublish): PendingReelPublish {
         val path = pending.coverPath ?: return pending
         if (pending.readyCoverId != null) return pending
@@ -155,14 +137,59 @@ class ReelPublishPipeline @Inject constructor(
         }
     }
 
-    private suspend fun createFlick(pending: PendingReelPublish): Outcome {
+    /**
+     * The create, straight away. On `MEDIA_NOT_READY` — the pre-instant
+     * server — wait for the transcode the old way and create once more.
+     */
+    private suspend fun createFlick(pending: PendingReelPublish, now: () -> Long, runUntil: Long): Outcome {
         tracker.update(ReelPublishState.Posting)
-        val videoId = pending.readyVideoId ?: fail(pending, "The upload didn't finish. Try again.", true)
+        val videoId = pending.confirmedVideoId ?: fail(pending, "The upload didn't finish. Try again.", true)
         val request = buildRequest(pending, videoId, pending.readyCoverId)
         return when (val result = repository.createPost(pending.creationKey, request)) {
             is AppResult.Success -> Outcome.Published(result.data)
+            is AppResult.Failure -> if (result.error.isNotReady()) {
+                val ready = awaitVideo(pending, videoId, now, runUntil)
+                createReadyFlick(ready, request)
+            } else {
+                fail(pending, repository.message(result.error), retryable = !repository.isTerminal(result.error))
+            }
+        }
+    }
+
+    private suspend fun createReadyFlick(pending: PendingReelPublish, request: CreatePostRequest): Outcome =
+        when (val result = repository.createPost(pending.creationKey, request)) {
+            is AppResult.Success -> Outcome.Published(result.data)
             is AppResult.Failure ->
                 fail(pending, repository.message(result.error), retryable = !repository.isTerminal(result.error))
+        }
+
+    /**
+     * FALLBACK ONLY. The window runs from the first poll and is persisted,
+     * so a continuation or a restart keeps the same clock.
+     */
+    private suspend fun awaitVideo(
+        pending: PendingReelPublish,
+        mediaId: String,
+        now: () -> Long,
+        runUntil: Long,
+    ): PendingReelPublish {
+        tracker.update(ReelPublishState.Processing)
+        val since = pending.processingSinceMillis ?: now()
+        val current = if (pending.processingSinceMillis == null) {
+            checkpoint(pending.copy(processingSinceMillis = since))
+        } else {
+            pending
+        }
+        val windowEnds = since + ReelMediaUploads.VIDEO_READINESS_WINDOW_MILLIS
+        return when (val readiness = uploads.awaitVideoReady(mediaId, min(windowEnds, runUntil), now)) {
+            ReelMediaUploads.Readiness.Ready -> current
+            ReelMediaUploads.Readiness.Pending ->
+                if (now() >= windowEnds) {
+                    fail(current, "Processing is taking too long. Try again in a minute.", retryable = true)
+                } else {
+                    throw Stop(Outcome.Continue)
+                }
+            is ReelMediaUploads.Readiness.Failed -> fail(current, readiness.message, readiness.retryable)
         }
     }
 
@@ -179,12 +206,17 @@ class ReelPublishPipeline @Inject constructor(
         throw Stop(Outcome.Failed(message, retryable))
     }
 
+    private fun AppError.isNotReady(): Boolean = this is AppError.Server && code == MEDIA_NOT_READY
+
     companion object {
         private const val PERCENT = 100
 
+        /** post-service's refusal of a confirmed-but-untranscoded video. */
+        const val MEDIA_NOT_READY = "MEDIA_NOT_READY"
+
         /**
-         * Under WorkManager's ten-minute stop, with room for the cover and
-         * the create after the poll returns.
+         * Under WorkManager's ten-minute stop, with room for the create after
+         * a fallback poll returns.
          */
         const val RUN_BUDGET_MILLIS = 8L * 60L * 1_000L
 

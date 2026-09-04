@@ -41,7 +41,6 @@ data class HashtagPostsRoute(val tag: String)
  * parameter is what makes that impossible to repeat by omission.
  */
 fun NavGraphBuilder.feedScreen(
-    onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
     onOpenMessages: () -> Unit,
     /** Slice D: the feed's top bar is the entry point to the inbox. */
@@ -53,7 +52,6 @@ fun NavGraphBuilder.feedScreen(
 ) {
     composable<FeedRoute> {
         FeedScreen(
-            onOpenPost = onOpenPost,
             onOpenAuthor = onOpenAuthor,
             onOpenMessages = onOpenMessages,
             onOpenNotifications = onOpenNotifications,
@@ -65,18 +63,16 @@ fun NavGraphBuilder.feedScreen(
 
 /** Registers the Friends tab root. Same cross-feature contract as [feedScreen]. */
 fun NavGraphBuilder.friendsFeedScreen(
-    onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
 ) {
     composable<FriendsFeedRoute> {
-        FriendsFeedScreen(onOpenPost = onOpenPost, onOpenAuthor = onOpenAuthor)
+        FriendsFeedScreen(onOpenAuthor = onOpenAuthor)
     }
 }
 
 /** Registers a tag's post list — a pushed screen with a back arrow, never a tab. */
 fun NavGraphBuilder.hashtagPostsScreen(
     onBack: () -> Unit,
-    onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
 ) {
     composable<HashtagPostsRoute> { entry ->
@@ -84,7 +80,6 @@ fun NavGraphBuilder.hashtagPostsScreen(
         HashtagPostsScreen(
             tag = route.tag,
             onBack = onBack,
-            onOpenPost = onOpenPost,
             onOpenAuthor = onOpenAuthor,
         )
     }
@@ -108,10 +103,8 @@ data object ReelsRoute
 fun NavGraphBuilder.reelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
-    /** The background-publish banner's "View". `:app` opens the post. */
-    onOpenPost: (postId: String) -> Unit,
 ) {
     composable<ReelsRoute> {
-        ReelsScreen(pool = pool, onOpenAuthor = onOpenAuthor, onOpenPost = onOpenPost)
+        ReelsScreen(pool = pool, onOpenAuthor = onOpenAuthor)
     }
 }

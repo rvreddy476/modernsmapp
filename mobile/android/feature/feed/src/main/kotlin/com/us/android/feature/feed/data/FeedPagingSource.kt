@@ -8,6 +8,7 @@ import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPoll
 import com.us.android.core.model.FeedPollOption
+import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
@@ -216,4 +217,23 @@ internal fun FeedItemDto.toDomain() = FeedItem(
             hasEnded = dto.hasEnded,
         )
     },
+    // The row's own flag, or any media still in the transcoder: a server
+    // that sends per-media status but not yet the post-level flag still
+    // reads as processing.
+    isProcessing = isProcessing || media.any {
+        it.processingStatus == PROCESSING_PENDING || it.processingStatus == PROCESSING_RUNNING
+    },
+    controls = FeedPostControls(
+        noComments = noComments,
+        hideShare = hideShare,
+        allowDownload = allowDownload,
+        remixSetting = remixSetting,
+        category = category,
+        taggedUserIds = taggedUserIds,
+        locationName = locationName,
+        coverMediaId = coverMediaId,
+    ),
 )
+
+private const val PROCESSING_PENDING = "pending"
+private const val PROCESSING_RUNNING = "processing"

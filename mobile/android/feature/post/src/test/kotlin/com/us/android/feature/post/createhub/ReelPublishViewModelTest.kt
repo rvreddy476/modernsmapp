@@ -120,7 +120,7 @@ class ReelPublishViewModelTest {
         assertThat(pending.category).isEmpty()
         assertThat(pending.taggedUserIds).isEmpty()
         assertThat(pending.locationName).isEmpty()
-        assertThat(pending.readyVideoId).isNull()
+        assertThat(pending.confirmedVideoId).isNull()
         assertThat(vm.state.value.phase).isEqualTo(ReelPublishViewModel.Phase.Enqueued)
         assertThat(vm.state.value.isBusy).isTrue()
     }

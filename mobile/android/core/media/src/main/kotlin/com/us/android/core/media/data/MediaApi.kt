@@ -44,4 +44,10 @@ data class MediaDeliveryDto(
     val variants: Map<String, String> = emptyMap(),
     @SerialName("hls_url") val hlsUrl: String? = null,
     @SerialName("expires_at") val expiresAt: String? = null,
+    // Instant reels (2026-09-04): the transcode's own state and the server's
+    // choice of what to play while it runs — the original file.
+    @SerialName("processing_status") val processingStatus: String = "",
+    @SerialName("moderation_status") val moderationStatus: String = "",
+    @SerialName("playback_url") val playbackUrl: String? = null,
+    @SerialName("playback_kind") val playbackKind: String = "",
 )

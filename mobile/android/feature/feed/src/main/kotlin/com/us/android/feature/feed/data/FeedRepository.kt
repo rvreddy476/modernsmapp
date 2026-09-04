@@ -57,6 +57,15 @@ class FeedRepository @Inject constructor(
         page.copy(items = hashtagHydrator.hydrate(page.items))
     }
 
+    /**
+     * One post as a feed row: post-service's bare `PostDetail`, hydrated the
+     * way a hashtag page is. The author's own just-posted reel comes in here.
+     */
+    suspend fun post(postId: String): AppResult<FeedItem> =
+        apiCall(errorMapper) { api.getPost(postId) }.map { dto ->
+            hashtagHydrator.hydrate(listOf(dto.toDomain())).first()
+        }
+
     /** Today's trending tags, most-used first. Empty is a real answer, not a failure. */
     suspend fun trendingHashtags(): AppResult<List<TrendingHashtag>> =
         apiCall(errorMapper) { api.getTrendingHashtags(TRENDING_LIMIT) }.map { dto ->

@@ -111,6 +111,19 @@ interface FeedApi {
         @Query("sort") sort: String = HASHTAG_SORT_RECENT,
     ): ApiEnvelope<List<FeedItemDto>>
 
+    /**
+     * One post by id — post-service `GetPost`, the same `PostDetail` row the
+     * hashtag list returns, so [FeedItemDto] decodes it and [HashtagPostHydrator]
+     * fills in the author and the media delivery.
+     *
+     * Used for exactly one thing: putting a reel the viewer just posted at
+     * the top of Reels the moment the server has created it, without waiting
+     * for the ranked feed to carry it. A processing flick is visible to its
+     * author here and nowhere else yet.
+     */
+    @GET("v1/posts/{postId}")
+    suspend fun getPost(@Path("postId") postId: String): ApiEnvelope<FeedItemDto>
+
     companion object {
         /** The server's default; `top` is the other accepted value. */
         const val HASHTAG_SORT_RECENT = "recent"

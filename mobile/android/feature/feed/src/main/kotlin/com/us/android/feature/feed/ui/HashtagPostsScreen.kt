@@ -19,7 +19,6 @@ import com.us.android.core.designsystem.component.UsTopBar
 fun HashtagPostsScreen(
     tag: String,
     onBack: () -> Unit,
-    onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Hashtag(tag)) },
@@ -32,7 +31,6 @@ fun HashtagPostsScreen(
     ) { padding ->
         FeedContent(
             viewModel = viewModel,
-            onOpenPost = onOpenPost,
             onOpenAuthor = onOpenAuthor,
             empty = FeedEmptyCopy(
                 title = "No posts with $label yet",

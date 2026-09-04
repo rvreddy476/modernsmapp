@@ -32,14 +32,15 @@ import javax.inject.Singleton
  *
  * ## WHY THE VIDEO'S READINESS IS A SEPARATE CALL
  *
- * A phone video can take the dev machine a quarter of an hour to transcode
- * (2 minutes of footage took 17 on 2026-09-04), and a WorkManager run is cut
- * off at ten. So [uploadVideo] stops at "confirmed" — the bytes are on the
- * server and the id is durable — and [awaitVideoReady] polls under a deadline
- * the caller sets, answering [Readiness.Pending] when the deadline passes
- * with the video still processing. The worker persists the confirmed id,
- * hands off to a continuation, and never re-uploads a video the server
- * already has.
+ * Since instant reels (2026-09-04) a flick is created from the CONFIRMED id
+ * and the server transcodes behind the post, so [uploadVideo] stops at
+ * "confirmed" and the pipeline creates at once. [awaitVideoReady] remains
+ * for the one server that still answers `MEDIA_NOT_READY`: a phone video can
+ * take the dev machine a quarter of an hour (2 minutes of footage took 17),
+ * a WorkManager run is cut off at ten, so it polls under a deadline the
+ * caller sets and answers [Readiness.Pending] when that passes. The worker
+ * persists the confirmed id, hands off to a continuation, and never
+ * re-uploads a video the server already has.
  *
  * The cover is a JPEG through the same `image` path the composer's photo
  * takes, with the photo-sized window folded in. The presigned PUT is a

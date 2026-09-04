@@ -73,7 +73,6 @@ import com.us.android.feature.feed.ui.comments.CommentsSheet
  */
 @Composable
 fun FeedScreen(
-    onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
@@ -125,9 +124,6 @@ fun FeedScreen(
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
             FeedTabsRow(selected = tab, onSelect = viewModel::selectTab)
-            // A reel posting in the background reports here, pinned under
-            // the tabs so it survives every scroll and every tab switch.
-            ReelPublishBanner(onOpenPost = onOpenPost)
             when (tab) {
                 FeedTab.HASHTAG -> TrendingHashtagsList(
                     state = trending,
@@ -137,7 +133,6 @@ fun FeedScreen(
 
                 FeedTab.FOR_YOU, FeedTab.FOLLOWING -> FeedContent(
                     viewModel = viewModel,
-                    onOpenPost = onOpenPost,
                     onOpenAuthor = onOpenAuthor,
                     empty = if (tab == FeedTab.FOLLOWING) FOLLOWING_EMPTY else FOR_YOU_EMPTY,
                     listState = listStates.getValue(tab),
@@ -162,13 +157,16 @@ private val FOLLOWING_EMPTY = FeedEmptyCopy(
 
 /**
  * A timeline body: the engagement failure bar, the paged card list, and the
- * comments sheet over it — everything below a top bar that every feed
- * surface shares. The ViewModel decides WHICH timeline; this only renders it.
+ * comments sheet and the media viewer over it — everything below a top bar
+ * that every feed surface shares. The ViewModel decides WHICH timeline; this
+ * only renders it.
+ *
+ * Nothing here navigates. A card's media opens [FeedMediaViewer] in place,
+ * comments open a sheet, and only the author's name leaves the screen.
  */
 @Composable
 internal fun FeedContent(
     viewModel: FeedViewModel,
-    onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
     empty: FeedEmptyCopy,
     modifier: Modifier = Modifier,
@@ -179,6 +177,12 @@ internal fun FeedContent(
     val pollVotes by viewModel.pollVotes.collectAsStateWithLifecycle()
     val failures by viewModel.failures.collectAsStateWithLifecycle()
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // The row whose media is open full screen. Plain remember, not saveable:
+    // a FeedItem is not parcelable, and a viewer that reopened itself after a
+    // process death over a feed that has since refreshed would show a row
+    // the reader may no longer be looking at.
+    var viewing by remember { mutableStateOf<FeedItem?>(null) }
+    val share = rememberPostSharer()
 
     // Two effects, deliberately. A refresh replaces the whole list with values
     // just fetched, so all of them are server authority. An append leaves the
@@ -207,7 +211,7 @@ internal fun FeedContent(
             items = items,
             overlays = overlays,
             pollVotes = pollVotes,
-            onOpenPost = onOpenPost,
+            onOpenMedia = { viewing = it },
             onOpenAuthor = onOpenAuthor,
             onOpenComments = { commentsFor = it },
             onReact = viewModel::onReact,
@@ -217,6 +221,7 @@ internal fun FeedContent(
             onExternalShared = viewModel::onExternalShared,
             posterUrl = viewModel::posterUrl,
             mediaPages = viewModel::mediaPages,
+            share = share,
             listState = listState,
             empty = empty,
         )
@@ -228,6 +233,31 @@ internal fun FeedContent(
     commentsFor?.let { postId ->
         CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
     }
+
+    // Likewise the media: full screen over the feed, back to the same row.
+    // The card state is rebuilt from the live overlay so a like made inside
+    // the viewer is the same like the card shows when it closes.
+    viewing?.let { item ->
+        FeedMediaViewer(
+            item = item,
+            state = item.toCardState(
+                overlays[item.id] ?: EngagementOverlay(),
+                viewModel.posterUrl(item),
+                viewModel.mediaPages(item),
+                pollVotes[item.id].orEmpty(),
+            ),
+            onClose = { viewing = null },
+            onAuthorClick = { onOpenAuthor(item.author.id) },
+            onReact = { viewModel.onReact(item.id, item.viewer.hasReacted) },
+            onComment = { commentsFor = item.id },
+            onRepost = { viewModel.onRepost(item.id, item.viewer.hasReposted) },
+            onBookmark = { viewModel.onBookmark(item.id, item.viewer.isBookmarked) },
+            onShare = {
+                share(item.text, item.author.nameForDisplay)
+                viewModel.onExternalShared(item.id)
+            },
+        )
+    }
 }
 
 // Flat callbacks rather than a bundled object: a data class of lambdas gets a
@@ -238,7 +268,8 @@ private fun FeedList(
     items: LazyPagingItems<FeedItem>,
     overlays: Map<String, EngagementOverlay>,
     pollVotes: Map<String, Set<String>>,
-    onOpenPost: (String) -> Unit,
+    /** The card's media was tapped: open it in place. */
+    onOpenMedia: (FeedItem) -> Unit,
     onOpenAuthor: (String) -> Unit,
     onOpenComments: (String) -> Unit,
     onReact: (postId: String, serverReacted: Boolean) -> Unit,
@@ -248,14 +279,13 @@ private fun FeedList(
     onExternalShared: (String) -> Unit,
     posterUrl: (FeedItem) -> String?,
     mediaPages: (FeedItem) -> List<PostCardMediaPage>,
+    /** Hoisted: it resolves a Context and must not be re-created per row. */
+    share: (text: String, authorName: String?) -> Unit,
     listState: LazyListState,
     empty: FeedEmptyCopy,
     modifier: Modifier = Modifier,
 ) {
     val refresh = items.loadState.refresh
-    // Hoisted out of the list body: this resolves a Context and would
-    // otherwise be re-created inside every visible row.
-    val share = rememberPostSharer()
 
     when {
         refresh is LoadState.Loading && items.itemCount == 0 ->
@@ -319,7 +349,9 @@ private fun FeedList(
                         mediaPages(item),
                         pollVotes[item.id].orEmpty(),
                     ),
-                    onClick = { onOpenPost(item.id) },
+                    // A tap opens the media in place; a text-only card has
+                    // nothing to open and does nothing. Never a push.
+                    onClick = { if (item.media.isNotEmpty()) onOpenMedia(item) },
                     onAuthorClick = { onOpenAuthor(item.author.id) },
                     onReact = { onReact(item.id, item.viewer.hasReacted) },
                     onComment = { onOpenComments(item.id) },

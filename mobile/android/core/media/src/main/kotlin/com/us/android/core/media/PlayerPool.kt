@@ -2,13 +2,10 @@ package com.us.android.core.media
 
 import androidx.annotation.OptIn
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.hls.HlsMediaSource
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,10 +32,22 @@ import javax.inject.Singleton
 @OptIn(UnstableApi::class)
 class PlayerPool @Inject constructor(
     private val playerFactory: PlayerFactory,
-    private val cacheDataSourceFactory: DataSource.Factory,
+    private val sources: MediaSources,
 ) {
 
     private val players = mutableMapOf<Int, ExoPlayer>()
+
+    /**
+     * What each pooled player is currently prepared with.
+     *
+     * A page index is not a stable identity: the Reels tabs (For You,
+     * Following) share one pager, and a reel the viewer just posted is
+     * inserted above page 0 the moment it exists, shifting every index by
+     * one. A player handed back by index alone would keep playing the video
+     * it had — the wrong one — so [acquire] re-prepares when the playback
+     * for that index has changed.
+     */
+    private val playbacks = mutableMapOf<Int, Playback>()
 
     /**
      * The player for [pageIndex], creating or recycling one as needed.
@@ -47,21 +56,27 @@ class PlayerPool @Inject constructor(
      * rather than a new one allocated. Reclaiming stops playback and clears
      * the media item, so the returned instance is always in a known state.
      */
-    fun acquire(pageIndex: Int, hlsUrl: String): ExoPlayer {
-        players[pageIndex]?.let { return it }
+    fun acquire(pageIndex: Int, playback: Playback): ExoPlayer {
+        players[pageIndex]?.let { existing ->
+            if (playbacks[pageIndex] == playback) return existing
+            existing.stop()
+            existing.clearMediaItems()
+            return prepare(existing, pageIndex, playback)
+        }
 
         val player = if (players.size >= MAX_PLAYERS) {
             recycleFurthestFrom(pageIndex)
         } else {
             playerFactory.create()
         }
+        return prepare(player, pageIndex, playback)
+    }
 
-        player.setMediaSource(
-            HlsMediaSource.Factory(cacheDataSourceFactory)
-                .createMediaSource(MediaItem.fromUri(hlsUrl)),
-        )
+    private fun prepare(player: ExoPlayer, pageIndex: Int, playback: Playback): ExoPlayer {
+        player.setMediaSource(sources.create(playback))
         player.prepare()
         players[pageIndex] = player
+        playbacks[pageIndex] = playback
         return player
     }
 
@@ -73,9 +88,9 @@ class PlayerPool @Inject constructor(
      * immediate neighbours: preloading further ahead spends the user's data on
      * videos most of them will never reach.
      */
-    fun preload(pageIndex: Int, hlsUrl: String) {
-        if (players.containsKey(pageIndex)) return
-        acquire(pageIndex, hlsUrl).playWhenReady = false
+    fun preload(pageIndex: Int, playback: Playback) {
+        if (playbacks[pageIndex] == playback) return
+        acquire(pageIndex, playback).playWhenReady = false
     }
 
     /** Plays [pageIndex] and pauses every other player. */
@@ -102,12 +117,14 @@ class PlayerPool @Inject constructor(
     fun release() {
         players.values.forEach { it.release() }
         players.clear()
+        playbacks.clear()
     }
 
     private fun recycleFurthestFrom(pageIndex: Int): ExoPlayer {
         val victim = players.keys.maxByOrNull { kotlin.math.abs(it - pageIndex) }
             ?: error("pool reported full but held no players")
         val player = players.remove(victim)!!
+        playbacks.remove(victim)
         player.stop()
         player.clearMediaItems()
         return player

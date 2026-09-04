@@ -31,6 +31,10 @@ internal fun List<FeedMediaDto>.toOrderedFeedMedia(): List<FeedMedia> {
             variants = it.variants,
             hlsUrl = it.hlsUrl,
             expiresAt = it.expiresAt,
+            processingStatus = it.processingStatus,
+            moderationStatus = it.moderationStatus,
+            playbackUrl = it.playbackUrl,
+            playbackKind = it.playbackKind,
         )
     }
     return when (val ordered = CarouselOrdinals.order(items) { it.position }) {

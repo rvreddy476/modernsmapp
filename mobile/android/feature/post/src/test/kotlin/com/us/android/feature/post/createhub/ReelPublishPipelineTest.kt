@@ -41,16 +41,20 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 
 /**
- * The reel's ONE mapping to bytes, the cover discipline, and resumption.
+ * The reel's ONE mapping to bytes, the instant create, the cover
+ * discipline, the fallback, and resumption.
  *
  * The request tests pin the wire names the server agreed (2026-09-04):
  * `no_comments` inverted from "Allow comments", `hide_share`,
  * `allow_download`, `remix_setting` as `allow`/`disallow`, `visibility`,
  * `category`, `cover_media_id`, `tagged_user_ids`, `location_name`, and
- * `title` empty. The cover tests pin that a cover which fails to upload
- * FAILS the post with a retryable message — it never posts without it.
- * The resumption tests pin that a retry, a continuation and a restart never
- * re-upload a video the server already has.
+ * `title` empty. The instant tests pin that the post is created from the
+ * CONFIRMED video with no readiness poll at all. The cover tests pin that a
+ * cover which fails to upload FAILS the post with a retryable message — it
+ * never posts without it — and that the cover's short readiness wait stays.
+ * The fallback tests pin that `MEDIA_NOT_READY` alone sends the pipeline
+ * polling, and that a continuation and a restart never re-upload a video
+ * the server already has.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ReelPublishPipelineTest {
@@ -113,12 +117,18 @@ class ReelPublishPipelineTest {
         val keys = mutableListOf<String>()
         var result: AppResult<String> = AppResult.Success("post-1")
 
+        /** Answers for the next creates, in order, before [result] takes over. */
+        val queued = ArrayDeque<AppResult<String>>()
+
         override suspend fun createPost(creationKey: String, request: CreatePostRequest): AppResult<String> {
             keys += creationKey
             requests += request
-            return result
+            return queued.removeFirstOrNull() ?: result
         }
     }
+
+    private val notReady: AppResult<String> =
+        AppResult.Failure(AppError.Server(statusCode = 409, code = ReelPublishPipeline.MEDIA_NOT_READY))
 
     private class ThrowingPostApi : PostApi {
         override suspend fun getPost(postId: String): Nothing = error("not used")
@@ -274,6 +284,37 @@ class ReelPublishPipelineTest {
         assertThat(request.locationName).isEqualTo("Marina Beach")
     }
 
+    // ── Instant: the create waits for nothing ───────────────────────────
+
+    @Test
+    fun `the post is created from the confirmed video without a single readiness poll`() = runTest {
+        val api = FakeUploadApi().apply {
+            // Were anything to poll the video it would see this and wait.
+            statuses += MediaStatusDto(processingStatus = "processing", moderationStatus = "pending")
+        }
+        val h = harness(api = api)
+
+        val outcome = run(h, pending(withCover = false))
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(api.statusCalls).isEqualTo(0)
+        assertThat(h.repository.requests.single().mediaIds).containsExactly("video-1")
+        assertThat(h.store.record?.confirmedVideoId).isEqualTo("video-1")
+        assertThat(h.store.record?.processingSinceMillis).isNull()
+        assertThat(testScheduler.currentTime).isEqualTo(0L)
+    }
+
+    @Test
+    fun `with a cover only the cover is polled and the video is still not`() = runTest {
+        val h = harness()
+
+        run(h, pending())
+
+        // One status call: the cover's. FakeUploadApi answers ready+passed.
+        assertThat(h.api.statusCalls).isEqualTo(1)
+        assertThat(h.repository.requests.single().coverMediaId).isEqualTo("image-2")
+    }
+
     // ── Cover ───────────────────────────────────────────────────────────
 
     @Test
@@ -299,10 +340,10 @@ class ReelPublishPipelineTest {
         assertThat((outcome as ReelPublishPipeline.Outcome.Failed).retryable).isTrue()
         assertThat(outcome.message).contains("cover")
         assertThat(h.repository.requests).isEmpty()
-        // The failure is persisted with the ready video, so a restart shows
-        // it and a retry does not start over.
+        // The failure is persisted with the confirmed video, so a restart
+        // shows it and a retry does not start over.
         assertThat(h.store.record?.failure?.retryable).isTrue()
-        assertThat(h.store.record?.readyVideoId).isEqualTo("video-1")
+        assertThat(h.store.record?.confirmedVideoId).isEqualTo("video-1")
     }
 
     @Test
@@ -321,11 +362,11 @@ class ReelPublishPipelineTest {
         assertThat(h.repository.requests.single().mediaIds).containsExactly("video-1")
     }
 
+    /** The cover's short readiness wait is kept: the video is instant, the cover is not. */
     @Test
     fun `a cover that is not ready and passed is never attached`() = runTest {
         val api = FakeUploadApi().apply {
-            // Video: ready+passed. Then the cover sits at ready/pending for the whole window.
-            statuses += MediaStatusDto(processingStatus = "ready", moderationStatus = "passed")
+            // The cover sits at ready/pending for the whole window.
             repeat(40) { statuses += MediaStatusDto(processingStatus = "ready", moderationStatus = "pending") }
         }
         val h = harness(api = api)
@@ -334,6 +375,7 @@ class ReelPublishPipelineTest {
 
         assertThat(h.repository.requests).isEmpty()
         assertThat(outcome).isInstanceOf(ReelPublishPipeline.Outcome.Failed::class.java)
+        assertThat((outcome as ReelPublishPipeline.Outcome.Failed).message).contains("cover")
     }
 
     @Test
@@ -365,13 +407,12 @@ class ReelPublishPipelineTest {
     }
 
     @Test
-    fun `a restart mid-transcode polls the confirmed id and never re-uploads`() = runTest {
+    fun `a restart after confirmation creates from the confirmed id and never re-uploads`() = runTest {
         val h = harness()
         val resumed = pending().copy(
             videoPath = "/cache/key-1.video",
             videoMimeType = "video/mp4",
             confirmedVideoId = "video-9",
-            processingSinceMillis = 0L,
         )
 
         val outcome = run(h, resumed)
@@ -382,32 +423,74 @@ class ReelPublishPipelineTest {
         assertThat(h.repository.requests.single().mediaIds).containsExactly("video-9")
     }
 
+    // ── Fallback: a server that still wants ready+passed ────────────────
+
     @Test
-    fun `a run whose budget ends mid-transcode hands off to a continuation with the checkpoint saved`() = runTest {
+    fun `MEDIA_NOT_READY alone sends the pipeline polling and it creates again when the video is ready`() = runTest {
         val api = FakeUploadApi().apply {
             statuses += MediaStatusDto(processingStatus = "processing", moderationStatus = "pending")
+            statuses += MediaStatusDto(processingStatus = "processing", moderationStatus = "pending")
+            statuses += MediaStatusDto(processingStatus = "ready", moderationStatus = "passed")
         }
-        val h = harness(api = api)
+        val repository = RecordingRepository(json).apply { queued += notReady }
+        val h = harness(api = api, repository = repository)
+        val seen = mutableListOf<ReelPublishState>()
+        val watching = launch(Dispatchers.Unconfined) { h.tracker.state.collect { seen += it } }
 
-        val outcome = run(h, pending(), budgetMillis = 30_000L)
+        val outcome = run(h, pending(withCover = false))
 
-        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Continue)
-        assertThat(h.store.record?.confirmedVideoId).isEqualTo("video-1")
-        assertThat(h.store.record?.processingSinceMillis).isNotNull()
-        assertThat(h.store.record?.readyVideoId).isNull()
-        assertThat(h.store.record?.failure).isNull()
-        assertThat(h.tracker.state.value).isEqualTo(ReelPublishState.Processing)
-        assertThat(h.repository.requests).isEmpty()
+        watching.cancel()
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(repository.requests).hasSize(2)
+        assertThat(repository.keys.distinct()).containsExactly("key-1")
+        assertThat(api.statusCalls).isEqualTo(3)
+        assertThat(seen).containsAtLeast(ReelPublishState.Posting, ReelPublishState.Processing).inOrder()
+        assertThat(h.store.record?.processingSinceMillis).isEqualTo(0L)
     }
 
     @Test
-    fun `the readiness window closes after thirty minutes with a retryable failure`() = runTest {
+    fun `any other create failure is not polled`() = runTest {
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(AppError.Server(statusCode = 409, code = "MEDIA_NOT_OWNED"))
+        }
+        val h = harness(repository = repository)
+
+        val outcome = run(h, pending(withCover = false))
+
+        assertThat(outcome).isInstanceOf(ReelPublishPipeline.Outcome.Failed::class.java)
+        assertThat((outcome as ReelPublishPipeline.Outcome.Failed).retryable).isFalse()
+        assertThat(h.api.statusCalls).isEqualTo(0)
+        assertThat(repository.requests).hasSize(1)
+    }
+
+    @Test
+    fun `a fallback run whose budget ends mid-transcode hands off to a continuation with the checkpoint saved`() =
+        runTest {
+            val api = FakeUploadApi().apply {
+                statuses += MediaStatusDto(processingStatus = "processing", moderationStatus = "pending")
+            }
+            val repository = RecordingRepository(json).apply { result = notReady }
+            val h = harness(api = api, repository = repository)
+
+            val outcome = run(h, pending(withCover = false), budgetMillis = 30_000L)
+
+            assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Continue)
+            assertThat(h.store.record?.confirmedVideoId).isEqualTo("video-1")
+            assertThat(h.store.record?.processingSinceMillis).isNotNull()
+            assertThat(h.store.record?.failure).isNull()
+            assertThat(h.tracker.state.value).isEqualTo(ReelPublishState.Processing)
+            assertThat(repository.requests).hasSize(1)
+        }
+
+    @Test
+    fun `the fallback window closes after thirty minutes with a retryable failure`() = runTest {
         val api = FakeUploadApi().apply {
             statuses += MediaStatusDto(processingStatus = "processing", moderationStatus = "pending")
         }
-        val h = harness(api = api)
+        val repository = RecordingRepository(json).apply { result = notReady }
+        val h = harness(api = api, repository = repository)
 
-        val outcome = run(h, pending(), budgetMillis = 60L * 60L * 1_000L)
+        val outcome = run(h, pending(withCover = false), budgetMillis = 60L * 60L * 1_000L)
 
         assertThat(outcome).isInstanceOf(ReelPublishPipeline.Outcome.Failed::class.java)
         assertThat((outcome as ReelPublishPipeline.Outcome.Failed).retryable).isTrue()
@@ -445,9 +528,10 @@ class ReelPublishPipelineTest {
         assertThat(seen).containsAtLeast(
             ReelPublishState.Preparing,
             ReelPublishState.Uploading(0f),
-            ReelPublishState.Processing,
             ReelPublishState.Posting,
         ).inOrder()
+        // Instant: the post never sits in Processing on the happy path.
+        assertThat(seen).doesNotContain(ReelPublishState.Processing)
         val fractions = seen.filterIsInstance<ReelPublishState.Uploading>().map { it.fraction }
         assertThat(fractions).isNotEmpty()
         assertThat(fractions).isInOrder()

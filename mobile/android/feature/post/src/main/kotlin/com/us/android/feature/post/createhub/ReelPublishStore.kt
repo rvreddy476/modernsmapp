@@ -28,9 +28,9 @@ import javax.inject.Singleton
  *
  * Persisted as JSON in `filesDir` the moment the user taps Post, and updated
  * at every checkpoint the worker reaches: the cached copy of the video, the
- * confirmed upload id, the moment processing began, the ready video id, the
- * ready cover id. A process death anywhere in between resumes from the last
- * checkpoint — a video the server already has is never uploaded twice.
+ * confirmed upload id, the ready cover id. A process death anywhere in
+ * between resumes from the last checkpoint — a video the server already has
+ * is never uploaded twice.
  *
  * The form's fields are copied in whole so the create request can be built
  * from this record alone; the ViewModel that held them is long gone by the
@@ -55,13 +55,17 @@ data class PendingReelPublish(
     val allowRemix: Boolean = true,
     val taggedUserIds: List<String> = emptyList(),
     val locationName: String = "",
-    /** Bytes landed and `confirm` succeeded; the server is processing. */
+    /**
+     * Bytes landed and `confirm` succeeded. This is the id the post is
+     * created with — instant reels need nothing more than confirmed.
+     */
     val confirmedVideoId: String? = null,
-    /** When [confirmedVideoId] was set — the 30-minute readiness window runs from here. */
+    /**
+     * FALLBACK ONLY: when the pre-instant server's `MEDIA_NOT_READY` first
+     * sent the pipeline polling — the 30-minute window runs from here.
+     */
     val processingSinceMillis: Long? = null,
-    /** EXACTLY ready+passed. Survives a create retry. */
-    val readyVideoId: String? = null,
-    /** Likewise the cover. */
+    /** The cover, EXACTLY ready+passed. Survives a create retry. */
     val readyCoverId: String? = null,
     /** Why the last run stopped, when it did. Cleared by a retry. */
     val failure: PendingReelFailure? = null,

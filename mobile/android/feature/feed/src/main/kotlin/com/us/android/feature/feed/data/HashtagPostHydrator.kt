@@ -103,4 +103,8 @@ private fun FeedMedia.withDelivery(delivery: MediaDeliveryDto) = copy(
     variants = delivery.variants,
     hlsUrl = delivery.hlsUrl,
     expiresAt = delivery.expiresAt,
+    processingStatus = delivery.processingStatus,
+    moderationStatus = delivery.moderationStatus,
+    playbackUrl = delivery.playbackUrl,
+    playbackKind = delivery.playbackKind,
 )

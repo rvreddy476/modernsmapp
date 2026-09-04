@@ -12,6 +12,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.us.android.core.common.di.ApplicationScope
 import com.us.android.core.media.publish.ReelPublishActions
+import com.us.android.core.media.publish.ReelPublishPreview
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import dagger.Binds
@@ -41,14 +42,15 @@ import javax.inject.Singleton
  *
  * ## WHY IT CHAINS ITSELF
  *
- * A run is stopped at ten minutes and a transcode can take thirty, so a run
- * whose budget ends mid-processing returns success and APPENDS another run
- * under the same unique name. The record's `processingSinceMillis` keeps the
- * 30-minute readiness window honest across those runs.
+ * Only on the fallback path: a server that still refuses a confirmed video
+ * is polled, a run is stopped at ten minutes and a transcode can take
+ * thirty, so a run whose budget ends mid-poll returns success and APPENDS
+ * another run under the same unique name. The record's
+ * `processingSinceMillis` keeps the 30-minute window honest across those runs.
  *
- * A failure is terminal for the chain — the banner offers Retry, which
- * enqueues a fresh chain over the same record — rather than WorkManager's
- * silent backoff, so "Couldn't post your reel" is shown the moment it is
+ * A failure is terminal for the chain — the pending reel item offers Retry,
+ * which enqueues a fresh chain over the same record — rather than
+ * WorkManager's silent backoff, so "Couldn't post" is shown the moment it is
  * known and the user decides.
  */
 @HiltWorker
@@ -120,12 +122,12 @@ interface ReelPublishLauncher {
 
 /**
  * Owns the ONE pending publish: enqueues it, restores it after a restart,
- * and answers the banner's Retry and Discard.
+ * and answers the pending reel item's Retry and Discard.
  *
- * Created the first time something injects it — the feed's banner ViewModel
- * on the home tab, or the reel form — which is early enough: the worker
- * itself only needs the tracker, so a WorkManager restart reports progress
- * whether or not this object exists yet.
+ * Created the first time something injects it — the Reels tab's ViewModel,
+ * or the reel form — which is early enough: the worker itself only needs the
+ * tracker, so a WorkManager restart reports progress whether or not this
+ * object exists yet.
  */
 @Singleton
 class ReelPublishController @Inject constructor(
@@ -150,6 +152,9 @@ class ReelPublishController @Inject constructor(
             files.delete(listOf(previous.videoPath, previous.coverPath))
         }
         store.save(pending)
+        // The preview first, then the state: the Reels tab draws the pending
+        // item the moment the state turns active, and wants the cover then.
+        tracker.setPreview(pending.preview())
         tracker.update(ReelPublishState.Preparing)
         ReelPublishWorker.enqueue(context, pending.creationKey, ExistingWorkPolicy.KEEP)
     }
@@ -160,6 +165,7 @@ class ReelPublishController @Inject constructor(
             // A fresh readiness window: the retry is a new decision by the
             // user, not the tail of the one that timed out.
             store.save(pending.copy(failure = null, processingSinceMillis = null))
+            tracker.setPreview(pending.preview())
             tracker.update(ReelPublishState.Preparing)
             ReelPublishWorker.enqueue(context, pending.creationKey, ExistingWorkPolicy.KEEP)
         }
@@ -186,6 +192,7 @@ class ReelPublishController @Inject constructor(
      */
     private suspend fun restore() {
         val pending = store.load() ?: return
+        if (tracker.preview.value == null) tracker.setPreview(pending.preview())
         val failure = pending.failure
         if (failure != null) {
             tracker.restoreIfIdle(ReelPublishState.Failed(failure.message, failure.retryable))
@@ -197,9 +204,15 @@ class ReelPublishController @Inject constructor(
         if (!alive) {
             ReelPublishWorker.enqueue(context, pending.creationKey, ExistingWorkPolicy.KEEP)
         }
-        val resumed = if (pending.confirmedVideoId != null) ReelPublishState.Processing else ReelPublishState.Preparing
+        val resumed = if (pending.confirmedVideoId != null) ReelPublishState.Posting else ReelPublishState.Preparing
         tracker.restoreIfIdle(resumed)
     }
+
+    private fun PendingReelPublish.preview() = ReelPublishPreview(
+        creationKey = creationKey,
+        coverPath = coverPath,
+        caption = caption,
+    )
 }
 
 @Module

@@ -83,6 +83,8 @@ class FeedPagingDeduplicationTest {
             cursor: String?,
             sort: String,
         ) = error("these pages are the home surface")
+
+        override suspend fun getPost(postId: String) = error("the paging source never fetches one post")
     }
 
     // The home loader exactly as the repository builds it: the source itself

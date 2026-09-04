@@ -86,10 +86,33 @@ class ReelPublishTrackerTest {
     @Test
     fun `reset clears any state because the publish was discarded`() {
         val tracker = ReelPublishTracker()
+        tracker.setPreview(ReelPublishPreview("key-1", "/cache/key-1.jpg", "hi"))
         tracker.update(ReelPublishState.Uploading(0.3f))
 
         tracker.reset()
 
         assertThat(tracker.state.value).isEqualTo(ReelPublishState.Idle)
+        assertThat(tracker.preview.value).isNull()
+    }
+
+    /**
+     * The preview is what the Reels tab draws while the reel posts. It goes
+     * with a finished publish when that is let go, and never before — a
+     * pending item whose cover vanished mid-upload would read as a failure.
+     */
+    @Test
+    fun `the preview outlives every in-flight state and leaves with a dismissed one`() {
+        val tracker = ReelPublishTracker()
+        val preview = ReelPublishPreview("key-1", "/cache/key-1.jpg", "sunday skate")
+        tracker.setPreview(preview)
+
+        tracker.update(ReelPublishState.Processing)
+        tracker.dismiss()
+        assertThat(tracker.preview.value).isEqualTo(preview)
+
+        tracker.update(ReelPublishState.Published("post-1"))
+        tracker.dismiss()
+        assertThat(tracker.state.value).isEqualTo(ReelPublishState.Idle)
+        assertThat(tracker.preview.value).isNull()
     }
 }

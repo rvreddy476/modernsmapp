@@ -33,6 +33,10 @@ dependencies {
     implementation(projects.core.datastore)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // The in-place media viewer closes on Back, and the pending reel item
+    // and the viewer draw images themselves rather than through a card.
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.coil.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.hilt.navigation.compose)
     implementation(libs.kotlinx.serialization.json)

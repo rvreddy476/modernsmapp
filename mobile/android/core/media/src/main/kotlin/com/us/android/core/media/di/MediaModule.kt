@@ -96,7 +96,7 @@ object MediaModule {
      * Takes no data source, deliberately.
      *
      * The cached, authenticated chain is attached where the media source is
-     * built — in [com.us.android.core.media.PlayerPool] — not to the player
+     * built — in [com.us.android.core.media.MediaSources] — not to the player
      * itself. Setting a default here as well would give a player two sources
      * of truth for how bytes are fetched, and whichever the media source
      * carried would silently win.

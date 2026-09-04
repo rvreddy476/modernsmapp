@@ -140,6 +140,57 @@ class FeedContractTest {
         assertThat(item.media.single().isVertical).isFalse()
     }
 
+    // ── Instant reels (2026-09-04): processing rows and the author's controls ──
+
+    /**
+     * The shape the dev stack sends for a reel the author just posted: the
+     * row is visible with `is_processing`, the media carries its own
+     * transcode state, and the server names what to play meanwhile.
+     */
+    @Test
+    fun `a processing reel decodes with its playback choice and controls`() {
+        val item = decode(
+            """{"data":[{"id":"p","post_type":"video","is_processing":true,"no_comments":true,"hide_share":true,"allow_download":false,"remix_setting":"disallow","category":"comedy","tagged_user_ids":["u1","u2"],"location_name":"Marina Beach","cover_media_id":"cov","media":[{"media_id":"m","kind":"video","status":"processing","processing_status":"processing","moderation_status":"pending","playback_url":"/v1/media/m/original","playback_kind":"original"}]}]}""",
+        ).data!!.first().toDomain()
+
+        assertThat(item.isProcessing).isTrue()
+        assertThat(item.controls.noComments).isTrue()
+        assertThat(item.controls.hideShare).isTrue()
+        assertThat(item.controls.allowDownload).isFalse()
+        assertThat(item.controls.remixSetting).isEqualTo("disallow")
+        assertThat(item.controls.category).isEqualTo("comedy")
+        assertThat(item.controls.taggedUserIds).containsExactly("u1", "u2").inOrder()
+        assertThat(item.controls.locationName).isEqualTo("Marina Beach")
+        assertThat(item.controls.coverMediaId).isEqualTo("cov")
+        val media = item.media.single()
+        assertThat(media.isProcessing).isTrue()
+        assertThat(media.processingStatus).isEqualTo("processing")
+        assertThat(media.moderationStatus).isEqualTo("pending")
+        assertThat(media.playbackUrl).isEqualTo("/v1/media/m/original")
+        assertThat(media.playbackKind).isEqualTo("original")
+    }
+
+    /** A row from before the fields existed renders every control, as it always did. */
+    @Test
+    fun `a row without the new fields is open and not processing`() {
+        val item = decode(REELS_PAGE_1).data!!.first().toDomain()
+
+        assertThat(item.isProcessing).isFalse()
+        assertThat(item.controls.noComments).isFalse()
+        assertThat(item.controls.hideShare).isFalse()
+        assertThat(item.controls.allowDownload).isTrue()
+    }
+
+    /** Per-media status alone marks the row processing when the post-level flag lags behind. */
+    @Test
+    fun `a pending media status marks the row processing without the post flag`() {
+        val item = decode(
+            """{"data":[{"id":"p","media":[{"media_id":"m","kind":"video","status":"pending","processing_status":"pending"}]}]}""",
+        ).data!!.first().toDomain()
+
+        assertThat(item.isProcessing).isTrue()
+    }
+
     // ── Hashtags: post-service, through the gateway ─────────────────────
 
     /**

@@ -80,8 +80,8 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
  * card of switches. Everything scrolls; the keyboard is an inset the root
  * column pads for, so the description is never under it.
  *
- * Post hands the publish to WorkManager and CLOSES — the feed's banner shows
- * the upload, the transcode and the post going out. There is no published
+ * Post hands the publish to WorkManager and CLOSES — the Reels tab's pending item shows
+ * the upload and the post going out. There is no published
  * callback here because nothing is published while this surface exists.
  */
 @Composable
@@ -124,7 +124,7 @@ internal fun ReelSurface(
 
     if (state.phase is Phase.Enqueued) {
         // Handed to the worker: leave, once. The user lands back where they
-        // were and the feed banner takes over.
+        // were and the Reels tab's pending item takes over.
         LaunchedEffect(Unit) { onClose() }
     }
 
@@ -664,9 +664,9 @@ private fun ReelSwitchRow(
 // ── Status ──────────────────────────────────────────────────────────────
 
 /**
- * Only a failure has anything to say here now: the upload, the transcode
- * and the post itself happen after this surface has closed, on the feed's
- * banner. The pill's spinner covers the moment before hand-off.
+ * Only a failure has anything to say here now: the upload
+ * and the post itself happen after this surface has closed, on the Reels
+ * tab's pending item. The pill's spinner covers the moment before hand-off.
  */
 @Composable
 private fun PhaseStatus(phase: Phase) {

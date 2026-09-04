@@ -42,6 +42,20 @@ data class FeedItemDto(
     val score: Double? = null,
     /** Present exactly when the post is a poll — hydrated by feed-service. */
     val poll: FeedPollDto? = null,
+    /**
+     * Instant reels (2026-09-04): the video is still transcoding or being
+     * moderated. The author sees the row now; others see it when this clears.
+     */
+    @SerialName("is_processing") val isProcessing: Boolean = false,
+    // The author's per-post controls, as the reel form sent them.
+    @SerialName("no_comments") val noComments: Boolean = false,
+    @SerialName("hide_share") val hideShare: Boolean = false,
+    @SerialName("allow_download") val allowDownload: Boolean = true,
+    @SerialName("remix_setting") val remixSetting: String = "",
+    val category: String = "",
+    @SerialName("tagged_user_ids") val taggedUserIds: List<String> = emptyList(),
+    @SerialName("location_name") val locationName: String = "",
+    @SerialName("cover_media_id") val coverMediaId: String? = null,
 )
 
 /**
@@ -111,6 +125,12 @@ data class FeedMediaDto(
     @SerialName("hls_url") val hlsUrl: String? = null,
     /** Five minutes after issue, per the captured contract. */
     @SerialName("expires_at") val expiresAt: String? = null,
+    // Instant reels: per-media processing, and the server's own choice of
+    // what to play — the HLS master once it exists, the original file until.
+    @SerialName("processing_status") val processingStatus: String = "",
+    @SerialName("moderation_status") val moderationStatus: String = "",
+    @SerialName("playback_url") val playbackUrl: String? = null,
+    @SerialName("playback_kind") val playbackKind: String = "",
 )
 
 @Serializable

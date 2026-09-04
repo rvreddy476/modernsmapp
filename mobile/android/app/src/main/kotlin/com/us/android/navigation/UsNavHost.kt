@@ -408,8 +408,10 @@ private fun NavGraphBuilder.tabDestinations(
     // The real home feed. It replaced the design-system gallery once the
     // 2026-08-17 capture returned a non-empty page and proved the item shape —
     // before that the feed could only have been built on an invented DTO.
+    // A card's media opens IN PLACE — a viewer over the feed, not a pushed
+    // post — so there is no post callback here; deep links reach post
+    // detail through navigateToPost from the notification target.
     feedScreen(
-        onOpenPost = { postId -> navController.navigateToPost(postId) },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
         onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
         onOpenNotifications = { navController.navigateToNotifications() },
@@ -422,14 +424,12 @@ private fun NavGraphBuilder.tabDestinations(
     // The Friends tab: the same feed narrowed to mutual follows. A tab root,
     // so no back arrow; its own route so the bar knows which item is lit.
     friendsFeedScreen(
-        onOpenPost = { postId -> navController.navigateToPost(postId) },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
 
     // A trending tag's posts, pushed over Home from the HashTag tab.
     hashtagPostsScreen(
         onBack = { navController.popBackStack() },
-        onOpenPost = { postId -> navController.navigateToPost(postId) },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
 
@@ -574,7 +574,6 @@ private fun NavGraphBuilder.tabDestinations(
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenPost = { postId -> navController.navigateToPost(postId) },
     )
     composable<ExploreRoute> {
         PlaceholderScreen(

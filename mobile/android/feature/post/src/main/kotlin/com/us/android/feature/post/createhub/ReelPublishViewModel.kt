@@ -39,7 +39,7 @@ import javax.inject.Inject
  * spinner the whole time, so the form now writes the chosen cover to disk,
  * hands a [PendingReelPublish] to the [ReelPublishLauncher] — WorkManager
  * from there, see [ReelPublishWorker] — and reports [Phase.Enqueued] so the
- * surface can close. The feed's banner shows the rest.
+ * surface can close. The Reels tab's pending item shows the rest.
  */
 @HiltViewModel
 class ReelPublishViewModel @Inject constructor(

@@ -43,6 +43,36 @@ data class FeedItem(
     val score: Double? = null,
     /** Present exactly when this post is a poll. */
     val poll: FeedPoll? = null,
+    /**
+     * The server is still transcoding or moderating this post's video.
+     *
+     * Since 2026-09-04 a flick is created the moment its upload is confirmed
+     * and is visible to its author at once; everyone else sees it when this
+     * turns false. The playback URL meanwhile is the original file.
+     */
+    val isProcessing: Boolean = false,
+    /** The author's per-post switches — what viewers may do with it. */
+    val controls: FeedPostControls = FeedPostControls(),
+)
+
+/**
+ * The author-set controls the reel form sends and the feed hands back.
+ *
+ * Defaults are the open case: an older row that predates the fields renders
+ * every control, which is what it did before the fields existed.
+ */
+data class FeedPostControls(
+    /** Comments are off: hide the comment control. */
+    val noComments: Boolean = false,
+    /** The author hid the share control. */
+    val hideShare: Boolean = false,
+    val allowDownload: Boolean = true,
+    /** `allow` or `disallow`. */
+    val remixSetting: String = "",
+    val category: String = "",
+    val taggedUserIds: List<String> = emptyList(),
+    val locationName: String = "",
+    val coverMediaId: String? = null,
 )
 
 /**
@@ -132,8 +162,25 @@ data class FeedMedia(
      * the media batch endpoint rather than retrying a dead URL.
      */
     val expiresAt: String? = null,
+    /** `pending`, `processing`, `ready`, `failed`, `rejected` — the transcode. */
+    val processingStatus: String = "",
+    /** `pending`, `passed`, `rejected` — moderation. */
+    val moderationStatus: String = "",
+    /**
+     * What to hand a player, when the server chose for us: the HLS master
+     * once a rendition exists, or the original file while it does not.
+     * Null on rows that predate the instant-reel contract — see [hlsUrl].
+     */
+    val playbackUrl: String? = null,
+    /** `hls` or `original`; blank when the server did not say. */
+    val playbackKind: String = "",
 ) {
     val isReady: Boolean get() = status == "ready"
+
+    /** The transcode is still running (or the row said so outright). */
+    val isProcessing: Boolean
+        get() = processingStatus == "pending" || processingStatus == "processing" ||
+            (!isReady && status == "processing")
 
     /**
      * What a screen reader should announce, or null for silence.
@@ -212,7 +259,12 @@ data class FeedQuery(
         val ForYou = FeedQuery(FeedSurface.Home)
         val Following = FeedQuery(FeedSurface.Home, followingOnly = true)
         val Friends = FeedQuery(FeedSurface.Home, circleOnly = true)
+
+        /** Reels as the server ranks them — the Reels tab's "For You". */
         val Reels = FeedQuery(FeedSurface.Reels)
+
+        /** Reels from authors the viewer follows — the Reels tab's "Following". */
+        val ReelsFollowing = FeedQuery(FeedSurface.Reels, followingOnly = true)
     }
 }
 
