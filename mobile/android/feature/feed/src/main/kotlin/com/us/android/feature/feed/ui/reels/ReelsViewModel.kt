@@ -76,12 +76,16 @@ fun FeedPostControls.railVisibility() = ReelRailVisibility(
 )
 
 /**
- * How much chrome sits over the video (founder, 2026-09-04, evening).
+ * How much chrome sits over the video (founder, 2026-09-04, from the phone).
  *
- * [NORMAL] is the reel as designed: the rail, the author block with Follow
- * and the caption, and the app's bottom bar under it. [FULL] is the video
- * and the status bar and nothing else — a double-tap gets there, a second
- * one comes back. Per session and per visit: leaving the tab resets it.
+ * [NORMAL] is the reel as designed: the Momentum header (wordmark, search,
+ * messages, the bell) translucent over the top of the video, the rail, the
+ * author block with Follow and the caption, and the app's bottom bar under
+ * it. [FULL] takes away ONLY the two strips the app puts around the video —
+ * the header and the bottom bar — and keeps the rail and the author block,
+ * because those belong to the reel, not to the app. A double-tap gets there,
+ * a second one comes back. Per session and per visit: Reels OPENS in normal
+ * mode every time.
  */
 enum class ReelsMode {
     NORMAL,
@@ -93,11 +97,13 @@ enum class ReelsMode {
 }
 
 /**
- * What each mode leaves on screen. Three flags rather than one because they
- * are drawn by three different owners: the rail and the author block by the
- * reel page, the bottom bar by the app shell.
+ * What each mode leaves on screen. Four flags rather than one because they
+ * are drawn by different owners: the header by the screen, the rail and the
+ * author block by the reel page, the bottom bar by the app shell.
  */
 data class ReelsChrome(
+    /** The Momentum header over the top of the video. */
+    val showHeader: Boolean,
     /** Like, comment, share, save, more, mute — the right rail. */
     val showRail: Boolean,
     /** Avatar, username, Follow and the caption — bottom-left. */
@@ -106,15 +112,21 @@ data class ReelsChrome(
     val showBottomBar: Boolean,
 ) {
     companion object {
-        val ALL = ReelsChrome(showRail = true, showAuthor = true, showBottomBar = true)
-        val NONE = ReelsChrome(showRail = false, showAuthor = false, showBottomBar = false)
+        /** Everything. */
+        val NORMAL = ReelsChrome(showHeader = true, showRail = true, showAuthor = true, showBottomBar = true)
+
+        /** The app's strips gone; the reel's own controls stay. */
+        val FULL = ReelsChrome(showHeader = false, showRail = true, showAuthor = true, showBottomBar = false)
     }
 }
 
-/** The one rule: normal shows everything, full shows nothing but the video. */
+/**
+ * The one rule: normal shows everything; full hides the header and the
+ * bottom bar and nothing else — the rail and the author block are always on.
+ */
 fun ReelsMode.chrome(): ReelsChrome = when (this) {
-    ReelsMode.NORMAL -> ReelsChrome.ALL
-    ReelsMode.FULL -> ReelsChrome.NONE
+    ReelsMode.NORMAL -> ReelsChrome.NORMAL
+    ReelsMode.FULL -> ReelsChrome.FULL
 }
 
 @HiltViewModel
@@ -242,13 +254,31 @@ class ReelsViewModel @Inject constructor(
         _mode.value = _mode.value.toggled()
     }
 
+    private val _paused = MutableStateFlow(false)
+
     /**
-     * Back to normal. Called when the screen leaves composition — a tab
-     * switch, a pushed profile, Back — so the next visit opens with its
-     * controls, and the shell's bar has already been given back by then.
+     * Whether the current reel is held still. A SINGLE tap on the video
+     * pauses it and a second one plays it again — the one thing a single tap
+     * does here (founder, 2026-09-04). Held per screen, not per player: a
+     * swipe to another reel plays it ([onReelShown] clears the pause), and
+     * the pool recycles players underneath, so a per-player flag would be
+     * lost with the instance.
      */
-    fun resetMode() {
+    val paused: StateFlow<Boolean> = _paused.asStateFlow()
+
+    fun togglePaused() {
+        _paused.value = !_paused.value
+    }
+
+    /**
+     * Back to normal, playing. Called when the screen leaves composition — a
+     * tab switch, a pushed profile, Back — so the next visit opens with its
+     * header and bar and a moving reel; the shell's bar has already been
+     * given back by then.
+     */
+    fun resetView() {
         _mode.value = ReelsMode.NORMAL
+        _paused.value = false
     }
 
     /**
@@ -298,8 +328,15 @@ class ReelsViewModel @Inject constructor(
 
     fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
 
-    /** The pager settled on a page: make sure its author's edge is known. */
-    fun onReelShown(item: FeedItem) = viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
+    /**
+     * The pager settled on a page: the new reel plays — a pause belongs to
+     * the reel it was made on, not the one swiped to — and its author's edge
+     * is made known.
+     */
+    fun onReelShown(item: FeedItem) {
+        _paused.value = false
+        viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
+    }
 
     private companion object {
         const val VIDEO = "video"

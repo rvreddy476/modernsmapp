@@ -322,15 +322,21 @@ class ReelsViewModelTest {
         assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
     }
 
-    /** Leaving the tab in full mode must not bring the viewer back to a bare video. */
+    /**
+     * Reels opens in normal mode, playing, EVERY time: leaving the tab in
+     * full mode or paused must not bring the viewer back to a bare, still
+     * video.
+     */
     @Test
-    fun `leaving the screen resets full mode`() {
+    fun `leaving the screen resets full mode and the pause so the next visit opens normal`() {
         val vm = viewModel()
         vm.toggleMode()
+        vm.togglePaused()
 
-        vm.resetMode()
+        vm.resetView()
 
         assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+        assertThat(vm.paused.value).isFalse()
     }
 
     /** Resetting an already-normal screen is a no-op, not a toggle. */
@@ -338,22 +344,69 @@ class ReelsViewModelTest {
     fun `reset from normal stays normal`() {
         val vm = viewModel()
 
-        vm.resetMode()
+        vm.resetView()
 
         assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+        assertThat(vm.paused.value).isFalse()
     }
 
     @Test
     fun `normal mode shows every piece of chrome`() {
         assertThat(ReelsMode.NORMAL.chrome())
-            .isEqualTo(ReelsChrome(showRail = true, showAuthor = true, showBottomBar = true))
+            .isEqualTo(ReelsChrome(showHeader = true, showRail = true, showAuthor = true, showBottomBar = true))
     }
 
-    /** Full mode is the video and the status bar: no rail, no author block, no bottom bar. */
+    /** Full mode hides ONLY the app's strips — the header and the bottom bar; the rail and the author stay. */
     @Test
-    fun `full mode shows nothing but the video`() {
+    fun `full mode hides the header and the bottom bar and keeps the reel's own controls`() {
         assertThat(ReelsMode.FULL.chrome())
-            .isEqualTo(ReelsChrome(showRail = false, showAuthor = false, showBottomBar = false))
+            .isEqualTo(ReelsChrome(showHeader = false, showRail = true, showAuthor = true, showBottomBar = false))
+    }
+
+    /** The rail and the author block are never hidden by any mode. */
+    @Test
+    fun `no mode hides the rail or the author block`() {
+        ReelsMode.entries.forEach { mode ->
+            assertThat(mode.chrome().showRail).isTrue()
+            assertThat(mode.chrome().showAuthor).isTrue()
+        }
+    }
+
+    // ── Pause ───────────────────────────────────────────────────────────
+
+    /** A single tap on the video holds the frame; a second one lets it go. Nothing else changes. */
+    @Test
+    fun `reels open playing and a single tap toggles paused`() {
+        val vm = viewModel()
+        assertThat(vm.paused.value).isFalse()
+
+        vm.togglePaused()
+        assertThat(vm.paused.value).isTrue()
+        assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+
+        vm.togglePaused()
+        assertThat(vm.paused.value).isFalse()
+    }
+
+    /** A pause belongs to the reel it was made on: swiping to the next reel plays it. */
+    @Test
+    fun `settling on another reel clears the pause`() = runTest {
+        val vm = viewModel()
+        vm.togglePaused()
+
+        vm.onReelShown(item(video()))
+
+        assertThat(vm.paused.value).isFalse()
+    }
+
+    /** A double-tap is about the frame, never the playback: full mode does not pause. */
+    @Test
+    fun `toggling the mode leaves the pause alone`() {
+        val vm = viewModel()
+
+        vm.toggleMode()
+
+        assertThat(vm.paused.value).isFalse()
     }
 
     @Test

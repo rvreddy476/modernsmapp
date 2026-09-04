@@ -270,10 +270,11 @@ fun UsNavHost(
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
-        // Reels fills the frame from the very top: no header, the video under
-        // the status bar. The shell hands that tab no inset at all; every other
-        // screen's own scaffold reserves the system bars as before, because
-        // the NavHost below consumes only what it was given.
+        // Reels fills the frame from the very top: the video under the status
+        // bar, its translucent header padding itself beneath it. The shell
+        // hands that tab no inset at all; every other screen's own scaffold
+        // reserves the system bars as before, because the NavHost below
+        // consumes only what it was given.
         contentWindowInsets = if (currentTab?.drawsUnderStatusBar == true) {
             WindowInsets(0)
         } else {
@@ -641,12 +642,14 @@ private fun NavGraphBuilder.tabDestinations(
     // it holds decoder sessions, and reacquiring those mid-scroll is exactly
     // the stutter this surface exists to avoid.
     //
-    // No header destinations: Reels wears no Momentum header (founder,
-    // 2026-09-04, evening). ExploreMode.REELS stays for the day search gets
-    // a surface of its own.
+    // The Momentum header floats over the video (founder, 2026-09-04, from
+    // the phone): the same three controls as Home, search scoped to reels.
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
+        onOpenNotifications = { navController.navigateToNotifications() },
+        onOpenSearch = { navController.navigateToExplore(ExploreMode.REELS) },
     )
     composable<ExploreRoute> { entry ->
         val mode = ExploreMode.fromWire(entry.toRoute<ExploreRoute>().mode)

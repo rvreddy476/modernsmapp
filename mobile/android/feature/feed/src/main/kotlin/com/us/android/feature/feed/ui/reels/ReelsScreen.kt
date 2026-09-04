@@ -8,6 +8,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -20,6 +21,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -30,6 +32,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -94,6 +97,7 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.formatCount
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.data.offersFollow
+import com.us.android.feature.feed.ui.MomentumHeader
 import com.us.android.feature.feed.ui.comments.CommentsSheet
 import com.us.android.feature.feed.ui.more.PostMoreSheetHost
 import com.us.android.feature.feed.ui.more.PostMoreViewModel
@@ -102,20 +106,26 @@ import java.io.File
 /**
  * The reels surface: Instagram Reels on Momentum's palette (founder,
  * 2026-09-04). A full-screen vertical pager of short video that fills the
- * frame from the very top — NO Momentum header (founder, 2026-09-04,
- * evening; the shell hands this tab no status-bar inset, and the system's
- * light icons read fine over video without a scrim); the right rail —
- * like, comment, share, save, more, mute — bottom-right; the author,
- * Follow and the caption bottom-left over a bottom scrim. No For You /
- * Following tabs: Reels is one surface.
+ * frame from the very top (the shell hands this tab no status-bar inset);
+ * the Momentum header — wordmark, search, messages, the bell — translucent
+ * over the top of the video on its own scrim; the right rail — like,
+ * comment, share, save, more, mute — bottom-right; the author, Follow and
+ * the caption bottom-left over a bottom scrim. No For You / Following tabs:
+ * Reels is one surface.
  *
- * Full mode: a DOUBLE-TAP on the video hides the rail, the author block
- * and the app's bottom bar, leaving the video and the status bar; a second
- * double-tap brings everything back. The rule is [ReelsMode.chrome]; the
- * bar is hidden through the shell ([HideShellBottomBar]) because only the
- * shell owns it. A double-tap never likes the reel — the rail's heart is
- * the one way to do that. Single tap on the video does what it always did:
- * nothing.
+ * Two gestures on the video (founder, 2026-09-04, from the phone):
+ *
+ *  - A SINGLE tap pauses the reel, and a second one plays it again; a
+ *    centred play glyph marks the held frame. Mute stays on the rail.
+ *  - A DOUBLE-tap is full mode: it hides ONLY the header and the app's
+ *    bottom bar — the rail and the author block stay, they belong to the
+ *    reel — and a second double-tap brings them back. The rule is
+ *    [ReelsMode.chrome]; the bar is hidden through the shell
+ *    ([HideShellBottomBar]) because only the shell owns it. A double-tap
+ *    never likes the reel — the rail's heart is the one way to do that.
+ *
+ * Reels OPENS in normal mode, playing, every time: both are reset when the
+ * screen is left.
  *
  * This is the screen the native migration was justified by, and its behaviour
  * is deliberately narrow:
@@ -138,15 +148,21 @@ import java.io.File
  * ([PostMoreSheetHost]), driven by [more]; what it leaves behind ("We'll
  * show you fewer posts like this") is shown over the reel once it has gone.
  */
+@Suppress("LongParameterList")
 @Composable
 fun ReelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
+    /** The header's three controls. Required: a header glyph that does nothing must not ship again. */
+    onOpenSearch: () -> Unit,
+    onOpenMessages: () -> Unit,
+    onOpenNotifications: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
 ) {
     val head by viewModel.head.collectAsStateWithLifecycle()
     val muted by viewModel.muted.collectAsStateWithLifecycle()
+    val paused by viewModel.paused.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
     val chrome = mode.chrome()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
@@ -165,13 +181,14 @@ fun ReelsScreen(
 
     ReleaseOnLifecycle(pool)
 
-    // The shell's bar follows the mode, and both are given back when the
-    // screen is left: the bar by HideShellBottomBar's own dispose, the mode
-    // by the reset here — so a tab switch out of full mode lands on a Home
-    // with its bar, and the next visit to Reels opens with its controls.
+    // The shell's bar follows the mode, and everything is given back when
+    // the screen is left: the bar by HideShellBottomBar's own dispose, the
+    // mode and the pause by the reset here — so a tab switch out of full
+    // mode lands on a Home with its bar, and the next visit to Reels opens
+    // in normal mode with a moving reel.
     HideShellBottomBar(hidden = !chrome.showBottomBar)
     DisposableEffect(viewModel) {
-        onDispose { viewModel.resetMode() }
+        onDispose { viewModel.resetView() }
     }
 
     Box(
@@ -184,6 +201,7 @@ fun ReelsScreen(
             head = head,
             pool = pool,
             muted = muted,
+            paused = paused,
             chrome = chrome,
             overlays = overlays,
             followEdges = followEdges,
@@ -191,6 +209,7 @@ fun ReelsScreen(
             playbackFor = viewModel::playback,
             actions = ReelActions(
                 onToggleMute = viewModel::toggleMuted,
+                onTogglePause = viewModel::togglePaused,
                 onToggleMode = viewModel::toggleMode,
                 onOpenAuthor = onOpenAuthor,
                 onReact = viewModel::onReact,
@@ -203,6 +222,14 @@ fun ReelsScreen(
                 onRetryPublish = viewModel::retryPublish,
                 onDiscardPublish = viewModel::discardPublish,
             ),
+        )
+
+        ScreenChrome(
+            paused = paused,
+            showHeader = chrome.showHeader,
+            onOpenSearch = onOpenSearch,
+            onOpenMessages = onOpenMessages,
+            onOpenNotifications = onOpenNotifications,
         )
         UsMessageHost(message = moreMessage, onDismiss = more::dismissMessage)
     }
@@ -228,6 +255,52 @@ fun ReelsScreen(
 }
 
 /**
+ * What the SCREEN draws over the pager, as opposed to what a page draws over
+ * its own video: the paused mark and the Momentum header.
+ *
+ * The paused mark is a play glyph, centred, only while paused. It sits above
+ * the pager and below the header so it never covers a control, and it is not
+ * itself tappable — the video under it is.
+ *
+ * The header — wordmark, search (scoped to reels by the host), messages, the
+ * bell — rides its own top scrim and pads itself under the status bar the
+ * shell left uncovered. It leaves upward in full mode, the same 200ms as the
+ * bar leaves down.
+ */
+@Composable
+private fun BoxScope.ScreenChrome(
+    paused: Boolean,
+    showHeader: Boolean,
+    onOpenSearch: () -> Unit,
+    onOpenMessages: () -> Unit,
+    onOpenNotifications: () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = paused,
+        modifier = Modifier.align(Alignment.Center),
+        enter = fadeIn(tween(CHROME_ANIM_MILLIS)) +
+            scaleIn(tween(CHROME_ANIM_MILLIS), initialScale = PAUSE_GLYPH_FROM),
+        exit = fadeOut(tween(CHROME_ANIM_MILLIS)),
+    ) {
+        PausedGlyph()
+    }
+    AnimatedVisibility(
+        visible = showHeader,
+        modifier = Modifier.align(Alignment.TopCenter),
+        enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
+        exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
+    ) {
+        MomentumHeader(
+            onOpenSearch = onOpenSearch,
+            onOpenMessages = onOpenMessages,
+            onOpenNotifications = onOpenNotifications,
+            translucent = true,
+            modifier = Modifier.testTag("reels_header"),
+        )
+    }
+}
+
+/**
  * Every per-reel callback, hoisted once. A class rather than flat lambdas
  * through three layers of pager: the bundle is built once per screen and
  * its identity is stable, so it is not what recomposes a page.
@@ -236,6 +309,8 @@ fun ReelsScreen(
 @Suppress("LongParameterList")
 internal class ReelActions(
     val onToggleMute: () -> Unit,
+    /** A single tap on the video: pause ↔ play. */
+    val onTogglePause: () -> Unit,
     /** A double-tap on the video: normal ↔ full mode. Never a like. */
     val onToggleMode: () -> Unit,
     val onOpenAuthor: (String) -> Unit,
@@ -263,6 +338,7 @@ private fun ReelsBody(
     head: ReelsHead?,
     pool: PlayerPool,
     muted: Boolean,
+    paused: Boolean,
     chrome: ReelsChrome,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
@@ -290,6 +366,7 @@ private fun ReelsBody(
             head = head,
             pool = pool,
             muted = muted,
+            paused = paused,
             chrome = chrome,
             overlays = overlays,
             followEdges = followEdges,
@@ -307,6 +384,7 @@ private fun ReelsPager(
     head: ReelsHead?,
     pool: PlayerPool,
     muted: Boolean,
+    paused: Boolean,
     chrome: ReelsChrome,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
@@ -332,6 +410,14 @@ private fun ReelsPager(
         listOf(current - 1, current + 1).forEach { index ->
             reelAt(index)?.let(playbackFor)?.let { pool.preload(index, it) }
         }
+    }
+
+    // The single-tap pause, applied to whichever page is settled. A separate
+    // effect from the one above, keyed on the pause alone: folding it in
+    // would re-run onShown on every tap, and onShown is what CLEARS a pause
+    // when the pager moves on.
+    LaunchedEffect(paused) {
+        if (paused) pool.pauseAll() else pool.playOnly(pagerState.settledPage)
     }
 
     VerticalPager(
@@ -539,12 +625,18 @@ private fun ReelPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // The double-tap lives on the PAGE, under the rail and the author
+            // Both taps live on the PAGE, under the rail and the author
             // block, so a tap that lands on a control is that control's and
-            // never a mode change. Only onDoubleTap is set: a single tap on
-            // the video has never done anything here, and the detector
-            // leaves it that way rather than inventing a pause.
-            .pointerInput(actions) { detectTapGestures(onDoubleTap = { actions.onToggleMode() }) },
+            // never a pause or a mode change. A single tap waits out the
+            // double-tap window before it pauses — the same beat Instagram
+            // has — so a double-tap is one mode change, not a pause and a
+            // mode change.
+            .pointerInput(actions) {
+                detectTapGestures(
+                    onTap = { actions.onTogglePause() },
+                    onDoubleTap = { actions.onToggleMode() },
+                )
+            },
     ) {
         if (playback != null) {
             val player = remember(page, playback) { pool.acquire(page, playback) }
@@ -571,8 +663,9 @@ private fun ReelPage(
         // The bottom 40% of the page darkens under BOTH the caption and the
         // rail. The scrim goes on the page, not the text, so it also covers
         // the padding — a caption whose descenders fall outside the dark area
-        // is exactly as unreadable as one with no scrim at all. It goes with
-        // the chrome: full mode is the whole frame, undarkened.
+        // is exactly as unreadable as one with no scrim at all. It follows
+        // the blocks it serves: on while either is on, which under today's
+        // rule is always — full mode keeps both.
         AnimatedVisibility(
             visible = chrome.showAuthor || chrome.showRail,
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -616,6 +709,27 @@ private fun ReelPage(
                 actions = actions,
             )
         }
+    }
+}
+
+/** The paused mark: a white play triangle on a soft dark disc, centred over the held frame. */
+@Composable
+private fun PausedGlyph() {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(PAUSE_DISC)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = PAUSE_DISC_ALPHA))
+            .semantics { contentDescription = "Paused" }
+            .testTag("reel_paused"),
+    ) {
+        Icon(
+            imageVector = UsIcons.Play,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(PAUSE_GLYPH),
+        )
     }
 }
 
@@ -942,6 +1056,12 @@ private const val PRESS_STIFFNESS = 1200f
 
 /** Secondary text over video: legible, clearly quieter than the caption. */
 private const val DIM_ALPHA = 0.7f
+
+/** The paused mark: a 72dp disc at 45% black under a 36dp play triangle, arriving from 80%. */
+private val PAUSE_DISC = 72.dp
+private val PAUSE_GLYPH = 36.dp
+private const val PAUSE_DISC_ALPHA = 0.45f
+private const val PAUSE_GLYPH_FROM = 0.8f
 
 /** The pending item's round loader: a 48dp ring, no number in it. */
 private val LOADER_SIZE = 48.dp

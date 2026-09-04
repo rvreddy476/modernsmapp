@@ -9,7 +9,7 @@ package com.us.android.navigation
  *    in the bar (the inbox, Explore) opens from the header and leaves by Back;
  *    neither shows a bar. An empty [tabs] list means the shell is not Ready.
  *  - The SCREEN's request. A tab root may ask for the bar to go — Reels' full
- *    mode, where a double-tap leaves only the video — through
+ *    mode, where a double-tap takes away the header and the bar — through
  *    [com.us.android.core.ui.ChromeVisibility]. The request only ever hides;
  *    it can never show a bar the route would not.
  */
@@ -26,9 +26,10 @@ fun routeShowsBottomBar(currentTab: TopLevelDestination?, tabs: List<TopLevelDes
 /**
  * Tabs whose content draws under the status bar rather than below it.
  *
- * Reels is the one (founder, 2026-09-04, evening): no header, the video
- * fills the frame from the very top. The shell hands such a tab no top
- * inset; every other tab's own scaffold reserves the status bar as before.
+ * Reels is the one (founder, 2026-09-04): the video fills the frame from
+ * the very top and the translucent Momentum header floats over it, padding
+ * itself under the status bar. The shell hands such a tab no top inset;
+ * every other tab's own scaffold reserves the status bar as before.
  */
 val TopLevelDestination.drawsUnderStatusBar: Boolean
     get() = this == TopLevelDestination.REELS

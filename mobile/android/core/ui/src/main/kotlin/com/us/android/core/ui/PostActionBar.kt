@@ -105,19 +105,26 @@ fun PostActionBar(
      */
     showCounts: Boolean = true,
     /**
-     * The Instagram card (founder, 2026-09-04) is like, comment, share on
-     * the left and save on the right — no repost glyph. The callback stays
-     * plumbed; only the control is withheld.
+     * Surfaces that have no repost concept pass false; the callback stays
+     * plumbed and only the control is withheld. The feed card shows it — the
+     * founder asked for it back the same day it was dropped (2026-09-04).
      */
     showRepost: Boolean = true,
     /** 20dp on post detail and reels; the Instagram card asks for 24dp. */
     glyphSize: Dp = ACTION_GLYPH,
-    /** Gap between controls. 20dp per the Figma row; the Instagram card uses 16dp. */
+    /** Gap between controls when [evenSpacing] is off. 20dp per the Figma row. */
     spacing: Dp = UsTheme.spacing.xxxxl,
+    /**
+     * True spreads the controls at equal distance across the row, save
+     * included; false packs them left with save pushed to the far edge.
+     * The feed card asks for equal distance (founder, 2026-09-04) because
+     * five glyphs read as one row of tools, not four tools and a stray.
+     */
+    evenSpacing: Boolean = false,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(spacing),
+        horizontalArrangement = if (evenSpacing) Arrangement.SpaceBetween else Arrangement.spacedBy(spacing),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ActionButton(
@@ -161,10 +168,11 @@ fun PostActionBar(
             glyphSize = glyphSize,
         )
 
-        // Save is pushed to the far edge. Everything to its left broadcasts;
-        // save acts on the post for this viewer alone. Sitting them flush
-        // together invites a private save to be read as one more way to post.
-        Spacer(Modifier.weight(1f))
+        // Without even spacing, save is pushed to the far edge: everything
+        // to its left broadcasts; save acts on the post for this viewer
+        // alone, and sitting them flush invites a private save to be read
+        // as one more way to post.
+        if (!evenSpacing) Spacer(Modifier.weight(1f))
 
         ActionButton(
             icon = if (state.isBookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,

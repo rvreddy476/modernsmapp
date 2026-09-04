@@ -344,8 +344,9 @@ fun PostCard(
             )
         }
 
-        // Like, comment, share on the left, save on the right. Glyphs only —
-        // the counts are written out as lines in the caption stack.
+        // Like, comment, repost, share, save at equal distance across the
+        // row (founder, 2026-09-04). Glyphs only — the counts are written
+        // out as lines in the caption stack.
         PostActionBar(
             state = state.actions,
             onReact = onReact,
@@ -354,7 +355,8 @@ fun PostCard(
             onBookmark = onBookmark,
             onShare = onShare,
             showCounts = false,
-            showRepost = false,
+            showRepost = true,
+            evenSpacing = true,
             glyphSize = ACTION_GLYPH,
             spacing = UsTheme.spacing.xxl,
             modifier = Modifier
