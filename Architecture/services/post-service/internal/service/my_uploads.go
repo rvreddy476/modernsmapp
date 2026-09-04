@@ -217,6 +217,19 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 	// Batch-fetch video metadata
 	videoMeta, _ := s.pgStore.BatchGetVideoMetadata(ctx, postIDs)
 
+	// Live media state — processing/moderation status, duration_ms, hls_url
+	// — from media_assets, the same overlay every other read gets (Tube
+	// "You" page, 2026-09-05). The author is the caller, so nothing is
+	// hidden while processing; is_processing simply says so. Best effort:
+	// the list is still the author's own uploads without it.
+	ptrs := make([]*postgres.Post, len(posts))
+	for i := range posts {
+		ptrs[i] = &posts[i]
+	}
+	if err := s.attachMediaState(ctx, ptrs); err != nil {
+		slog.Warn("my uploads: media state overlay failed", "error", err)
+	}
+
 	details := make([]UploadDetail, len(posts))
 	for i, p := range posts {
 		post := p

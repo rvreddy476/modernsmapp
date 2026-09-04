@@ -58,10 +58,12 @@ func applyMediaState(p *postgres.Post, state map[uuid.UUID]postgres.MediaOwnersh
 			p.Media[i].ProcessingStatus = m.ProcessingStatus
 			p.Media[i].ModerationStatus = m.ModerationStatus
 			p.Media[i].DurationMs = m.DurationMs
+			p.Media[i].HLSURL = hlsURLFor(p.Media[i].MediaID, m)
 		} else {
 			p.Media[i].ProcessingStatus = ""
 			p.Media[i].ModerationStatus = ""
 			p.Media[i].DurationMs = 0
+			p.Media[i].HLSURL = ""
 		}
 		if !mediaPublishable(p.Media[i].ProcessingStatus, p.Media[i].ModerationStatus) {
 			processing = true
@@ -135,4 +137,16 @@ func (s *Service) attachMediaStateToDetails(ctx context.Context, details []PostD
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// hlsURLFor is the gateway-relative authorized master playlist for a video
+// asset whose transcode has produced a ladder — the same path media-service
+// hands feed-service's hydration (hlsPlaylistURL there). Empty for images,
+// for a ladder not yet written, and for anything not publishable, so a
+// client never holds a playlist URL for a video it cannot yet be shown.
+func hlsURLFor(mediaID uuid.UUID, m postgres.MediaOwnership) string {
+	if !m.HasHLS || !mediaPublishable(m.ProcessingStatus, m.ModerationStatus) {
+		return ""
+	}
+	return "/v1/media/" + mediaID.String() + "/hls/master.m3u8"
 }

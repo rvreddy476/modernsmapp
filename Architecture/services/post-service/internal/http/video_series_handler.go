@@ -718,7 +718,7 @@ func (h *Handler) GetContinueWatching(c *gin.Context) {
 		return
 	}
 	if items == nil {
-		items = []postgres.WatchProgress{}
+		items = []service.ContinueWatchingItem{}
 	}
 	api.JSON(c.Writer, http.StatusOK, items, nil)
 }

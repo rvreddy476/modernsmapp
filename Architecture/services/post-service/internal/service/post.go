@@ -1629,8 +1629,8 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 // even though every other surface correctly hid them. viewerID is now
 // threaded through so the same fail-closed gate applies.
 // contentTypes narrows the page (legacy spellings normalized); empty = all.
-func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, excludeAuthor *uuid.UUID, contentTypes []string, limit int, cursor string) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetRecentPosts(ctx, excludeAuthor, contentTypes, limit, cursor)
+func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, excludeAuthor *uuid.UUID, contentTypes []string, category string, limit int, cursor string) ([]PostDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetRecentPosts(ctx, excludeAuthor, contentTypes, category, limit, cursor)
 	if err != nil {
 		return nil, "", err
 	}

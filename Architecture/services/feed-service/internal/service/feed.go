@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"sort"
 	"strings"
@@ -328,9 +329,8 @@ func (s *Service) GetFlickFeed(ctx context.Context, userID uuid.UUID, limit int)
 //
 // followingOnly is the reels "Following" tab: only reels by authors the
 // viewer FOLLOWS (one-way, the social graph — the same meaning as the home
-// feed's following_only, NOT the PostTube channel-subscription filter the
-// watch surface uses). The viewer's own reels are not "followed" and are
-// excluded, matching the home feed.
+// feed's and the watch feed's following_only). The viewer's own reels are
+// not "followed" and are excluded, matching the home feed.
 func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
 	target := limit + 1
 	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"flick", "reel"}, before, target*3)
@@ -361,17 +361,33 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 	// Reels "Following" tab. Fail CLOSED, unlike the home feed's older
 	// version of this filter: an unresolved follow graph is an error, never
 	// a page of reels from strangers labelled "Following".
-	if followingOnly && len(candidates) > 0 {
-		following, err := s.fetchFollowing(ctx, userID)
+	if followingOnly {
+		candidates, err = s.applyFollowingFilter(ctx, userID, candidates, "reels")
 		if err != nil {
-			log.Printf("reels following_only: failed to fetch follows for %s: %v", userID, err)
-			return nil, "", fmt.Errorf("reels following filter: %w", err)
+			return nil, "", err
 		}
-		candidates = filterByAuthorSet(candidates, following)
 	}
 
 	window, next := keysetWindow(candidates, limit)
 	return scoreReels(window), next, nil
+}
+
+// applyFollowingFilter narrows candidates to authors the viewer FOLLOWS
+// (graph-service, one-way) — the shared meaning of following_only on the
+// reels and watch surfaces. Fails CLOSED: an unresolved follow graph is an
+// error, never a page of strangers labelled "Following". An empty
+// candidate set short-circuits without a graph round trip. `surface`
+// names the caller in the log line and the wrapped error.
+func (s *Service) applyFollowingFilter(ctx context.Context, userID uuid.UUID, candidates []FeedItem, surface string) ([]FeedItem, error) {
+	if len(candidates) == 0 {
+		return candidates, nil
+	}
+	following, err := s.fetchFollowing(ctx, userID)
+	if err != nil {
+		log.Printf("%s following_only: failed to fetch follows for %s: %v", surface, userID, err)
+		return nil, fmt.Errorf("%s following filter: %w", surface, err)
+	}
+	return filterByAuthorSet(candidates, following), nil
 }
 
 // filterByAuthorSet keeps only candidates whose author is in `authors`. An
@@ -402,31 +418,10 @@ func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit 
 
 // GetLongVideoFeedPage returns a ranked timestamp-keyset page.
 func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string) ([]FeedItem, string, error) {
-	target := limit + 1
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
+	candidates, next, blocked, err := s.videoTimelineWindow(ctx, userID, limit, before, false)
 	if err != nil {
 		return nil, "", err
 	}
-
-	candidates := make([]FeedItem, 0, len(items))
-	for _, item := range items {
-		candidates = append(candidates, FeedItem{
-			PostID:      item.PostID,
-			AuthorID:    item.AuthorID,
-			CreatedAt:   item.CreatedAt,
-			ContentType: item.ContentType,
-			CursorToken: item.CursorToken,
-		})
-	}
-
-	// M2-P0-6: block/mute safety, fail closed, before ranking.
-	blocked, err := s.resolveBlockedSet(ctx, userID)
-	if err != nil {
-		return nil, "", err
-	}
-	candidates = applyBlockFilter(candidates, blocked)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
-	candidates, next := keysetWindow(candidates, limit)
 
 	// Discovery fill (Tube, 2026-09-05). The timeline only holds long
 	// videos from people the viewer follows, so a new viewer — or one whose
@@ -440,27 +435,94 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 	// page as the timeline produced it rather than serving unfiltered
 	// strangers. Later pages stay timeline-only, keyed by the cursor.
 	if before == "" && len(candidates) < limit {
-		viewer := userID
-		fill, err := s.getRecentPublicPostsFor(ctx, &viewer, []string{"long_video"}, limit*2)
+		fill, err := s.longVideoDiscoveryFill(ctx, userID, blocked, "", limit*2)
 		if err != nil {
 			log.Printf("long video discovery fill failed for %s: %v", userID, err)
 		} else {
-			fill = s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked))
 			candidates = mergeDiscoveryFill(candidates, fill, limit)
 		}
 	}
 
-	if s.ranker != nil && len(candidates) > 0 {
-		rc := feedItemsToCandidates(candidates)
-		ranked, err := s.ranker.Rank(ctx, userID, rc, limit)
-		if err != nil {
-			log.Printf("Long video feed ranking failed, fallback to chronological: %v", err)
-		} else {
-			candidates = candidatesToFeedItems(ranked)
-		}
+	return s.rankVideoWindow(ctx, userID, candidates, limit, "Long video feed"), next, nil
+}
+
+// videoTimelineWindow is the keyset window both Tube surfaces read: the
+// viewer's long-form timeline rows, block/mute and hidden-author filtered
+// (M2-P0-6, fail closed), optionally narrowed to authors the viewer follows
+// (followingOnly — the watch "Following" tab, resolved exactly as the reels
+// tab is), cut to `limit` with the cursor of the row after it.
+// Chronological and unfilled — ranking and the discovery fill are the
+// callers' business, so the category path (category.go) can pull several
+// windows and rank once. The resolved block set is returned so a caller's
+// fill can pass the same filter without a second graph round trip.
+func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, map[uuid.UUID]struct{}, error) {
+	target := limit + 1
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
+	if err != nil {
+		return nil, "", nil, err
 	}
 
-	return candidates, next, nil
+	candidates := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+			CursorToken: item.CursorToken,
+		})
+	}
+
+	// M2-P0-6: block/mute safety, fail closed. Runs before the
+	// following filter and the ranker so no later step can reintroduce
+	// a blocked author.
+	blocked, err := s.resolveBlockedSet(ctx, userID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	candidates = applyBlockFilter(candidates, blocked)
+	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
+
+	// Watch "Following" tab: authors the viewer follows, the social graph
+	// (graph-service) — the same set and the same fail-closed rule as the
+	// reels Following tab. A viewer who follows nobody sees an empty tab,
+	// never their whole feed; an unresolved graph is an error, never a
+	// page of strangers.
+	if followingOnly {
+		candidates, err = s.applyFollowingFilter(ctx, userID, candidates, "watch")
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
+	candidates, next := keysetWindow(candidates, limit)
+	return candidates, next, blocked, nil
+}
+
+// longVideoDiscoveryFill is the recent-public long-video source behind the
+// Tube first-page fill, evaluated as the viewer and passed through the SAME
+// block/mute and hidden-author filters as the timeline rows. `category`
+// narrows it at post-service (empty = any).
+func (s *Service) longVideoDiscoveryFill(ctx context.Context, userID uuid.UUID, blocked map[uuid.UUID]struct{}, category string, limit int) ([]FeedItem, error) {
+	viewer := userID
+	fill, err := s.getRecentPublicPostsFor(ctx, &viewer, []string{"long_video"}, category, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked)), nil
+}
+
+// rankVideoWindow runs the main ranker over one fixed window (full
+// signals), falling back to the chronological order on error.
+func (s *Service) rankVideoWindow(ctx context.Context, userID uuid.UUID, candidates []FeedItem, limit int, surface string) []FeedItem {
+	if s.ranker == nil || len(candidates) == 0 {
+		return candidates
+	}
+	ranked, err := s.ranker.Rank(ctx, userID, feedItemsToCandidates(candidates), limit)
+	if err != nil {
+		log.Printf("%s ranking failed, fallback to chronological: %v", surface, err)
+		return candidates
+	}
+	return candidatesToFeedItems(ranked)
 }
 
 // GetReelFeed returns the user's reel-only timeline, scored by recency.
@@ -482,81 +544,16 @@ func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int,
 	return items, err
 }
 
-// GetVideoFeedPage is the paginated watch surface. followingOnly retains its
-// legacy wire name but still means channel subscriptions only.
+// GetVideoFeedPage is the paginated watch surface. followingOnly is the
+// watch "Following" tab: only long videos by authors the viewer follows
+// (graph-service), resolved exactly as the reels Following tab is.
 func (s *Service) GetVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
-	target := limit + 1
-	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
+	candidates, next, _, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly)
 	if err != nil {
 		return nil, "", err
 	}
-
-	candidates := make([]FeedItem, 0, len(items))
-	for _, item := range items {
-		candidates = append(candidates, FeedItem{
-			PostID:      item.PostID,
-			AuthorID:    item.AuthorID,
-			CreatedAt:   item.CreatedAt,
-			ContentType: item.ContentType,
-			CursorToken: item.CursorToken,
-		})
-	}
-
-	// M2-P0-6: block/mute safety, fail closed. Runs before the
-	// subscriptions filter and the ranker so no later step can reintroduce
-	// a blocked author.
-	blocked, err := s.resolveBlockedSet(ctx, userID)
-	if err != nil {
-		return nil, "", err
-	}
-	candidates = applyBlockFilter(candidates, blocked)
-	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
-
-	// Subscriptions filter (Module 1 P0-3): the PostTube Subscriptions tab
-	// is driven by real CHANNEL SUBSCRIPTIONS, not the social follow
-	// graph. Following someone does not put their long video here, and
-	// subscribing does not require following them. The parameter keeps
-	// its wire name (`following_only`) for old clients, but the meaning is
-	// now "subscriptions only" — there is no follow fallback: a viewer
-	// with zero subscriptions sees an empty tab, not their follow feed.
-	if followingOnly && len(candidates) > 0 {
-		subscribed, err := s.fetchSubscribedCreators(ctx, userID)
-		if err != nil {
-			// Fail closed: showing follow-graph videos here would
-			// silently reintroduce the exact conflation P0-3 removes.
-			log.Printf("video feed subscriptions: failed to fetch subscriptions for %s: %v", userID, err)
-			return nil, "", err
-		}
-		if len(subscribed) > 0 {
-			subSet := make(map[uuid.UUID]struct{}, len(subscribed))
-			for _, cid := range subscribed {
-				subSet[cid] = struct{}{}
-			}
-			filtered := candidates[:0]
-			for _, c := range candidates {
-				if _, ok := subSet[c.AuthorID]; ok {
-					filtered = append(filtered, c)
-				}
-			}
-			candidates = filtered
-		} else {
-			candidates = nil
-		}
-	}
-	candidates, next := keysetWindow(candidates, limit)
-
 	// Long-video feed uses the main ranker with full signals
-	if s.ranker != nil && len(candidates) > 0 {
-		rc := feedItemsToCandidates(candidates)
-		ranked, err := s.ranker.Rank(ctx, userID, rc, limit)
-		if err != nil {
-			log.Printf("Video feed ranking failed, fallback to chronological: %v", err)
-		} else {
-			candidates = candidatesToFeedItems(ranked)
-		}
-	}
-
-	return candidates, next, nil
+	return s.rankVideoWindow(ctx, userID, candidates, limit, "Video feed"), next, nil
 }
 
 func keysetWindow(items []FeedItem, limit int) ([]FeedItem, string) {
@@ -1108,7 +1105,7 @@ func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]u
 // getRecentPublicPosts fetches recent public posts from post-service as a cold-start fallback
 // for users with an empty home timeline (new users, no follows, etc.).
 func (s *Service) getRecentPublicPosts(ctx context.Context, limit int) ([]FeedItem, error) {
-	return s.getRecentPublicPostsFor(ctx, nil, nil, limit)
+	return s.getRecentPublicPostsFor(ctx, nil, nil, "", limit)
 }
 
 // getRecentPublicPostsFor is the discovery source behind the cold-start
@@ -1116,11 +1113,17 @@ func (s *Service) getRecentPublicPosts(ctx context.Context, limit int) ([]FeedIt
 // types and evaluated AS the viewer. With a viewer, post-service applies its
 // own read rules for that person: private authors are dropped, a post still
 // processing is returned only to its author, and the viewer's own posts are
-// included. Without one it behaves as an anonymous read.
-func (s *Service) getRecentPublicPostsFor(ctx context.Context, viewerID *uuid.UUID, contentTypes []string, limit int) ([]FeedItem, error) {
+// included. Without one it behaves as an anonymous read. A non-empty
+// `category` asks post-service for that taxonomy id only (Tube category
+// filter, 2026-09-05); it is already a validated slug by the time it gets
+// here, so it goes on the query string escaped but otherwise verbatim.
+func (s *Service) getRecentPublicPostsFor(ctx context.Context, viewerID *uuid.UUID, contentTypes []string, category string, limit int) ([]FeedItem, error) {
 	url := fmt.Sprintf("%s/v1/posts/recent?limit=%d", s.postServiceURL, limit)
 	if len(contentTypes) > 0 {
 		url += "&content_type=" + strings.Join(contentTypes, ",")
+	}
+	if category != "" {
+		url += "&category=" + neturl.QueryEscape(category)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

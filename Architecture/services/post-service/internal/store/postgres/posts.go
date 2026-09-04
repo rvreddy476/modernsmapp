@@ -148,6 +148,15 @@ type PostMedia struct {
 	// milliseconds, overlaid from media_assets with the pipeline state
 	// (Tube, 2026-09-05). Omitted while unknown and for images.
 	DurationMs int `json:"duration_ms,omitempty"`
+
+	// HLSURL is the gateway-relative authorized master playlist
+	// (/v1/media/{id}/hls/master.m3u8), overlaid from media_assets once the
+	// transcode has produced a ladder (hls_master_key set). Omitted
+	// otherwise. Same value feed-service's hydration emits, so the Tube
+	// "You" page (my uploads, saved, continue watching) can play a video
+	// from post-service's own post shape without a second hydration.
+	// media-service still authorizes the request on fetch.
+	HLSURL string `json:"hls_url,omitempty"`
 }
 
 // The one projection every post-media read uses.
@@ -389,6 +398,9 @@ type MediaOwnership struct {
 	// DurationMs: media_assets.duration_ms (media-service migration 016),
 	// falling back to the whole-second column for older rows; 0 = unknown.
 	DurationMs int
+	// HasHLS: media_assets.hls_master_key is set, i.e. the transcode has
+	// produced a ladder and the authorized master playlist exists.
+	HasHLS bool
 }
 
 // BatchGetMediaOwnership returns ownership and state for the given media
@@ -402,7 +414,8 @@ func (s *Store) BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (ma
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type,
 		       COALESCE(processing_status,''), COALESCE(moderation_status,''),
-		       COALESCE(duration_ms, duration_seconds * 1000, 0)
+		       COALESCE(duration_ms, duration_seconds * 1000, 0),
+		       COALESCE(hls_master_key, '') <> ''
 		FROM media_assets WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("batch media ownership: %w", err)
@@ -413,7 +426,7 @@ func (s *Store) BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (ma
 			id uuid.UUID
 			m  MediaOwnership
 		)
-		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.ProcessingStatus, &m.ModerationStatus, &m.DurationMs); err != nil {
+		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.ProcessingStatus, &m.ModerationStatus, &m.DurationMs, &m.HasHLS); err != nil {
 			return nil, fmt.Errorf("batch media ownership scan: %w", err)
 		}
 		out[id] = m
@@ -886,7 +899,9 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 // If excludeAuthor is non-nil, posts by that author are excluded.
 // contentTypes, when non-empty, restricts the page to those content types
 // (feed-service's /v1/feed/videos discovery fill asks for long_video only).
-func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, contentTypes []string, limit int, cursor string) ([]Post, string, error) {
+// A non-empty `category` keeps only posts carrying exactly that taxonomy id
+// (Tube category filter, 2026-09-05).
+func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, contentTypes []string, category string, limit int, cursor string) ([]Post, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -908,6 +923,11 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, co
 	if len(contentTypes) > 0 {
 		query += fmt.Sprintf(` AND content_type = ANY($%d)`, argIdx)
 		args = append(args, contentTypes)
+		argIdx++
+	}
+	if category != "" {
+		query += fmt.Sprintf(` AND category = $%d`, argIdx)
+		args = append(args, category)
 		argIdx++
 	}
 
@@ -1278,6 +1298,14 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 	if len(posts) > limit {
 		nextCursor = savedAt[limit-1].Format(time.RFC3339Nano)
 		posts = posts[:limit]
+	}
+
+	// Attached media, ordered and normalized — the saved list is a "You"
+	// page surface (Tube, 2026-09-05) and renders the same post shape as
+	// every other read: without this a saved video had a title and no
+	// player. See post_media.go.
+	if err := s.attachPostMedia(ctx, posts); err != nil {
+		return nil, "", err
 	}
 
 	return posts, nextCursor, nil

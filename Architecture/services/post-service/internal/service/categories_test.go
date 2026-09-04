@@ -70,3 +70,29 @@ func TestFlickCategoriesReturnsACopy(t *testing.T) {
 		t.Fatal("FlickCategories exposed the shared slice")
 	}
 }
+
+// The read-side filter (Tube, 2026-09-05) is shape-only: an id no post
+// carries is an empty page, not a 400, so only a malformed value is refused.
+func TestNormalizeCategoryFilter(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr error
+	}{
+		{"", "", nil},
+		{"tech", "tech", nil},
+		{" Music ", "music", nil},
+		{"cooking", "cooking", nil}, // outside the taxonomy, still well-formed
+		{"how-to_2", "how-to_2", nil},
+		{"-tech", "", ErrInvalidCategoryFilter},
+		{"te ch", "", ErrInvalidCategoryFilter},
+		{"tech;drop", "", ErrInvalidCategoryFilter},
+		{"a-category-id-that-is-far-too-long-to-be-real", "", ErrInvalidCategoryFilter},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeCategoryFilter(tc.in)
+		if !errors.Is(err, tc.wantErr) || got != tc.want {
+			t.Errorf("NormalizeCategoryFilter(%q) = (%q, %v), want (%q, %v)", tc.in, got, err, tc.want, tc.wantErr)
+		}
+	}
+}

@@ -264,6 +264,29 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 
+	// Tube category filter (2026-09-05): `category=<taxonomy id>` keeps
+	// only long videos in that category. Applied after hydration inside
+	// the service (category lives on the post), which walks further
+	// timeline windows to fill the page — see service/category.go.
+	category, ok := service.NormalizeCategoryFilter(c.Query("category"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY",
+			"category must be a lowercase slug (letters, digits, '-', '_')", nil)
+		return
+	}
+	if category != "" {
+		hydrated, next, err := h.svc.GetLongVideoCategoryPage(c.Request.Context(), userID, limit, before, category)
+		if err != nil {
+			log.Printf("long video feed (category %q) failed: %v", category, err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+				"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
+			return
+		}
+		c.Writer.Header().Set("X-Feed-Surface", "videos")
+		api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+		return
+	}
+
 	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -299,6 +322,27 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 	}
 
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
+
+	// Tube category filter (2026-09-05) — same contract as /feed/videos.
+	category, ok := service.NormalizeCategoryFilter(c.Query("category"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY",
+			"category must be a lowercase slug (letters, digits, '-', '_')", nil)
+		return
+	}
+	if category != "" {
+		hydrated, next, err := h.svc.GetVideoFeedCategoryPage(c.Request.Context(), userID, limit, before, followingOnly, category)
+		if err != nil {
+			log.Printf("watch feed (category %q) failed: %v", category, err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+				"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
+			return
+		}
+		c.Writer.Header().Set("X-Feed-Surface", "watch")
+		api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+		return
+	}
+
 	feedItems, next, err := h.svc.GetVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

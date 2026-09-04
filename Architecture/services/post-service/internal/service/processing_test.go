@@ -129,3 +129,26 @@ func TestHiddenWhileProcessingIsAuthorOnly(t *testing.T) {
 		t.Fatal("a published post is visible to everyone (subject to the other gates)")
 	}
 }
+
+// hls_url (Tube "You" page, 2026-09-05): the authorized master playlist is
+// overlaid only once a ladder exists AND the asset is publishable, so a
+// client never holds a playlist for a video it cannot yet be shown.
+func TestApplyMediaStateOverlaysHLSURL(t *testing.T) {
+	ready, noLadder, transcoding, missing := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	state := map[uuid.UUID]postgres.MediaOwnership{
+		ready:       {Kind: "video", ProcessingStatus: "ready", ModerationStatus: "passed", HasHLS: true, DurationMs: 12000},
+		noLadder:    {Kind: "video", ProcessingStatus: "ready", ModerationStatus: "passed", HasHLS: false},
+		transcoding: {Kind: "video", ProcessingStatus: "processing", ModerationStatus: "pending", HasHLS: true},
+	}
+	p := &postgres.Post{Media: []postgres.PostMedia{{MediaID: ready}, {MediaID: noLadder}, {MediaID: transcoding}, {MediaID: missing, HLSURL: "stale"}}}
+	applyMediaState(p, state)
+
+	if want := "/v1/media/" + ready.String() + "/hls/master.m3u8"; p.Media[0].HLSURL != want || p.Media[0].DurationMs != 12000 {
+		t.Fatalf("ready asset: hls_url=%q duration=%d want %q,12000", p.Media[0].HLSURL, p.Media[0].DurationMs, want)
+	}
+	for i, why := range map[int]string{1: "no ladder yet", 2: "still processing", 3: "row missing"} {
+		if p.Media[i].HLSURL != "" {
+			t.Fatalf("%s: hls_url=%q want empty", why, p.Media[i].HLSURL)
+		}
+	}
+}

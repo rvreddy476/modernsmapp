@@ -2,12 +2,8 @@ package service
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"log"
 	"math"
-	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -218,94 +214,6 @@ func earlierThan(a, b FeedItem) bool {
 		return a.Score >= b.Score
 	}
 	return !a.CreatedAt.Before(b.CreatedAt)
-}
-
-// fetchSubscribedCreators returns the creator IDs whose channels the
-// viewer subscribes to (Module 1 P0-3). Backs the PostTube Subscriptions
-// feed. Uses the internal user-service contract; an error propagates so
-// callers fail closed rather than falling back to the follow graph.
-// maxSubscriptionsPerViewer is an EXPLICIT product limit on how many
-// channel subscriptions shape the Subscriptions feed (fixes-v2 / P2-2).
-//
-// v1 stopped after 50 pages and returned the truncated set as success —
-// a silent ceiling. The limit is now a named, configurable product rule
-// (FEED_MAX_SUBSCRIPTIONS) and exceeding it is reported to the caller as
-// an error rather than quietly dropping creators from the viewer's feed.
-var maxSubscriptionsPerViewer = intFromEnv("FEED_MAX_SUBSCRIPTIONS", 50_000)
-
-// ErrSubscriptionLimitExceeded means the viewer has more subscriptions
-// than the configured product limit, so the set cannot be built
-// completely. Callers fail closed rather than serve a partial feed that
-// silently omits creators.
-var ErrSubscriptionLimitExceeded = errors.New("viewer exceeds the supported subscription limit")
-
-func intFromEnv(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-		log.Printf("ignoring invalid %s=%q", key, v)
-	}
-	return fallback
-}
-
-// fetchSubscribedCreators pages the keyset contract to exhaustion.
-func (s *Service) fetchSubscribedCreators(ctx context.Context, viewerID uuid.UUID) ([]uuid.UUID, error) {
-	const pageSize = 1000
-	maxPages := (maxSubscriptionsPerViewer + pageSize - 1) / pageSize
-
-	var out []uuid.UUID
-	after := uuid.Nil
-	for page := 0; page < maxPages; page++ {
-		url := fmt.Sprintf("%s/internal/users/%s/subscribed-owner-ids?after=%s&limit=%d",
-			s.userServiceURL, viewerID, after, pageSize)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
-		}
-		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-			req.Header.Set("X-Internal-Service-Key", key)
-		}
-		resp, err := s.userClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("user-service request failed: %w", err)
-		}
-		var env struct {
-			Data struct {
-				OwnerIDs  []string `json:"owner_ids"`
-				NextAfter string   `json:"next_after"`
-				HasMore   bool     `json:"has_more"`
-			} `json:"data"`
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return nil, fmt.Errorf("user-service returned %d", resp.StatusCode)
-		}
-		decodeErr := json.NewDecoder(resp.Body).Decode(&env)
-		resp.Body.Close()
-		if decodeErr != nil {
-			return nil, fmt.Errorf("decode subscriptions: %w", decodeErr)
-		}
-
-		for _, raw := range env.Data.OwnerIDs {
-			if id, err := uuid.Parse(raw); err == nil {
-				out = append(out, id)
-			}
-		}
-		if !env.Data.HasMore || env.Data.NextAfter == "" {
-			return out, nil
-		}
-		next, err := uuid.Parse(env.Data.NextAfter)
-		if err != nil {
-			return out, nil
-		}
-		after = next
-	}
-	// Exhausted the page budget with more still available: surface it
-	// instead of returning a silently truncated set as success.
-	log.Printf("subscriptions: viewer %s exceeds the %d-subscription product limit",
-		viewerID, maxSubscriptionsPerViewer)
-	return nil, fmt.Errorf("%w (limit %d)", ErrSubscriptionLimitExceeded, maxSubscriptionsPerViewer)
 }
 
 // RecordDistribution persists a post's main-feed eligibility (rev-guarded

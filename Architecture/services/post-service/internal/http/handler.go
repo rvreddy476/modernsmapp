@@ -834,6 +834,16 @@ func (h *Handler) GetRecentPosts(c *gin.Context) {
 		return
 	}
 
+	// Optional category filter (Tube, 2026-09-05): exact taxonomy id. A
+	// malformed value is a 400; an id no post carries is an empty page —
+	// see service.NormalizeCategoryFilter for why the taxonomy is not
+	// consulted here.
+	category, err := service.NormalizeCategoryFilter(c.Query("category"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", err.Error(), nil)
+		return
+	}
+
 	var viewerID *uuid.UUID
 	if v := c.GetHeader("X-User-Id"); v != "" {
 		if id, err := uuid.Parse(v); err == nil {
@@ -841,7 +851,7 @@ func (h *Handler) GetRecentPosts(c *gin.Context) {
 		}
 	}
 
-	posts, nextCursor, err := h.svc.GetRecentPosts(c.Request.Context(), viewerID, nil, contentTypes, limit, cursor)
+	posts, nextCursor, err := h.svc.GetRecentPosts(c.Request.Context(), viewerID, nil, contentTypes, category, limit, cursor)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

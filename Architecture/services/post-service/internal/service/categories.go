@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -79,6 +80,31 @@ func NormalizeFlickCategory(raw string) (string, error) {
 	}
 	if _, ok := flickCategoryIDs[id]; !ok {
 		return "", ErrInvalidCategory
+	}
+	return id, nil
+}
+
+// ErrInvalidCategoryFilter is a `category` query value that is not even
+// shaped like a taxonomy id.
+var ErrInvalidCategoryFilter = errors.New("category filter must be a lowercase slug (letters, digits, '-', '_')")
+
+// categorySlugRe is the shape of a taxonomy id — the same rule feed-service
+// applies before forwarding the value here.
+var categorySlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// NormalizeCategoryFilter canonicalises a READ-side `category` filter
+// (Tube, 2026-09-05). Unlike NormalizeFlickCategory it does not check the
+// taxonomy: a filter for an id no post carries is a legitimate question
+// with an empty answer, and refusing it would make feed-service's
+// discovery fill log an error for a page that is simply empty. Only a
+// malformed value is refused. Empty means "no filter".
+func NormalizeCategoryFilter(raw string) (string, error) {
+	id := strings.ToLower(strings.TrimSpace(raw))
+	if id == "" {
+		return "", nil
+	}
+	if !categorySlugRe.MatchString(id) {
+		return "", ErrInvalidCategoryFilter
 	}
 	return id, nil
 }

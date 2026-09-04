@@ -84,9 +84,51 @@ func (s *Service) DeleteWatchProgress(ctx context.Context, userID, postID uuid.U
 	return s.rdb.Del(ctx, key).Err()
 }
 
-// GetContinueWatching returns incomplete watch progress items from the DB.
-func (s *Service) GetContinueWatching(ctx context.Context, userID uuid.UUID, limit int) ([]postgres.WatchProgress, error) {
-	return s.pgStore.GetContinueWatching(ctx, userID, limit)
+// ContinueWatchingItem is one row of the Tube "Continue watching" shelf:
+// the progress, plus the post it belongs to in the ordinary post shape
+// (title, media with duration_ms / hls_url, counts) so the shelf renders
+// without a second round trip.
+type ContinueWatchingItem struct {
+	postgres.WatchProgress
+	Post *PostDetail `json:"post"`
+}
+
+// GetContinueWatching returns the viewer's incomplete watch progress,
+// most recent first, each with its post hydrated through the batch read
+// (GetPostsByIDs) as the viewer. A row whose post that read no longer
+// returns — deleted, moderated out, or otherwise not the viewer's to see —
+// is dropped: there is nothing to resume.
+func (s *Service) GetContinueWatching(ctx context.Context, userID uuid.UUID, limit int) ([]ContinueWatchingItem, error) {
+	rows, err := s.pgStore.GetContinueWatching(ctx, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.PostID)
+	}
+	posts, err := s.GetPostsByIDs(ctx, ids, &userID)
+	if err != nil {
+		return nil, fmt.Errorf("hydrate continue watching: %w", err)
+	}
+	return attachContinueWatchingPosts(rows, posts), nil
+}
+
+// attachContinueWatchingPosts pairs progress rows with their posts, keeping
+// the rows' order and dropping any without a post. Pure, for the test.
+func attachContinueWatchingPosts(rows []postgres.WatchProgress, posts map[uuid.UUID]*PostDetail) []ContinueWatchingItem {
+	out := make([]ContinueWatchingItem, 0, len(rows))
+	for _, r := range rows {
+		p, ok := posts[r.PostID]
+		if !ok || p == nil {
+			continue
+		}
+		out = append(out, ContinueWatchingItem{WatchProgress: r, Post: p})
+	}
+	return out
 }
 
 // SaveChapters delegates to the store.
