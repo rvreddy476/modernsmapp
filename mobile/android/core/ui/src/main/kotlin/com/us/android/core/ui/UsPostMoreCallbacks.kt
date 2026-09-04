@@ -17,6 +17,13 @@ class UsPostMoreCallbacks(
     val onInterested: () -> Unit,
     /** The host removes the post from the list at once and tells the server. */
     val onNotInterested: () -> Unit,
+    /**
+     * "Don't recommend @user", other people's posts only. The host sends the
+     * author-scoped signal and reports back through
+     * `UsPostMoreState.dontRecommend`; the sheet waits for that, shows the
+     * confirmation, and leaves — a refusal is read where the viewer is looking.
+     */
+    val onDontRecommend: () -> Unit = {},
     val onFollow: () -> Unit,
     val onUnfollow: () -> Unit,
     /** Confirmed in the sheet; the host removes every post by the author. */

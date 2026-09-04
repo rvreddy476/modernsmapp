@@ -22,11 +22,20 @@ data class UsPostMoreState(
     val followRow: UsPostMoreFollowRow,
     /** The server's "why you're seeing this" sentence; blank hides the row. */
     val reasonText: String = "",
+    /**
+     * The post reached the viewer as a recommendation rather than from an
+     * account they follow. "Interested" only means something for a
+     * suggestion — for someone already followed it says nothing, so the row
+     * is withheld (founder, 2026-09-04).
+     */
+    val suggested: Boolean = true,
     /** What "Copy link" puts on the clipboard. */
     val link: String,
     val report: UsPostReportState = UsPostReportState.Idle,
     /** The viewer's own post: where the delete stands, owned by whoever sends it. */
     val delete: UsPostDeleteState = UsPostDeleteState.Idle,
+    /** Another person's post: where "Don't recommend @user" stands, owned by whoever sends it. */
+    val dontRecommend: UsPostDontRecommendState = UsPostDontRecommendState.Idle,
     /** True while a one-shot action (block) is on the wire; the rows go inert. */
     val busy: Boolean = false,
     /**
@@ -119,6 +128,20 @@ sealed interface UsPostDeleteState {
     data class Failed(val message: String) : UsPostDeleteState
 }
 
+/**
+ * "Don't recommend @user"'s progress, owned by whoever sends it. Like a
+ * delete, it WAITS: the author's posts leave the lists only once the server
+ * has the signal, so a refusal never makes rows vanish and then return. The
+ * sheet shows [Done] as its inline confirmation and then leaves; [Failed]
+ * keeps the sheet open with the reason under the rows.
+ */
+sealed interface UsPostDontRecommendState {
+    data object Idle : UsPostDontRecommendState
+    data object Sending : UsPostDontRecommendState
+    data object Done : UsPostDontRecommendState
+    data class Failed(val message: String) : UsPostDontRecommendState
+}
+
 /** One row of the sheet's menu. The order within [rowGroups] is the design's. */
 enum class UsPostMoreRow(val label: String) {
     /** Reels only: the full caption, unfolded inline. */
@@ -139,6 +162,9 @@ enum class UsPostMoreRow(val label: String) {
     WHY("Why you're seeing this post"),
     INTERESTED("Interested"),
     NOT_INTERESTED("Not interested"),
+
+    /** Other people's posts: YouTube's "Don't recommend channel" — every post by the author goes. */
+    DONT_RECOMMEND("Don't recommend"),
     UNFOLLOW("Unfollow"),
     FOLLOW("Follow"),
     BLOCK("Block"),
@@ -154,7 +180,9 @@ enum class UsPostMoreRow(val label: String) {
  *
  *  - Group 1 is always there: Save/Unsave, Copy link, Share.
  *  - Group 2 is for OTHER people's posts: "Why you're seeing this post" only
- *    when the server sent a sentence, then Interested and Not interested.
+ *    when the server sent a sentence, then Interested, Not interested, and
+ *    "Don't recommend @user" (founder, 2026-09-04, from YouTube's "Don't
+ *    recommend channel") — the author-wide "Not interested".
  *  - Group 3, other people's posts: Unfollow or Follow when the edge is
  *    known, Block, and Report last.
  *  - The viewer's own post: group 1, then "Delete post" alone, red and
@@ -181,8 +209,13 @@ fun UsPostMoreState.rowGroups(): List<List<UsPostMoreRow>> {
 
     val second = buildList {
         if (reasonText.isNotBlank()) add(UsPostMoreRow.WHY)
-        add(UsPostMoreRow.INTERESTED)
+        if (suggested) add(UsPostMoreRow.INTERESTED)
+        // "Not interested" is about this post and applies to anyone; it is
+        // not an unfollow.
         add(UsPostMoreRow.NOT_INTERESTED)
+        // Muting an account you follow is what Unfollow is for, so the row
+        // exists only while the author is not followed.
+        if (followRow != UsPostMoreFollowRow.UNFOLLOW) add(UsPostMoreRow.DONT_RECOMMEND)
     }
     val third = buildList {
         when (followRow) {

@@ -8,7 +8,9 @@ import org.junit.Test
  * Instagram capture (2026-09-04) turned into rules the sheet cannot drift
  * from:
  *
- *  - another person's post: all three groups, Report last;
+ *  - another person's post: all three groups, Report last, and "Don't
+ *    recommend @user" right after "Not interested" (founder, 2026-09-04,
+ *    from YouTube's "Don't recommend channel");
  *  - the viewer's own post: Save, Copy link, Share, then Delete post alone
  *    and last — never a row that acts on "the author";
  *  - Unfollow only when the viewer follows, Follow only when they are
@@ -37,13 +39,57 @@ class UsPostMoreRowsTest {
 
     @Test
     fun `another person's post shows all three groups with report last`() {
-        val groups = state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "From someone you follow").rowGroups()
+        // Followed author, reached through the follow: no Interested (it is
+        // not a suggestion) and no Don't recommend (Unfollow is that).
+        val groups = state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "From someone you follow")
+            .copy(suggested = false)
+            .rowGroups()
 
         assertThat(groups).containsExactly(
             listOf(UsPostMoreRow.SAVE, UsPostMoreRow.COPY_LINK, UsPostMoreRow.SHARE),
-            listOf(UsPostMoreRow.WHY, UsPostMoreRow.INTERESTED, UsPostMoreRow.NOT_INTERESTED),
+            listOf(UsPostMoreRow.WHY, UsPostMoreRow.NOT_INTERESTED),
             listOf(UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT),
         ).inOrder()
+    }
+
+    /**
+     * The founder looked for Block and Report on his OWN reel (2026-09-04)
+     * and found them "missing": that is the rule, not a bug. Pinned both
+     * ways so neither side of it can drift.
+     */
+    @Test
+    fun `block and report are offered on another person's post and never on the viewer's own`() {
+        for (follow in UsPostMoreFollowRow.entries) {
+            val other = state(own = false, follow = follow).rowGroups().flatten()
+            assertThat(other).containsAtLeast(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT).inOrder()
+            assertThat(other.last()).isEqualTo(UsPostMoreRow.REPORT)
+
+            val own = state(own = true, follow = follow).rowGroups().flatten()
+            assertThat(own).containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
+        }
+        // A reel changes nothing about it: the reel group is about the frame, not the author.
+        assertThat(state(own = false).copy(reel = reel()).rowGroups().flatten())
+            .containsAtLeast(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT).inOrder()
+        assertThat(state(own = true).copy(reel = reel()).rowGroups().flatten())
+            .containsNoneOf(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT)
+    }
+
+    /** YouTube's "Don't recommend channel": right after "Not interested", other people's posts only. */
+    @Test
+    fun `don't recommend follows not interested on another person's post and is never on the viewer's own`() {
+        val second = state(own = false).rowGroups()[1]
+        assertThat(second).containsExactly(
+            UsPostMoreRow.INTERESTED,
+            UsPostMoreRow.NOT_INTERESTED,
+            UsPostMoreRow.DONT_RECOMMEND,
+        ).inOrder()
+        assertThat(second.indexOf(UsPostMoreRow.DONT_RECOMMEND))
+            .isEqualTo(second.indexOf(UsPostMoreRow.NOT_INTERESTED) + 1)
+
+        assertThat(state(own = true).rowGroups().flatten()).doesNotContain(UsPostMoreRow.DONT_RECOMMEND)
+        assertThat(state(own = true).copy(reel = reel()).rowGroups().flatten())
+            .doesNotContain(UsPostMoreRow.DONT_RECOMMEND)
+        assertThat(UsPostMoreRow.DONT_RECOMMEND.label).isEqualTo("Don't recommend")
     }
 
     @Test
@@ -58,6 +104,7 @@ class UsPostMoreRowsTest {
         assertThat(groups.flatten()).containsNoneOf(
             UsPostMoreRow.INTERESTED,
             UsPostMoreRow.NOT_INTERESTED,
+            UsPostMoreRow.DONT_RECOMMEND,
             UsPostMoreRow.FOLLOW,
             UsPostMoreRow.UNFOLLOW,
             UsPostMoreRow.BLOCK,
@@ -91,11 +138,32 @@ class UsPostMoreRowsTest {
             .containsExactly(UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT).inOrder()
     }
 
+    /**
+     * Interested is a signal about a suggestion, so a post from an account
+     * the viewer already follows does not offer it; and muting an account the
+     * viewer follows is what Unfollow is for, so Don't recommend appears only
+     * while the author is not followed (founder, 2026-09-04).
+     */
+    @Test
+    fun `interested is for suggestions and don't recommend is for accounts not followed`() {
+        val followed = state(follow = UsPostMoreFollowRow.UNFOLLOW).copy(suggested = false).rowGroups()[1]
+        assertThat(followed).containsExactly(UsPostMoreRow.NOT_INTERESTED)
+
+        val suggestedStranger = state(follow = UsPostMoreFollowRow.FOLLOW).copy(suggested = true).rowGroups()[1]
+        assertThat(suggestedStranger)
+            .containsExactly(UsPostMoreRow.INTERESTED, UsPostMoreRow.NOT_INTERESTED, UsPostMoreRow.DONT_RECOMMEND)
+            .inOrder()
+
+        val unknownEdge = state(follow = UsPostMoreFollowRow.HIDDEN).copy(suggested = true).rowGroups()[1]
+        assertThat(unknownEdge).contains(UsPostMoreRow.DONT_RECOMMEND)
+    }
+
     @Test
     fun `the why row appears only with a reason sentence`() {
         assertThat(state(reason = "Popular in Comedy").rowGroups()[1].first()).isEqualTo(UsPostMoreRow.WHY)
         assertThat(state(reason = "").rowGroups()[1])
-            .containsExactly(UsPostMoreRow.INTERESTED, UsPostMoreRow.NOT_INTERESTED).inOrder()
+            .containsExactly(UsPostMoreRow.INTERESTED, UsPostMoreRow.NOT_INTERESTED, UsPostMoreRow.DONT_RECOMMEND)
+            .inOrder()
         assertThat(state(reason = "   ").rowGroups()[1]).doesNotContain(UsPostMoreRow.WHY)
     }
 

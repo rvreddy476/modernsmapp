@@ -16,6 +16,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.ui.UsPostDeleteState
+import com.us.android.core.ui.UsPostDontRecommendState
 import com.us.android.core.ui.UsPostReportState
 import com.us.android.core.ui.UsReportReason
 import com.us.android.feature.feed.data.FeedRepository
@@ -46,7 +47,9 @@ import javax.inject.Inject
  * the reel overlay already read. Report and Delete are the two actions that
  * WAIT: the sheet shows the outcome, and "you already reported this" is an
  * outcome, not an error. Delete waits because a post that vanished and then
- * came back "couldn't be deleted" reads as a lie.
+ * came back "couldn't be deleted" reads as a lie. "Don't recommend @user"
+ * waits for the same reason at author scale: it clears every post by the
+ * author, and half a feed emptying and refilling is worse than a beat's wait.
  */
 @HiltViewModel
 // Constructor injection of every collaborator the sheet's rows need; a
@@ -73,6 +76,11 @@ class PostMoreViewModel @Inject constructor(
     /** The delete's progress for the viewer's own post the sheet is open on. */
     val delete: StateFlow<UsPostDeleteState> = _delete.asStateFlow()
 
+    private val _dontRecommend = MutableStateFlow<UsPostDontRecommendState>(UsPostDontRecommendState.Idle)
+
+    /** "Don't recommend @user"'s progress for the post the sheet is open on. */
+    val dontRecommend: StateFlow<UsPostDontRecommendState> = _dontRecommend.asStateFlow()
+
     private val _message = MutableStateFlow<UsMessage?>(null)
 
     /** What the HOST shows after the sheet has closed: a confirmation, or a refusal. */
@@ -83,10 +91,11 @@ class PostMoreViewModel @Inject constructor(
 
     val ownUserId: String get() = follows.ownId
 
-    /** The sheet opened on a post: nothing from an earlier report or delete carries over. */
+    /** The sheet opened on a post: nothing from an earlier report, delete or "don't recommend" carries over. */
     fun opened() {
         _report.value = UsPostReportState.Idle
         _delete.value = UsPostDeleteState.Idle
+        _dontRecommend.value = UsPostDontRecommendState.Idle
     }
 
     fun dismissMessage() {
@@ -120,6 +129,31 @@ class PostMoreViewModel @Inject constructor(
             if (feed.sendFeedback(item.id, interested = false) is AppResult.Failure) {
                 hidden.unhidePost(item.id)
                 say(COULD_NOT_SAVE, UsMessageType.Error)
+            }
+        }
+    }
+
+    /**
+     * "Don't recommend @user". WAITS for the server, then every post by the
+     * author leaves every list at once through [HiddenPosts] — the same set
+     * Block uses — and the sheet shows its confirmation. A refusal leaves
+     * every post where it was and is read under the rows.
+     */
+    fun dontRecommend(item: FeedItem) {
+        if (_dontRecommend.value == UsPostDontRecommendState.Sending) return
+        _dontRecommend.value = UsPostDontRecommendState.Sending
+        val authorId = item.author.id
+        viewModelScope.launch {
+            _dontRecommend.value = when (val result = feed.sendAuthorFeedback(authorId, interested = false)) {
+                is AppResult.Success -> {
+                    hidden.hideAuthor(authorId)
+                    UsPostDontRecommendState.Done
+                }
+                is AppResult.Failure -> when (result.error) {
+                    is AppError.NoNetwork, is AppError.Timeout ->
+                        UsPostDontRecommendState.Failed("You're offline. Try again when you're connected.")
+                    else -> UsPostDontRecommendState.Failed(COULD_NOT_SAVE)
+                }
             }
         }
     }

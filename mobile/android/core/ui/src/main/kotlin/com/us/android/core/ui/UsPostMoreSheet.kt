@@ -71,6 +71,7 @@ import kotlinx.coroutines.launch
  *
  *  1. Save / Unsave · Copy link · Share
  *  2. Why you're seeing this post (expands inline) · Interested · Not interested
+ *     · Don't recommend @user
  *  3. Unfollow @user / Follow · Block @user · Report (red, last)
  *
  * The viewer's own post shows group 1 and then "Delete post" (red, last).
@@ -82,9 +83,10 @@ import kotlinx.coroutines.launch
  * viewer's own post shows group 1 and Delete, the relationship row needs a known
  * edge, and the "why" row needs a sentence to show. Report is a second step
  * INSIDE the same sheet ([UsPostReportStep]); Block and Delete confirm in a
- * small dialog over it. Delete is the one row that WAITS on the sheet: the
- * host answers through [UsPostMoreState.delete], and the sheet shows "Post
- * deleted" and leaves, or the refusal under the rows.
+ * small dialog over it. Delete and "Don't recommend" are the two rows that
+ * WAIT on the sheet: the host answers through [UsPostMoreState.delete] /
+ * [UsPostMoreState.dontRecommend], and the sheet shows "Post deleted" / "We
+ * won't recommend posts from @user" and leaves, or the refusal under the rows.
  *
  * Stateless, like everything in this module. [state] and [callbacks] come
  * from the host; the only state held here is presentation — which step is
@@ -133,6 +135,14 @@ fun UsPostMoreSheet(
     // sheet leaves: the row under it is already gone from every list.
     LaunchedEffect(state.delete) {
         if (state.delete == UsPostDeleteState.Deleted) {
+            delay(REPORT_LINGER_MILLIS)
+            leaveThen {}
+        }
+    }
+    // "Don't recommend" that landed: the author's posts are already gone
+    // from every list; the confirmation shows for the beat, then the sheet leaves.
+    LaunchedEffect(state.dontRecommend) {
+        if (state.dontRecommend == UsPostDontRecommendState.Done) {
             delay(REPORT_LINGER_MILLIS)
             leaveThen {}
         }
@@ -259,6 +269,7 @@ private class MorePresentation {
      * that are complete on the tap use it. Save flips in place, Copy link
      * shows its pill, Why / Description / Quality expand, Block and Delete
      * ask first, Report steps in, Clear screen leaves and then clears.
+     * "Don't recommend" stays and waits for the host's answer, like Delete.
      */
     fun onRow(
         row: UsPostMoreRow,
@@ -278,6 +289,7 @@ private class MorePresentation {
             UsPostMoreRow.WHY -> reasonOpen = !reasonOpen
             UsPostMoreRow.INTERESTED -> leaveThen(callbacks.onInterested)
             UsPostMoreRow.NOT_INTERESTED -> leaveThen(callbacks.onNotInterested)
+            UsPostMoreRow.DONT_RECOMMEND -> callbacks.onDontRecommend()
             UsPostMoreRow.UNFOLLOW -> leaveThen(callbacks.onUnfollow)
             UsPostMoreRow.FOLLOW -> leaveThen(callbacks.onFollow)
             UsPostMoreRow.BLOCK -> confirmBlock = true
@@ -308,7 +320,13 @@ private fun MoreMenu(
     onSelectQuality: (UsReelQuality) -> Unit,
 ) {
     val delete = state.delete
-    val rowsEnabled = !state.busy && delete != UsPostDeleteState.Deleting
+    val dontRecommend = state.dontRecommend
+    val rowsEnabled = !state.busy &&
+        delete != UsPostDeleteState.Deleting &&
+        dontRecommend != UsPostDontRecommendState.Sending
+    // The one refusal the sheet can be showing: a delete's, or a "don't recommend"'s.
+    val refusal = (delete as? UsPostDeleteState.Failed)?.message
+        ?: (dontRecommend as? UsPostDontRecommendState.Failed)?.message
     Box(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
             val groups = state.rowGroups()
@@ -326,15 +344,15 @@ private fun MoreMenu(
                     )
                 }
             }
-            // A refused delete stays on the sheet, under the row that asked
-            // for it, so the viewer reads the reason where they are looking.
+            // A refused delete or "don't recommend" stays on the sheet, under
+            // the rows, so the viewer reads the reason where they are looking.
             AnimatedVisibility(
-                visible = delete is UsPostDeleteState.Failed,
+                visible = refusal != null,
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut(),
             ) {
                 Text(
-                    text = (delete as? UsPostDeleteState.Failed)?.message.orEmpty(),
+                    text = refusal.orEmpty(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = UsTheme.extended.liveRed,
                     modifier = Modifier
@@ -356,6 +374,12 @@ private fun MoreMenu(
             testTag = "post_more_deleted",
             modifier = Modifier.align(Alignment.TopCenter),
         )
+        StatusPill(
+            visible = dontRecommend == UsPostDontRecommendState.Done,
+            text = "We won't recommend posts from @${state.username}",
+            testTag = "post_more_dont_recommend_done",
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
     }
 }
 
@@ -375,13 +399,8 @@ private fun MenuRow(
     onClick: () -> Unit,
     onSelectQuality: (UsReelQuality) -> Unit,
 ) {
-    val red = UsTheme.extended.liveRed
-    val (label, tint) = when (row) {
-        UsPostMoreRow.UNFOLLOW -> "Unfollow @${state.username}" to UsTheme.extended.textPrimary
-        UsPostMoreRow.BLOCK -> "Block @${state.username}" to UsTheme.extended.textPrimary
-        UsPostMoreRow.REPORT, UsPostMoreRow.DELETE -> row.label to red
-        else -> row.label to UsTheme.extended.textPrimary
-    }
+    val label = row.menuLabel(state.username)
+    val tint = if (row.isDestructive) UsTheme.extended.liveRed else UsTheme.extended.textPrimary
     val reel = state.reel
     Column(modifier = Modifier.fillMaxWidth()) {
         SheetRow(
@@ -422,6 +441,20 @@ private fun MenuRow(
         }
     }
 }
+
+/**
+ * What the row prints: the rows that act on the author carry the handle —
+ * "Unfollow @user", "Block @user", "Don't recommend @user" — the rest their
+ * own label.
+ */
+private fun UsPostMoreRow.menuLabel(username: String): String = when (this) {
+    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK -> "$label @$username"
+    else -> label
+}
+
+/** Report and Delete are red: the two rows that cannot be taken back from the sheet. */
+private val UsPostMoreRow.isDestructive: Boolean
+    get() = this == UsPostMoreRow.REPORT || this == UsPostMoreRow.DELETE
 
 /** The paragraph under an expander row, in the secondary step, indented to the label. */
 @Composable
@@ -504,8 +537,12 @@ private fun QualityPicker(reel: UsReelMoreState?, onSelect: (UsReelQuality) -> U
     }
 }
 
-/** Lucide, one per row: the reel's four (text · maximize · minimize · sliders), then the post's. */
-private fun UsPostMoreRow.icon(): ImageVector = reelIcon() ?: postIcon()
+/**
+ * Lucide, one per row: the reel's four (text · maximize · minimize ·
+ * sliders), the four about the author (user-x · user-minus · user-plus ·
+ * ban), then the post's own.
+ */
+private fun UsPostMoreRow.icon(): ImageVector = reelIcon() ?: personIcon() ?: postIcon()
 
 private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     UsPostMoreRow.DESCRIPTION -> UsIcons.FileText
@@ -515,10 +552,21 @@ private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
     else -> null
 }
 
-/** bookmark · link · share · info · thumbs · user · ban · flag · trash. */
+/** The rows that act on the author: a figure with an x, a minus, a plus; a ban sign. */
+private fun UsPostMoreRow.personIcon(): ImageVector? = when (this) {
+    UsPostMoreRow.DONT_RECOMMEND -> UsIcons.UserX
+    UsPostMoreRow.UNFOLLOW -> UsIcons.UserMinus
+    UsPostMoreRow.FOLLOW -> UsIcons.UserPlus
+    UsPostMoreRow.BLOCK -> UsIcons.Ban
+    else -> null
+}
+
+/** bookmark · link · share · info · thumbs · flag · trash. */
 private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.DESCRIPTION, UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS, UsPostMoreRow.QUALITY ->
         error("a reel row: $this")
+    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK ->
+        error("a row about the author: $this")
     UsPostMoreRow.SAVE -> UsIcons.BookmarkOutline
     UsPostMoreRow.UNSAVE -> UsIcons.BookmarkFilled
     UsPostMoreRow.COPY_LINK -> UsIcons.Link
@@ -526,9 +574,6 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.WHY -> UsIcons.Info
     UsPostMoreRow.INTERESTED -> UsIcons.ThumbsUp
     UsPostMoreRow.NOT_INTERESTED -> UsIcons.ThumbsDown
-    UsPostMoreRow.UNFOLLOW -> UsIcons.UserMinus
-    UsPostMoreRow.FOLLOW -> UsIcons.UserPlus
-    UsPostMoreRow.BLOCK -> UsIcons.Ban
     UsPostMoreRow.REPORT -> UsIcons.Flag
     UsPostMoreRow.DELETE -> UsIcons.Trash
 }

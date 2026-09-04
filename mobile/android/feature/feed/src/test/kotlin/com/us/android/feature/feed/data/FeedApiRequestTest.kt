@@ -2,8 +2,8 @@ package com.us.android.feature.feed.data
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.model.FeedQuery
+import com.us.android.core.network.di.NetworkModule
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.MediaType.Companion.toMediaType
@@ -23,10 +23,14 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
  * plain feed must not gain either parameter — so the For You request is
  * checked for their absence as strictly as Following is checked for
  * presence.
+ *
+ * And the feedback body: one scope on the wire, never both — `post_id` for
+ * "Not interested", `author_id` for "Don't recommend @user" — which holds
+ * only under the app's own Json (nulls omitted), so that is the one used.
  */
 class FeedApiRequestTest {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = NetworkModule.provideJson()
     private lateinit var server: MockWebServer
     private lateinit var api: FeedApi
 
@@ -88,6 +92,27 @@ class FeedApiRequestTest {
         assertThat(target).startsWith("/v1/feed/home?")
         assertThat(target).contains("circle_only=true")
         assertThat(target).doesNotContain("following_only")
+    }
+
+    private fun feedbackBody(request: FeedFeedbackRequest): String {
+        enqueue("""{"data":{}}""")
+        runBlocking { api.feedback(request) }
+        return server.takeRequest().also { assertThat(it.target).isEqualTo("/v1/feed/feedback") }.body!!.utf8()
+    }
+
+    @Test
+    fun `post feedback puts post_id alone on the wire`() {
+        val body = feedbackBody(FeedFeedbackRequest.forPost("p1", FeedApi.FEEDBACK_NOT_INTERESTED))
+
+        assertThat(body).isEqualTo("""{"post_id":"p1","signal":"not_interested"}""")
+    }
+
+    @Test
+    fun `author feedback puts author_id alone on the wire`() {
+        val body = feedbackBody(FeedFeedbackRequest.forAuthor("u1", FeedApi.FEEDBACK_NOT_INTERESTED))
+
+        assertThat(body).isEqualTo("""{"signal":"not_interested","author_id":"u1"}""")
+        assertThat(body).doesNotContain("post_id")
     }
 
     @Test

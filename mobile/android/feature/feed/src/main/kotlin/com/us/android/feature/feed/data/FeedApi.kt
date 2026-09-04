@@ -133,6 +133,11 @@ interface FeedApi {
      * every surface on the next fetch; the client removes it at once and does
      * not wait. Distinct from `/v1/feed/signal` (a ranking impression) and
      * from post-service's `/v1/feedback` (product notes).
+     *
+     * The same endpoint takes an AUTHOR scope — `author_id` in place of
+     * `post_id` — for "Don't recommend @user" (founder, 2026-09-04, from
+     * YouTube's "Don't recommend channel"): `not_interested` drops every post
+     * by the author from every surface, `interested` is the undo.
      */
     @POST("v1/feed/feedback")
     suspend fun feedback(@Body body: FeedFeedbackRequest): ApiEnvelope<FeedFeedbackDto>
@@ -146,17 +151,29 @@ interface FeedApi {
     }
 }
 
+/**
+ * One scope or the other: a post ([postId]) or an author ([authorId]). The
+ * unused one is null and stays off the wire (the client's Json omits nulls),
+ * so the server sees exactly `{"post_id":…}` or `{"author_id":…}`.
+ */
 @Serializable
 data class FeedFeedbackRequest(
-    @SerialName("post_id") val postId: String,
+    @SerialName("post_id") val postId: String? = null,
     /** [FeedApi.FEEDBACK_INTERESTED] or [FeedApi.FEEDBACK_NOT_INTERESTED]. */
     val signal: String,
-)
+    @SerialName("author_id") val authorId: String? = null,
+) {
+    companion object {
+        fun forPost(postId: String, signal: String) = FeedFeedbackRequest(postId = postId, signal = signal)
+        fun forAuthor(authorId: String, signal: String) = FeedFeedbackRequest(signal = signal, authorId = authorId)
+    }
+}
 
 /** The stored row, echoed back. Nothing here is rendered; a 2xx is the signal. */
 @Serializable
 data class FeedFeedbackDto(
     @SerialName("post_id") val postId: String = "",
+    @SerialName("author_id") val authorId: String = "",
     val signal: String = "",
 )
 

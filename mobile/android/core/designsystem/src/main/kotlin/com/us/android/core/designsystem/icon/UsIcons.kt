@@ -480,6 +480,15 @@ object UsIcons {
         "M22 11h-6",
     )
 
+    /** Lucide `user-x` — "Don't recommend @user" (YouTube's "Don't recommend channel"). */
+    val UserX: ImageVector = lucideStroked(
+        "UserX",
+        "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+        "M9,7 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0",
+        "m17 8 5 5",
+        "m22 8-5 5",
+    )
+
     /** Lucide `ban` — Block. */
     val Ban: ImageVector = lucideStroked(
         "Ban",

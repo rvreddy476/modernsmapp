@@ -33,6 +33,7 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.core.ui.UsPostDeleteState
+import com.us.android.core.ui.UsPostDontRecommendState
 import com.us.android.core.ui.UsPostMoreFollowRow
 import com.us.android.core.ui.UsPostReportState
 import com.us.android.core.ui.UsReportReason
@@ -68,6 +69,9 @@ import retrofit2.Response
  *    server; a refusal puts it back.
  *  - Block removes every post by the author from the list and sends the
  *    block; "Interested" is the undo of an earlier "Not interested".
+ *  - "Don't recommend @user" WAITS for the server's answer to the
+ *    author-scoped feedback, then removes every post by the author; a
+ *    refusal leaves them all in place.
  *  - A report carries the chosen reason's wire token, and a 409 reads as
  *    "already reported", not as a failure.
  *  - Delete WAITS for the server: a 204 (or a 404 — already gone) hides the
@@ -88,6 +92,10 @@ class PostMoreViewModelTest {
         val feedback = mutableListOf<FeedFeedbackRequest>()
         var feedbackFails = false
 
+        /** Completed by the test to let a held feedback answer — proves "don't recommend" waits. */
+        val gate = CompletableDeferred<Unit>()
+        var holdFeedback = false
+
         override suspend fun getFeed(
             surface: String,
             limit: Int,
@@ -98,8 +106,16 @@ class PostMoreViewModelTest {
 
         override suspend fun feedback(body: FeedFeedbackRequest): ApiEnvelope<FeedFeedbackDto> {
             feedback += body
+            if (holdFeedback) gate.await()
             if (feedbackFails) throw java.io.IOException("offline")
-            return ApiEnvelope(data = FeedFeedbackDto(body.postId, body.signal), meta = null)
+            return ApiEnvelope(
+                data = FeedFeedbackDto(
+                    postId = body.postId.orEmpty(),
+                    authorId = body.authorId.orEmpty(),
+                    signal = body.signal,
+                ),
+                meta = null,
+            )
         }
 
         override suspend fun getDelta(feedType: String, anchor: String, limit: Int): Nothing = error("unused")
@@ -321,6 +337,73 @@ class PostMoreViewModelTest {
 
         assertThat(h.hidden.state.value.authorIds).isEmpty()
         assertThat(vm.message.value?.type).isEqualTo(UsMessageType.Error)
+    }
+
+    // ── Don't recommend @user ───────────────────────────────────────────
+
+    @Test
+    fun `don't recommend sends the author-scoped signal, then hides every post by the author`() = runTest {
+        val h = Harness(page).apply { feedApi.holdFeedback = true }
+        val vm = viewModel(h)
+        val feed = feedViewModel(h)
+        assertThat(feed.items.asSnapshot().map { it.id }).containsExactly("p1", "p2", "p3").inOrder()
+
+        vm.dontRecommend(item("p1", "a"))
+
+        // Nothing vanishes before the server has answered.
+        assertThat(vm.dontRecommend.value).isEqualTo(UsPostDontRecommendState.Sending)
+        assertThat(h.hidden.state.value.authorIds).isEmpty()
+        assertThat(feed.items.asSnapshot().map { it.id }).containsExactly("p1", "p2", "p3").inOrder()
+
+        h.feedApi.gate.complete(Unit)
+        advanceUntilIdle()
+        assertThat(h.feedApi.feedback).containsExactly(
+            FeedFeedbackRequest(postId = null, signal = "not_interested", authorId = "a"),
+        )
+        assertThat(vm.dontRecommend.value).isEqualTo(UsPostDontRecommendState.Done)
+        assertThat(h.hidden.state.value.authorIds).containsExactly("a")
+        assertThat(feed.items.asSnapshot().map { it.id }).containsExactly("p2")
+        // The sheet shows "We won't recommend posts from @a" itself; the host has nothing to add.
+        assertThat(vm.message.value).isNull()
+    }
+
+    @Test
+    fun `a refused don't recommend keeps the author's posts and says so under the rows`() = runTest {
+        val h = Harness(page).apply { feedApi.feedbackFails = true }
+        val vm = viewModel(h)
+        val feed = feedViewModel(h)
+
+        vm.dontRecommend(item("p1", "a"))
+        advanceUntilIdle()
+
+        assertThat(vm.dontRecommend.value).isInstanceOf(UsPostDontRecommendState.Failed::class.java)
+        assertThat(h.hidden.state.value.authorIds).isEmpty()
+        assertThat(feed.items.asSnapshot().map { it.id }).containsExactly("p1", "p2", "p3").inOrder()
+        assertThat(h.graph.blockRequests).isEmpty()
+    }
+
+    @Test
+    fun `opening the sheet again forgets the last don't recommend`() = runTest {
+        val h = Harness(page).apply { feedApi.feedbackFails = true }
+        val vm = viewModel(h)
+        vm.dontRecommend(item("p1", "a"))
+        advanceUntilIdle()
+
+        vm.opened()
+
+        assertThat(vm.dontRecommend.value).isEqualTo(UsPostDontRecommendState.Idle)
+    }
+
+    @Test
+    fun `the don't recommend state reaches the sheet's state`() {
+        val state = item("p1", "b").toMoreState(
+            EngagementOverlay(),
+            null,
+            ownUserId = "me",
+            dontRecommend = UsPostDontRecommendState.Sending,
+        )
+
+        assertThat(state.dontRecommend).isEqualTo(UsPostDontRecommendState.Sending)
     }
 
     // ── Report ──────────────────────────────────────────────────────────

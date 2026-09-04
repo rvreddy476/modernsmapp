@@ -89,14 +89,21 @@ class FeedRepository @Inject constructor(
      * after `not_interested` is how a hide is undone — latest wins.
      */
     suspend fun sendFeedback(postId: String, interested: Boolean): AppResult<Unit> =
-        apiCall(errorMapper) {
-            api.feedback(
-                FeedFeedbackRequest(
-                    postId = postId,
-                    signal = if (interested) FeedApi.FEEDBACK_INTERESTED else FeedApi.FEEDBACK_NOT_INTERESTED,
-                ),
-            )
-        }.map { }
+        apiCall(errorMapper) { api.feedback(FeedFeedbackRequest.forPost(postId, feedbackSignal(interested))) }
+            .map { }
+
+    /**
+     * Records "Don't recommend @user" (or its undo) for every post by
+     * [authorId] — the same endpoint, author scope. The caller WAITS on the
+     * answer before hiding anything: an author-wide hide that had to be put
+     * back would empty and refill half a feed.
+     */
+    suspend fun sendAuthorFeedback(authorId: String, interested: Boolean): AppResult<Unit> =
+        apiCall(errorMapper) { api.feedback(FeedFeedbackRequest.forAuthor(authorId, feedbackSignal(interested))) }
+            .map { }
+
+    private fun feedbackSignal(interested: Boolean): String =
+        if (interested) FeedApi.FEEDBACK_INTERESTED else FeedApi.FEEDBACK_NOT_INTERESTED
 
     private fun pager(load: suspend (PageRequest) -> FeedPage): Flow<PagingData<FeedItem>> = Pager(
         config = PagingConfig(

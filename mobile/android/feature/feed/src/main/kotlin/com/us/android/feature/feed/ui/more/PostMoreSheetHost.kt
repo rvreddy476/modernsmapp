@@ -10,6 +10,7 @@ import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.UsPostDeleteState
+import com.us.android.core.ui.UsPostDontRecommendState
 import com.us.android.core.ui.UsPostMoreCallbacks
 import com.us.android.core.ui.UsPostMoreFollowRow
 import com.us.android.core.ui.UsPostMoreSheet
@@ -44,6 +45,7 @@ internal fun PostMoreSheetHost(
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
+    val dontRecommend by viewModel.dontRecommend.collectAsStateWithLifecycle()
     LaunchedEffect(item.id) { viewModel.opened() }
 
     val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality) {
@@ -52,6 +54,7 @@ internal fun PostMoreSheetHost(
             onShare = { onShare(item) },
             onInterested = { viewModel.interested(item) },
             onNotInterested = { viewModel.notInterested(item) },
+            onDontRecommend = { viewModel.dontRecommend(item) },
             onFollow = { viewModel.follow(item.author.id) },
             onUnfollow = { viewModel.unfollow(item.author.id) },
             onBlock = { viewModel.block(item) },
@@ -62,7 +65,7 @@ internal fun PostMoreSheetHost(
         )
     }
     UsPostMoreSheet(
-        state = item.toMoreState(overlay, followEdge, ownUserId, report, delete, reel),
+        state = item.toMoreState(overlay, followEdge, ownUserId, report, delete, reel, dontRecommend),
         callbacks = callbacks,
         onDismiss = onDismiss,
     )
@@ -80,6 +83,7 @@ internal fun FeedItem.toMoreState(
     report: UsPostReportState = UsPostReportState.Idle,
     delete: UsPostDeleteState = UsPostDeleteState.Idle,
     reel: UsReelMoreState? = null,
+    dontRecommend: UsPostDontRecommendState = UsPostDontRecommendState.Idle,
 ): UsPostMoreState {
     val own = ownUserId.isNotBlank() && author.id == ownUserId
     return UsPostMoreState(
@@ -89,9 +93,13 @@ internal fun FeedItem.toMoreState(
         isBookmarked = overlay.bookmarkedOr(viewer.isBookmarked),
         followRow = if (own) UsPostMoreFollowRow.HIDDEN else moreFollowRow(followEdge),
         reasonText = reasonText,
+        // "following" and "connection" are the server's two "you asked for
+        // this" reasons; everything else was suggested.
+        suggested = reason != "following" && reason != "connection",
         link = postShareLink(id),
         report = report,
         delete = delete,
+        dontRecommend = dontRecommend,
         reel = reel,
     )
 }
