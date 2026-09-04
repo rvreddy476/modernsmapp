@@ -18,7 +18,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data object FeedRoute
 
-/** The Friends tab root: the home timeline narrowed to mutual follows. */
+/** The Friends feed: the home timeline narrowed to mutual follows. A root, opened from Explore. */
 @Serializable
 data object FriendsFeedRoute
 
@@ -71,23 +71,20 @@ fun NavGraphBuilder.feedScreen(
 }
 
 /**
- * Registers the Friends tab root. Same cross-feature contract as [feedScreen]:
- * the Momentum header's three controls are required, and `:app` decides that
- * this page's search opens scoped to people.
+ * Registers the Friends feed. Since 2026-09-05 it is opened from the Explore
+ * launcher rather than the bar, so it wears a back arrow: [onBack] returns
+ * to wherever it was opened from. Same cross-feature contract as
+ * [feedScreen] for authors and reels.
  */
 fun NavGraphBuilder.friendsFeedScreen(
+    onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
-    onOpenMessages: () -> Unit,
-    onOpenNotifications: () -> Unit,
-    onOpenSearch: () -> Unit,
     onOpenReels: () -> Unit,
 ) {
     composable<FriendsFeedRoute> {
         FriendsFeedScreen(
+            onBack = onBack,
             onOpenAuthor = onOpenAuthor,
-            onOpenMessages = onOpenMessages,
-            onOpenNotifications = onOpenNotifications,
-            onOpenSearch = onOpenSearch,
             onOpenReels = onOpenReels,
         )
     }
@@ -128,9 +125,7 @@ data object ReelsRoute
 fun NavGraphBuilder.reelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
-    /** The translucent Momentum header over the video; `:app` scopes search to reels. */
-    onOpenMessages: () -> Unit,
-    onOpenNotifications: () -> Unit,
+    /** The header's search glyph over the video; `:app` decides it opens Explore. */
     onOpenSearch: () -> Unit,
 ) {
     composable<ReelsRoute> {
@@ -138,8 +133,6 @@ fun NavGraphBuilder.reelsScreen(
             pool = pool,
             onOpenAuthor = onOpenAuthor,
             onOpenSearch = onOpenSearch,
-            onOpenMessages = onOpenMessages,
-            onOpenNotifications = onOpenNotifications,
         )
     }
 }

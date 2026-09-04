@@ -27,12 +27,13 @@ import kotlin.reflect.KClass
  * lookup would break the moment one tab is left out.
  *
  * Two entries are roots but never bar items: [MESSAGES] (the inbox, opened
- * from the header's message glyph) and [EXPLORE] (the header's search glyph).
- * They stay here so [forDestination] recognises them as roots — a pushed
- * screen over the inbox is still "inside Messages" — while [TabResolver]
- * leaves them out of the bar.
+ * from Home's header and the Explore launcher) and [FRIENDS] (the friends
+ * feed, opened from the launcher since 2026-09-05, when Explore took its
+ * place in the bar). They stay here so [forDestination] recognises them as
+ * roots — a pushed screen over the inbox is still "inside Messages" — while
+ * [TabResolver] leaves them out of the bar.
  *
- * [module] is null for the tabs every user has (Friends, Explore, Me). Home
+ * [module] is null for the tabs every user has (Explore, Me, and Friends). Home
  * maps to [AppModule.FEED], which [ModulePreferences.includes] always answers
  * yes to, so it too is always present — the mapping exists so the feed can be
  * the user's *home*, not so it can be switched off.
@@ -108,9 +109,10 @@ fun NavController.navigateToTopLevel(destination: TopLevelDestination) {
 }
 
 /**
- * Opens search scoped to [mode] — the same tab-switch options as
- * [navigateToTopLevel], because Explore IS a root (the bar hides under it
- * and Back returns to the tab that opened it); only the argument differs.
+ * Opens the Explore tab with its search scoped to [mode] — the same
+ * tab-switch options as [navigateToTopLevel], because Explore IS a bar tab
+ * (founder, 2026-09-05); only the argument differs, and it only decides
+ * what the page's search field looks for.
  */
 fun NavController.navigateToExplore(mode: ExploreMode) {
     val options = navOptions {

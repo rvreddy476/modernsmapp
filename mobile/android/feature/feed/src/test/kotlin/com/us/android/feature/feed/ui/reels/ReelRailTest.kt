@@ -12,7 +12,9 @@ import org.junit.Test
  *  - a count is the label where there is one, the control's name where
  *    there is not — "8.8K" over "Like", never "0";
  *  - `hide_share` removes Share, `no_comments` removes Comment, and nothing
- *    the author sets touches Like, Save or More;
+ *    the author sets touches Like or Save;
+ *  - there is no More on the rail: it moved to the header's hamburger
+ *    (founder, 2026-09-05), so the rail is Like, Comment, Share, Save;
  *  - "@handle" only where there is a handle; a display name gets no "@";
  *  - the playhead fraction is 0..1 whatever the player reports.
  */
@@ -23,17 +25,15 @@ class ReelRailTest {
         likes: Int = 0,
         comments: Int = 0,
         saved: Boolean = false,
-        offersMore: Boolean = true,
-    ) = railControls(controls, likes, comments, saved, offersMore)
+    ) = railControls(controls, likes, comments, saved)
 
     @Test
-    fun `the rail is like, comment, share, save, more with their names when there is nothing to count`() {
+    fun `the rail is like, comment, share, save with their names when there is nothing to count`() {
         assertThat(rail().map { it.kind to it.label }).containsExactly(
             RailKind.LIKE to "Like",
             RailKind.COMMENT to "Comment",
             RailKind.SHARE to "Share",
             RailKind.SAVE to "Save",
-            RailKind.MORE to "More",
         ).inOrder()
     }
 
@@ -64,20 +64,24 @@ class ReelRailTest {
     fun `hide_share drops share and nothing else`() {
         val kinds = rail(controls = FeedPostControls(hideShare = true)).map { it.kind }
 
-        assertThat(kinds).containsExactly(RailKind.LIKE, RailKind.COMMENT, RailKind.SAVE, RailKind.MORE).inOrder()
+        assertThat(kinds).containsExactly(RailKind.LIKE, RailKind.COMMENT, RailKind.SAVE).inOrder()
     }
 
     @Test
     fun `no_comments drops comment and nothing else`() {
         val kinds = rail(controls = FeedPostControls(noComments = true)).map { it.kind }
 
-        assertThat(kinds).containsExactly(RailKind.LIKE, RailKind.SHARE, RailKind.SAVE, RailKind.MORE).inOrder()
+        assertThat(kinds).containsExactly(RailKind.LIKE, RailKind.SHARE, RailKind.SAVE).inOrder()
     }
 
     @Test
-    fun `more is there only when the surface has a sheet to open`() {
-        assertThat(rail(offersMore = false).map { it.kind }).doesNotContain(RailKind.MORE)
-        assertThat(rail(offersMore = true).last().kind).isEqualTo(RailKind.MORE)
+    fun `nothing the author sets touches like or save, and more is not on the rail`() {
+        val every = rail(controls = FeedPostControls(hideShare = true, noComments = true)).map { it.kind }
+
+        assertThat(every).containsExactly(RailKind.LIKE, RailKind.SAVE).inOrder()
+        assertThat(RailKind.entries)
+            .containsExactly(RailKind.LIKE, RailKind.COMMENT, RailKind.SHARE, RailKind.SAVE)
+            .inOrder()
     }
 
     // ── The author line ─────────────────────────────────────────────────

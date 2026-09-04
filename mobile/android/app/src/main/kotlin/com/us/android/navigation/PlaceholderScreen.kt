@@ -30,12 +30,14 @@ fun PlaceholderScreen(
     title: String,
     reason: String,
     modifier: Modifier = Modifier,
+    /** A back arrow when the placeholder is pushed rather than a tab root. */
+    onBack: (() -> Unit)? = null,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
 ) {
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = title) },
+        topBar = { UsTopBar(title = title, onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         Column(

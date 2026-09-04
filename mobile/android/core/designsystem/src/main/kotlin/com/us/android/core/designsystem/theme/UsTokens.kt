@@ -81,6 +81,27 @@ data class UsExtendedColors(
     val bgRaised: Color,
     /** The Create sheet's per-type circle gradients. See [UsCreateColors]. */
     val create: UsCreateColors,
+    /** The Explore launcher's per-app tile gradients. See [UsLauncherColors]. */
+    val launcher: UsLauncherColors,
+)
+
+/**
+ * The Explore launcher's tiles — one gradient per mini-app (founder,
+ * 2026-09-05). Six reuse a create ramp so the two grids read as one family;
+ * Ask, Feast and Tube have no create twin and carry their own pairs from
+ * [UsColorTokens]. Shared across themes, like [UsCreateColors].
+ */
+@Immutable
+data class UsLauncherColors(
+    val chat: UsCreateSwatch,
+    val friends: UsCreateSwatch,
+    val alerts: UsCreateSwatch,
+    val live: UsCreateSwatch,
+    val shop: UsCreateSwatch,
+    val match: UsCreateSwatch,
+    val ask: UsCreateSwatch,
+    val feast: UsCreateSwatch,
+    val tube: UsCreateSwatch,
 )
 
 /**
@@ -237,6 +258,17 @@ internal val DarkExtendedColors = UsExtendedColors(
         poll = createSwatch(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
         article = createSwatch(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
         live = EmberSwatch,
+    ),
+    launcher = UsLauncherColors(
+        chat = createSwatch(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
+        friends = createSwatch(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
+        alerts = createSwatch(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
+        live = EmberSwatch,
+        shop = createSwatch(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
+        match = createSwatch(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
+        ask = createSwatch(UsColorTokens.LaunchAskLight, UsColorTokens.LaunchAskDeep),
+        feast = createSwatch(UsColorTokens.LaunchFeastLight, UsColorTokens.LaunchFeastDeep),
+        tube = createSwatch(UsColorTokens.LaunchTubeLight, UsColorTokens.LaunchTubeDeep),
     ),
 )
 

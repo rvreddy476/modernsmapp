@@ -12,14 +12,14 @@ class TabResolverTest {
         home: AppModule = AppModule.FEED,
     ) = ModulePreferences(modules = modules, homeModule = home, onboardingCompleted = true)
 
-    /** The Figma bar: Home, Reels, "+", Friends, Me. */
+    /** The bar (founder, 2026-09-05): Home, Reels, "+", Explore, Me. */
     @Test
     fun `every module on yields the full bar in fixed order`() {
         assertThat(TabResolver.resolve(prefs()))
             .containsExactly(
                 TopLevelDestination.HOME,
                 TopLevelDestination.REELS,
-                TopLevelDestination.FRIENDS,
+                TopLevelDestination.EXPLORE,
                 TopLevelDestination.ME,
             )
             .inOrder()
@@ -32,41 +32,41 @@ class TabResolverTest {
 
         assertThat(tabs).containsExactly(
             TopLevelDestination.HOME,
-            TopLevelDestination.FRIENDS,
+            TopLevelDestination.EXPLORE,
             TopLevelDestination.ME,
         ).inOrder()
     }
 
     @Test
-    fun `home, friends and me survive every choice`() {
+    fun `home, explore and me survive every choice`() {
         val tabs = TabResolver.resolve(prefs(modules = emptySet()))
 
         assertThat(tabs).containsExactly(
             TopLevelDestination.HOME,
-            TopLevelDestination.FRIENDS,
+            TopLevelDestination.EXPLORE,
             TopLevelDestination.ME,
         ).inOrder()
     }
 
-    /** The inbox and search live behind header glyphs, never in the bar. */
+    /** The inbox opens from the header and the launcher; Friends from the launcher. Neither is in the bar. */
     @Test
-    fun `messages and explore are never tabs`() {
+    fun `messages and friends are never tabs`() {
         val tabs = TabResolver.resolve(prefs(modules = AppModule.selectable.toSet()))
 
-        assertThat(tabs).containsNoneOf(TopLevelDestination.MESSAGES, TopLevelDestination.EXPLORE)
+        assertThat(tabs).containsNoneOf(TopLevelDestination.MESSAGES, TopLevelDestination.FRIENDS)
     }
 
     /**
      * The "+" slot sits after the first half of the tabs, so four tabs put it
-     * between Reels and Friends — the frame's two-"+"-two.
+     * between Reels and Explore — the frame's two-"+"-two.
      */
     @Test
-    fun `the create slot splits the full bar between reels and friends`() {
+    fun `the create slot splits the full bar between reels and explore`() {
         val tabs = TabResolver.resolve(prefs())
         val split = tabs.size / 2
 
         assertThat(tabs.take(split)).containsExactly(TopLevelDestination.HOME, TopLevelDestination.REELS).inOrder()
-        assertThat(tabs.drop(split)).containsExactly(TopLevelDestination.FRIENDS, TopLevelDestination.ME).inOrder()
+        assertThat(tabs.drop(split)).containsExactly(TopLevelDestination.EXPLORE, TopLevelDestination.ME).inOrder()
     }
 
     /** The home module no longer reorders the bar; it only picks the first screen. */
@@ -77,7 +77,7 @@ class TabResolverTest {
         assertThat(tabs).containsExactly(
             TopLevelDestination.HOME,
             TopLevelDestination.REELS,
-            TopLevelDestination.FRIENDS,
+            TopLevelDestination.EXPLORE,
             TopLevelDestination.ME,
         ).inOrder()
     }

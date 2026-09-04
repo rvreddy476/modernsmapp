@@ -278,7 +278,7 @@ private fun UsHomeTopBarPreview() {
             actions = {
                 IconButton(onClick = {}) {
                     Icon(
-                        imageVector = UsIcons.Explore,
+                        imageVector = UsIcons.Search,
                         contentDescription = "Search",
                         tint = UsTheme.extended.textPrimary,
                     )

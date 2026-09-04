@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -91,6 +92,7 @@ import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
+import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
@@ -112,7 +114,6 @@ import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.data.offersFollow
-import com.us.android.feature.feed.ui.MomentumHeader
 import com.us.android.feature.feed.ui.comments.CommentsSheet
 import com.us.android.feature.feed.ui.more.PostMoreSheetHost
 import com.us.android.feature.feed.ui.more.PostMoreViewModel
@@ -124,9 +125,9 @@ import java.io.File
  * The reels surface: Instagram Reels on Momentum's palette (founder,
  * 2026-09-04). A full-screen vertical pager of short video that fills the
  * frame from the very top (the shell hands this tab no status-bar inset);
- * the Momentum header — wordmark, search, messages, the bell — translucent
- * over the top of the video on its own scrim; the right rail — like,
- * comment, share, save, more, mute — bottom-right; the author, Follow and
+ * the header — the hamburger and search, white — translucent over the top
+ * of the video on its own scrim; the right rail — like, comment, share,
+ * save, mute — bottom-right; the author, Follow and
  * the caption bottom-left over a bottom scrim. No For You / Following tabs:
  * Reels is one surface.
  *
@@ -172,23 +173,22 @@ import java.io.File
  * the author row is a 36dp avatar, "@handle" and a white Follow pill; and a
  * 2dp playhead line runs along the bottom of the frame ([ProgressLine]).
  *
- * The rail's ⋮ opens the same "more" sheet the feed card opens
- * ([PostMoreSheetHost]), driven by [more], with the reel's own group on
- * top — Description, Clear screen / Show controls, Quality (the HLS ladder
- * the settled player reports; the pick is held for the session by the
- * ViewModel and applied to every page's player). What the sheet leaves
- * behind ("We'll show you fewer posts like this") is shown over the reel
- * once it has gone.
+ * The header's hamburger (founder, 2026-09-05; it was the rail's ⋮ before)
+ * opens the same "more" sheet the feed card opens ([PostMoreSheetHost]),
+ * driven by [more], for the reel the pager has SETTLED on, with the reel's
+ * own group on top — Description, Clear screen / Show controls, Quality (the
+ * HLS ladder the settled player reports; the pick is held for the session
+ * by the ViewModel and applied to every page's player). What the sheet
+ * leaves behind ("We'll show you fewer posts like this") is shown over the
+ * reel once it has gone. The header's only other glyph is search, which
+ * opens Explore; no wordmark, no messages, no bell over a reel.
  */
-@Suppress("LongParameterList")
 @Composable
 fun ReelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
-    /** The header's three controls. Required: a header glyph that does nothing must not ship again. */
+    /** The header's search glyph. Required: a header glyph that does nothing must not ship again. */
     onOpenSearch: () -> Unit,
-    onOpenMessages: () -> Unit,
-    onOpenNotifications: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
 ) {
@@ -205,6 +205,10 @@ fun ReelsScreen(
     val pagerState = rememberReelsPager(viewModel, items, head)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
+    // The reel the pager has settled on — what the header's hamburger opens
+    // the more sheet FOR. Null over the pending head, where there is no
+    // reel yet to describe or report; the hamburger then does nothing.
+    var settledReel by remember { mutableStateOf<FeedItem?>(null) }
     // The player of the page the pager has settled on — what the more
     // sheet's Quality row reads its ladder from. Screen state, never the
     // ViewModel's: a player is an Android object the pool owns and recycles.
@@ -254,7 +258,7 @@ fun ReelsScreen(
                 onOpenAuthor = onOpenAuthor,
                 onShare = onShare,
                 onComment = { commentsFor = it },
-                onMore = { moreFor = it },
+                onSettledReel = { settledReel = it },
                 onSettledPlayer = { settledPlayer = it },
             ),
         )
@@ -262,9 +266,8 @@ fun ReelsScreen(
         ScreenChrome(
             paused = paused,
             showHeader = chrome.showHeader,
+            onOpenMenu = { settledReel?.let { moreFor = it } },
             onOpenSearch = onOpenSearch,
-            onOpenMessages = onOpenMessages,
-            onOpenNotifications = onOpenNotifications,
         )
         UsMessageHost(message = moreMessage, onDismiss = more::dismissMessage)
     }
@@ -452,18 +455,17 @@ internal data class ReelsViewState(
  * the pager and below the header so it never covers a control, and it is not
  * itself tappable — the video under it is.
  *
- * The header — wordmark, search (scoped to reels by the host), messages, the
- * bell — rides its own top scrim and pads itself under the status bar the
- * shell left uncovered. It leaves upward in full mode, the same 200ms as the
- * bar leaves down.
+ * The header — the hamburger and search, nothing else (founder, 2026-09-05)
+ * — rides its own top scrim and pads itself under the status bar the shell
+ * left uncovered. It leaves upward in full mode, the same 200ms as the bar
+ * leaves down.
  */
 @Composable
 private fun BoxScope.ScreenChrome(
     paused: Boolean,
     showHeader: Boolean,
+    onOpenMenu: () -> Unit,
     onOpenSearch: () -> Unit,
-    onOpenMessages: () -> Unit,
-    onOpenNotifications: () -> Unit,
 ) {
     AnimatedVisibility(
         visible = paused,
@@ -480,16 +482,41 @@ private fun BoxScope.ScreenChrome(
         enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
         exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
     ) {
-        MomentumHeader(
+        ReelsHeader(
+            onOpenMenu = onOpenMenu,
             onOpenSearch = onOpenSearch,
-            onOpenMessages = onOpenMessages,
-            onOpenNotifications = onOpenNotifications,
-            translucent = true,
-            // The name stays on Home; over a reel only the glyphs remain.
-            showWordmark = false,
             modifier = Modifier.testTag("reels_header"),
         )
     }
+}
+
+/**
+ * Two white glyphs over the translucent top scrim (founder, 2026-09-05):
+ * the hamburger, which opens the settled reel's More sheet — the sheet the
+ * rail's ⋮ used to open — and then search, which opens Explore. No wordmark
+ * (over a video the brand is the video), no messages, no bell: those stay
+ * on Home's full header. The same [UsHomeTopBar] as Home so the scrim, the
+ * height and the status-bar padding are one drawing, not two.
+ */
+@Composable
+private fun ReelsHeader(
+    onOpenMenu: () -> Unit,
+    onOpenSearch: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    UsHomeTopBar(
+        modifier = modifier,
+        translucent = true,
+        showWordmark = false,
+        actions = {
+            IconButton(onClick = onOpenMenu, modifier = Modifier.testTag("reels_header:menu")) {
+                Icon(imageVector = UsIcons.Menu, contentDescription = "More", tint = Color.White)
+            }
+            IconButton(onClick = onOpenSearch, modifier = Modifier.testTag("reels_header:search")) {
+                Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = Color.White)
+            }
+        },
+    )
 }
 
 /**
@@ -511,9 +538,10 @@ internal class ReelActions(
     val onComment: (postId: String) -> Unit,
     val onShare: (FeedItem) -> Unit,
     val onFollow: (authorId: String) -> Unit,
-    val onMore: ((FeedItem) -> Unit)?,
     /** The pager settled on this reel. */
     val onShown: (FeedItem) -> Unit,
+    /** The reel of the settled page, or null when the settled page has none (the pending head). */
+    val onSettledReel: (FeedItem?) -> Unit,
     /** The player of the settled page, or null when the settled page has none (the pending head). */
     val onSettledPlayer: (Player?) -> Unit,
     val onRetryPublish: () -> Unit,
@@ -523,15 +551,16 @@ internal class ReelActions(
 /**
  * The bundle for [ReelsScreen]: everything the ViewModel answers directly,
  * plus the five things only the screen can do — push a profile, open the
- * system share sheet, open the comments and more sheets, and hold the
- * settled player.
+ * system share sheet, open the comments sheet, and hold the settled reel
+ * and its player (the hamburger's more sheet opens on the former, reads its
+ * ladder from the latter).
  */
 private fun reelActions(
     viewModel: ReelsViewModel,
     onOpenAuthor: (String) -> Unit,
     onShare: (FeedItem) -> Unit,
     onComment: (postId: String) -> Unit,
-    onMore: (FeedItem) -> Unit,
+    onSettledReel: (FeedItem?) -> Unit,
     onSettledPlayer: (Player?) -> Unit,
 ) = ReelActions(
     onToggleMute = viewModel::toggleMuted,
@@ -543,8 +572,8 @@ private fun reelActions(
     onComment = onComment,
     onShare = onShare,
     onFollow = viewModel::onFollow,
-    onMore = onMore,
     onShown = viewModel::onReelShown,
+    onSettledReel = onSettledReel,
     onSettledPlayer = onSettledPlayer,
     onRetryPublish = viewModel::retryPublish,
     onDiscardPublish = viewModel::discardPublish,
@@ -625,6 +654,7 @@ private fun ReelsPager(
         val current = pagerState.settledPage
         val reel = reelAt(current)
         val player = reel?.let(playbackFor)?.let { pool.acquire(current, it) }
+        actions.onSettledReel(reel)
         actions.onSettledPlayer(player)
         reel?.let(actions.onShown)
         pool.playOnly(current)
@@ -1044,8 +1074,9 @@ private fun BottomScrim(modifier: Modifier = Modifier) {
 /**
  * The vertical control strip over a reel, YouTube Shorts' idiom on
  * Instagram's order (founder, 2026-09-04, "combine both"): like, comment,
- * share, save, ⋮ — each glyph with a one-line label under it, the count
- * where there is one — then mute on its own, unlabelled. 56dp from the
+ * share, save — each glyph with a one-line label under it, the count
+ * where there is one — then mute on its own, unlabelled. The ⋮ left the
+ * rail for the header's hamburger (founder, 2026-09-05). 56dp from the
  * bottom, 20dp between controls. Plain white glyphs on the bottom scrim —
  * no discs; the scrim carries the contrast for the whole strip.
  *
@@ -1067,7 +1098,6 @@ private fun ReelActionRail(
         likes = overlay.likeCountOr(item.counts.likes, item.viewer.hasReacted),
         comments = item.counts.comments,
         saved = bookmarked,
-        offersMore = actions.onMore != null,
     )
     Column(
         modifier = modifier
@@ -1129,12 +1159,6 @@ private fun RailControlButton(
             label = control.label,
             tint = if (bookmarked) UsTheme.extended.statusWarning else Color.White,
             onClick = { actions.onBookmark(item.id, item.viewer.isBookmarked) },
-        )
-        RailKind.MORE -> RailButton(
-            icon = UsIcons.More,
-            description = "More",
-            label = control.label,
-            onClick = { actions.onMore?.invoke(item) },
         )
     }
 }

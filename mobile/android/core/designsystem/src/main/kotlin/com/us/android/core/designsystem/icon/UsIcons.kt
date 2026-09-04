@@ -391,15 +391,70 @@ object UsIcons {
             "l.84-2.873a2 2 0 0 1 .506-.852z",
     )
 
-    /** Lucide `search`. The Explore tab is the app's discover-and-search surface. */
+    /**
+     * Lucide `layout-grid` — four rounded squares. The Explore tab is the
+     * mini-app launcher (founder, 2026-09-05), so its glyph is a grid of
+     * apps, not a magnifier; search is one field ON that page.
+     */
     val Explore: ImageVector = lucideStroked(
         "Explore",
+        "M4 3h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+        "M15 3h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+        "M15 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z",
+        "M4 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z",
+    )
+
+    /** Lucide `search` — the header's search action and the Explore page's field. */
+    val Search: ImageVector = lucideStroked(
+        "Search",
         "m21 21-4.34-4.34",
         "M11,11 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0",
     )
 
-    /** The header search action — same glyph as [Explore], different call site. */
-    val Search: ImageVector get() = Explore
+    /** Lucide `menu` — three lines. Over a reel it opens the reel's More sheet. */
+    val Menu: ImageVector = lucideStroked("Menu", "M4 12h16", "M4 6h16", "M4 18h16")
+
+    /** Lucide `shopping-bag` — the Shop launcher tile. */
+    val ShoppingBag: ImageVector = lucideStroked(
+        "ShoppingBag",
+        "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z",
+        "M3 6h18",
+        "M16 10a4 4 0 0 1-8 0",
+    )
+
+    /** Lucide `heart-handshake` — the Match launcher tile. */
+    val HeartHandshake: ImageVector = lucideStroked(
+        "HeartHandshake",
+        "M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2" +
+            "A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z",
+        "M12 5 9.04 7.96a2.17 2.17 0 0 0 0 3.08c.82.82 2.13.85 3 .07l2.07-1.9a2.82 2.82 0 0 1 3.79 0" +
+            "l2.96 2.66",
+        "m18 15-2-2",
+        "m15 18-2-2",
+    )
+
+    /** Lucide `circle-help` — the Ask (Q&A) launcher tile. */
+    val CircleHelp: ImageVector = lucideStroked(
+        "CircleHelp",
+        "M12,12 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0",
+        "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3",
+        "M12 17h.01",
+    )
+
+    /** Lucide `utensils` — the Feast (food) launcher tile. */
+    val Utensils: ImageVector = lucideStroked(
+        "Utensils",
+        "M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2",
+        "M7 2v20",
+        "M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7",
+    )
+
+    /** Lucide `tv` — the Tube (long video) launcher tile. */
+    val Tv: ImageVector = lucideStroked(
+        "Tv",
+        "M4 7h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z",
+        "m17 2-5 5-5-5",
+    )
 
     /** Lucide `circle-user` — the Me tab and profile headers. */
     val Profile: ImageVector = lucideStroked(

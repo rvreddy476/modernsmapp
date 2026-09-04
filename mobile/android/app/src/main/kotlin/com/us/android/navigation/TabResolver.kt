@@ -5,10 +5,12 @@ import com.us.android.core.profile.data.ModulePreferences
 /**
  * Turns the user's module choices into the bottom bar.
  *
- * The bar's ORDER is fixed — Home, Reels, "+", Friends, Me — whatever the
- * user's home module is. The module choices decide only two things:
+ * The bar's ORDER is fixed — Home, Reels, "+", Explore, Me (founder,
+ * 2026-09-05: Explore, the mini-app launcher, took Friends' slot; Friends
+ * opens from the launcher) — whatever the user's home module is. The module
+ * choices decide only two things:
  *  1. Whether a module-backed tab is shown at all: Reels appears when the
- *     reels module is on; Home, Friends and Me are always there. Modules this
+ *     reels module is on; Home, Explore and Me are always there. Modules this
  *     build has no screen for never reach here — they have no
  *     [TopLevelDestination] — so an unbuilt choice is recorded server-side
  *     and produces no dead tab.
@@ -23,14 +25,14 @@ import com.us.android.core.profile.data.ModulePreferences
 object TabResolver {
 
     /**
-     * The bar, in order. Messages and Explore are tab roots (the inbox and
-     * search are reached from the header) but never bar items, so they are
-     * simply not listed.
+     * The bar, in order. Messages and Friends are tab roots (the inbox and
+     * the friends feed are reached from the header and the Explore launcher)
+     * but never bar items, so they are simply not listed.
      */
     private val BAR_ORDER = listOf(
         TopLevelDestination.HOME,
         TopLevelDestination.REELS,
-        TopLevelDestination.FRIENDS,
+        TopLevelDestination.EXPLORE,
         TopLevelDestination.ME,
     )
 

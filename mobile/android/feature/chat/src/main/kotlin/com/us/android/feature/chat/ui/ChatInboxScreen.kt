@@ -436,7 +436,7 @@ private fun SearchPill(query: String, onQueryChange: (String) -> Unit) {
             ),
     ) {
         Icon(
-            imageVector = UsIcons.Explore,
+            imageVector = UsIcons.Search,
             contentDescription = null,
             tint = UsTheme.extended.textMuted,
             modifier = Modifier.size(SEARCH_GLYPH),

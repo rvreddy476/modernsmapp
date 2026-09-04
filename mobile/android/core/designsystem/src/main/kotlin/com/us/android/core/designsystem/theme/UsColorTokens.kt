@@ -87,6 +87,20 @@ internal object UsColorTokens {
     val CreateArticleLight = Color(0xFF22D3EE)
     val CreateArticleDeep = Color(0xFF0891B2)
 
+    // ── Explore launcher (founder, 2026-09-05) ─────────────────────────
+    // The launcher's tiles reuse the create ramps where one fits — chat is
+    // the audio violet, friends the photo emerald, alerts the poll gold,
+    // shop the article cyan, match the reel rose, live the ember — and
+    // three modules have no create twin, so they get their own pairs:
+    // Ask in indigo, Feast in orange-amber, Tube in a plain red that is
+    // neither the rose nor the ember.
+    val LaunchAskLight = Color(0xFF818CF8)
+    val LaunchAskDeep = Color(0xFF4F46E5)
+    val LaunchFeastLight = Color(0xFFFBBF24)
+    val LaunchFeastDeep = Color(0xFFEA580C)
+    val LaunchTubeLight = Color(0xFFF87171)
+    val LaunchTubeDeep = Color(0xFFB91C1C)
+
     // ── Glass ──────────────────────────────────────────────────────────
     val GlassBg = Color(0x1AFFFFFF)
     val GlassBorder = Color(0x14FFFFFF)

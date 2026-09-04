@@ -10,8 +10,9 @@ import com.us.android.core.designsystem.component.UsMomentumHeader
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 
 /**
- * The Momentum header with its live unread count, for the feed module's
- * three top-level pages — Home, Friends and Reels. The pure layout is
+ * The Momentum header with its live unread count, for Home — the one feed
+ * page that still wears the full header (Reels has its hamburger-and-search
+ * header, Friends a titled bar, since 2026-09-05). The pure layout is
  * [UsMomentumHeader]; this only binds the badge.
  *
  * ## WHY THE BADGE IS A COUNT AND NOT A DOT

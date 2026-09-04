@@ -45,6 +45,10 @@ import com.us.android.core.model.NotificationTarget
 import com.us.android.core.model.SessionState
 import com.us.android.core.ui.ChromeVisibility
 import com.us.android.core.ui.LocalChromeVisibility
+import com.us.android.explore.ExploreScreen
+import com.us.android.explore.LauncherApp
+import com.us.android.explore.LauncherTile
+import com.us.android.explore.launcherTiles
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
@@ -63,12 +67,14 @@ import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
 import com.us.android.feature.chat.navigation.groupCreateScreen
 import com.us.android.feature.chat.navigation.groupInfoScreen
+import com.us.android.feature.chat.navigation.navigateToChatInbox
 import com.us.android.feature.chat.navigation.navigateToChatLockSettings
 import com.us.android.feature.chat.navigation.navigateToChatRequest
 import com.us.android.feature.chat.navigation.navigateToChatThread
 import com.us.android.feature.chat.navigation.navigateToGroupCreate
 import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.feed.navigation.FeedRoute
+import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
 import com.us.android.feature.feed.navigation.friendsFeedScreen
 import com.us.android.feature.feed.navigation.hashtagPostsScreen
@@ -161,13 +167,23 @@ data object SplashRoute
 // because no feature module owns them yet.
 
 /**
- * Search, opened from the Momentum header. [mode] is the scope the page that
- * opened it wants — see [ExploreMode] — carried as its wire name so the route
- * stays a plain serializable value. A dedicated search surface does not
- * exist yet; the placeholder names the scope so the plumbing is visible.
+ * The Explore tab — the mini-app launcher with a search field on top
+ * (founder, 2026-09-05). [mode] is the scope a header's search glyph wants
+ * the field to look in — see [ExploreMode] — carried as its wire name so the
+ * route stays a plain serializable value; the bar's own tap opens it on
+ * posts.
  */
 @Serializable
 data class ExploreRoute(val mode: String = ExploreMode.POSTS.name)
+
+/**
+ * Where the Explore field's query lands. A dedicated search surface does
+ * not exist yet — the only search endpoint this client knows is the people
+ * search the reel form tags with — so this is the placeholder, named with
+ * the scope and the query so the plumbing is visible end to end.
+ */
+@Serializable
+data class SearchRoute(val query: String, val mode: String = ExploreMode.POSTS.name)
 
 /**
  * What the header's search glyph looks for, per page (founder, 2026-09-04):
@@ -206,7 +222,7 @@ data object GalleryRoute
  * the module picker, or the user's home tab.
  *
  * The bottom bar is built from the same choices, in a FIXED order — Home,
- * Reels, "+", Friends, Me — with Reels present only when its module is on.
+ * Reels, "+", Explore, Me — with Reels present only when its module is on.
  * The home module decides which of those opens first, never their order.
  *
  * Routes are `@Serializable` objects rather than strings, so arguments become
@@ -225,6 +241,7 @@ fun UsNavHost(
     val tabs = remember(shellState) {
         (shellState as? ShellState.Ready)?.let { TabResolver.resolve(it.prefs) }.orEmpty()
     }
+    val launcher = rememberLauncher()
     val startDestination = shellState.startDestination()
 
     // An incoming ring fronts the call surface (foreground path; background
@@ -329,7 +346,7 @@ fun UsNavHost(
             ) {
                 authDestinations(navController)
                 shellDestinations()
-                tabDestinations(navController, pool)
+                tabDestinations(navController, pool, launcher)
             }
         }
     }
@@ -354,6 +371,14 @@ fun UsNavHost(
         )
     }
 }
+
+/**
+ * The Explore launcher's tiles: every app, always, with the ones this build
+ * cannot open marked "Soon". The module choices shape the bar and the home
+ * page, not this grid — Explore is where the apps are found.
+ */
+@Composable
+private fun rememberLauncher(): List<LauncherTile> = remember { launcherTiles() }
 
 /**
  * The two start destinations between sign-in and the tabs.
@@ -471,6 +496,7 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
 private fun NavGraphBuilder.tabDestinations(
     navController: NavHostController,
     pool: PlayerPool,
+    launcher: List<LauncherTile>,
 ) {
     // A tapped feed video opens the Reels TAB (founder, 2026-09-05), which
     // reads the post id the feed left in ReelsEntry and opens on that reel.
@@ -496,14 +522,12 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenReels = onOpenReels,
     )
 
-    // The Friends tab: the same feed narrowed to mutual follows. A tab root,
-    // so no back arrow; its own route so the bar knows which item is lit.
+    // The Friends feed: the same feed narrowed to mutual follows. A root
+    // (so a pushed profile over it is still "inside Friends") but no longer a
+    // bar item: the Explore launcher pushes it, and Back returns there.
     friendsFeedScreen(
+        onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
-        onOpenNotifications = { navController.navigateToNotifications() },
-        // Friends is a page about people, so its search looks for people.
-        onOpenSearch = { navController.navigateToExplore(ExploreMode.PEOPLE) },
         onOpenReels = onOpenReels,
     )
 
@@ -653,25 +677,15 @@ private fun NavGraphBuilder.tabDestinations(
     // it holds decoder sessions, and reacquiring those mid-scroll is exactly
     // the stutter this surface exists to avoid.
     //
-    // The Momentum header floats over the video (founder, 2026-09-04, from
-    // the phone): the same three controls as Home, search scoped to reels.
+    // The header floats over the video (founder, 2026-09-05): the hamburger
+    // opens the reel's More sheet inside the screen; search opens the
+    // Explore tab scoped to reels.
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
-        onOpenNotifications = { navController.navigateToNotifications() },
         onOpenSearch = { navController.navigateToExplore(ExploreMode.REELS) },
     )
-    composable<ExploreRoute> { entry ->
-        val mode = ExploreMode.fromWire(entry.toRoute<ExploreRoute>().mode)
-        PlaceholderScreen(
-            title = "Search · ${mode.label}",
-            reason = "Search is not built yet. This page opened it scoped to ${mode.label.lowercase()}. " +
-                "The design-system gallery lives here meanwhile so the tokens stay reviewable on a real device.",
-            actionLabel = "Open the design gallery",
-            onAction = { navController.navigate(GalleryRoute) },
-        )
-    }
+    exploreDestinations(navController, launcher)
 
     profileDestinations(navController)
 
@@ -683,6 +697,50 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
+}
+
+/**
+ * The Explore tab and the search placeholder its field submits to.
+ *
+ * A launcher tile opens a destination in whichever feature owns it, and
+ * this is the one place allowed to know all of them: Chat is the inbox,
+ * Friends the friends feed, Alerts the notification inbox, Live the live
+ * hub. The five module tiles have no screen yet, so they never reach here —
+ * the screen answers a "Soon" tap itself. Each is a plain push, so Back
+ * returns to the launcher rather than to Home.
+ */
+private fun NavGraphBuilder.exploreDestinations(
+    navController: NavHostController,
+    launcher: List<LauncherTile>,
+) {
+    composable<ExploreRoute> { entry ->
+        val mode = ExploreMode.fromWire(entry.toRoute<ExploreRoute>().mode)
+        ExploreScreen(
+            tiles = launcher,
+            onSearch = { query -> navController.navigate(SearchRoute(query, mode.name)) },
+            onOpenApp = { app ->
+                when (app) {
+                    LauncherApp.CHAT -> navController.navigateToChatInbox()
+                    LauncherApp.FRIENDS -> navController.navigate(FriendsFeedRoute)
+                    LauncherApp.ALERTS -> navController.navigateToNotifications()
+                    LauncherApp.LIVE -> navController.navigateToLiveHub()
+                    LauncherApp.SHOP, LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST, LauncherApp.TUBE -> Unit
+                }
+            },
+        )
+    }
+    composable<SearchRoute> { entry ->
+        val route = entry.toRoute<SearchRoute>()
+        val mode = ExploreMode.fromWire(route.mode)
+        PlaceholderScreen(
+            title = "Search · ${mode.label}",
+            reason = "Search is not built yet. Explore asked for “${route.query}” in ${mode.label.lowercase()}. " +
+                "The design-system gallery lives here meanwhile so the tokens stay reviewable on a real device.",
+            onBack = { navController.popBackStack() },
+            actionLabel = "Open the design gallery",
+            onAction = { navController.navigate(GalleryRoute) },
+        )
+    }
 }
 
 /** Profile, edit-profile and settings destinations registered by the feature. */

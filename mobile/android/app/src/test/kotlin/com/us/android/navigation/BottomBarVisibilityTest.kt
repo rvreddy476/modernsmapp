@@ -12,7 +12,7 @@ class BottomBarVisibilityTest {
     private val tabs = listOf(
         TopLevelDestination.HOME,
         TopLevelDestination.REELS,
-        TopLevelDestination.FRIENDS,
+        TopLevelDestination.EXPLORE,
         TopLevelDestination.ME,
     )
 
@@ -36,11 +36,11 @@ class BottomBarVisibilityTest {
         assertThat(bottomBarVisible(null, tabs, chromeHidden = true)).isFalse()
     }
 
-    /** The inbox and Explore are roots that open from the header; the bar hides under them. */
+    /** The inbox and Friends are roots that open from the header or the launcher; the bar hides under them. */
     @Test
     fun `a root outside the bar shows no bar`() {
         assertThat(bottomBarVisible(TopLevelDestination.MESSAGES, tabs, chromeHidden = false)).isFalse()
-        assertThat(bottomBarVisible(TopLevelDestination.EXPLORE, tabs, chromeHidden = false)).isFalse()
+        assertThat(bottomBarVisible(TopLevelDestination.FRIENDS, tabs, chromeHidden = false)).isFalse()
     }
 
     /** Before the shell is Ready there are no tabs, so there is nothing to draw. */

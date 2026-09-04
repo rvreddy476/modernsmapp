@@ -11,11 +11,14 @@ import com.us.android.core.ui.formatCount
  * to the noun when there is nothing to count, because "0" under a heart
  * reads as a score and "Like" reads as an invitation. Save says whether it
  * is done. Share follows the author's `hide_share` switch (see
- * [railVisibility]) and More is there when the surface has a sheet to open.
- * Mute is not in this list: it sits under the rail without a label, a
- * setting rather than an action on the reel.
+ * [railVisibility]). Mute is not in this list: it sits under the rail
+ * without a label, a setting rather than an action on the reel.
+ *
+ * There is no More here any more (founder, 2026-09-05): the reel's More
+ * sheet opens from the hamburger in the header, so the rail is the four
+ * actions on the reel itself and nothing that is about the app.
  */
-enum class RailKind { LIKE, COMMENT, SHARE, SAVE, MORE }
+enum class RailKind { LIKE, COMMENT, SHARE, SAVE }
 
 data class RailControl(val kind: RailKind, val label: String)
 
@@ -23,14 +26,12 @@ data class RailControl(val kind: RailKind, val label: String)
  * @param likes the like count with this session's tap already layered in.
  * @param comments the comment count.
  * @param saved whether the reel is bookmarked, this session's tap included.
- * @param offersMore whether the surface has a "more" sheet to open.
  */
 fun railControls(
     controls: FeedPostControls,
     likes: Int,
     comments: Int,
     saved: Boolean,
-    offersMore: Boolean,
 ): List<RailControl> {
     val visible = controls.railVisibility()
     return buildList {
@@ -38,7 +39,6 @@ fun railControls(
         if (visible.showComment) add(RailControl(RailKind.COMMENT, railCountLabel(comments, "Comment")))
         if (visible.showShare) add(RailControl(RailKind.SHARE, "Share"))
         add(RailControl(RailKind.SAVE, if (saved) "Saved" else "Save"))
-        if (offersMore) add(RailControl(RailKind.MORE, "More"))
     }
 }
 

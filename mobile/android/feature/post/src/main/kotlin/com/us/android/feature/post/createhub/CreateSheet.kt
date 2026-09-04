@@ -34,9 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -48,9 +46,9 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.us.android.core.designsystem.component.UsIconSquare
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsCreateSwatch
 import com.us.android.core.designsystem.theme.UsTheme
@@ -258,7 +256,7 @@ private fun CreateTile(surface: CreateSurface, onClick: () -> Unit, modifier: Mo
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        IconSquare(swatch = surface.swatch(), icon = surface.icon, size = TILE_ICON, glyph = TILE_GLYPH)
+        UsIconSquare(swatch = surface.swatch(), icon = surface.icon, size = TILE_ICON, glyph = TILE_GLYPH)
         Spacer(Modifier.height(TILE_LABEL_GAP))
         Text(
             text = surface.label,
@@ -296,7 +294,7 @@ private fun GoLiveRow(onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        IconSquare(
+        UsIconSquare(
             swatch = UsTheme.extended.create.live,
             icon = UsIcons.Radio,
             size = LIVE_ICON,
@@ -358,50 +356,6 @@ private fun LiveBadge() {
 
 // ── Shared pieces ───────────────────────────────────────────────────────
 
-/**
- * The create mark: a rounded square filled with the type's gradient, a gloss
- * fading down from the top edge, a white glyph, and the swatch's glow cast
- * beneath as a coloured shadow. Corners at a third of the side — the
- * app-icon proportion — so all seven read as one family at any size.
- */
-@Composable
-private fun IconSquare(
-    swatch: UsCreateSwatch,
-    icon: ImageVector,
-    size: Dp,
-    glyph: Dp,
-) {
-    val shape = RoundedCornerShape(size / ICON_CORNER_DIVISOR)
-    val gloss = remember {
-        Brush.verticalGradient(
-            colorStops = arrayOf(
-                0f to Color.White.copy(alpha = GLOSS_ALPHA),
-                GLOSS_END to Color.Transparent,
-            ),
-        )
-    }
-    Box(
-        modifier = Modifier
-            .size(size)
-            .shadow(
-                elevation = ICON_GLOW,
-                shape = shape,
-                ambientColor = swatch.glow,
-                spotColor = swatch.glow,
-            )
-            .background(swatch.brush, shape)
-            .background(gloss, shape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(glyph),
-        )
-    }
-}
-
 /** The design's swatch for each type — tokens, never hex, in this module. */
 @Composable
 private fun CreateSurface.swatch(): UsCreateSwatch {
@@ -434,12 +388,9 @@ private const val SCRIM_ALPHA = 0.55f
 private const val RIM_ALPHA = 0.08f
 private const val HANDLE_ALPHA = 0.35f
 private const val TILE_FILL_ALPHA = 0.04f
-private const val GLOSS_ALPHA = 0.28f
-private const val GLOSS_END = 0.55f
 private const val BADGE_FILL_ALPHA = 0.18f
 private const val PRESS_SCALE = 0.95f
 private const val PRESS_STIFFNESS = 900f
-private const val ICON_CORNER_DIVISOR = 3
 
 private val SHEET_RADIUS = 28.dp
 private val HAIRLINE = 1.dp
@@ -456,7 +407,6 @@ private val TILE_HEIGHT = 84.dp
 private val TILE_ICON = 40.dp
 private val TILE_GLYPH = 19.dp
 private val TILE_LABEL_GAP = 8.dp
-private val ICON_GLOW = 10.dp
 private val CLOSE_BUTTON = 30.dp
 private val CLOSE_GLYPH = 14.dp
 private val LIVE_ICON = 36.dp

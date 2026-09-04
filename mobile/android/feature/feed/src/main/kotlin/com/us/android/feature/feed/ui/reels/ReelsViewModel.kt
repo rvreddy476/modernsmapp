@@ -80,8 +80,8 @@ fun FeedPostControls.railVisibility() = ReelRailVisibility(
 /**
  * How much chrome sits over the video (founder, 2026-09-04, from the phone).
  *
- * [NORMAL] is the reel as designed: the Momentum header (wordmark, search,
- * messages, the bell) translucent over the top of the video, the rail, the
+ * [NORMAL] is the reel as designed: the header (the hamburger and search)
+ * translucent over the top of the video, the rail, the
  * author block with Follow and the caption, and the app's bottom bar under
  * it. [FULL] takes away ONLY the two strips the app puts around the video —
  * the header and the bottom bar — and keeps the rail and the author block,
