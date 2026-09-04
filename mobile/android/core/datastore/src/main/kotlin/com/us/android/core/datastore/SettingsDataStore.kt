@@ -170,20 +170,6 @@ class SettingsDataStore @Inject constructor(
         store.edit { it[KEY_WELLBEING_GUARD_CACHE] = encoded }
     }
 
-    /**
-     * The Create sheet's "Compact view" toggle: a single-column list of the
-     * six create types instead of the 3×2 tile grid. A layout preference,
-     * so it survives the sheet closing and the app restarting; false (the
-     * grid) until the user says otherwise.
-     */
-    val createCompactView: Flow<Boolean> = store.data
-        .safe()
-        .map { it[KEY_CREATE_COMPACT_VIEW] ?: false }
-
-    suspend fun setCreateCompactView(compact: Boolean) {
-        store.edit { it[KEY_CREATE_COMPACT_VIEW] = compact }
-    }
-
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -206,7 +192,6 @@ class SettingsDataStore @Inject constructor(
         val KEY_KEYWORD_FILTERS = stringPreferencesKey("keyword_filters")
         val KEY_USAGE_LEDGER = stringPreferencesKey("usage_ledger")
         val KEY_WELLBEING_GUARD_CACHE = stringPreferencesKey("wellbeing_guard_cache")
-        val KEY_CREATE_COMPACT_VIEW = booleanPreferencesKey("create_compact_view")
         const val KEYWORD_SEPARATOR = ","
     }
 }

@@ -90,13 +90,24 @@ data class UsExtendedColors(
  */
 @Immutable
 data class UsCreateColors(
-    val text: Brush,
-    val photo: Brush,
-    val reel: Brush,
-    val audio: Brush,
-    val poll: Brush,
-    val article: Brush,
-    val live: Brush,
+    val text: UsCreateSwatch,
+    val photo: UsCreateSwatch,
+    val reel: UsCreateSwatch,
+    val audio: UsCreateSwatch,
+    val poll: UsCreateSwatch,
+    val article: UsCreateSwatch,
+    val live: UsCreateSwatch,
+)
+
+/**
+ * One create type's colour: the fill [brush] for its icon tile and the solid
+ * [glow] the tile casts beneath itself — the deep end of the same ramp, so a
+ * coloured shadow reads as light from the tile rather than a second colour.
+ */
+@Immutable
+data class UsCreateSwatch(
+    val brush: Brush,
+    val glow: Color,
 )
 
 /** Corner radii, ported from app_spacing.dart. */
@@ -156,9 +167,12 @@ private val EmberGradient: Brush = Brush.horizontalGradient(
     listOf(UsColorTokens.AccentOrange, UsColorTokens.AccentRed),
 )
 
-/** A create-tile circle: light at the top, deep at the bottom. */
-private fun createGradient(light: Color, deep: Color): Brush =
-    Brush.verticalGradient(listOf(light, deep))
+/** A create tile: light at the top, deep at the bottom, glowing in the deep. */
+private fun createSwatch(light: Color, deep: Color): UsCreateSwatch =
+    UsCreateSwatch(brush = Brush.verticalGradient(listOf(light, deep)), glow = deep)
+
+/** Ember for Text and Live: the accent brush, glowing in the accent red. */
+private val EmberSwatch = UsCreateSwatch(brush = EmberGradient, glow = UsColorTokens.AccentRed)
 
 internal val DarkExtendedColors = UsExtendedColors(
     textPrimary = UsColorTokens.TextPrimary,
@@ -208,13 +222,13 @@ internal val DarkExtendedColors = UsExtendedColors(
     accentDeep = UsColorTokens.AccentRed,
     bgRaised = UsColorTokens.BgTertiary,
     create = UsCreateColors(
-        text = EmberGradient,
-        photo = createGradient(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
-        reel = createGradient(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
-        audio = createGradient(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
-        poll = createGradient(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
-        article = createGradient(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
-        live = EmberGradient,
+        text = EmberSwatch,
+        photo = createSwatch(UsColorTokens.CreatePhotoLight, UsColorTokens.CreatePhotoDeep),
+        reel = createSwatch(UsColorTokens.CreateReelLight, UsColorTokens.CreateReelDeep),
+        audio = createSwatch(UsColorTokens.CreateAudioLight, UsColorTokens.CreateAudioDeep),
+        poll = createSwatch(UsColorTokens.CreatePollLight, UsColorTokens.CreatePollDeep),
+        article = createSwatch(UsColorTokens.CreateArticleLight, UsColorTokens.CreateArticleDeep),
+        live = EmberSwatch,
     ),
 )
 

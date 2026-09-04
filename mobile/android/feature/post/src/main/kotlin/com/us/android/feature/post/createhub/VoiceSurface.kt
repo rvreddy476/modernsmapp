@@ -230,7 +230,7 @@ private fun RecordPanel(
             modifier = Modifier
                 .size(RECORD_BUTTON)
                 .clip(CircleShape)
-                .background(UsTheme.extended.create.audio)
+                .background(UsTheme.extended.create.audio.brush)
                 .clickable(onClick = onRecordTapped)
                 .semantics {
                     contentDescription = if (recording) "Stop recording" else "Record a voice note"
@@ -319,7 +319,7 @@ private fun ClipCard(
             modifier = Modifier
                 .size(PLAY_BUTTON)
                 .clip(CircleShape)
-                .background(UsTheme.extended.create.audio)
+                .background(UsTheme.extended.create.audio.brush)
                 .clickable(onClick = onTogglePlayback)
                 .semantics {
                     contentDescription = if (playing) "Pause preview" else "Play preview"
