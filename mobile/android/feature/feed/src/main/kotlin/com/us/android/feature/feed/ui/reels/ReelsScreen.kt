@@ -1,5 +1,6 @@
 package com.us.android.feature.feed.ui.reels
 
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
@@ -211,6 +212,10 @@ fun ReelsScreen(
     // mode lands on a Home with its bar, and the next visit to Reels opens
     // in normal mode with a moving reel.
     HideShellBottomBar(hidden = !chrome.showBottomBar)
+    // Back in full mode brings the controls back; it never leaves the tab.
+    // Without this the system Back reached the root and closed the app
+    // from a screen that had hidden every other way out (founder, 2026-09-04).
+    BackHandler(enabled = mode == ReelsMode.FULL) { viewModel.toggleMode() }
     DisposableEffect(viewModel) {
         onDispose { viewModel.resetView() }
     }
