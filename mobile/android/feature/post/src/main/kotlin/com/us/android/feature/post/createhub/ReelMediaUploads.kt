@@ -28,32 +28,49 @@ import javax.inject.Singleton
  * reserve → presigned PUT → confirm → poll for EXACTLY `ready` + `passed`.
  * Nothing less is attachable: `ready` with moderation still pending is an id
  * the server will refuse on create, and a create that fails after a
- * two-minute transcode is the worst place to learn that.
+ * seventeen-minute transcode is the worst place to learn that.
  *
- * The video reserves `file_type: video` with a window sized for a transcode;
- * the cover is a JPEG through the same `image` path the composer's photo
- * takes, with the photo-sized window. The presigned PUT is a BLOCKING OkHttp
- * `execute()`, so it runs on the injected IO dispatcher; everything else is
- * suspend-friendly and stays on the caller's.
+ * ## WHY THE VIDEO'S READINESS IS A SEPARATE CALL
+ *
+ * A phone video can take the dev machine a quarter of an hour to transcode
+ * (2 minutes of footage took 17 on 2026-09-04), and a WorkManager run is cut
+ * off at ten. So [uploadVideo] stops at "confirmed" — the bytes are on the
+ * server and the id is durable — and [awaitVideoReady] polls under a deadline
+ * the caller sets, answering [Readiness.Pending] when the deadline passes
+ * with the video still processing. The worker persists the confirmed id,
+ * hands off to a continuation, and never re-uploads a video the server
+ * already has.
+ *
+ * The cover is a JPEG through the same `image` path the composer's photo
+ * takes, with the photo-sized window folded in. The presigned PUT is a
+ * BLOCKING OkHttp `execute()`, so it runs on the injected IO dispatcher;
+ * everything else is suspend-friendly and stays on the caller's.
  */
 @Singleton
 class ReelMediaUploads @Inject constructor(
     private val uploader: MediaUploader,
-    private val encoder: ReelCoverEncoder,
     @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
 ) {
 
     sealed interface Outcome {
+        /**
+         * For the cover: ready AND passed, attachable now. For the video:
+         * confirmed on the server — readiness is [awaitVideoReady]'s answer.
+         */
         data class Ready(val mediaId: String) : Outcome
         data class Failed(val message: String, val retryable: Boolean) : Outcome
     }
 
-    /** Progress and the switch to "processing" are reported so the UI can say so. */
-    suspend fun uploadVideo(
-        video: PickedMedia,
-        onProgress: (Float) -> Unit,
-        onProcessing: () -> Unit,
-    ): Outcome {
+    sealed interface Readiness {
+        data object Ready : Readiness
+
+        /** The deadline passed and the server is still working. Not a failure. */
+        data object Pending : Readiness
+        data class Failed(val message: String, val retryable: Boolean) : Readiness
+    }
+
+    /** Reserve, PUT with progress, confirm. Ready here means CONFIRMED. */
+    suspend fun uploadVideo(video: PickedMedia, onProgress: (Float) -> Unit): Outcome {
         val init = when (val reserved = uploader.reserve(video.mimeType, video.sizeBytes, fileType = FILE_TYPE_VIDEO)) {
             is AppResult.Failure -> return Outcome.Failed("Couldn't start the upload. Check your connection.", true)
             is AppResult.Success -> reserved.data
@@ -73,18 +90,39 @@ class ReelMediaUploads @Inject constructor(
         if (uploader.confirm(init.mediaId) is AppResult.Failure) {
             return Outcome.Failed("The server didn't confirm the upload. Try again.", retryable = true)
         }
-        onProcessing()
-        return awaitReady(init.mediaId, VIDEO_READINESS_POLLS, VIDEO_POLL_MILLIS, "This video")
+        return Outcome.Ready(init.mediaId)
     }
 
     /**
-     * The chosen frame as a JPEG, through the image path. A frame that
-     * cannot be encoded is a terminal failure of THIS cover, not of the
-     * post — the caller decides whether to post without one (it does not).
+     * Poll a confirmed video every five seconds until it is EXACTLY
+     * ready+passed, rejected, or [untilMillis] (by [now]) has passed.
      */
-    suspend fun uploadCover(frame: CoverFrame): Outcome {
-        val bytes = encoder.encode(frame)
-            ?: return Outcome.Failed("That cover frame couldn't be prepared. Pick another.", retryable = true)
+    suspend fun awaitVideoReady(mediaId: String, untilMillis: Long, now: () -> Long): Readiness {
+        while (true) {
+            when (val status = uploader.status(mediaId)) {
+                is AppResult.Failure -> Unit // transient; keep polling
+                is AppResult.Success -> {
+                    val processing = status.data.processingStatus
+                    val moderation = status.data.moderationStatus
+                    if (isRejected(processing, moderation)) {
+                        return Readiness.Failed("This video was rejected ($processing/$moderation).", retryable = false)
+                    }
+                    if (processing == PROCESSING_READY && moderation == MEDIA_MODERATION_PASSED) {
+                        return Readiness.Ready
+                    }
+                }
+            }
+            if (now() + VIDEO_POLL_MILLIS > untilMillis) return Readiness.Pending
+            delay(VIDEO_POLL_MILLIS)
+        }
+    }
+
+    /**
+     * The chosen frame's JPEG bytes, through the image path, polled with the
+     * photo-sized window. A cover that fails is a failure of THIS cover, not
+     * of the post — the caller decides whether to post without one (it does not).
+     */
+    suspend fun uploadCover(bytes: ByteArray): Outcome {
         val size = bytes.size.toLong()
         val init = when (val reserved = uploader.reserve(COVER_MIME, size, fileType = FILE_TYPE_IMAGE)) {
             is AppResult.Failure -> return Outcome.Failed("Couldn't upload the cover. Try again.", true)
@@ -105,40 +143,42 @@ class ReelMediaUploads @Inject constructor(
         if (uploader.confirm(init.mediaId) is AppResult.Failure) {
             return Outcome.Failed("The server didn't confirm the cover. Try again.", retryable = true)
         }
-        return awaitReady(init.mediaId, COVER_READINESS_POLLS, COVER_POLL_MILLIS, "This cover")
+        return awaitCoverReady(init.mediaId)
     }
 
-    private suspend fun awaitReady(mediaId: String, polls: Int, pollMillis: Long, what: String): Outcome {
-        repeat(polls) { attempt ->
+    private suspend fun awaitCoverReady(mediaId: String): Outcome {
+        repeat(COVER_READINESS_POLLS) { attempt ->
             when (val status = uploader.status(mediaId)) {
-                is AppResult.Failure -> Unit // transient; keep polling
+                is AppResult.Failure -> Unit
                 is AppResult.Success -> {
                     val processing = status.data.processingStatus
                     val moderation = status.data.moderationStatus
-                    if (processing == PROCESSING_REJECTED || processing == PROCESSING_FAILED ||
-                        moderation == MEDIA_MODERATION_REJECTED
-                    ) {
-                        return Outcome.Failed("$what was rejected ($processing/$moderation).", retryable = false)
+                    if (isRejected(processing, moderation)) {
+                        return Outcome.Failed("This cover was rejected ($processing/$moderation).", retryable = false)
                     }
                     if (processing == PROCESSING_READY && moderation == MEDIA_MODERATION_PASSED) {
                         return Outcome.Ready(mediaId)
                     }
                 }
             }
-            if (attempt < polls - 1) delay(pollMillis)
+            if (attempt < COVER_READINESS_POLLS - 1) delay(COVER_POLL_MILLIS)
         }
-        return Outcome.Failed("Processing is taking too long. Try again in a minute.", retryable = true)
+        return Outcome.Failed("The cover is taking too long to process. Try again in a minute.", retryable = true)
     }
 
-    private companion object {
-        const val COVER_MIME = "image/jpeg"
+    private fun isRejected(processing: String?, moderation: String?): Boolean =
+        processing == PROCESSING_REJECTED || processing == PROCESSING_FAILED ||
+            moderation == MEDIA_MODERATION_REJECTED
 
-        /** Transcode-sized window: 120 × 2 s = four minutes. */
-        const val VIDEO_READINESS_POLLS = 120
-        const val VIDEO_POLL_MILLIS = 2_000L
+    companion object {
+        private const val COVER_MIME = "image/jpeg"
+
+        /** Long videos take this long on the dev machine; the worker chains runs to cover it. */
+        const val VIDEO_READINESS_WINDOW_MILLIS = 30L * 60L * 1_000L
+        const val VIDEO_POLL_MILLIS = 5_000L
 
         /** Photo-sized window, the composer's: 30 × 1 s. */
-        const val COVER_READINESS_POLLS = 30
-        const val COVER_POLL_MILLIS = 1_000L
+        private const val COVER_READINESS_POLLS = 30
+        private const val COVER_POLL_MILLIS = 1_000L
     }
 }

@@ -108,8 +108,10 @@ data object ReelsRoute
 fun NavGraphBuilder.reelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
+    /** The background-publish banner's "View". `:app` opens the post. */
+    onOpenPost: (postId: String) -> Unit,
 ) {
     composable<ReelsRoute> {
-        ReelsScreen(pool = pool, onOpenAuthor = onOpenAuthor)
+        ReelsScreen(pool = pool, onOpenAuthor = onOpenAuthor, onOpenPost = onOpenPost)
     }
 }

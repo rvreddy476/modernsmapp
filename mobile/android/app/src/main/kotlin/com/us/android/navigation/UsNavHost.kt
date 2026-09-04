@@ -574,6 +574,7 @@ private fun NavGraphBuilder.tabDestinations(
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenPost = { postId -> navController.navigateToPost(postId) },
     )
     composable<ExploreRoute> {
         PlaceholderScreen(

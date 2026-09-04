@@ -125,6 +125,9 @@ fun FeedScreen(
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
             FeedTabsRow(selected = tab, onSelect = viewModel::selectTab)
+            // A reel posting in the background reports here, pinned under
+            // the tabs so it survives every scroll and every tab switch.
+            ReelPublishBanner(onOpenPost = onOpenPost)
             when (tab) {
                 FeedTab.HASHTAG -> TrendingHashtagsList(
                     state = trending,

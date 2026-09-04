@@ -56,6 +56,7 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.formatCount
+import com.us.android.feature.feed.ui.ReelPublishBanner
 
 /**
  * The reels surface: a full-screen vertical pager of short video.
@@ -77,34 +78,41 @@ import com.us.android.core.ui.formatCount
 fun ReelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
+    /** The publish banner's "View": `:app` opens the new reel's post. */
+    onOpenPost: (postId: String) -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
     val muted by viewModel.muted.collectAsStateWithLifecycle()
     val refresh = items.loadState.refresh
 
-    when {
-        refresh is LoadState.Loading && items.itemCount == 0 ->
-            UsLoadingState(label = "Loading reels")
+    Box(modifier = Modifier.fillMaxSize()) {
+        when {
+            refresh is LoadState.Loading && items.itemCount == 0 ->
+                UsLoadingState(label = "Loading reels")
 
-        refresh is LoadState.Error && items.itemCount == 0 -> UsErrorState(
-            message = "We couldn't load reels.",
-            onRetry = items::retry,
-        )
+            refresh is LoadState.Error && items.itemCount == 0 -> UsErrorState(
+                message = "We couldn't load reels.",
+                onRetry = items::retry,
+            )
 
-        refresh is LoadState.NotLoading && items.itemCount == 0 -> UsEmptyState(
-            title = "No reels yet",
-            detail = "Short videos from people you follow will show up here.",
-        )
+            refresh is LoadState.NotLoading && items.itemCount == 0 -> UsEmptyState(
+                title = "No reels yet",
+                detail = "Short videos from people you follow will show up here.",
+            )
 
-        else -> ReelsPager(
-            items = items,
-            pool = pool,
-            muted = muted,
-            urlFor = viewModel::playbackUrl,
-            onToggleMute = viewModel::toggleMuted,
-            onOpenAuthor = onOpenAuthor,
-        )
+            else -> ReelsPager(
+                items = items,
+                pool = pool,
+                muted = muted,
+                urlFor = viewModel::playbackUrl,
+                onToggleMute = viewModel::toggleMuted,
+                onOpenAuthor = onOpenAuthor,
+            )
+        }
+        // The same strip the home feed pins under its tabs, laid over the
+        // top of the pager: a reel posted from here should report here.
+        ReelPublishBanner(onOpenPost = onOpenPost, modifier = Modifier.align(Alignment.TopCenter))
     }
 }
 

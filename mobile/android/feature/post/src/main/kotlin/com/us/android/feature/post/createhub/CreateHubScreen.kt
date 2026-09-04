@@ -76,8 +76,9 @@ import java.io.File
  *    Post Studio with the picks already imported. Unchanged.
  *  - **Reel** — the same grid over videos; one tap picks, then the
  *    TikTok-shaped form in [ReelSurface]: description, cover strip, tag
- *    people, location, audience, category, switches; upload/transcode/
- *    publish states shown honestly.
+ *    people, location, audience, category, switches. Post hands the
+ *    upload/transcode/publish to a WorkManager worker and closes; the
+ *    feed's banner shows the states honestly.
  *  - **Audio** — record a voice note or pick a track, preview, caption, post
  *    as a `voice` post. See [VoicePublishViewModel] for what the server
  *    accepts today.
@@ -113,7 +114,10 @@ fun CreateHubScreen(
                 onClose = onClose,
                 onOpenStudio = onOpenStudio,
             )
-            CreateSurface.Reel -> ReelSurface(onClose = onClose, onPublished = onPublished)
+            // Reel posts in the background: the surface closes on hand-off and
+            // the feed's banner reports the rest, so there is no published id
+            // to navigate to from here.
+            CreateSurface.Reel -> ReelSurface(onClose = onClose)
             CreateSurface.Audio -> VoiceSurface(onClose = onClose, onPublished = onPublished)
             CreateSurface.Poll -> PollSurface(onClose = onClose, onPublished = onPublished)
         }

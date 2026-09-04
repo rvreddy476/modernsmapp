@@ -31,7 +31,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -80,11 +79,14 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
  * one card of rows (Tag people, Add location, Audience, Category) and one
  * card of switches. Everything scrolls; the keyboard is an inset the root
  * column pads for, so the description is never under it.
+ *
+ * Post hands the publish to WorkManager and CLOSES — the feed's banner shows
+ * the upload, the transcode and the post going out. There is no published
+ * callback here because nothing is published while this surface exists.
  */
 @Composable
 internal fun ReelSurface(
     onClose: () -> Unit,
-    onPublished: (postId: String) -> Unit,
     viewModel: ReelPublishViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -120,9 +122,10 @@ internal fun ReelSurface(
         return
     }
 
-    (state.phase as? Phase.Published)?.let { published ->
-        // Navigate on the SERVER's id, once.
-        LaunchedEffect(published.postId) { onPublished(published.postId) }
+    if (state.phase is Phase.Enqueued) {
+        // Handed to the worker: leave, once. The user lands back where they
+        // were and the feed banner takes over.
+        LaunchedEffect(Unit) { onClose() }
     }
 
     ReelForm(state = state, viewModel = viewModel, onClose = onClose, onChangeVideo = openSystemPicker)
@@ -660,49 +663,20 @@ private fun ReelSwitchRow(
 
 // ── Status ──────────────────────────────────────────────────────────────
 
+/**
+ * Only a failure has anything to say here now: the upload, the transcode
+ * and the post itself happen after this surface has closed, on the feed's
+ * banner. The pill's spinner covers the moment before hand-off.
+ */
 @Composable
 private fun PhaseStatus(phase: Phase) {
-    when (phase) {
-        is Phase.Uploading -> {
-            Spacer(Modifier.height(UsTheme.spacing.xxl))
-            LinearProgressIndicator(
-                progress = { phase.fraction },
-                color = UsTheme.extended.accentSolid,
-                trackColor = UsTheme.extended.bgCard,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(UsTheme.radii.full)),
-            )
-            StatusLine("Uploading video… ${(phase.fraction * PERCENT).toInt()}%")
-        }
-        is Phase.Processing -> {
-            Spacer(Modifier.height(UsTheme.spacing.xxl))
-            StatusLine("Processing video — this can take a couple of minutes…")
-        }
-        is Phase.Posting -> {
-            Spacer(Modifier.height(UsTheme.spacing.xxl))
-            StatusLine("Posting…")
-        }
-        is Phase.Failure -> {
-            Spacer(Modifier.height(UsTheme.spacing.xxl))
-            Text(
-                text = phase.message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.testTag("reel-failure"),
-            )
-        }
-        is Phase.Published, is Phase.Editing -> Unit
-    }
-}
-
-@Composable
-private fun StatusLine(text: String) {
+    if (phase !is Phase.Failure) return
+    Spacer(Modifier.height(UsTheme.spacing.xxl))
     Text(
-        text = text,
+        text = phase.message,
         style = MaterialTheme.typography.bodySmall,
-        color = UsTheme.extended.textMuted,
-        modifier = Modifier.padding(vertical = UsTheme.spacing.s),
+        color = MaterialTheme.colorScheme.error,
+        modifier = Modifier.testTag("reel-failure"),
     )
 }
 
@@ -752,7 +726,6 @@ private val AudienceOptions = listOf(
 
 // ── Metrics ─────────────────────────────────────────────────────────────
 
-private const val PERCENT = 100
 private const val STRIP_SLOTS = 6
 private const val PORTRAIT = 9f / 16f
 private const val PRESS_SCALE = 0.94f
