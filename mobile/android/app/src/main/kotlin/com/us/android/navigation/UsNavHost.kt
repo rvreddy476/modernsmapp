@@ -2,6 +2,7 @@ package com.us.android.navigation
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -254,7 +255,13 @@ fun UsNavHost(
             startDestination = startDestination,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(shellPadding),
+                .padding(shellPadding)
+                // Padding does not CONSUME insets. Without this, every
+                // screen's own scaffold and top bar saw the status bar and
+                // the navigation bar again and reserved them a second time:
+                // a band above the wordmark and a band between the last
+                // card and the tab bar (founder's phone, 2026-09-04).
+                .consumeWindowInsets(shellPadding),
         ) {
             authDestinations(navController)
             shellDestinations()

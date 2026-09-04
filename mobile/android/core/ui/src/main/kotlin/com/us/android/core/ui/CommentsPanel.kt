@@ -246,7 +246,7 @@ private fun Composer(
                     )
                 } else {
                     Icon(
-                        imageVector = UsIcons.Share,
+                        imageVector = UsIcons.Send,
                         contentDescription = null,
                         tint = if (state.canSubmit) {
                             UsTheme.extended.textPrimary

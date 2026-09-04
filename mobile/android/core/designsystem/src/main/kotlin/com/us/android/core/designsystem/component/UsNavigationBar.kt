@@ -27,7 +27,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -145,7 +144,10 @@ private fun CenterSlot(onClick: () -> Unit, active: Boolean) {
 /** A regular destination: glyph over a tiny label, 64dp wide per the frame. */
 @Composable
 private fun FlatTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
-    val tint = if (selected) UsTheme.extended.accentSolid else UsTheme.extended.textMuted
+    // Selected is WHITE, not the accent: the founder read the ember tab as
+    // "orange or saffron" noise on the navy bar (2026-09-04). The bar's only
+    // bright thing is the white create tile; the current tab joins it.
+    val tint = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.textMuted
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
@@ -176,9 +178,10 @@ private fun FlatTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
 }
 
 /**
- * The raised centre create button — a 40dp gradient square with 14dp
- * corners and the design's red drop shadow (`0 3 5 #DC2626`), floating
- * above the flat bar rather than sitting in its row.
+ * The centre create button — a 40dp WHITE square with 14dp corners and the
+ * navy plus, flat on the bar. The Figma frame's red glow under it was
+ * dropped on 2026-09-04: the founder saw it as "glowing" and wanted a plain
+ * button that sits with the other glyphs.
  */
 @Composable
 private fun CenterCreateButton(
@@ -187,7 +190,6 @@ private fun CenterCreateButton(
     active: Boolean = false,
 ) {
     val shape = RoundedCornerShape(CENTER_BUTTON_RADIUS)
-    val shadow = UsTheme.extended.accentDeep
     // The whole tile turns, not just the glyph, so the square's corners say
     // "this is the same button" while the plus becomes a cross.
     val rotation by animateFloatAsState(
@@ -199,14 +201,6 @@ private fun CenterCreateButton(
         modifier = modifier
             .size(CENTER_BUTTON)
             .rotate(rotation)
-            .shadow(
-                elevation = CENTER_SHADOW,
-                shape = shape,
-                ambientColor = shadow,
-                spotColor = shadow,
-            )
-            // The home frame: a WHITE tile with the navy plus and the ember
-            // glow underneath — white on navy, whatever the surface.
             .background(Color.White, shape)
             .clickable(onClick = onClick)
             .semantics {
@@ -251,7 +245,6 @@ private val BAR_VERTICAL = 10.dp
 private val BAR_BORDER = 1.dp
 private val CENTER_BUTTON = 40.dp
 private val CENTER_BUTTON_RADIUS = 14.dp
-private val CENTER_SHADOW = 5.dp
 private val CENTER_GLYPH = 22.dp
 
 @Preview(name = "Navigation bar — with create button", showBackground = true)

@@ -433,7 +433,7 @@ private fun WatchChatPanel(
             onClick = onSend,
             modifier = Modifier.testTag("live-chat-send"),
         ) {
-            Icon(UsIcons.Share, contentDescription = "Send", tint = Color.White)
+            Icon(UsIcons.Send, contentDescription = "Send", tint = Color.White)
         }
     }
 }

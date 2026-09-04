@@ -4,7 +4,12 @@
 
 package com.us.android.core.ui
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,9 +22,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -182,12 +190,32 @@ private fun ActionButton(
     // makes an empty feed look like a failed one; the count appears the moment
     // there is something to count.
     val caption = count?.takeIf { it > 0 }?.let { formatCount(it) }
+    // No ripple. The default bounded ripple lit a 48dp RECTANGLE around each
+    // glyph — the "square box" the founder saw (2026-09-04). The press is
+    // shown instead by the glyph dipping to 85% on a spring and springing
+    // back, the way a native like button gives under the thumb.
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) PRESS_SCALE else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS),
+        label = "actionPress",
+    )
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
         modifier = Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            )
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .padding(vertical = UsTheme.spacing.m)
             .clearAndSetSemantics {
                 contentDescription = readable
@@ -215,6 +243,8 @@ private fun ActionButton(
 
 /** Figma feed-card action glyph size. */
 private val ACTION_GLYPH = 20.dp
+private const val PRESS_SCALE = 0.85f
+private const val PRESS_STIFFNESS = 1200f
 
 private val previewState = PostActionState(
     likeCount = 128,

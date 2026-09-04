@@ -88,15 +88,30 @@ object UsIcons {
     val BookmarkFilled: ImageVector = lucideFilled("BookmarkFilled", BOOKMARK_PATH)
 
     /**
-     * Share, Lucide `arrow-right`.
-     *
-     * Replaced the hand-drawn paper plane with the Momentum design's own mark
-     * for the same action: leaving this surface for somewhere else.
+     * Share, Lucide `share`: a tray with an arrow leaving upward — the mark
+     * every phone already uses for "send this somewhere". The plain
+     * right-arrow it replaced (2026-09-04) read as "next", not "share".
      *
      * It does not collide with [Repost]: that is a closed loop of two arrows
      * and means "put this on my own timeline". This one leaves.
      */
-    val Share: ImageVector = lucideStroked("Share", "M5 12h14", "m12 5 7 7-7 7")
+    val Share: ImageVector = lucideStroked(
+        "Share",
+        "M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8",
+        "m16 6-4-4-4 4",
+        "M12 2v13",
+    )
+
+    /**
+     * Send, Lucide `send`: the paper plane. Submits a comment or a live chat
+     * line — a message leaving for one place, not [Share]'s "anywhere".
+     */
+    val Send: ImageVector = lucideStroked(
+        "Send",
+        "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937" +
+            "l7.93 3.18a2 2 0 0 1 1.112 1.11z",
+        "m21.854 2.147-10.94 10.939",
+    )
 
     /** Upload. The same tray, arrow reversed into it. */
     val Upload: ImageVector = stroked("Upload") {

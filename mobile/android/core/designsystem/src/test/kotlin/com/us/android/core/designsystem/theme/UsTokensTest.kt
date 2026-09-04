@@ -65,13 +65,26 @@ class UsTokensTest {
 
     /** Text and Go Live ARE the ember accent; the set is shared across themes. */
     @Test
-    fun `text and live create circles are the ember accent and the set does not invert`() {
+    fun `text and live create tiles are the ember accent and the set does not invert`() {
         val create = DarkExtendedColors.create
-        assertThat(create.text).isEqualTo(DarkExtendedColors.ctaGradient)
-        assertThat(create.live).isEqualTo(DarkExtendedColors.ctaGradient)
+        assertThat(create.text.brush).isEqualTo(DarkExtendedColors.ctaGradient)
+        assertThat(create.live.brush).isEqualTo(DarkExtendedColors.ctaGradient)
         assertThat(LightExtendedColors.create).isEqualTo(create)
         val distinct = setOf(create.text, create.photo, create.reel, create.audio, create.poll, create.article)
         assertThat(distinct).hasSize(6)
+    }
+
+    /** Every tile glows in the DEEP end of its own ramp, never a borrowed colour. */
+    @Test
+    fun `each create tile glows in its own deep colour`() {
+        val create = DarkExtendedColors.create
+        assertThat(create.text.glow).isEqualTo(UsColorTokens.AccentRed)
+        assertThat(create.live.glow).isEqualTo(UsColorTokens.AccentRed)
+        assertThat(create.photo.glow).isEqualTo(UsColorTokens.CreatePhotoDeep)
+        assertThat(create.reel.glow).isEqualTo(UsColorTokens.CreateReelDeep)
+        assertThat(create.audio.glow).isEqualTo(UsColorTokens.CreateAudioDeep)
+        assertThat(create.poll.glow).isEqualTo(UsColorTokens.CreatePollDeep)
+        assertThat(create.article.glow).isEqualTo(UsColorTokens.CreateArticleDeep)
     }
 
     /** Chat keeps its green on purpose — the brief carves it out of the accent. */

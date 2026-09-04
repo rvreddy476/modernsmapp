@@ -1,5 +1,8 @@
 package com.us.android.feature.feed.ui.comments
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -7,11 +10,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.CommentsController
 import com.us.android.core.engagement.data.CommentsUiState
 import com.us.android.core.engagement.data.EngagementRepository
@@ -43,19 +49,31 @@ fun CommentsSheet(
     // than showing the previous post's conversation.
     LaunchedEffect(postId) { viewModel.bind(postId) }
 
+    // Roughly two thirds of the screen, in the card's navy with the Create
+    // sheet's corners. It used to grow to the full height in Material's
+    // default surface colour, which slid up like a NEW PAGE and slid back
+    // down on dismiss — the "going to the next page and coming back" the
+    // founder saw (2026-09-04). Held short, the post stays visible above
+    // the conversation about it, which is the whole point of a sheet.
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
+        containerColor = UsTheme.extended.bgCardSolid,
+        contentColor = UsTheme.extended.textPrimary,
+        shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
+        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
         modifier = Modifier.testTag("comments_sheet"),
     ) {
-        CommentsPanel(
-            state = state,
-            onDraftChange = viewModel::onDraftChange,
-            onSubmit = viewModel::submit,
-            onLoadMore = viewModel::loadMore,
-            onRetryAppend = viewModel::loadMore,
-            onRetryRefresh = viewModel::refresh,
-        )
+        Box(modifier = Modifier.fillMaxHeight(SHEET_HEIGHT_FRACTION)) {
+            CommentsPanel(
+                state = state,
+                onDraftChange = viewModel::onDraftChange,
+                onSubmit = viewModel::submit,
+                onLoadMore = viewModel::loadMore,
+                onRetryAppend = viewModel::loadMore,
+                onRetryRefresh = viewModel::refresh,
+            )
+        }
     }
 }
 
@@ -103,3 +121,8 @@ class CommentsViewModel @Inject constructor(
         viewModelScope.launch { block(current) }
     }
 }
+
+/** The sheet's share of the screen: the post's card stays visible above it. */
+private const val SHEET_HEIGHT_FRACTION = 0.66f
+private const val SCRIM_ALPHA = 0.55f
+private val SHEET_RADIUS = 28.dp
