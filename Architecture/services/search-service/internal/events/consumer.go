@@ -556,8 +556,40 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
+		// Soft delete (2026-09-04): post-service emits PostDeleted in the
+		// same transaction as PostSearchEligibilityChanged and stamps the
+		// SAME search_rev on it. Use that canonical revision when present:
+		// an auto-incremented barrier would land one ABOVE the canonical
+		// one, and the restore that follows (canonical rev+1) would then be
+		// dropped as stale — the post could never come back into search.
+		// Legacy producers without search_rev keep the AutoRev barrier.
+		if p.SearchRev > 0 {
+			return c.store.ApplyPostProjection(ctx, search.PostProjection{
+				PostID: p.PostID, Rev: p.SearchRev, Removed: true, AuthorID: p.AuthorID,
+			})
+		}
 		return c.store.ApplyPostProjection(ctx, search.PostProjection{
-			PostID: p.PostID, AutoRev: true, Removed: true,
+			PostID: p.PostID, AutoRev: true, Removed: true, AuthorID: p.AuthorID,
+		})
+
+	case events.PostRestored:
+		// Re-indexing rides on the PostSearchEligibilityChanged event emitted
+		// in the same post-service transaction (deleted=false, body
+		// included when eligible) — the one choke point for eligibility.
+		// Nothing to do here; the case exists so the event is visibly
+		// accounted for rather than falling into the default.
+		return nil
+
+	case events.PostPurged:
+		// Hard delete after the restore window. The document is already a
+		// tombstone from the soft delete; raise the barrier once more so
+		// nothing in flight can resurrect a post whose rows no longer exist.
+		var p events.PostPurgedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.ApplyPostProjection(ctx, search.PostProjection{
+			PostID: p.PostID, AutoRev: true, Removed: true, AuthorID: p.AuthorID,
 		})
 
 	case events.EventUserDeletionRequested:

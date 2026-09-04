@@ -605,3 +605,9 @@ func (s *Service) DeactivateDeviceTokens(ctx context.Context, userID uuid.UUID) 
 	}
 	return s.pgStore.DeactivateDeviceTokens(ctx, userID)
 }
+
+// DeleteNotificationsForEntity removes the rows in one user's inbox that
+// point at an entity (soft-deleted post, 2026-09-04). See the Scylla store.
+func (s *Service) DeleteNotificationsForEntity(ctx context.Context, userID, entityID uuid.UUID) (int, error) {
+	return s.scyllaStore.DeleteNotificationsForEntity(ctx, userID, entityID, 3)
+}

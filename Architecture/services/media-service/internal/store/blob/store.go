@@ -322,3 +322,18 @@ func (s *Store) CompleteMultipartUpload(ctx context.Context, objectKey, storageU
 func (s *Store) AbortMultipartUpload(ctx context.Context, objectKey, storageUploadID string) error {
 	return s.core.AbortMultipartUpload(ctx, s.bucket, objectKey, storageUploadID)
 }
+
+// ListObjectKeys returns every object key under prefix (recursive). Used by
+// the asset purge to remove EVERYTHING an asset ever produced — original,
+// variants, thumbnails, frames, hls/* — without trusting the row tables to
+// have recorded each key.
+func (s *Store) ListObjectKeys(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+		if obj.Err != nil {
+			return keys, fmt.Errorf("blob: list %s: %w", prefix, obj.Err)
+		}
+		keys = append(keys, obj.Key)
+	}
+	return keys, nil
+}

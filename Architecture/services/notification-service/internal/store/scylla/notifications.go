@@ -358,3 +358,47 @@ func (s *NotificationStore) DeleteNotification(ctx context.Context, userID uuid.
 		WHERE user_id = ? AND bucket = ? AND ts = ?
 	`, gocql.UUID(userID), bucket, ts).Exec()
 }
+
+// DeleteNotificationsForEntity removes every row in ONE user's inbox that
+// points at the given entity (e.g. a soft-deleted post), scanning the last
+// bucketLookback month buckets. The clustering key is (user_id, bucket, ts)
+// with no entity index, so this is a partition scan filtered client-side —
+// cheap for one user, which is why the PostDeleted consumer applies it to
+// the author's inbox only. Returns the number of rows deleted. Idempotent.
+func (s *NotificationStore) DeleteNotificationsForEntity(ctx context.Context, userID, entityID uuid.UUID, bucketLookback int) (int, error) {
+	if bucketLookback <= 0 {
+		bucketLookback = 3
+	}
+	now := time.Now().UTC()
+	gUser := gocql.UUID(userID)
+	gEntity := gocql.UUID(entityID)
+	deleted := 0
+	for i := 0; i < bucketLookback; i++ {
+		t := now.AddDate(0, -i, 0)
+		b := t.Year()*100 + int(t.Month())
+		iter := s.session.Query(`
+			SELECT ts, entity_id FROM notifications_by_user
+			WHERE user_id = ? AND bucket = ?
+		`, gUser, b).WithContext(ctx).Iter()
+		var doomed []gocql.UUID
+		var ts, eid gocql.UUID
+		for iter.Scan(&ts, &eid) {
+			if eid == gEntity {
+				doomed = append(doomed, ts)
+			}
+		}
+		if err := iter.Close(); err != nil {
+			return deleted, err
+		}
+		for _, ts := range doomed {
+			if err := s.session.Query(`
+				DELETE FROM notifications_by_user
+				WHERE user_id = ? AND bucket = ? AND ts = ?
+			`, gUser, b, ts).WithContext(ctx).Exec(); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	return deleted, nil
+}

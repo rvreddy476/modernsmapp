@@ -660,6 +660,14 @@ services:
       # erases their posts and acks onto platform.purge-acks.v1.
       IDENTITY_KAFKA_TOPIC: identity.events.v1
       PURGE_ACKS_TOPIC: platform.purge-acks.v1
+      # Post soft delete → "Recently deleted" → hard purge (2026-09-04).
+      # POST_PURGE_AFTER is the restore window; production default is 720h
+      # (30 days). DEV ONLY: 2m so the whole lifecycle — delete, restore,
+      # purge of rows + MinIO objects — can be exercised in one sitting.
+      # POST_PURGE_INTERVAL is the worker tick (production default 5m).
+      POST_PURGE_AFTER: ${POST_PURGE_AFTER:-72h}
+      POST_PURGE_INTERVAL: ${POST_PURGE_INTERVAL:-30s}
+      MEDIA_SERVICE_URL: http://media-service:8087
       USER_SERVICE_URL: http://identity-user:8110
       REVIEWER_SERVICE_URL: http://reviewer-service:8120
       # Local media uses the non-production stub scanner and has no human

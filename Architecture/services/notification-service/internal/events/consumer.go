@@ -353,6 +353,34 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		deepLink := fmt.Sprintf("/post/%s", e.OriginalPostID)
 		return c.service.CreateNotification(ctx, originalAuthorID, reposterID, "post_reposted", "post", originalPostID, deepLink, e.CreatedAt)
 
+	case events.PostDeleted:
+		// Soft delete (2026-09-04): notifications that point at the post
+		// must stop resolving to it. The inbox is keyed (user, bucket, ts)
+		// with no entity index, so this removes the rows in the AUTHOR's
+		// inbox — likes, comments, mentions, reposts "on your post", which
+		// is where nearly every post-targeted notification lands. The
+		// subscriber upload fan-out ("X posted a new video") reaches many
+		// inboxes and cannot be enumerated here; those rows stay and the
+		// client resolves a 404 post as "content no longer available".
+		var e events.PostDeletedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		authorID, err := uuid.Parse(e.AuthorID)
+		if err != nil {
+			return nil
+		}
+		postID, err := uuid.Parse(e.PostID)
+		if err != nil {
+			return nil
+		}
+		n, err := c.service.DeleteNotificationsForEntity(ctx, authorID, postID)
+		if err != nil {
+			return fmt.Errorf("PostDeleted: remove author inbox rows for %s: %w", postID, err)
+		}
+		slog.Info("post deleted: author inbox rows removed", "post_id", postID, "author_id", authorID, "rows", n)
+		return nil
+
 	case events.PostContentTypeChanged:
 		// M11: tell the author when post-service reclassifies their
 		// upload after transcode (e.g. they meant a flick/reel but

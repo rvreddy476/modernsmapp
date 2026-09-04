@@ -86,6 +86,13 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.UploadDeleted:
 		return c.handleUploadDeleted(ctx, envelope)
 
+	// Soft delete / restore (2026-09-04) — see post_lifecycle.go.
+	case events.PostDeleted:
+		return c.handlePostDeleted(ctx, envelope)
+
+	case events.PostRestored:
+		return c.handlePostRestored(ctx, envelope)
+
 	case events.HandleChanged:
 		return c.handleHandleChanged(ctx, envelope)
 

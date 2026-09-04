@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/post-service/internal/engagement/consumers"
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/http"
+	"github.com/atpost/post-service/internal/postpurge"
 	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
@@ -432,7 +433,18 @@ func main() {
 	postSvc.StartOutboxWorker(consumerCtx)
 	postSvc.StartCrossPostWorker(consumerCtx)
 
-	slog.Info("reconciler, outbox, and cleanup workers started")
+	// Post purge worker (soft delete → "Recently deleted" → hard delete,
+	// 2026-09-04). POST_PURGE_AFTER is the restore window (default 720h;
+	// the dev compose sets 2m so the lifecycle is testable end to end);
+	// POST_PURGE_INTERVAL is the tick. Same shape as auth-service's account
+	// purge worker: ticks, idempotent, safe in every replica. See
+	// internal/postpurge.
+	purgeCfg := postpurge.ConfigFromEnv()
+	postSvc.SetPurgeAfter(purgeCfg.After)
+	go postpurge.NewWorker(pgStore, postSvc, purgeCfg, slog.Default()).Start(consumerCtx)
+
+	slog.Info("reconciler, outbox, purge, and cleanup workers started",
+		"post_purge_after", purgeCfg.After, "post_purge_interval", purgeCfg.Interval)
 
 	// 12. HTTP Server
 	// Shared SSE fan-out hub: one Redis SUB per channel, in-memory

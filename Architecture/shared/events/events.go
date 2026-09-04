@@ -17,6 +17,8 @@ const (
 
 	PostCreated             = "PostCreated"             // payload: PostCreatedPayload
 	PostDeleted             = "PostDeleted"             // payload: PostDeletedPayload
+	PostRestored            = "PostRestored"            // payload: PostRestoredPayload
+	PostPurged              = "PostPurged"              // payload: PostPurgedPayload
 	PostContentTypeChanged  = "PostContentTypeChanged"  // payload: PostContentTypeChangedPayload
 	PostDistributionUpdated = "PostDistributionUpdated" // payload: PostDistributionUpdatedPayload
 	// PostSearchEligibilityChanged is the single contract for every change
@@ -613,10 +615,54 @@ type UserUnfollowedPayload struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
+// PostDeletedPayload is the SOFT delete (product decision 2026-09-04: post
+// deletion is soft first, hard later). The row and its media stay; the
+// author may restore within the window, after which the purge worker emits
+// PostPurged. Consumers must make the post vanish from every surface at
+// once — timelines, hydration caches, search, notifications.
+//
+// Additive fields (old producers omit them):
+//
+//   - ContentType / CreatedAt let feed-service find the exact timeline rows
+//     without a scan.
+//   - SearchRev is the canonical search revision of the delete, emitted in
+//     the same transaction as the row change (search_eligibility.go). A
+//     consumer that has it MUST use it instead of an auto-incremented
+//     barrier: an auto barrier lands ABOVE the canonical revision, and the
+//     restore that follows (rev+1) would then be dropped as stale.
+//   - PurgeAt is when the purge worker will hard-delete unless restored.
 type PostDeletedPayload struct {
-	PostID    string    `json:"post_id"`
-	AuthorID  string    `json:"author_id"`
-	DeletedAt time.Time `json:"deleted_at"`
+	PostID      string     `json:"post_id"`
+	AuthorID    string     `json:"author_id"`
+	DeletedAt   time.Time  `json:"deleted_at"`
+	ContentType string     `json:"content_type,omitempty"`
+	CreatedAt   time.Time  `json:"created_at,omitempty"`
+	SearchRev   int64      `json:"search_rev,omitempty"`
+	PurgeAt     *time.Time `json:"purge_at,omitempty"`
+}
+
+// PostRestoredPayload undoes a soft delete within the restore window.
+// feed-service re-fans the post out (author + followers, as create does);
+// search re-indexes from the PostSearchEligibilityChanged event emitted in
+// the same transaction (SearchRev here equals that event's revision).
+type PostRestoredPayload struct {
+	PostID      string    `json:"post_id"`
+	AuthorID    string    `json:"author_id"`
+	ContentType string    `json:"content_type"`
+	Visibility  string    `json:"visibility"`
+	CreatedAt   time.Time `json:"created_at"`
+	RestoredAt  time.Time `json:"restored_at"`
+	SearchRev   int64     `json:"search_rev,omitempty"`
+}
+
+// PostPurgedPayload is the HARD delete: the post's rows are gone and the
+// listed media assets (those no other post referenced) have been handed to
+// media-service for object deletion. Nothing can bring the post back.
+type PostPurgedPayload struct {
+	PostID   string    `json:"post_id"`
+	AuthorID string    `json:"author_id"`
+	MediaIDs []string  `json:"media_ids,omitempty"`
+	PurgedAt time.Time `json:"purged_at"`
 }
 
 // PostContentTypeChangedPayload is published by post-service when a

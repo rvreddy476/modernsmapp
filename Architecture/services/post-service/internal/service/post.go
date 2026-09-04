@@ -83,6 +83,11 @@ type Service struct {
 	internalServiceKey   string
 	httpClient           *http.Client
 
+	// purgeAfter is the "Recently deleted" window: a soft-deleted post can
+	// be restored until deleted_at + purgeAfter, after which the purge
+	// worker hard-deletes it. Set from POST_PURGE_AFTER (default 30 days).
+	purgeAfter time.Duration
+
 	// storyAudience resolves story audiences server-side (M4-P0-1). A nil
 	// value fails closed with an unresolved error rather than degrading to an
 	// empty relationship set, so an unwired deployment denies rather than

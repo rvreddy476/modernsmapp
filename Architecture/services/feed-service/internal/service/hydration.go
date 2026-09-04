@@ -205,8 +205,12 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		}
 	}
 
-	// 1a. Check the per-viewer Redis cache for prebuilt hydrated rows.
-	cached := s.fetchHydratedCache(ctx, viewerID, uniquePostIDs)
+	// 1a. Check the per-viewer Redis cache for prebuilt hydrated rows, then
+	// discard any whose post has been soft-deleted since it was cached
+	// (deleted_tombstone.go). Fail closed: a tombstone lookup failure
+	// empties the cache and the page is re-fetched from post-service,
+	// whose batch endpoint drops deleted posts outright.
+	cached := s.filterDeletedFromCache(ctx, s.fetchHydratedCache(ctx, viewerID, uniquePostIDs))
 
 	// Build the list of post IDs we still need from post-service.
 	ids := make([]string, 0, len(uniquePostIDs))

@@ -83,6 +83,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		internal.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 		{
 			internal.DELETE("/orphan/:mediaId", h.DeleteOrphanMedia)
+			// Post purge (2026-09-04): delete an asset on behalf of the
+			// post that was its last referrer. Body names the referrer;
+			// the store re-checks every other reference before deleting.
+			internal.DELETE("/:mediaId", h.DeleteMediaInternal)
 			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
 			internal.GET("/:mediaId/profile-authority", h.GetProfileMediaAuthority)
 		}
@@ -597,5 +601,57 @@ func (h *Handler) ExtractFrame(c *gin.Context) {
 		"media_id":     mediaID.String(),
 		"timestamp_ms": req.TimestampMs,
 		"status":       "stub_extraction",
+	}, nil)
+}
+
+// DeleteMediaInternalRequest names who is giving the asset up.
+type DeleteMediaInternalRequest struct {
+	Referrer   string `json:"referrer"`
+	ReferrerID string `json:"referrer_id"`
+}
+
+// DeleteMediaInternal — DELETE /v1/media/internal/:mediaId
+//
+// Service-to-service only (post purge, 2026-09-04). post-service has
+// removed its own post_media rows for the referrer post and established
+// that no other post references the asset; media-service re-checks every
+// reference table it can see inside the row-deleting transaction, then
+// removes every object under the asset's key prefix.
+//
+//	200 {"status":"deleted","objects_deleted":n}
+//	404 NOT_FOUND          asset already gone (idempotent for the caller)
+//	409 STILL_REFERENCED   something else still holds the asset
+//	400 BAD_REQUEST        bad id or body
+func (h *Handler) DeleteMediaInternal(c *gin.Context) {
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	var body DeleteMediaInternalRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "body must be {\"referrer\":\"post\",\"referrer_id\":\"<uuid>\"}", nil)
+		return
+	}
+	ref, err := service.ParseReferrer(body.Referrer, body.ReferrerID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
+	res, err := h.svc.PurgeAssetForReferrer(c.Request.Context(), mediaID, ref)
+	switch {
+	case errors.Is(err, service.ErrAssetNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		return
+	case errors.Is(err, service.ErrAssetStillReferenced):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "STILL_REFERENCED", err.Error(), nil)
+		return
+	case err != nil:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{
+		"status": "deleted", "prefix": res.Prefix,
+		"objects_deleted": res.ObjectsDeleted, "objects_failed": res.ObjectsFailed,
 	}, nil)
 }

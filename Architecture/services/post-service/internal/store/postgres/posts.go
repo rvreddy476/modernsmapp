@@ -73,13 +73,20 @@ type Post struct {
 	// Thread fields (Module 1 P0-8). Root posts of a thread have
 	// ThreadRootID = own id and ThreadSeq = 0; standalone posts have all
 	// three NULL/0.
-	ThreadRootID    *uuid.UUID  `json:"thread_root_id,omitempty"`
-	ThreadReplyToID *uuid.UUID  `json:"thread_reply_to_id,omitempty"`
-	ThreadSeq       int         `json:"thread_seq,omitempty"`
-	CreatedAt       time.Time   `json:"created_at"`
-	UpdatedAt       time.Time   `json:"updated_at"`
-	Media           []PostMedia `json:"media,omitempty"`
-	Poll            *PollData   `json:"poll,omitempty"`
+	ThreadRootID    *uuid.UUID `json:"thread_root_id,omitempty"`
+	ThreadReplyToID *uuid.UUID `json:"thread_reply_to_id,omitempty"`
+	ThreadSeq       int        `json:"thread_seq,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	// DeletedAt is set while the post is soft-deleted ("Recently deleted",
+	// 2026-09-04). Every ordinary read filters deleted_at IS NULL, so it is
+	// only ever non-nil on the author's own recently-deleted listing.
+	// PurgeAt is when the purge worker will hard-delete it — computed by
+	// the service from DeletedAt + the purge window, never stored.
+	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
+	PurgeAt   *time.Time  `json:"purge_at,omitempty"`
+	Media     []PostMedia `json:"media,omitempty"`
+	Poll      *PollData   `json:"poll,omitempty"`
 
 	// IsProcessing is true until EVERY attached asset is processing_status
 	// "ready" AND moderation_status "passed" (2026-09-04: a reel is
@@ -190,7 +197,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	tier_required_id,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
-	created_at, updated_at, review_status`
+	created_at, updated_at, review_status, deleted_at`
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
@@ -221,7 +228,7 @@ func postScanDestinations(p *Post) []any {
 		&p.TierRequiredID,
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
-		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
+		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus, &p.DeletedAt,
 	}
 }
 

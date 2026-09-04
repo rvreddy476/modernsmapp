@@ -74,7 +74,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/by-author/:authorId", h.GetPostsByAuthor)
 		v1.GET("/by-author/:authorId/counts", h.GetAuthorCounts)
 		v1.GET("/:postId", h.GetPost)
+		// Soft delete → "Recently deleted" → restore (2026-09-04). DELETE
+		// keeps rows and media for POST_PURGE_AFTER; the purge worker
+		// (internal/postpurge) hard-deletes after that.
 		v1.DELETE("/:postId", h.DeletePost)
+		v1.POST("/:postId/restore", h.RestorePost)
+		v1.GET("/me/deleted", h.ListMyDeletedPosts)
 		v1.PUT("/:postId/pin", h.TogglePin)
 
 		// Legacy reaction routes (kept for backward compat)

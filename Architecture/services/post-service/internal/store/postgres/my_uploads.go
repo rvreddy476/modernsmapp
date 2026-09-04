@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 )
 
@@ -56,29 +57,57 @@ func (s *Store) GetUploadsByContentTypes(ctx context.Context, authorID uuid.UUID
 	return posts, nextCursor, nil
 }
 
-// DeleteUploadCascade soft-deletes a post and all its crosspost links + target embed posts.
-// Returns the number of cascade-deleted embed posts.
-func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.UUID) (int, error) {
+// DeleteUploadCascade SOFT-deletes a post and all its crosspost links + target
+// embed posts, and emits — in the same transaction — the two events every
+// downstream surface needs:
+//
+//   - PostSearchEligibilityChanged (deleted=true) for search, via the
+//     canonical choke point, and
+//   - PostDeleted for feed / notification consumers, carrying the SAME
+//     search revision so no consumer raises a barrier past the canonical
+//     one (a restore is rev+1 and must not be dropped as stale).
+//
+// Nothing is erased here: rows and media stay so the author can restore
+// from "Recently deleted" for purgeAfter; the purge worker hard-deletes
+// after that (internal/postpurge). Returns the number of cascade-deleted
+// embed posts.
+func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.UUID, purgeAfter time.Duration) (int, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
 
-	// Verify ownership and soft-delete the source post
-	var deletedID uuid.UUID
+	// Verify ownership and soft-delete the source post. One NOW() for the
+	// whole transaction: cascaded targets share the exact deleted_at, which
+	// is how RestorePost finds them again.
+	var (
+		deletedID   uuid.UUID
+		deletedAt   time.Time
+		contentType string
+		createdAt   time.Time
+	)
 	err = tx.QueryRow(ctx, `
 		UPDATE posts SET deleted_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
-		RETURNING id
-	`, postID, authorID).Scan(&deletedID)
+		RETURNING id, deleted_at, content_type, created_at
+	`, postID, authorID).Scan(&deletedID, &deletedAt, &contentType, &createdAt)
 	if err != nil {
 		return 0, fmt.Errorf("post not found or not owned by user")
 	}
+	purgeAt := deletedAt.Add(purgeAfter)
+
 	// M2-P0-2: deletion removes the post from public search. Emitted in
 	// this same transaction so the removal cannot be lost.
-	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
+	rev, err := BumpSearchRevAndEmitTxRev(ctx, tx, postID)
+	if err != nil {
 		return 0, fmt.Errorf("emit search eligibility on delete: %w", err)
+	}
+	if err := InsertOutboxEventTx(ctx, tx, events.PostDeleted, "post", postID, events.PostDeletedPayload{
+		PostID: postID.String(), AuthorID: authorID.String(), DeletedAt: deletedAt,
+		ContentType: contentType, CreatedAt: createdAt, SearchRev: rev, PurgeAt: &purgeAt,
+	}); err != nil {
+		return 0, fmt.Errorf("emit PostDeleted: %w", err)
 	}
 
 	// Cascade-delete crosspost links (table may not exist yet — use savepoint)
@@ -105,21 +134,43 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 
 		if len(linkIDs) > 0 {
 			_, _ = tx.Exec(ctx, `
-				UPDATE crosspost_links SET deleted_at = NOW()
+				UPDATE crosspost_links SET deleted_at = $2
 				WHERE source_post_id = $1 AND deleted_at IS NULL
-			`, postID)
+			`, postID, deletedAt)
 		}
 		if len(targetPostIDs) > 0 {
-			tag, err := tx.Exec(ctx, `
-				UPDATE posts SET deleted_at = NOW(), updated_at = NOW()
+			trows, err := tx.Query(ctx, `
+				UPDATE posts SET deleted_at = $2, updated_at = NOW()
 				WHERE id = ANY($1) AND deleted_at IS NULL
-			`, targetPostIDs)
+				RETURNING id, author_id, content_type, created_at
+			`, targetPostIDs, deletedAt)
 			if err == nil {
-				cascadeCount = int(tag.RowsAffected())
-				// M2-P0-2: each cascaded delete must leave public search.
-				for _, tid := range targetPostIDs {
-					if emitErr := BumpSearchRevAndEmitTx(ctx, tx, tid); emitErr != nil {
+				type target struct {
+					id, author  uuid.UUID
+					contentType string
+					createdAt   time.Time
+				}
+				var targets []target
+				for trows.Next() {
+					var t target
+					if err := trows.Scan(&t.id, &t.author, &t.contentType, &t.createdAt); err == nil {
+						targets = append(targets, t)
+					}
+				}
+				trows.Close()
+				cascadeCount = len(targets)
+				// M2-P0-2: each cascaded delete must leave public search,
+				// and every feed that carries the embed must drop it.
+				for _, t := range targets {
+					trev, emitErr := BumpSearchRevAndEmitTxRev(ctx, tx, t.id)
+					if emitErr != nil {
 						return 0, fmt.Errorf("emit search eligibility on cascade delete: %w", emitErr)
+					}
+					if emitErr := InsertOutboxEventTx(ctx, tx, events.PostDeleted, "post", t.id, events.PostDeletedPayload{
+						PostID: t.id.String(), AuthorID: t.author.String(), DeletedAt: deletedAt,
+						ContentType: t.contentType, CreatedAt: t.createdAt, SearchRev: trev, PurgeAt: &purgeAt,
+					}); emitErr != nil {
+						return 0, fmt.Errorf("emit PostDeleted on cascade delete: %w", emitErr)
 					}
 				}
 			}

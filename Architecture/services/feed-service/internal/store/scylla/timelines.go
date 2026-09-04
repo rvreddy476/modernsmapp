@@ -620,3 +620,91 @@ func (s *TimelineStore) CheckInteractions(ctx context.Context, userID uuid.UUID,
 	}
 	return result, nil
 }
+
+// TimelineOwner is one timeline that carried a post: the home timeline of
+// user OwnerID ("home") or the author's own canonical copy ("author").
+type TimelineOwner struct {
+	Kind    string
+	OwnerID uuid.UUID
+}
+
+// DeletePostFromTimelines removes every timeline row that references the
+// post — each follower's home_timeline_by_user copy and the author's
+// author_timeline_by_author copy — and returns the owners whose timelines
+// held it, so the caller can drop their per-viewer hydration cache rows.
+//
+// Soft delete (2026-09-04): the post must vanish from everyone's home and
+// reels feeds at once. Uses timeline_index_by_post (HF4) for an O(1) per
+// owner lookup, with the same ALLOW FILTERING fallback as
+// UpdatePostContentType for pre-HF4 rows. The index rows go last, so a
+// crash mid-way leaves the post re-addressable for the retry. Idempotent.
+func (s *TimelineStore) DeletePostFromTimelines(ctx context.Context, postID uuid.UUID) ([]TimelineOwner, error) {
+	gPost := toGocql(postID)
+	type indexed struct {
+		kind  string
+		owner gocql.UUID
+		b     int
+		ts    gocql.UUID
+	}
+	var rows []indexed
+	{
+		iter := s.session.Query(
+			`SELECT timeline_kind, owner_id, bucket, ts
+			 FROM timeline_index_by_post WHERE post_id = ?`, gPost,
+		).WithContext(ctx).Iter()
+		var r indexed
+		for iter.Scan(&r.kind, &r.owner, &r.b, &r.ts) {
+			rows = append(rows, r)
+		}
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Pre-HF4 fallback: rows written before the index existed.
+	if len(rows) == 0 && os.Getenv("FEED_HF4_FALLBACK") != "false" {
+		iter := s.session.Query(
+			`SELECT user_id, bucket, ts FROM home_timeline_by_user WHERE post_id = ? ALLOW FILTERING`, gPost,
+		).WithContext(ctx).Iter()
+		var owner gocql.UUID
+		var b int
+		var ts gocql.UUID
+		for iter.Scan(&owner, &b, &ts) {
+			rows = append(rows, indexed{kind: "home", owner: owner, b: b, ts: ts})
+		}
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
+		iter = s.session.Query(
+			`SELECT author_id, bucket, ts FROM author_timeline_by_author WHERE post_id = ? ALLOW FILTERING`, gPost,
+		).WithContext(ctx).Iter()
+		for iter.Scan(&owner, &b, &ts) {
+			rows = append(rows, indexed{kind: "author", owner: owner, b: b, ts: ts})
+		}
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
+	}
+
+	owners := make([]TimelineOwner, 0, len(rows))
+	for _, r := range rows {
+		var stmt string
+		switch r.kind {
+		case "home":
+			stmt = `DELETE FROM home_timeline_by_user WHERE user_id = ? AND bucket = ? AND ts = ?`
+		case "author":
+			stmt = `DELETE FROM author_timeline_by_author WHERE author_id = ? AND bucket = ? AND ts = ?`
+		default:
+			continue
+		}
+		if err := s.session.Query(stmt, r.owner, r.b, r.ts).WithContext(ctx).Exec(); err != nil {
+			return owners, err
+		}
+		owners = append(owners, TimelineOwner{Kind: r.kind, OwnerID: uuid.UUID(r.owner)})
+	}
+	if err := s.session.Query(`DELETE FROM timeline_index_by_post WHERE post_id = ?`, gPost).
+		WithContext(ctx).Exec(); err != nil {
+		return owners, err
+	}
+	return owners, nil
+}

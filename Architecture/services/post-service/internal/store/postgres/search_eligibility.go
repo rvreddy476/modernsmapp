@@ -37,6 +37,15 @@ var ErrPostRowMissing = errors.New("post row not found")
 // the canonical source, and a caller that computed the value separately
 // could drift from what actually persisted.
 func BumpSearchRevAndEmitTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID) error {
+	_, err := BumpSearchRevAndEmitTxRev(ctx, tx, postID)
+	return err
+}
+
+// BumpSearchRevAndEmitTxRev is BumpSearchRevAndEmitTx that also returns the
+// revision it stamped. The soft-delete / restore paths put that same
+// revision on PostDeleted / PostRestored so a consumer that raises its own
+// barrier (search) lands on the canonical number, not one above it.
+func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID) (int64, error) {
 	var (
 		authorID    uuid.UUID
 		visibility  string
@@ -56,10 +65,10 @@ func BumpSearchRevAndEmitTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID) er
 		Scan(&authorID, &visibility, &review, &text, &contentType,
 			&createdAt, &deletedAt, &rev)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrPostRowMissing
+		return 0, ErrPostRowMissing
 	}
 	if err != nil {
-		return fmt.Errorf("bump search_rev: %w", err)
+		return 0, fmt.Errorf("bump search_rev: %w", err)
 	}
 
 	payload := events.PostSearchEligibilityChangedPayload{
@@ -80,7 +89,10 @@ func BumpSearchRevAndEmitTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID) er
 		payload.Text = text
 	}
 
-	return InsertOutboxEventTx(ctx, tx, events.PostSearchEligibilityChanged, "post", postID, payload)
+	if err := InsertOutboxEventTx(ctx, tx, events.PostSearchEligibilityChanged, "post", postID, payload); err != nil {
+		return 0, err
+	}
+	return rev, nil
 }
 
 // WithSearchEligibilityTx runs mutate inside a transaction and, if it
