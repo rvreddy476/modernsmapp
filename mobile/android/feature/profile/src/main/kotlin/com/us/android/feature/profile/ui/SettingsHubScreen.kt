@@ -50,6 +50,11 @@ fun SettingsHubScreen(
                     onClick = sections.onModules,
                     description = "Which parts of the app you use, and which one opens first",
                 )
+                UsSettingsLinkRow(
+                    "Recently deleted",
+                    onClick = sections.onRecentlyDeleted,
+                    description = "Posts you deleted in the last 30 days, and how to restore them",
+                )
             }
             UsSettingsSection("Privacy and safety") {
                 UsSettingsLinkRow(

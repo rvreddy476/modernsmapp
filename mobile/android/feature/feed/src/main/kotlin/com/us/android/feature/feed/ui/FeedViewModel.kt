@@ -13,6 +13,7 @@ import com.us.android.core.engagement.data.EngagementFailure
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
@@ -22,8 +23,8 @@ import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.FollowGraph
-import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.KeywordFilter
+import com.us.android.feature.feed.data.hides
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject

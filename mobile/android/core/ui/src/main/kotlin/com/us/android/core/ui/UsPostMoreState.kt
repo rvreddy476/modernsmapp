@@ -15,7 +15,7 @@ data class UsPostMoreState(
     val postId: String,
     /** The handle without `@`, or the display name when the account has none. */
     val username: String,
-    /** The viewer's own post: no Interested / Not interested, no Follow, no Block, no Report. */
+    /** The viewer's own post: no Interested / Not interested, no Follow, no Block, no Report — Delete instead. */
     val isOwnPost: Boolean,
     /** Server value with this session's tap layered in — flips the Save row's label. */
     val isBookmarked: Boolean,
@@ -25,6 +25,8 @@ data class UsPostMoreState(
     /** What "Copy link" puts on the clipboard. */
     val link: String,
     val report: UsPostReportState = UsPostReportState.Idle,
+    /** The viewer's own post: where the delete stands, owned by whoever sends it. */
+    val delete: UsPostDeleteState = UsPostDeleteState.Idle,
     /** True while a one-shot action (block) is on the wire; the rows go inert. */
     val busy: Boolean = false,
 )
@@ -49,6 +51,18 @@ sealed interface UsPostReportState {
     data object Failed : UsPostReportState
 }
 
+/**
+ * The delete's progress, owned by whoever sends it. The sheet shows
+ * [Deleted] as its inline confirmation and then leaves; [Failed] keeps the
+ * sheet open with the reason under the rows so the viewer can try again.
+ */
+sealed interface UsPostDeleteState {
+    data object Idle : UsPostDeleteState
+    data object Deleting : UsPostDeleteState
+    data object Deleted : UsPostDeleteState
+    data class Failed(val message: String) : UsPostDeleteState
+}
+
 /** One row of the sheet's menu. The order within [rowGroups] is the design's. */
 enum class UsPostMoreRow(val label: String) {
     SAVE("Save"),
@@ -62,12 +76,12 @@ enum class UsPostMoreRow(val label: String) {
     FOLLOW("Follow"),
     BLOCK("Block"),
     REPORT("Report"),
+    DELETE("Delete post"),
 }
 
 /**
  * The rows to draw, grouped; hairline dividers go between groups. An empty
- * group is dropped, so the viewer's own post — group 1 only — has no
- * dangling divider under it.
+ * group is dropped, so no group ever has a dangling divider under it.
  *
  * The rules, from the founder's Instagram capture (2026-09-04):
  *
@@ -76,6 +90,8 @@ enum class UsPostMoreRow(val label: String) {
  *    when the server sent a sentence, then Interested and Not interested.
  *  - Group 3, other people's posts: Unfollow or Follow when the edge is
  *    known, Block, and Report last.
+ *  - The viewer's own post: group 1, then "Delete post" alone, red and
+ *    last — a soft delete with a 30-day restore window (founder, 2026-09-04).
  */
 fun UsPostMoreState.rowGroups(): List<List<UsPostMoreRow>> {
     val first = listOf(
@@ -83,7 +99,7 @@ fun UsPostMoreState.rowGroups(): List<List<UsPostMoreRow>> {
         UsPostMoreRow.COPY_LINK,
         UsPostMoreRow.SHARE,
     )
-    if (isOwnPost) return listOf(first)
+    if (isOwnPost) return listOf(first, listOf(UsPostMoreRow.DELETE))
 
     val second = buildList {
         if (reasonText.isNotBlank()) add(UsPostMoreRow.WHY)

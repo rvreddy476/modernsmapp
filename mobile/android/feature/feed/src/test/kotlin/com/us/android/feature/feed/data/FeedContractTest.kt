@@ -255,8 +255,27 @@ class FeedContractTest {
         assertThat(page.nextCursor).isEqualTo("djE6ZTcwZWU4ODAtOTlhYS0xMWYxLTkyMzMtZmU0NWFjOWU0MDIx")
     }
 
+    /**
+     * Soft delete (2026-09-04): a row that still reaches a feed after the
+     * author deleted it carries `deleted_at`, and is dropped before mapping.
+     * The page is not "empty" for cursor purposes, so paging continues.
+     */
+    @Test
+    fun `a row carrying deleted_at is dropped from the page but keeps the cursor`() {
+        val page = decode(DELETED_ROW_PAGE).toFeedPage()
+
+        assertThat(page.items.map { it.id }).containsExactly("live")
+        assertThat(page.nextCursor).isEqualTo("next")
+    }
+
     private companion object {
         const val TRENDING_EMPTY = """{"data":{"hashtags":[]}}"""
+
+        const val DELETED_ROW_PAGE =
+            """{"data":[{"id":"gone","author_id":"a","text":"del","post_type":"text","created_at":"2026-09-04T10:00:00Z",""" +
+                """"deleted_at":"2026-09-04T10:05:00Z","purge_at":"2026-10-04T10:05:00Z"},""" +
+                """{"id":"live","author_id":"a","text":"kept","post_type":"text","created_at":"2026-09-04T10:00:00Z"}],""" +
+                """"meta":{"next_cursor":"next"}}"""
 
         const val TRENDING_POPULATED =
             """{"data":{"hashtags":[{"normalized_name":"android","display_name":"#android","post_count":3},{"normalized_name":"momentum","display_name":"#momentum","post_count":1}]}}"""

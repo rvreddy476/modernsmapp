@@ -9,7 +9,8 @@ import org.junit.Test
  * from:
  *
  *  - another person's post: all three groups, Report last;
- *  - the viewer's own post: Save, Copy link, Share and nothing else;
+ *  - the viewer's own post: Save, Copy link, Share, then Delete post alone
+ *    and last — never a row that acts on "the author";
  *  - Unfollow only when the viewer follows, Follow only when they are
  *    known not to, neither while the edge is unknown;
  *  - "Why you're seeing this post" only when the server sent a sentence.
@@ -46,10 +47,14 @@ class UsPostMoreRowsTest {
     }
 
     @Test
-    fun `the viewer's own post shows save, copy link and share only`() {
+    fun `the viewer's own post shows save, copy link, share and then delete last`() {
         val groups = state(own = true, reason = "Trending now", follow = UsPostMoreFollowRow.UNFOLLOW).rowGroups()
 
-        assertThat(groups).containsExactly(listOf(UsPostMoreRow.SAVE, UsPostMoreRow.COPY_LINK, UsPostMoreRow.SHARE))
+        assertThat(groups).containsExactly(
+            listOf(UsPostMoreRow.SAVE, UsPostMoreRow.COPY_LINK, UsPostMoreRow.SHARE),
+            listOf(UsPostMoreRow.DELETE),
+        ).inOrder()
+        assertThat(groups.last().last()).isEqualTo(UsPostMoreRow.DELETE)
         assertThat(groups.flatten()).containsNoneOf(
             UsPostMoreRow.INTERESTED,
             UsPostMoreRow.NOT_INTERESTED,
@@ -59,6 +64,13 @@ class UsPostMoreRowsTest {
             UsPostMoreRow.REPORT,
             UsPostMoreRow.WHY,
         )
+    }
+
+    @Test
+    fun `delete is offered on the viewer's own post only`() {
+        assertThat(state(own = false).rowGroups().flatten()).doesNotContain(UsPostMoreRow.DELETE)
+        assertThat(state(own = true).rowGroups().flatten()).contains(UsPostMoreRow.DELETE)
+        assertThat(UsPostMoreRow.DELETE.label).isEqualTo("Delete post")
     }
 
     @Test

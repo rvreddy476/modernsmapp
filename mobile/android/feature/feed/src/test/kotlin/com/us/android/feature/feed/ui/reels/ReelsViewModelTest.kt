@@ -7,6 +7,7 @@ import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
+import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.publish.ReelPublishActions
@@ -27,7 +28,6 @@ import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.feed.data.FeedApi
 import com.us.android.feature.feed.data.FeedFeedbackRequest
 import com.us.android.feature.feed.data.FeedRepository
-import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.PollVoteRequest
 import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.dto.FeedDeltaDto

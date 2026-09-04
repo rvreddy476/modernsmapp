@@ -10,6 +10,7 @@ import androidx.navigation.compose.composable
 import com.us.android.feature.settings.account.AccountControlScreen
 import com.us.android.feature.settings.account.ManageAccountScreen
 import com.us.android.feature.settings.content.ContentPreferencesScreen
+import com.us.android.feature.settings.deleted.RecentlyDeletedScreen
 import com.us.android.feature.settings.onboarding.OnboardingScreen
 import com.us.android.feature.settings.screentime.ScreenTimeScreen
 import kotlinx.serialization.Serializable
@@ -95,3 +96,14 @@ fun NavGraphBuilder.contentPreferencesScreen(onBack: () -> Unit) {
 }
 
 fun NavController.navigateToContentPreferences() = navigate(ContentPreferencesRoute)
+
+// ── Recently deleted ──────────────────────────────────────────────────
+
+/** The viewer's soft-deleted posts and their 30-day Restore (founder, 2026-09-04). */
+@Serializable data object RecentlyDeletedRoute
+
+fun NavGraphBuilder.recentlyDeletedScreen(onBack: () -> Unit) {
+    composable<RecentlyDeletedRoute> { RecentlyDeletedScreen(onBack) }
+}
+
+fun NavController.navigateToRecentlyDeleted() = navigate(RecentlyDeletedRoute)

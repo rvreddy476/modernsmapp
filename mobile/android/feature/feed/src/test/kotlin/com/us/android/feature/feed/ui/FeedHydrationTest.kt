@@ -5,6 +5,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
+import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedAuthor
@@ -14,7 +15,6 @@ import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ErrorMapper
 import com.us.android.feature.feed.data.FeedRepository
-import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.followGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch

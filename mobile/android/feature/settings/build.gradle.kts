@@ -10,8 +10,8 @@ android {
 }
 
 // The module picker (first-login onboarding and its settings-hub twin), plus
-// the launch-safety settings pages: Manage account, Screen time and Content
-// preferences.
+// the launch-safety settings pages: Manage account, Screen time, Content
+// preferences and Recently deleted.
 //
 // Data comes from :core:profile and :core:auth. It must NOT depend on
 // :feature:profile: the hub rows that open these pages are wired by :app
@@ -27,11 +27,18 @@ dependencies {
     implementation(projects.core.auth)
     // Screen time reads the local usage ledger for "today so far".
     implementation(projects.core.datastore)
+    // Recently deleted: the soft-delete lifecycle (list, restore) and the
+    // process-wide hidden set a restored post is cleared from, so it comes
+    // back in every feed without a refresh. A core module, no feature edge.
+    implementation(projects.core.engagement)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.hilt.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
+    // Recently deleted draws each post's still. The ImageLoader itself is
+    // configured in :app on the authenticated client; this module renders only.
+    implementation(libs.coil.compose)
 
     testImplementation(projects.core.testing)
     // The fake-API test builds the repository against the real ErrorMapper.

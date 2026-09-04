@@ -152,12 +152,16 @@ class FeedPagingSource(
  * The terminal page omits `meta` entirely rather than sending an empty
  * cursor, so an absent or blank value is the end. An empty page is also
  * treated as the end regardless of what `meta` says — otherwise a server that
- * always echoed a cursor would page forever.
+ * always echoed a cursor would page forever. "Empty" is judged BEFORE the
+ * deleted-row filter, so a page of nothing but deleted posts still pages on.
  */
 internal fun ApiEnvelope<List<FeedItemDto>>.toFeedPage(): FeedPage {
     val items = data.orEmpty()
     return FeedPage(
-        items = items.map { it.toDomain() },
+        // A soft-deleted post (`deleted_at` set) is never a row, whatever
+        // surface still carries it: the server's 30-day restore window is
+        // the author's, not the reader's.
+        items = items.filter { it.deletedAt.isBlank() }.map { it.toDomain() },
         nextCursor = if (items.isEmpty()) null else meta?.nextCursor?.takeIf { it.isNotBlank() },
         errorCode = error?.code,
     )

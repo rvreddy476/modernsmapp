@@ -2,21 +2,24 @@ package com.us.android.feature.feed.ui.more
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.engagement.data.HiddenPosts
+import com.us.android.core.engagement.data.PostLifecycleRepository
 import com.us.android.core.engagement.data.ReportOutcome
 import com.us.android.core.engagement.data.ReportRepository
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.profile.data.ProfileRepository
+import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostReportState
 import com.us.android.core.ui.UsReportReason
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.FollowGraph
-import com.us.android.feature.feed.data.HiddenPosts
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,9 +43,10 @@ import javax.inject.Inject
  * Save goes through the shared [EngagementStore] — the same lane the card's
  * bookmark glyph uses, so the sheet and the glyph can never disagree.
  * Follow and Unfollow go through [FollowGraph], which the card header and
- * the reel overlay already read. Report is the one action that WAITS: the
- * sheet shows the outcome, and "you already reported this" is an outcome,
- * not an error.
+ * the reel overlay already read. Report and Delete are the two actions that
+ * WAIT: the sheet shows the outcome, and "you already reported this" is an
+ * outcome, not an error. Delete waits because a post that vanished and then
+ * came back "couldn't be deleted" reads as a lie.
  */
 @HiltViewModel
 // Constructor injection of every collaborator the sheet's rows need; a
@@ -56,12 +60,18 @@ class PostMoreViewModel @Inject constructor(
     private val feed: FeedRepository,
     private val reports: ReportRepository,
     private val hidden: HiddenPosts,
+    private val lifecycle: PostLifecycleRepository,
 ) : ViewModel() {
 
     private val _report = MutableStateFlow<UsPostReportState>(UsPostReportState.Idle)
 
     /** The report step's progress for the post the sheet is open on. */
     val report: StateFlow<UsPostReportState> = _report.asStateFlow()
+
+    private val _delete = MutableStateFlow<UsPostDeleteState>(UsPostDeleteState.Idle)
+
+    /** The delete's progress for the viewer's own post the sheet is open on. */
+    val delete: StateFlow<UsPostDeleteState> = _delete.asStateFlow()
 
     private val _message = MutableStateFlow<UsMessage?>(null)
 
@@ -73,9 +83,10 @@ class PostMoreViewModel @Inject constructor(
 
     val ownUserId: String get() = follows.ownId
 
-    /** The sheet opened on a post: nothing from an earlier report carries over. */
+    /** The sheet opened on a post: nothing from an earlier report or delete carries over. */
     fun opened() {
         _report.value = UsPostReportState.Idle
+        _delete.value = UsPostDeleteState.Idle
     }
 
     fun dismissMessage() {
@@ -150,11 +161,43 @@ class PostMoreViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Confirmed in the sheet. The ONE action here that waits for the server
+     * before touching the list: a delete that is refused must not have made
+     * the post vanish first, because the viewer would read the vanish as the
+     * deed done. On 204 the post leaves every list at once through
+     * [HiddenPosts] — the same set the feeds already filter on — and the
+     * sheet shows "Post deleted". A 404 is a post that is already gone, which
+     * is the same outcome from where the viewer stands.
+     */
+    fun delete(item: FeedItem) {
+        if (_delete.value == UsPostDeleteState.Deleting) return
+        _delete.value = UsPostDeleteState.Deleting
+        viewModelScope.launch {
+            _delete.value = when (val result = lifecycle.deletePost(item.id)) {
+                is AppResult.Success -> deleted(item.id)
+                is AppResult.Failure -> when (result.error) {
+                    is AppError.NotFound -> deleted(item.id)
+                    is AppError.Forbidden -> UsPostDeleteState.Failed("You can only delete your own posts.")
+                    is AppError.NoNetwork, is AppError.Timeout ->
+                        UsPostDeleteState.Failed("You're offline. Try again when you're connected.")
+                    else -> UsPostDeleteState.Failed(COULD_NOT_DELETE)
+                }
+            }
+        }
+    }
+
+    private fun deleted(postId: String): UsPostDeleteState {
+        hidden.hidePost(postId)
+        return UsPostDeleteState.Deleted
+    }
+
     private fun say(text: String, type: UsMessageType) {
         _message.value = UsMessage(text = text, type = type)
     }
 
     private companion object {
         const val COULD_NOT_SAVE = "Couldn't save that. Try again."
+        const val COULD_NOT_DELETE = "Couldn't delete this post. Try again."
     }
 }

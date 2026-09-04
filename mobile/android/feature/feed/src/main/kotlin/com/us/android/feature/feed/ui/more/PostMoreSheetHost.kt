@@ -9,6 +9,7 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostMoreCallbacks
 import com.us.android.core.ui.UsPostMoreFollowRow
 import com.us.android.core.ui.UsPostMoreSheet
@@ -35,6 +36,7 @@ internal fun PostMoreSheetHost(
     viewModel: PostMoreViewModel,
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
+    val delete by viewModel.delete.collectAsStateWithLifecycle()
     LaunchedEffect(item.id) { viewModel.opened() }
 
     val callbacks = remember(item, viewModel, onShare) {
@@ -47,10 +49,11 @@ internal fun PostMoreSheetHost(
             onUnfollow = { viewModel.unfollow(item.author.id) },
             onBlock = { viewModel.block(item) },
             onReport = { reason, details -> viewModel.report(item, reason, details) },
+            onDelete = { viewModel.delete(item) },
         )
     }
     UsPostMoreSheet(
-        state = item.toMoreState(overlay, followEdge, ownUserId, report),
+        state = item.toMoreState(overlay, followEdge, ownUserId, report, delete),
         callbacks = callbacks,
         onDismiss = onDismiss,
     )
@@ -65,6 +68,7 @@ internal fun FeedItem.toMoreState(
     followEdge: FollowStatus?,
     ownUserId: String,
     report: UsPostReportState = UsPostReportState.Idle,
+    delete: UsPostDeleteState = UsPostDeleteState.Idle,
 ): UsPostMoreState {
     val own = ownUserId.isNotBlank() && author.id == ownUserId
     return UsPostMoreState(
@@ -76,6 +80,7 @@ internal fun FeedItem.toMoreState(
         reasonText = reasonText,
         link = postShareLink(id),
         report = report,
+        delete = delete,
     )
 }
 

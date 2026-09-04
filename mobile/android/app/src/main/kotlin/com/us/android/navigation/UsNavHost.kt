@@ -107,8 +107,10 @@ import com.us.android.feature.settings.navigation.navigateToAccountControl
 import com.us.android.feature.settings.navigation.navigateToContentPreferences
 import com.us.android.feature.settings.navigation.navigateToManageAccount
 import com.us.android.feature.settings.navigation.navigateToModulesSettings
+import com.us.android.feature.settings.navigation.navigateToRecentlyDeleted
 import com.us.android.feature.settings.navigation.navigateToScreenTime
 import com.us.android.feature.settings.navigation.onboardingScreen
+import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
 import kotlinx.serialization.Serializable
 
@@ -686,6 +688,7 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 onNotifications = { navController.navigate(NotificationSettingsRoute) },
                 onScreenTime = { navController.navigateToScreenTime() },
                 onContentPreferences = { navController.navigateToContentPreferences() },
+                onRecentlyDeleted = { navController.navigateToRecentlyDeleted() },
                 onSecurity = { navController.navigate(SecuritySettingsRoute) },
                 // The module picker is `:feature:settings`; the hub only
                 // asks for "modules" and this is where that resolves.
@@ -706,6 +709,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     accountControlScreen(onBack = { navController.popBackStack() }, onSignedOut = onSignedOut)
     screenTimeScreen(onBack = { navController.popBackStack() })
     contentPreferencesScreen(onBack = { navController.popBackStack() })
+    // Recently deleted: the 30-day restore window for soft-deleted posts.
+    recentlyDeletedScreen(onBack = { navController.popBackStack() })
 }
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */

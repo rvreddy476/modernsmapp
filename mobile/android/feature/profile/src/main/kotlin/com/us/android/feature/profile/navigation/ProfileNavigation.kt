@@ -233,6 +233,8 @@ data class SettingsSections(
     val onNotifications: () -> Unit,
     val onScreenTime: () -> Unit,
     val onContentPreferences: () -> Unit,
+    /** Settings › Recently deleted, a `:feature:settings` page: the 30-day restore window. */
+    val onRecentlyDeleted: () -> Unit,
     val onSecurity: () -> Unit,
     /**
      * The module picker lives in `:feature:settings`; `:app` owns which

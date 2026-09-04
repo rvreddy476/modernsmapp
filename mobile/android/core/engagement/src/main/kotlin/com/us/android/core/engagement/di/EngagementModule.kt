@@ -4,6 +4,7 @@ import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
+import com.us.android.core.engagement.data.PostLifecycleApi
 import com.us.android.core.engagement.data.ReportApi
 import dagger.Module
 import dagger.Provides
@@ -32,6 +33,12 @@ object EngagementModule {
     @Provides
     @Singleton
     fun provideReportApi(retrofit: Retrofit): ReportApi = retrofit.create(ReportApi::class.java)
+
+    /** Soft delete / restore / recently deleted, on the same authenticated client. */
+    @Provides
+    @Singleton
+    fun providePostLifecycleApi(retrofit: Retrofit): PostLifecycleApi =
+        retrofit.create(PostLifecycleApi::class.java)
 
     /**
      * Binds the writes interface to the real repository.

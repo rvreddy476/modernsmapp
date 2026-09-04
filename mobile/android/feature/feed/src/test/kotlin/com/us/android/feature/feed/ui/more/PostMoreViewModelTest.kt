@@ -5,12 +5,16 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.engagement.data.CreateCommentRequest
+import com.us.android.core.engagement.data.DeletedPostDto
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
 import com.us.android.core.engagement.data.FileReportRequest
+import com.us.android.core.engagement.data.HiddenPosts
+import com.us.android.core.engagement.data.PostLifecycleApi
+import com.us.android.core.engagement.data.PostLifecycleRepository
 import com.us.android.core.engagement.data.ReactionRequest
 import com.us.android.core.engagement.data.ReportApi
 import com.us.android.core.engagement.data.ReportDto
@@ -28,6 +32,7 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostMoreFollowRow
 import com.us.android.core.ui.UsPostReportState
 import com.us.android.core.ui.UsReportReason
@@ -35,7 +40,6 @@ import com.us.android.feature.feed.data.FeedApi
 import com.us.android.feature.feed.data.FeedFeedbackDto
 import com.us.android.feature.feed.data.FeedFeedbackRequest
 import com.us.android.feature.feed.data.FeedRepository
-import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.PollVoteRequest
 import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.dto.FeedAuthorDto
@@ -44,6 +48,7 @@ import com.us.android.feature.feed.data.followGraph
 import com.us.android.feature.feed.ui.FeedMode
 import com.us.android.feature.feed.ui.FeedTabState
 import com.us.android.feature.feed.ui.FeedViewModel
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -65,6 +70,8 @@ import retrofit2.Response
  *    block; "Interested" is the undo of an earlier "Not interested".
  *  - A report carries the chosen reason's wire token, and a 409 reads as
  *    "already reported", not as a failure.
+ *  - Delete WAITS for the server: a 204 (or a 404 — already gone) hides the
+ *    post everywhere through the shared set; a refusal leaves it in place.
  *  - Own post / follow edge → which rows the sheet is built with.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -123,6 +130,36 @@ class PostMoreViewModelTest {
         }
     }
 
+    /** Records deletes; can refuse them the way the server does — 403 not yours, 404 unknown. */
+    private class FakeLifecycleApi : PostLifecycleApi {
+        val deleted = mutableListOf<String>()
+        var deleteStatus: Int? = null
+        var offline = false
+
+        /** Completed by the test to let a held delete answer — proves the list waits. */
+        val gate = CompletableDeferred<Unit>()
+        var holdDelete = false
+
+        override suspend fun deletePost(postId: String) {
+            deleted += postId
+            if (holdDelete) gate.await()
+            if (offline) throw java.io.IOException("offline")
+            deleteStatus?.let { status ->
+                throw HttpException(
+                    Response.error<Any>(
+                        status,
+                        """{"error":{"code":"FORBIDDEN","message":"not yours"}}"""
+                            .toResponseBody("application/json".toMediaType()),
+                    ),
+                )
+            }
+        }
+
+        override suspend fun restorePost(postId: String): ApiEnvelope<DeletedPostDto> = error("unused")
+        override suspend fun listDeleted(cursor: String?, limit: Int): ApiEnvelope<List<DeletedPostDto>> =
+            error("unused")
+    }
+
     private class AcceptingWrites : EngagementWrites {
         override suspend fun react(postId: String, reaction: String) = AppResult.Success(Unit)
         override suspend fun unreact(postId: String) = AppResult.Success(Unit)
@@ -174,6 +211,7 @@ class PostMoreViewModelTest {
         val reportApi = FakeReportApi()
         val graph = RecordingGraphApi()
         val hidden = HiddenPosts()
+        val lifecycleApi = FakeLifecycleApi()
     }
 
     private fun viewModel(h: Harness): PostMoreViewModel {
@@ -186,6 +224,7 @@ class PostMoreViewModelTest {
             feed = FeedRepository(h.feedApi, mapper) { it },
             reports = ReportRepository(h.reportApi, mapper),
             hidden = h.hidden,
+            lifecycle = PostLifecycleRepository(h.lifecycleApi, mapper),
         )
     }
 
@@ -325,6 +364,91 @@ class PostMoreViewModelTest {
         vm.opened()
 
         assertThat(vm.report.value).isEqualTo(UsPostReportState.Idle)
+    }
+
+    // ── Delete ──────────────────────────────────────────────────────────
+
+    @Test
+    fun `a confirmed delete waits for the server, then hides the post everywhere`() = runTest {
+        val h = Harness(page).apply { lifecycleApi.holdDelete = true }
+        val vm = viewModel(h)
+        val feed = feedViewModel(h)
+
+        vm.delete(item("p2", "b"))
+
+        // Nothing vanishes before the server has answered.
+        assertThat(vm.delete.value).isEqualTo(UsPostDeleteState.Deleting)
+        assertThat(h.hidden.state.value.postIds).isEmpty()
+        assertThat(feed.items.asSnapshot().map { it.id }).containsExactly("p1", "p2", "p3").inOrder()
+
+        h.lifecycleApi.gate.complete(Unit)
+        advanceUntilIdle()
+        assertThat(h.lifecycleApi.deleted).containsExactly("p2")
+        assertThat(vm.delete.value).isEqualTo(UsPostDeleteState.Deleted)
+        assertThat(h.hidden.state.value.postIds).containsExactly("p2")
+        assertThat(feed.items.asSnapshot().map { it.id }).containsExactly("p1", "p3").inOrder()
+        // The sheet shows "Post deleted" itself; the host has nothing to add.
+        assertThat(vm.message.value).isNull()
+    }
+
+    @Test
+    fun `a refused delete leaves the post in place and says why`() = runTest {
+        val h = Harness(page).apply { lifecycleApi.deleteStatus = 403 }
+        val vm = viewModel(h)
+
+        vm.delete(item("p2", "b"))
+        advanceUntilIdle()
+
+        assertThat(vm.delete.value).isEqualTo(UsPostDeleteState.Failed("You can only delete your own posts."))
+        assertThat(h.hidden.state.value.postIds).isEmpty()
+    }
+
+    @Test
+    fun `an offline delete is a retryable refusal`() = runTest {
+        val h = Harness(page).apply { lifecycleApi.offline = true }
+        val vm = viewModel(h)
+
+        vm.delete(item("p2", "b"))
+        advanceUntilIdle()
+
+        assertThat(vm.delete.value).isInstanceOf(UsPostDeleteState.Failed::class.java)
+        assertThat(h.hidden.state.value.postIds).isEmpty()
+    }
+
+    @Test
+    fun `a post the server no longer has is treated as deleted`() = runTest {
+        val h = Harness(page).apply { lifecycleApi.deleteStatus = 404 }
+        val vm = viewModel(h)
+
+        vm.delete(item("p2", "b"))
+        advanceUntilIdle()
+
+        assertThat(vm.delete.value).isEqualTo(UsPostDeleteState.Deleted)
+        assertThat(h.hidden.state.value.postIds).containsExactly("p2")
+    }
+
+    @Test
+    fun `opening the sheet again forgets the last delete`() = runTest {
+        val h = Harness(page).apply { lifecycleApi.deleteStatus = 403 }
+        val vm = viewModel(h)
+        vm.delete(item("p2", "b"))
+        advanceUntilIdle()
+
+        vm.opened()
+
+        assertThat(vm.delete.value).isEqualTo(UsPostDeleteState.Idle)
+    }
+
+    @Test
+    fun `the delete state reaches the sheet's state`() {
+        val state = item("p1", "me").toMoreState(
+            EngagementOverlay(),
+            null,
+            ownUserId = "me",
+            delete = UsPostDeleteState.Deleting,
+        )
+
+        assertThat(state.delete).isEqualTo(UsPostDeleteState.Deleting)
     }
 
     // ── The state the sheet is built with ───────────────────────────────

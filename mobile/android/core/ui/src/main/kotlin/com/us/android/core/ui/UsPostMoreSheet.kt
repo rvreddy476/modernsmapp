@@ -73,11 +73,15 @@ import kotlinx.coroutines.launch
  *  2. Why you're seeing this post (expands inline) · Interested · Not interested
  *  3. Unfollow @user / Follow · Block @user · Report (red, last)
  *
+ * The viewer's own post shows group 1 and then "Delete post" (red, last).
+ *
  * Which rows appear is [rowGroups]'s decision, pinned by its own test: the
- * viewer's own post shows group 1 only, the relationship row needs a known
+ * viewer's own post shows group 1 and Delete, the relationship row needs a known
  * edge, and the "why" row needs a sentence to show. Report is a second step
- * INSIDE the same sheet ([UsPostReportStep]); Block confirms in a small
- * dialog over it.
+ * INSIDE the same sheet ([UsPostReportStep]); Block and Delete confirm in a
+ * small dialog over it. Delete is the one row that WAITS on the sheet: the
+ * host answers through [UsPostMoreState.delete], and the sheet shows "Post
+ * deleted" and leaves, or the refusal under the rows.
  *
  * Stateless, like everything in this module. [state] and [callbacks] come
  * from the host; the only state held here is presentation — which step is
@@ -118,6 +122,14 @@ fun UsPostMoreSheet(
     // then the sheet leaves on its own. Nothing is left for the reader to do.
     LaunchedEffect(state.report) {
         if (state.report.isSettled) {
+            delay(REPORT_LINGER_MILLIS)
+            leaveThen {}
+        }
+    }
+    // A delete that landed shows "Post deleted" for the same beat, then the
+    // sheet leaves: the row under it is already gone from every list.
+    LaunchedEffect(state.delete) {
+        if (state.delete == UsPostDeleteState.Deleted) {
             delay(REPORT_LINGER_MILLIS)
             leaveThen {}
         }
@@ -172,14 +184,46 @@ fun UsPostMoreSheet(
         }
     }
 
+    MoreConfirmations(ui = ui, state = state, callbacks = callbacks, leaveThen = ::leaveThen)
+}
+
+/** The two "are you sure" dialogs, over the sheet: Block leaves on yes, Delete waits. */
+@Composable
+private fun MoreConfirmations(
+    ui: MorePresentation,
+    state: UsPostMoreState,
+    callbacks: UsPostMoreCallbacks,
+    leaveThen: (() -> Unit) -> Unit,
+) {
     if (ui.confirmBlock) {
-        BlockDialog(
-            username = state.username,
+        ConfirmDialog(
+            title = "Block @${state.username}?",
+            body = "They won't be able to see your posts or message you.",
+            confirmLabel = "Block",
+            testTag = "post_more_block_dialog",
+            confirmTestTag = "post_more_block_confirm",
             onConfirm = {
                 ui.confirmBlock = false
                 leaveThen(callbacks.onBlock)
             },
             onDismiss = { ui.confirmBlock = false },
+        )
+    }
+    if (ui.confirmDelete) {
+        // The sheet stays: the host answers through state.delete, and the
+        // confirmation or the refusal is shown where the viewer is looking.
+        ConfirmDialog(
+            title = "Delete post?",
+            body = "It will be removed from your profile and feeds. " +
+                "You can restore it from Recently deleted for 30 days.",
+            confirmLabel = "Delete",
+            testTag = "post_more_delete_dialog",
+            confirmTestTag = "post_more_delete_confirm",
+            onConfirm = {
+                ui.confirmDelete = false
+                callbacks.onDelete()
+            },
+            onDismiss = { ui.confirmDelete = false },
         )
     }
 }
@@ -199,12 +243,13 @@ private class MorePresentation {
     var step by mutableStateOf(MoreStep.MENU)
     var reasonOpen by mutableStateOf(false)
     var confirmBlock by mutableStateOf(false)
+    var confirmDelete by mutableStateOf(false)
     var linkCopied by mutableStateOf(false)
 
     /**
      * [leaveThen] slides the sheet away and then runs the action; the rows
      * that are complete on the tap use it. Save flips in place, Copy link
-     * shows its pill, Why expands, Block asks first, Report steps in.
+     * shows its pill, Why expands, Block and Delete ask first, Report steps in.
      */
     fun onRow(
         row: UsPostMoreRow,
@@ -226,6 +271,7 @@ private class MorePresentation {
             UsPostMoreRow.FOLLOW -> leaveThen(callbacks.onFollow)
             UsPostMoreRow.BLOCK -> confirmBlock = true
             UsPostMoreRow.REPORT -> step = MoreStep.REPORT
+            UsPostMoreRow.DELETE -> confirmDelete = true
         }
     }
 }
@@ -240,6 +286,7 @@ private fun MoreMenu(
     linkCopied: Boolean,
     onRow: (UsPostMoreRow) -> Unit,
 ) {
+    val delete = state.delete
     Box(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
             val groups = state.rowGroups()
@@ -250,14 +297,39 @@ private fun MoreMenu(
                         row = row,
                         state = state,
                         reasonOpen = reasonOpen,
-                        enabled = !state.busy,
+                        enabled = !state.busy && delete != UsPostDeleteState.Deleting,
                         onClick = { onRow(row) },
                     )
                 }
             }
+            // A refused delete stays on the sheet, under the row that asked
+            // for it, so the viewer reads the reason where they are looking.
+            AnimatedVisibility(
+                visible = delete is UsPostDeleteState.Failed,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                Text(
+                    text = (delete as? UsPostDeleteState.Failed)?.message.orEmpty(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = UsTheme.extended.liveRed,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = REASON_INDENT, end = ROW_SIDE, bottom = UsTheme.spacing.m)
+                        .testTag("post_more_delete_error"),
+                )
+            }
         }
-        LinkCopiedPill(
+        StatusPill(
             visible = linkCopied,
+            text = "Link copied",
+            testTag = "post_more_link_copied",
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
+        StatusPill(
+            visible = delete == UsPostDeleteState.Deleted,
+            text = "Post deleted",
+            testTag = "post_more_deleted",
             modifier = Modifier.align(Alignment.TopCenter),
         )
     }
@@ -276,7 +348,7 @@ private fun MenuRow(
     val (label, tint) = when (row) {
         UsPostMoreRow.UNFOLLOW -> "Unfollow @${state.username}" to UsTheme.extended.textPrimary
         UsPostMoreRow.BLOCK -> "Block @${state.username}" to UsTheme.extended.textPrimary
-        UsPostMoreRow.REPORT -> row.label to red
+        UsPostMoreRow.REPORT, UsPostMoreRow.DELETE -> row.label to red
         else -> row.label to UsTheme.extended.textPrimary
     }
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -313,7 +385,7 @@ private fun MenuRow(
     }
 }
 
-/** Lucide, one per row: bookmark · link · share · info · thumbs · user · ban · flag. */
+/** Lucide, one per row: bookmark · link · share · info · thumbs · user · ban · flag · trash. */
 private fun UsPostMoreRow.icon(): ImageVector = when (this) {
     UsPostMoreRow.SAVE -> UsIcons.BookmarkOutline
     UsPostMoreRow.UNSAVE -> UsIcons.BookmarkFilled
@@ -326,6 +398,7 @@ private fun UsPostMoreRow.icon(): ImageVector = when (this) {
     UsPostMoreRow.FOLLOW -> UsIcons.UserPlus
     UsPostMoreRow.BLOCK -> UsIcons.Ban
     UsPostMoreRow.REPORT -> UsIcons.Flag
+    UsPostMoreRow.DELETE -> UsIcons.Trash
 }
 
 /** The chevron turns over when the reason is open. */
@@ -342,9 +415,9 @@ private fun ExpandChevron(open: Boolean) {
     )
 }
 
-/** "✓ Link copied", a raised pill that shows for two seconds. */
+/** "✓ Link copied" / "✓ Post deleted": a raised pill that shows for a beat. */
 @Composable
-private fun LinkCopiedPill(visible: Boolean, modifier: Modifier = Modifier) {
+private fun StatusPill(visible: Boolean, text: String, testTag: String, modifier: Modifier = Modifier) {
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn() + expandVertically(),
@@ -356,7 +429,7 @@ private fun LinkCopiedPill(visible: Boolean, modifier: Modifier = Modifier) {
                 .clip(RoundedCornerShape(UsTheme.radii.full))
                 .background(UsTheme.extended.bgRaised)
                 .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.m)
-                .testTag("post_more_link_copied"),
+                .testTag(testTag),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
         ) {
@@ -367,7 +440,7 @@ private fun LinkCopiedPill(visible: Boolean, modifier: Modifier = Modifier) {
                 modifier = Modifier.size(PILL_GLYPH),
             )
             Text(
-                text = "Link copied",
+                text = text,
                 style = MaterialTheme.typography.labelLarge,
                 color = UsTheme.extended.textPrimary,
             )
@@ -375,15 +448,25 @@ private fun LinkCopiedPill(visible: Boolean, modifier: Modifier = Modifier) {
     }
 }
 
-// ── Block ───────────────────────────────────────────────────────────────
+// ── Confirmations ───────────────────────────────────────────────────────
 
 /**
- * "Block @user?" — the one action here that cannot be undone from the sheet,
- * so it asks once. A navy card in the sheet's idiom, not Material's dialog:
- * the same surface, corners and type as everything around it.
+ * "Block @user?" / "Delete post?" — the two actions here that cannot be
+ * undone from the sheet, so each asks once. A navy card in the sheet's
+ * idiom, not Material's dialog: the same surface, corners and type as
+ * everything around it. The confirming action is always red.
  */
+@Suppress("LongParameterList")
 @Composable
-private fun BlockDialog(username: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+private fun ConfirmDialog(
+    title: String,
+    body: String,
+    confirmLabel: String,
+    testTag: String,
+    confirmTestTag: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -391,16 +474,16 @@ private fun BlockDialog(username: String, onConfirm: () -> Unit, onDismiss: () -
                 .clip(RoundedCornerShape(DIALOG_RADIUS))
                 .background(UsTheme.extended.bgCardSolid)
                 .padding(DIALOG_PADDING)
-                .testTag("post_more_block_dialog"),
+                .testTag(testTag),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
             Text(
-                text = "Block @$username?",
+                text = title,
                 style = MaterialTheme.typography.titleLarge.copy(fontSize = DIALOG_TITLE_SIZE),
                 color = UsTheme.extended.textPrimary,
             )
             Text(
-                text = "They won't be able to see your posts or message you.",
+                text = body,
                 style = MaterialTheme.typography.bodyMedium,
                 color = UsTheme.extended.textSecondary,
             )
@@ -413,10 +496,10 @@ private fun BlockDialog(username: String, onConfirm: () -> Unit, onDismiss: () -
                 DialogAction(label = "Cancel", tint = UsTheme.extended.textSecondary, onClick = onDismiss)
                 Spacer(Modifier.width(UsTheme.spacing.xxl))
                 DialogAction(
-                    label = "Block",
+                    label = confirmLabel,
                     tint = UsTheme.extended.liveRed,
                     onClick = onConfirm,
-                    modifier = Modifier.testTag("post_more_block_confirm"),
+                    modifier = Modifier.testTag(confirmTestTag),
                 )
             }
         }

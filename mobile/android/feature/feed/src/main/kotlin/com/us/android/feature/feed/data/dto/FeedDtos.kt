@@ -63,6 +63,13 @@ data class FeedItemDto(
      */
     val reason: String = "",
     @SerialName("reason_text") val reasonText: String = "",
+    /**
+     * Soft delete (founder, 2026-09-04): set once the author deleted the
+     * post, blank otherwise (`omitempty`). A row that arrives with it set is
+     * dropped before it is mapped — see `toFeedPage` in FeedPagingSource —
+     * — so a feed that still carries a deleted post never renders it.
+     */
+    @SerialName("deleted_at") val deletedAt: String = "",
 )
 
 /**

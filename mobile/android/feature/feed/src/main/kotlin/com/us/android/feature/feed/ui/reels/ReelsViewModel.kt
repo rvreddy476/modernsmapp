@@ -9,6 +9,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.publish.ReelPublishActions
@@ -20,7 +21,7 @@ import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.FollowGraph
-import com.us.android.feature.feed.data.HiddenPosts
+import com.us.android.feature.feed.data.hides
 import com.us.android.feature.feed.data.playbackFor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay

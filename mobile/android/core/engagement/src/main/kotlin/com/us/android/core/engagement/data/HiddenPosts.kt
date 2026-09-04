@@ -1,6 +1,5 @@
-package com.us.android.feature.feed.data
+package com.us.android.core.engagement.data
 
-import com.us.android.core.model.FeedItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -10,7 +9,8 @@ import javax.inject.Singleton
 
 /**
  * What the viewer asked not to see THIS session: posts they marked "Not
- * interested" and authors they blocked from the post "more" sheet.
+ * interested", posts they deleted, and authors they blocked from the post
+ * "more" sheet.
  *
  * ## WHY A LOCAL SET AND NOT A REFRESH
  *
@@ -21,8 +21,16 @@ import javax.inject.Singleton
  * the post at the hydration tail and the author's posts at the block check —
  * carries it for real.
  *
- * Process-wide, like [FollowGraph], so a block made on a reel is already
+ * Process-wide, like the follow graph, so a block made on a reel is already
  * applied when the same author's post scrolls past on Home.
+ *
+ * ## WHY IT LIVES HERE AND NOT IN THE FEED
+ *
+ * A deleted post is hidden through this set and comes BACK through it when
+ * the viewer restores it from Settings › Recently deleted. Settings must not
+ * depend on the feed, and the feed must not depend on settings, so the set
+ * sits in the neutral engagement seam both can see. The feed adds its own
+ * `FeedItem` overload of [HiddenSet.hides]; this module knows only ids.
  */
 @Singleton
 class HiddenPosts @Inject constructor() {
@@ -31,7 +39,7 @@ class HiddenPosts @Inject constructor() {
 
     fun hidePost(postId: String) = _state.update { it.copy(postIds = it.postIds + postId) }
 
-    /** "Interested" after a "Not interested": the row comes back. */
+    /** "Interested" after a "Not interested", or a restore after a delete: the row comes back. */
     fun unhidePost(postId: String) = _state.update { it.copy(postIds = it.postIds - postId) }
 
     fun hideAuthor(authorId: String) = _state.update { it.copy(authorIds = it.authorIds + authorId) }
@@ -47,5 +55,5 @@ data class HiddenSet(
 ) {
     val isEmpty: Boolean get() = postIds.isEmpty() && authorIds.isEmpty()
 
-    fun hides(item: FeedItem): Boolean = item.id in postIds || item.author.id in authorIds
+    fun hides(postId: String, authorId: String): Boolean = postId in postIds || authorId in authorIds
 }
