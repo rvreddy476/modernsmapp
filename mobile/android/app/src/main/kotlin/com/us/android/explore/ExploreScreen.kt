@@ -57,13 +57,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.us.android.core.designsystem.component.UsIconSquare
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
-import com.us.android.core.designsystem.theme.UsCreateSwatch
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 
@@ -71,8 +69,9 @@ import com.us.android.core.notifications.ui.UnreadBadgeViewModel
  * The Explore tab — Momentum's mini-app launcher (founder, 2026-09-05).
  *
  * A search field on top, then "Your apps": a 3-column grid of the launcher
- * tiles [launcherTiles] resolved from the user's module choices. Each tile
- * is the Create sheet's icon square at 56dp with its label under it; a
+ * tiles [launcherTiles]. Each tile is a flat navy square with a white glyph
+ * (founder, 2026-09-05: "all the app colours in white only, on navy") at
+ * 48dp with its label under it; a
  * module this build cannot open yet is dimmed with a "Soon" pill and says so
  * when tapped, rather than looking inert or opening nothing.
  *
@@ -271,7 +270,7 @@ private fun LauncherTileView(
             modifier = Modifier.alpha(if (tile.soon) SOON_ALPHA else 1f),
         ) {
             Box {
-                UsIconSquare(swatch = app.swatch(), icon = app.icon, size = TILE_ICON, glyph = TILE_GLYPH)
+                FlatTile(icon = app.icon)
                 if (badge > 0) {
                     CountBadge(count = badge, modifier = Modifier.align(Alignment.TopEnd))
                 }
@@ -290,6 +289,29 @@ private fun LauncherTileView(
             Spacer(Modifier.height(PILL_GAP))
             SoonPill()
         }
+    }
+}
+
+/**
+ * The launcher mark: a flat brand-navy square, corners at a third of the
+ * side like every Momentum icon square, with the app's glyph in white. No
+ * gradient, gloss or glow — the founder asked for one colour across the
+ * grid, so the label and the glyph carry the identity, not a swatch.
+ */
+@Composable
+private fun FlatTile(icon: ImageVector) {
+    Box(
+        modifier = Modifier
+            .size(TILE_ICON)
+            .background(UsTheme.extended.brandNavy, RoundedCornerShape(TILE_ICON / TILE_CORNER_DIVISOR)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(TILE_GLYPH),
+        )
     }
 }
 
@@ -336,23 +358,6 @@ private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
 
 // ── Per-app presentation ────────────────────────────────────────────────
 
-/** The design's swatch for each app — tokens, never hex, in `:app`. */
-@Composable
-private fun LauncherApp.swatch(): UsCreateSwatch {
-    val launcher = UsTheme.extended.launcher
-    return when (this) {
-        LauncherApp.CHAT -> launcher.chat
-        LauncherApp.FRIENDS -> launcher.friends
-        LauncherApp.ALERTS -> launcher.alerts
-        LauncherApp.LIVE -> launcher.live
-        LauncherApp.SHOP -> launcher.shop
-        LauncherApp.MATCH -> launcher.match
-        LauncherApp.ASK -> launcher.ask
-        LauncherApp.FEAST -> launcher.feast
-        LauncherApp.TUBE -> launcher.tube
-    }
-}
-
 /** Lucide: message-circle, users, bell, radio, shopping-bag, heart-handshake, circle-help, utensils, tv. */
 private val LauncherApp.icon: ImageVector
     get() = when (this) {
@@ -374,6 +379,7 @@ private const val SOON_ALPHA = 0.6f
 private const val PRESS_SCALE = 0.95f
 private const val PRESS_STIFFNESS = 900f
 private const val BADGE_MAX = 99
+private const val TILE_CORNER_DIVISOR = 3
 
 private val PAGE_TOP = 12.dp
 private val PAGE_BOTTOM = 24.dp
@@ -388,8 +394,8 @@ private val ROW_GAP = 8.dp
 private val TILE_GAP = 8.dp
 private val TILE_RADIUS = 18.dp
 private val TILE_PADDING_V = 12.dp
-private val TILE_ICON = 56.dp
-private val TILE_GLYPH = 26.dp
+private val TILE_ICON = 48.dp
+private val TILE_GLYPH = 22.dp
 private val LABEL_GAP = 8.dp
 private val LABEL_SIZE = 13.sp
 private val PILL_GAP = 4.dp
