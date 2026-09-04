@@ -34,6 +34,24 @@ func AuthorPenalty(netFeedback float64) float64 {
 	return math.Min(0.5, 0.25*-netFeedback)
 }
 
+// MutedAuthorNet is the net feedback an author-level "Don't recommend this
+// account" contributes: enough on its own to reach AuthorPenalty's cap.
+const MutedAuthorNet = -2
+
+// NetWithMute combines the viewer's post-level net feedback about an author
+// with their author-level answer into the single value mirrored to
+// feed:author_feedback:{viewer}. An active mute is a strong negative: it
+// floors the post-level history at zero (a few earlier "Interested" taps
+// must not soften "never recommend this account") and then adds
+// MutedAuthorNet, so the author always lands at the maximum penalty.
+// Without a mute the post-level net passes through unchanged.
+func NetWithMute(postNet float64, muted bool) float64 {
+	if !muted {
+		return postNet
+	}
+	return math.Min(postNet, 0) + MutedAuthorNet
+}
+
 // ScoreCandidates computes a ranking score for each candidate using the
 // v2.0 spec Appendix A formula:
 //

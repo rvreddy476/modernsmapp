@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/atpost/feed-service/internal/ranking"
 	"github.com/atpost/feed-service/internal/store/postgres"
 	"github.com/atpost/shared/httpclient"
 	"github.com/google/uuid"
@@ -24,12 +25,57 @@ import (
 type fakeFeedbackStore struct {
 	rows   map[[2]uuid.UUID]postgres.PostFeedback
 	hidden map[uuid.UUID]struct{}
-	err    error
-	calls  int
+	// authors is feed_author_feedback, keyed (viewer, author).
+	authors map[[2]uuid.UUID]postgres.AuthorFeedback
+	err     error
+	calls   int
 }
 
 func newFakeFeedbackStore() *fakeFeedbackStore {
-	return &fakeFeedbackStore{rows: map[[2]uuid.UUID]postgres.PostFeedback{}, hidden: map[uuid.UUID]struct{}{}}
+	return &fakeFeedbackStore{
+		rows:    map[[2]uuid.UUID]postgres.PostFeedback{},
+		hidden:  map[uuid.UUID]struct{}{},
+		authors: map[[2]uuid.UUID]postgres.AuthorFeedback{},
+	}
+}
+
+func (f *fakeFeedbackStore) UpsertAuthorFeedback(_ context.Context, r *postgres.AuthorFeedback) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.authors[[2]uuid.UUID{r.UserID, r.AuthorID}] = *r
+	return nil
+}
+
+func (f *fakeFeedbackStore) MutedAuthorIDs(_ context.Context, viewerID uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := map[uuid.UUID]struct{}{}
+	for k, r := range f.authors {
+		if k[0] == viewerID && r.Signal == FeedbackNotInterested {
+			out[k[1]] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeFeedbackStore) ListMutedAuthors(_ context.Context, viewerID uuid.UUID) ([]postgres.MutedAuthor, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	var out []postgres.MutedAuthor
+	for k, r := range f.authors {
+		if k[0] == viewerID && r.Signal == FeedbackNotInterested {
+			out = append(out, postgres.MutedAuthor{AuthorID: k[1], CreatedAt: r.CreatedAt})
+		}
+	}
+	return out, nil
+}
+
+// mute is a test helper: the viewer has "Don't recommend" on the author.
+func (f *fakeFeedbackStore) mute(viewer, author uuid.UUID) {
+	f.authors[[2]uuid.UUID{viewer, author}] = postgres.AuthorFeedback{UserID: viewer, AuthorID: author, Signal: FeedbackNotInterested}
 }
 
 func (f *fakeFeedbackStore) UpsertFeedback(_ context.Context, r *postgres.PostFeedback) error {
@@ -57,7 +103,10 @@ func (f *fakeFeedbackStore) ExcludedPostIDs(_ context.Context, viewerID uuid.UUI
 	return out, nil
 }
 
-func (f *fakeFeedbackStore) AuthorFeedbackNet(_ context.Context, viewerID, authorID uuid.UUID) (int, error) {
+func (f *fakeFeedbackStore) AuthorFeedbackNet(_ context.Context, viewerID, authorID uuid.UUID) (int, bool, error) {
+	if f.err != nil {
+		return 0, false, f.err
+	}
 	net := 0
 	for k, r := range f.rows {
 		if k[0] != viewerID || r.AuthorID != authorID {
@@ -69,7 +118,8 @@ func (f *fakeFeedbackStore) AuthorFeedbackNet(_ context.Context, viewerID, autho
 			net--
 		}
 	}
-	return net, nil
+	a, ok := f.authors[[2]uuid.UUID{viewerID, authorID}]
+	return net, ok && a.Signal == FeedbackNotInterested, nil
 }
 
 // upstreamStub stands in for every service HydratePosts talks to, keyed by
@@ -261,5 +311,192 @@ func TestApplyFeedbackFilter_NoStoreIsPassThrough(t *testing.T) {
 	out, err := s.applyFeedbackFilter(context.Background(), uuid.New(), in)
 	if err != nil || len(out) != 1 {
 		t.Fatalf("unconfigured store passes through: %v %d", err, len(out))
+	}
+}
+
+// "Don't recommend this account" — author-level feedback
+// (POST /v1/feed/feedback {author_id}):
+//
+//   - one row per (viewer, author), latest wins; interested clears;
+//   - not_interested drops EVERY post by the author at the hydration tail,
+//     on the cached and uncached paths alike, and keeps everyone else's;
+//   - the author is the maximum ranker penalty while muted;
+//   - a failed author lookup FAILS CLOSED, like the post-level one.
+
+func TestRecordAuthorFeedback_Validation(t *testing.T) {
+	viewer, author := uuid.New(), uuid.New()
+	cases := []struct {
+		name   string
+		author uuid.UUID
+		signal string
+		want   error
+	}{
+		{"own account", viewer, FeedbackNotInterested, ErrOwnAuthorFeedback},
+		{"own account, interested", viewer, FeedbackInterested, ErrOwnAuthorFeedback},
+		{"unknown signal", author, "meh", ErrInvalidFeedbackSignal},
+		{"empty signal", author, "", ErrInvalidFeedbackSignal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeFeedbackStore()
+			s := &Service{feedback: store}
+			if _, err := s.RecordAuthorFeedback(context.Background(), viewer, tc.author, tc.signal); !errors.Is(err, tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, err)
+			}
+			if len(store.authors) != 0 {
+				t.Fatal("nothing may be stored for a rejected answer")
+			}
+		})
+	}
+}
+
+func TestRecordAuthorFeedback_MuteThenInterestedClears(t *testing.T) {
+	viewer, author := uuid.New(), uuid.New()
+	store := newFakeFeedbackStore()
+	s := &Service{feedback: store}
+
+	f, err := s.RecordAuthorFeedback(context.Background(), viewer, author, FeedbackNotInterested)
+	if err != nil {
+		t.Fatalf("mute: %v", err)
+	}
+	if f.UserID != viewer || f.AuthorID != author || f.Signal != FeedbackNotInterested {
+		t.Fatalf("response echoes the stored row, got %+v", f)
+	}
+	muted, err := s.feedback.MutedAuthorIDs(context.Background(), viewer)
+	if err != nil || len(muted) != 1 {
+		t.Fatalf("author must be muted after not_interested: %v %v", muted, err)
+	}
+	listed, err := s.ListMutedAuthors(context.Background(), viewer)
+	if err != nil || len(listed) != 1 || listed[0].AuthorID != author {
+		t.Fatalf("listing shows the mute: %+v %v", listed, err)
+	}
+
+	// Ranker: an active mute is the maximum author penalty even with a
+	// positive post-level history.
+	store.rows[[2]uuid.UUID{viewer, uuid.New()}] = postgres.PostFeedback{AuthorID: author, Signal: FeedbackInterested}
+	net, isMuted, err := store.AuthorFeedbackNet(context.Background(), viewer, author)
+	if err != nil || !isMuted || net != 1 {
+		t.Fatalf("net/muted = %d/%v (%v), want 1/true", net, isMuted, err)
+	}
+	if got := ranking.AuthorPenalty(ranking.NetWithMute(float64(net), isMuted)); got != 0.5 {
+		t.Fatalf("a muted author must carry the maximum penalty, got %v", got)
+	}
+
+	// Same answer twice is still one row.
+	if _, err := s.RecordAuthorFeedback(context.Background(), viewer, author, FeedbackNotInterested); err != nil {
+		t.Fatalf("re-mute: %v", err)
+	}
+	if len(store.authors) != 1 {
+		t.Fatalf("two answers on one author must be ONE row, got %d", len(store.authors))
+	}
+
+	// Interested clears the mute.
+	if _, err := s.RecordAuthorFeedback(context.Background(), viewer, author, FeedbackInterested); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if muted, _ := s.feedback.MutedAuthorIDs(context.Background(), viewer); len(muted) != 0 {
+		t.Fatalf("interested must clear the mute, still muted: %v", muted)
+	}
+	listed, err = s.ListMutedAuthors(context.Background(), viewer)
+	if err != nil || listed == nil || len(listed) != 0 {
+		t.Fatalf("listing after clear is an empty list, never nil: %#v %v", listed, err)
+	}
+	if got := ranking.AuthorPenalty(ranking.NetWithMute(1, false)); got != 0 {
+		t.Fatalf("no penalty once cleared, got %v", got)
+	}
+}
+
+func TestApplyFeedbackFilter_DropsEveryPostByMutedAuthor(t *testing.T) {
+	viewer, muted, other := uuid.New(), uuid.New(), uuid.New()
+	m1 := HydratedPost{ID: uuid.New(), AuthorID: muted}
+	m2 := HydratedPost{ID: uuid.New(), AuthorID: muted}
+	keep1 := HydratedPost{ID: uuid.New(), AuthorID: other}
+	keep2 := HydratedPost{ID: uuid.New(), AuthorID: viewer}
+	// other's post, but it reached this surface because the muted account
+	// reposted it: the muted account must not surface through a repost.
+	reposted := HydratedPost{ID: uuid.New(), AuthorID: other, IsRepost: true, RepostedBy: &muted}
+	// The muted author's post reposted by someone the viewer is fine with is
+	// still the muted author's post.
+	mutedViaOther := HydratedPost{ID: uuid.New(), AuthorID: muted, IsRepost: true, RepostedBy: &other}
+
+	store := newFakeFeedbackStore()
+	store.mute(viewer, muted)
+	s := &Service{feedback: store}
+
+	out, err := s.applyFeedbackFilter(context.Background(), viewer, []HydratedPost{m1, keep1, m2, reposted, keep2, mutedViaOther})
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if len(out) != 2 || out[0].ID != keep1.ID || out[1].ID != keep2.ID {
+		t.Fatalf("want [keep1, keep2], got %+v", out)
+	}
+}
+
+func TestApplyFeedbackFilter_UnmutedAuthorPassesThrough(t *testing.T) {
+	viewer, author := uuid.New(), uuid.New()
+	post := HydratedPost{ID: uuid.New(), AuthorID: author}
+	store := newFakeFeedbackStore()
+	store.authors[[2]uuid.UUID{viewer, author}] = postgres.AuthorFeedback{Signal: FeedbackInterested}
+	// Another viewer's mute of the same author must not leak.
+	store.mute(uuid.New(), author)
+	s := &Service{feedback: store}
+
+	out, err := s.applyFeedbackFilter(context.Background(), viewer, []HydratedPost{post})
+	if err != nil || len(out) != 1 {
+		t.Fatalf("an interested / other-viewer row must not drop the post: %v %+v", err, out)
+	}
+}
+
+func TestHydratePosts_MutedAuthorGoneUntilInterested(t *testing.T) {
+	viewer, muted, other := uuid.New(), uuid.New(), uuid.New()
+	a := HydratedPost{ID: uuid.New(), AuthorID: muted}
+	b := HydratedPost{ID: uuid.New(), AuthorID: other}
+	c := HydratedPost{ID: uuid.New(), AuthorID: muted}
+	store := newFakeFeedbackStore()
+	s, done := feedbackService(t, store, a, b, c)
+	defer done()
+	items := []FeedItem{{PostID: a.ID, AuthorID: a.AuthorID}, {PostID: b.ID, AuthorID: b.AuthorID}, {PostID: c.ID, AuthorID: c.AuthorID}}
+
+	if _, err := s.RecordAuthorFeedback(context.Background(), viewer, muted, FeedbackNotInterested); err != nil {
+		t.Fatalf("mute: %v", err)
+	}
+	out, err := s.HydratePosts(context.Background(), items, viewer)
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	if len(out) != 1 || out[0].ID != b.ID {
+		t.Fatalf("every post by the muted author must be gone, got %+v", out)
+	}
+
+	if _, err := s.RecordAuthorFeedback(context.Background(), viewer, muted, FeedbackInterested); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	out, err = s.HydratePosts(context.Background(), items, viewer)
+	if err != nil {
+		t.Fatalf("hydrate after clear: %v", err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("posts come back once the mute is cleared, got %d", len(out))
+	}
+}
+
+// authorLookupFailingStore fails ONLY the author-level lookup, so the
+// post-level step succeeds first and the author step is what fails closed.
+type authorLookupFailingStore struct {
+	*fakeFeedbackStore
+}
+
+func (a authorLookupFailingStore) MutedAuthorIDs(context.Context, uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	return nil, errors.New("postgres down")
+}
+
+func TestApplyFeedbackFilter_AuthorLookupFailureFailsClosed(t *testing.T) {
+	s := &Service{feedback: authorLookupFailingStore{newFakeFeedbackStore()}}
+	out, err := s.applyFeedbackFilter(context.Background(), uuid.New(), []HydratedPost{{ID: uuid.New(), AuthorID: uuid.New()}})
+	if err == nil {
+		t.Fatal("a failed author-mute lookup must be an ERROR, never an unfiltered page")
+	}
+	if out != nil {
+		t.Fatalf("no rows may be returned alongside the error, got %d", len(out))
 	}
 }

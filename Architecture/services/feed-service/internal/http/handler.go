@@ -70,8 +70,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/preference", h.SetPreference)
 		v1.GET("/preference", h.GetPreference)
 		v1.POST("/signal", h.PostSignal)
-		// Post "more" sheet: Interested / Not interested.
+		// Post "more" sheet: Interested / Not interested (post_id), and
+		// "Don't recommend this account" / undo (author_id).
 		v1.POST("/feedback", h.PostFeedback)
+		v1.GET("/feedback/authors", h.GetMutedAuthors)
 		// MF9 — /internal/debug requires an admin scope at the
 		// gateway (requireAdminForInternalPaths). The legacy /debug
 		// path is kept as a 410 Gone so any deployed client surfaces
@@ -462,16 +464,66 @@ func (h *Handler) PostSignal(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "recorded"}, nil)
 }
 
+// feedbackRequest is the body of POST /v1/feed/feedback. Exactly one of
+// post_id ("Interested" / "Not interested" about a post) or author_id
+// ("Don't recommend this account" / undo) — see feedbackTarget.
 type feedbackRequest struct {
-	PostID string `json:"post_id" binding:"required"`
-	Signal string `json:"signal" binding:"required"` // interested | not_interested
+	PostID   string `json:"post_id"`
+	AuthorID string `json:"author_id"`
+	Signal   string `json:"signal" binding:"required"` // interested | not_interested
 }
 
-// PostFeedback — POST /v1/feed/feedback. "Interested" / "Not interested"
-// on the post "more" sheet. Latest answer per (viewer, post) wins;
-// not_interested removes the post from every surface on the next fetch.
-// Distinct from /signal (see_less / see_more, a ranking-only impression)
-// and from post-service's /v1/feedback (product feedback notes).
+// feedbackTarget is a validated feedbackRequest: exactly one of PostID /
+// AuthorID is non-nil.
+type feedbackTarget struct {
+	PostID   *uuid.UUID
+	AuthorID *uuid.UUID
+	Signal   string
+}
+
+// resolveFeedbackTarget validates the body against the viewer. On failure
+// the returned code/message are the 400 the handler answers with: neither
+// or both ids, an unparsable id, an unknown signal, or the viewer's own
+// account as author are all INVALID_REQUEST.
+func resolveFeedbackTarget(viewerID uuid.UUID, req feedbackRequest) (feedbackTarget, string, string) {
+	t := feedbackTarget{Signal: req.Signal}
+	if !service.ValidFeedbackSignal(req.Signal) {
+		return t, "INVALID_REQUEST", "signal must be 'interested' or 'not_interested'"
+	}
+	hasPost, hasAuthor := req.PostID != "", req.AuthorID != ""
+	switch {
+	case hasPost && hasAuthor:
+		return t, "INVALID_REQUEST", "post_id and author_id are mutually exclusive"
+	case !hasPost && !hasAuthor:
+		return t, "INVALID_REQUEST", "post_id or author_id is required"
+	case hasPost:
+		id, err := uuid.Parse(req.PostID)
+		if err != nil {
+			return t, "INVALID_REQUEST", "Invalid post ID"
+		}
+		t.PostID = &id
+	default:
+		id, err := uuid.Parse(req.AuthorID)
+		if err != nil {
+			return t, "INVALID_REQUEST", "Invalid author ID"
+		}
+		if id == viewerID {
+			return t, "INVALID_REQUEST", "author_id cannot be your own account"
+		}
+		t.AuthorID = &id
+	}
+	return t, "", ""
+}
+
+// PostFeedback — POST /v1/feed/feedback. With post_id: "Interested" /
+// "Not interested" on the post "more" sheet. Latest answer per (viewer,
+// post) wins; not_interested removes the post from every surface on the
+// next fetch. With author_id: "Don't recommend this account" —
+// not_interested removes EVERY post by that author from every surface on
+// the next fetch (and is the maximum author penalty for the ranker);
+// interested undoes it. Exactly one of the two ids; the viewer's own id is
+// rejected. Distinct from /signal (see_less / see_more, a ranking-only
+// impression) and from post-service's /v1/feedback (product feedback notes).
 func (h *Handler) PostFeedback(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
@@ -483,17 +535,28 @@ func (h *Handler) PostFeedback(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-	if !service.ValidFeedbackSignal(req.Signal) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "signal must be 'interested' or 'not_interested'", nil)
-		return
-	}
-	postID, err := uuid.Parse(req.PostID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+	target, code, msg := resolveFeedbackTarget(userID, req)
+	if code != "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, code, msg, nil)
 		return
 	}
 
-	f, err := h.svc.RecordFeedback(c.Request.Context(), userID, postID, req.Signal)
+	if target.AuthorID != nil {
+		f, err := h.svc.RecordAuthorFeedback(c.Request.Context(), userID, *target.AuthorID, target.Signal)
+		if err != nil {
+			if errors.Is(err, service.ErrOwnAuthorFeedback) || errors.Is(err, service.ErrInvalidFeedbackSignal) {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+				return
+			}
+			log.Printf("feed author feedback failed: %v", err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "FEEDBACK_FAILED", "Could not record feedback — try again", nil)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, f, nil)
+		return
+	}
+
+	f, err := h.svc.RecordFeedback(c.Request.Context(), userID, *target.PostID, target.Signal)
 	if err != nil {
 		if errors.Is(err, service.ErrFeedbackPostNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
@@ -504,6 +567,25 @@ func (h *Handler) PostFeedback(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, f, nil)
+}
+
+// GetMutedAuthors — GET /v1/feed/feedback/authors. The accounts this
+// viewer has "Don't recommend" on, newest first, so the client can show
+// and undo them (POST /v1/feed/feedback {author_id, "interested"}).
+// Always a list, never null.
+func (h *Handler) GetMutedAuthors(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	authors, err := h.svc.ListMutedAuthors(c.Request.Context(), userID)
+	if err != nil {
+		log.Printf("feed muted authors list failed: %v", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "FEEDBACK_FAILED", "Could not load muted accounts — try again", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, authors, nil)
 }
 
 // feedRateLimit enforces a per-user 120 req/min cap on the feed
