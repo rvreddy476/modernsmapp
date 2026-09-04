@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -204,10 +205,61 @@ fun UsPillButton(
     }
 }
 
+/**
+ * THE follow button — the same control wherever an account can be
+ * followed: the post header's right end, the reel's author row, a profile.
+ *
+ * Ember flame, Momentum's one action colour, so "follow" reads the same on
+ * a navy card, over a video and on a profile (founder, 2026-09-04: "pick a
+ * colour, but keep it consistent"). A capsule, 32dp tall, 13sp semibold —
+ * a real button, not an inline text link.
+ */
+@Composable
+fun UsFollowButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    text: String = "Follow",
+    busy: Boolean = false,
+) {
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(UsTheme.radii.full)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(UsTheme.extended.ctaGradient, shape)
+            .clickable(enabled = !busy, onClick = onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = text
+            }
+            .padding(horizontal = FOLLOW_HORIZONTAL, vertical = FOLLOW_VERTICAL),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (busy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(PILL_SPINNER),
+                strokeWidth = 2.dp,
+                color = Color.White,
+            )
+        } else {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                fontSize = FOLLOW_TEXT,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
 private val PILL_HORIZONTAL = 12.dp
 private val PILL_VERTICAL = 6.dp
 private val PILL_TEXT = 11.sp
 private val PILL_SPINNER = 12.dp
+private val FOLLOW_HORIZONTAL = 16.dp
+private val FOLLOW_VERTICAL = 7.dp
+private val FOLLOW_TEXT = 13.sp
 
 @Preview(name = "Pills", showBackground = true, backgroundColor = 0xFF041122)
 @Composable

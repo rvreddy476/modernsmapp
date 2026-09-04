@@ -84,6 +84,7 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
@@ -1212,26 +1213,10 @@ private fun ReelOverlay(
  */
 @Composable
 private fun FollowPill(onClick: () -> Unit) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .height(PILL_HEIGHT)
-            .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(Color.White)
-            .pressScale(onClick)
-            .padding(horizontal = UsTheme.spacing.xl)
-            .semantics { role = Role.Button }
-            .testTag("reel_follow"),
-    ) {
-        Text(
-            text = "Follow",
-            style = MaterialTheme.typography.labelMedium,
-            fontSize = PILL_TEXT,
-            fontWeight = FontWeight.SemiBold,
-            color = UsTheme.extended.bgCanvas,
-            maxLines = 1,
-        )
-    }
+    // The design system's one follow button — ember here as on the post
+    // header, so the same action never wears two colours (founder,
+    // 2026-09-04). Solid, so it never sinks into a bright frame.
+    UsFollowButton(onClick = onClick, modifier = Modifier.testTag("reel_follow"))
 }
 
 /**
@@ -1287,8 +1272,6 @@ private val OVERLAY_BOTTOM = 56.dp
 private val OVERLAY_RAIL_CLEARANCE = 72.dp
 private val NAME_SIZE = 15.sp
 private val CAPTION_SIZE = 14.sp
-private val PILL_TEXT = 14.sp
-private val PILL_HEIGHT = 32.dp
 
 /** The playhead line: 2dp, the track at 25% white, read four times a second. */
 private val PROGRESS_HEIGHT = 2.dp

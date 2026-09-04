@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -419,7 +420,7 @@ private fun PostCardHeader(
                 .weight(1f)
                 .padding(start = UsTheme.spacing.l),
         ) {
-            PostCardNameRow(state, onAuthorClick, onFollow)
+            PostCardNameRow(state, onAuthorClick)
             Text(
                 text = state.timestamp,
                 style = MaterialTheme.typography.bodySmall,
@@ -427,6 +428,17 @@ private fun PostCardHeader(
                 color = UsTheme.extended.textMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (onFollow != null) {
+            // A real button at the row's right end, in the one follow colour
+            // the whole app uses (founder, 2026-09-04) — the inline "· Follow"
+            // text beside the name read as a typo.
+            UsFollowButton(
+                onClick = onFollow,
+                modifier = Modifier
+                    .padding(start = UsTheme.spacing.m)
+                    .testTag("post_follow"),
             )
         }
         if (onMore != null) {
@@ -441,9 +453,9 @@ private fun PostCardHeader(
     }
 }
 
-/** The username, then "· Follow" in the accent when offered, then "· Pinned". */
+/** The username, then "· Pinned" when the author pinned it. */
 @Composable
-private fun PostCardNameRow(state: PostCardState, onAuthorClick: () -> Unit, onFollow: (() -> Unit)?) {
+private fun PostCardNameRow(state: PostCardState, onAuthorClick: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = state.username,
@@ -461,31 +473,6 @@ private fun PostCardNameRow(state: PostCardState, onAuthorClick: () -> Unit, onF
                     onClick = onAuthorClick,
                 ),
         )
-        if (onFollow != null) {
-            // "· Follow" as a text button in the accent — Instagram's inline
-            // follow, not a pill. The dot is part of the label so the two
-            // never wrap apart.
-            Text(
-                text = "· Follow",
-                style = MaterialTheme.typography.bodyMedium,
-                fontSize = NAME_SIZE,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.accentSolid,
-                maxLines = 1,
-                modifier = Modifier
-                    .padding(start = UsTheme.spacing.xs)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onFollow,
-                    )
-                    .semantics {
-                        role = Role.Button
-                        contentDescription = "Follow"
-                    }
-                    .testTag("post_follow"),
-            )
-        }
         if (state.isPinned) {
             Text(
                 text = "· Pinned",
