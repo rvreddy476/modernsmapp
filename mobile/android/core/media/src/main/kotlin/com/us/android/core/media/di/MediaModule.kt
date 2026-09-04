@@ -111,9 +111,11 @@ object MediaModule {
             .build()
             .apply {
                 repeatMode = ExoPlayer.REPEAT_MODE_ONE
-                // Reels start muted. Autoplaying sound in a scrolling feed is
-                // hostile in public, and every platform that ships it also
-                // ships an unmute affordance.
+                // Silent until a surface says otherwise. The feed's autoplay
+                // keeps it there — the feed is always muted — and Reels sets
+                // the volume from its own mute switch on every page (sound on
+                // by default since 2026-09-05). A player that arrived loud
+                // would play a beat of audio before the surface's rule landed.
                 volume = 0f
             }
     }

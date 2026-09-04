@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
@@ -40,6 +41,7 @@ import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.engagement.data.repostCountOr
 import com.us.android.core.engagement.data.repostedOr
+import com.us.android.core.media.Playback
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FollowStatus
@@ -78,6 +80,8 @@ fun FeedScreen(
     onOpenSearch: () -> Unit,
     /** A trending tag was tapped; :app pushes that tag's posts. */
     onOpenHashtag: (tag: String) -> Unit,
+    /** A video was tapped; :app switches to the Reels tab, which opens on it. */
+    onOpenReels: () -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Home) },
     ),
@@ -114,6 +118,7 @@ fun FeedScreen(
                 FeedTab.FOR_YOU, FeedTab.FOLLOWING -> FeedContent(
                     viewModel = viewModel,
                     onOpenAuthor = onOpenAuthor,
+                    onOpenReels = onOpenReels,
                     empty = if (tab == FeedTab.FOLLOWING) FOLLOWING_EMPTY else FOR_YOU_EMPTY,
                     listState = listStates.getValue(tab),
                 )
@@ -141,23 +146,33 @@ private val FOLLOWING_EMPTY = FeedEmptyCopy(
  * that every feed surface shares. The ViewModel decides WHICH timeline; this
  * only renders it.
  *
- * Nothing here navigates. A post's media opens [FeedPostViewer] in place —
- * a pager over these SAME rows, starting at the tapped one — comments open
- * a sheet, and only the author's name leaves the screen.
+ * Video rows play by themselves, muted, one at a time — the most visible
+ * one ([rememberAutoplayTarget]) — through the one feed player made here
+ * and handed to the list. It pauses while the comments sheet or the viewer
+ * is up and whenever the screen is not resumed.
+ *
+ * Two things leave the screen: the author's name, and a tap on a VIDEO,
+ * which goes to the Reels tab at that reel, with sound ([onOpenReels],
+ * after [FeedPlaybackViewModel.openInReels] has left the id for Reels to
+ * find). A photo's media opens [FeedPostViewer] in place — a pager over
+ * these SAME rows, starting at the tapped one — and comments open a sheet.
  *
  * The ⋮ on every post opens the "more" sheet ([PostMoreSheetHost]) over
  * the list, driven by [more]; the confirmation it leaves behind ("We'll
  * show you fewer posts like this") is shown here, under the list, once the
  * sheet has gone.
  */
+@Suppress("LongMethod") // One body per timeline: the state, the list, and the three surfaces over it.
 @Composable
 internal fun FeedContent(
     viewModel: FeedViewModel,
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenReels: () -> Unit,
     empty: FeedEmptyCopy,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     more: PostMoreViewModel = hiltViewModel(),
+    playback: FeedPlaybackViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
@@ -175,6 +190,22 @@ internal fun FeedContent(
     // may no longer be looking at.
     var viewing by remember { mutableStateOf<ViewerTarget?>(null) }
     val share = rememberPostSharer()
+    val feedPlayer = rememberFeedPlayer(playback)
+    // The feed plays only while it is what the reader is looking at: the
+    // screen resumed, and neither the comments sheet nor the viewer over it.
+    val autoplayAllowed = rememberIsResumed() && commentsFor == null && viewing == null
+    val openReel: (FeedItem) -> Unit = { item ->
+        playback.openInReels(item)
+        onOpenReels()
+    }
+    val autoplay = remember(feedPlayer, autoplayAllowed, playback) {
+        FeedAutoplay(
+            player = feedPlayer,
+            allowed = autoplayAllowed,
+            playbackFor = playback::playback,
+            load = playback::load,
+        )
+    }
 
     ReconcileHydration(items = items, viewModel = viewModel)
 
@@ -208,12 +239,16 @@ internal fun FeedContent(
                 pollVotes = pollVotes,
                 followEdges = followEdges,
                 ownUserId = viewModel.ownUserId,
-                onOpenMedia = { index, item -> viewing = ViewerTarget(item.id, index) },
+                // A video goes to Reels; a photo opens the viewer in place.
+                onOpenMedia = { index, item ->
+                    if (playback.isVideo(item)) openReel(item) else viewing = ViewerTarget(item.id, index)
+                },
                 callbacks = callbacks,
                 posterUrl = viewModel::posterUrl,
                 mediaPages = viewModel::mediaPages,
                 listState = listState,
                 empty = empty,
+                autoplay = autoplay,
             )
         }
         MoreSheetMessage(more)
@@ -240,7 +275,8 @@ internal fun FeedContent(
 
     // Likewise the viewer: full window over the feed, back to the same row.
     // It pages over the SAME items, so a like made inside it is the same
-    // like the row shows when it closes.
+    // like the row shows when it closes. A video page swiped to inside it
+    // plays muted like the feed, and a tap on it goes to Reels the same way.
     viewing?.let { target ->
         FeedPostViewer(
             items = items,
@@ -252,10 +288,28 @@ internal fun FeedContent(
             callbacks = callbacks,
             posterUrl = viewModel::posterUrl,
             mediaPages = viewModel::mediaPages,
+            onOpenReel = { item ->
+                viewing = null
+                openReel(item)
+            },
             onClose = { viewing = null },
+            viewModel = playback,
         )
     }
 }
+
+/**
+ * What the list needs to play its most visible video: the feed's one
+ * player, whether it may play right now, and how to find and load a row's
+ * video. One remembered-by-value bundle through the list rather than four
+ * parameters — the list already carries as many as it can read.
+ */
+internal data class FeedAutoplay(
+    val player: ExoPlayer,
+    val allowed: Boolean,
+    val playbackFor: (FeedItem) -> Playback?,
+    val load: (ExoPlayer, Playback) -> Unit,
+)
 
 /**
  * What the more sheet left behind, once it has gone: "We'll show you fewer
@@ -374,9 +428,11 @@ private fun FeedList(
     mediaPages: (FeedItem) -> List<PostCardMediaPage>,
     listState: LazyListState,
     empty: FeedEmptyCopy,
+    autoplay: FeedAutoplay,
     modifier: Modifier = Modifier,
 ) {
     val refresh = items.loadState.refresh
+    val playingId = feedAutoplay(listState, items, autoplay)
 
     when {
         refresh is LoadState.Loading && items.itemCount == 0 ->
@@ -418,16 +474,26 @@ private fun FeedList(
             ) { index ->
                 val item = items[index] ?: return@items
                 val overlay = overlays[item.id] ?: EngagementOverlay()
+                val poster = posterUrl(item)
+                val video = autoplaySlot(
+                    item = item,
+                    playing = item.id == playingId,
+                    player = autoplay.player,
+                    posterUrl = poster,
+                    onClick = { onOpenMedia(index, item) },
+                )
                 PostCard(
                     state = item.toCardState(
                         overlay,
-                        posterUrl(item),
+                        poster,
                         mediaPages(item),
                         pollVotes[item.id].orEmpty(),
                     ),
-                    // A tap on the media opens the viewer in place at this
-                    // row; a text-only post has no media and never fires it.
+                    // A tap on the media: a video goes to Reels, a photo opens
+                    // the viewer in place at this row; a text-only post has no
+                    // media and never fires it.
                     onClick = { onOpenMedia(index, item) },
+                    mediaOverride = video,
                     onAuthorClick = { callbacks.onOpenAuthor(item.author.id) },
                     onReact = { callbacks.onReact(item.id, item.viewer.hasReacted) },
                     onComment = { callbacks.onOpenComments(item.id) },
@@ -452,6 +518,51 @@ private fun FeedList(
                 AppendState(state = items.loadState.append, onRetry = items::retry)
             }
         }
+    }
+}
+
+/**
+ * Which video card plays, and the player kept on it: the most visible one,
+ * by the list's own layout info ([rememberAutoplayTarget]). Null — nothing
+ * on screen clears the bar, or the list is not showing — parks the player.
+ */
+@Composable
+private fun feedAutoplay(
+    listState: LazyListState,
+    items: LazyPagingItems<FeedItem>,
+    autoplay: FeedAutoplay,
+): String? {
+    val playingId by rememberAutoplayTarget(listState, items, autoplay.playbackFor)
+    val playingItem = playingId?.let { id -> items.itemSnapshotList.items.firstOrNull { it.id == id } }
+    DriveFeedPlayer(
+        player = autoplay.player,
+        playback = playingItem?.let(autoplay.playbackFor),
+        allowed = autoplay.allowed,
+        load = autoplay.load,
+    )
+    return playingId
+}
+
+/**
+ * What a row draws in its 4:5 frame: the feed player, when this is the
+ * playing card; nothing — the poster, as usual — otherwise. The override
+ * carries the same tap the poster would: to Reels.
+ */
+private fun autoplaySlot(
+    item: FeedItem,
+    playing: Boolean,
+    player: ExoPlayer,
+    posterUrl: String?,
+    onClick: () -> Unit,
+): (@Composable () -> Unit)? {
+    if (!playing) return null
+    return {
+        FeedVideo(
+            player = player,
+            posterUrl = posterUrl,
+            contentDescription = item.media.firstOrNull()?.contentDescription,
+            onClick = onClick,
+        )
     }
 }
 

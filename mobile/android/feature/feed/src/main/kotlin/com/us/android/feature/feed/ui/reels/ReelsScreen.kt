@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -153,7 +154,13 @@ import java.io.File
  *
  * A reel the viewer just posted sits ABOVE page 0 as the [ReelsHead]: its
  * cover under a round loader while it posts, the real reel the moment it
- * exists. No banner anywhere — the item IS the progress.
+ * exists. No banner anywhere — the item IS the progress. The same slot
+ * holds a reel a feed tap asked for that the ranked pages did not have
+ * ([OpenOnEntry]).
+ *
+ * Sound is ON when Reels opens (founder, 2026-09-05) — the feed's autoplay
+ * is the silent preview, this is where the sound is — and the rail's
+ * speaker mutes it for the session.
  *
  * From YouTube Shorts (founder, 2026-09-04, "combine both"): every rail
  * control carries a label — the count where there is one ([railControls]);
@@ -190,6 +197,7 @@ fun ReelsScreen(
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
     val items = viewModel.items.collectAsLazyPagingItems()
+    val pagerState = rememberReelsPager(viewModel, items, head)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
     // The player of the page the pager has settled on — what the more
@@ -229,6 +237,7 @@ fun ReelsScreen(
         ReelsBody(
             items = items,
             head = head,
+            pagerState = pagerState,
             pool = pool,
             view = ReelsViewState(muted = muted, paused = paused, chrome = chrome, quality = quality),
             overlays = overlays,
@@ -278,6 +287,58 @@ fun ReelsScreen(
             onClearScreen = viewModel::toggleMode,
             onSelectQuality = viewModel::selectQuality,
         )
+    }
+}
+
+/**
+ * The pager's state — the SCREEN's, not the pager's, because a feed tap
+ * asks for a scroll to a reel and the request is answered here, where the
+ * ViewModel's entry meets the pages ([OpenOnEntry]). One page per ranked
+ * reel, plus one for the head when there is one.
+ */
+@Composable
+private fun rememberReelsPager(
+    viewModel: ReelsViewModel,
+    items: LazyPagingItems<FeedItem>,
+    head: ReelsHead?,
+): PagerState {
+    val pageCount = items.itemCount + if (head != null) 1 else 0
+    val pagerState = rememberPagerState(pageCount = { pageCount })
+    OpenOnEntry(viewModel = viewModel, items = items, head = head, pagerState = pagerState)
+    return pagerState
+}
+
+/**
+ * Answers a feed tap (founder, 2026-09-05): Reels opens AT the tapped reel.
+ *
+ * Two steps, each its own effect. Once the pages have settled — the first
+ * load finished, well or badly — the ViewModel is handed what they hold
+ * and takes the entry: the reel is either among them or fetched and
+ * pinned as the head ([ReelsViewModel.resolveEntry]). Then, as soon as the
+ * target is on a page ([entryPage]), the pager jumps there — no animation,
+ * because the viewer tapped THAT reel and should see it, not a flick past
+ * the ones before it — and the target is let go.
+ */
+@Composable
+private fun OpenOnEntry(
+    viewModel: ReelsViewModel,
+    items: LazyPagingItems<FeedItem>,
+    head: ReelsHead?,
+    pagerState: PagerState,
+) {
+    val entry by viewModel.entry.collectAsStateWithLifecycle()
+    val target by viewModel.entryTarget.collectAsStateWithLifecycle()
+    val refresh = items.loadState.refresh
+    val headId = (head as? ReelsHead.Live)?.item?.id
+    LaunchedEffect(entry, refresh, items.itemCount, headId) {
+        if (entry == null || refresh is LoadState.Loading) return@LaunchedEffect
+        viewModel.resolveEntry(items.itemSnapshotList.items.map { it.id } + listOfNotNull(headId))
+    }
+    LaunchedEffect(target, headId, items.itemCount) {
+        val postId = target ?: return@LaunchedEffect
+        val page = entryPage(postId, headId, items.itemSnapshotList.items.map { it.id }) ?: return@LaunchedEffect
+        pagerState.scrollToPage(page)
+        viewModel.onEntryShown()
     }
 }
 
@@ -492,6 +553,7 @@ private fun reelActions(
 private fun ReelsBody(
     items: LazyPagingItems<FeedItem>,
     head: ReelsHead?,
+    pagerState: PagerState,
     pool: PlayerPool,
     view: ReelsViewState,
     overlays: Map<String, EngagementOverlay>,
@@ -518,6 +580,7 @@ private fun ReelsBody(
         else -> ReelsPager(
             items = items,
             head = head,
+            pagerState = pagerState,
             pool = pool,
             view = view,
             overlays = overlays,
@@ -534,6 +597,7 @@ private fun ReelsBody(
 private fun ReelsPager(
     items: LazyPagingItems<FeedItem>,
     head: ReelsHead?,
+    pagerState: PagerState,
     pool: PlayerPool,
     view: ReelsViewState,
     overlays: Map<String, EngagementOverlay>,
@@ -542,8 +606,7 @@ private fun ReelsPager(
     playbackFor: (FeedItem) -> Playback?,
     actions: ReelActions,
 ) {
-    val pageCount = items.itemCount + if (head != null) 1 else 0
-    val pagerState = rememberPagerState(pageCount = { pageCount })
+    val pageCount = pagerState.pageCount
     val paused = view.paused
 
     // peek, not get: a neighbour lookup must not trigger a page load.

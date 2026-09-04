@@ -472,10 +472,16 @@ private fun NavGraphBuilder.tabDestinations(
     navController: NavHostController,
     pool: PlayerPool,
 ) {
+    // A tapped feed video opens the Reels TAB (founder, 2026-09-05), which
+    // reads the post id the feed left in ReelsEntry and opens on that reel.
+    // The same tab switch the bar makes, so Reels keeps its own back stack
+    // and the bar lights its item.
+    val onOpenReels = { navController.navigateToTopLevel(TopLevelDestination.REELS) }
+
     // The real home feed. It replaced the design-system gallery once the
     // 2026-08-17 capture returned a non-empty page and proved the item shape —
     // before that the feed could only have been built on an invented DTO.
-    // A card's media opens IN PLACE — a viewer over the feed, not a pushed
+    // A photo's media opens IN PLACE — a viewer over the feed, not a pushed
     // post — so there is no post callback here; deep links reach post
     // detail through navigateToPost from the notification target.
     feedScreen(
@@ -487,6 +493,7 @@ private fun NavGraphBuilder.tabDestinations(
         // for the bar's centre button.
         onOpenSearch = { navController.navigateToExplore(ExploreMode.POSTS) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
+        onOpenReels = onOpenReels,
     )
 
     // The Friends tab: the same feed narrowed to mutual follows. A tab root,
@@ -497,12 +504,14 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenNotifications = { navController.navigateToNotifications() },
         // Friends is a page about people, so its search looks for people.
         onOpenSearch = { navController.navigateToExplore(ExploreMode.PEOPLE) },
+        onOpenReels = onOpenReels,
     )
 
     // A trending tag's posts, pushed over Home from the HashTag tab.
     hashtagPostsScreen(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenReels = onOpenReels,
     )
 
     // The Create hub — one composer, opened on the surface the Create sheet

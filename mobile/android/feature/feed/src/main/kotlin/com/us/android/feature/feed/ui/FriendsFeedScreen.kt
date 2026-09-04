@@ -22,6 +22,8 @@ fun FriendsFeedScreen(
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenSearch: () -> Unit,
+    /** A video was tapped; :app switches to the Reels tab, which opens on it. */
+    onOpenReels: () -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Friends) },
     ),
@@ -39,6 +41,7 @@ fun FriendsFeedScreen(
         FeedContent(
             viewModel = viewModel,
             onOpenAuthor = onOpenAuthor,
+            onOpenReels = onOpenReels,
             empty = FRIENDS_EMPTY,
             modifier = Modifier.padding(padding),
         )

@@ -39,6 +39,12 @@ data class HashtagPostsRoute(val tag: String)
  * [onOpenMessages] is REQUIRED rather than defaulted. The Messages icon was
  * once rendered here with an empty handler and shipped inert; a required
  * parameter is what makes that impossible to repeat by omission.
+ *
+ * [onOpenReels] is the tab switch a tapped video asks for. The feed has
+ * already left the post id in `ReelsEntry` (`:core:media`) by the time it
+ * calls this; `:app` only switches to the Reels root, which reads the
+ * entry when it starts. No argument travels through the route, because a
+ * tab root is restored, not pushed.
  */
 fun NavGraphBuilder.feedScreen(
     onOpenAuthor: (userId: String) -> Unit,
@@ -49,6 +55,8 @@ fun NavGraphBuilder.feedScreen(
     onOpenSearch: () -> Unit,
     /** A trending tag was tapped. `:app` pushes [HashtagPostsRoute] for it. */
     onOpenHashtag: (tag: String) -> Unit,
+    /** A video was tapped. `:app` switches to the Reels tab. */
+    onOpenReels: () -> Unit,
 ) {
     composable<FeedRoute> {
         FeedScreen(
@@ -57,6 +65,7 @@ fun NavGraphBuilder.feedScreen(
             onOpenNotifications = onOpenNotifications,
             onOpenSearch = onOpenSearch,
             onOpenHashtag = onOpenHashtag,
+            onOpenReels = onOpenReels,
         )
     }
 }
@@ -71,6 +80,7 @@ fun NavGraphBuilder.friendsFeedScreen(
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenReels: () -> Unit,
 ) {
     composable<FriendsFeedRoute> {
         FriendsFeedScreen(
@@ -78,6 +88,7 @@ fun NavGraphBuilder.friendsFeedScreen(
             onOpenMessages = onOpenMessages,
             onOpenNotifications = onOpenNotifications,
             onOpenSearch = onOpenSearch,
+            onOpenReels = onOpenReels,
         )
     }
 }
@@ -86,6 +97,7 @@ fun NavGraphBuilder.friendsFeedScreen(
 fun NavGraphBuilder.hashtagPostsScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenReels: () -> Unit,
 ) {
     composable<HashtagPostsRoute> { entry ->
         val route = entry.toRoute<HashtagPostsRoute>()
@@ -93,6 +105,7 @@ fun NavGraphBuilder.hashtagPostsScreen(
             tag = route.tag,
             onBack = onBack,
             onOpenAuthor = onOpenAuthor,
+            onOpenReels = onOpenReels,
         )
     }
 }

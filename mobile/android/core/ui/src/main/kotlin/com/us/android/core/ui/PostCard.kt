@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
@@ -307,12 +308,19 @@ fun PostCard(
     /** Casts a vote in this card's poll. Null on surfaces that cannot vote. */
     onVotePoll: ((optionId: String) -> Unit)? = null,
     /**
-     * Something to draw in the 4:5 frame INSTEAD of the poster — the in-place
-     * viewer puts a playing video there. Null renders the media as usual.
+     * Something to draw in the 4:5 frame INSTEAD of the poster — the feed
+     * puts the playing video of its most visible video card there, and the
+     * in-place viewer does the same on a video page. Null renders the media
+     * as usual. The override owns its own tap: the poster's [onClick] is not
+     * wired under it.
      */
     mediaOverride: (@Composable () -> Unit)? = null,
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("post_card"),
+    ) {
         PostCardHeader(state, onAuthorClick, onFollow, onMore)
 
         // Poll block — ballots until the viewer votes (or the poll ends),
@@ -391,6 +399,9 @@ fun PostMediaFrame(modifier: Modifier = Modifier, content: @Composable BoxScope.
  * The author row: a 32dp avatar, the username at 14sp semibold with the
  * "· Follow" text button in the accent beside it, the time under it at
  * 12sp muted, and the ⋮ at the right end. 16dp side padding.
+ *
+ * At least [POST_CARD_HEADER_HEIGHT] tall — see that constant for why the
+ * feed needs to know where the media frame under it begins.
  */
 @Composable
 private fun PostCardHeader(
@@ -402,7 +413,9 @@ private fun PostCardHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = SIDE_PADDING, end = UsTheme.spacing.xs, top = HEADER_VERTICAL, bottom = HEADER_VERTICAL),
+            .heightIn(min = POST_CARD_HEADER_HEIGHT)
+            .padding(start = SIDE_PADDING, end = UsTheme.spacing.xs)
+            .testTag("post_header"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         UsAvatar(
@@ -542,7 +555,20 @@ private fun PostCardCaption(state: PostCardState, onComment: () -> Unit, caption
 
 /** Instagram's page gutter: 16dp, not the 18dp Momentum page gutter. */
 private val SIDE_PADDING = 16.dp
-private val HEADER_VERTICAL = 10.dp
+
+/**
+ * The header row's height: the 32dp avatar with the old 10dp above and
+ * below, plus the room the two text lines take at the default font scale.
+ *
+ * A KNOWN height rather than a content-sized one, because the feed decides
+ * which video to play from the list's layout info — each row's offset and
+ * size — and needs to find the 4:5 frame inside the row without measuring
+ * it: the frame starts this far below the row's top. A larger font scale
+ * can push the row past this (it is a minimum, so nothing clips), and the
+ * frame estimate is then out by a few dp on a frame several hundred tall —
+ * well inside the 60% rule's tolerance.
+ */
+val POST_CARD_HEADER_HEIGHT = 56.dp
 private val NAME_SIZE = 14.sp
 private val META_SIZE = 12.sp
 
@@ -814,13 +840,17 @@ fun ImmersivePostPage(
 
 /**
  * The media attachment for a post card: image or video poster frame in the
- * uniform 4:5 [PostMediaFrame], cropped to fill, with the "Reel" pill for
- * video and a count pill for carousels.
+ * uniform 4:5 [PostMediaFrame], cropped to fill, with a count pill for
+ * carousels. A video's poster carries no label: the frame plays when the
+ * feed decides it should ([mediaOverride] on [PostCard]), and is a plain
+ * still otherwise.
  */
 @Composable
 fun PostMedia(
     url: String?,
-    postType: String,
+    // Kept so the card's contract does not change under three surfaces; the
+    // poster no longer draws anything from it.
+    @Suppress("UNUSED_PARAMETER") postType: String,
     count: Int,
     modifier: Modifier = Modifier,
     /**
@@ -852,40 +882,12 @@ fun PostMedia(
             )
         }
 
-        if (postType == VIDEO_POST || postType == "flick" || postType == "long_video") {
-            // Figma redesign: a bottom-start "Reel" pill on the canvas
-            // surface, replacing the old centred play circle — the label
-            // says WHAT the media is, and stops covering the frame with a
-            // scrim button.
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(UsTheme.spacing.l)
-                    .clip(RoundedCornerShape(UsTheme.radii.full))
-                    .background(UsTheme.extended.bgCanvas)
-                    .padding(
-                        start = 10.dp,
-                        end = UsTheme.spacing.l,
-                        top = UsTheme.spacing.s,
-                        bottom = UsTheme.spacing.s,
-                    ),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-            ) {
-                Icon(
-                    imageVector = UsIcons.Play,
-                    contentDescription = "Play video",
-                    tint = Color.White,
-                    modifier = Modifier.size(REEL_GLYPH),
-                )
-                Text(
-                    text = "Reel",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                )
-            }
-        }
+        // No "Reel" label and no play glyph over a video's poster (founder,
+        // 2026-09-05): the feed PLAYS the video in this frame when the card
+        // is the most visible one, so the frame itself says what it is.
+        // A label would sit on top of a moving picture, and a play button
+        // would promise a tap does something it does not — a tap opens
+        // Reels.
 
         if (count > 1) {
             MediaCountPill(
@@ -1084,7 +1086,6 @@ const val DEFAULT_MEDIA_ASPECT = 16f / 9f
 
 const val VIDEO_POST = "video"
 private val HAIRLINE = 0.5.dp
-private val REEL_GLYPH = 14.dp
 private const val COUNT_PILL_ALPHA = 0.6f
 
 // ── Previews ────────────────────────────────────────────────────────────

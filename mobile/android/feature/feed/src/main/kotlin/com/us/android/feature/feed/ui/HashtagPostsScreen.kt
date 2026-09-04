@@ -20,6 +20,8 @@ fun HashtagPostsScreen(
     tag: String,
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    /** A video was tapped; :app switches to the Reels tab, which opens on it. */
+    onOpenReels: () -> Unit,
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Hashtag(tag)) },
     ),
@@ -32,6 +34,7 @@ fun HashtagPostsScreen(
         FeedContent(
             viewModel = viewModel,
             onOpenAuthor = onOpenAuthor,
+            onOpenReels = onOpenReels,
             empty = FeedEmptyCopy(
                 title = "No posts with $label yet",
                 detail = "Be the first to post with this tag.",

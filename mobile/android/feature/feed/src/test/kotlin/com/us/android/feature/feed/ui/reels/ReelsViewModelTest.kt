@@ -10,6 +10,7 @@ import com.us.android.core.engagement.data.EngagementWrites
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.PlaybackKind
+import com.us.android.core.media.ReelsEntry
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishPreview
 import com.us.android.core.media.publish.ReelPublishState
@@ -164,6 +165,7 @@ class ReelsViewModelTest {
         val tracker: ReelPublishTracker = ReelPublishTracker(),
         val actions: RecordingActions = RecordingActions(),
         val graph: RecordingGraphApi = RecordingGraphApi(),
+        val entry: ReelsEntry = ReelsEntry(),
     )
 
     private fun viewModel(h: Harness = Harness()) = ReelsViewModel(
@@ -174,6 +176,7 @@ class ReelsViewModelTest {
         tracker = h.tracker,
         publishActions = h.actions,
         follows = followGraph(h.graph),
+        reelsEntry = h.entry,
         hidden = HiddenPosts(),
     )
 
@@ -419,20 +422,158 @@ class ReelsViewModelTest {
     }
 
     /**
-     * Mute is held in the ViewModel, not per player. A per-player flag resets
-     * the moment the pool recycles that instance, so the sound would silently
-     * come back on after four swipes.
+     * Reels open with sound ON (founder, 2026-09-05): the feed is the silent
+     * preview, Reels is where the sound is. Mute is held in the ViewModel,
+     * not per player — a per-player flag resets the moment the pool recycles
+     * that instance, so a mute would silently come undone after four swipes.
      */
     @Test
-    fun `reels start muted and the choice survives toggling`() {
+    fun `reels start unmuted and the choice survives toggling`() {
         val vm = viewModel()
-        assertThat(vm.muted.value).isTrue()
-
-        vm.toggleMuted()
         assertThat(vm.muted.value).isFalse()
 
         vm.toggleMuted()
         assertThat(vm.muted.value).isTrue()
+
+        vm.toggleMuted()
+        assertThat(vm.muted.value).isFalse()
+    }
+
+    /** Leaving the screen resets the mode and the pause, never the sound: a mute is for the session. */
+    @Test
+    fun `leaving the screen keeps a mute`() {
+        val vm = viewModel()
+        vm.toggleMuted()
+
+        vm.resetView()
+
+        assertThat(vm.muted.value).isTrue()
+    }
+
+    // ── The entry from a feed ───────────────────────────────────────────
+
+    /** No feed tap: nothing to resolve, nothing fetched, nothing to scroll to. */
+    @Test
+    fun `with no entry the tab opens as it was left`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.resolveEntry(listOf("r1", "r2"))
+        advanceUntilIdle()
+
+        assertThat(vm.entryTarget.value).isNull()
+        assertThat(h.api.postRequests).isEmpty()
+    }
+
+    /**
+     * The tapped reel is already in the loaded pages: the pager scrolls to
+     * it, nothing is fetched, and the request is cleared so the next visit
+     * from the tab does not scroll there again.
+     */
+    @Test
+    fun `an entry already in the pages is scrolled to, not fetched`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        h.entry.open("r2")
+        assertThat(vm.entry.value).isEqualTo("r2")
+
+        vm.resolveEntry(listOf("r1", "r2", "r3"))
+        advanceUntilIdle()
+
+        assertThat(vm.entryTarget.value).isEqualTo("r2")
+        assertThat(h.api.postRequests).isEmpty()
+        assertThat(vm.head.value).isNull()
+        assertThat(h.entry.requested.value).isNull()
+        assertThat(vm.entry.value).isNull()
+
+        vm.onEntryShown()
+        assertThat(vm.entryTarget.value).isNull()
+    }
+
+    /**
+     * The tapped reel is NOT in the pages (Home is chronological, Reels is
+     * ranked): it is fetched by id and pinned as the head, so it shows first
+     * with the ranked reels after it, and the pager is sent to page 0.
+     */
+    @Test
+    fun `an entry absent from the pages is fetched and shown first`() = runTest {
+        val posted = FeedItemDto(
+            id = "from-feed",
+            postType = "video",
+            media = listOf(FeedMediaDto(mediaId = "m1", kind = "video", hlsUrl = "/v1/media/m1/hls/master.m3u8")),
+        )
+        val h = Harness(api = RecordingApi(post = posted))
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        h.entry.open("from-feed")
+
+        vm.resolveEntry(listOf("r1", "r2"))
+        advanceUntilIdle()
+
+        assertThat(h.api.postRequests).containsExactly("from-feed")
+        val head = vm.head.value as ReelsHead.Live
+        assertThat(head.item.id).isEqualTo("from-feed")
+        assertThat(vm.entryTarget.value).isEqualTo("from-feed")
+        assertThat(h.entry.requested.value).isNull()
+        // The publish tracker was never involved: nothing to dismiss.
+        assertThat(h.actions.calls).isEmpty()
+    }
+
+    /** A fetch that fails leaves nothing to scroll to; the tab simply opens. The request is still spent. */
+    @Test
+    fun `an entry that cannot be fetched is dropped`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        h.entry.open("gone")
+
+        vm.resolveEntry(emptyList())
+        advanceUntilIdle()
+
+        assertThat(h.api.postRequests).containsExactly("gone")
+        assertThat(vm.entryTarget.value).isNull()
+        assertThat(vm.head.value).isNull()
+        assertThat(h.entry.requested.value).isNull()
+    }
+
+    /** An entry that is already the head — tapped twice from the feed — is a scroll to page 0, no fetch. */
+    @Test
+    fun `an entry that is already the head is not fetched again`() = runTest {
+        val posted = FeedItemDto(id = "from-feed", postType = "video")
+        val h = Harness(api = RecordingApi(post = posted))
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        h.entry.open("from-feed")
+        vm.resolveEntry(emptyList())
+        advanceUntilIdle()
+        vm.onEntryShown()
+
+        h.entry.open("from-feed")
+        vm.resolveEntry(emptyList())
+        advanceUntilIdle()
+
+        assertThat(h.api.postRequests).containsExactly("from-feed")
+        assertThat(vm.entryTarget.value).isEqualTo("from-feed")
+    }
+
+    // ── The page an entry sits on ───────────────────────────────────────
+
+    @Test
+    fun `the head is page 0 and the ranked reels shift past it`() {
+        assertThat(entryPage("h", headId = "h", rankedIds = listOf("a", "b"))).isEqualTo(0)
+        assertThat(entryPage("b", headId = "h", rankedIds = listOf("a", "b"))).isEqualTo(2)
+    }
+
+    @Test
+    fun `without a head the ranked index is the page`() {
+        assertThat(entryPage("b", headId = null, rankedIds = listOf("a", "b"))).isEqualTo(1)
+    }
+
+    @Test
+    fun `a reel the pager does not hold has no page`() {
+        assertThat(entryPage("z", headId = "h", rankedIds = listOf("a", "b"))).isNull()
+        assertThat(entryPage("z", headId = null, rankedIds = emptyList())).isNull()
     }
 
     // ── Quality ─────────────────────────────────────────────────────────

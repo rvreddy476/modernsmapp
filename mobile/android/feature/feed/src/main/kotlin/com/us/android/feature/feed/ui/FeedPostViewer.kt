@@ -1,7 +1,6 @@
 package com.us.android.feature.feed.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.annotation.OptIn
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -31,12 +30,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -47,12 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.compose.PlayerSurface
-import androidx.media3.ui.compose.SURFACE_TYPE_TEXTURE_VIEW
-import androidx.media3.ui.compose.modifiers.resizeWithContentScale
-import androidx.media3.ui.compose.state.rememberPresentationState
 import androidx.paging.compose.LazyPagingItems
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
@@ -83,6 +74,11 @@ import com.us.android.feature.feed.data.offersFollow
  * Paging for the next page exactly as scrolling the list would, and a like
  * made on a page is the same overlay the row reads when the viewer closes.
  *
+ * Opened on PHOTOS only, since 2026-09-05: a tap on a feed video goes to
+ * Reels instead. A video page is still reachable by swiping, and then it
+ * plays the way the feed does — muted, looping, in the card's frame — and
+ * a single tap on it goes to Reels too ([onOpenReel]).
+ *
  * One player at a time: only the SETTLED page owns a player, created when
  * the page settles and released when it leaves. A flick through five reels
  * starts one playback, not five.
@@ -99,8 +95,10 @@ internal fun FeedPostViewer(
     callbacks: FeedRowCallbacks,
     posterUrl: (FeedItem) -> String?,
     mediaPages: (FeedItem) -> List<PostCardMediaPage>,
+    /** A video page was tapped: the host closes the viewer and opens Reels on it. */
+    onOpenReel: (FeedItem) -> Unit,
     onClose: () -> Unit,
-    viewModel: FeedViewerViewModel = hiltViewModel(),
+    viewModel: FeedPlaybackViewModel = hiltViewModel(),
 ) {
     Dialog(
         onDismissRequest = onClose,
@@ -148,6 +146,7 @@ internal fun FeedPostViewer(
                         callbacks = callbacks,
                         posterUrl = posterUrl(item),
                         mediaPages = mediaPages(item),
+                        onOpenReel = onOpenReel,
                         viewModel = viewModel,
                     )
                 }
@@ -209,9 +208,11 @@ private class PullToClose(
 
 /**
  * One page: the Instagram card for [item], scrollable when its caption runs
- * past the window. A video row on the ACTIVE page draws a playing player in
- * the card's 4:5 frame; on any other page, and for a video with no rendition
- * yet, the card draws its poster as it does in the list.
+ * past the window. A video row on the ACTIVE page draws a silently playing
+ * player in the card's 4:5 frame — the feed's own presentation — and a tap
+ * on it goes to Reels; on any other page, and for a video with no rendition
+ * yet, the card draws its poster as it does in the list, and a tap on THAT
+ * goes to Reels as well.
  */
 @Suppress("LongParameterList")
 @Composable
@@ -224,14 +225,25 @@ private fun ViewerPage(
     callbacks: FeedRowCallbacks,
     posterUrl: String?,
     mediaPages: List<PostCardMediaPage>,
-    viewModel: FeedViewerViewModel,
+    onOpenReel: (FeedItem) -> Unit,
+    viewModel: FeedPlaybackViewModel,
 ) {
     val playback = remember(item.id) { viewModel.playback(item) }
     val video: (@Composable () -> Unit)? = if (active && playback != null) {
         {
-            val player = remember(playback) { viewModel.createPlayer(playback) }
+            val player = remember(playback) {
+                viewModel.createSilentPlayer().also { player ->
+                    viewModel.load(player, playback)
+                    player.playWhenReady = true
+                }
+            }
             DisposableEffect(player) { onDispose { player.release() } }
-            ViewerVideo(player = player, modifier = Modifier.fillMaxSize())
+            FeedVideo(
+                player = player,
+                posterUrl = posterUrl,
+                contentDescription = item.media.firstOrNull()?.contentDescription,
+                onClick = { onOpenReel(item) },
+            )
         }
     } else {
         null
@@ -246,8 +258,9 @@ private fun ViewerPage(
     ) {
         PostCard(
             state = item.toCardState(overlay, posterUrl, mediaPages, pollVotes),
-            // Already in the viewer: a tap on the media has nowhere further to go.
-            onClick = {},
+            // A photo is already as open as it gets; a video's poster (a page
+            // not yet active, or one with no rendition) goes to Reels.
+            onClick = { if (viewModel.isVideo(item)) onOpenReel(item) },
             onAuthorClick = { callbacks.onOpenAuthor(item.author.id) },
             onReact = { callbacks.onReact(item.id, item.viewer.hasReacted) },
             onComment = { callbacks.onOpenComments(item.id) },
@@ -267,33 +280,6 @@ private fun ViewerPage(
             onMore = callbacks.onMore?.let { more -> { more(item) } },
             mediaOverride = video,
             modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
-
-/**
- * The video, cropped to fill the card's 4:5 frame the way its poster is.
- * Tapping it pauses and resumes. A TextureView rather than a SurfaceView
- * here: the frame CLIPS the crop, and a SurfaceView punches through its
- * parent's clip.
- */
-@OptIn(UnstableApi::class)
-@Composable
-private fun ViewerVideo(player: ExoPlayer, modifier: Modifier = Modifier) {
-    val presentation = rememberPresentationState(player)
-    Box(
-        modifier = modifier
-            .clip(RectangleShape)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { player.playWhenReady = !player.playWhenReady },
-        contentAlignment = Alignment.Center,
-    ) {
-        PlayerSurface(
-            player = player,
-            surfaceType = SURFACE_TYPE_TEXTURE_VIEW,
-            modifier = Modifier.resizeWithContentScale(ContentScale.Crop, presentation.videoSizeDp),
         )
     }
 }

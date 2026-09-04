@@ -12,6 +12,7 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
+import com.us.android.core.media.ReelsEntry
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
@@ -130,6 +131,19 @@ fun ReelsMode.chrome(): ReelsChrome = when (this) {
     ReelsMode.FULL -> ReelsChrome.FULL
 }
 
+/**
+ * The page a reel sits on: 0 when it is the head, else its index among the
+ * ranked reels shifted past the head when there is one; null when the pager
+ * does not hold it (yet). Pure, so the scroll a feed tap asks for can be
+ * pinned without a pager.
+ */
+fun entryPage(postId: String, headId: String?, rankedIds: List<String>): Int? {
+    if (headId == postId) return 0
+    val index = rankedIds.indexOf(postId)
+    if (index < 0) return null
+    return index + if (headId != null) 1 else 0
+}
+
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
 // indirection, not clarity.
@@ -142,10 +156,15 @@ class ReelsViewModel @Inject constructor(
     private val tracker: ReelPublishTracker,
     private val publishActions: ReelPublishActions,
     private val follows: FollowGraph,
+    private val reelsEntry: ReelsEntry,
     hidden: HiddenPosts,
 ) : ViewModel() {
 
-    /** The reel the server has created for this session's publish, once fetched. */
+    /**
+     * The reel pinned above the ranked pages, once fetched: the one this
+     * session just published, or the one a feed tap sent the viewer here
+     * for when the ranked pages did not already hold it ([resolveEntry]).
+     */
     private val _live = MutableStateFlow<FeedItem?>(null)
 
     /**
@@ -223,15 +242,69 @@ class ReelsViewModel @Inject constructor(
 
     fun discardPublish() = publishActions.discard()
 
-    private val _muted = MutableStateFlow(true)
+    // ── The entry from a feed ───────────────────────────────────────────
 
     /**
-     * Reels start muted and stay muted until the viewer says otherwise.
+     * The post a feed tap asked Reels to open on, until Reels has taken it
+     * — see [ReelsEntry]. The screen calls [resolveEntry] once it knows what
+     * its pages hold.
+     */
+    val entry: StateFlow<String?> = reelsEntry.requested
+
+    private val _entryTarget = MutableStateFlow<String?>(null)
+
+    /**
+     * The reel the pager should move to, once it is on a page: the entry,
+     * after [resolveEntry] has found or fetched it. The screen scrolls there
+     * and calls [onEntryShown]; it is null the rest of the time.
+     */
+    val entryTarget: StateFlow<String?> = _entryTarget.asStateFlow()
+
+    /**
+     * Takes the feed's request, given the ids of the reels the pager can
+     * already show ([loadedIds], plus the head if there is one).
      *
-     * Autoplaying sound in a scrolling surface is hostile in public, and every
-     * platform that ships it also ships an unmute affordance. The choice is
-     * held here rather than per-player so it survives page changes and player
-     * recycling — a per-player flag resets the moment the pool reclaims one.
+     * Two outcomes, the founder's rule (2026-09-05): a reel already in the
+     * pages is scrolled to — [entryTarget] names it and nothing is fetched;
+     * one that is not is fetched by id and pinned as the head, so it shows
+     * FIRST with the ranked reels after it, and the ranked page that later
+     * carries it is filtered so it never appears twice. Either way the
+     * request is cleared at once, so a later visit from the tab opens where
+     * Reels was left, and a fetch that fails leaves nothing to scroll to —
+     * the tab simply opens.
+     */
+    fun resolveEntry(loadedIds: Collection<String>) {
+        val postId = reelsEntry.requested.value ?: return
+        reelsEntry.clear()
+        if (postId in loadedIds || _live.value?.id == postId) {
+            _entryTarget.value = postId
+            return
+        }
+        viewModelScope.launch {
+            when (val result = repository.post(postId)) {
+                is AppResult.Success -> {
+                    _live.value = result.data
+                    _entryTarget.value = postId
+                }
+                is AppResult.Failure -> Unit
+            }
+        }
+    }
+
+    /** The pager is on the entry's reel; nothing more to move to. */
+    fun onEntryShown() {
+        _entryTarget.value = null
+    }
+
+    private val _muted = MutableStateFlow(false)
+
+    /**
+     * Reels open with SOUND ON (founder, 2026-09-05) — from the tab and
+     * from a feed tap alike; the feed is the silent preview, Reels is where
+     * the sound is. The rail's speaker still mutes, and the choice is held
+     * for the session: here rather than per-player so it survives page
+     * changes and player recycling — a per-player flag resets the moment
+     * the pool reclaims one.
      */
     val muted: StateFlow<Boolean> = _muted.asStateFlow()
 

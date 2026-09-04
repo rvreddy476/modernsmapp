@@ -147,7 +147,7 @@ object UsIcons {
         circle(10f, 18f, 3f)
     }
 
-    /** Muted speaker. Reels open in this state. */
+    /** Muted speaker — the rail's state after the viewer mutes. Reels open with sound ON (founder, 2026-09-05). */
     val SoundOff: ImageVector = stroked("SoundOff") {
         speaker()
         moveTo(16.4f, 9.6f)

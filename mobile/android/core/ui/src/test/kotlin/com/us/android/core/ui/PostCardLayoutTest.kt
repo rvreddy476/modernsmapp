@@ -7,7 +7,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import com.google.common.truth.Truth.assertThat
@@ -82,12 +84,40 @@ class PostCardLayoutTest {
         assertThat(frameAspects().single()).isWithin(TOLERANCE).of(MEDIA_FRAME_ASPECT)
     }
 
+    /**
+     * A video's poster is the same frame with NOTHING written on it (founder,
+     * 2026-09-05): no "Reel" label, no play glyph. The feed plays the video
+     * in this frame, and a label over a moving picture is noise.
+     */
     @Test
-    fun `a reel's poster frame is the same 4 by 5`() {
+    fun `a reel's poster frame is the same 4 by 5 and carries no label`() {
         render(state(postType = "video", mediaCount = 1))
 
         assertThat(frameAspects().single()).isWithin(TOLERANCE).of(MEDIA_FRAME_ASPECT)
-        composeRule.onNodeWithText("Reel").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Reel").assertCountEquals(0)
+        composeRule.onAllNodesWithContentDescription("Play video").assertCountEquals(0)
+    }
+
+    /**
+     * The feed locates the media frame from the list's layout info — the
+     * row's top plus [POST_CARD_HEADER_HEIGHT] — so two things must hold:
+     * the frame begins exactly where the header ends, with nothing between
+     * them on a video post, and the header is never SHORTER than the
+     * constant. (Not "exactly": Robolectric's stub font metrics draw the two
+     * text lines taller than the theme's 18sp + 15sp, so the row measures
+     * past its 56dp minimum here where it does not on a device.)
+     */
+    @Test
+    fun `the media frame starts where the header ends`() {
+        render(state(postType = "video", mediaCount = 1))
+
+        val card = composeRule.onNodeWithTag("post_card").fetchSemanticsNode()
+        val header = composeRule.onNodeWithTag("post_header").fetchSemanticsNode()
+        val frame = composeRule.onNodeWithTag("post_media_frame").fetchSemanticsNode()
+        val headerPx = with(composeRule.density) { POST_CARD_HEADER_HEIGHT.toPx() }
+        assertThat(header.positionInRoot.y).isWithin(1f).of(card.positionInRoot.y)
+        assertThat(frame.positionInRoot.y - card.positionInRoot.y).isWithin(1f).of(header.size.height.toFloat())
+        assertThat(header.size.height.toFloat()).isAtLeast(headerPx - 1f)
     }
 
     /** Every page of a carousel is the frame; a landscape page is cropped, not letterboxed. */

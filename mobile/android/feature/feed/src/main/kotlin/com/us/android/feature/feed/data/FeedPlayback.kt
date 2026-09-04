@@ -41,6 +41,14 @@ internal fun MediaUrlResolver.playbackFor(media: FeedMedia): Playback? {
     return null
 }
 
+/**
+ * Whether the row carries a video at all — playable or not. A tap on a
+ * video's media goes to Reels even while it is still processing: Reels is
+ * where a video is watched, and it already knows how to say "still
+ * processing" for one that cannot play yet.
+ */
+internal fun FeedItem.hasVideo(): Boolean = media.any { it.kind == VIDEO_KIND }
+
 /** `kind` on a feed media entry; `image` is the other value in use. */
 private const val VIDEO_KIND = "video"
 private const val PLAYBACK_ORIGINAL = "original"
