@@ -149,6 +149,8 @@ func main() {
 	// feed uses for post authors).
 	postSvc.SetProfileServiceURL(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
+	// Tube channel avatars resolve through media-service's delivery gate.
+	postSvc.SetMediaServiceURL(env("MEDIA_SERVICE_URL", "http://media-service:8087"))
 	// Community review is parked at launch; an explicit URL is required to
 	// enqueue into that future system. Empty disables the best-effort call.
 	postSvc.SetReviewerServiceURL(env("REVIEWER_SERVICE_URL", ""))

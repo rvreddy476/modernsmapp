@@ -312,6 +312,14 @@ func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uu
 		return res, nil
 	}
 
+	// Tube: a channel avatar is public to every viewer once the canonical
+	// gate above (moderation) has let a non-uploader through.
+	if owners, err := s.pgStore.ChannelAvatarOwners(ctx, []uuid.UUID{mediaID}); err != nil {
+		return MediaAccessResult{}, err
+	} else if _, isAvatar := owners[mediaID]; isAvatar {
+		return channelAvatarAccess(facts.ProcessingStatus), nil
+	}
+
 	story, err := s.pgStore.StoryForMedia(ctx, mediaID)
 	if err != nil {
 		return MediaAccessResult{}, err
@@ -392,6 +400,10 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 	if err != nil {
 		return nil, err
 	}
+	avatarOwners, err := s.pgStore.ChannelAvatarOwners(ctx, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
 	postIDSet := make(map[uuid.UUID]bool)
 	var postIDs []uuid.UUID
 	for _, ids := range postIDsByMedia {
@@ -468,6 +480,12 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 					"reason", res.Reason)
 			}
 			results[mediaID] = res
+			continue
+		}
+
+		// Tube: a channel avatar is public (see ViewerMayAccessMedia).
+		if _, isAvatar := avatarOwners[mediaID]; isAvatar {
+			results[mediaID] = channelAvatarAccess(facts.ProcessingStatus)
 			continue
 		}
 
@@ -612,4 +630,15 @@ func evaluatePostMediaVisibility(viewerID uuid.UUID, p *postgres.Post, rel Viewe
 	default: // private, staged, and future/unknown values fail closed
 		return false
 	}
+}
+
+// channelAvatarAccess is the verdict for a media asset that is some Tube
+// channel's avatar: allowed for every viewer, "not ready" while the image
+// pipeline is still running. Moderation was already checked by the
+// canonical gate before this is consulted.
+func channelAvatarAccess(processingStatus string) MediaAccessResult {
+	if processingStatus != "ready" {
+		return MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "channel_avatar_not_ready"}
+	}
+	return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "channel_avatar"}
 }

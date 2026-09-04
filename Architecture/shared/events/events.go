@@ -114,6 +114,13 @@ const (
 	LiveStreamStarted  = "live.stream.started"   // payload: LiveStreamStartedPayload
 	LiveStreamEnded    = "live.stream.ended"     // payload: LiveStreamEndedPayload
 	LiveStreamVODReady = "live.stream.vod_ready" // payload: LiveStreamVODReadyPayload
+
+	// Tube channels (post-service owns them; 2026-09-05). Emitted through the
+	// post-service outbox so search can index channels later. Prefixed "tube."
+	// because "channel.created" / "channel.updated" below already name the
+	// broadcast channel-service events, whose payload is a different shape.
+	TubeChannelCreated = "tube.channel.created" // payload: ChannelPayload
+	TubeChannelUpdated = "tube.channel.updated" // payload: ChannelPayload
 )
 
 // v2.1 new event types
@@ -645,6 +652,18 @@ type PostDeletedPayload struct {
 // feed-service re-fans the post out (author + followers, as create does);
 // search re-indexes from the PostSearchEligibilityChanged event emitted in
 // the same transaction (SearchRev here equals that event's revision).
+// ChannelPayload is the wire shape of tube.channel.created / tube.channel.updated.
+// One channel per account, keyed by the owner: user_id is the identity.
+type ChannelPayload struct {
+	UserID        string    `json:"user_id"`
+	Name          string    `json:"name"`
+	Handle        string    `json:"handle"`
+	About         string    `json:"about"`
+	AvatarMediaID *string   `json:"avatar_media_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type PostRestoredPayload struct {
 	PostID      string    `json:"post_id"`
 	AuthorID    string    `json:"author_id"`

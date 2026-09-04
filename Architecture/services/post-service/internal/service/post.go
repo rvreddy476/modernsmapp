@@ -73,6 +73,7 @@ type Service struct {
 	spam                   *spam.Detector
 	userServiceURL         string
 	profileServiceURL      string
+	mediaServiceURL        string
 	graphServiceURL        string
 	monetizationServiceURL string
 	reviewerServiceURL     string
@@ -119,6 +120,10 @@ type Service struct {
 
 	// Private-account / comments-audience gate state (privacy_gate.go).
 	privacyGateState
+
+	// channels is the Tube channel store (channels.go). Nil when there is no
+	// Postgres store; every channel flow then fails closed.
+	channels channelStore
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -132,6 +137,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 	}
 	if pg != nil {
 		svc.hiddenAuthors = pg
+		svc.channels = pg
 	}
 	if rdb != nil {
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
@@ -378,6 +384,9 @@ type PostDetail struct {
 	ViewerRepost   *RepostStateResult `json:"viewer_repost,omitempty"`
 	HasReposted    bool               `json:"has_reposted"`
 	IsRepostable   bool               `json:"is_repostable"`
+	// Channel is the author's Tube channel, attached to long_video posts
+	// whose author has one (channels.go); omitted otherwise.
+	Channel *ChannelRef `json:"channel,omitempty"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
@@ -766,6 +775,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Validate content_type
 	if !validContentTypes[contentType] {
 		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, flick, or long_video", contentType)
+	}
+
+	// Tube: a long video is listed under a channel, so the account must have
+	// created one first (founder rule, 2026-09-05). Reels/flicks are not gated.
+	if err := s.gateVideoBehindChannel(ctx, input.AuthorID, contentType); err != nil {
+		return nil, err
 	}
 
 	// Tube: a long video is listed by its title, so it must have one; the
@@ -1544,6 +1559,13 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 		}
 	}
 
+	// Tube: the author's channel card on a long video (channels.go).
+	attachViewer := uuid.Nil
+	if viewerID != nil {
+		attachViewer = *viewerID
+	}
+	s.attachChannelRefs(ctx, attachViewer, []*PostDetail{detail})
+
 	return detail, nil
 }
 
@@ -2044,6 +2066,11 @@ func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int,
 	if err != nil {
 		return nil, "", err
 	}
+	ptrs := make([]*PostDetail, len(details))
+	for i := range details {
+		ptrs[i] = &details[i]
+	}
+	s.attachChannelRefs(ctx, userID, ptrs)
 	return details, nextCursor, nil
 }
 

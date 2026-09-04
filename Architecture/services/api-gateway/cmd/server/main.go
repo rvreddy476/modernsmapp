@@ -110,9 +110,13 @@ func main() {
 		{"/v1/admin/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8117")},
 		{"/v1/auth", env("AUTH_SERVICE_URL", "http://identity-auth:8081")},
 		{"/v1/profiles", env("PROFILE_SERVICE_URL", "http://identity-profile:8098")},
-		// User service: onboarding, users, channels, pages, links
+		// User service: onboarding, users, pages, links
 		{"/v1/onboarding", env("USER_SERVICE_URL", "http://user-service:8082")},
-		{"/v1/channels", env("USER_SERVICE_URL", "http://user-service:8082")},
+		// Tube channels (2026-09-05) are owned by post-service: one channel per
+		// account, the gate for long videos. user-service's older
+		// /v1/channels/:id handlers are no longer reachable through the
+		// gateway (they never held data); /v1/users/me/channels still is.
+		{"/v1/channels", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/pages", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/links", env("USER_SERVICE_URL", "http://user-service:8082")},
 		// Privacy settings are served by the IDENTITY user-service, not the

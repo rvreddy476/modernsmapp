@@ -239,5 +239,19 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 			VideoMetadata: videoMeta[p.ID],
 		}
 	}
+	// Tube: the channel card on the author's own long videos.
+	channelPtrs := make([]*PostDetail, len(details))
+	for i := range details {
+		channelPtrs[i] = &details[i].PostDetail
+	}
+	s.attachChannelRefs(ctx, authorOf(posts), channelPtrs)
 	return details
+}
+
+// authorOf is the author of a single-author upload list (uuid.Nil if empty).
+func authorOf(posts []postgres.Post) uuid.UUID {
+	if len(posts) == 0 {
+		return uuid.Nil
+	}
+	return posts[0].AuthorID
 }

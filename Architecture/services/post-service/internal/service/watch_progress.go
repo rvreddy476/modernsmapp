@@ -114,6 +114,12 @@ func (s *Service) GetContinueWatching(ctx context.Context, userID uuid.UUID, lim
 	if err != nil {
 		return nil, fmt.Errorf("hydrate continue watching: %w", err)
 	}
+	// Tube: the channel card on each resumable long video.
+	details := make([]*PostDetail, 0, len(posts))
+	for _, p := range posts {
+		details = append(details, p)
+	}
+	s.attachChannelRefs(ctx, userID, details)
 	return attachContinueWatchingPosts(rows, posts), nil
 }
 

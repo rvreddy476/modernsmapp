@@ -105,6 +105,11 @@ type HydratedPost struct {
 	FeedContentType string     `json:"feed_content_type,omitempty"` // "post", "repost", "reel", etc.
 	Author          Author     `json:"author"`
 
+	// Channel is the author's Tube channel, attached to long_video posts
+	// whose author has one (channels.go); omitted otherwise. Resolved at
+	// render time, never cached, so a rename shows on the next page.
+	Channel *ChannelRef `json:"channel,omitempty"`
+
 	// "Why you're seeing this post" (post "more" sheet, 2026-09-04). Reason
 	// is a stable token ("following", "connection", "trending",
 	// "category:<id>", "recommended", "hashtag:<tag>"); ReasonText is a
@@ -389,10 +394,17 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 	mediaIDs := make([]uuid.UUID, 0, len(posts))
 	seenAuthors := make(map[uuid.UUID]bool, len(posts))
 	seenMedia := make(map[uuid.UUID]bool, len(posts))
+	// Tube: authors of long videos, whose channels are resolved per page.
+	var channelAuthorIDs []uuid.UUID
+	seenChannelAuthors := make(map[uuid.UUID]bool)
 	for _, post := range posts {
 		if !seenAuthors[post.AuthorID] {
 			seenAuthors[post.AuthorID] = true
 			authorIDs = append(authorIDs, post.AuthorID)
+		}
+		if isLongVideoPost(post.ContentType) && !seenChannelAuthors[post.AuthorID] {
+			seenChannelAuthors[post.AuthorID] = true
+			channelAuthorIDs = append(channelAuthorIDs, post.AuthorID)
 		}
 		for _, media := range post.Media {
 			if !seenMedia[media.MediaID] {
@@ -406,6 +418,8 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 	var deliveries map[uuid.UUID]mediaDelivery
 	var profileErr, mediaErr error
 	var wg sync.WaitGroup
+	var channels map[uuid.UUID]*ChannelRef
+	var channelErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -418,12 +432,25 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 			deliveries, mediaErr = s.fetchMediaDeliveries(ctx, viewerID, mediaIDs)
 		}()
 	}
+	if len(channelAuthorIDs) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			channels, channelErr = s.fetchChannels(ctx, viewerID, channelAuthorIDs)
+		}()
+	}
 	wg.Wait()
 	if profileErr != nil {
 		return fmt.Errorf("profile hydration failed: %w", profileErr)
 	}
 	if mediaErr != nil {
 		return fmt.Errorf("media hydration failed: %w", mediaErr)
+	}
+	// The channel card is decoration on a video that renders fine without
+	// it: a channel outage must not blank the video feed. Best-effort.
+	if channelErr != nil {
+		slog.WarnContext(ctx, "feed hydration: channel resolution skipped", "err", channelErr)
+		channels = nil
 	}
 
 	for i := range posts {
@@ -433,6 +460,12 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 			posts[i].Author.DisplayName = profile.DisplayName
 			posts[i].Author.Username = profile.Username
 			posts[i].Author.AvatarMediaID = profile.AvatarMediaID
+		}
+		posts[i].Channel = nil
+		if isLongVideoPost(posts[i].ContentType) {
+			if ref, ok := channels[posts[i].AuthorID]; ok {
+				posts[i].Channel = ref
+			}
 		}
 		authorizedMedia := make([]HydratedMedia, 0, len(posts[i].Media))
 		for _, m := range posts[i].Media {

@@ -142,6 +142,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/internal/media-access", h.MediaAccess)
 	r.POST("/v1/internal/media-access/batch", h.MediaAccessBatch)
 
+	// Tube channels (channels_handler.go): one per account, gate for long videos.
+	h.registerChannelRoutes(r)
+
 	// Stories
 	stories := r.Group("/v1/stories")
 	{
@@ -411,6 +414,9 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TITLE_REQUIRED", err.Error(), nil)
 	case errors.Is(err, service.ErrTitleTooLong):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TITLE_TOO_LONG", err.Error(), nil)
+	case errors.Is(err, service.ErrChannelRequired):
+		// Tube: a long video needs a channel first (founder rule, 2026-09-05).
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "CHANNEL_REQUIRED", "Create your channel before posting a video", nil)
 	default:
 		return false
 	}
