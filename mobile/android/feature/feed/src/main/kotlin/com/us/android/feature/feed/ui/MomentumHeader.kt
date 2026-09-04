@@ -32,6 +32,7 @@ internal fun MomentumHeader(
     onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier,
     translucent: Boolean = false,
+    showWordmark: Boolean = true,
     onHomeClick: () -> Unit = {},
     viewModel: UnreadBadgeViewModel = hiltViewModel(),
 ) {
@@ -47,5 +48,6 @@ internal fun MomentumHeader(
         modifier = modifier,
         onHomeClick = onHomeClick,
         translucent = translucent,
+        showWordmark = showWordmark,
     )
 }

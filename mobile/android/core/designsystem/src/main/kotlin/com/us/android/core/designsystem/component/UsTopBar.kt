@@ -163,19 +163,26 @@ fun UsHomeTopBar(
     onHomeClick: () -> Unit = {},
     modifier: Modifier = Modifier,
     translucent: Boolean = false,
+    /**
+     * The wordmark belongs to Home. Reels keeps the glyphs and drops the
+     * name (founder, 2026-09-05): over a video the brand is the video.
+     */
+    showWordmark: Boolean = true,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     TopAppBar(
         // Momentum redesign: the brand row is the wordmark alone — no
         // logo chip. Still one tappable block, same scroll-to-top contract.
         title = {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(UsTheme.radii.small))
-                    .clickable(onClick = onHomeClick)
-                    .semantics { contentDescription = "Momentum home" },
-            ) {
-                UsWordmark(size = UsWordmarkSize.TopBar)
+            if (showWordmark) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(UsTheme.radii.small))
+                        .clickable(onClick = onHomeClick)
+                        .semantics { contentDescription = "Momentum home" },
+                ) {
+                    UsWordmark(size = UsWordmarkSize.TopBar)
+                }
             }
         },
         actions = actions,
@@ -211,6 +218,7 @@ fun UsMomentumHeader(
     modifier: Modifier = Modifier,
     onHomeClick: () -> Unit = {},
     translucent: Boolean = false,
+    showWordmark: Boolean = true,
 ) {
     // Over video the glyphs are plain white; the text ramp is tuned for the
     // navy ground, not for an arbitrary frame.
@@ -219,6 +227,7 @@ fun UsMomentumHeader(
         onHomeClick = onHomeClick,
         modifier = modifier,
         translucent = translucent,
+        showWordmark = showWordmark,
         actions = {
             IconButton(onClick = onSearch) {
                 Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = tint)

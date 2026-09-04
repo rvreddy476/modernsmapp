@@ -485,6 +485,8 @@ private fun BoxScope.ScreenChrome(
             onOpenMessages = onOpenMessages,
             onOpenNotifications = onOpenNotifications,
             translucent = true,
+            // The name stays on Home; over a reel only the glyphs remain.
+            showWordmark = false,
             modifier = Modifier.testTag("reels_header"),
         )
     }
