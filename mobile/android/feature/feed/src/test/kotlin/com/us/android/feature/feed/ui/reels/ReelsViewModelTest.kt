@@ -25,6 +25,7 @@ import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.core.ui.UsReelQuality
 import com.us.android.feature.feed.data.FeedApi
 import com.us.android.feature.feed.data.FeedFeedbackRequest
 import com.us.android.feature.feed.data.FeedRepository
@@ -432,6 +433,29 @@ class ReelsViewModelTest {
 
         vm.toggleMuted()
         assertThat(vm.muted.value).isTrue()
+    }
+
+    // ── Quality ─────────────────────────────────────────────────────────
+
+    /**
+     * The more sheet's pick is a SESSION setting: it outlives the reel it
+     * was made on and the reset that leaving the screen does, because a
+     * viewer who chose 360p on a thin connection wants every reel at 360p.
+     */
+    @Test
+    fun `reels start on auto and a picked quality survives leaving the screen`() {
+        val vm = viewModel()
+        assertThat(vm.quality.value).isEqualTo(UsReelQuality.Auto)
+
+        vm.selectQuality(UsReelQuality.Height(360))
+        vm.toggleMode()
+        vm.resetView()
+
+        assertThat(vm.quality.value).isEqualTo(UsReelQuality.Height(360))
+        assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+
+        vm.selectQuality(UsReelQuality.Auto)
+        assertThat(vm.quality.value).isEqualTo(UsReelQuality.Auto)
     }
 
     // ── The surface ─────────────────────────────────────────────────────

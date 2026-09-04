@@ -514,6 +514,40 @@ object UsIcons {
         "M3 3v5h5",
     )
 
+    // ── The reel's more sheet (2026-09-04) ──────────────────────────────
+
+    /** Lucide `maximize` — "Clear screen": the reel alone, no app chrome. */
+    val Maximize: ImageVector = lucideStroked(
+        "Maximize",
+        "M8 3H5a2 2 0 0 0-2 2v3",
+        "M21 8V5a2 2 0 0 0-2-2h-3",
+        "M3 16v3a2 2 0 0 0 2 2h3",
+        "M16 21h3a2 2 0 0 0 2-2v-3",
+    )
+
+    /** Lucide `minimize` — "Show controls": the chrome back over the reel. */
+    val Minimize: ImageVector = lucideStroked(
+        "Minimize",
+        "M8 3v3a2 2 0 0 1-2 2H3",
+        "M21 8h-3a2 2 0 0 1-2-2V3",
+        "M3 16h3a2 2 0 0 1 2 2v3",
+        "M16 21v-3a2 2 0 0 1 2-2h3",
+    )
+
+    /** Lucide `sliders-horizontal` — playback quality. */
+    val Sliders: ImageVector = lucideStroked(
+        "Sliders",
+        "M21 4h-3",
+        "M14 4H3",
+        "M21 12h-9",
+        "M8 12H3",
+        "M21 20h-7",
+        "M10 20H3",
+        "M14 2v4",
+        "M8 10v4",
+        "M16 18v4",
+    )
+
     /** A right arrow — the chat send glyph (the design's circular send). */
     val Forward: ImageVector = stroked("Forward") {
         moveTo(4f, 12f)

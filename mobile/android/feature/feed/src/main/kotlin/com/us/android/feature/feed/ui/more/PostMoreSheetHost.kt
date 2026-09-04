@@ -15,6 +15,8 @@ import com.us.android.core.ui.UsPostMoreFollowRow
 import com.us.android.core.ui.UsPostMoreSheet
 import com.us.android.core.ui.UsPostMoreState
 import com.us.android.core.ui.UsPostReportState
+import com.us.android.core.ui.UsReelMoreState
+import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.postShareLink
 
 /**
@@ -25,6 +27,7 @@ import com.us.android.core.ui.postShareLink
  * the host because the system chooser needs an Activity context the
  * ViewModel must not hold.
  */
+@Suppress("LongParameterList")
 @Composable
 internal fun PostMoreSheetHost(
     item: FeedItem,
@@ -34,12 +37,16 @@ internal fun PostMoreSheetHost(
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
     viewModel: PostMoreViewModel,
+    /** Set by Reels alone: the group above the rows, and the two things only a reel can do. */
+    reel: UsReelMoreState? = null,
+    onClearScreen: () -> Unit = {},
+    onSelectQuality: (UsReelQuality) -> Unit = {},
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
     LaunchedEffect(item.id) { viewModel.opened() }
 
-    val callbacks = remember(item, viewModel, onShare) {
+    val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality) {
         UsPostMoreCallbacks(
             onToggleSave = { viewModel.toggleSave(item) },
             onShare = { onShare(item) },
@@ -50,10 +57,12 @@ internal fun PostMoreSheetHost(
             onBlock = { viewModel.block(item) },
             onReport = { reason, details -> viewModel.report(item, reason, details) },
             onDelete = { viewModel.delete(item) },
+            onClearScreen = onClearScreen,
+            onSelectQuality = onSelectQuality,
         )
     }
     UsPostMoreSheet(
-        state = item.toMoreState(overlay, followEdge, ownUserId, report, delete),
+        state = item.toMoreState(overlay, followEdge, ownUserId, report, delete, reel),
         callbacks = callbacks,
         onDismiss = onDismiss,
     )
@@ -63,12 +72,14 @@ internal fun PostMoreSheetHost(
  * The sheet's state for one row: the server's values with this session's
  * bookmark tap layered in, and the relationship row decided by the graph.
  */
+@Suppress("LongParameterList")
 internal fun FeedItem.toMoreState(
     overlay: EngagementOverlay,
     followEdge: FollowStatus?,
     ownUserId: String,
     report: UsPostReportState = UsPostReportState.Idle,
     delete: UsPostDeleteState = UsPostDeleteState.Idle,
+    reel: UsReelMoreState? = null,
 ): UsPostMoreState {
     val own = ownUserId.isNotBlank() && author.id == ownUserId
     return UsPostMoreState(
@@ -81,6 +92,7 @@ internal fun FeedItem.toMoreState(
         link = postShareLink(id),
         report = report,
         delete = delete,
+        reel = reel,
     )
 }
 

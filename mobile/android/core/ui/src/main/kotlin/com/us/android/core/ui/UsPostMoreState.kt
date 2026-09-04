@@ -29,7 +29,63 @@ data class UsPostMoreState(
     val delete: UsPostDeleteState = UsPostDeleteState.Idle,
     /** True while a one-shot action (block) is on the wire; the rows go inert. */
     val busy: Boolean = false,
+    /**
+     * Present when the sheet was opened from a REEL: the group that goes
+     * above everything else (founder, 2026-09-04, from YouTube Shorts). Null
+     * on a feed card, and the card's sheet is exactly what it was.
+     */
+    val reel: UsReelMoreState? = null,
 )
+
+/**
+ * What the reel's own group needs: the caption "Description" unfolds, which
+ * way the "Clear screen" row points, and the quality picker's options.
+ */
+@Immutable
+data class UsReelMoreState(
+    /** The full caption, shown under "Description" when opened; blank hides the row. */
+    val description: String,
+    /** Full mode is on: the row reads "Show controls" and leaves it. */
+    val fullMode: Boolean,
+    /** The picker's options, [UsReelQuality.Auto] first — see [reelQualityOptions]. */
+    val qualities: List<UsReelQuality>,
+    /** The session's choice, shown at the right of the Quality row. */
+    val selected: UsReelQuality = UsReelQuality.Auto,
+) {
+    /**
+     * Auto alone means there is nothing to pick — the reel plays its original
+     * file, or the ladder has not been read yet — and the row goes inert
+     * rather than opening a picker with one entry.
+     */
+    val canPickQuality: Boolean get() = qualities.size > 1
+}
+
+/** One entry of the reel's quality picker: the player's own choice, or one rung of the HLS ladder. */
+sealed interface UsReelQuality {
+    /** What the row prints: "Auto", "720p". */
+    val label: String
+
+    data object Auto : UsReelQuality {
+        override val label: String get() = "Auto"
+    }
+
+    /** One rendition, by its height in pixels. */
+    data class Height(val height: Int) : UsReelQuality {
+        override val label: String get() = "${height}p"
+    }
+}
+
+/**
+ * The picker's options from the heights the player reports for the item:
+ * Auto first, then each distinct height, tallest first. A non-adaptive
+ * item — the original MP4 the server hands out while it transcodes — has
+ * no ladder to pick from and offers Auto alone, whatever heights were seen.
+ */
+fun reelQualityOptions(heights: Iterable<Int>, adaptive: Boolean = true): List<UsReelQuality> {
+    if (!adaptive) return listOf(UsReelQuality.Auto)
+    val rungs = heights.filter { it > 0 }.distinct().sortedDescending().map { UsReelQuality.Height(it) }
+    return listOf(UsReelQuality.Auto) + rungs
+}
 
 /**
  * Which relationship row the third group offers.
@@ -65,6 +121,17 @@ sealed interface UsPostDeleteState {
 
 /** One row of the sheet's menu. The order within [rowGroups] is the design's. */
 enum class UsPostMoreRow(val label: String) {
+    /** Reels only: the full caption, unfolded inline. */
+    DESCRIPTION("Description"),
+
+    /** Reels only: full mode — the header and the bar go, the reel stays. */
+    CLEAR_SCREEN("Clear screen"),
+
+    /** Reels only: [CLEAR_SCREEN]'s other face, while full mode is on. */
+    SHOW_CONTROLS("Show controls"),
+
+    /** Reels only: the rendition picker, the current choice at the right. */
+    QUALITY("Quality"),
     SAVE("Save"),
     UNSAVE("Unsave"),
     COPY_LINK("Copy link"),
@@ -92,14 +159,25 @@ enum class UsPostMoreRow(val label: String) {
  *    known, Block, and Report last.
  *  - The viewer's own post: group 1, then "Delete post" alone, red and
  *    last — a soft delete with a 30-day restore window (founder, 2026-09-04).
+ *  - A REEL puts its own group ABOVE all of that (YouTube Shorts, founder,
+ *    2026-09-04): "Description" when there is a caption to unfold, "Clear
+ *    screen" or "Show controls" by the mode, and "Quality". Own reel or
+ *    not, the group is the same — it is about the frame, not the author.
  */
 fun UsPostMoreState.rowGroups(): List<List<UsPostMoreRow>> {
+    val reelGroup = reel?.let { reel ->
+        buildList {
+            if (reel.description.isNotBlank()) add(UsPostMoreRow.DESCRIPTION)
+            add(if (reel.fullMode) UsPostMoreRow.SHOW_CONTROLS else UsPostMoreRow.CLEAR_SCREEN)
+            add(UsPostMoreRow.QUALITY)
+        }
+    }
     val first = listOf(
         if (isBookmarked) UsPostMoreRow.UNSAVE else UsPostMoreRow.SAVE,
         UsPostMoreRow.COPY_LINK,
         UsPostMoreRow.SHARE,
     )
-    if (isOwnPost) return listOf(first, listOf(UsPostMoreRow.DELETE))
+    if (isOwnPost) return listOfNotNull(reelGroup, first, listOf(UsPostMoreRow.DELETE))
 
     val second = buildList {
         if (reasonText.isNotBlank()) add(UsPostMoreRow.WHY)
@@ -115,7 +193,7 @@ fun UsPostMoreState.rowGroups(): List<List<UsPostMoreRow>> {
         add(UsPostMoreRow.BLOCK)
         add(UsPostMoreRow.REPORT)
     }
-    return listOf(first, second, third)
+    return listOfNotNull(reelGroup, first, second, third)
 }
 
 /**

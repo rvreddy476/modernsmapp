@@ -19,6 +19,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.ui.UsReelQuality
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.FollowGraph
 import com.us.android.feature.feed.data.hides
@@ -252,6 +253,22 @@ class ReelsViewModel @Inject constructor(
     /** A double-tap on the video. Never a like: a double-tap here is about the frame, not the post. */
     fun toggleMode() {
         _mode.value = _mode.value.toggled()
+    }
+
+    private val _quality = MutableStateFlow<UsReelQuality>(UsReelQuality.Auto)
+
+    /**
+     * The rendition the viewer asked for from the more sheet's Quality row:
+     * the player's own choice, or one height of the HLS ladder. Held for the
+     * SESSION — a viewer who picked 360p on a thin connection wants the next
+     * reel at 360p too — so it survives swipes, the pool recycling players,
+     * and [resetView]; only a new process starts back at Auto. Every page's
+     * player applies it as it is prepared.
+     */
+    val quality: StateFlow<UsReelQuality> = _quality.asStateFlow()
+
+    fun selectQuality(quality: UsReelQuality) {
+        _quality.value = quality
     }
 
     private val _paused = MutableStateFlow(false)

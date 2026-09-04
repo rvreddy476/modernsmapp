@@ -121,4 +121,104 @@ class UsPostMoreRowsTest {
     fun `copy link puts the post's canonical address on the clipboard`() {
         assertThat(postShareLink("abc-123")).isEqualTo("https://momentum.app/p/abc-123")
     }
+
+    // ── The reel's group (YouTube Shorts, 2026-09-04) ───────────────────
+
+    private fun reel(
+        description: String = "sunday at the lake",
+        fullMode: Boolean = false,
+        qualities: List<UsReelQuality> = reelQualityOptions(listOf(360, 720)),
+        selected: UsReelQuality = UsReelQuality.Auto,
+    ) = UsReelMoreState(description = description, fullMode = fullMode, qualities = qualities, selected = selected)
+
+    @Test
+    fun `a reel puts description, clear screen and quality above the post's groups`() {
+        val groups = state(follow = UsPostMoreFollowRow.UNFOLLOW, reason = "Trending").copy(reel = reel()).rowGroups()
+
+        assertThat(groups).containsExactly(
+            listOf(UsPostMoreRow.DESCRIPTION, UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.QUALITY),
+            listOf(UsPostMoreRow.SAVE, UsPostMoreRow.COPY_LINK, UsPostMoreRow.SHARE),
+            listOf(UsPostMoreRow.WHY, UsPostMoreRow.INTERESTED, UsPostMoreRow.NOT_INTERESTED),
+            listOf(UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK, UsPostMoreRow.REPORT),
+        ).inOrder()
+    }
+
+    /** The feed card's sheet is exactly what it was: no reel, no reel group. */
+    @Test
+    fun `a post that is not a reel has no reel group`() {
+        val rows = state().rowGroups().flatten()
+
+        assertThat(rows).containsNoneOf(
+            UsPostMoreRow.DESCRIPTION,
+            UsPostMoreRow.CLEAR_SCREEN,
+            UsPostMoreRow.SHOW_CONTROLS,
+            UsPostMoreRow.QUALITY,
+        )
+        assertThat(state().rowGroups()).hasSize(3)
+    }
+
+    @Test
+    fun `the viewer's own reel keeps the reel group and then delete last`() {
+        val groups = state(own = true).copy(reel = reel()).rowGroups()
+
+        assertThat(groups).containsExactly(
+            listOf(UsPostMoreRow.DESCRIPTION, UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.QUALITY),
+            listOf(UsPostMoreRow.SAVE, UsPostMoreRow.COPY_LINK, UsPostMoreRow.SHARE),
+            listOf(UsPostMoreRow.DELETE),
+        ).inOrder()
+    }
+
+    @Test
+    fun `clear screen reads show controls while full mode is on`() {
+        assertThat(state().copy(reel = reel(fullMode = false)).rowGroups().first())
+            .contains(UsPostMoreRow.CLEAR_SCREEN)
+        val full = state().copy(reel = reel(fullMode = true)).rowGroups().first()
+        assertThat(full).contains(UsPostMoreRow.SHOW_CONTROLS)
+        assertThat(full).doesNotContain(UsPostMoreRow.CLEAR_SCREEN)
+    }
+
+    /** A "Description" that unfolds into nothing is a broken row, not a row. */
+    @Test
+    fun `description needs a caption to unfold`() {
+        assertThat(state().copy(reel = reel(description = "")).rowGroups().first())
+            .containsExactly(UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.QUALITY).inOrder()
+        assertThat(state().copy(reel = reel(description = "  ")).rowGroups().first())
+            .doesNotContain(UsPostMoreRow.DESCRIPTION)
+    }
+
+    // ── Quality options ─────────────────────────────────────────────────
+
+    @Test
+    fun `quality options are auto first then the ladder tallest first, deduped`() {
+        val options = reelQualityOptions(listOf(360, 720, 360, 1080, 720))
+
+        assertThat(options).containsExactly(
+            UsReelQuality.Auto,
+            UsReelQuality.Height(1080),
+            UsReelQuality.Height(720),
+            UsReelQuality.Height(360),
+        ).inOrder()
+        assertThat(options.map { it.label }).containsExactly("Auto", "1080p", "720p", "360p").inOrder()
+    }
+
+    @Test
+    fun `heights the player has not measured are dropped`() {
+        assertThat(reelQualityOptions(listOf(0, -1, 720)))
+            .containsExactly(UsReelQuality.Auto, UsReelQuality.Height(720)).inOrder()
+    }
+
+    /** The original MP4 has no ladder: Auto alone, and the row is inert. */
+    @Test
+    fun `an original-only reel offers auto alone and nothing to pick`() {
+        val options = reelQualityOptions(listOf(720, 360), adaptive = false)
+
+        assertThat(options).containsExactly(UsReelQuality.Auto)
+        assertThat(reel(qualities = options).canPickQuality).isFalse()
+    }
+
+    @Test
+    fun `a ladder not yet read is auto alone and nothing to pick either`() {
+        assertThat(reel(qualities = reelQualityOptions(emptyList())).canPickQuality).isFalse()
+        assertThat(reel(qualities = reelQualityOptions(listOf(720))).canPickQuality).isTrue()
+    }
 }

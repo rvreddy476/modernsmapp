@@ -30,4 +30,12 @@ class UsPostMoreCallbacks(
      * viewer is still looking.
      */
     val onDelete: () -> Unit = {},
+    /**
+     * Reels only: "Clear screen" / "Show controls" — the host flips its
+     * mode; the sheet has already left when this fires, so the frame that
+     * clears is the one the viewer is looking at.
+     */
+    val onClearScreen: () -> Unit = {},
+    /** Reels only: a rung of the quality picker was picked; the host applies and keeps it. */
+    val onSelectQuality: (UsReelQuality) -> Unit = {},
 )

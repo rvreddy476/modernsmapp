@@ -74,6 +74,9 @@ import kotlinx.coroutines.launch
  *  3. Unfollow @user / Follow · Block @user · Report (red, last)
  *
  * The viewer's own post shows group 1 and then "Delete post" (red, last).
+ * Opened from a REEL ([UsPostMoreState.reel]), a group of its own goes
+ * first — Description (unfolds the caption) · Clear screen / Show controls
+ * · Quality (unfolds the rendition picker) — and the rest follows unchanged.
  *
  * Which rows appear is [rowGroups]'s decision, pinned by its own test: the
  * viewer's own post shows group 1 and Delete, the relationship row needs a known
@@ -170,9 +173,12 @@ fun UsPostMoreSheet(
             when (ui.step) {
                 MoreStep.MENU -> MoreMenu(
                     state = state,
-                    reasonOpen = ui.reasonOpen,
-                    linkCopied = ui.linkCopied,
+                    ui = ui,
                     onRow = ::onRow,
+                    onSelectQuality = { quality ->
+                        ui.qualityOpen = false
+                        callbacks.onSelectQuality(quality)
+                    },
                 )
 
                 MoreStep.REPORT -> UsPostReportStep(
@@ -242,6 +248,8 @@ private val UsPostReportState.isSettled: Boolean
 private class MorePresentation {
     var step by mutableStateOf(MoreStep.MENU)
     var reasonOpen by mutableStateOf(false)
+    var descriptionOpen by mutableStateOf(false)
+    var qualityOpen by mutableStateOf(false)
     var confirmBlock by mutableStateOf(false)
     var confirmDelete by mutableStateOf(false)
     var linkCopied by mutableStateOf(false)
@@ -249,7 +257,8 @@ private class MorePresentation {
     /**
      * [leaveThen] slides the sheet away and then runs the action; the rows
      * that are complete on the tap use it. Save flips in place, Copy link
-     * shows its pill, Why expands, Block and Delete ask first, Report steps in.
+     * shows its pill, Why / Description / Quality expand, Block and Delete
+     * ask first, Report steps in, Clear screen leaves and then clears.
      */
     fun onRow(
         row: UsPostMoreRow,
@@ -258,6 +267,8 @@ private class MorePresentation {
         copyLink: () -> Unit,
     ) {
         when (row) {
+            UsPostMoreRow.DESCRIPTION, UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS, UsPostMoreRow.QUALITY ->
+                onReelRow(row, callbacks, leaveThen)
             UsPostMoreRow.SAVE, UsPostMoreRow.UNSAVE -> callbacks.onToggleSave()
             UsPostMoreRow.COPY_LINK -> {
                 copyLink()
@@ -274,6 +285,16 @@ private class MorePresentation {
             UsPostMoreRow.DELETE -> confirmDelete = true
         }
     }
+
+    /** The reel's group: Description and Quality unfold in place; Clear screen leaves and then clears. */
+    private fun onReelRow(row: UsPostMoreRow, callbacks: UsPostMoreCallbacks, leaveThen: (() -> Unit) -> Unit) {
+        when (row) {
+            UsPostMoreRow.DESCRIPTION -> descriptionOpen = !descriptionOpen
+            UsPostMoreRow.QUALITY -> qualityOpen = !qualityOpen
+            UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS -> leaveThen(callbacks.onClearScreen)
+            else -> error("not a reel row: $row")
+        }
+    }
 }
 
 // ── The menu ────────────────────────────────────────────────────────────
@@ -282,11 +303,12 @@ private class MorePresentation {
 @Composable
 private fun MoreMenu(
     state: UsPostMoreState,
-    reasonOpen: Boolean,
-    linkCopied: Boolean,
+    ui: MorePresentation,
     onRow: (UsPostMoreRow) -> Unit,
+    onSelectQuality: (UsReelQuality) -> Unit,
 ) {
     val delete = state.delete
+    val rowsEnabled = !state.busy && delete != UsPostDeleteState.Deleting
     Box(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
             val groups = state.rowGroups()
@@ -296,9 +318,11 @@ private fun MoreMenu(
                     MenuRow(
                         row = row,
                         state = state,
-                        reasonOpen = reasonOpen,
-                        enabled = !state.busy && delete != UsPostDeleteState.Deleting,
+                        ui = ui,
+                        // Quality with Auto alone is a fact, not a choice: the row stays, inert.
+                        enabled = rowsEnabled && (row != UsPostMoreRow.QUALITY || state.reel?.canPickQuality == true),
                         onClick = { onRow(row) },
+                        onSelectQuality = onSelectQuality,
                     )
                 }
             }
@@ -321,7 +345,7 @@ private fun MoreMenu(
             }
         }
         StatusPill(
-            visible = linkCopied,
+            visible = ui.linkCopied,
             text = "Link copied",
             testTag = "post_more_link_copied",
             modifier = Modifier.align(Alignment.TopCenter),
@@ -335,14 +359,21 @@ private fun MoreMenu(
     }
 }
 
-/** One row, and — for "Why you're seeing this post" — the sentence under it when open. */
+/**
+ * One row, and what unfolds under it when open: the "why" sentence, the
+ * reel's full caption, or the quality picker. The three expanders share one
+ * shape — a chevron at the right that turns over, the content indented to
+ * the label — so the sheet reads as one idiom, not three.
+ */
+@Suppress("LongMethod")
 @Composable
 private fun MenuRow(
     row: UsPostMoreRow,
     state: UsPostMoreState,
-    reasonOpen: Boolean,
+    ui: MorePresentation,
     enabled: Boolean,
     onClick: () -> Unit,
+    onSelectQuality: (UsReelQuality) -> Unit,
 ) {
     val red = UsTheme.extended.liveRed
     val (label, tint) = when (row) {
@@ -351,6 +382,7 @@ private fun MenuRow(
         UsPostMoreRow.REPORT, UsPostMoreRow.DELETE -> row.label to red
         else -> row.label to UsTheme.extended.textPrimary
     }
+    val reel = state.reel
     Column(modifier = Modifier.fillMaxWidth()) {
         SheetRow(
             icon = row.icon(),
@@ -358,35 +390,135 @@ private fun MenuRow(
             tint = tint,
             enabled = enabled,
             onClick = onClick,
-            trailing = if (row == UsPostMoreRow.WHY) {
-                { ExpandChevron(open = reasonOpen) }
-            } else {
-                null
+            trailing = when (row) {
+                UsPostMoreRow.WHY -> {
+                    { ExpandChevron(open = ui.reasonOpen) }
+                }
+                UsPostMoreRow.DESCRIPTION -> {
+                    { ExpandChevron(open = ui.descriptionOpen) }
+                }
+                UsPostMoreRow.QUALITY -> {
+                    { QualityValue(reel = reel, open = ui.qualityOpen) }
+                }
+                else -> null
             },
             testTag = "post_more_row:${row.name.lowercase()}",
         )
-        if (row == UsPostMoreRow.WHY) {
-            AnimatedVisibility(
-                visible = reasonOpen,
+        when (row) {
+            UsPostMoreRow.WHY -> Unfolded(open = ui.reasonOpen, text = state.reasonText, testTag = "post_more_reason")
+            UsPostMoreRow.DESCRIPTION -> Unfolded(
+                open = ui.descriptionOpen,
+                text = reel?.description.orEmpty(),
+                testTag = "post_more_description",
+            )
+            UsPostMoreRow.QUALITY -> AnimatedVisibility(
+                visible = ui.qualityOpen && reel != null,
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut(),
             ) {
+                QualityPicker(reel = reel, onSelect = onSelectQuality)
+            }
+            else -> Unit
+        }
+    }
+}
+
+/** The paragraph under an expander row, in the secondary step, indented to the label. */
+@Composable
+private fun Unfolded(open: Boolean, text: String, testTag: String) {
+    AnimatedVisibility(
+        visible = open,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut(),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textSecondary,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = REASON_INDENT, end = ROW_SIDE, bottom = UsTheme.spacing.l)
+                .testTag(testTag),
+        )
+    }
+}
+
+/** "Auto" / "720p" at the right of the Quality row, with the chevron only when there is a choice to make. */
+@Composable
+private fun QualityValue(reel: UsReelMoreState?, open: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ROW_GAP / 2)) {
+        Text(
+            text = (reel?.selected ?: UsReelQuality.Auto).label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.testTag("post_more_quality_value"),
+        )
+        if (reel?.canPickQuality == true) ExpandChevron(open = open)
+    }
+}
+
+/**
+ * The picker: one 44dp line per option, indented to the label, the chosen
+ * one marked with a check. Auto first, then the ladder tallest-first — the
+ * order [reelQualityOptions] fixed.
+ */
+@Composable
+private fun QualityPicker(reel: UsReelMoreState?, onSelect: (UsReelQuality) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(bottom = UsTheme.spacing.s)) {
+        reel?.qualities.orEmpty().forEach { option ->
+            val chosen = option == reel?.selected
+            val interaction = remember { MutableInteractionSource() }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(OPTION_HEIGHT)
+                    .sheetPressScale(interaction, scale = ROW_PRESS_SCALE)
+                    .clickable(
+                        interactionSource = interaction,
+                        indication = null,
+                        role = Role.RadioButton,
+                        onClick = { onSelect(option) },
+                    )
+                    .padding(start = REASON_INDENT, end = ROW_SIDE)
+                    .testTag("post_more_quality:${option.label.lowercase()}")
+                    .semantics { contentDescription = if (chosen) "${option.label}, selected" else option.label },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    text = state.reasonText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = UsTheme.extended.textSecondary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = REASON_INDENT, end = ROW_SIDE, bottom = UsTheme.spacing.l)
-                        .testTag("post_more_reason"),
+                    text = option.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontSize = ROW_TEXT_SIZE,
+                    color = if (chosen) UsTheme.extended.textPrimary else UsTheme.extended.textSecondary,
+                    modifier = Modifier.weight(1f),
                 )
+                if (chosen) {
+                    Icon(
+                        imageVector = UsIcons.Check,
+                        contentDescription = null,
+                        tint = UsTheme.extended.accentSolid,
+                        modifier = Modifier.size(CHEVRON_SIZE),
+                    )
+                }
             }
         }
     }
 }
 
-/** Lucide, one per row: bookmark · link · share · info · thumbs · user · ban · flag · trash. */
-private fun UsPostMoreRow.icon(): ImageVector = when (this) {
+/** Lucide, one per row: the reel's four (text · maximize · minimize · sliders), then the post's. */
+private fun UsPostMoreRow.icon(): ImageVector = reelIcon() ?: postIcon()
+
+private fun UsPostMoreRow.reelIcon(): ImageVector? = when (this) {
+    UsPostMoreRow.DESCRIPTION -> UsIcons.FileText
+    UsPostMoreRow.CLEAR_SCREEN -> UsIcons.Maximize
+    UsPostMoreRow.SHOW_CONTROLS -> UsIcons.Minimize
+    UsPostMoreRow.QUALITY -> UsIcons.Sliders
+    else -> null
+}
+
+/** bookmark · link · share · info · thumbs · user · ban · flag · trash. */
+private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
+    UsPostMoreRow.DESCRIPTION, UsPostMoreRow.CLEAR_SCREEN, UsPostMoreRow.SHOW_CONTROLS, UsPostMoreRow.QUALITY ->
+        error("a reel row: $this")
     UsPostMoreRow.SAVE -> UsIcons.BookmarkOutline
     UsPostMoreRow.UNSAVE -> UsIcons.BookmarkFilled
     UsPostMoreRow.COPY_LINK -> UsIcons.Link
@@ -648,6 +780,9 @@ private val HANDLE_TOP = 8.dp
 private val HANDLE_BOTTOM = 8.dp
 private val HAIRLINE = 1.dp
 private val ROW_HEIGHT = 52.dp
+
+/** A quality option is a line inside a row, not a row: 44dp, still a full target. */
+private val OPTION_HEIGHT = 44.dp
 private val ROW_SIDE = 18.dp
 private val ROW_GAP = 16.dp
 private val ROW_GLYPH = 22.dp
