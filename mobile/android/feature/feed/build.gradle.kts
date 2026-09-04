@@ -23,6 +23,9 @@ dependencies {
     // so the feed resolves one per row through the shared profile repository.
     // A core module: no feature-to-feature edge.
     implementation(projects.core.profile)
+    // FollowGraph needs the signed-in user id to hide Follow on the viewer's own
+    // posts. Read-only session view — a core module, no feature edge.
+    implementation(projects.core.auth)
     implementation(projects.core.engagement)
     // Slice D: the top-bar badge observes the SHARED unread count so the feed
     // and the inbox can never disagree about it. A core module, so no

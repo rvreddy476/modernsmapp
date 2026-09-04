@@ -3,7 +3,6 @@ package com.us.android.feature.feed.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,8 +11,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,8 +22,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -34,11 +29,8 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.time.formatRelativeTime
-import com.us.android.core.designsystem.component.UsBadgedIcon
-import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
@@ -48,6 +40,7 @@ import com.us.android.core.engagement.data.repostCountOr
 import com.us.android.core.engagement.data.repostedOr
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
 import com.us.android.core.ui.EngagementFailureBar
 import com.us.android.core.ui.PostActionState
@@ -60,6 +53,7 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberPostSharer
+import com.us.android.feature.feed.data.offersFollow
 import com.us.android.feature.feed.ui.comments.CommentsSheet
 
 /**
@@ -92,32 +86,14 @@ fun FeedScreen(
     val listStates = remember { FeedTab.entries.associateWith { LazyListState() } }
 
     UsScaffold(
-        // Momentum's header: search, Messages, the bell. Every one of them
-        // works — Search, New post and Messages were all rendered here once
-        // with empty click handlers, and were removed on the rule that a
-        // visible primary control which does nothing is worse than an absent
-        // one. Each callback is a REQUIRED parameter so none can be re-added
-        // inert. Create moved to the bottom bar's centre button.
+        // Momentum's header: search, Messages, the bell — the same header
+        // Reels, Friends and Me wear. Each callback is a REQUIRED parameter so
+        // none can be re-added inert. Create lives on the bar's centre button.
         topBar = {
-            UsHomeTopBar(
-                onHomeClick = { },
-                actions = {
-                    IconButton(onClick = onOpenSearch) {
-                        Icon(
-                            imageVector = UsIcons.Search,
-                            contentDescription = "Search",
-                            tint = UsTheme.extended.textPrimary,
-                        )
-                    }
-                    IconButton(onClick = onOpenMessages) {
-                        Icon(
-                            imageVector = UsIcons.Comment,
-                            contentDescription = "Messages",
-                            tint = UsTheme.extended.textPrimary,
-                        )
-                    }
-                    NotificationsAction(onClick = onOpenNotifications)
-                },
+            MomentumHeader(
+                onOpenSearch = onOpenSearch,
+                onOpenMessages = onOpenMessages,
+                onOpenNotifications = onOpenNotifications,
             )
         },
         applyPageGutter = false,
@@ -156,13 +132,18 @@ private val FOLLOWING_EMPTY = FeedEmptyCopy(
 )
 
 /**
- * A timeline body: the engagement failure bar, the paged card list, and the
- * comments sheet and the media viewer over it — everything below a top bar
+ * A timeline body: the engagement failure bar, the paged post list, and the
+ * comments sheet and the post viewer over it — everything below a top bar
  * that every feed surface shares. The ViewModel decides WHICH timeline; this
  * only renders it.
  *
- * Nothing here navigates. A card's media opens [FeedMediaViewer] in place,
- * comments open a sheet, and only the author's name leaves the screen.
+ * Nothing here navigates. A post's media opens [FeedPostViewer] in place —
+ * a pager over these SAME rows, starting at the tapped one — comments open
+ * a sheet, and only the author's name leaves the screen.
+ *
+ * [onMore] is the ⋮ on every post. Null until a host has a sheet to open;
+ * the card renders the glyph only when it is passed, so it can never ship
+ * as a control that does nothing.
  */
 @Composable
 internal fun FeedContent(
@@ -171,17 +152,19 @@ internal fun FeedContent(
     empty: FeedEmptyCopy,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
+    onMore: ((FeedItem) -> Unit)? = null,
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val pollVotes by viewModel.pollVotes.collectAsStateWithLifecycle()
     val failures by viewModel.failures.collectAsStateWithLifecycle()
+    val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
-    // The row whose media is open full screen. Plain remember, not saveable:
-    // a FeedItem is not parcelable, and a viewer that reopened itself after a
-    // process death over a feed that has since refreshed would show a row
-    // the reader may no longer be looking at.
-    var viewing by remember { mutableStateOf<FeedItem?>(null) }
+    // The row whose media is open in the viewer, by id AND index. Plain
+    // remember, not saveable: a viewer that reopened itself after a process
+    // death over a feed that has since refreshed would show a row the reader
+    // may no longer be looking at.
+    var viewing by remember { mutableStateOf<ViewerTarget?>(null) }
     val share = rememberPostSharer()
 
     // Two effects, deliberately. A refresh replaces the whole list with values
@@ -201,6 +184,27 @@ internal fun FeedContent(
         }
     }
 
+    val callbacks = remember(viewModel, onOpenAuthor, share, onMore) {
+        FeedRowCallbacks(
+            onOpenAuthor = onOpenAuthor,
+            onOpenComments = { commentsFor = it },
+            onReact = viewModel::onReact,
+            onBookmark = viewModel::onBookmark,
+            onRepost = viewModel::onRepost,
+            onVotePoll = viewModel::onVotePoll,
+            onFollow = viewModel::onFollow,
+            onShare = { item ->
+                share(item.text, item.author.nameForDisplay)
+                // Recorded only after the chooser was actually launched, and
+                // only here — the repost endpoint already records repost and
+                // quote shares, so counting this one through both would
+                // double it.
+                viewModel.onExternalShared(item.id)
+            },
+            onMore = onMore,
+        )
+    }
+
     Column(modifier = modifier) {
         EngagementFailureBar(
             failures = failures,
@@ -211,17 +215,12 @@ internal fun FeedContent(
             items = items,
             overlays = overlays,
             pollVotes = pollVotes,
-            onOpenMedia = { viewing = it },
-            onOpenAuthor = onOpenAuthor,
-            onOpenComments = { commentsFor = it },
-            onReact = viewModel::onReact,
-            onBookmark = viewModel::onBookmark,
-            onRepost = viewModel::onRepost,
-            onVotePoll = viewModel::onVotePoll,
-            onExternalShared = viewModel::onExternalShared,
+            followEdges = followEdges,
+            ownUserId = viewModel.ownUserId,
+            onOpenMedia = { index, item -> viewing = ViewerTarget(item.id, index) },
+            callbacks = callbacks,
             posterUrl = viewModel::posterUrl,
             mediaPages = viewModel::mediaPages,
-            share = share,
             listState = listState,
             empty = empty,
         )
@@ -234,53 +233,80 @@ internal fun FeedContent(
         CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
     }
 
-    // Likewise the media: full screen over the feed, back to the same row.
-    // The card state is rebuilt from the live overlay so a like made inside
-    // the viewer is the same like the card shows when it closes.
-    viewing?.let { item ->
-        FeedMediaViewer(
-            item = item,
-            state = item.toCardState(
-                overlays[item.id] ?: EngagementOverlay(),
-                viewModel.posterUrl(item),
-                viewModel.mediaPages(item),
-                pollVotes[item.id].orEmpty(),
-            ),
+    // Likewise the viewer: full window over the feed, back to the same row.
+    // It pages over the SAME items, so a like made inside it is the same
+    // like the row shows when it closes.
+    viewing?.let { target ->
+        FeedPostViewer(
+            items = items,
+            startPage = viewerStartPage(items.itemSnapshotList.items.map { it.id }, target.postId, target.index),
+            overlays = overlays,
+            pollVotes = pollVotes,
+            followEdges = followEdges,
+            ownUserId = viewModel.ownUserId,
+            callbacks = callbacks,
+            posterUrl = viewModel::posterUrl,
+            mediaPages = viewModel::mediaPages,
             onClose = { viewing = null },
-            onAuthorClick = { onOpenAuthor(item.author.id) },
-            onReact = { viewModel.onReact(item.id, item.viewer.hasReacted) },
-            onComment = { commentsFor = item.id },
-            onRepost = { viewModel.onRepost(item.id, item.viewer.hasReposted) },
-            onBookmark = { viewModel.onBookmark(item.id, item.viewer.isBookmarked) },
-            onShare = {
-                share(item.text, item.author.nameForDisplay)
-                viewModel.onExternalShared(item.id)
-            },
         )
     }
 }
 
+/** The post the viewer opened on: its id, and the index it was tapped at. */
+private data class ViewerTarget(val postId: String, val index: Int)
+
+/**
+ * Every row callback the list and the viewer share, hoisted ONCE.
+ *
+ * A bundle rather than flat parameters here on purpose: it is remembered, so
+ * its identity is stable across recompositions and the rows do not recompose
+ * for it. The per-row lambdas that close over an item are still created in
+ * the row, which is unavoidable and cheap.
+ */
+// One parameter per row action: the bundle IS the parameter list.
+@Suppress("LongParameterList")
+internal class FeedRowCallbacks(
+    val onOpenAuthor: (String) -> Unit,
+    val onOpenComments: (String) -> Unit,
+    val onReact: (postId: String, serverReacted: Boolean) -> Unit,
+    val onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
+    val onRepost: (postId: String, serverReposted: Boolean) -> Unit,
+    val onVotePoll: (postId: String, optionId: String) -> Unit,
+    val onFollow: (authorId: String) -> Unit,
+    val onShare: (FeedItem) -> Unit,
+    val onMore: ((FeedItem) -> Unit)?,
+)
+
+/**
+ * The page the viewer opens on.
+ *
+ * By id first: the pager is over the live paging snapshot, and between the
+ * tap and the viewer's first frame a refresh can shift every index. The
+ * tapped index is the fallback when the id is no longer in the list at all
+ * (the row was removed), clamped so the pager never asks for a page past
+ * the end.
+ */
+internal fun viewerStartPage(ids: List<String>, tappedId: String, tappedIndex: Int): Int {
+    val byId = ids.indexOf(tappedId)
+    if (byId >= 0) return byId
+    return tappedIndex.coerceIn(0, (ids.size - 1).coerceAtLeast(0))
+}
+
 // Flat callbacks rather than a bundled object: a data class of lambdas gets a
 // new identity on every recomposition, which would recompose every visible row.
-@Suppress("LongParameterList")
+@Suppress("LongParameterList", "LongMethod")
 @Composable
 private fun FeedList(
     items: LazyPagingItems<FeedItem>,
     overlays: Map<String, EngagementOverlay>,
     pollVotes: Map<String, Set<String>>,
-    /** The card's media was tapped: open it in place. */
-    onOpenMedia: (FeedItem) -> Unit,
-    onOpenAuthor: (String) -> Unit,
-    onOpenComments: (String) -> Unit,
-    onReact: (postId: String, serverReacted: Boolean) -> Unit,
-    onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
-    onRepost: (postId: String, serverReposted: Boolean) -> Unit,
-    onVotePoll: (postId: String, optionId: String) -> Unit,
-    onExternalShared: (String) -> Unit,
+    followEdges: Map<String, FollowStatus>,
+    ownUserId: String,
+    /** The row's media was tapped: open the viewer at that index. */
+    onOpenMedia: (index: Int, item: FeedItem) -> Unit,
+    callbacks: FeedRowCallbacks,
     posterUrl: (FeedItem) -> String?,
     mediaPages: (FeedItem) -> List<PostCardMediaPage>,
-    /** Hoisted: it resolves a Context and must not be re-created per row. */
-    share: (text: String, authorName: String?) -> Unit,
     listState: LazyListState,
     empty: FeedEmptyCopy,
     modifier: Modifier = Modifier,
@@ -306,31 +332,16 @@ private fun FeedList(
             modifier = modifier,
         )
 
-        // A scrollable column of compact cards, not a full-screen pager.
-        //
-        // The immersive one-post-per-screen presentation belongs to Reels,
-        // where every item is video. Applying it to the home timeline turns a
-        // two-line text post into a full screen of empty space and makes a
-        // mixed feed unreadable. ImmersivePostPage remains available in
-        // :core:ui for the surfaces that genuinely want it.
+        // A scrollable column of Instagram-laid-out posts, not a full-screen
+        // pager. The immersive one-post-per-screen presentation belongs to
+        // Reels, where every item is video; on a mixed feed it turns a
+        // two-line text post into a full screen of empty space.
         else -> LazyColumn(
             state = listState,
             modifier = modifier.fillMaxSize(),
-            // contentPadding, not Modifier.padding: padding the list shrinks
-            // the scroll viewport so cards are clipped at a hard inset edge
-            // mid-scroll. Padding the content lets them reach the real screen
-            // edges and insets only the first and last.
-            //
-            // Figma redesign: contained cards float on the canvas with a
-            // 20dp side gutter and 12dp between neighbours — the separation
-            // the old full-bleed rows drew as divider lines. Only 8dp above
-            // the first card and below the last: the tabs row and the bar
-            // are edges already, and the founder read the 16dp as a gap
-            // (phone screenshot, 2026-09-04).
-            contentPadding = PaddingValues(
-                horizontal = UsTheme.spacing.xxxxl,
-                vertical = UsTheme.spacing.m,
-            ),
+            // No side gutter, no top inset (founder, 2026-09-04): the posts run
+            // edge to edge like Instagram's, and the tabs row above is already
+            // an edge. 12dp between neighbours is the only separation.
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
             // `key` is what lets Compose keep an item's state across a page
@@ -349,27 +360,26 @@ private fun FeedList(
                         mediaPages(item),
                         pollVotes[item.id].orEmpty(),
                     ),
-                    // A tap opens the media in place; a text-only card has
-                    // nothing to open and does nothing. Never a push.
-                    onClick = { if (item.media.isNotEmpty()) onOpenMedia(item) },
-                    onAuthorClick = { onOpenAuthor(item.author.id) },
-                    onReact = { onReact(item.id, item.viewer.hasReacted) },
-                    onComment = { onOpenComments(item.id) },
-                    onRepost = { onRepost(item.id, item.viewer.hasReposted) },
-                    onBookmark = { onBookmark(item.id, item.viewer.isBookmarked) },
+                    // A tap on the media opens the viewer in place at this
+                    // row; a text-only post has no media and never fires it.
+                    onClick = { onOpenMedia(index, item) },
+                    onAuthorClick = { callbacks.onOpenAuthor(item.author.id) },
+                    onReact = { callbacks.onReact(item.id, item.viewer.hasReacted) },
+                    onComment = { callbacks.onOpenComments(item.id) },
+                    onRepost = { callbacks.onRepost(item.id, item.viewer.hasReposted) },
+                    onBookmark = { callbacks.onBookmark(item.id, item.viewer.isBookmarked) },
+                    onShare = { callbacks.onShare(item) },
                     onVotePoll = if (item.poll?.hasEnded == false) {
-                        { optionId -> onVotePoll(item.id, optionId) }
+                        { optionId -> callbacks.onVotePoll(item.id, optionId) }
                     } else {
                         null
                     },
-                    onShare = {
-                        share(item.text, item.author.nameForDisplay)
-                        // Recorded only after the chooser was actually
-                        // launched, and only here — the repost endpoint
-                        // already records repost/quote shares, so counting
-                        // this one through both would double it.
-                        onExternalShared(item.id)
+                    onFollow = if (offersFollow(ownUserId, item.author.id, followEdges[item.author.id])) {
+                        { callbacks.onFollow(item.author.id) }
+                    } else {
+                        null
                     },
+                    onMore = callbacks.onMore?.let { more -> { more(item) } },
                 )
             }
 
@@ -380,7 +390,6 @@ private fun FeedList(
     }
 }
 
-/** The footer: a spinner while appending, an inline retry when it failed. */
 @Composable
 private fun AppendState(state: LoadState, onRetry: () -> Unit) {
     when (state) {
@@ -419,7 +428,7 @@ private fun AppendState(state: LoadState, onRetry: () -> Unit) {
  * Membership in the set means "the user changed this since the page loaded",
  * which is why it is an XOR against the server value rather than a replacement.
  */
-private fun FeedItem.toCardState(
+internal fun FeedItem.toCardState(
     overlay: EngagementOverlay,
     posterUrl: String?,
     mediaPages: List<PostCardMediaPage>,
@@ -496,44 +505,3 @@ private fun FeedEmptyPreview() {
  */
 internal fun FeedMedia.aspectRatio(): Float =
     if (width > 0 && height > 0) width.toFloat() / height.toFloat() else DEFAULT_MEDIA_ASPECT
-
-/**
- * The notification bell, with its unread badge — Slice D.
- *
- * ## WHY THE BADGE IS A COUNT AND NOT A DOT
- *
- * A dot says "something happened". A number says how much, which is what
- * decides whether the user opens it now or later. Above 99 the badge shows
- * "99+": the exact number stops being useful long before it stops being
- * renderable, and a four-digit badge overflows the icon.
- *
- * The count is refreshed when the feed appears rather than polled. Polling a
- * count on a timer costs a request per interval per user forever, and the feed
- * is looked at often enough that the badge is never meaningfully stale.
- */
-@Composable
-private fun NotificationsAction(
-    onClick: () -> Unit,
-    viewModel: UnreadBadgeViewModel = hiltViewModel(),
-) {
-    val count by viewModel.count.collectAsStateWithLifecycle()
-
-    LaunchedEffect(Unit) { viewModel.refresh() }
-
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier.semantics {
-            // The badge is decorative to a screen reader; the COUNT belongs in
-            // the button's own description, because "Notifications" followed by
-            // a detached "3" is not a sentence.
-            contentDescription = when {
-                count <= 0 -> "Notifications"
-                count == 1 -> "Notifications, 1 unread"
-                else -> "Notifications, $count unread"
-            }
-        },
-    ) {
-        // Momentum's white 16dp badge with the count in the deep accent red.
-        UsBadgedIcon(icon = UsIcons.Notifications, count = count)
-    }
-}

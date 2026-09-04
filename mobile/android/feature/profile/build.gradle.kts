@@ -26,6 +26,9 @@ dependencies {
     // For Retrofit, the shared envelope and apiCall. This feature declares
     // endpoint interfaces; it never builds a client.
     implementation(projects.core.network)
+    // The Me tab wears the Momentum header, whose bell reads the shared unread
+    // count through UnreadBadgeViewModel. A core module, no feature edge.
+    implementation(projects.core.notifications)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)

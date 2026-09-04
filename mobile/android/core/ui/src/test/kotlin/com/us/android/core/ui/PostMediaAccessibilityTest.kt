@@ -55,7 +55,6 @@ class PostMediaAccessibilityTest {
                     url = "https://example.invalid/photo.jpg",
                     postType = "image",
                     count = 1,
-                    aspectRatio = 1f,
                     contentDescription = contentDescription,
                 )
             }

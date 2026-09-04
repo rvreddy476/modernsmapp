@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +35,7 @@ import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsMomentumHeader
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
@@ -44,11 +46,13 @@ import com.us.android.core.model.PersonalProfile
 import com.us.android.core.model.Profile
 import com.us.android.core.model.ProfileCounts
 import com.us.android.core.model.ProfileRelationship
+import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.UsStat
 import com.us.android.core.ui.UsStatRow
+import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
 
 /**
  * Profile screen — stateful entry point.
@@ -126,6 +130,12 @@ data class ProfileDestinations(
      * private account is not a control a viewer of that profile could reach.
      */
     val onOpenFollowRequests: (() -> Unit)? = null,
+    /**
+     * Present on the Me TAB only: it wears the Momentum header (wordmark,
+     * search, messages, bell) like every other top-level page. A pushed
+     * profile keeps the titled bar with its back arrow.
+     */
+    val header: MomentumHeaderDestinations? = null,
 )
 
 internal data class ProfileActions(
@@ -156,20 +166,29 @@ internal fun ProfileContent(
 ) {
     UsScaffold(
         modifier = modifier,
-        // The title tracks the loaded profile. While loading it stays generic
-        // rather than flashing a placeholder name that then changes.
         topBar = {
-            UsTopBar(
-                title = state.title(),
-                onBack = destinations.onBack,
-                actions = {
-                    if (destinations.onOpenSettings != null) {
-                        IconButton(onClick = destinations.onOpenSettings) {
-                            Icon(UsIcons.Settings, contentDescription = "Settings")
+            val header = destinations.header
+            if (header != null) {
+                // The Me tab: the same Momentum header as Home, Reels and
+                // Friends. Settings moves down beside "Edit profile" — the
+                // header is the app's, not this page's.
+                OwnProfileHeader(header)
+            } else {
+                // A pushed profile. The title tracks the loaded profile; while
+                // loading it stays generic rather than flashing a placeholder
+                // name that then changes.
+                UsTopBar(
+                    title = state.title(),
+                    onBack = destinations.onBack,
+                    actions = {
+                        if (destinations.onOpenSettings != null) {
+                            IconButton(onClick = destinations.onOpenSettings) {
+                                Icon(UsIcons.Settings, contentDescription = "Settings")
+                            }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            }
         },
         applyPageGutter = false,
     ) { padding ->
@@ -235,11 +254,27 @@ private fun LoadedProfile(
         // keyed off the access token — an edit control on someone else's page
         // would silently overwrite the viewer's own profile.
         if (profile.isOwnProfile && destinations.onEditProfile != null) {
-            UsSecondaryButton(
-                text = "Edit profile",
-                onClick = destinations.onEditProfile,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                UsSecondaryButton(
+                    text = "Edit profile",
+                    onClick = destinations.onEditProfile,
+                    modifier = Modifier.weight(1f),
+                )
+                // Settings sits here when the Momentum header owns the top
+                // bar; a pushed own-profile (no header) keeps it in the bar.
+                if (destinations.header != null && destinations.onOpenSettings != null) {
+                    IconButton(onClick = destinations.onOpenSettings) {
+                        Icon(
+                            imageVector = UsIcons.Settings,
+                            contentDescription = "Settings",
+                            tint = UsTheme.extended.textPrimary,
+                        )
+                    }
+                }
+            }
         }
 
         // Same gating as Edit profile, and for the same reason: approving
@@ -710,3 +745,26 @@ private fun ProfileErrorPreview() = PreviewHost(
 @Composable
 private fun ProfileErrorTerminalPreview() =
     PreviewHost(ProfileUiState.Error("This profile isn't available.", retryable = false))
+
+/**
+ * The Me tab's Momentum header with its live unread count. The pure layout
+ * is [UsMomentumHeader]; this only binds the badge, refreshed when the tab
+ * appears rather than polled — the same contract Home uses.
+ */
+@Composable
+private fun OwnProfileHeader(
+    header: MomentumHeaderDestinations,
+    viewModel: UnreadBadgeViewModel = hiltViewModel(),
+) {
+    val count by viewModel.count.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) { viewModel.refresh() }
+
+    UsMomentumHeader(
+        unreadCount = count,
+        onSearch = header.onOpenSearch,
+        onMessages = header.onOpenMessages,
+        onNotifications = header.onOpenNotifications,
+        modifier = Modifier.testTag("me_header"),
+    )
+}

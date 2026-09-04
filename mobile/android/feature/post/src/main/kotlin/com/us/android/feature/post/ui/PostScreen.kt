@@ -56,7 +56,6 @@ import com.us.android.core.model.PostCounts
 import com.us.android.core.model.PostMediaRef
 import com.us.android.core.model.PostViewerState
 import com.us.android.core.model.Profile
-import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
 import com.us.android.core.ui.EngagementFailureBar
 import com.us.android.core.ui.PostActionBar
 import com.us.android.core.ui.PostActionState
@@ -352,7 +351,6 @@ private fun CarouselPage(reference: PostMediaRef, delivery: MediaDelivery?) {
             url = delivery.posterUrl,
             postType = if (reference.kind == VIDEO_POST) VIDEO_POST else reference.kind,
             count = 1,
-            aspectRatio = delivery.aspectRatio ?: DEFAULT_MEDIA_ASPECT,
             contentDescription = reference.contentDescription,
         )
 

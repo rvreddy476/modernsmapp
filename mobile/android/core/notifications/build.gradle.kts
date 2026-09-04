@@ -21,6 +21,9 @@ dependencies {
     api(libs.firebase.messaging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    // UnreadBadgeViewModel: the Momentum header's badge, shared by every
+    // top-level page. ViewModel only — no Compose in this module.
+    implementation(libs.androidx.lifecycle.viewmodel)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

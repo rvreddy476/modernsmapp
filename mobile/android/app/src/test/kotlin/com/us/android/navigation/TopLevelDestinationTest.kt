@@ -34,7 +34,7 @@ class TopLevelDestinationTest {
         assertThat(TopLevelDestination.MESSAGES.rootRoute).isEqualTo(ChatInboxRoute)
         assertThat(TopLevelDestination.REELS.rootRoute).isEqualTo(ReelsRoute)
         assertThat(TopLevelDestination.FRIENDS.rootRoute).isEqualTo(FriendsFeedRoute)
-        assertThat(TopLevelDestination.EXPLORE.rootRoute).isEqualTo(ExploreRoute)
+        assertThat(TopLevelDestination.EXPLORE.rootRoute).isEqualTo(ExploreRoute())
         assertThat(TopLevelDestination.ME.rootRoute).isEqualTo(OwnProfileRoute)
     }
 

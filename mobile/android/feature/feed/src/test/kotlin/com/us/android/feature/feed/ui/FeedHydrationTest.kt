@@ -14,6 +14,7 @@ import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ErrorMapper
 import com.us.android.feature.feed.data.FeedRepository
+import com.us.android.feature.feed.data.followGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -91,6 +92,7 @@ class FeedHydrationTest {
             engagement = store,
             shares = EngagementRepository(UnusedEngagementApi(), ErrorMapper(json)),
             tabState = FeedTabState(),
+            follows = followGraph(),
         )
     }
 

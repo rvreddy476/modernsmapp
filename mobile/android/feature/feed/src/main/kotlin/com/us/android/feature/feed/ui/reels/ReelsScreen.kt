@@ -5,27 +5,22 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -38,11 +33,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -56,6 +51,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -68,8 +64,9 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
+import com.us.android.core.designsystem.component.UsAvatar
+import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
-import com.us.android.core.designsystem.modifier.usMediaScrim
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
@@ -78,17 +75,24 @@ import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.model.FeedItem
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.formatCount
 import com.us.android.core.ui.rememberPostSharer
+import com.us.android.feature.feed.data.offersFollow
+import com.us.android.feature.feed.ui.MomentumHeader
 import com.us.android.feature.feed.ui.comments.CommentsSheet
 import java.io.File
 
 /**
- * The reels surface: a full-screen vertical pager of short video, under two
- * labels — For You, Following — laid over the top of the video.
+ * The reels surface: Instagram Reels on Momentum's palette (founder,
+ * 2026-09-04). A full-screen vertical pager of short video; the Momentum
+ * header laid over the top on a translucent scrim; the right rail —
+ * like, comment, share, save, more, mute — bottom-right; the author,
+ * Follow and the caption bottom-left over a bottom scrim. No For You /
+ * Following tabs: Reels is one surface.
  *
  * This is the screen the native migration was justified by, and its behaviour
  * is deliberately narrow:
@@ -103,26 +107,30 @@ import java.io.File
  *    released when the screen is destroyed. A leaked ExoPlayer holds a decoder
  *    session and audio focus, which can stop the NEXT video playing at all.
  *
- * A reel the viewer just posted sits ABOVE page 0 of either tab as the
- * [ReelsHead]: its cover under a round loader while it posts, the real reel
- * the moment it exists. No banner anywhere — the item IS the progress.
+ * A reel the viewer just posted sits ABOVE page 0 as the [ReelsHead]: its
+ * cover under a round loader while it posts, the real reel the moment it
+ * exists. No banner anywhere — the item IS the progress.
+ *
+ * [onMore] is the rail's ⋮. Null until a host has a sheet to open; the rail
+ * draws the glyph only when it is passed.
  */
 @Composable
 fun ReelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenSearch: () -> Unit,
+    onOpenMessages: () -> Unit,
+    onOpenNotifications: () -> Unit,
+    onMore: ((FeedItem) -> Unit)? = null,
     viewModel: ReelsViewModel = hiltViewModel(),
 ) {
-    val tab by viewModel.tab.collectAsStateWithLifecycle()
     val head by viewModel.head.collectAsStateWithLifecycle()
     val muted by viewModel.muted.collectAsStateWithLifecycle()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
+    val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     val items = viewModel.items.collectAsLazyPagingItems()
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     val share = rememberPostSharer()
-    // One saved scroll position PER TAB: For You's page applied to Following
-    // would drop the viewer mid-list in a feed they have not scrolled.
-    val tabStates = rememberSaveableStateHolder()
 
     ReleaseOnLifecycle(pool)
 
@@ -131,14 +139,16 @@ fun ReelsScreen(
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        tabStates.SaveableStateProvider(tab) {
-            ReelsBody(
-                items = items,
-                head = head,
-                pool = pool,
-                muted = muted,
-                overlays = overlays,
-                playbackFor = viewModel::playback,
+        ReelsBody(
+            items = items,
+            head = head,
+            pool = pool,
+            muted = muted,
+            overlays = overlays,
+            followEdges = followEdges,
+            ownUserId = viewModel.ownUserId,
+            playbackFor = viewModel::playback,
+            actions = ReelActions(
                 onToggleMute = viewModel::toggleMuted,
                 onOpenAuthor = onOpenAuthor,
                 onReact = viewModel::onReact,
@@ -148,16 +158,23 @@ fun ReelsScreen(
                     share(item.text, item.author.nameForDisplay)
                     viewModel.onExternalShared(item.id)
                 },
+                onFollow = viewModel::onFollow,
+                onMore = onMore,
+                onShown = viewModel::onReelShown,
                 onRetryPublish = viewModel::retryPublish,
                 onDiscardPublish = viewModel::discardPublish,
-            )
-        }
-        ReelsTabsRow(
-            selected = tab,
-            onSelect = viewModel::selectTab,
+            ),
+        )
+        // The Momentum header over the video: wordmark, search (scoped to
+        // reels by the host), messages, the bell — on its own scrim.
+        MomentumHeader(
+            onOpenSearch = onOpenSearch,
+            onOpenMessages = onOpenMessages,
+            onOpenNotifications = onOpenNotifications,
+            translucent = true,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .statusBarsPadding(),
+                .testTag("reels_header"),
         )
     }
 
@@ -169,64 +186,26 @@ fun ReelsScreen(
 }
 
 /**
- * "For You | Following" over the video, Instagram-style: two labels, the
- * active one white over a short white underline, the other muted. Both are
- * `Role.Tab` in one selectable group so TalkBack reads "For You, tab, 1 of
- * 2, selected" rather than two unrelated buttons.
+ * Every per-reel callback, hoisted once. A class rather than flat lambdas
+ * through three layers of pager: the bundle is built once per screen and
+ * its identity is stable, so it is not what recomposes a page.
  */
-@Composable
-private fun ReelsTabsRow(
-    selected: ReelsTab,
-    onSelect: (ReelsTab) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .padding(top = UsTheme.spacing.m)
-            .selectableGroup()
-            .testTag("reels_tabs"),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxxl),
-    ) {
-        ReelsTab.entries.forEach { tab ->
-            val active = tab == selected
-            // The column is as wide as its label, so the underline matches it:
-            // a full-width bar under a short word reads as a border, not a
-            // selection.
-            Column(
-                modifier = Modifier
-                    .width(IntrinsicSize.Max)
-                    // No ripple over video — the label's colour is the state.
-                    .selectable(
-                        selected = active,
-                        role = Role.Tab,
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { onSelect(tab) },
-                    )
-                    .padding(horizontal = UsTheme.spacing.xs, vertical = UsTheme.spacing.s),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = tab.label,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold,
-                    color = if (active) Color.White else Color.White.copy(alpha = TAB_INACTIVE_ALPHA),
-                    maxLines = 1,
-                )
-                // Always laid out, transparent when inactive, so the label does
-                // not shift by 2dp when the selection moves.
-                Box(
-                    modifier = Modifier
-                        .padding(top = TAB_UNDERLINE_GAP)
-                        .width(TAB_UNDERLINE_WIDTH)
-                        .height(TAB_UNDERLINE_HEIGHT)
-                        .clip(RoundedCornerShape(UsTheme.radii.full))
-                        .background(if (active) Color.White else Color.Transparent),
-                )
-            }
-        }
-    }
-}
+// One parameter per reel action: the bundle IS the parameter list.
+@Suppress("LongParameterList")
+internal class ReelActions(
+    val onToggleMute: () -> Unit,
+    val onOpenAuthor: (String) -> Unit,
+    val onReact: (postId: String, serverReacted: Boolean) -> Unit,
+    val onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
+    val onComment: (postId: String) -> Unit,
+    val onShare: (FeedItem) -> Unit,
+    val onFollow: (authorId: String) -> Unit,
+    val onMore: ((FeedItem) -> Unit)?,
+    /** The pager settled on this reel. */
+    val onShown: (FeedItem) -> Unit,
+    val onRetryPublish: () -> Unit,
+    val onDiscardPublish: () -> Unit,
+)
 
 /**
  * The loading / error / empty states, or the pager. A pending or live head
@@ -241,15 +220,10 @@ private fun ReelsBody(
     pool: PlayerPool,
     muted: Boolean,
     overlays: Map<String, EngagementOverlay>,
+    followEdges: Map<String, FollowStatus>,
+    ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
-    onToggleMute: () -> Unit,
-    onOpenAuthor: (String) -> Unit,
-    onReact: (postId: String, serverReacted: Boolean) -> Unit,
-    onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
-    onComment: (postId: String) -> Unit,
-    onShare: (FeedItem) -> Unit,
-    onRetryPublish: () -> Unit,
-    onDiscardPublish: () -> Unit,
+    actions: ReelActions,
 ) {
     val refresh = items.loadState.refresh
     val empty = items.itemCount == 0 && head == null
@@ -272,15 +246,10 @@ private fun ReelsBody(
             pool = pool,
             muted = muted,
             overlays = overlays,
+            followEdges = followEdges,
+            ownUserId = ownUserId,
             playbackFor = playbackFor,
-            onToggleMute = onToggleMute,
-            onOpenAuthor = onOpenAuthor,
-            onReact = onReact,
-            onBookmark = onBookmark,
-            onComment = onComment,
-            onShare = onShare,
-            onRetryPublish = onRetryPublish,
-            onDiscardPublish = onDiscardPublish,
+            actions = actions,
         )
     }
 }
@@ -293,15 +262,10 @@ private fun ReelsPager(
     pool: PlayerPool,
     muted: Boolean,
     overlays: Map<String, EngagementOverlay>,
+    followEdges: Map<String, FollowStatus>,
+    ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
-    onToggleMute: () -> Unit,
-    onOpenAuthor: (String) -> Unit,
-    onReact: (postId: String, serverReacted: Boolean) -> Unit,
-    onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
-    onComment: (postId: String) -> Unit,
-    onShare: (FeedItem) -> Unit,
-    onRetryPublish: () -> Unit,
-    onDiscardPublish: () -> Unit,
+    actions: ReelActions,
 ) {
     val pageCount = items.itemCount + if (head != null) 1 else 0
     val pagerState = rememberPagerState(pageCount = { pageCount })
@@ -313,7 +277,10 @@ private fun ReelsPager(
     // through five reels must start one playback, not five.
     LaunchedEffect(pagerState.settledPage, pageCount, head) {
         val current = pagerState.settledPage
-        reelAt(current)?.let(playbackFor)?.let { pool.acquire(current, it) }
+        reelAt(current)?.let { reel ->
+            playbackFor(reel)?.let { pool.acquire(current, it) }
+            actions.onShown(reel)
+        }
         pool.playOnly(current)
         listOf(current - 1, current + 1).forEach { index ->
             reelAt(index)?.let(playbackFor)?.let { pool.preload(index, it) }
@@ -330,7 +297,11 @@ private fun ReelsPager(
         when (val content = pageAt(page, head, items, load = true)) {
             null -> Unit
             is ReelsPage.Pending ->
-                PendingReelPage(head = content.head, onRetry = onRetryPublish, onDiscard = onDiscardPublish)
+                PendingReelPage(
+                    head = content.head,
+                    onRetry = actions.onRetryPublish,
+                    onDiscard = actions.onDiscardPublish,
+                )
 
             is ReelsPage.Reel -> {
                 val item = content.item
@@ -338,15 +309,11 @@ private fun ReelsPager(
                     item = item,
                     playback = playbackFor(item),
                     overlay = overlays[item.id] ?: EngagementOverlay(),
+                    offersFollow = offersFollow(ownUserId, item.author.id, followEdges[item.author.id]),
                     pool = pool,
                     page = page,
                     muted = muted,
-                    onToggleMute = onToggleMute,
-                    onOpenAuthor = onOpenAuthor,
-                    onReact = { onReact(item.id, item.viewer.hasReacted) },
-                    onBookmark = { onBookmark(item.id, item.viewer.isBookmarked) },
-                    onComment = { onComment(item.id) },
-                    onShare = { onShare(item) },
+                    actions = actions,
                 )
             }
         }
@@ -412,6 +379,7 @@ private fun PendingReelPage(
                 modifier = Modifier.fillMaxSize(),
             )
         }
+        BottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
         if (head.failure == null) {
             CircularProgressIndicator(
                 color = Color.White,
@@ -427,9 +395,8 @@ private fun PendingReelPage(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .usMediaScrim()
-                .padding(horizontal = UsTheme.spacing.pageHorizontal)
-                .padding(top = REEL_SCRIM_RAMP, bottom = UsTheme.spacing.pageHorizontal),
+                .padding(horizontal = OVERLAY_SIDE)
+                .padding(bottom = OVERLAY_BOTTOM),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         ) {
             head.failure?.let { failure ->
@@ -440,7 +407,7 @@ private fun PendingReelPage(
                     text = head.caption,
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White,
-                    maxLines = CAPTION_MAX_LINES,
+                    maxLines = CAPTION_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -457,7 +424,7 @@ private fun PublishFailureStrip(
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
-            .background(Color.Black.copy(alpha = RAIL_PLATE_ALPHA))
+            .background(Color.Black.copy(alpha = STRIP_PLATE_ALPHA))
             .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
             .testTag("reel_pending_failure"),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
@@ -484,7 +451,7 @@ private fun StripDot() {
     Text(
         text = "·",
         style = MaterialTheme.typography.labelLarge,
-        color = Color.White.copy(alpha = TAB_INACTIVE_ALPHA),
+        color = Color.White.copy(alpha = DIM_ALPHA),
     )
 }
 
@@ -509,15 +476,11 @@ private fun ReelPage(
     item: FeedItem,
     playback: Playback?,
     overlay: EngagementOverlay,
+    offersFollow: Boolean,
     pool: PlayerPool,
     page: Int,
     muted: Boolean,
-    onToggleMute: () -> Unit,
-    onOpenAuthor: (String) -> Unit,
-    onReact: () -> Unit,
-    onBookmark: () -> Unit,
-    onComment: () -> Unit,
-    onShare: () -> Unit,
+    actions: ReelActions,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         if (playback != null) {
@@ -542,9 +505,17 @@ private fun ReelPage(
             )
         }
 
+        // The bottom 40% of the page darkens under BOTH the caption and the
+        // rail. The scrim goes on the page, not the text, so it also covers
+        // the padding — a caption whose descenders fall outside the dark area
+        // is exactly as unreadable as one with no scrim at all.
+        BottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
+
         ReelOverlay(
             item = item,
-            onOpenAuthor = onOpenAuthor,
+            offersFollow = offersFollow,
+            onOpenAuthor = actions.onOpenAuthor,
+            onFollow = { actions.onFollow(item.author.id) },
             modifier = Modifier.align(Alignment.BottomStart),
         )
 
@@ -556,38 +527,37 @@ private fun ReelPage(
             item = item,
             overlay = overlay,
             muted = muted,
-            onToggleMute = onToggleMute,
-            onReact = onReact,
-            onBookmark = onBookmark,
-            onComment = onComment,
-            onShare = onShare,
+            actions = actions,
             modifier = Modifier.align(Alignment.BottomEnd),
         )
     }
 }
 
+/** Transparent at 60% of the height, black at 70% by the bottom edge. */
+@Composable
+private fun BottomScrim(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .fillMaxHeight(SCRIM_FRACTION)
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = SCRIM_ALPHA)))),
+    )
+}
+
 /**
- * The vertical control strip over a reel.
- *
- * Icons only, each on a translucent dark disc. The first attempt used
- * `Modifier.shadow` on the glyph instead, on the theory that a plate would
- * fight the caption scrim; on a device that drew a hard elevation disc behind
- * the icon that was more obtrusive than any plate. A soft circle is both more
- * legible over a white frame and quieter.
+ * The vertical control strip over a reel, Instagram's order: like with its
+ * count, comment with its count, share, save, ⋮, then mute. 56dp from the
+ * bottom, 20dp between controls. Plain white glyphs on the bottom scrim —
+ * no discs; the scrim carries the contrast for the whole strip.
  *
  * Comment and share follow the author's switches — see [railVisibility].
  */
-@Suppress("LongParameterList")
 @Composable
 private fun ReelActionRail(
     item: FeedItem,
     overlay: EngagementOverlay,
     muted: Boolean,
-    onToggleMute: () -> Unit,
-    onReact: () -> Unit,
-    onBookmark: () -> Unit,
-    onComment: () -> Unit,
-    onShare: () -> Unit,
+    actions: ReelActions,
     modifier: Modifier = Modifier,
 ) {
     val rail = item.controls.railVisibility()
@@ -595,24 +565,24 @@ private fun ReelActionRail(
     val bookmarked = overlay.bookmarkedOr(item.viewer.isBookmarked)
     Column(
         modifier = modifier
-            .padding(end = UsTheme.spacing.l, bottom = RAIL_BOTTOM_INSET)
+            .padding(end = UsTheme.spacing.m, bottom = RAIL_BOTTOM_INSET)
             .testTag("reel_rail"),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        verticalArrangement = Arrangement.spacedBy(RAIL_GAP),
     ) {
         RailButton(
             icon = if (reacted) UsIcons.HeartFilled else UsIcons.HeartOutline,
             description = if (reacted) "Liked" else "Like",
             count = overlay.likeCountOr(item.counts.likes, item.viewer.hasReacted),
             tint = if (reacted) UsTheme.extended.liveRed else Color.White,
-            onClick = onReact,
+            onClick = { actions.onReact(item.id, item.viewer.hasReacted) },
         )
         if (rail.showComment) {
             RailButton(
                 icon = UsIcons.Comment,
                 description = "Comments",
                 count = item.counts.comments,
-                onClick = onComment,
+                onClick = { actions.onComment(item.id) },
             )
         }
         if (rail.showShare) {
@@ -620,7 +590,7 @@ private fun ReelActionRail(
                 icon = UsIcons.Share,
                 description = "Share",
                 count = null,
-                onClick = onShare,
+                onClick = { actions.onShare(item) },
             )
         }
         RailButton(
@@ -628,13 +598,21 @@ private fun ReelActionRail(
             description = if (bookmarked) "Saved" else "Save",
             count = null,
             tint = if (bookmarked) UsTheme.extended.statusWarning else Color.White,
-            onClick = onBookmark,
+            onClick = { actions.onBookmark(item.id, item.viewer.isBookmarked) },
         )
+        actions.onMore?.let { more ->
+            RailButton(
+                icon = UsIcons.More,
+                description = "More",
+                count = null,
+                onClick = { more(item) },
+            )
+        }
         RailButton(
             icon = if (muted) UsIcons.SoundOff else UsIcons.SoundOn,
             description = if (muted) "Unmute" else "Mute",
             count = null,
-            onClick = onToggleMute,
+            onClick = actions.onToggleMute,
         )
     }
 }
@@ -652,7 +630,6 @@ private fun RailButton(
         modifier = Modifier
             .pressScale(onClick)
             .sizeIn(minWidth = RAIL_TARGET, minHeight = RAIL_TARGET)
-            .padding(vertical = UsTheme.spacing.s)
             .clearAndSetSemantics {
                 contentDescription = if (count != null) "$description, $count" else description
                 role = Role.Button
@@ -663,17 +640,14 @@ private fun RailButton(
             imageVector = icon,
             contentDescription = null,
             tint = tint,
-            modifier = Modifier
-                // The disc, not the glyph, carries the contrast. A bare white
-                // icon vanishes against a white frame no matter its weight.
-                .background(Color.Black.copy(alpha = RAIL_PLATE_ALPHA), CircleShape)
-                .padding(UsTheme.spacing.m)
-                .size(RAIL_ICON),
+            modifier = Modifier.size(RAIL_ICON),
         )
         if (count != null && count > 0) {
             Text(
                 text = formatCount(count),
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelMedium,
+                fontSize = RAIL_COUNT_SIZE,
+                fontWeight = FontWeight.SemiBold,
                 color = Color.White,
             )
         }
@@ -703,57 +677,116 @@ private fun Modifier.pressScale(onClick: () -> Unit): Modifier {
 }
 
 /**
- * Author and caption, bottom-left.
+ * Bottom-left, Instagram's order: a 32dp avatar, the username, the outlined
+ * Follow pill (only when the viewer is known not to follow, never on the
+ * viewer's own reel), then the caption clamped to two lines with "more".
  *
- * Holds no controls. Everything actionable moved to [ReelActionRail]; text and
- * targets interleaved in one column made the caption look tappable and the
- * buttons look like part of the sentence.
+ * No "♪ Original audio" line: a feed row carries no audio metadata today,
+ * and printing a label for a fact the server has not stated would be
+ * decoration pretending to be information. It appears the day the row
+ * carries a track.
+ *
+ * Holds no rail controls. Text and targets interleaved in one column made
+ * the caption look tappable and the buttons look like part of the sentence.
  */
 @Composable
 private fun ReelOverlay(
     item: FeedItem,
+    offersFollow: Boolean,
     onOpenAuthor: (String) -> Unit,
+    onFollow: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    var overflowed by remember(item.id) { mutableStateOf(false) }
+    val username = item.author.username?.takeIf { it.isNotBlank() } ?: item.author.nameForDisplay
     Column(
         modifier = modifier
             .fillMaxWidth()
-            // The scrim goes on the container, not the text, so it also covers
-            // the padding — a caption whose descenders fall outside the dark
-            // area is exactly as unreadable as one with no scrim at all.
-            .usMediaScrim()
-            .padding(horizontal = UsTheme.spacing.pageHorizontal)
-            // Extra top room gives the gradient somewhere to ramp, so the
-            // scrim fades in instead of starting at a visible line.
-            .padding(top = REEL_SCRIM_RAMP, bottom = UsTheme.spacing.pageHorizontal),
+            .padding(start = OVERLAY_SIDE, end = OVERLAY_RAIL_CLEARANCE, bottom = OVERLAY_BOTTOM)
+            .testTag("reel_overlay"),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
-        // The name is the way to the author's profile. A separate "View
-        // author" button restated what tapping a name already means on every
-        // social surface ever shipped.
-        Text(
-            text = item.author.nameForDisplay,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = Color.White,
-            modifier = Modifier
-                .clip(RoundedCornerShape(UsTheme.radii.small))
-                .clickable(
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        ) {
+            // The avatar and the name are the way to the author's profile.
+            UsAvatar(
+                name = item.author.nameForDisplay,
+                seed = item.author.id,
+                size = UsAvatarSize.Small,
+                modifier = Modifier.clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                ) { onOpenAuthor(item.author.id) }
-                .semantics { role = Role.Button },
-        )
+                ) { onOpenAuthor(item.author.id) },
+            )
+            Text(
+                text = username,
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = NAME_SIZE,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { onOpenAuthor(item.author.id) }
+                    .semantics { role = Role.Button },
+            )
+            if (offersFollow) {
+                FollowPill(onClick = onFollow)
+            }
+        }
         if (item.text.isNotBlank()) {
             Text(
                 text = item.text,
                 style = MaterialTheme.typography.bodyMedium,
+                fontSize = NAME_SIZE,
                 color = Color.White,
-                maxLines = CAPTION_MAX_LINES,
+                maxLines = if (expanded) Int.MAX_VALUE else CAPTION_LINES,
                 overflow = TextOverflow.Ellipsis,
+                onTextLayout = { if (!expanded) overflowed = it.hasVisualOverflow },
             )
+            if (overflowed || expanded) {
+                Text(
+                    text = if (expanded) "less" else "more",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White.copy(alpha = DIM_ALPHA),
+                    modifier = Modifier
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { expanded = !expanded }
+                        .semantics { role = Role.Button }
+                        .testTag("reel_caption_toggle"),
+                )
+            }
         }
     }
+}
+
+/** Instagram's outlined Follow: a 1dp white hairline, white label, 6dp corners. */
+@Composable
+private fun FollowPill(onClick: () -> Unit) {
+    val shape = RoundedCornerShape(UsTheme.radii.pill)
+    Text(
+        text = "Follow",
+        style = MaterialTheme.typography.labelMedium,
+        fontSize = PILL_TEXT,
+        fontWeight = FontWeight.SemiBold,
+        color = Color.White,
+        modifier = Modifier
+            .clip(shape)
+            .border(PILL_BORDER, Color.White, shape)
+            .pressScale(onClick)
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
+            .semantics { role = Role.Button }
+            .testTag("reel_follow"),
+    )
 }
 
 /**
@@ -778,30 +811,33 @@ private fun ReleaseOnLifecycle(pool: PlayerPool) {
     }
 }
 
-private const val CAPTION_MAX_LINES = 3
+/** Instagram clamps the reel caption to two lines before "more". */
+private const val CAPTION_LINES = 2
 
-/**
- * How far above the caption the scrim starts fading in.
- *
- * Not a spacing token: this is the length of a gradient ramp, not a gap between
- * elements, and tying it to a layout token would make it change for reasons
- * that have nothing to do with legibility.
- */
-private val REEL_SCRIM_RAMP = 72.dp
+/** The bottom scrim covers the lowest 40% of the page. */
+private const val SCRIM_FRACTION = 0.4f
+private const val SCRIM_ALPHA = 0.7f
 
-/**
- * Keeps the rail clear of the caption block below it.
- *
- * Larger than it looks it needs to be: the caption can run to three lines, and
- * a rail that overlaps the last line of someone's text is worse than one
- * sitting slightly high on a short caption.
- */
-private val RAIL_BOTTOM_INSET = 132.dp
+/** The rail's bottom edge: 56dp up from the page's bottom. */
+private val RAIL_BOTTOM_INSET = 56.dp
+
+/** 20dp between rail controls. */
+private val RAIL_GAP = 20.dp
 
 /** Comfortably past the 48dp minimum — this is a one-thumb surface. */
-private val RAIL_TARGET = 56.dp
+private val RAIL_TARGET = 48.dp
 
-private val RAIL_ICON = 26.dp
+private val RAIL_ICON = 28.dp
+private val RAIL_COUNT_SIZE = 12.sp
+
+private val OVERLAY_SIDE = 16.dp
+private val OVERLAY_BOTTOM = 56.dp
+
+/** The overlay stops short of the rail so a long name never runs under it. */
+private val OVERLAY_RAIL_CLEARANCE = 72.dp
+private val NAME_SIZE = 14.sp
+private val PILL_TEXT = 12.sp
+private val PILL_BORDER = 1.dp
 
 /**
  * Dark enough to read as neutral over ANY frame.
@@ -810,16 +846,13 @@ private val RAIL_ICON = 26.dp
  * olive and looked like a rendering artefact rather than a control. The plate
  * has to dominate the pixels behind it or it should not be there.
  */
-private const val RAIL_PLATE_ALPHA = 0.55f
+private const val STRIP_PLATE_ALPHA = 0.55f
 
 private const val PRESS_SCALE = 0.85f
 private const val PRESS_STIFFNESS = 1200f
 
-/** The inactive tab label over video: legible, clearly not the one selected. */
-private const val TAB_INACTIVE_ALPHA = 0.6f
-private val TAB_UNDERLINE_WIDTH = 24.dp
-private val TAB_UNDERLINE_HEIGHT = 2.dp
-private val TAB_UNDERLINE_GAP = 6.dp
+/** Secondary text over video: legible, clearly quieter than the caption. */
+private const val DIM_ALPHA = 0.7f
 
 /** The pending item's round loader: a 48dp ring, no number in it. */
 private val LOADER_SIZE = 48.dp

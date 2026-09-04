@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
@@ -150,12 +151,18 @@ fun UsRootTopBar(
 /**
  * Momentum's home top bar: the wordmark on the left, action slots on the
  * right (search, messages, and the bell with its [UsBadgedIcon] count).
+ *
+ * [translucent] is the Reels variant: the same bar laid OVER the video on a
+ * top-to-bottom black 50% → 0 scrim. The scrim is drawn by the bar itself so
+ * every host that overlays it gets the same ramp, and the wordmark stays
+ * legible over a white frame.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UsHomeTopBar(
     onHomeClick: () -> Unit = {},
     modifier: Modifier = Modifier,
+    translucent: Boolean = false,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     TopAppBar(
@@ -176,8 +183,82 @@ fun UsHomeTopBar(
             containerColor = Color.Transparent,
             scrolledContainerColor = Color.Transparent,
         ),
-        modifier = modifier,
+        modifier = if (translucent) modifier.background(TranslucentHeaderScrim) else modifier,
     )
+}
+
+/**
+ * The Momentum header every top-level page wears — Home, Reels, Friends and
+ * Me (founder, 2026-09-04): the wordmark, then search, messages and the bell
+ * with its unread count. One composable so the four pages cannot drift.
+ *
+ * Every callback is REQUIRED. Search, New post and Messages were once
+ * rendered on Home with empty click handlers and shipped inert; they were
+ * removed on the rule that a visible primary control which does nothing is
+ * worse than an absent one, and a required parameter is what stops that
+ * recurring by omission.
+ *
+ * [unreadCount] is the bell's badge. The count goes in the button's own
+ * description — "Notifications" followed by a detached "3" is not a sentence
+ * — and the badge itself is decorative to a screen reader.
+ */
+@Composable
+fun UsMomentumHeader(
+    unreadCount: Int,
+    onSearch: () -> Unit,
+    onMessages: () -> Unit,
+    onNotifications: () -> Unit,
+    modifier: Modifier = Modifier,
+    onHomeClick: () -> Unit = {},
+    translucent: Boolean = false,
+) {
+    // Over video the glyphs are plain white; the text ramp is tuned for the
+    // navy ground, not for an arbitrary frame.
+    val tint = if (translucent) Color.White else UsTheme.extended.textPrimary
+    UsHomeTopBar(
+        onHomeClick = onHomeClick,
+        modifier = modifier,
+        translucent = translucent,
+        actions = {
+            IconButton(onClick = onSearch) {
+                Icon(imageVector = UsIcons.Search, contentDescription = "Search", tint = tint)
+            }
+            IconButton(onClick = onMessages) {
+                Icon(imageVector = UsIcons.Comment, contentDescription = "Messages", tint = tint)
+            }
+            IconButton(
+                onClick = onNotifications,
+                modifier = Modifier.semantics {
+                    contentDescription = when {
+                        unreadCount <= 0 -> "Notifications"
+                        unreadCount == 1 -> "Notifications, 1 unread"
+                        else -> "Notifications, $unreadCount unread"
+                    }
+                },
+            ) {
+                UsBadgedIcon(icon = UsIcons.Notifications, count = unreadCount, tint = tint)
+            }
+        },
+    )
+}
+
+/** Black at half strength on the top edge, gone by the bar's bottom. */
+private val TranslucentHeaderScrim: Brush = Brush.verticalGradient(
+    listOf(Color.Black.copy(alpha = 0.5f), Color.Transparent),
+)
+
+@Preview(name = "Momentum header", showBackground = true, backgroundColor = 0xFF041122)
+@Composable
+private fun UsMomentumHeaderPreview() {
+    UsTheme { UsMomentumHeader(unreadCount = 3, onSearch = {}, onMessages = {}, onNotifications = {}) }
+}
+
+@Preview(name = "Momentum header — over media", showBackground = true, backgroundColor = 0xFF9A9A9A)
+@Composable
+private fun UsMomentumHeaderTranslucentPreview() {
+    UsTheme {
+        UsMomentumHeader(unreadCount = 0, onSearch = {}, onMessages = {}, onNotifications = {}, translucent = true)
+    }
 }
 
 @Preview(name = "Top bar — home feed", showBackground = true)

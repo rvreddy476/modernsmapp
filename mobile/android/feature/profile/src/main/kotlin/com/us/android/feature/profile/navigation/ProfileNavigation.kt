@@ -91,6 +91,8 @@ fun NavGraphBuilder.ownProfileScreen(
     onEditProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenFollowRequests: () -> Unit,
+    /** The Momentum header the Me tab wears — search, messages, the bell. */
+    header: MomentumHeaderDestinations,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -105,10 +107,23 @@ fun NavGraphBuilder.ownProfileScreen(
                 // Same reasoning as onEditProfile: approving someone into an
                 // account is only ever offered on that account's own screen.
                 onOpenFollowRequests = onOpenFollowRequests,
+                header = header,
             ),
         )
     }
 }
+
+/**
+ * The Momentum header's three controls, as the Me tab needs them. Every one
+ * is required: a header glyph with nothing behind it is exactly the inert
+ * control the Home header once shipped. `:app` decides where each goes —
+ * search scoped to the viewer's own posts, the inbox, the notification list.
+ */
+data class MomentumHeaderDestinations(
+    val onOpenSearch: () -> Unit,
+    val onOpenMessages: () -> Unit,
+    val onOpenNotifications: () -> Unit,
+)
 
 /**
  * Incoming follow requests for the signed-in user's own private account.

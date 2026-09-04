@@ -61,12 +61,24 @@ fun NavGraphBuilder.feedScreen(
     }
 }
 
-/** Registers the Friends tab root. Same cross-feature contract as [feedScreen]. */
+/**
+ * Registers the Friends tab root. Same cross-feature contract as [feedScreen]:
+ * the Momentum header's three controls are required, and `:app` decides that
+ * this page's search opens scoped to people.
+ */
 fun NavGraphBuilder.friendsFeedScreen(
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenMessages: () -> Unit,
+    onOpenNotifications: () -> Unit,
+    onOpenSearch: () -> Unit,
 ) {
     composable<FriendsFeedRoute> {
-        FriendsFeedScreen(onOpenAuthor = onOpenAuthor)
+        FriendsFeedScreen(
+            onOpenAuthor = onOpenAuthor,
+            onOpenMessages = onOpenMessages,
+            onOpenNotifications = onOpenNotifications,
+            onOpenSearch = onOpenSearch,
+        )
     }
 }
 
@@ -103,8 +115,18 @@ data object ReelsRoute
 fun NavGraphBuilder.reelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
+    /** The translucent Momentum header over the video; `:app` scopes search to reels. */
+    onOpenMessages: () -> Unit,
+    onOpenNotifications: () -> Unit,
+    onOpenSearch: () -> Unit,
 ) {
     composable<ReelsRoute> {
-        ReelsScreen(pool = pool, onOpenAuthor = onOpenAuthor)
+        ReelsScreen(
+            pool = pool,
+            onOpenAuthor = onOpenAuthor,
+            onOpenSearch = onOpenSearch,
+            onOpenMessages = onOpenMessages,
+            onOpenNotifications = onOpenNotifications,
+        )
     }
 }

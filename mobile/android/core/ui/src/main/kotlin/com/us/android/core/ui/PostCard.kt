@@ -7,8 +7,10 @@ package com.us.android.core.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -35,13 +37,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -56,7 +58,6 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
-import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
@@ -112,7 +113,15 @@ data class PostCardState(
     val isPinned: Boolean = false,
     /** Present exactly when the post is a poll. */
     val poll: PostCardPoll? = null,
-)
+) {
+    /**
+     * What the Instagram header and caption print: the username when the
+     * surface has one, the display name otherwise. Instagram leads with the
+     * handle; an account without one still needs a name on its post.
+     */
+    val username: String
+        get() = authorHandle?.removePrefix("@")?.takeIf { it.isNotBlank() } ?: authorName
+}
 
 /**
  * A poll ready to render: server-computed counts and percentages, plus the
@@ -152,7 +161,8 @@ data class PostCardMediaPage(
 )
 
 /**
- * The attachment area: one image, or a swipeable ordered carousel.
+ * The attachment area: one image, or a swipeable ordered carousel — always
+ * inside the same 4:5 frame (see [PostMediaFrame]), edge to edge.
  *
  * ## WHY THE SINGLE-IMAGE BRANCH STAYS
  *
@@ -162,7 +172,7 @@ data class PostCardMediaPage(
  * inside a slice whose scope is the feed and post detail.
  */
 @Composable
-private fun PostMediaCarousel(state: PostCardState) {
+private fun PostMediaCarousel(state: PostCardState, onClick: () -> Unit) {
     val pages = state.mediaPages
     if (pages.size <= 1) {
         val single = pages.firstOrNull()
@@ -170,14 +180,18 @@ private fun PostMediaCarousel(state: PostCardState) {
             url = single?.url ?: state.mediaUrl,
             postType = state.postType,
             count = state.mediaCount,
-            aspectRatio = single?.aspectRatio ?: state.mediaAspectRatio,
             contentDescription = single?.contentDescription ?: state.mediaContentDescription,
+            modifier = Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            ),
         )
         return
     }
 
     val pagerState = rememberPagerState(pageCount = { pages.size })
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Box(modifier = Modifier.fillMaxWidth()) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { index ->
             val page = pages[index]
             PostMedia(
@@ -187,16 +201,29 @@ private fun PostMediaCarousel(state: PostCardState) {
                 // mediaCount it would stamp "3" onto every page of the very
                 // carousel it is meant to be counting.
                 count = 1,
-                aspectRatio = page.aspectRatio,
                 contentDescription = page.contentDescription,
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick,
+                ),
             )
         }
+        // "2/5", top-right, and the position pips over the bottom edge —
+        // both INSIDE the frame, the way Instagram overlays them, so the
+        // frame stays exactly 4:5 with or without a carousel.
+        MediaCountPill(
+            text = "${pagerState.currentPage + 1}/${pages.size}",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(UsTheme.spacing.l),
+        )
         CarouselPips(
             pageCount = pages.size,
             currentPage = pagerState.currentPage,
             modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(top = UsTheme.spacing.m),
+                .align(Alignment.BottomCenter)
+                .padding(bottom = UsTheme.spacing.l),
         )
     }
 }
@@ -216,17 +243,13 @@ private fun CarouselPips(pageCount: Int, currentPage: Int, modifier: Modifier = 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         repeat(pageCount) { index ->
+            // White over the photo, dimmed when not current: the pips sit on
+            // the media now, and a themed colour can vanish into any frame.
             Box(
                 modifier = Modifier
                     .size(if (index == currentPage) PIP_SELECTED else PIP_UNSELECTED)
                     .clip(CircleShape)
-                    .background(
-                        if (index == currentPage) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            UsTheme.extended.textSecondary.copy(alpha = PIP_DIM_ALPHA)
-                        },
-                    ),
+                    .background(Color.White.copy(alpha = if (index == currentPage) 1f else PIP_DIM_ALPHA)),
             )
         }
     }
@@ -237,8 +260,15 @@ private val PIP_UNSELECTED = 5.dp
 private const val PIP_DIM_ALPHA = 0.35f
 
 /**
- * Reusable compact post card for standard list feeds, search results, and
- * profile pages.
+ * The post, laid out exactly as Instagram lays out a feed post, on
+ * Momentum's palette (founder, 2026-09-04).
+ *
+ * No contained card: no gutters, no border, no shadow, no corner radius. The
+ * header row at 16dp side padding; the media EDGE TO EDGE in a uniform 4:5
+ * frame; the action row; then the caption stack. A text-only post is the
+ * same header, the text at 15sp with 16dp padding, then the same action row
+ * — its height follows the text. This is THE post component: Home, Friends,
+ * a hashtag's posts and the in-place viewer all render it.
  */
 // A Compose layout reads as one declaration; splitting it into helpers to
 // satisfy a line budget spreads one visual structure across several functions
@@ -249,6 +279,7 @@ private const val PIP_DIM_ALPHA = 0.35f
 @Composable
 fun PostCard(
     state: PostCardState,
+    /** The media was tapped. A text-only post has nothing to open and never fires it. */
     onClick: () -> Unit,
     onAuthorClick: () -> Unit,
     onReact: () -> Unit,
@@ -258,51 +289,63 @@ fun PostCard(
     onShare: () -> Unit,
     modifier: Modifier = Modifier,
     /**
-     * Null hides the control.
+     * The ⋮ "More" glyph at the header's right end. Null hides it.
      *
      * It previously defaulted to an empty lambda and rendered unconditionally,
      * so every card carried an overflow button that did nothing on every
      * surface that had no menu to show. Nullable makes "no action" impossible
      * to render by accident.
      */
-    onOptionClick: (() -> Unit)? = null,
+    onMore: (() -> Unit)? = null,
+    /**
+     * "· Follow" beside the name. Null hides it — the host passes it only
+     * when the viewer is KNOWN not to follow the author and the post is not
+     * their own.
+     */
     onFollow: (() -> Unit)? = null,
     /** Casts a vote in this card's poll. Null on surfaces that cannot vote. */
     onVotePoll: ((optionId: String) -> Unit)? = null,
+    /**
+     * Something to draw in the 4:5 frame INSTEAD of the poster — the in-place
+     * viewer puts a playing video there. Null renders the media as usual.
+     */
+    mediaOverride: (@Composable () -> Unit)? = null,
 ) {
-    // Momentum (Figma YsWb936muw8pwIxgb0je2A): a CONTAINED card — the solid
-    // card surface, 24dp corners, a 1dp border and a soft drop shadow, 16dp
-    // padding. Separation between cards is the list's spacing, not a rule.
-    val shape = RoundedCornerShape(UsTheme.radii.card)
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .shadow(CARD_SHADOW, shape, ambientColor = CARD_SHADOW_COLOR, spotColor = CARD_SHADOW_COLOR)
-            .clip(shape)
-            .background(UsTheme.extended.bgCardSolid)
-            .border(HAIRLINE_FULL, UsTheme.extended.borderMedium, shape)
-            .clickable(onClick = onClick)
-            .padding(UsTheme.spacing.xxl),
-        // 8dp between the header, media, actions and caption: enough to
-        // separate them, not enough to read as a gap (founder, 2026-09-04).
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-    ) {
-        PostCardHeader(state, onAuthorClick, onFollow, onOptionClick)
+    Column(modifier = modifier.fillMaxWidth()) {
+        PostCardHeader(state, onAuthorClick, onFollow, onMore)
 
         // Poll block — ballots until the viewer votes (or the poll ends),
         // results after.
         state.poll?.let { poll ->
-            PostPollBlock(poll = poll, onVote = onVotePoll)
+            Box(modifier = Modifier.padding(horizontal = SIDE_PADDING, vertical = UsTheme.spacing.m)) {
+                PostPollBlock(poll = poll, onVote = onVotePoll)
+            }
         }
 
-        // Media sits directly under the header: it is the card's centre of
-        // gravity, and the caption stack below reads as commentary on it.
         if (state.mediaCount > 0) {
-            PostMediaCarousel(state)
+            // The media is the post's centre of gravity: directly under the
+            // header, edge to edge, and the caption below reads as
+            // commentary on it.
+            if (mediaOverride != null) {
+                PostMediaFrame(modifier = Modifier.testTag("post_media_frame")) { mediaOverride() }
+            } else {
+                PostMediaCarousel(state, onClick)
+            }
+        } else if (state.text.isNotBlank()) {
+            // Text-only: the text IS the body, at 15sp with the page gutter.
+            Text(
+                text = state.text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = SIDE_PADDING, vertical = UsTheme.spacing.m)
+                    .testTag("post_text_body"),
+            )
         }
 
-        // Social action bar, glyphs only — the counts are written out as
-        // lines in the caption stack below, per the Momentum card.
+        // Like, comment, share on the left, save on the right. Glyphs only —
+        // the counts are written out as lines in the caption stack.
         PostActionBar(
             state = state.actions,
             onReact = onReact,
@@ -311,107 +354,168 @@ fun PostCard(
             onBookmark = onBookmark,
             onShare = onShare,
             showCounts = false,
-            modifier = Modifier.fillMaxWidth(),
+            showRepost = false,
+            glyphSize = ACTION_GLYPH,
+            spacing = UsTheme.spacing.xxl,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = SIDE_PADDING),
         )
 
-        PostCardCaption(state, onComment)
+        PostCardCaption(state, onComment, captionShown = state.mediaCount > 0)
     }
 }
 
 /**
- * The author row: a 36dp avatar with a 2dp ring, the name at 14sp bold,
- * the handle (or the time, when the surface has no handle) at 11sp under
- * it, and the Follow pill / overflow trailing.
+ * The uniform media frame: full width, 4:5, edge to edge, on the canvas
+ * colour while the bytes load. EVERY media post — image, carousel, reel
+ * poster or playing video — sits in this one frame, cropped to fill, so the
+ * feed scrolls at a steady rhythm instead of jumping between a 16:9 strip
+ * and a full-height portrait.
+ */
+@Composable
+fun PostMediaFrame(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .aspectRatio(MEDIA_FRAME_ASPECT)
+            .background(UsTheme.extended.bgCanvas),
+        content = content,
+    )
+}
+
+/**
+ * The author row: a 32dp avatar, the username at 14sp semibold with the
+ * "· Follow" text button in the accent beside it, the time under it at
+ * 12sp muted, and the ⋮ at the right end. 16dp side padding.
  */
 @Composable
 private fun PostCardHeader(
     state: PostCardState,
     onAuthorClick: () -> Unit,
     onFollow: (() -> Unit)?,
-    onOptionClick: (() -> Unit)?,
+    onMore: (() -> Unit)?,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = SIDE_PADDING, end = UsTheme.spacing.xs, top = HEADER_VERTICAL, bottom = HEADER_VERTICAL),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        UsAvatar(
+            name = state.authorName,
+            seed = state.authorId,
+            size = UsAvatarSize.Small,
+            modifier = Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onAuthorClick,
+            ),
+        )
+        Column(
             modifier = Modifier
-                .weight(1f, fill = false)
-                .clickable(onClick = onAuthorClick),
+                .weight(1f)
+                .padding(start = UsTheme.spacing.l),
         ) {
-            UsAvatar(
-                name = state.authorName,
-                size = UsAvatarSize.Post,
-                // The design's white ring; in the derived light theme white
-                // on a white card vanishes, so it takes the text colour there.
-                modifier = Modifier
-                    .border(AVATAR_RING, UsTheme.extended.textPrimary, CircleShape)
-                    .padding(AVATAR_RING),
+            PostCardNameRow(state, onAuthorClick, onFollow)
+            Text(
+                text = state.timestamp,
+                style = MaterialTheme.typography.bodySmall,
+                fontSize = META_SIZE,
+                color = UsTheme.extended.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-                ) {
-                    Text(
-                        text = state.authorName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontSize = NAME_SIZE,
-                        fontWeight = FontWeight.Bold,
-                        color = UsTheme.extended.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (state.isPinned) {
-                        Text(
-                            text = "• Pinned",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = UsTheme.extended.accentSolid,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
-                }
-                Text(
-                    text = state.authorHandle ?: state.timestamp,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = UsTheme.extended.textMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
         }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (onFollow != null) {
-                UsPillButton(text = "Follow", onClick = onFollow)
-            }
-            if (onOptionClick != null) {
-                IconButton(onClick = onOptionClick) {
-                    Icon(
-                        imageVector = UsIcons.More,
-                        contentDescription = "Post options",
-                        tint = UsTheme.extended.textMuted,
-                    )
-                }
+        if (onMore != null) {
+            IconButton(onClick = onMore, modifier = Modifier.testTag("post_more")) {
+                Icon(
+                    imageVector = UsIcons.More,
+                    contentDescription = "More",
+                    tint = UsTheme.extended.textPrimary,
+                )
             }
         }
     }
 }
 
+/** The username, then "· Follow" in the accent when offered, then "· Pinned". */
+@Composable
+private fun PostCardNameRow(state: PostCardState, onAuthorClick: () -> Unit, onFollow: (() -> Unit)?) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = state.username,
+            style = MaterialTheme.typography.bodyMedium,
+            fontSize = NAME_SIZE,
+            fontWeight = FontWeight.SemiBold,
+            color = UsTheme.extended.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onAuthorClick,
+                ),
+        )
+        if (onFollow != null) {
+            // "· Follow" as a text button in the accent — Instagram's inline
+            // follow, not a pill. The dot is part of the label so the two
+            // never wrap apart.
+            Text(
+                text = "· Follow",
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = NAME_SIZE,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.accentSolid,
+                maxLines = 1,
+                modifier = Modifier
+                    .padding(start = UsTheme.spacing.xs)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onFollow,
+                    )
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Follow"
+                    }
+                    .testTag("post_follow"),
+            )
+        }
+        if (state.isPinned) {
+            Text(
+                text = "· Pinned",
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier.padding(start = UsTheme.spacing.xs),
+            )
+        }
+    }
+}
+
 /**
- * The caption stack under the action row: "N likes" (14sp bold), the caption
- * with the author's name in bold (13sp), "View all N comments" (12sp
- * muted, opens the comments), and the timestamp in 10sp uppercase.
+ * The caption stack under the action row, at the page gutter: "N likes"
+ * (14sp bold), "username caption" clamped to three lines with "more",
+ * "View all N comments" (muted, opens the comments), and the time in 11sp
+ * uppercase muted.
+ *
+ * [captionShown] is false for a text-only post, whose text is already the
+ * body above the action row; repeating it here would print it twice.
  *
  * Zero counts are not information: the lines appear the moment there is
  * something to count, so a fresh post is not three rows of "0".
  */
 @Composable
-private fun PostCardCaption(state: PostCardState, onComment: () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
+private fun PostCardCaption(state: PostCardState, onComment: () -> Unit, captionShown: Boolean) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = SIDE_PADDING)
+            .padding(bottom = UsTheme.spacing.m),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
         val likes = state.actions.likeCount
         if (likes > 0) {
             Text(
@@ -422,35 +526,42 @@ private fun PostCardCaption(state: PostCardState, onComment: () -> Unit) {
                 color = UsTheme.extended.textPrimary,
             )
         }
-        if (state.text.isNotBlank()) {
-            CaptionText(postId = state.postId, authorName = state.authorName, text = state.text)
+        if (captionShown && state.text.isNotBlank()) {
+            CaptionText(postId = state.postId, authorName = state.username, text = state.text)
         }
         val comments = state.actions.commentCount
         if (comments > 0) {
             Text(
                 text = "View all " + formatCount(comments) + if (comments == 1) " comment" else " comments",
                 style = MaterialTheme.typography.bodyMedium,
-                fontSize = COMMENTS_SIZE,
+                fontSize = NAME_SIZE,
                 color = UsTheme.extended.textMuted,
-                modifier = Modifier.clickable(onClick = onComment),
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onComment,
+                ),
             )
         }
         Text(
             text = state.timestamp.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textMuted,
         )
     }
 }
 
-/** Momentum card shadow: `0 10 24 -8 rgba(0,0,0,.2)`, approximated by elevation. */
-private val CARD_SHADOW = 10.dp
-
-@Suppress("MagicNumber") // rgba(0,0,0,.2) from the design, as one ARGB literal.
-private val CARD_SHADOW_COLOR = Color(0x33000000)
-private val AVATAR_RING = 2.dp
+/** Instagram's page gutter: 16dp, not the 18dp Momentum page gutter. */
+private val SIDE_PADDING = 16.dp
+private val HEADER_VERTICAL = 10.dp
 private val NAME_SIZE = 14.sp
-private val COMMENTS_SIZE = 12.sp
+private val META_SIZE = 12.sp
+
+/** 24dp glyphs on the Instagram card; post detail and reels keep the 20dp default. */
+private val ACTION_GLYPH = 24.dp
+
+/** Every media post's frame: Instagram's portrait limit, applied uniformly. */
+const val MEDIA_FRAME_ASPECT = 4f / 5f
 
 /**
  * Full-screen immersive post page used by VerticalPager for immersive media/video feeds.
@@ -713,19 +824,15 @@ fun ImmersivePostPage(
 }
 
 /**
- * The media attachment for a post card: image or video poster frame, with a
- * play badge for video and a count pill for carousels.
+ * The media attachment for a post card: image or video poster frame in the
+ * uniform 4:5 [PostMediaFrame], cropped to fill, with the "Reel" pill for
+ * video and a count pill for carousels.
  */
-// The inline ARGB values below are one-off surface colours from the current
-// visual design, not shared tokens. Promoting them to the design system is a
-// deliberate design decision, recorded as backlog rather than made here.
-@Suppress("MagicNumber")
 @Composable
 fun PostMedia(
     url: String?,
     postType: String,
     count: Int,
-    aspectRatio: Float,
     modifier: Modifier = Modifier,
     /**
      * What a screen reader announces for this image, or null for silence —
@@ -742,24 +849,7 @@ fun PostMedia(
      */
     contentDescription: String?,
 ) {
-    // Momentum media radius (16dp), on the canvas colour with the token border.
-    val mediaShape = RoundedCornerShape(UsTheme.radii.media)
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            // Never taller than 4:5. A full-height portrait photo pushed the
-            // action row and caption off the screen, so a post could not be
-            // taken in at once; Crop below keeps the frame filled.
-            .aspectRatio(aspectRatio.coerceAtLeast(MIN_MEDIA_ASPECT))
-            .clip(mediaShape)
-            .background(UsTheme.extended.bgCanvas)
-            .border(
-                width = HAIRLINE,
-                color = UsTheme.extended.borderMedium,
-                shape = mediaShape,
-            ),
-    ) {
+    PostMediaFrame(modifier = modifier.testTag("post_media_frame")) {
         if (url != null) {
             AsyncImage(
                 model = url,
@@ -809,26 +899,33 @@ fun PostMedia(
         }
 
         if (count > 1) {
-            Box(
+            MediaCountPill(
+                text = "1/$count",
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(UsTheme.spacing.l)
-                    .clip(RoundedCornerShape(UsTheme.radii.full))
-                    .background(Color.Black.copy(alpha = COUNT_PILL_ALPHA))
-                    .border(HAIRLINE, Color(0x33FFFFFF), RoundedCornerShape(UsTheme.radii.full))
-                    .padding(
-                        horizontal = UsTheme.spacing.m,
-                        vertical = UsTheme.spacing.xs,
-                    ),
-            ) {
-                Text(
-                    text = "1/$count",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White,
-                )
-            }
+                    .padding(UsTheme.spacing.l),
+            )
         }
+    }
+}
+
+/** "2/5" on a dark plate over the media's top-right corner. */
+@Suppress("MagicNumber") // The plate's hairline is a one-off ARGB literal, not a token.
+@Composable
+private fun MediaCountPill(text: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(UsTheme.radii.full))
+            .background(Color.Black.copy(alpha = COUNT_PILL_ALPHA))
+            .border(HAIRLINE, Color(0x33FFFFFF), RoundedCornerShape(UsTheme.radii.full))
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            color = Color.White,
+        )
     }
 }
 
@@ -947,7 +1044,7 @@ private fun PollResultRow(option: PostCardPollOption, chosen: Boolean) {
  * The caption, three lines at most until the reader asks for the rest.
  *
  * A long post used to run eight lines under its media and push the next
- * card a screen away. Now it shows [CAPTION_LINES] and a "Show more" link,
+ * card a screen away. Now it shows [CAPTION_LINES] and Instagram's "more" link,
  * which only appears when the text actually overflowed — measured from the
  * layout, not guessed from a character count, so a three-line caption never
  * gets a link that reveals nothing. Expanded state is per post and survives
@@ -973,7 +1070,7 @@ private fun CaptionText(postId: String, authorName: String, text: String) {
         )
         if (overflowed || expanded) {
             Text(
-                text = if (expanded) "Show less" else "Show more",
+                text = if (expanded) "less" else "more",
                 style = MaterialTheme.typography.labelLarge,
                 color = UsTheme.extended.textMuted,
                 modifier = Modifier
@@ -988,8 +1085,6 @@ private fun CaptionText(postId: String, authorName: String, text: String) {
 /** Lines of caption shown before "Show more". */
 private const val CAPTION_LINES = 3
 
-/** Media is never taller than 4:5 — Instagram's portrait limit. */
-private const val MIN_MEDIA_ASPECT = 4f / 5f
 private const val PERCENT_D = 100.0
 private const val RESULT_BAR_ALPHA = 0.35f
 
@@ -1013,7 +1108,7 @@ private val previewActions = PostActionState(
     isBookmarked = false,
 )
 
-@Preview(showBackground = true)
+@Preview(name = "Post — text only", showBackground = true, backgroundColor = 0xFF041122)
 @Composable
 private fun PostCardPreview() {
     UsTheme {
@@ -1022,10 +1117,41 @@ private fun PostCardPreview() {
                 postId = "post-1",
                 authorId = "author-1",
                 authorName = "Jane Doe",
+                authorHandle = "@janedoe",
                 text = "Exploring new possibilities with Compose & Kotlin!",
                 timestamp = "2h",
                 postType = "text",
                 mediaCount = 0,
+                actions = previewActions,
+            ),
+            onClick = {},
+            onAuthorClick = {},
+            onReact = {},
+            onComment = {},
+            onRepost = {},
+            onBookmark = {},
+            onShare = {},
+            onFollow = {},
+            onMore = {},
+        )
+    }
+}
+
+@Preview(name = "Post — photo, 4:5 frame", showBackground = true, backgroundColor = 0xFF041122)
+@Composable
+private fun PostCardPhotoPreview() {
+    UsTheme {
+        PostCard(
+            state = PostCardState(
+                postId = "post-2",
+                authorId = "author-1",
+                authorName = "Jane Doe",
+                authorHandle = "@janedoe",
+                text = "Golden hour on the ridge. Three lines of caption at most before the reader is asked, " +
+                    "and the rest waits behind a small more link exactly the way the reference app does it.",
+                timestamp = "2h",
+                postType = "image",
+                mediaCount = 1,
                 actions = previewActions,
             ),
             onClick = {},

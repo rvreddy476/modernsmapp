@@ -1,4 +1,4 @@
-package com.us.android.feature.feed.ui
+package com.us.android.core.notifications.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,7 +9,9 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
- * Exposes the shared unread count to the feed's top bar — Slice D.
+ * Exposes the shared unread count to the Momentum header — Slice D. Lives in
+ * `:core:notifications` because the header is worn by Home, Reels, Friends
+ * AND Me, and two feature modules cannot share a ViewModel any other way.
  *
  * Deliberately tiny, and deliberately NOT part of `FeedViewModel`: the badge
  * has nothing to do with the timeline, and folding it in would make every

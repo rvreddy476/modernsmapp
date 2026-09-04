@@ -36,6 +36,7 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
@@ -103,11 +104,20 @@ fun PostActionBar(
      * post detail and reels keep the inline counts.
      */
     showCounts: Boolean = true,
+    /**
+     * The Instagram card (founder, 2026-09-04) is like, comment, share on
+     * the left and save on the right — no repost glyph. The callback stays
+     * plumbed; only the control is withheld.
+     */
+    showRepost: Boolean = true,
+    /** 20dp on post detail and reels; the Instagram card asks for 24dp. */
+    glyphSize: Dp = ACTION_GLYPH,
+    /** Gap between controls. 20dp per the Figma row; the Instagram card uses 16dp. */
+    spacing: Dp = UsTheme.spacing.xxxxl,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        // 20dp between actions, per the Figma feed-card action row.
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxxxl),
+        horizontalArrangement = Arrangement.spacedBy(spacing),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ActionButton(
@@ -118,6 +128,7 @@ fun PostActionBar(
             enabled = state.canReact && !state.busy,
             activeTint = UsTheme.extended.liveRed,
             onClick = onReact,
+            glyphSize = glyphSize,
         )
         ActionButton(
             icon = UsIcons.Comment,
@@ -126,16 +137,20 @@ fun PostActionBar(
             active = false,
             enabled = state.canComment && !state.busy,
             onClick = onComment,
+            glyphSize = glyphSize,
         )
-        ActionButton(
-            icon = UsIcons.Repost,
-            label = "Repost",
-            count = state.repostCount.takeIf { showCounts },
-            active = state.hasReposted,
-            enabled = state.canRepost && !state.busy,
-            activeTint = UsTheme.extended.statusSuccess,
-            onClick = onRepost,
-        )
+        if (showRepost) {
+            ActionButton(
+                icon = UsIcons.Repost,
+                label = "Repost",
+                count = state.repostCount.takeIf { showCounts },
+                active = state.hasReposted,
+                enabled = state.canRepost && !state.busy,
+                activeTint = UsTheme.extended.statusSuccess,
+                onClick = onRepost,
+                glyphSize = glyphSize,
+            )
+        }
         ActionButton(
             icon = UsIcons.Share,
             label = "Share",
@@ -143,6 +158,7 @@ fun PostActionBar(
             active = false,
             enabled = !state.busy,
             onClick = onShare,
+            glyphSize = glyphSize,
         )
 
         // Save is pushed to the far edge. Everything to its left broadcasts;
@@ -158,6 +174,7 @@ fun PostActionBar(
             enabled = !state.busy,
             activeTint = UsTheme.extended.statusWarning,
             onClick = onBookmark,
+            glyphSize = glyphSize,
         )
     }
 }
@@ -171,6 +188,7 @@ private fun ActionButton(
     enabled: Boolean,
     onClick: () -> Unit,
     activeTint: Color = Color.Unspecified,
+    glyphSize: Dp = ACTION_GLYPH,
 ) {
     // Resting tint is the MUTED step, per the Momentum action row —
     // the actions are quieter than the content until they are active.
@@ -228,7 +246,7 @@ private fun ActionButton(
             imageVector = icon,
             contentDescription = null,
             tint = tint,
-            modifier = Modifier.size(ACTION_GLYPH),
+            modifier = Modifier.size(glyphSize),
         )
         if (caption != null) {
             Text(

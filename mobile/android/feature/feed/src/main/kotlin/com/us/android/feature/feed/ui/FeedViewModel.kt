@@ -17,9 +17,11 @@ import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedQuery
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.feature.feed.data.FeedRepository
+import com.us.android.feature.feed.data.FollowGraph
 import com.us.android.feature.feed.data.KeywordFilter
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
@@ -59,6 +61,9 @@ sealed interface TrendingState {
 }
 
 @HiltViewModel(assistedFactory = FeedViewModel.Factory::class)
+// Constructor injection of the timeline's collaborators; a wrapper would add
+// indirection, not clarity.
+@Suppress("LongParameterList")
 class FeedViewModel @AssistedInject constructor(
     @Assisted private val mode: FeedMode,
     private val repository: FeedRepository,
@@ -66,6 +71,7 @@ class FeedViewModel @AssistedInject constructor(
     private val engagement: EngagementStore,
     private val shares: EngagementRepository,
     private val tabState: FeedTabState,
+    private val follows: FollowGraph,
     settings: SettingsDataStore? = null,
 ) : ViewModel() {
 
@@ -276,6 +282,7 @@ class FeedViewModel @AssistedInject constructor(
      * server rather than from a snapshot held since before the tap.
      */
     fun onRefreshHydrated(items: List<FeedItem>) {
+        learnAuthors(items)
         hydratedIds.clear()
         items.forEach { item ->
             hydratedIds += item.id
@@ -292,6 +299,7 @@ class FeedViewModel @AssistedInject constructor(
      * still holds the reaction.
      */
     fun onAppendHydrated(items: List<FeedItem>) {
+        learnAuthors(items)
         items.forEach { item ->
             if (hydratedIds.add(item.id)) reconcile(item)
         }
@@ -303,6 +311,24 @@ class FeedViewModel @AssistedInject constructor(
         serverBookmarked = item.viewer.isBookmarked,
         serverReposted = item.viewer.hasReposted,
     )
+
+    // ── Follow ──────────────────────────────────────────────────────────
+
+    /**
+     * Author id → the viewer's edge, for every author the graph has answered
+     * for. The card offers "Follow" only when [offersFollow] says so.
+     */
+    val followEdges: StateFlow<Map<String, FollowStatus>> = follows.edges
+
+    /** The signed-in user; own posts never offer Follow. */
+    val ownUserId: String get() = follows.ownId
+
+    fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
+
+    /** One relationship lookup per author never seen before, off the hydration path. */
+    private fun learnAuthors(items: List<FeedItem>) = viewModelScope.launch {
+        follows.ensureKnown(items.map { it.author.id })
+    }
 }
 
 /**

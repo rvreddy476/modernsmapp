@@ -82,6 +82,7 @@ import com.us.android.feature.post.navigation.navigateToStudio
 import com.us.android.feature.post.navigation.postScreen
 import com.us.android.feature.post.navigation.studioScreen
 import com.us.android.feature.profile.navigation.DirectMessagesRoute
+import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
 import com.us.android.feature.profile.navigation.NotificationSettingsRoute
 import com.us.android.feature.profile.navigation.PrivacySettingsRoute
 import com.us.android.feature.profile.navigation.ProfileDetailsRoute
@@ -146,8 +147,30 @@ data object SplashRoute
 // modules, because the feature owns the screen. The rest are declared here
 // because no feature module owns them yet.
 
+/**
+ * Search, opened from the Momentum header. [mode] is the scope the page that
+ * opened it wants — see [ExploreMode] — carried as its wire name so the route
+ * stays a plain serializable value. A dedicated search surface does not
+ * exist yet; the placeholder names the scope so the plumbing is visible.
+ */
 @Serializable
-data object ExploreRoute
+data class ExploreRoute(val mode: String = ExploreMode.POSTS.name)
+
+/**
+ * What the header's search glyph looks for, per page (founder, 2026-09-04):
+ * Home → posts, Reels → reels, Friends → people, Me → the viewer's own posts.
+ */
+enum class ExploreMode(val label: String) {
+    POSTS("Posts"),
+    REELS("Reels"),
+    PEOPLE("People"),
+    OWN_POSTS("Your posts"),
+    ;
+
+    companion object {
+        fun fromWire(name: String): ExploreMode = entries.firstOrNull { it.name == name } ?: POSTS
+    }
+}
 
 /**
  * The design-system gallery.
@@ -413,9 +436,10 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
         onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
         onOpenNotifications = { navController.navigateToNotifications() },
-        // Search is the Explore tab until a dedicated surface exists; the
-        // create action left the header for the bar's centre button.
-        onOpenSearch = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
+        // Search is the Explore placeholder until a dedicated surface exists,
+        // opened scoped to POSTS from Home; the create action left the header
+        // for the bar's centre button.
+        onOpenSearch = { navController.navigateToExplore(ExploreMode.POSTS) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
     )
 
@@ -423,6 +447,10 @@ private fun NavGraphBuilder.tabDestinations(
     // so no back arrow; its own route so the bar knows which item is lit.
     friendsFeedScreen(
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
+        onOpenNotifications = { navController.navigateToNotifications() },
+        // Friends is a page about people, so its search looks for people.
+        onOpenSearch = { navController.navigateToExplore(ExploreMode.PEOPLE) },
     )
 
     // A trending tag's posts, pushed over Home from the HashTag tab.
@@ -572,12 +600,16 @@ private fun NavGraphBuilder.tabDestinations(
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
+        onOpenNotifications = { navController.navigateToNotifications() },
+        onOpenSearch = { navController.navigateToExplore(ExploreMode.REELS) },
     )
-    composable<ExploreRoute> {
+    composable<ExploreRoute> { entry ->
+        val mode = ExploreMode.fromWire(entry.toRoute<ExploreRoute>().mode)
         PlaceholderScreen(
-            title = "Explore",
-            reason = "Search is not built yet. The design-system gallery lives here " +
-                "meanwhile so the tokens stay reviewable on a real device.",
+            title = "Search · ${mode.label}",
+            reason = "Search is not built yet. This page opened it scoped to ${mode.label.lowercase()}. " +
+                "The design-system gallery lives here meanwhile so the tokens stay reviewable on a real device.",
             actionLabel = "Open the design gallery",
             onAction = { navController.navigate(GalleryRoute) },
         )
@@ -605,6 +637,13 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onEditProfile = { navController.navigateToEditProfile() },
         onOpenSettings = { navController.navigateToSettings() },
         onOpenFollowRequests = { navController.navigateToFollowRequests() },
+        // The Me tab wears the same Momentum header as Home; its search is
+        // scoped to the viewer's own posts.
+        header = MomentumHeaderDestinations(
+            onOpenSearch = { navController.navigateToExplore(ExploreMode.OWN_POSTS) },
+            onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
+            onOpenNotifications = { navController.navigateToNotifications() },
+        ),
     )
     profileScreen(
         onOpenFollowers = {},

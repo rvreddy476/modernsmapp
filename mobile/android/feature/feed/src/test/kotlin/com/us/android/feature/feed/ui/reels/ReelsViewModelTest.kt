@@ -19,6 +19,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedViewerState
+import com.us.android.core.model.FollowStatus
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
@@ -26,9 +27,11 @@ import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.feed.data.FeedApi
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.PollVoteRequest
+import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.dto.FeedDeltaDto
 import com.us.android.feature.feed.data.dto.FeedItemDto
 import com.us.android.feature.feed.data.dto.FeedMediaDto
+import com.us.android.feature.feed.data.followGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -155,6 +158,7 @@ class ReelsViewModelTest {
         val api: RecordingApi = RecordingApi(),
         val tracker: ReelPublishTracker = ReelPublishTracker(),
         val actions: RecordingActions = RecordingActions(),
+        val graph: RecordingGraphApi = RecordingGraphApi(),
     )
 
     private fun viewModel(h: Harness = Harness()) = ReelsViewModel(
@@ -164,6 +168,7 @@ class ReelsViewModelTest {
         shares = EngagementRepository(UnusedEngagementApi(), ErrorMapper(json)),
         tracker = h.tracker,
         publishActions = h.actions,
+        follows = followGraph(h.graph),
     )
 
     private fun item(vararg media: FeedMedia, controls: FeedPostControls = FeedPostControls()) = FeedItem(
@@ -314,27 +319,41 @@ class ReelsViewModelTest {
         assertThat(vm.muted.value).isTrue()
     }
 
-    // ── Tabs ────────────────────────────────────────────────────────────
+    // ── The surface ─────────────────────────────────────────────────────
 
     /**
-     * For You is the plain ranked surface — `following_only` OMITTED, so the
-     * request the server has served since day one is unchanged. Following is
-     * the same surface with `following_only=true`.
+     * Reels is ONE ranked surface — `following_only` OMITTED, so the request
+     * the server has served since day one is unchanged. The For You /
+     * Following split was reversed (founder, 2026-09-04).
      */
     @Test
-    fun `For You omits following_only and Following sends it`() = runTest {
+    fun `reels asks for the plain ranked surface`() = runTest {
         val h = Harness()
         val vm = viewModel(h)
-        assertThat(vm.tab.value).isEqualTo(ReelsTab.FOR_YOU)
 
         vm.items.asSnapshot()
+
         assertThat(h.api.followingOnly).containsExactly(null)
+    }
 
-        vm.selectTab(ReelsTab.FOLLOWING)
-        vm.items.asSnapshot()
+    // ── Follow ──────────────────────────────────────────────────────────
 
-        assertThat(vm.tab.value).isEqualTo(ReelsTab.FOLLOWING)
-        assertThat(h.api.followingOnly).containsExactly(null, true).inOrder()
+    /** Settling on a reel learns its author's edge; a follow goes through the graph. */
+    @Test
+    fun `a shown reel learns its author and a follow is sent`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+        val reel = item(video())
+
+        vm.onReelShown(reel)
+        advanceUntilIdle()
+        assertThat(h.graph.relationshipRequests).containsExactly("me" to "a")
+        assertThat(vm.followEdges.value["a"]).isEqualTo(FollowStatus.NONE)
+
+        vm.onFollow("a")
+        advanceUntilIdle()
+        assertThat(h.graph.followRequests).containsExactly("a")
+        assertThat(vm.followEdges.value["a"]).isEqualTo(FollowStatus.FOLLOWING)
     }
 
     // ── The head: the viewer's own reel while it posts ──────────────────

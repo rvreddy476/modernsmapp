@@ -17,10 +17,11 @@ import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
+import com.us.android.core.model.FollowStatus
 import com.us.android.feature.feed.data.FeedRepository
+import com.us.android.feature.feed.data.FollowGraph
 import com.us.android.feature.feed.data.playbackFor
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,20 +29,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-
-/**
- * The two labels over the Reels pager, Instagram-style. Both are the ranked
- * reels surface; Following is the same query narrowed server-side with
- * `following_only=true`.
- */
-enum class ReelsTab(val label: String) {
-    FOR_YOU("For You"),
-    FOLLOWING("Following"),
-}
 
 /**
  * The slot ABOVE the ranked reels: the viewer's own reel while it posts, and
@@ -84,6 +74,9 @@ fun FeedPostControls.railVisibility() = ReelRailVisibility(
 )
 
 @HiltViewModel
+// Constructor injection of the surface's collaborators; a wrapper would add
+// indirection, not clarity.
+@Suppress("LongParameterList")
 class ReelsViewModel @Inject constructor(
     private val repository: FeedRepository,
     private val urlResolver: MediaUrlResolver,
@@ -91,39 +84,27 @@ class ReelsViewModel @Inject constructor(
     private val shares: EngagementRepository,
     private val tracker: ReelPublishTracker,
     private val publishActions: ReelPublishActions,
+    private val follows: FollowGraph,
 ) : ViewModel() {
-
-    private val _tab = MutableStateFlow(ReelsTab.FOR_YOU)
-    val tab: StateFlow<ReelsTab> = _tab.asStateFlow()
-
-    fun selectTab(tab: ReelsTab) {
-        _tab.value = tab
-    }
 
     /** The reel the server has created for this session's publish, once fetched. */
     private val _live = MutableStateFlow<FeedItem?>(null)
 
     /**
-     * One cached stream PER TAB, as the home feed does: `cachedIn` is lazy,
-     * so Following costs nothing until first shown, and flipping back to For
-     * You replays its pages rather than refetching and dropping the viewer
-     * to the first reel. Rotation survives for the same reason.
+     * The ranked reels surface, one cached stream: `cachedIn` replays the
+     * pages across rotation rather than refetching and dropping the viewer
+     * to the first reel. No For You / Following split — the founder reversed
+     * that (2026-09-04); Reels is one surface, like Instagram's.
      *
      * A reel that went live this session is filtered out of the ranked page
      * once the feed carries it: the head slot already shows it, and the same
      * reel twice in a row is the one thing the slot must not produce.
      */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val items: Flow<PagingData<FeedItem>> = run {
-        val pages = mapOf(
-            ReelsTab.FOR_YOU to repository.feed(FeedQuery.Reels).cachedIn(viewModelScope),
-            ReelsTab.FOLLOWING to repository.feed(FeedQuery.ReelsFollowing).cachedIn(viewModelScope),
-        )
-        tab.flatMapLatest { pages.getValue(it) }
-            .combine(_live) { page, live ->
-                if (live == null) page else page.filter { it.id != live.id }
-            }
-    }
+    val items: Flow<PagingData<FeedItem>> = repository.feed(FeedQuery.Reels)
+        .cachedIn(viewModelScope)
+        .combine(_live) { page, live ->
+            if (live == null) page else page.filter { it.id != live.id }
+        }
 
     /**
      * The slot above the feed, derived from the process-wide publish tracker
@@ -232,6 +213,18 @@ class ReelsViewModel @Inject constructor(
     fun onExternalShared(postId: String) = viewModelScope.launch {
         shares.recordExternalShare(postId)
     }
+
+    // ── Follow ──────────────────────────────────────────────────────────
+
+    /** Author id → the viewer's edge; the overlay offers Follow only when [offersFollow] says so. */
+    val followEdges: StateFlow<Map<String, FollowStatus>> = follows.edges
+
+    val ownUserId: String get() = follows.ownId
+
+    fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
+
+    /** The pager settled on a page: make sure its author's edge is known. */
+    fun onReelShown(item: FeedItem) = viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
 
     private companion object {
         const val VIDEO = "video"
