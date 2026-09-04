@@ -24,17 +24,65 @@ var defaultHLSVariants = []HLSVariant{
 	{"1080p", 1080, "5000k", "192k"},
 }
 
-// GenerateHLSVariants transcodes the video at inputPath into HLS adaptive bitrate segments.
-// Returns paths to the generated files (local temp paths) and the master playlist path.
-func GenerateHLSVariants(ctx context.Context, inputPath, outputDir string) (masterPlaylistPath string, variantPaths []string, err error) {
+// HLSPlan says what the HLS ladder is for, so it can be sized to the video
+// instead of always encoding every rung.
+type HLSPlan struct {
+	// Reel is short-form (see ReelMaxDurationSeconds). Reels are watched on
+	// phones and already cap their MP4 renditions at 720p; the HLS ladder
+	// used to ignore that and spend a full encode on a 1080p rung nobody
+	// would be served.
+	Reel bool
+	// SourceHeight in pixels, or 0 when unknown. A rung taller than the
+	// source is an upscale: a full encode that adds no detail.
+	SourceHeight int
+}
+
+// hlsVariantsFor picks the rungs of the ladder for a plan. Always at least
+// the lowest rung, so every video has one variant to play.
+func hlsVariantsFor(plan HLSPlan) []HLSVariant {
+	var out []HLSVariant
 	for _, v := range defaultHLSVariants {
+		if plan.Reel && v.Height > 720 {
+			continue
+		}
+		if plan.SourceHeight > 0 && v.Height > plan.SourceHeight && len(out) > 0 {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// hlsPreset trades a little bitrate efficiency for wall-clock on reels: a
+// two-minute phone clip took three sequential "fast" encodes and the app's
+// readiness window ran out (2026-09-04). Long-form keeps "fast".
+func hlsPreset(plan HLSPlan) string {
+	if plan.Reel {
+		return "veryfast"
+	}
+	return "fast"
+}
+
+// GenerateHLSVariants transcodes the video at inputPath into HLS adaptive bitrate segments
+// using the full ladder. Prefer GenerateHLSVariantsFor when the plan is known.
+func GenerateHLSVariants(ctx context.Context, inputPath, outputDir string) (masterPlaylistPath string, variantPaths []string, err error) {
+	return GenerateHLSVariantsFor(ctx, inputPath, outputDir, HLSPlan{})
+}
+
+// GenerateHLSVariantsFor transcodes the video at inputPath into HLS adaptive bitrate segments
+// for the rungs the plan calls for. Returns paths to the generated files (local temp paths)
+// and the master playlist path.
+func GenerateHLSVariantsFor(ctx context.Context, inputPath, outputDir string, plan HLSPlan) (masterPlaylistPath string, variantPaths []string, err error) {
+	variants := hlsVariantsFor(plan)
+	preset := hlsPreset(plan)
+	for _, v := range variants {
 		outputM3U8 := filepath.Join(outputDir, v.Quality+".m3u8")
 		segmentPattern := filepath.Join(outputDir, v.Quality+"_%03d.ts")
 
 		args := []string{
 			"-i", inputPath,
 			"-vf", fmt.Sprintf("scale=-2:%d", v.Height),
-			"-c:v", "libx264", "-preset", "fast",
+			"-c:v", "libx264", "-preset", preset,
 			"-b:v", v.VideoBitrate,
 			"-c:a", "aac", "-b:a", v.AudioBitrate,
 			"-hls_time", "6",
@@ -60,7 +108,9 @@ func GenerateHLSVariants(ctx context.Context, inputPath, outputDir string) (mast
 	master := "#EXTM3U\n#EXT-X-VERSION:3\n"
 	bandwidths := map[string]int{"360p": 800000, "720p": 2500000, "1080p": 5000000}
 	resolutions := map[string]string{"360p": "640x360", "720p": "1280x720", "1080p": "1920x1080"}
-	for _, v := range defaultHLSVariants {
+	// Only the rungs that were encoded: a master listing a variant that does
+	// not exist sends the player to a 404 mid-stream.
+	for _, v := range variants {
 		master += fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%s\n%s.m3u8\n",
 			bandwidths[v.Quality], resolutions[v.Quality], v.Quality)
 	}
