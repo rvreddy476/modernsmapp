@@ -6,6 +6,7 @@ package com.us.android.core.designsystem.component
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -178,10 +180,12 @@ private fun FlatTab(item: UsNavItem, selected: Boolean, onClick: () -> Unit) {
 }
 
 /**
- * The centre create button — a 40dp WHITE square with 14dp corners and the
- * navy plus, flat on the bar. The Figma frame's red glow under it was
- * dropped on 2026-09-04: the founder saw it as "glowing" and wanted a plain
- * button that sits with the other glyphs.
+ * The centre create button — a 40dp rounded square that, AT REST, is drawn
+ * the way the other glyphs are: a muted 1.5dp outline with a muted plus.
+ * Only while the Create sheet is open does it fill white with the navy plus
+ * and turn into a "×". The always-white tile (and before it the red glow)
+ * read as "already selected" to the founder (2026-09-04); a highlight has
+ * to mean something, so it is reserved for the open state.
  */
 @Composable
 private fun CenterCreateButton(
@@ -196,12 +200,18 @@ private fun CenterCreateButton(
         targetValue = if (active) CENTER_ACTIVE_ROTATION else 0f,
         label = "createRotation",
     )
+    val fill by animateFloatAsState(
+        targetValue = if (active) 1f else 0f,
+        label = "createFill",
+    )
+    val muted = UsTheme.extended.textMuted
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .size(CENTER_BUTTON)
             .rotate(rotation)
-            .background(Color.White, shape)
+            .background(Color.White.copy(alpha = fill), shape)
+            .border(CENTER_OUTLINE, muted.copy(alpha = 1f - fill), shape)
             .clickable(onClick = onClick)
             .semantics {
                 contentDescription = if (active) "Close create" else "Create"
@@ -211,7 +221,7 @@ private fun CenterCreateButton(
         Icon(
             imageVector = UsIcons.Create,
             contentDescription = null,
-            tint = CREATE_GLYPH_NAVY,
+            tint = lerp(muted, CREATE_GLYPH_NAVY, fill),
             modifier = Modifier.size(CENTER_GLYPH),
         )
     }
@@ -245,6 +255,7 @@ private val BAR_VERTICAL = 10.dp
 private val BAR_BORDER = 1.dp
 private val CENTER_BUTTON = 40.dp
 private val CENTER_BUTTON_RADIUS = 14.dp
+private val CENTER_OUTLINE = 1.5.dp
 private val CENTER_GLYPH = 22.dp
 
 @Preview(name = "Navigation bar — with create button", showBackground = true)

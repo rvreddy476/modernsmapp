@@ -186,9 +186,10 @@ enum class AppEnvironment(
  * ./gradlew.bat assembleDevDebug -PdevHost=192.168.1.3
  * ```
  *
- * The value also lands in the dev network-security config, because cleartext to
- * anything but loopback is denied by default and an unlisted host fails with a
- * bare connection error that looks like the server is down.
+ * The dev network-security config permits cleartext to any host, so the value
+ * needs no registration there. (It once listed private ranges as <domain>
+ * entries, which match DNS suffixes rather than CIDR blocks — a LAN host was
+ * refused and the app reported itself offline.)
  *
  * DEV ONLY. Staging and prod are unaffected and keep the strict policy.
  */

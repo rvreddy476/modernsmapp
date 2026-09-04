@@ -1,7 +1,8 @@
 package com.us.android.feature.feed.ui.comments
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -11,6 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -64,7 +66,12 @@ fun CommentsSheet(
         scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
         modifier = Modifier.testTag("comments_sheet"),
     ) {
-        Box(modifier = Modifier.fillMaxHeight(SHEET_HEIGHT_FRACTION)) {
+        // A FIXED height from the window, not a fraction of whatever the
+        // sheet is measured against: the fraction resolved differently while
+        // the list was loading and once it was empty, so the sheet opened
+        // tall and then shrank (founder, 2026-09-04). Fixed, it never moves.
+        val sheetHeight = LocalConfiguration.current.screenHeightDp.dp * SHEET_HEIGHT_FRACTION
+        Box(modifier = Modifier.fillMaxWidth().height(sheetHeight)) {
             CommentsPanel(
                 state = state,
                 onDraftChange = viewModel::onDraftChange,
