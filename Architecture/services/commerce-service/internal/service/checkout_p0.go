@@ -292,11 +292,14 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 		return nil, err
 	}
 
-	sellerState, err := s.store.SellerStateForCart(ctx, in.UserID)
-	if err != nil {
-		return nil, err
-	}
-
+	// The seller's place of supply is NOT resolved here. It used to be, and
+	// because finding the seller means reading the cart, it returned
+	// ErrCartEmpty on any retry that arrived after a successful checkout had
+	// cleared the cart — the exact case Idempotency-Key exists for. The
+	// store's replay path (advisory lock, then lookup by key) never ran, so a
+	// client retrying a timed-out request was told its cart was empty instead
+	// of being handed the order it had already placed. The store now resolves
+	// it inside the transaction, after the replay.
 	res, err := s.store.Checkout(ctx, postgres.CheckoutParams{
 		UserID:             in.UserID,
 		AddressID:          in.AddressID,
@@ -312,7 +315,6 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 		SnapshotKeyVer:     keyVer,
 		DestinationState:   addr.State,
 		DestinationPin:     addr.PostalCode,
-		SellerState:        sellerState,
 		ActorType:          "customer",
 	})
 	if err != nil {

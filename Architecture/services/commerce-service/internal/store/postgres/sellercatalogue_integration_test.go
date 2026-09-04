@@ -35,7 +35,7 @@ func newCatalogueFixture(t *testing.T) catalogueFixture {
 
 	rows := []struct{ title, status, approval string }{
 		{"Live Product", "active", "approved"},
-		{"Also Live", "active", "live"},
+		{"Also Live", "active", "approved"},
 		{"Secret Draft", "draft", "draft"},
 		{"Under Review", "draft", "submitted"},
 		{"Rejected By Moderation", "draft", "rejected"},
@@ -151,7 +151,7 @@ func TestTheStorefrontAgreesWithTheBrowseSurface(t *testing.T) {
 
 	rows, err := testPool.Query(ctx, `
 		SELECT title FROM products
-		 WHERE seller_id = $1 AND status = 'active' AND approval_status IN ('approved','live')`,
+		 WHERE seller_id = $1 AND status = 'active' AND approval_status = 'approved'`,
 		f.sellerID)
 	if err != nil {
 		t.Fatal(err)

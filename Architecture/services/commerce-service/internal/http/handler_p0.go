@@ -607,9 +607,29 @@ func writeCommerceError(c *gin.Context, err error) {
 	case postgres.IsRetryable(err):
 		api.ErrorWithContext(ctx, w, http.StatusServiceUnavailable, "TRY_AGAIN",
 			"please try again", nil)
+	case errors.Is(err, postgres.ErrPlaceOfSupplyUnknown):
+		// The seller's place of supply is missing, so GST cannot be
+		// determined and the store refused to guess. That refusal is
+		// correct; answering it with an unexplained 500 was not. It is a
+		// 409 because nothing about the request is malformed — the shop is
+		// not in a state that can be sold from, and the buyer retrying the
+		// same call changes nothing until the seller fixes their address.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "PLACE_OF_SUPPLY_UNKNOWN",
+			"this seller cannot be checked out from yet: their pickup address is incomplete", nil)
 	default:
 		// Genuinely unexpected. The message is NOT echoed: it can contain
 		// identifiers, and the client has nothing useful to do with it.
+		//
+		// It IS logged. Before this line an unmapped sentinel became a bare
+		// 500 that appeared nowhere — not in the response, not in the log —
+		// so the only way to find out which error a production 500 meant was
+		// to reproduce it locally and read the code. ErrPlaceOfSupplyUnknown
+		// reached this branch for exactly that reason and cost a code trace
+		// to identify.
+		slog.ErrorContext(ctx, "commerce: unmapped error returned to the client as 500",
+			"error", err,
+			"method", c.Request.Method,
+			"path", c.FullPath())
 		api.ErrorWithContext(ctx, w, http.StatusInternalServerError, "INTERNAL_ERROR",
 			"something went wrong", nil)
 	}

@@ -535,6 +535,35 @@ jobs:
           done
           echo "the KYC document ownership proofs executed against a live database"
 
+      # The journey with NOTHING seeded past a seam.
+      #
+      # Four launch defects lived exactly where the fixtures wrote rows that a
+      # route was supposed to produce: the admin approval wrote an
+      # approval_status both sale gates refuse, the pickup address never
+      # reached the GST place of supply, a cart-dependent precheck defeated
+      # the idempotent replay, and the order list answered a shape the client
+      # cannot deserialise. Every suite was green throughout — each component
+      # was correct and tested, and the seams between them were not.
+      #
+      # These four build the seller through the real routes instead, including
+      # the admin approve nothing had ever called.
+      - name: The journey through the real routes (nothing seeded)
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/http/... -count=1 -v \
+            -run 'TestAnAdminApprovedProductCanActuallyBeBought|TestASellerWhoOnlyUsedTheAppCanBeCheckedOutFrom|TestARetriedCheckoutReturnsTheSameOrder|TestTheOrderListIsShapedTheWayTheClientReadsIt' \
+            | tee seam.log
+          for p in TestAnAdminApprovedProductCanActuallyBeBought \
+                   TestASellerWhoOnlyUsedTheAppCanBeCheckedOutFrom \
+                   TestARetriedCheckoutReturnsTheSameOrder \
+                   TestTheOrderListIsShapedTheWayTheClientReadsIt; do
+            grep -q -- "--- PASS: $p" seam.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the seller and buyer journeys ran end to end over the real routes"
+
       # Repricing must move the column checkout READS.
       #
       # `selling_price` is a NUMERIC mirror; `selling_price_minor` is what the
@@ -788,7 +817,7 @@ jobs:
         run: |
           set -euo pipefail
           BAD=0
-          for f in database/migrations/00[789]*.sql database/migrations/01*.sql; do
+          for f in database/migrations/00[789]*.sql database/migrations/0[12]*.sql; do
             if grep -Ein 'DROP[[:space:]]+(COLUMN|TABLE)' "$f"; then
               echo "::error file=$f::destructive step in a boot migration"
               BAD=1
@@ -847,6 +876,50 @@ jobs:
             grep -q "$needle" "$F" || { echo "::error::$F does not install $needle"; exit 1; }
           done
           echo "the contract half is present and gated"
+
+      # The approval-vocabulary contract must refuse a fleet that is still
+      # rolling. `ApproveProductByAdmin` wrote 'live' while both sale gates
+      # require 'approved', so approved products were visible and unbuyable.
+      # Boot 022 converts the backlog (expand); gated 1001 removes 'live' from
+      # the CHECK (contract). A 'live' row surviving 022 was written by a pod
+      # on the old image, which is exactly when 1001 must refuse rather than
+      # narrow a constraint under a live writer.
+      - name: The approval-vocabulary contract refuses a rolling fleet
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          psql -c "CREATE DATABASE approvalvocab;"
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/setup.sql
+          for f in database/migrations/*.sql; do
+            psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+          # A row an old pod writes AFTER 022 has converted the backlog.
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -c "
+            INSERT INTO sellers (id,user_id,store_name,slug,email)
+              VALUES ('00000000-0000-0000-0000-0000000000aa','00000000-0000-0000-0000-0000000000bb','S','s-av','s@x.test');
+            INSERT INTO products (id,seller_id,title,slug,status,approval_status)
+              VALUES ('00000000-0000-0000-0000-0000000000cc','00000000-0000-0000-0000-0000000000aa','P','p-av','active','live');"
+
+          if psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/gated/1001_approval_status_tighten.sql; then
+            echo "::error::gated 1001 narrowed the CHECK while a 'live' row existed — it must refuse while the old image is still writing"
+            exit 1
+          fi
+          # The refusal must be atomic: nothing installed.
+          STILL_WIDE=$(psql -d approvalvocab -tAc "SELECT pg_get_constraintdef(oid) LIKE '%live%' FROM pg_constraint WHERE conname='products_approval_status_check'")
+          [ "$STILL_WIDE" = "t" ] || { echo "::error::the refused migration left a partially-applied constraint"; exit 1; }
+
+          # Rollout complete: 022 converts, and 1001 then applies.
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/migrations/022_approval_status_one_vocabulary.sql
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/gated/1001_approval_status_tighten.sql
+          NARROW=$(psql -d approvalvocab -tAc "SELECT pg_get_constraintdef(oid) LIKE '%live%' FROM pg_constraint WHERE conname='products_approval_status_check'")
+          [ "$NARROW" = "f" ] || { echo "::error::gated 1001 ran but 'live' is still permitted"; exit 1; }
+
+          # And the database itself now refuses the spelling.
+          if psql -d approvalvocab -v ON_ERROR_STOP=1 -q -c "UPDATE products SET approval_status='live' WHERE id='00000000-0000-0000-0000-0000000000cc'"; then
+            echo "::error::PostgreSQL accepted approval_status='live' after the contract migration"
+            exit 1
+          fi
+          echo "the approval vocabulary contract refuses early, applies once drained, and is enforced by PostgreSQL"
 
       # C10: a migration whose invariant is already violated must FAIL and
       # must NOT be recorded as applied. A migration that installs nothing

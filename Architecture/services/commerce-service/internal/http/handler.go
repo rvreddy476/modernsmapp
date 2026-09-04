@@ -1350,7 +1350,21 @@ func (h *Handler) ListOrders(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "LIST_ORDERS_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, res.Items, &api.Meta{NextCursor: res.NextCursor})
+	// `data` is an OBJECT holding the page, not a bare array.
+	//
+	// It was `data: [...]` with the cursor in `meta`. Android's OrderDto is
+	// declared as ApiEnvelope<OrderListDto> — `data.items` plus
+	// `data.next_cursor` — so an array where an object was expected does not
+	// deserialise at all, and the buyer's order list could never render. The
+	// envelope contract test asserts only that `data` EXISTS, which an array
+	// satisfies, so nothing caught it.
+	//
+	// The cursor is repeated in `meta` so any caller already reading it there
+	// keeps working.
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"items":       res.Items,
+		"next_cursor": res.NextCursor,
+	}, &api.Meta{NextCursor: res.NextCursor})
 }
 
 func (h *Handler) GetOrder(c *gin.Context) {

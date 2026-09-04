@@ -294,13 +294,13 @@ func (s *Store) GetProductAttributes(ctx context.Context, productID uuid.UUID) (
 // and their moderation failures.
 //
 // The public predicate is the same one the browse and search surfaces use
-// (`status='active' AND approval_status IN ('approved','live')`), so a product
+// (`status='active' AND approval_status='approved'`), so a product
 // cannot be visible on a storefront while being invisible in search.
 func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, status string, publicOnly bool, limit, offset int) ([]*Product, int, error) {
 	where := "WHERE seller_id=$1"
 	args := []any{sellerID}
 	if publicOnly {
-		where += " AND status = 'active' AND approval_status IN ('approved','live')"
+		where += " AND status = 'active' AND approval_status = 'approved'"
 	}
 	if status != "" {
 		where += fmt.Sprintf(" AND status=$%d", len(args)+1)
@@ -393,7 +393,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	conds := []string{"p.status = 'active'", "p.approval_status IN ('approved','live')"}
+	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
 	args := []any{}
 	idx := 1
 	if f.CategoryID != nil {
@@ -535,9 +535,9 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 //
 // status values per the products_status_check constraint: draft, active,
 // paused, archived. approval_status: draft, submitted, under_review,
-// approved, rejected, live, hidden, archived. We surface active+approved.
+// approved, rejected, hidden, archived. We surface active+approved.
 func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*Product, int, error) {
-	conds := []string{"p.status = 'active'", "p.approval_status IN ('approved','live')"}
+	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
 	args := []any{}
 	idx := 1
 	if categoryID != nil {
@@ -1204,11 +1204,30 @@ func (s *Store) GetOrderByID(ctx context.Context, id uuid.UUID) (*Order, error) 
 // seller counts and the first item's product so the customer can tell
 // orders apart without opening every one. Aggregates come from a single
 // LATERAL subquery so the list query is O(page-size) instead of N+1.
+// OrderCard is one row of the buyer's order list.
+//
+// ─── WHY THE MONEY IS IN MINOR UNITS ────────────────────────────────────
+//
+// This carried `final_amount`, a float64 read from `orders.final_amount`.
+// Migration 007 made the minor-unit columns authoritative and stopped
+// maintaining the rupee ones, so `final_amount` is 0.00 on every order the
+// P0 checkout has ever written — the list rendered every order as ₹0 while
+// `final_amount_minor` held the real total.
+//
+// The client was already right: Android's OrderDto reads `total_minor` and
+// friends as Paise and never referenced `final_amount`. This is the server
+// catching up to the contract the rest of P0 uses, not a new one.
 type OrderCard struct {
-	ID                uuid.UUID  `json:"id"`
-	OrderNumber       string     `json:"order_number"`
-	FinalAmount       float64    `json:"final_amount"`
-	Currency          string     `json:"currency"`
+	ID          uuid.UUID `json:"id"`
+	OrderNumber string    `json:"order_number"`
+
+	SubtotalMinor money.Paise `json:"subtotal_minor"`
+	DiscountMinor money.Paise `json:"discount_minor"`
+	ShippingMinor money.Paise `json:"shipping_minor"`
+	TaxMinor      money.Paise `json:"tax_minor"`
+	TotalMinor    money.Paise `json:"total_minor"`
+	Currency      string      `json:"currency"`
+
 	PaymentMethod     *string    `json:"payment_method,omitempty"`
 	PaymentStatus     string     `json:"payment_status"`
 	Status            string     `json:"status"`
@@ -1217,6 +1236,9 @@ type OrderCard struct {
 	FirstProductID    *uuid.UUID `json:"first_product_id,omitempty"`
 	FirstProductTitle string     `json:"first_product_title,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
+	// CreatedAtEpoch is what the client actually parses; the RFC3339 form
+	// above stays for anything reading the API by hand.
+	CreatedAtEpoch int64 `json:"created_at_epoch"`
 }
 
 // ListOrderCardsByCustomer returns one page of order cards for the
@@ -1230,7 +1252,9 @@ func (s *Store) ListOrderCardsByCustomer(ctx context.Context, userID uuid.UUID, 
 	// Fetch limit+1 so we can detect whether a next page exists without a
 	// separate COUNT(*) — count would index-scan the full set per request.
 	rows, err := s.db.Query(ctx, `
-		SELECT o.id, o.order_number, o.final_amount, o.currency_code,
+		SELECT o.id, o.order_number, o.currency_code,
+		       o.subtotal_minor, o.discount_amount_minor, o.shipping_charges_minor,
+		       o.tax_amount_minor, o.final_amount_minor,
 		       o.payment_method, o.payment_status, o.status, o.created_at,
 		       COALESCE(items.item_count, 0),
 		       COALESCE(items.seller_count, 0),
@@ -1262,7 +1286,9 @@ func (s *Store) ListOrderCardsByCustomer(ctx context.Context, userID uuid.UUID, 
 		var firstProductID *uuid.UUID
 		var firstProductTitle *string
 		if err := rows.Scan(
-			&c.ID, &c.OrderNumber, &c.FinalAmount, &c.Currency,
+			&c.ID, &c.OrderNumber, &c.Currency,
+			&c.SubtotalMinor, &c.DiscountMinor, &c.ShippingMinor,
+			&c.TaxMinor, &c.TotalMinor,
 			&c.PaymentMethod, &c.PaymentStatus, &c.Status, &c.CreatedAt,
 			&c.ItemCount, &c.SellerCount,
 			&firstProductID, &firstProductTitle,
@@ -1273,6 +1299,7 @@ func (s *Store) ListOrderCardsByCustomer(ctx context.Context, userID uuid.UUID, 
 		if firstProductTitle != nil {
 			c.FirstProductTitle = *firstProductTitle
 		}
+		c.CreatedAtEpoch = c.CreatedAt.Unix()
 		out = append(out, c)
 	}
 	hasMore := len(out) > limit

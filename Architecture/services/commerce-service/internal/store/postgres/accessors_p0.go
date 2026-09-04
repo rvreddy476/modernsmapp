@@ -73,18 +73,50 @@ func (s *Store) GetAddressRow(ctx context.Context, id uuid.UUID) (*AddressRow, e
 	return &a, nil
 }
 
-// SellerStateForCart returns the registered state of the cart's seller.
+// SellerStateForCart returns the place of supply of the cart's seller.
 //
 // It decides CGST+SGST versus IGST. D2 guarantees one seller per cart, so
 // there is exactly one answer; a cart that somehow holds two sellers is a
 // data error and is reported rather than guessed at.
+//
+// ─── WHY THE PICKUP ADDRESS AND NOT `sellers.state` ─────────────────────
+//
+// This read `sellers.state` alone, and every quote from a seller onboarded
+// through the app failed with ErrPlaceOfSupplyUnknown.
+//
+// `sellers.state` is written by exactly two paths: the legacy
+// `POST /sellers/onboard` insert, and `PUT /onboarding/step/basic`. The P0
+// app calls neither — its journey is start → seller/address → payout →
+// documents → submit — so the column stays empty and the seller half of the
+// place-of-supply comparison was never populated. The address the seller DID
+// give went to `seller_addresses`, which this query did not look at.
+//
+// The give-away is that the two halves of one address were read from two
+// different tables: SellerPickupPin (a dozen lines below) already resolves
+// the postcode from `seller_addresses`, which is why the courier call
+// succeeded on the same request whose tax determination failed. The origin
+// of a shipment and the place of supply for its GST are the same address, so
+// they are now read the same way — same table, same address types, same
+// ordering, same fallback.
+//
+// The fallback to `sellers.state` is for sellers onboarded through the older
+// wizard, whose registered state is the only one they have. Pickup wins when
+// both exist: it is where the goods actually move from.
 func (s *Store) SellerStateForCart(ctx context.Context, userID uuid.UUID) (string, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT DISTINCT COALESCE(sel.state, '')
+		SELECT DISTINCT COALESCE(NULLIF(addr.state, ''), NULLIF(sel.state, ''), '')
 		  FROM cart_items ci
 		  JOIN carts c ON c.id = ci.cart_id
 		  JOIN products p ON p.id = ci.product_id
 		  JOIN sellers sel ON sel.id = p.seller_id
+		  LEFT JOIN LATERAL (
+		      SELECT sa.state
+		        FROM seller_addresses sa
+		       WHERE sa.seller_id = sel.id
+		         AND sa.address_type IN ('pickup','warehouse','business')
+		       ORDER BY (sa.address_type = 'pickup') DESC, sa.is_default DESC
+		       LIMIT 1
+		  ) addr ON TRUE
 		 WHERE c.user_id = $1`, userID)
 	if err != nil {
 		return "", err

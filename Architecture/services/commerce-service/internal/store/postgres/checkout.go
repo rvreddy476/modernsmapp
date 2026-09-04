@@ -170,8 +170,10 @@ type CheckoutParams struct {
 	DestinationState string
 	DestinationPin   string
 
-	// SellerState decides CGST+SGST versus IGST.
-	SellerState string
+	// The seller half of the place-of-supply comparison is deliberately NOT
+	// a parameter. It is resolved inside the transaction from the locked
+	// seller — see sellerPlaceOfSupply and the note on the idempotency
+	// section below.
 
 	ActorType string
 }
@@ -264,6 +266,8 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 			OrderID:     existing.ID,
 			OrderNumber: existing.Number,
 			TotalMinor:  existing.TotalMinor,
+			TaxMinor:    existing.TaxMinor,
+			ShipMinor:   existing.ShipMinor,
 			Reused:      true,
 		}, nil
 	}
@@ -449,11 +453,22 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 		couponID, discount = cid, amt
 	}
 
-	if strings.TrimSpace(p.SellerState) == "" || strings.TrimSpace(p.DestinationState) == "" {
-		return nil, fmt.Errorf("%w: seller state %q, destination state %q",
-			ErrPlaceOfSupplyUnknown, p.SellerState, p.DestinationState)
+	// Resolved HERE, from the seller these locked lines belong to, rather
+	// than passed in by the caller. See the idempotency section above: a
+	// caller that resolved it beforehand had to read the cart to find the
+	// seller, and on an idempotent retry the cart is already empty — so the
+	// retry failed with ErrCartEmpty before ever reaching the replay that
+	// exists to answer it. Resolving it inside the transaction means no
+	// cart-dependent work can precede the replay.
+	sellerState, err := sellerPlaceOfSupply(ctx, tx, sellerID)
+	if err != nil {
+		return nil, err
 	}
-	interstate := !equalFoldState(p.SellerState, p.DestinationState)
+	if strings.TrimSpace(sellerState) == "" || strings.TrimSpace(p.DestinationState) == "" {
+		return nil, fmt.Errorf("%w: seller state %q, destination state %q",
+			ErrPlaceOfSupplyUnknown, sellerState, p.DestinationState)
+	}
+	interstate := !equalFoldState(sellerState, p.DestinationState)
 
 	computed, err := tax.Compute(tax.Input{
 		Lines:         taxLines,
@@ -508,7 +523,7 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 		p.PaymentMethod,
 		p.AddressID, p.AddressSnapshot, p.SealedSnapshot, p.SnapshotKeyVer,
 		p.CouponCode, p.IdempotencyKey, p.RequestFingerprint,
-		p.DestinationState, p.SellerState, interstate,
+		p.DestinationState, sellerState, interstate,
 		p.TermsVersion,
 	)
 	if err != nil {
@@ -681,16 +696,30 @@ type existingOrder struct {
 	ID         uuid.UUID
 	Number     string
 	TotalMinor money.Paise
+	TaxMinor   money.Paise
+	ShipMinor  money.Paise
 }
 
 func lockExistingOrderByKey(ctx context.Context, tx pgx.Tx, userID uuid.UUID, key string) (*existingOrder, string, error) {
 	var o existingOrder
 	var fp *string
+	// Tax and shipping are selected because the retry's response must be the
+	// SAME as the original's. They were omitted, and the omission was
+	// invisible while a cart-dependent precheck made this path unreachable:
+	// a retry never got here, so nobody saw it answer with the right total
+	// beside a zero tax and a zero delivery charge. A client rendering its
+	// confirmation from the retry showed the buyer a breakdown that did not
+	// add up.
 	err := tx.QueryRow(ctx,
-		`SELECT id, order_number, COALESCE(final_amount_minor,0), request_fingerprint
+		`SELECT id, order_number,
+		        COALESCE(final_amount_minor,0),
+		        COALESCE(tax_amount_minor,0),
+		        COALESCE(shipping_charges_minor,0),
+		        request_fingerprint
 		   FROM orders
 		  WHERE customer_user_id = $1 AND idempotency_key = $2
-		  FOR UPDATE`, userID, key).Scan(&o.ID, &o.Number, &o.TotalMinor, &fp)
+		  FOR UPDATE`, userID, key).
+		Scan(&o.ID, &o.Number, &o.TotalMinor, &o.TaxMinor, &o.ShipMinor, &fp)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, "", nil
@@ -1120,6 +1149,42 @@ func actorOr(a string) string {
 		return "customer"
 	}
 	return a
+}
+
+// sellerPlaceOfSupply returns the state GST is charged from, for one seller,
+// inside the caller's transaction.
+//
+// It is the same predicate as SellerStateForCart and SellerPickupPin: the
+// pickup address first, the seller's registered state as the fallback for
+// sellers onboarded through the older wizard. The origin of a shipment and
+// the place of supply for its GST are the same address, so all three resolve
+// it identically — reading them from different tables is what let a seller
+// have a courier pickup point and no determinable tax state at once.
+func sellerPlaceOfSupply(ctx context.Context, tx pgx.Tx, sellerID uuid.UUID) (string, error) {
+	var state string
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(addr.state, ''), NULLIF(sel.state, ''), '')
+		  FROM sellers sel
+		  LEFT JOIN LATERAL (
+		      SELECT sa.state
+		        FROM seller_addresses sa
+		       WHERE sa.seller_id = sel.id
+		         AND sa.address_type IN ('pickup','warehouse','business')
+		       ORDER BY (sa.address_type = 'pickup') DESC, sa.is_default DESC
+		       LIMIT 1
+		  ) addr ON TRUE
+		 WHERE sel.id = $1`, sellerID).Scan(&state)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No seller row for a seller id taken off locked cart lines is a
+			// data error, not an empty state. Reporting it as "place of
+			// supply unknown" would tell the buyer to ask the seller to fix
+			// an address that is not the problem.
+			return "", fmt.Errorf("checkout: seller %s not found", sellerID)
+		}
+		return "", err
+	}
+	return state, nil
 }
 
 func equalFoldState(a, b string) bool {

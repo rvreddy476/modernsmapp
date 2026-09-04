@@ -99,7 +99,7 @@ func (s *Store) CartViewFor(ctx context.Context, cartID uuid.UUID) (*CartView, e
 		       COALESCE(NULLIF(v.selling_price_minor, 0), ROUND(v.selling_price * 100))::bigint,
 		       COALESCE(i.total_qty - i.reserved_qty, 0),
 		       p.seller_id, COALESCE(s.store_name, ''),
-		       (p.status = 'active' AND p.approval_status IN ('approved','live') AND v.status = 'active')
+		       (p.status = 'active' AND p.approval_status = 'approved' AND v.status = 'active')
 		  FROM cart_items ci
 		  JOIN product_variants v ON v.id = ci.variant_id
 		  JOIN products p         ON p.id = v.product_id

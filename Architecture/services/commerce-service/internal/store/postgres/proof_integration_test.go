@@ -214,7 +214,6 @@ func (f *fixture) paramsExpecting(quoteID uuid.UUID, idemKey string, expected mo
 			"address_line_1":"5 Main St","city":"Bengaluru","state":"KA","postal_code":"560002","country":"IN"}`),
 		DestinationState: "KA",
 		DestinationPin:   "560002",
-		SellerState:      "KA",
 		ActorType:        "customer",
 	}
 }
