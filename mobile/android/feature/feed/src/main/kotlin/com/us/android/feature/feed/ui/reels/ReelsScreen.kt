@@ -66,6 +66,7 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
@@ -84,6 +85,8 @@ import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.data.offersFollow
 import com.us.android.feature.feed.ui.MomentumHeader
 import com.us.android.feature.feed.ui.comments.CommentsSheet
+import com.us.android.feature.feed.ui.more.PostMoreSheetHost
+import com.us.android.feature.feed.ui.more.PostMoreViewModel
 import java.io.File
 
 /**
@@ -111,8 +114,9 @@ import java.io.File
  * cover under a round loader while it posts, the real reel the moment it
  * exists. No banner anywhere — the item IS the progress.
  *
- * [onMore] is the rail's ⋮. Null until a host has a sheet to open; the rail
- * draws the glyph only when it is passed.
+ * The rail's ⋮ opens the same "more" sheet the feed card opens
+ * ([PostMoreSheetHost]), driven by [more]; what it leaves behind ("We'll
+ * show you fewer posts like this") is shown over the reel once it has gone.
  */
 @Composable
 fun ReelsScreen(
@@ -121,16 +125,24 @@ fun ReelsScreen(
     onOpenSearch: () -> Unit,
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
-    onMore: ((FeedItem) -> Unit)? = null,
     viewModel: ReelsViewModel = hiltViewModel(),
+    more: PostMoreViewModel = hiltViewModel(),
 ) {
     val head by viewModel.head.collectAsStateWithLifecycle()
     val muted by viewModel.muted.collectAsStateWithLifecycle()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
+    val moreMessage by more.message.collectAsStateWithLifecycle()
     val items = viewModel.items.collectAsLazyPagingItems()
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var moreFor by remember { mutableStateOf<FeedItem?>(null) }
     val share = rememberPostSharer()
+    // Recorded only AFTER the chooser was launched, and shared by the rail's
+    // glyph and the more sheet's row so the count cannot be taken twice.
+    val onShare: (FeedItem) -> Unit = { item ->
+        share(item.text, item.author.nameForDisplay)
+        viewModel.onExternalShared(item.id)
+    }
 
     ReleaseOnLifecycle(pool)
 
@@ -154,12 +166,9 @@ fun ReelsScreen(
                 onReact = viewModel::onReact,
                 onBookmark = viewModel::onBookmark,
                 onComment = { commentsFor = it },
-                onShare = { item ->
-                    share(item.text, item.author.nameForDisplay)
-                    viewModel.onExternalShared(item.id)
-                },
+                onShare = onShare,
                 onFollow = viewModel::onFollow,
-                onMore = onMore,
+                onMore = { moreFor = it },
                 onShown = viewModel::onReelShown,
                 onRetryPublish = viewModel::retryPublish,
                 onDiscardPublish = viewModel::discardPublish,
@@ -176,12 +185,26 @@ fun ReelsScreen(
                 .align(Alignment.TopCenter)
                 .testTag("reels_header"),
         )
+        UsMessageHost(message = moreMessage, onDismiss = more::dismissMessage)
     }
 
     // Comments open over the reel rather than navigating away: the reel keeps
     // playing behind the conversation about it.
     commentsFor?.let { postId ->
         CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
+    }
+
+    // The same more sheet the feed card opens, over the playing reel.
+    moreFor?.let { item ->
+        PostMoreSheetHost(
+            item = item,
+            overlay = overlays[item.id] ?: EngagementOverlay(),
+            followEdge = followEdges[item.author.id],
+            ownUserId = viewModel.ownUserId,
+            onShare = onShare,
+            onDismiss = { moreFor = null },
+            viewModel = more,
+        )
     }
 }
 

@@ -124,11 +124,41 @@ interface FeedApi {
     @GET("v1/posts/{postId}")
     suspend fun getPost(@Path("postId") postId: String): ApiEnvelope<FeedItemDto>
 
+    /**
+     * "Interested" / "Not interested" from the post "more" sheet —
+     * feed-service `PostFeedback` (2026-09-04).
+     *
+     * Latest answer per (viewer, post) wins, so sending `interested` after a
+     * `not_interested` is the undo. A `not_interested` drops the post from
+     * every surface on the next fetch; the client removes it at once and does
+     * not wait. Distinct from `/v1/feed/signal` (a ranking impression) and
+     * from post-service's `/v1/feedback` (product notes).
+     */
+    @POST("v1/feed/feedback")
+    suspend fun feedback(@Body body: FeedFeedbackRequest): ApiEnvelope<FeedFeedbackDto>
+
     companion object {
         /** The server's default; `top` is the other accepted value. */
         const val HASHTAG_SORT_RECENT = "recent"
+
+        const val FEEDBACK_INTERESTED = "interested"
+        const val FEEDBACK_NOT_INTERESTED = "not_interested"
     }
 }
+
+@Serializable
+data class FeedFeedbackRequest(
+    @SerialName("post_id") val postId: String,
+    /** [FeedApi.FEEDBACK_INTERESTED] or [FeedApi.FEEDBACK_NOT_INTERESTED]. */
+    val signal: String,
+)
+
+/** The stored row, echoed back. Nothing here is rendered; a 2xx is the signal. */
+@Serializable
+data class FeedFeedbackDto(
+    @SerialName("post_id") val postId: String = "",
+    val signal: String = "",
+)
 
 @Serializable
 data class PollVoteRequest(@SerialName("option_id") val optionId: String)

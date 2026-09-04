@@ -20,6 +20,7 @@ import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.FollowGraph
+import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.playbackFor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
@@ -85,6 +86,7 @@ class ReelsViewModel @Inject constructor(
     private val tracker: ReelPublishTracker,
     private val publishActions: ReelPublishActions,
     private val follows: FollowGraph,
+    hidden: HiddenPosts,
 ) : ViewModel() {
 
     /** The reel the server has created for this session's publish, once fetched. */
@@ -104,6 +106,11 @@ class ReelsViewModel @Inject constructor(
         .cachedIn(viewModelScope)
         .combine(_live) { page, live ->
             if (live == null) page else page.filter { it.id != live.id }
+        }
+        .combine(hidden.state) { page, set ->
+            // "Not interested" and Block from the more sheet — removed at once,
+            // the same way the home feed removes them.
+            if (set.isEmpty) page else page.filter { !set.hides(it) }
         }
 
     /**

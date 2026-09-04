@@ -38,6 +38,10 @@ internal class RecordingGraphApi(
     val relationshipRequests = mutableListOf<Pair<String, String>>()
     val followRequests = mutableListOf<String>()
     val unfollowRequests = mutableListOf<String>()
+    val blockRequests = mutableListOf<String>()
+
+    /** Throw on block, so the optimistic removal must be undone. */
+    var blockFails: Boolean = false
 
     override suspend fun relationship(userId: String, otherId: String): ApiEnvelope<RelationshipDto> {
         relationshipRequests += userId to otherId
@@ -65,7 +69,11 @@ internal class RecordingGraphApi(
         error("unused")
 
     override suspend fun getStats(userId: String): ApiEnvelope<ProfileStatsDto> = error("unused")
-    override suspend fun block(body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto> = error("unused")
+    override suspend fun block(body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto> {
+        blockRequests += body.userId
+        if (blockFails) throw java.io.IOException("offline")
+        return ApiEnvelope(data = GraphStatusDto("blocked"), meta = null)
+    }
     override suspend fun unblock(body: GraphUserIdRequest): ApiEnvelope<GraphStatusDto> = error("unused")
     override suspend fun cancelFollowRequest(targetId: String): ApiEnvelope<GraphStatusDto> = error("unused")
     override suspend fun incomingFollowRequests(limit: Int, cursor: String?): ApiEnvelope<List<FollowRequestDto>> =

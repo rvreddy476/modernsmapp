@@ -4,6 +4,7 @@ import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
+import com.us.android.core.engagement.data.ReportApi
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -26,6 +27,11 @@ object EngagementModule {
     @Singleton
     fun provideEngagementApi(retrofit: Retrofit): EngagementApi =
         retrofit.create(EngagementApi::class.java)
+
+    /** trust-safety's report intake, on the same authenticated client. */
+    @Provides
+    @Singleton
+    fun provideReportApi(retrofit: Retrofit): ReportApi = retrofit.create(ReportApi::class.java)
 
     /**
      * Binds the writes interface to the real repository.

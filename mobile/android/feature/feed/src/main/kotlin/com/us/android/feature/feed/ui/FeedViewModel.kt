@@ -22,6 +22,7 @@ import com.us.android.core.model.TrendingHashtag
 import com.us.android.core.ui.PostCardMediaPage
 import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.FollowGraph
+import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.KeywordFilter
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
@@ -72,6 +73,7 @@ class FeedViewModel @AssistedInject constructor(
     private val shares: EngagementRepository,
     private val tabState: FeedTabState,
     private val follows: FollowGraph,
+    hidden: HiddenPosts,
     settings: SettingsDataStore? = null,
 ) : ViewModel() {
 
@@ -164,6 +166,12 @@ class FeedViewModel @AssistedInject constructor(
         } else {
             flow
         }
+    }.combine(hidden.state) { page, set ->
+        // "Not interested" and Block from the more sheet, applied at once as
+        // a filter over every page — the same overlay idea as engagement,
+        // because a PagingData row cannot be removed in place and a refresh
+        // would drop the reader to the top to remove one row.
+        if (set.isEmpty) page else page.filter { !set.hides(it) }
     }
 
     private fun cached(query: FeedQuery) = repository.feed(query).cachedIn(viewModelScope)

@@ -14,6 +14,7 @@ import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ErrorMapper
 import com.us.android.feature.feed.data.FeedRepository
+import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.followGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -93,6 +94,7 @@ class FeedHydrationTest {
             shares = EngagementRepository(UnusedEngagementApi(), ErrorMapper(json)),
             tabState = FeedTabState(),
             follows = followGraph(),
+            hidden = HiddenPosts(),
         )
     }
 
@@ -219,6 +221,9 @@ private class UnusedFeedApi : com.us.android.feature.feed.data.FeedApi {
         postId: String,
         body: com.us.android.feature.feed.data.PollVoteRequest,
     ): Nothing = error("poll voting is not under test")
+
+    override suspend fun feedback(body: com.us.android.feature.feed.data.FeedFeedbackRequest): Nothing =
+        error("feedback is not under test")
 }
 
 private class UnusedEngagementApi : com.us.android.core.engagement.data.EngagementApi {

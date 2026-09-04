@@ -2,6 +2,7 @@ package com.us.android.feature.feed.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,6 +30,7 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.time.formatRelativeTime
+import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
@@ -55,6 +57,8 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.data.offersFollow
 import com.us.android.feature.feed.ui.comments.CommentsSheet
+import com.us.android.feature.feed.ui.more.PostMoreSheetHost
+import com.us.android.feature.feed.ui.more.PostMoreViewModel
 
 /**
  * The Home tab.
@@ -141,9 +145,10 @@ private val FOLLOWING_EMPTY = FeedEmptyCopy(
  * a pager over these SAME rows, starting at the tapped one — comments open
  * a sheet, and only the author's name leaves the screen.
  *
- * [onMore] is the ⋮ on every post. Null until a host has a sheet to open;
- * the card renders the glyph only when it is passed, so it can never ship
- * as a control that does nothing.
+ * The ⋮ on every post opens the "more" sheet ([PostMoreSheetHost]) over
+ * the list, driven by [more]; the confirmation it leaves behind ("We'll
+ * show you fewer posts like this") is shown here, under the list, once the
+ * sheet has gone.
  */
 @Composable
 internal fun FeedContent(
@@ -152,7 +157,7 @@ internal fun FeedContent(
     empty: FeedEmptyCopy,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
-    onMore: ((FeedItem) -> Unit)? = null,
+    more: PostMoreViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
@@ -160,6 +165,10 @@ internal fun FeedContent(
     val failures by viewModel.failures.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // The post whose ⋮ was tapped. Plain remember, like the viewer: a sheet
+    // that reopened itself after a process death would be about a row the
+    // reader may no longer be looking at.
+    var moreFor by remember { mutableStateOf<FeedItem?>(null) }
     // The row whose media is open in the viewer, by id AND index. Plain
     // remember, not saveable: a viewer that reopened itself after a process
     // death over a feed that has since refreshed would show a row the reader
@@ -167,24 +176,9 @@ internal fun FeedContent(
     var viewing by remember { mutableStateOf<ViewerTarget?>(null) }
     val share = rememberPostSharer()
 
-    // Two effects, deliberately. A refresh replaces the whole list with values
-    // just fetched, so all of them are server authority. An append leaves the
-    // earlier pages in the snapshot exactly as they were loaded — including a
-    // `has_reacted=false` captured before the viewer liked the row — so those
-    // rows must NOT be reprocessed. Reconciling the whole snapshot on append
-    // is what made a confirmed like revert on scroll.
-    LaunchedEffect(items.loadState.refresh) {
-        if (items.loadState.refresh is LoadState.NotLoading && items.itemCount > 0) {
-            viewModel.onRefreshHydrated(items.itemSnapshotList.items)
-        }
-    }
-    LaunchedEffect(items.loadState.append, items.itemCount) {
-        if (items.loadState.append is LoadState.NotLoading && items.itemCount > 0) {
-            viewModel.onAppendHydrated(items.itemSnapshotList.items)
-        }
-    }
+    ReconcileHydration(items = items, viewModel = viewModel)
 
-    val callbacks = remember(viewModel, onOpenAuthor, share, onMore) {
+    val callbacks = remember(viewModel, onOpenAuthor, share) {
         FeedRowCallbacks(
             onOpenAuthor = onOpenAuthor,
             onOpenComments = { commentsFor = it },
@@ -201,29 +195,28 @@ internal fun FeedContent(
                 // double it.
                 viewModel.onExternalShared(item.id)
             },
-            onMore = onMore,
+            onMore = { moreFor = it },
         )
     }
 
-    Column(modifier = modifier) {
-        EngagementFailureBar(
-            failures = failures,
-            onRetry = viewModel::retryFailure,
-            onDismiss = viewModel::dismissFailure,
-        )
-        FeedList(
-            items = items,
-            overlays = overlays,
-            pollVotes = pollVotes,
-            followEdges = followEdges,
-            ownUserId = viewModel.ownUserId,
-            onOpenMedia = { index, item -> viewing = ViewerTarget(item.id, index) },
-            callbacks = callbacks,
-            posterUrl = viewModel::posterUrl,
-            mediaPages = viewModel::mediaPages,
-            listState = listState,
-            empty = empty,
-        )
+    Box(modifier = modifier) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            EngagementFailureBar(failures, onRetry = viewModel::retryFailure, onDismiss = viewModel::dismissFailure)
+            FeedList(
+                items = items,
+                overlays = overlays,
+                pollVotes = pollVotes,
+                followEdges = followEdges,
+                ownUserId = viewModel.ownUserId,
+                onOpenMedia = { index, item -> viewing = ViewerTarget(item.id, index) },
+                callbacks = callbacks,
+                posterUrl = viewModel::posterUrl,
+                mediaPages = viewModel::mediaPages,
+                listState = listState,
+                empty = empty,
+            )
+        }
+        MoreSheetMessage(more)
     }
 
     // Comments open over the feed rather than navigating away, so the reader
@@ -231,6 +224,18 @@ internal fun FeedContent(
     // conversation about it.
     commentsFor?.let { postId ->
         CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
+    }
+
+    moreFor?.let { item ->
+        FeedMoreSheet(
+            item = item,
+            overlays = overlays,
+            followEdges = followEdges,
+            ownUserId = viewModel.ownUserId,
+            onShare = callbacks.onShare,
+            onDismiss = { moreFor = null },
+            more = more,
+        )
     }
 
     // Likewise the viewer: full window over the feed, back to the same row.
@@ -249,6 +254,66 @@ internal fun FeedContent(
             mediaPages = viewModel::mediaPages,
             onClose = { viewing = null },
         )
+    }
+}
+
+/**
+ * What the more sheet left behind, once it has gone: "We'll show you fewer
+ * posts like this", "Blocked @x", or the server's refusal.
+ */
+@Composable
+private fun BoxScope.MoreSheetMessage(more: PostMoreViewModel) {
+    val message by more.message.collectAsStateWithLifecycle()
+    UsMessageHost(message = message, onDismiss = more::dismissMessage)
+}
+
+/**
+ * The more sheet for [item], over the list AND over the viewer: it is a
+ * modal window of its own, so it sits above whichever is showing.
+ */
+@Suppress("LongParameterList")
+@Composable
+private fun FeedMoreSheet(
+    item: FeedItem,
+    overlays: Map<String, EngagementOverlay>,
+    followEdges: Map<String, FollowStatus>,
+    ownUserId: String,
+    onShare: (FeedItem) -> Unit,
+    onDismiss: () -> Unit,
+    more: PostMoreViewModel,
+) {
+    PostMoreSheetHost(
+        item = item,
+        overlay = overlays[item.id] ?: EngagementOverlay(),
+        followEdge = followEdges[item.author.id],
+        ownUserId = ownUserId,
+        onShare = onShare,
+        onDismiss = onDismiss,
+        viewModel = more,
+    )
+}
+
+/**
+ * Hands each freshly loaded page to the ViewModel for reconciliation.
+ *
+ * Two effects, deliberately. A refresh replaces the whole list with values
+ * just fetched, so all of them are server authority. An append leaves the
+ * earlier pages in the snapshot exactly as they were loaded — including a
+ * `has_reacted=false` captured before the viewer liked the row — so those
+ * rows must NOT be reprocessed. Reconciling the whole snapshot on append
+ * is what made a confirmed like revert on scroll.
+ */
+@Composable
+private fun ReconcileHydration(items: LazyPagingItems<FeedItem>, viewModel: FeedViewModel) {
+    LaunchedEffect(items.loadState.refresh) {
+        if (items.loadState.refresh is LoadState.NotLoading && items.itemCount > 0) {
+            viewModel.onRefreshHydrated(items.itemSnapshotList.items)
+        }
+    }
+    LaunchedEffect(items.loadState.append, items.itemCount) {
+        if (items.loadState.append is LoadState.NotLoading && items.itemCount > 0) {
+            viewModel.onAppendHydrated(items.itemSnapshotList.items)
+        }
     }
 }
 

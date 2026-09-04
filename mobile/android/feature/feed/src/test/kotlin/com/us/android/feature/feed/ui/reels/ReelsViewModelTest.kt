@@ -25,7 +25,9 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.feed.data.FeedApi
+import com.us.android.feature.feed.data.FeedFeedbackRequest
 import com.us.android.feature.feed.data.FeedRepository
+import com.us.android.feature.feed.data.HiddenPosts
 import com.us.android.feature.feed.data.PollVoteRequest
 import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.dto.FeedDeltaDto
@@ -101,6 +103,8 @@ class ReelsViewModelTest {
             error("unused")
 
         override suspend fun votePoll(postId: String, body: PollVoteRequest): Nothing = error("unused")
+
+        override suspend fun feedback(body: FeedFeedbackRequest): Nothing = error("unused")
     }
 
     private class AcceptingWrites : EngagementWrites {
@@ -169,6 +173,7 @@ class ReelsViewModelTest {
         tracker = h.tracker,
         publishActions = h.actions,
         follows = followGraph(h.graph),
+        hidden = HiddenPosts(),
     )
 
     private fun item(vararg media: FeedMedia, controls: FeedPostControls = FeedPostControls()) = FeedItem(

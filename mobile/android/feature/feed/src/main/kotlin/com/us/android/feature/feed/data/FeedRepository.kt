@@ -81,6 +81,23 @@ class FeedRepository @Inject constructor(
     suspend fun votePoll(postId: String, optionId: String): Boolean =
         runCatching { api.votePoll(postId, PollVoteRequest(optionId)) }.isSuccess
 
+    /**
+     * Records "Interested" / "Not interested" for [postId].
+     *
+     * The caller has already hidden (or kept) the row; the answer only
+     * decides whether to tell the viewer the server disagreed. `interested`
+     * after `not_interested` is how a hide is undone — latest wins.
+     */
+    suspend fun sendFeedback(postId: String, interested: Boolean): AppResult<Unit> =
+        apiCall(errorMapper) {
+            api.feedback(
+                FeedFeedbackRequest(
+                    postId = postId,
+                    signal = if (interested) FeedApi.FEEDBACK_INTERESTED else FeedApi.FEEDBACK_NOT_INTERESTED,
+                ),
+            )
+        }.map { }
+
     private fun pager(load: suspend (PageRequest) -> FeedPage): Flow<PagingData<FeedItem>> = Pager(
         config = PagingConfig(
             pageSize = PAGE_SIZE,

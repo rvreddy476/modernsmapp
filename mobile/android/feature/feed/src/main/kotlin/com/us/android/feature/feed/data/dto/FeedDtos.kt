@@ -56,6 +56,13 @@ data class FeedItemDto(
     @SerialName("tagged_user_ids") val taggedUserIds: List<String> = emptyList(),
     @SerialName("location_name") val locationName: String = "",
     @SerialName("cover_media_id") val coverMediaId: String? = null,
+    /**
+     * "Why you're seeing this post" — feed-service reason.go. A stable token
+     * and the sentence to show; both `omitempty`, so absent on the viewer's
+     * own posts and on older servers.
+     */
+    val reason: String = "",
+    @SerialName("reason_text") val reasonText: String = "",
 )
 
 /**

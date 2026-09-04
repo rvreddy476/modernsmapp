@@ -233,6 +233,8 @@ internal fun FeedItemDto.toDomain() = FeedItem(
         locationName = locationName,
         coverMediaId = coverMediaId,
     ),
+    reason = reason,
+    reasonText = reasonText,
 )
 
 private const val PROCESSING_PENDING = "pending"

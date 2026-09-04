@@ -53,6 +53,18 @@ data class FeedItem(
     val isProcessing: Boolean = false,
     /** The author's per-post switches — what viewers may do with it. */
     val controls: FeedPostControls = FeedPostControls(),
+    /**
+     * "Why you're seeing this post" (the post "more" sheet, 2026-09-04).
+     *
+     * [reason] is the stable token feed-service derives at hydration —
+     * `following`, `connection`, `trending`, `category:<id>`, `recommended` —
+     * and [reasonText] the sentence it wants shown verbatim ("From someone
+     * you follow", "Popular in Comedy"). Both are blank on the viewer's own
+     * posts and on rows from a server that predates them; the sheet shows the
+     * row only when there is a sentence to put in it.
+     */
+    val reason: String = "",
+    val reasonText: String = "",
 )
 
 /**

@@ -75,6 +75,8 @@ class FeedPagingDeduplicationTest {
             body: PollVoteRequest,
         ) = error("the paging source never votes")
 
+        override suspend fun feedback(body: FeedFeedbackRequest) = error("the paging source never sends feedback")
+
         override suspend fun getTrendingHashtags(limit: Int) = error("the paging source never lists tags")
 
         override suspend fun getPostsByHashtag(

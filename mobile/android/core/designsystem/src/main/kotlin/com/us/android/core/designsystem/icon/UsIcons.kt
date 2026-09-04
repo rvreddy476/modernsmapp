@@ -88,30 +88,29 @@ object UsIcons {
     val BookmarkFilled: ImageVector = lucideFilled("BookmarkFilled", BOOKMARK_PATH)
 
     /**
-     * Share, Lucide `share`: a tray with an arrow leaving upward — the mark
-     * every phone already uses for "send this somewhere". The plain
-     * right-arrow it replaced (2026-09-04) read as "next", not "share".
+     * Share: the SOLID curved arrow — the TikTok share mark, which the
+     * founder supplied as an image (2026-09-04) after the plain right-arrow,
+     * the tray-and-arrow and the paper plane before it. A filled shape, not
+     * a stroke: at 24dp the curved tail only reads as an arrow with weight.
      *
      * It does not collide with [Repost]: that is a closed loop of two arrows
      * and means "put this on my own timeline". This one leaves.
      */
-    val Share: ImageVector = lucideStroked(
+    val Share: ImageVector = lucideFilled(
         "Share",
-        "M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8",
-        "m16 6-4-4-4 4",
-        "M12 2v13",
+        "M13.4 3.4 L21.7 9.1 C22.4 9.6 22.4 10.4 21.7 10.9 L13.4 16.6 " +
+            "C12.9 17 12.4 16.6 12.4 16 V12.2 C8.4 12.5 5.9 15.1 4.6 20.3 " +
+            "C4.4 21 3.4 21.1 3.2 20.4 C2.2 15 4.4 8.3 12.4 7.9 V4 " +
+            "C12.4 3.4 12.9 3 13.4 3.4 Z",
     )
 
     /**
      * Send, Lucide `send`: the paper plane. Submits a comment or a live chat
      * line — a message leaving for one place, not [Share]'s "anywhere".
      */
-    val Send: ImageVector = lucideStroked(
-        "Send",
-        "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937" +
-            "l7.93 3.18a2 2 0 0 1 1.112 1.11z",
-        "m21.854 2.147-10.94 10.939",
-    )
+    // A one-time copy of two strings at class init, not a hot path.
+    @Suppress("SpreadOperator")
+    val Send: ImageVector = lucideStroked("Send", *SEND_PATHS)
 
     /** Upload. The same tray, arrow reversed into it. */
     val Upload: ImageVector = stroked("Upload") {
@@ -433,6 +432,64 @@ object UsIcons {
     /** Lucide `check` — a chosen option. */
     val Check: ImageVector = lucideStroked("Check", "M20 6 9 17l-5-5")
 
+    // ── The post "more" sheet (2026-09-04) ──────────────────────────────
+
+    /** Lucide `link` — copy the post's link. */
+    val Link: ImageVector = lucideStroked(
+        "Link",
+        "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71",
+        "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+    )
+
+    /** Lucide `info` — "Why you're seeing this post". */
+    val Info: ImageVector = lucideStroked(
+        "Info",
+        "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20",
+        "M12 16v-4",
+        "M12 8h.01",
+    )
+
+    /** Lucide `thumbs-up` — Interested. */
+    val ThumbsUp: ImageVector = lucideStroked(
+        "ThumbsUp",
+        "M7 10v12",
+        "M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 " +
+            "2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z",
+    )
+
+    /** Lucide `thumbs-down` — Not interested. */
+    val ThumbsDown: ImageVector = lucideStroked(
+        "ThumbsDown",
+        "M17 14V2",
+        "M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 " +
+            "2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z",
+    )
+
+    /** Lucide `user-minus` — Unfollow. */
+    val UserMinus: ImageVector = lucideStroked(
+        "UserMinus",
+        "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+        "M9,7 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0",
+        "M22 11h-6",
+    )
+
+    /** Lucide `ban` — Block. */
+    val Ban: ImageVector = lucideStroked(
+        "Ban",
+        "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20",
+        "m4.9 4.9 14.2 14.2",
+    )
+
+    /** Lucide `flag` — Report. */
+    val Flag: ImageVector = lucideStroked(
+        "Flag",
+        "M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z",
+        "M4 22v-7",
+    )
+
+    /** Lucide `chevron-down` — an inline expander, rotated when open. */
+    val ChevronDown: ImageVector = lucideStroked("ChevronDown", "m6 9 6 6 6-6")
+
     /** A right arrow — the chat send glyph (the design's circular send). */
     val Forward: ImageVector = stroked("Forward") {
         moveTo(4f, 12f)
@@ -593,6 +650,13 @@ private const val HEART_PATH = "M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .81
 /** Lucide `bookmark`, shared by [UsIcons.BookmarkOutline] and [UsIcons.BookmarkFilled]. */
 private const val BOOKMARK_PATH = "M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 " +
     "0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z"
+
+/** Lucide `send`, the paper plane shared by [UsIcons.Share] and [UsIcons.Send]. */
+private val SEND_PATHS = arrayOf(
+    "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937" +
+        "l7.93 3.18a2 2 0 0 1 1.112 1.11z",
+    "m21.854 2.147-10.94 10.939",
+)
 
 private const val ICON_SIZE = 24f
 
