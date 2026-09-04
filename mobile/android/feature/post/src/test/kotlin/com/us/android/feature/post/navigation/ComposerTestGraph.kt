@@ -1,5 +1,6 @@
 package com.us.android.feature.post.navigation
 
+import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.TokenProvider
 import com.us.android.core.network.TokenRefresher
@@ -74,4 +75,13 @@ object ComposerTestGraph {
     fun provideTokenRefresher(): TokenRefresher = object : TokenRefresher {
         override suspend fun refresh(): String? = null
     }
+
+    /**
+     * Nobody is signed in, so the comments composer has no viewer to draw.
+     * The real source lives in `:app` (`ProfileCommentsViewerSource`), which
+     * this graph does not include.
+     */
+    @Provides
+    @Singleton
+    fun provideCommentsViewerSource(): CommentsViewerSource = CommentsViewerSource { null }
 }

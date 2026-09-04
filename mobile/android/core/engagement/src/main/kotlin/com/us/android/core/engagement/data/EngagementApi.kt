@@ -198,6 +198,15 @@ data class CommentDto(
     @SerialName("is_reply") val isReply: Boolean = false,
     @SerialName("created_at") val createdAt: String = "",
     val author: CommentAuthorDto? = null,
+    /**
+     * The post owner's reply, loaded inline by `ListComments`.
+     *
+     * post-service's reply model is ONE reply per comment, by the post owner
+     * only (`REPLY_OWNER_ONLY`, `REPLY_EXISTS`, `CANNOT_REPLY_TO_REPLY`), and
+     * the list endpoint nests it under its parent rather than paging it. So
+     * there is no "view replies" fetch — this is the whole thread.
+     */
+    val reply: CommentDto? = null,
 )
 
 /** The embedded author block — post-service's read-time profile hydration. */

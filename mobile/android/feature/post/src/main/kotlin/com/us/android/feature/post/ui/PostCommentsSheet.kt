@@ -3,18 +3,18 @@ package com.us.android.feature.post.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
+import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import com.us.android.core.designsystem.component.UsScaffold
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.engagement.data.CommentsController
 import com.us.android.core.engagement.data.CommentsUiState
+import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.engagement.data.EngagementRepository
-import com.us.android.core.ui.CommentsPanel
+import com.us.android.core.ui.UsCommentsCallbacks
+import com.us.android.core.ui.UsCommentsSheet
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,51 +23,60 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
- * The full-screen comments destination.
+ * Post detail's comments — the same [UsCommentsSheet] the feed opens.
  *
- * Renders the same [CommentsPanel] as the bottom sheet over the feed. Two
- * presentations, one implementation: paging, validation, idempotency and
- * retry cannot drift between "comments from the feed" and "comments from post
- * detail", because there is only one of each.
+ * Previously a pushed destination with its own top bar; now the sheet, so
+ * the four places comments open (feed card, reels rail, media viewer, post
+ * detail) look and behave identically. The post id comes from the SAME
+ * `postId` argument the post route already carries, so this needs no route
+ * of its own.
  */
 @Composable
-fun CommentsScreen(
-    onBack: () -> Unit,
+internal fun PostCommentsSheet(
+    onDismiss: () -> Unit,
     viewModel: PostCommentsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) { viewModel.refresh() }
+    LaunchedEffect(Unit) { viewModel.open() }
 
-    UsScaffold(
-        topBar = { UsTopBar(title = "Comments", onBack = onBack) },
-        applyPageGutter = false,
-    ) {
-        CommentsPanel(
-            state = state,
+    val callbacks = remember(viewModel) {
+        UsCommentsCallbacks(
             onDraftChange = viewModel::onDraftChange,
             onSubmit = viewModel::submit,
+            onQuickReaction = viewModel::quickReaction,
             onLoadMore = viewModel::loadMore,
             onRetryAppend = viewModel::loadMore,
             onRetryRefresh = viewModel::refresh,
-            modifier = Modifier,
         )
     }
+    UsCommentsSheet(
+        postId = viewModel.postId,
+        state = state,
+        callbacks = callbacks,
+        onDismiss = onDismiss,
+    )
 }
 
 @HiltViewModel
 class PostCommentsViewModel @Inject constructor(
     repository: EngagementRepository,
+    private val viewerSource: CommentsViewerSource,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
-    private val controller = CommentsController(
-        postId = savedStateHandle.get<String>(POST_ID_KEY).orEmpty(),
-        repository = repository,
-    )
+    val postId: String = savedStateHandle.get<String>(POST_ID_KEY).orEmpty()
+
+    private val controller = CommentsController(postId = postId, repository = repository)
 
     private val _state = MutableStateFlow(CommentsUiState())
     val state: StateFlow<CommentsUiState> = _state.asStateFlow()
+
+    /** First open: the list, and the viewer's avatar alongside it, not before it. */
+    fun open() {
+        refresh()
+        viewModelScope.launch { _state.value = controller.setViewer(viewerSource.current()) }
+    }
 
     fun refresh() = viewModelScope.launch { _state.value = controller.refresh() }
 
@@ -79,6 +88,8 @@ class PostCommentsViewModel @Inject constructor(
     }
 
     fun submit() = viewModelScope.launch { _state.value = controller.submit() }
+
+    fun quickReaction(emoji: String) = viewModelScope.launch { _state.value = controller.quickReaction(emoji) }
 
     private companion object {
         const val POST_ID_KEY = "postId"

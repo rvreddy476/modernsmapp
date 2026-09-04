@@ -22,6 +22,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,11 +71,14 @@ import com.us.android.core.ui.rememberPostSharer
 fun PostScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
-    onOpenComments: () -> Unit,
     viewModel: PostViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val failures by viewModel.failures.collectAsStateWithLifecycle()
+    // Comments open OVER the post, the same sheet the feed and reels use,
+    // rather than pushing a destination: the post stays visible above the
+    // conversation about it, and Back closes the sheet rather than the post.
+    var commentsOpen by rememberSaveable { mutableStateOf(false) }
     PostContent(
         state = state,
         failures = failures,
@@ -85,9 +91,12 @@ fun PostScreen(
         onRepost = viewModel::onRepostToggle,
         onDismissActionError = viewModel::dismissActionError,
         onOpenAuthor = onOpenAuthor,
-        onOpenComments = onOpenComments,
+        onOpenComments = { commentsOpen = true },
         onPageSettled = viewModel::onPageSettled,
     )
+    if (commentsOpen) {
+        PostCommentsSheet(onDismiss = { commentsOpen = false })
+    }
 }
 
 /** Stateless renderer. Immutable state in, callbacks out; fetches nothing. */

@@ -22,11 +22,40 @@ data class CommentRow(
     val likeCount: Int = 0,
     val replyCount: Int = 0,
     val pending: Boolean = false,
+    /** The post owner's inline reply, when there is one. See [CommentDto.reply]. */
+    val reply: CommentRow? = null,
 )
+
+/**
+ * The person typing — what the composer draws beside the field.
+ *
+ * Resolved OUTSIDE this module (profile + media delivery live elsewhere) and
+ * handed in through [CommentsController.setViewer]; a null viewer renders the
+ * initial-disc fallback. [avatarUrl] is null when the account has no avatar
+ * or the asset is still processing.
+ */
+data class CommentsViewer(
+    val id: String,
+    val name: String,
+    val avatarUrl: String? = null,
+)
+
+/**
+ * Where a screen gets the [CommentsViewer] from.
+ *
+ * An interface here so the controller's owners (the feed's sheet, post
+ * detail's sheet) can inject it without this module learning about profiles
+ * or media. Bound in `:app`, which already owns cross-module wiring.
+ */
+fun interface CommentsViewerSource {
+    /** Null when there is no session or the profile could not be loaded. */
+    suspend fun current(): CommentsViewer?
+}
 
 /** Everything the comments UI renders. */
 data class CommentsUiState(
     val rows: List<CommentRow> = emptyList(),
+    val viewer: CommentsViewer? = null,
     val loading: Boolean = false,
     val appending: Boolean = false,
     val refreshError: AppError? = null,
@@ -109,6 +138,26 @@ class CommentsController(
     private var submitKeyText: String? = null
 
     fun snapshot(): CommentsUiState = state
+
+    /** Who is commenting. Also names the optimistic row, instead of "You". */
+    fun setViewer(viewer: CommentsViewer?): CommentsUiState =
+        state.copy(viewer = viewer).also { state = it }
+
+    /**
+     * A quick-reaction emoji tap.
+     *
+     * Instagram's rule: with nothing typed the emoji IS the comment and goes
+     * straight out; with a draft in progress it is appended so the tap never
+     * discards what the user was writing. The sent emoji reuses [submit] and
+     * so inherits its idempotency-key handling.
+     */
+    suspend fun quickReaction(emoji: String): CommentsUiState =
+        if (state.draft.isBlank()) {
+            onDraftChange(emoji)
+            submit()
+        } else {
+            onDraftChange(state.draft + emoji)
+        }
 
     suspend fun refresh(): CommentsUiState {
         state = state.copy(loading = true, refreshError = null)
@@ -193,10 +242,10 @@ class CommentsController(
             rows = listOf(
                 CommentRow(
                     id = optimisticId,
-                    authorId = "",
+                    authorId = state.viewer?.id.orEmpty(),
                     body = text,
                     createdAt = "",
-                    authorName = "You",
+                    authorName = state.viewer?.name?.ifBlank { null } ?: "You",
                     pending = true,
                 ),
             ) + state.rows,
@@ -206,7 +255,11 @@ class CommentsController(
             is AppResult.Success -> {
                 submitKey = null
                 submitKeyText = null
-                val confirmed = result.data.toRow()
+                // The create response carries `author_id` only — author
+                // hydration happens on list reads — so a fresh comment would
+                // render as "?" until the next refresh. The viewer wrote it;
+                // attribute it to them.
+                val confirmed = result.data.toRow().attributedToViewer(state.viewer)
                 state.copy(
                     submitting = false,
                     draft = "",
@@ -231,7 +284,18 @@ class CommentsController(
     }
 }
 
-private fun CommentDto.toRow() = CommentRow(
+/**
+ * Fills a missing author from the viewer — only when the server sent none,
+ * and only when the row is the viewer's (or unattributed): a hydrated author
+ * is never overwritten.
+ */
+private fun CommentRow.attributedToViewer(viewer: CommentsViewer?): CommentRow {
+    if (viewer == null || authorName.isNotBlank()) return this
+    if (authorId.isNotBlank() && authorId != viewer.id) return this
+    return copy(authorId = viewer.id, authorName = viewer.name)
+}
+
+private fun CommentDto.toRow(): CommentRow = CommentRow(
     id = id,
     authorId = authorId,
     body = body,
@@ -239,4 +303,5 @@ private fun CommentDto.toRow() = CommentRow(
     authorName = author?.displayName.orEmpty(),
     likeCount = likeCount,
     replyCount = replyCount,
+    reply = reply?.toRow(),
 )

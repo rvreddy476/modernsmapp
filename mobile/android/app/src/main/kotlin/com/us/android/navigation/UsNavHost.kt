@@ -74,10 +74,8 @@ import com.us.android.feature.post.navigation.ComposerRoute
 import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
 import com.us.android.feature.post.navigation.StudioRoute
-import com.us.android.feature.post.navigation.commentsScreen
 import com.us.android.feature.post.navigation.composerScreen
 import com.us.android.feature.post.navigation.createHubScreen
-import com.us.android.feature.post.navigation.navigateToComments
 import com.us.android.feature.post.navigation.navigateToCreate
 import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.navigateToStudio
@@ -587,15 +585,14 @@ private fun NavGraphBuilder.tabDestinations(
 
     profileDestinations(navController)
 
-    // Post detail and its comments. Cross-feature navigation is resolved here:
-    // :feature:post hands back an author id and :app decides that opens a
-    // profile. Neither feature imports the other, so each stays testable alone.
+    // Post detail. Cross-feature navigation is resolved here: :feature:post
+    // hands back an author id and :app decides that opens a profile. Neither
+    // feature imports the other, so each stays testable alone. Comments are
+    // the shared sheet over the post now, not a destination.
     postScreen(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenComments = { postId -> navController.navigateToComments(postId) },
     )
-    commentsScreen(onBack = { navController.popBackStack() })
 }
 
 /** Profile, edit-profile and settings destinations registered by the feature. */

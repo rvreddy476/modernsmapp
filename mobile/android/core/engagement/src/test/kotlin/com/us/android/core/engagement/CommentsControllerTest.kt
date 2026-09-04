@@ -2,8 +2,11 @@ package com.us.android.core.engagement
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
+import com.us.android.core.engagement.data.CommentAuthorDto
 import com.us.android.core.engagement.data.CommentDto
+import com.us.android.core.engagement.data.CommentRow
 import com.us.android.core.engagement.data.CommentsController
+import com.us.android.core.engagement.data.CommentsViewer
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.network.ApiEnvelope
@@ -344,5 +347,165 @@ class CommentsControllerTest {
         assertThat(state.submitError).isInstanceOf(AppError::class.java)
         assertThat(state.draft).isEqualTo("hello")
         assertThat(state.rows).isEmpty()
+    }
+
+    // ── Quick reactions (the emoji row under the list) ────────────────────
+
+    /** Instagram's rule: nothing typed, the emoji IS the comment and goes out. */
+    @Test
+    fun `a quick reaction on an empty draft sends the emoji immediately`() = runTest {
+        val api = FakeApi().apply {
+            pages += page(next = null)
+            creates += { ApiEnvelope(data = comment("new").copy(body = "❤️")) }
+        }
+        val controller = controller(api)
+        controller.refresh()
+
+        val state = controller.quickReaction("❤️")
+
+        assertThat(api.sentTexts).containsExactly("❤️")
+        assertThat(state.rows.map { it.body }).containsExactly("❤️")
+        assertThat(state.draft).isEmpty()
+        assertThat(state.submitting).isFalse()
+    }
+
+    /** With a draft in progress the tap must never discard what was typed. */
+    @Test
+    fun `a quick reaction on a non-empty draft appends and does not send`() = runTest {
+        val api = FakeApi().apply { pages += page(next = null) }
+        val controller = controller(api)
+        controller.refresh()
+        controller.onDraftChange("nice ")
+
+        val state = controller.quickReaction("🔥")
+
+        assertThat(api.sentTexts).isEmpty()
+        assertThat(state.draft).isEqualTo("nice 🔥")
+        assertThat(state.rows).isEmpty()
+    }
+
+    // ── Viewer identity ───────────────────────────────────────────────────
+
+    /**
+     * The optimistic row wears the viewer's own name and id, not "You".
+     *
+     * The row exists only while the request is in flight, so the fake API
+     * snapshots the controller from inside the create call.
+     */
+    @Test
+    fun `the optimistic row is attributed to the viewer once known`() = runTest {
+        val api = FakeApi().apply { pages += page(next = null) }
+        val controller = controller(api)
+        var pendingRow: CommentRow? = null
+        api.creates += {
+            pendingRow = controller.snapshot().rows.single()
+            ApiEnvelope(data = comment("new"))
+        }
+        controller.refresh()
+        controller.setViewer(CommentsViewer(id = "me", name = "Raghu", avatarUrl = null))
+        controller.onDraftChange("hello")
+
+        val state = controller.submit()
+
+        assertThat(pendingRow?.pending).isTrue()
+        assertThat(pendingRow?.authorName).isEqualTo("Raghu")
+        assertThat(pendingRow?.authorId).isEqualTo("me")
+        assertThat(state.viewer?.name).isEqualTo("Raghu")
+        assertThat(state.rows.single().pending).isFalse()
+    }
+
+    /**
+     * The create response carries `author_id` only (hydration is a list-read
+     * concern), so the confirmed row is attributed to the viewer who wrote it
+     * rather than rendered as an unknown "?" until the next refresh.
+     */
+    @Test
+    fun `a confirmed comment without a hydrated author is attributed to the viewer`() = runTest {
+        val api = FakeApi().apply {
+            pages += page(next = null)
+            creates += { ApiEnvelope(data = CommentDto(id = "new", postId = postId, authorId = "me", body = "hi")) }
+        }
+        val controller = controller(api)
+        controller.refresh()
+        controller.setViewer(CommentsViewer(id = "me", name = "Raghu"))
+        controller.onDraftChange("hi")
+
+        val state = controller.submit()
+
+        val row = state.rows.single()
+        assertThat(row.authorName).isEqualTo("Raghu")
+        assertThat(row.authorId).isEqualTo("me")
+        assertThat(row.pending).isFalse()
+    }
+
+    /** A server-hydrated author is never overwritten by the viewer's identity. */
+    @Test
+    fun `a hydrated author on the confirmed comment is kept`() = runTest {
+        val api = FakeApi().apply {
+            pages += page(next = null)
+            creates += {
+                ApiEnvelope(
+                    data = CommentDto(
+                        id = "new",
+                        postId = postId,
+                        authorId = "me",
+                        body = "hi",
+                        author = CommentAuthorDto(id = "me", displayName = "Server Name"),
+                    ),
+                )
+            }
+        }
+        val controller = controller(api)
+        controller.refresh()
+        controller.setViewer(CommentsViewer(id = "me", name = "Raghu"))
+        controller.onDraftChange("hi")
+
+        val state = controller.submit()
+
+        assertThat(state.rows.single().authorName).isEqualTo("Server Name")
+    }
+
+    @Test
+    fun `setting the viewer does not disturb loaded rows`() = runTest {
+        val api = FakeApi().apply { pages += page("1", "2", next = null) }
+        val controller = controller(api)
+        controller.refresh()
+
+        val state = controller.setViewer(CommentsViewer(id = "me", name = "Raghu"))
+
+        assertThat(state.rows.map { it.id }).containsExactly("1", "2").inOrder()
+        assertThat(state.viewer?.id).isEqualTo("me")
+    }
+
+    // ── The owner's inline reply ──────────────────────────────────────────
+
+    /** post-service nests the single owner reply under its parent; it rides along. */
+    @Test
+    fun `an inline reply is carried under its parent row`() = runTest {
+        val api = FakeApi().apply {
+            pages += {
+                ApiEnvelope(
+                    data = listOf(
+                        comment("1").copy(
+                            replyCount = 1,
+                            reply = CommentDto(
+                                id = "r1",
+                                postId = postId,
+                                authorId = "owner",
+                                body = "thanks",
+                                isReply = true,
+                            ),
+                        ),
+                    ),
+                )
+            }
+        }
+
+        val state = controller(api).refresh()
+
+        val row = state.rows.single()
+        assertThat(row.reply?.id).isEqualTo("r1")
+        assertThat(row.reply?.body).isEqualTo("thanks")
+        assertThat(row.reply?.reply).isNull()
     }
 }
