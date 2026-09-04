@@ -997,8 +997,17 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			} else {
 				w, h, _ = s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
 			}
-			cat, _ := ClassifyVideo(float64(maxDuration), w, h)
-			p.ContentType = cat
+			// A reel is what the author posted as a reel (founder, 2026-09-04):
+			// a landscape or two-minute phone video sent from the Reel
+			// composer stays a flick. Only a caller with no short-form
+			// intent ("post", "video", "long_video") takes the measured
+			// classification.
+			if contentType == "flick" || contentType == "reel" {
+				p.ContentType = "flick"
+			} else {
+				cat, _ := ClassifyVideo(float64(maxDuration), w, h)
+				p.ContentType = cat
+			}
 		} else {
 			// Duration unknown (transcode pending). Respect the
 			// caller's intent: if mobile said "flick"/"reel" — keep
@@ -1190,9 +1199,8 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			vm.Orientation = orientation
 			vm.ComputedCategory = category
 			vm.FinalCategory = category
-			// Ensure post content_type matches classification
-			p.ContentType = category
-			s.pgStore.UpdatePostContentType(ctx, p.ID, category)
+			// The computed category is analytics; the post keeps the type
+			// the author chose (see the classification block above).
 		} else {
 			// Duration unknown: the classification block above already
 			// honoured the caller's short-form intent on p.ContentType.

@@ -157,6 +157,13 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 		if err != nil {
 			slog.Warn("media transcode consumer: read author+content_type failed",
 				"post_id", vm.PostID, "error", err)
+		} else if oldType == "flick" && newType != "flick" {
+			// Never downgrade a reel. The author posted it from the Reel
+			// composer; a landscape frame or a long duration is their
+			// choice, not a misclassification (founder, 2026-09-04). The
+			// measured category stays on video_metadata for analytics.
+			slog.Info("media transcode consumer: keeping author's flick",
+				"post_id", vm.PostID, "measured_type", newType, "duration_s", duration, "w", w, "h", h)
 		} else if oldType != newType {
 			if err := c.store.UpdatePostContentType(ctx, vm.PostID, newType); err != nil {
 				slog.Warn("media transcode consumer: reclassify failed",
