@@ -52,8 +52,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -838,6 +843,9 @@ private fun ReelPage(
     actions: ReelActions,
 ) {
     val chrome = view.chrome
+    // How far the reel has played, 0..1, read off the player while this page
+    // is settled and playing; the author's avatar ring draws it.
+    var progress by remember(item.id) { mutableFloatStateOf(0f) }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -870,11 +878,7 @@ private fun ReelPage(
                 surfaceType = SURFACE_TYPE_SURFACE_VIEW,
                 modifier = Modifier.fillMaxSize(),
             )
-            ProgressLine(
-                player = player,
-                polling = settled && !view.paused,
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
+            TrackProgress(player = player, polling = settled && !view.paused) { progress = it }
         } else {
             // No playable rendition yet. An asset still processing has no
             // hls_url, so this is an expected state rather than a failure.
@@ -912,6 +916,7 @@ private fun ReelPage(
             ReelOverlay(
                 item = item,
                 offersFollow = offersFollow,
+                progress = progress,
                 onOpenAuthor = actions.onOpenAuthor,
                 onFollow = { actions.onFollow(item.author.id) },
             )
@@ -948,29 +953,57 @@ private fun ReelPage(
  * mode without knowing which it is in.
  */
 @Composable
-private fun ProgressLine(player: Player, polling: Boolean, modifier: Modifier = Modifier) {
-    var fraction by remember(player) { mutableFloatStateOf(0f) }
+private fun TrackProgress(player: Player, polling: Boolean, onProgress: (Float) -> Unit) {
     LaunchedEffect(player, polling) {
         while (polling && isActive) {
-            fraction = progressFraction(player.currentPosition, player.duration)
+            onProgress(progressFraction(player.currentPosition, player.duration))
             delay(PROGRESS_POLL_MILLIS)
         }
     }
+}
+
+/**
+ * The playhead as a ring around the author's avatar: a faint white track,
+ * and the ember arc starting at twelve o'clock and sweeping clockwise as
+ * the reel plays — the avatar reads as a tiny player (founder, 2026-09-05,
+ * in place of the line along the bottom of the frame).
+ */
+@Composable
+private fun ProgressRing(progress: Float, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val track = Color.White.copy(alpha = PROGRESS_TRACK_ALPHA)
+    val played = UsTheme.extended.ctaGradient
     Box(
         modifier = modifier
-            .fillMaxWidth()
-            .height(PROGRESS_HEIGHT)
-            .background(Color.White.copy(alpha = PROGRESS_TRACK_ALPHA))
+            .drawBehind {
+                val stroke = RING_STROKE.toPx()
+                val inset = stroke / 2
+                val arcSize = Size(size.width - stroke, size.height - stroke)
+                drawArc(
+                    color = track,
+                    startAngle = RING_START_ANGLE,
+                    sweepAngle = FULL_SWEEP,
+                    useCenter = false,
+                    topLeft = Offset(inset, inset),
+                    size = arcSize,
+                    style = Stroke(width = stroke),
+                )
+                if (progress > 0f) {
+                    drawArc(
+                        brush = played,
+                        startAngle = RING_START_ANGLE,
+                        sweepAngle = FULL_SWEEP * progress.coerceIn(0f, 1f),
+                        useCenter = false,
+                        topLeft = Offset(inset, inset),
+                        size = arcSize,
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                    )
+                }
+            }
+            .padding(RING_STROKE + RING_GAP)
             .testTag("reel_progress"),
+        contentAlignment = Alignment.Center,
     ) {
-        if (fraction > 0f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(fraction)
-                    .fillMaxHeight()
-                    .background(UsTheme.extended.ctaGradient),
-            )
-        }
+        content()
     }
 }
 
@@ -1191,6 +1224,8 @@ private fun Modifier.pressScale(onClick: () -> Unit): Modifier {
 private fun ReelOverlay(
     item: FeedItem,
     offersFollow: Boolean,
+    /** 0..1 of the reel played; drawn as the ring around the avatar. */
+    progress: Float,
     onOpenAuthor: (String) -> Unit,
     onFollow: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1209,16 +1244,19 @@ private fun ReelOverlay(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         ) {
-            // The avatar and the name are the way to the author's profile.
-            UsAvatar(
-                name = item.author.nameForDisplay,
-                seed = item.author.id,
-                size = UsAvatarSize.Post,
-                modifier = Modifier.clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { onOpenAuthor(item.author.id) },
-            )
+            // The avatar and the name are the way to the author's profile;
+            // the ring around the avatar is the playhead.
+            ProgressRing(progress = progress) {
+                UsAvatar(
+                    name = item.author.nameForDisplay,
+                    seed = item.author.id,
+                    size = UsAvatarSize.Post,
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { onOpenAuthor(item.author.id) },
+                )
+            }
             Text(
                 text = username,
                 style = MaterialTheme.typography.bodyMedium,
@@ -1337,7 +1375,10 @@ private val NAME_SIZE = 15.sp
 private val CAPTION_SIZE = 14.sp
 
 /** The playhead line: 2dp, the track at 25% white, read four times a second. */
-private val PROGRESS_HEIGHT = 2.dp
+private val RING_STROKE = 3.dp
+private val RING_GAP = 2.dp
+private const val RING_START_ANGLE = -90f
+private const val FULL_SWEEP = 360f
 private const val PROGRESS_TRACK_ALPHA = 0.25f
 private const val PROGRESS_POLL_MILLIS = 250L
 

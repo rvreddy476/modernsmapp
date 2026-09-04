@@ -1,6 +1,7 @@
 package com.us.android.core.designsystem.icon
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -193,8 +194,28 @@ object UsIcons {
         "m9 18 6-6-6-6",
     )
 
-    /** Reels: the Momentum bottom bar shows the bare [Play] mark for this tab. */
-    val Reels: ImageVector get() = Play
+    /**
+     * Reels: a film reel — a solid disc with four punched holes, a hub, and
+     * the strip trailing out to the right. The founder supplied the shape
+     * (2026-09-05); it says "video" the way the bare play triangle never
+     * did, because every tab on the bar is a stroke and the triangle read as
+     * a media control, not a place.
+     *
+     * The disc and its holes are one even-odd path so the holes are cut out,
+     * not painted; the strip is a second path drawn over the disc's edge.
+     */
+    val Reels: ImageVector = filledEvenOdd(
+        "Reels",
+        // Disc, then the four holes and the hub — each a two-arc circle.
+        "M11 1.4a9.6 9.6 0 1 0 0 19.2a9.6 9.6 0 1 0 0-19.2Z" +
+            "M11 3.4a2.3 2.3 0 1 0 0 4.6a2.3 2.3 0 1 0 0-4.6Z" +
+            "M3.4 11a2.3 2.3 0 1 0 4.6 0a2.3 2.3 0 1 0-4.6 0Z" +
+            "M14 11a2.3 2.3 0 1 0 4.6 0a2.3 2.3 0 1 0-4.6 0Z" +
+            "M11 14a2.3 2.3 0 1 0 0 4.6a2.3 2.3 0 1 0 0-4.6Z" +
+            "M11 10a1 1 0 1 0 0 2a1 1 0 1 0 0-2Z",
+        // The strip: from under the disc out to a rounded end at the right.
+        "M11 18.7h10.2a1.25 1.25 0 0 1 0 2.5H11Z",
+    )
 
     /** A phone handset — the calling vocabulary (missed-call rows, call UI). */
     val Phone: ImageVector = stroked("Phone") {
@@ -693,6 +714,25 @@ private fun lucideStroked(name: String, vararg pathData: String): ImageVector =
                 strokeLineCap = StrokeCap.Round,
                 strokeLineJoin = StrokeJoin.Round,
             )
+        }
+    }.build()
+
+/**
+ * A solid glyph whose paths carry their own holes: even-odd fill, so a
+ * circle drawn inside a disc is cut out of it rather than painted over it
+ * (the film reel). [lucideFilled] stays non-zero for Lucide's single
+ * outlines, which never nest.
+ */
+private fun filledEvenOdd(name: String, vararg pathData: String): ImageVector =
+    ImageVector.Builder(
+        name = name,
+        defaultWidth = ICON_SIZE.dp,
+        defaultHeight = ICON_SIZE.dp,
+        viewportWidth = ICON_SIZE,
+        viewportHeight = ICON_SIZE,
+    ).apply {
+        pathData.forEach { d ->
+            addPath(pathData = addPathNodes(d), fill = SolidColor(Color.Black), pathFillType = PathFillType.EvenOdd)
         }
     }.build()
 
