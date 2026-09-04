@@ -1,7 +1,9 @@
 package com.us.android.feature.post.createhub
 
 import android.graphics.Bitmap
+import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.testing.MainDispatcherRule
@@ -77,18 +79,26 @@ class ReelPublishViewModelTest {
     /** The encoded bytes carry the frame index in their length, so the test can tell frames apart. */
     private val encoder = ReelCoverEncoder { frame -> frame.bitmap?.let { ByteArray(frame.index + 1) } }
 
+    /** What the probe says about every picked video; null values are "could not tell". */
+    private fun probe(durationMs: Long? = 30_000L, sizeBytes: Long? = 20L * 1024 * 1024) =
+        ReelVideoProbe { VideoProbe(durationMs = durationMs, sizeBytes = sizeBytes) }
+
     private fun viewModel(
         launcher: FakeLauncher = FakeLauncher(),
         files: FakeFiles = FakeFiles(),
         lookups: FakeLookups = FakeLookups(),
         frames: ReelFrameExtractor = frames(withBitmaps = true),
+        probe: ReelVideoProbe = probe(),
+        surface: CreateSurface = CreateSurface.Reel,
     ) = ReelPublishViewModel(
         launcher = launcher,
         files = files,
         encoder = encoder,
         frames = frames,
         lookups = lookups,
+        probe = probe,
         io = Dispatchers.Unconfined,
+        savedStateHandle = SavedStateHandle(mapOf(ReelPublishViewModel.SURFACE_ARG to surface.routeKey)),
     )
 
     private fun ReelPublishViewModel.pickAndPost(caption: String = "") {
@@ -327,5 +337,99 @@ class ReelPublishViewModelTest {
         vm.onVideoPicked("content://video/1")
         assertThat(vm.state.value.canPost).isTrue()
         assertThat(vm.state.value.caption).isEmpty()
+    }
+
+    // ── Kind and the gate (Tube, 2026-09-05) ────────────────────────────
+
+    @Test
+    fun `the Video tile opens the form as a long video and every other way in is a reel`() {
+        assertThat(viewModel(surface = CreateSurface.Video).state.value.kind).isEqualTo(VideoKind.LONG)
+        assertThat(viewModel(surface = CreateSurface.Reel).state.value.kind).isEqualTo(VideoKind.REEL)
+        assertThat(ReelPublishViewModel.videoKindForSurface(null)).isEqualTo(VideoKind.REEL)
+        assertThat(ReelPublishViewModel.videoKindForSurface("video")).isEqualTo(VideoKind.LONG)
+    }
+
+    @Test
+    fun `a long video needs a title and carries it and its kind into the record`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher, surface = CreateSurface.Video)
+
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+        assertThat(vm.state.value.canPost).isFalse()
+        assertThat(vm.state.value.hasRequiredText).isFalse()
+
+        vm.onTitleChanged("   ")
+        assertThat(vm.state.value.canPost).isFalse()
+        vm.onTitleChanged("How the feed ranks")
+        assertThat(vm.state.value.canPost).isTrue()
+        vm.onPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.kind).isEqualTo(VideoKind.LONG)
+        assertThat(pending.title).isEqualTo("How the feed ranks")
+    }
+
+    @Test
+    fun `the title is clamped to a hundred characters`() {
+        val vm = viewModel(surface = CreateSurface.Video)
+        vm.onTitleChanged("x".repeat(140))
+        assertThat(vm.state.value.title).hasLength(ReelPublishViewModel.MAX_TITLE_LENGTH)
+    }
+
+    @Test
+    fun `a reel over five minutes cannot post until it is switched to a video, keeping the selection`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher, probe = probe(durationMs = 6L * 60L * 1_000L))
+
+        vm.onVideoPicked("content://video/1")
+        vm.onCaptionChanged("six minutes")
+        vm.onCoverSelected(2)
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.gate).isEqualTo(VideoGate.TooLongForReel(360_000L))
+        assertThat(vm.state.value.canPost).isFalse()
+        vm.onPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued).isEmpty()
+
+        vm.switchToLong()
+        assertThat(vm.state.value.kind).isEqualTo(VideoKind.LONG)
+        assertThat(vm.state.value.gate).isEqualTo(VideoGate.Ok)
+        assertThat(vm.state.value.videoUri).isEqualTo("content://video/1")
+        assertThat(vm.state.value.coverIndex).isEqualTo(2)
+        assertThat(vm.state.value.caption).isEqualTo("six minutes")
+        assertThat(vm.state.value.canPost).isFalse() // a video still needs its title
+
+        vm.onTitleChanged("Six minutes")
+        vm.onPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.single().kind).isEqualTo(VideoKind.LONG)
+        assertThat(launcher.enqueued.single().caption).isEqualTo("six minutes")
+    }
+
+    @Test
+    fun `a file over 500 MB is refused for either kind`() = runTest {
+        val tooBig = 501L * 1024 * 1024
+        val reel = viewModel(probe = probe(sizeBytes = tooBig))
+        reel.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+        assertThat(reel.state.value.gate).isEqualTo(VideoGate.TooLarge(tooBig))
+        assertThat(reel.state.value.canPost).isFalse()
+
+        reel.switchToLong()
+        reel.onTitleChanged("Big")
+        assertThat(reel.state.value.canPost).isFalse()
+    }
+
+    @Test
+    fun `an unreadable probe never blocks a post`() = runTest {
+        val vm = viewModel(probe = probe(durationMs = null, sizeBytes = null))
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.gate).isEqualTo(VideoGate.Ok)
+        assertThat(vm.state.value.canPost).isTrue()
     }
 }

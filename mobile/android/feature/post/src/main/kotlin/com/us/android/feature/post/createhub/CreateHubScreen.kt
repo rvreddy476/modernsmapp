@@ -79,6 +79,9 @@ import java.io.File
  *    people, location, audience, category, switches. Post hands the
  *    upload/transcode/publish to a WorkManager worker and closes; the
  *    Reels tab's pending item shows the states honestly.
+ *  - **Video** — the reel form as a long video (Tube): a required title, a
+ *    16:9 cover, no remix switch, no duration cap. Posts as `long_video` and
+ *    hands off to the same worker; Tube home shows the pending item.
  *  - **Audio** — record a voice note or pick a track, preview, caption, post
  *    as a `voice` post. See [VoicePublishViewModel] for what the server
  *    accepts today.
@@ -92,6 +95,8 @@ fun CreateHubScreen(
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
     onOpenStudio: (uris: List<String>) -> Unit,
+    /** A long video was handed to the worker: `:app` opens Tube, where its pending item is. */
+    onOpenTube: () -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -117,7 +122,10 @@ fun CreateHubScreen(
             // Reel posts in the background: the surface closes on hand-off and
             // the Reels tab's pending item reports the rest, so there is no published id
             // to navigate to from here.
-            CreateSurface.Reel -> ReelSurface(onClose = onClose)
+            CreateSurface.Reel -> ReelSurface(onClose = onClose, onOpenTube = onOpenTube)
+            // The same form opened as a long video (Tube, 2026-09-05): a title,
+            // a 16:9 cover, no remix. Its hand-off routes to Tube home.
+            CreateSurface.Video -> ReelSurface(onClose = onClose, onOpenTube = onOpenTube)
             CreateSurface.Audio -> VoiceSurface(onClose = onClose, onPublished = onPublished)
             CreateSurface.Poll -> PollSurface(onClose = onClose, onPublished = onPublished)
         }

@@ -64,8 +64,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.ui.usSwitchColors
 import com.us.android.feature.post.createhub.ReelPublishViewModel.Phase
 import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
@@ -73,20 +75,28 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 
 /**
- * REEL — pick a video, then the TikTok-shaped form.
+ * REEL and VIDEO — pick a video, then the TikTok-shaped form.
  *
  * Cover preview beside the description, the cover strip under them, then
  * one card of rows (Tag people, Add location, Audience, Category) and one
  * card of switches. Everything scrolls; the keyboard is an inset the root
  * column pads for, so the description is never under it.
  *
- * Post hands the publish to WorkManager and CLOSES — the Reels tab's pending item shows
- * the upload and the post going out. There is no published
- * callback here because nothing is published while this surface exists.
+ * Opened from the Video tile (Tube, 2026-09-05) the same form is a LONG
+ * video: a required title on top, a 16:9 cover strip, no remix switch. The
+ * ViewModel reads which from the route; a reel over five minutes can switch
+ * to it in place ([GateNotice]).
+ *
+ * Post hands the publish to WorkManager and LEAVES — a reel closes back to
+ * where the user was and the Reels tab's pending item shows the upload; a
+ * long video opens Tube home, where its pending item is. There is no
+ * published callback here because nothing is published while this surface
+ * exists.
  */
 @Composable
 internal fun ReelSurface(
     onClose: () -> Unit,
+    onOpenTube: () -> Unit,
     viewModel: ReelPublishViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -109,11 +119,12 @@ internal fun ReelSurface(
     val openSystemPicker = {
         pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
     }
+    val long = state.kind == VideoKind.LONG
     if (state.videoUri == null) {
         MediaGallerySurface(
             kind = GalleryKind.Videos,
-            title = "New reel",
-            subtitle = "Pick a video — it posts to Reels.",
+            title = if (long) "New video" else "New reel",
+            subtitle = if (long) "Pick a video — it posts to Tube." else "Pick a video — it posts to Reels.",
             onClose = onClose,
             onCamera = openCamera,
             onPicked = { uris -> uris.firstOrNull()?.let { viewModel.onVideoPicked(it.toString()) } },
@@ -123,9 +134,10 @@ internal fun ReelSurface(
     }
 
     if (state.phase is Phase.Enqueued) {
-        // Handed to the worker: leave, once. The user lands back where they
-        // were and the Reels tab's pending item takes over.
-        LaunchedEffect(Unit) { onClose() }
+        // Handed to the worker: leave, once. A reel lands the user back where
+        // they were and the Reels tab's pending item takes over; a long video
+        // opens Tube home, whose pending item takes over there.
+        LaunchedEffect(Unit) { if (long) onOpenTube() else onClose() }
     }
 
     ReelForm(state = state, viewModel = viewModel, onClose = onClose, onChangeVideo = openSystemPicker)
@@ -143,6 +155,8 @@ private fun ReelForm(
 ) {
     var sheet by rememberSaveable { mutableStateOf(ReelSheet.None) }
     val editable = !state.isBusy
+    val long = state.kind == VideoKind.LONG
+    val noun = if (long) "video" else "reel"
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -150,17 +164,13 @@ private fun ReelForm(
                 .fillMaxSize()
                 .imePadding(),
         ) {
-            CreateTopBar(title = "New reel", onClose = onClose) {
+            CreateTopBar(title = if (long) "New video" else "New reel", onClose = onClose) {
                 PublishPill(
                     text = if (state.phase is Phase.Failure) "Try again" else "Post",
                     enabled = state.canPost,
                     busy = state.isBusy,
                     onClick = viewModel::onPost,
-                    description = when {
-                        state.isBusy -> "Post reel. In progress."
-                        state.canPost -> "Post reel"
-                        else -> "Post reel. Unavailable: choose a video first."
-                    },
+                    description = postDescription(state, noun),
                     testTag = "reel-post",
                 )
             }
@@ -171,7 +181,12 @@ private fun ReelForm(
                     .padding(horizontal = UsTheme.spacing.pageHorizontal),
             ) {
                 Spacer(Modifier.height(UsTheme.spacing.s))
+                if (long) {
+                    TitleField(value = state.title, onValueChange = viewModel::onTitleChanged, enabled = editable)
+                    Spacer(Modifier.height(UsTheme.spacing.l))
+                }
                 CoverAndDescription(
+                    kind = state.kind,
                     cover = state.cover,
                     caption = state.caption,
                     onCaptionChanged = viewModel::onCaptionChanged,
@@ -179,6 +194,7 @@ private fun ReelForm(
                 )
                 Spacer(Modifier.height(UsTheme.spacing.l))
                 CoverStrip(
+                    kind = state.kind,
                     frames = state.frames,
                     loading = state.framesLoading,
                     coverIndex = state.coverIndex,
@@ -186,6 +202,7 @@ private fun ReelForm(
                     onSelect = viewModel::onCoverSelected,
                     onChangeVideo = onChangeVideo,
                 )
+                GateNotice(gate = state.gate, enabled = editable, onSwitchToLong = viewModel::switchToLong)
                 Spacer(Modifier.height(UsTheme.spacing.xxl))
                 DetailsCard(
                     state = state,
@@ -213,6 +230,26 @@ private fun ReelForm(
         }
     }
 
+    ReelPickerSheets(sheet = sheet, state = state, viewModel = viewModel, onClose = { sheet = ReelSheet.None })
+}
+
+/** What the Post pill says to a screen reader: what it will do, or why it cannot. */
+private fun postDescription(state: ReelPublishViewModel.ReelUiState, noun: String): String = when {
+    state.isBusy -> "Post $noun. In progress."
+    state.canPost -> "Post $noun"
+    !state.gate.allowsPost -> "Post $noun. Unavailable: ${gateMessage(state.gate)}"
+    !state.hasRequiredText -> "Post video. Unavailable: add a title first."
+    else -> "Post $noun. Unavailable: choose a video first."
+}
+
+/** The three picker sheets — audience, category, location — one at a time. */
+@Composable
+private fun ReelPickerSheets(
+    sheet: ReelSheet,
+    state: ReelPublishViewModel.ReelUiState,
+    viewModel: ReelPublishViewModel,
+    onClose: () -> Unit,
+) {
     when (sheet) {
         ReelSheet.Audience -> ReelOptionSheet(
             title = "Audience",
@@ -220,9 +257,9 @@ private fun ReelForm(
             selected = state.visibility,
             onPick = {
                 viewModel.onVisibilityChanged(it)
-                sheet = ReelSheet.None
+                onClose()
             },
-            onDismiss = { sheet = ReelSheet.None },
+            onDismiss = onClose,
         )
         ReelSheet.Category -> ReelOptionSheet(
             title = "Category",
@@ -230,17 +267,17 @@ private fun ReelForm(
             selected = state.category,
             onPick = {
                 viewModel.onCategoryChanged(it)
-                sheet = ReelSheet.None
+                onClose()
             },
-            onDismiss = { sheet = ReelSheet.None },
+            onDismiss = onClose,
         )
         ReelSheet.Location -> ReelLocationSheet(
             initial = state.locationName,
             onDone = {
                 viewModel.onLocationChanged(it)
-                sheet = ReelSheet.None
+                onClose()
             },
-            onDismiss = { sheet = ReelSheet.None },
+            onDismiss = onClose,
         )
         ReelSheet.None, ReelSheet.People -> Unit
     }
@@ -248,40 +285,69 @@ private fun ReelForm(
 
 // ── Cover + description ─────────────────────────────────────────────────
 
-/** Instagram's arrangement: the 9:16 cover on the left, the text beside it. */
+/**
+ * Instagram's arrangement for a reel: the 9:16 cover on the left, the text
+ * beside it. A long video is landscape, so its 16:9 cover sits full-width
+ * ABOVE the description instead — a 9:16 slot would crop most of the frame.
+ */
 @Composable
 private fun CoverAndDescription(
+    kind: VideoKind,
     cover: CoverFrame?,
     caption: String,
     onCaptionChanged: (String) -> Unit,
     enabled: Boolean,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(PREVIEW_HEIGHT),
-    ) {
-        CoverPreview(cover = cover)
-        Spacer(Modifier.width(UsTheme.spacing.l))
-        DescriptionField(
-            value = caption,
-            onValueChange = onCaptionChanged,
-            enabled = enabled,
+    when (kind) {
+        VideoKind.REEL -> Row(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-        )
+                .fillMaxWidth()
+                .height(PREVIEW_HEIGHT),
+        ) {
+            CoverPreview(
+                cover = cover,
+                modifier = Modifier
+                    .width(PREVIEW_WIDTH)
+                    .fillMaxHeight(),
+            )
+            Spacer(Modifier.width(UsTheme.spacing.l))
+            DescriptionField(
+                value = caption,
+                onValueChange = onCaptionChanged,
+                enabled = enabled,
+                placeholder = "Describe your reel… #hashtags @mentions",
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+            )
+        }
+        VideoKind.LONG -> Column(modifier = Modifier.fillMaxWidth()) {
+            CoverPreview(
+                cover = cover,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(LANDSCAPE),
+            )
+            Spacer(Modifier.height(UsTheme.spacing.l))
+            DescriptionField(
+                value = caption,
+                onValueChange = onCaptionChanged,
+                enabled = enabled,
+                placeholder = "Describe your video… #hashtags @mentions",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(LONG_DESCRIPTION_HEIGHT),
+            )
+        }
     }
 }
 
 @Composable
-private fun CoverPreview(cover: CoverFrame?) {
+private fun CoverPreview(cover: CoverFrame?, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(UsTheme.radii.medium)
     val image = remember(cover?.bitmap) { cover?.bitmap?.asImageBitmap() }
     Box(
-        modifier = Modifier
-            .width(PREVIEW_WIDTH)
-            .fillMaxHeight()
+        modifier = modifier
             .clip(shape)
             .background(UsTheme.extended.bgCard)
             .border(HAIRLINE, UsTheme.extended.borderSubtle, shape)
@@ -317,6 +383,7 @@ private fun DescriptionField(
     value: String,
     onValueChange: (String) -> Unit,
     enabled: Boolean,
+    placeholder: String,
     modifier: Modifier = Modifier,
 ) {
     val accent = UsTheme.extended.accentSolid
@@ -324,7 +391,7 @@ private fun DescriptionField(
     Box(modifier = modifier) {
         if (value.isEmpty()) {
             Text(
-                text = "Describe your reel… #hashtags @mentions",
+                text = placeholder,
                 style = MaterialTheme.typography.bodyLarge.copy(
                     fontSize = DESCRIPTION_SIZE,
                     lineHeight = DESCRIPTION_LINE_HEIGHT,
@@ -353,9 +420,10 @@ private fun DescriptionField(
 
 // ── Cover strip ─────────────────────────────────────────────────────────
 
-/** Six frames, evenly spaced; the chosen one carries the accent ring. */
+/** Six frames, evenly spaced, in the kind's aspect; the chosen one carries the accent ring. */
 @Composable
 private fun CoverStrip(
+    kind: VideoKind,
     frames: List<CoverFrame>,
     loading: Boolean,
     coverIndex: Int,
@@ -391,13 +459,14 @@ private fun CoverStrip(
             )
         }
         Spacer(Modifier.height(UsTheme.spacing.s))
+        val aspect = if (kind == VideoKind.LONG) LANDSCAPE else PORTRAIT
         Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
             if (frames.isEmpty()) {
                 repeat(STRIP_SLOTS) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .aspectRatio(PORTRAIT)
+                            .aspectRatio(aspect)
                             .clip(RoundedCornerShape(UsTheme.radii.small))
                             .background(UsTheme.extended.bgCard),
                     )
@@ -406,6 +475,7 @@ private fun CoverStrip(
                 frames.forEach { frame ->
                     CoverFrameTile(
                         frame = frame,
+                        aspect = aspect,
                         selected = frame.index == coverIndex,
                         enabled = enabled && frame.bitmap != null,
                         onClick = { onSelect(frame.index) },
@@ -420,6 +490,7 @@ private fun CoverStrip(
 @Composable
 private fun CoverFrameTile(
     frame: CoverFrame,
+    aspect: Float,
     selected: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -432,7 +503,7 @@ private fun CoverFrameTile(
     val scale by animateFloatAsState(targetValue = if (pressed) PRESS_SCALE else 1f, label = "framePress")
     Box(
         modifier = modifier
-            .aspectRatio(PORTRAIT)
+            .aspectRatio(aspect)
             .scale(scale)
             .clip(shape)
             .background(UsTheme.extended.bgCard)
@@ -578,7 +649,11 @@ private fun DetailRow(
 
 // ── Switches card ───────────────────────────────────────────────────────
 
-/** Exactly these four, in this order — the founder's list. */
+/**
+ * Exactly these four, in this order — the founder's list. A long video has
+ * no remix: the server keeps no `remix_setting` for long form, so the row
+ * is absent rather than a switch that records nothing.
+ */
 @Composable
 private fun SwitchesCard(
     state: ReelPublishViewModel.ReelUiState,
@@ -609,14 +684,16 @@ private fun SwitchesCard(
             enabled = enabled,
             testTag = "reel-allow-download",
         )
-        RowDivider()
-        ReelSwitchRow(
-            title = "Allow remix",
-            checked = state.allowRemix,
-            onCheckedChange = viewModel::onAllowRemixChanged,
-            enabled = enabled,
-            testTag = "reel-allow-remix",
-        )
+        if (state.kind == VideoKind.REEL) {
+            RowDivider()
+            ReelSwitchRow(
+                title = "Allow remix",
+                checked = state.allowRemix,
+                onCheckedChange = viewModel::onAllowRemixChanged,
+                enabled = enabled,
+                testTag = "reel-allow-remix",
+            )
+        }
     }
 }
 
@@ -659,6 +736,112 @@ private fun ReelSwitchRow(
             modifier = Modifier.scale(SWITCH_SCALE),
         )
     }
+}
+
+// ── Title (long video) ──────────────────────────────────────────────────
+
+/**
+ * The long video's title: required, 100 characters, the counter at the
+ * right. A bare field on the same reasoning as the description — a box
+ * makes it a form — with a hairline under it so it reads as its own line
+ * above the cover rather than a first line of the description.
+ */
+@Composable
+private fun TitleField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+) {
+    val accent = UsTheme.extended.accentSolid
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            if (value.isEmpty()) {
+                Text(
+                    text = "Title",
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = TITLE_SIZE),
+                    color = UsTheme.extended.textDim,
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                enabled = enabled,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = TITLE_SIZE,
+                    color = UsTheme.extended.textPrimary,
+                ),
+                cursorBrush = SolidColor(accent),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "Title" }
+                    .testTag("video-title"),
+            )
+        }
+        Spacer(Modifier.height(UsTheme.spacing.s))
+        HorizontalDivider(color = UsTheme.extended.borderSubtle, thickness = HAIRLINE)
+        Spacer(Modifier.height(UsTheme.spacing.xs))
+        Text(
+            text = "${value.length}/${ReelPublishViewModel.MAX_TITLE_LENGTH}",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (value.isBlank()) UsTheme.extended.textDim else UsTheme.extended.textMuted,
+            modifier = Modifier
+                .align(Alignment.End)
+                .testTag("video-title-count"),
+        )
+    }
+}
+
+// ── The gate ────────────────────────────────────────────────────────────
+
+/**
+ * What stops a post, said inline under the cover strip (founder,
+ * 2026-09-05): a reel over five minutes offers "Post as a Video" — the
+ * same video, cover and fields, as a long video — and a file over 500 MB
+ * says so and offers nothing, because no kind can take it. Nothing is
+ * drawn while the gate is open.
+ */
+@Composable
+private fun GateNotice(
+    gate: VideoGate,
+    enabled: Boolean,
+    onSwitchToLong: () -> Unit,
+) {
+    if (gate is VideoGate.Ok) return
+    Spacer(Modifier.height(UsTheme.spacing.l))
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.glassBg)
+            .border(HAIRLINE, UsTheme.extended.glassBorder, RoundedCornerShape(UsTheme.radii.medium))
+            .padding(horizontal = ROW_PADDING_H, vertical = UsTheme.spacing.l)
+            .testTag("video-gate"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        Text(
+            text = gateMessage(gate),
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        if (gate is VideoGate.TooLongForReel) {
+            UsPillButton(
+                text = "Post as a Video",
+                onClick = onSwitchToLong,
+                enabled = enabled,
+                modifier = Modifier.testTag("video-gate-switch"),
+            )
+        }
+    }
+}
+
+/** The gate's one sentence, shared by the notice and the Post pill's description. */
+internal fun gateMessage(gate: VideoGate): String = when (gate) {
+    VideoGate.Ok -> ""
+    is VideoGate.TooLongForReel -> "Reels are up to 5 minutes. Post it as a Video instead"
+    is VideoGate.TooLarge -> "Videos are up to 500 MB. Pick a smaller file."
 }
 
 // ── Status ──────────────────────────────────────────────────────────────
@@ -728,6 +911,7 @@ private val AudienceOptions = listOf(
 
 private const val STRIP_SLOTS = 6
 private const val PORTRAIT = 9f / 16f
+private const val LANDSCAPE = 16f / 9f
 private const val PRESS_SCALE = 0.94f
 private const val PRESS_ALPHA = 0.6f
 private const val UNSELECTED_ALPHA = 0.55f
@@ -738,6 +922,8 @@ private val RING_WIDTH = 2.dp
 private val PREVIEW_WIDTH = 96.dp
 private val PREVIEW_HEIGHT = 170.dp
 private val PREVIEW_GLYPH = 22.dp
+private val LONG_DESCRIPTION_HEIGHT = 96.dp
+private val TITLE_SIZE = 17.sp
 private val ROW_PADDING_H = 14.dp
 private val ROW_PADDING_V = 13.dp
 private val SWITCH_PADDING_V = 4.dp

@@ -100,6 +100,10 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
+import com.us.android.core.feed.data.offersFollow
+import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.more.PostMoreSheetHost
+import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerPool
@@ -113,10 +117,6 @@ import com.us.android.core.ui.UsReelMoreState
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
-import com.us.android.feature.feed.data.offersFollow
-import com.us.android.feature.feed.ui.comments.CommentsSheet
-import com.us.android.feature.feed.ui.more.PostMoreSheetHost
-import com.us.android.feature.feed.ui.more.PostMoreViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.io.File

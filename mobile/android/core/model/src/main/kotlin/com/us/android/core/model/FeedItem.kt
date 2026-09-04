@@ -24,6 +24,11 @@ data class FeedItem(
     val authorId: String,
     val author: FeedAuthor,
     val text: String,
+    /**
+     * The long video's title (Tube, 2026-09-05). Blank on every other kind of
+     * post and on rows from a server that predates the field.
+     */
+    val title: String = "",
     val visibility: String,
     /** `post`, `flick`, `long_video`, … — the feed's own classification. */
     val feedContentType: String,
@@ -186,6 +191,12 @@ data class FeedMedia(
     val playbackUrl: String? = null,
     /** `hls` or `original`; blank when the server did not say. */
     val playbackKind: String = "",
+    /**
+     * The video's length, from the transcode (`duration_ms`, Tube 2026-09-05).
+     * Zero for images and for rows from a server that predates the field, so
+     * a duration badge is drawn only when there is one to draw.
+     */
+    val durationMs: Long = 0L,
 ) {
     val isReady: Boolean get() = status == "ready"
 
@@ -277,6 +288,9 @@ data class FeedQuery(
 
         /** Reels from authors the viewer follows — the Reels tab's "Following". */
         val ReelsFollowing = FeedQuery(FeedSurface.Reels, followingOnly = true)
+
+        /** Long videos as the server ranks them — Tube's home (2026-09-05). */
+        val Videos = FeedQuery(FeedSurface.Videos)
     }
 }
 

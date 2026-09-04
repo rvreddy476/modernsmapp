@@ -25,12 +25,12 @@ class CreateSurfaceRoutingTest {
     }
 
     @Test
-    fun `the sheet offers exactly the six typed tiles in the render's order`() {
+    fun `the sheet offers exactly the seven typed tiles in the render's order`() {
         assertThat(CreateSurface.entries.map { it.label })
-            .containsExactly("Text", "Photo", "Reel", "Audio", "Poll", "Article")
+            .containsExactly("Text", "Photo", "Reel", "Video", "Audio", "Poll", "Article")
             .inOrder()
         assertThat(CreateSurface.entries.map { it.routeKey })
-            .containsExactly("text", "photo", "reel", "audio", "poll", "article")
+            .containsExactly("text", "photo", "reel", "video", "audio", "poll", "article")
             .inOrder()
         // Live is a row that navigates elsewhere, never a composer surface.
         assertThat(CreateSurface.entries.map { it.routeKey }).doesNotContain("live")

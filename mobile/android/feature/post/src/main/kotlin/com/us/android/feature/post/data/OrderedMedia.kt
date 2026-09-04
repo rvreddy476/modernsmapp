@@ -26,6 +26,7 @@ internal fun List<PostMediaDto>.toOrderedRefs(): List<PostMediaRef> {
             position = it.position,
             altText = it.altText,
             altDecorative = it.altDecorative,
+            durationMs = it.durationMs,
         )
     }
     return when (val ordered = CarouselOrdinals.order(refs) { it.position }) {

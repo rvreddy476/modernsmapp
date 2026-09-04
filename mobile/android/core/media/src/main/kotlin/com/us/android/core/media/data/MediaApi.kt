@@ -50,4 +50,6 @@ data class MediaDeliveryDto(
     @SerialName("moderation_status") val moderationStatus: String = "",
     @SerialName("playback_url") val playbackUrl: String? = null,
     @SerialName("playback_kind") val playbackKind: String = "",
+    /** The transcode's measured length; 0 for images and for older assets. */
+    @SerialName("duration_ms") val durationMs: Long = 0L,
 )

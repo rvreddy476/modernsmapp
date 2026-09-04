@@ -1,6 +1,7 @@
 package com.us.android.feature.feed.data
 
 import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.model.SessionState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper

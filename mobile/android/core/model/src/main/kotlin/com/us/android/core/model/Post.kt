@@ -18,6 +18,14 @@ data class Post(
     val authorId: String,
     val text: String,
     val visibility: String,
+    /**
+     * `post`, `poll`, `flick`, `long_video`, `voice` — the product family.
+     * Blank on a payload that predates the field. A `long_video` opens in
+     * Tube's watch screen; everything else opens as a post.
+     */
+    val contentType: String = "",
+    /** The long video's title; blank on every other kind of post. */
+    val title: String = "",
     val postType: String,
     val createdAt: String,
     val counts: PostCounts,
@@ -66,6 +74,8 @@ data class PostMediaRef(
     val altDecorative: Boolean = false,
     /** Carousel ordinal; -1 when the payload predates the field. */
     val position: Int = CarouselOrdinals.ABSENT,
+    /** The video's length in milliseconds; zero for images and older payloads. */
+    val durationMs: Long = 0L,
 ) {
     /**
      * What a screen reader should announce, or null for silence.

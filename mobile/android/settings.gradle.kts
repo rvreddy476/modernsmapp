@@ -93,3 +93,12 @@ include(":feature:notifications")
 // own feature so neither :feature:profile nor :app carries a screen that has
 // to appear BEFORE the tabs exist.
 include(":feature:settings")
+
+// The feed data seam — feed-service endpoints, paging, hydration, the follow
+// graph, and the shared post "more" / comments sheets. Split out of
+// :feature:feed when Tube arrived: features must not depend on each other.
+include(":core:feed")
+
+// Tube — long video: the home list, the watch screen. Reads through
+// :core:feed; posts through :feature:post's video pipeline.
+include(":feature:tube")

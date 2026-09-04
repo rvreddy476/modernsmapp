@@ -203,7 +203,12 @@ private fun SheetHeader(onClose: () -> Unit) {
 
 // ── The grid ────────────────────────────────────────────────────────────
 
-/** 3 columns × 2 rows, 8dp gaps. Rows, not a lazy grid: six items, all visible. */
+/**
+ * 4 columns × 2 rows, 8dp gaps. Rows, not a lazy grid: seven items, all
+ * visible. Four across since Video joined Reel (2026-09-05) — three would
+ * have left one tile alone on a third row. A short last row is padded with
+ * empty slots so every tile keeps the same width.
+ */
 @Composable
 private fun TileGrid(onPick: (CreateSurface) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(GAP)) {
@@ -216,6 +221,7 @@ private fun TileGrid(onPick: (CreateSurface) -> Unit) {
                         modifier = Modifier.weight(1f),
                     )
                 }
+                repeat(COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
@@ -364,18 +370,21 @@ private fun CreateSurface.swatch(): UsCreateSwatch {
         CreateSurface.Text -> create.text
         CreateSurface.Photo -> create.photo
         CreateSurface.Reel -> create.reel
+        // Tube's own red, so the tile and the launcher tile it posts to match.
+        CreateSurface.Video -> UsTheme.extended.launcher.tube
         CreateSurface.Audio -> create.audio
         CreateSurface.Poll -> create.poll
         CreateSurface.Article -> create.article
     }
 }
 
-/** Lucide: type · image · film · mic · chart-column · file-text. */
+/** Lucide: type · image · film · clapperboard · mic · chart-column · file-text. */
 private val CreateSurface.icon: ImageVector
     get() = when (this) {
         CreateSurface.Text -> UsIcons.Type
         CreateSurface.Photo -> UsIcons.Image
         CreateSurface.Reel -> UsIcons.Film
+        CreateSurface.Video -> UsIcons.Clapperboard
         CreateSurface.Audio -> UsIcons.Mic
         CreateSurface.Poll -> UsIcons.Poll
         CreateSurface.Article -> UsIcons.FileText
@@ -383,7 +392,7 @@ private val CreateSurface.icon: ImageVector
 
 // ── Metrics ─────────────────────────────────────────────────────────────
 
-private const val COLUMNS = 3
+private const val COLUMNS = 4
 private const val SCRIM_ALPHA = 0.55f
 private const val RIM_ALPHA = 0.08f
 private const val HANDLE_ALPHA = 0.35f

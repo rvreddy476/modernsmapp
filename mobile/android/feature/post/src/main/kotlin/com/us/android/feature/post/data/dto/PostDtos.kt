@@ -35,6 +35,8 @@ data class PostDto(
     val media: List<PostMediaDto> = emptyList(),
     @SerialName("author_id") val authorId: String = "",
     val text: String = "",
+    /** The long video's title (Tube, 2026-09-05); blank on every other kind of post. */
+    val title: String = "",
     val visibility: String = "",
     @SerialName("content_type") val contentType: String = "",
     @SerialName("post_type") val postType: String = "",
@@ -165,4 +167,6 @@ data class PostMediaDto(
      */
     @SerialName("alt_text") val altText: String = "",
     @SerialName("alt_decorative") val altDecorative: Boolean = false,
+    /** The transcode's measured length (Tube, 2026-09-05); 0 for images and older posts. */
+    @SerialName("duration_ms") val durationMs: Long = 0L,
 )

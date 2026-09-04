@@ -1,7 +1,7 @@
 package com.us.android.feature.feed.ui
 
 import com.us.android.core.common.error.AppError
-import com.us.android.feature.feed.data.AppErrorException
+import com.us.android.core.feed.data.AppErrorException
 
 /**
  * One wording per failure class, shared by every feed surface so the home

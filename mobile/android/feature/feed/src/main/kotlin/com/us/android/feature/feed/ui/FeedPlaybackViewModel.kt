@@ -4,14 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.us.android.core.feed.data.hasVideo
+import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.media.MediaSources
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlayerFactory
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.model.FeedItem
-import com.us.android.feature.feed.data.hasVideo
-import com.us.android.feature.feed.data.playbackFor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 

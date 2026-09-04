@@ -3,6 +3,7 @@ package com.us.android.feature.post.createhub
 import android.content.Context
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
+import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.media.upload.MediaSourceResolver
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.UploadSource
@@ -46,6 +47,10 @@ data class PendingReelPublish(
     val videoMimeType: String? = null,
     /** The chosen cover frame as a JPEG file, or null when no frame could be extracted. */
     val coverPath: String? = null,
+    /** Reel (`flick`) or long video (`long_video`) — which surface it lands on. */
+    val kind: VideoKind = VideoKind.REEL,
+    /** The long video's title; required for [VideoKind.LONG], ignored for a reel. */
+    val title: String = "",
     val caption: String = "",
     val visibility: String = VISIBILITY_PUBLIC,
     val category: String = "",

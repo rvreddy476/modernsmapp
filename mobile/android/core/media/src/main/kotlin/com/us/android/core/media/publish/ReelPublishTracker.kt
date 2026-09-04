@@ -54,15 +54,32 @@ sealed interface ReelPublishState {
 }
 
 /**
- * What the Reels tab shows for a reel that is still posting: the cover frame
- * the user chose (a local JPEG path, or null when no frame could be
- * extracted) and the caption, so the pending item looks like the reel it is
- * about to become.
+ * Which kind of video a publish is (Tube, 2026-09-05).
+ *
+ * The same pipeline posts both: a [REEL] is a `flick` — vertical, up to five
+ * minutes, lands on the Reels tab — and a [LONG] video is a `long_video`
+ * with a required title that lands in Tube. Product-neutral on purpose: this
+ * module only needs to know which SURFACE the pending item belongs to, so
+ * Reels never shows a long video posting and Tube never shows a reel.
+ */
+enum class VideoKind {
+    REEL,
+    LONG,
+}
+
+/**
+ * What the Reels tab (or Tube) shows for a video that is still posting: the
+ * cover frame the user chose (a local JPEG path, or null when no frame could
+ * be extracted), the caption, and — for a long video — its title, so the
+ * pending item looks like the post it is about to become. [kind] decides
+ * which surface draws it.
  */
 data class ReelPublishPreview(
     val creationKey: String,
     val coverPath: String?,
     val caption: String,
+    val kind: VideoKind = VideoKind.REEL,
+    val title: String = "",
 )
 
 /**

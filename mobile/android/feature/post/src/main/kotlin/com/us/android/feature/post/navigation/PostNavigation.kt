@@ -125,6 +125,8 @@ fun NavGraphBuilder.createHubScreen(
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
     onOpenStudio: (uris: List<String>) -> Unit,
+    /** A long video was handed to the worker; `:app` opens Tube home over the hub. */
+    onOpenTube: () -> Unit,
 ) {
     composable<CreateRoute> { entry ->
         val route = entry.toRoute<CreateRoute>()
@@ -133,6 +135,7 @@ fun NavGraphBuilder.createHubScreen(
             onClose = onClose,
             onPublished = onPublished,
             onOpenStudio = onOpenStudio,
+            onOpenTube = onOpenTube,
         )
     }
 }

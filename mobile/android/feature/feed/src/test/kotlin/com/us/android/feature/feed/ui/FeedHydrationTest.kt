@@ -7,6 +7,7 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.engagement.data.reactedOr
+import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedCounts
@@ -14,7 +15,6 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ErrorMapper
-import com.us.android.feature.feed.data.FeedRepository
 import com.us.android.feature.feed.data.followGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -198,7 +198,7 @@ class FeedHydrationTest {
  * points directly, so any real call means the test is not measuring what it
  * claims to.
  */
-private class UnusedFeedApi : com.us.android.feature.feed.data.FeedApi {
+private class UnusedFeedApi : com.us.android.core.feed.data.FeedApi {
     override suspend fun getFeed(
         surface: String,
         limit: Int,
@@ -219,10 +219,10 @@ private class UnusedFeedApi : com.us.android.feature.feed.data.FeedApi {
 
     override suspend fun votePoll(
         postId: String,
-        body: com.us.android.feature.feed.data.PollVoteRequest,
+        body: com.us.android.core.feed.data.PollVoteRequest,
     ): Nothing = error("poll voting is not under test")
 
-    override suspend fun feedback(body: com.us.android.feature.feed.data.FeedFeedbackRequest): Nothing =
+    override suspend fun feedback(body: com.us.android.core.feed.data.FeedFeedbackRequest): Nothing =
         error("feedback is not under test")
 }
 

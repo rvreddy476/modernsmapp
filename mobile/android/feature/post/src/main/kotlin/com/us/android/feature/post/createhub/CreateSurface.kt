@@ -1,7 +1,7 @@
 package com.us.android.feature.post.createhub
 
 /**
- * The six things the Create sheet can make, in the order the sheet shows them.
+ * The seven things the Create sheet can make, in the order the sheet shows them.
  *
  * ## ONE ENUM, TWO CONSUMERS
  *
@@ -20,6 +20,7 @@ enum class CreateSurface(val routeKey: String, val label: String, val hint: Stri
     Text("text", "Text", "Say something"),
     Photo("photo", "Photo", "Camera or gallery"),
     Reel("reel", "Reel", "Short video"),
+    Video("video", "Video", "Long video"),
     Audio("audio", "Audio", "Voice note or track"),
     Poll("poll", "Poll", "Ask a question"),
     Article("article", "Article", "Long-form"),

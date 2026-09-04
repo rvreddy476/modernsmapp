@@ -354,6 +354,36 @@ object UsIcons {
         "M17 16.5h4",
     )
 
+    /** Lucide `clapperboard` — the Create sheet's Video (long video) tile. */
+    val Clapperboard: ImageVector = lucideStroked(
+        "Clapperboard",
+        "M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z",
+        "m6.2 5.3 3.1 3.9",
+        "m12.4 3.4 3.1 4",
+        "M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
+    )
+
+    /** Lucide `pause`, solid — the watch player's centre control while playing. */
+    val Pause: ImageVector = lucideFilled(
+        "Pause",
+        "M15 3h3a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+        "M6 3h3a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+    )
+
+    /** Lucide `rotate-cw` — ten seconds forward on the watch player. */
+    val RotateCw: ImageVector = lucideStroked(
+        "RotateCw",
+        "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8",
+        "M21 3v5h-5",
+    )
+
+    /** Lucide `gauge` — playback speed. */
+    val Gauge: ImageVector = lucideStroked(
+        "Gauge",
+        "m12 14 4-4",
+        "M3.34 19a10 10 0 1 1 17.32 0",
+    )
+
     /** Lucide `mic` — a voice note, on the Create sheet and the record button. */
     val Mic: ImageVector = lucideStroked(
         "Mic",

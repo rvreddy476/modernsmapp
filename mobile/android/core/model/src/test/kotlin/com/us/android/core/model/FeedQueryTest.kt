@@ -30,6 +30,16 @@ class FeedQueryTest {
         assertThat(listOf(FeedQuery.ForYou, FeedQuery.Following, FeedQuery.Friends)).containsNoDuplicates()
     }
 
+    /** Tube reads the ranked `videos` surface whole: no narrowing, and its own pager key. */
+    @Test
+    fun `videos is the plain videos surface`() {
+        assertThat(FeedQuery.Videos).isEqualTo(FeedQuery(FeedSurface.Videos))
+        assertThat(FeedQuery.Videos.surface.path).isEqualTo("videos")
+        assertThat(FeedQuery.Videos.followingOnly).isFalse()
+        assertThat(FeedQuery.Videos.circleOnly).isFalse()
+        assertThat(FeedQuery.Videos).isNotEqualTo(FeedQuery.Reels)
+    }
+
     @Test
     fun `a trending tag always displays with a hash`() {
         assertThat(TrendingHashtag("android", "#android", 3).label).isEqualTo("#android")

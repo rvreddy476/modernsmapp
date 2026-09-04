@@ -55,6 +55,14 @@ class LauncherTilesTest {
         assertThat(covered).containsAtLeastElementsIn(expected)
     }
 
+    /** Tube has a screen since 2026-09-05: its tile opens, it is not "Soon". */
+    @Test
+    fun `tube opens rather than promising`() {
+        val tube = launcherTiles().single { it.app == LauncherApp.TUBE }
+        assertThat(tube.soon).isFalse()
+        assertThat(AppModule.POSTTUBE.hasScreen).isTrue()
+    }
+
     @Test
     fun `the soon message names the app`() {
         assertThat(comingSoonMessage(LauncherApp.SHOP)).isEqualTo("Shop is coming soon")

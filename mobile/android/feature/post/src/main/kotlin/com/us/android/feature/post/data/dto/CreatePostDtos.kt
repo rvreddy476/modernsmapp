@@ -210,6 +210,13 @@ const val CONTENT_TYPE_POST = "post"
 const val CONTENT_TYPE_POLL = "poll"
 const val CONTENT_TYPE_FLICK = "flick"
 
+/**
+ * A long video — Tube (2026-09-05). The same create call as a flick with a
+ * required `title` and no `remix_setting`; post-service keeps it out of Reels
+ * and puts it on `GET /v1/feed/videos`.
+ */
+const val CONTENT_TYPE_LONG_VIDEO = "long_video"
+
 /** `remix_setting` values — the only two the create handler accepts. */
 const val REMIX_ALLOW = "allow"
 const val REMIX_DISALLOW = "disallow"

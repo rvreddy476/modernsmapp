@@ -172,7 +172,9 @@ tasks.register("moduleGraphCheck") {
     // 30 = 28 + :feature:settings (module picker / onboarding) + the two
     //      phantom parent projects (:core, :feature) that Gradle creates for
     //      nested paths and counts among subprojects.
-    val expectedModuleCount = 30
+    // 32 = 30 + :core:feed (the feed data seam split out of :feature:feed) +
+    //      :feature:tube (long video), 2026-09-05.
+    val expectedModuleCount = 32
 
     doLast {
         val allViolations = buildList {

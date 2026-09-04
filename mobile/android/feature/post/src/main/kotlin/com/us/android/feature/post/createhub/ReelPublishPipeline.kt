@@ -4,8 +4,10 @@ import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.media.publish.VideoKind
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
+import com.us.android.feature.post.data.dto.CONTENT_TYPE_LONG_VIDEO
 import com.us.android.feature.post.data.dto.CreatePostRequest
 import com.us.android.feature.post.data.dto.DistributionRequest
 import com.us.android.feature.post.data.dto.POST_TYPE_VIDEO
@@ -221,23 +223,38 @@ class ReelPublishPipeline @Inject constructor(
         const val RUN_BUDGET_MILLIS = 8L * 60L * 1_000L
 
         /**
-         * The ONE place the form becomes bytes. The switches go on the wire
-         * whatever their value; the optional fields are omitted when unset so
-         * an empty category is "none", not `""`.
+         * The ONE place the form becomes bytes, for BOTH kinds of video (Tube,
+         * 2026-09-05). The switches go on the wire whatever their value; the
+         * optional fields are omitted when unset so an empty category is
+         * "none", not `""`.
+         *
+         * A reel is a `flick` with an empty title and its remix switch. A long
+         * video is a `long_video` with the title the form required and NO
+         * `remix_setting` at all — the server has no remix for long form, and
+         * sending one would record a control nothing enforces.
          */
         fun buildRequest(pending: PendingReelPublish, videoId: String, coverId: String?) = CreatePostRequest(
             text = pending.caption.trim(),
             visibility = pending.visibility,
-            contentType = CONTENT_TYPE_FLICK,
+            contentType = when (pending.kind) {
+                VideoKind.REEL -> CONTENT_TYPE_FLICK
+                VideoKind.LONG -> CONTENT_TYPE_LONG_VIDEO
+            },
             postType = POST_TYPE_VIDEO,
             mediaIds = listOf(videoId),
             language = DEFAULT_LANGUAGE,
             distribution = DistributionRequest(),
-            title = "",
+            title = when (pending.kind) {
+                VideoKind.REEL -> ""
+                VideoKind.LONG -> pending.title.trim()
+            },
             noComments = !pending.allowComments,
             hideShare = pending.hideShare,
             allowDownload = pending.allowDownload,
-            remixSetting = if (pending.allowRemix) REMIX_ALLOW else REMIX_DISALLOW,
+            remixSetting = when (pending.kind) {
+                VideoKind.REEL -> if (pending.allowRemix) REMIX_ALLOW else REMIX_DISALLOW
+                VideoKind.LONG -> null
+            },
             category = pending.category.trim().ifBlank { null },
             coverMediaId = coverId,
             taggedUserIds = pending.taggedUserIds.takeIf { it.isNotEmpty() },

@@ -212,6 +212,8 @@ class ReelPublishController @Inject constructor(
         creationKey = creationKey,
         coverPath = coverPath,
         caption = caption,
+        kind = kind,
+        title = title,
     )
 }
 

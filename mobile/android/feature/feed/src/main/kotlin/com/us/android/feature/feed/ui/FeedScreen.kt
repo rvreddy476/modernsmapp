@@ -41,6 +41,10 @@ import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.engagement.data.repostCountOr
 import com.us.android.core.engagement.data.repostedOr
+import com.us.android.core.feed.data.offersFollow
+import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.more.PostMoreSheetHost
+import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.media.Playback
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
@@ -57,10 +61,6 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberPostSharer
-import com.us.android.feature.feed.data.offersFollow
-import com.us.android.feature.feed.ui.comments.CommentsSheet
-import com.us.android.feature.feed.ui.more.PostMoreSheetHost
-import com.us.android.feature.feed.ui.more.PostMoreViewModel
 
 /**
  * The Home tab.

@@ -10,21 +10,22 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
+import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.hides
+import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.UsReelQuality
-import com.us.android.feature.feed.data.FeedRepository
-import com.us.android.feature.feed.data.FollowGraph
-import com.us.android.feature.feed.data.hides
-import com.us.android.feature.feed.data.playbackFor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -194,12 +195,14 @@ class ReelsViewModel @Inject constructor(
      *
      * The preview is what makes a pending item drawable; a tracker state
      * without one (a restart before the controller restored the record)
-     * shows nothing rather than a blank page with a loader on it.
+     * shows nothing rather than a blank page with a loader on it. A LONG
+     * video posting (Tube, 2026-09-05) is not a reel and never sits here —
+     * Tube home draws that one.
      */
     val head: StateFlow<ReelsHead?> = combine(tracker.state, tracker.preview, _live) { state, preview, live ->
         when {
             live != null -> ReelsHead.Live(live)
-            preview == null || state is ReelPublishState.Idle -> null
+            preview == null || preview.kind != VideoKind.REEL || state is ReelPublishState.Idle -> null
             else -> ReelsHead.Pending(
                 creationKey = preview.creationKey,
                 coverPath = preview.coverPath,
@@ -212,10 +215,13 @@ class ReelsViewModel @Inject constructor(
     init {
         // The moment the worker reports the post id, fetch the reel the server
         // made of it and let the tracker go — the pending item becomes the
-        // real thing without a refresh.
+        // real thing without a refresh. A long video's post is Tube's to
+        // fetch; this slot leaves it alone.
         viewModelScope.launch {
             tracker.state.collect { state ->
-                if (state is ReelPublishState.Published) becomeLive(state.postId)
+                if (state is ReelPublishState.Published && tracker.preview.value?.kind == VideoKind.REEL) {
+                    becomeLive(state.postId)
+                }
             }
         }
     }

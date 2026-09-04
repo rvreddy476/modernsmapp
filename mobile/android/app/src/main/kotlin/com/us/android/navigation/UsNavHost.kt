@@ -129,6 +129,10 @@ import com.us.android.feature.settings.navigation.navigateToScreenTime
 import com.us.android.feature.settings.navigation.onboardingScreen
 import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
+import com.us.android.feature.tube.navigation.TubeHomeRoute
+import com.us.android.feature.tube.navigation.navigateToTube
+import com.us.android.feature.tube.navigation.navigateToWatch
+import com.us.android.feature.tube.navigation.tubeScreens
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -187,13 +191,15 @@ data class SearchRoute(val query: String, val mode: String = ExploreMode.POSTS.n
 
 /**
  * What the header's search glyph looks for, per page (founder, 2026-09-04):
- * Home → posts, Reels → reels, Friends → people, Me → the viewer's own posts.
+ * Home → posts, Reels → reels, Friends → people, Me → the viewer's own posts,
+ * Tube → long videos (2026-09-05).
  */
 enum class ExploreMode(val label: String) {
     POSTS("Posts"),
     REELS("Reels"),
     PEOPLE("People"),
     OWN_POSTS("Your posts"),
+    TUBE("Videos"),
     ;
 
     companion object {
@@ -550,6 +556,13 @@ private fun NavGraphBuilder.tabDestinations(
             }
         },
         onOpenStudio = { uris -> navController.navigateToStudio(uris) },
+        // A long video handed to the worker REPLACES the hub with Tube home,
+        // where its pending card is — the way a reel lands on the Reels tab.
+        onOpenTube = {
+            navController.navigate(TubeHomeRoute) {
+                popUpTo<CreateRoute> { inclusive = true }
+            }
+        },
     )
 
     // Live streaming: the hub (live now + go live), the broadcaster surface
@@ -687,6 +700,16 @@ private fun NavGraphBuilder.tabDestinations(
     )
     exploreDestinations(navController, launcher)
 
+    // Tube — long video (2026-09-05): the list, pushed from the Explore
+    // launcher, and the watch screen pushed over it. Search opens Explore
+    // scoped to videos; an author opens a profile.
+    tubeScreens(
+        onBack = { navController.popBackStack() },
+        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenSearch = { navController.navigateToExplore(ExploreMode.TUBE) },
+        onOpenVideo = { postId -> navController.navigateToWatch(postId) },
+    )
+
     profileDestinations(navController)
 
     // Post detail. Cross-feature navigation is resolved here: :feature:post
@@ -705,9 +728,9 @@ private fun NavGraphBuilder.tabDestinations(
  * A launcher tile opens a destination in whichever feature owns it, and
  * this is the one place allowed to know all of them: Chat is the inbox,
  * Friends the friends feed, Alerts the notification inbox, Live the live
- * hub. The five module tiles have no screen yet, so they never reach here —
- * the screen answers a "Soon" tap itself. Each is a plain push, so Back
- * returns to the launcher rather than to Home.
+ * hub, Tube the long-video list. The other four module tiles have no screen
+ * yet, so they never reach here — the screen answers a "Soon" tap itself.
+ * Each is a plain push, so Back returns to the launcher rather than to Home.
  */
 private fun NavGraphBuilder.exploreDestinations(
     navController: NavHostController,
@@ -724,7 +747,8 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.FRIENDS -> navController.navigate(FriendsFeedRoute)
                     LauncherApp.ALERTS -> navController.navigateToNotifications()
                     LauncherApp.LIVE -> navController.navigateToLiveHub()
-                    LauncherApp.SHOP, LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST, LauncherApp.TUBE -> Unit
+                    LauncherApp.TUBE -> navController.navigateToTube()
+                    LauncherApp.SHOP, LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST -> Unit
                 }
             },
         )

@@ -5,6 +5,7 @@ import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.media.upload.FILE_TYPE_IMAGE
 import com.us.android.core.media.upload.FILE_TYPE_VIDEO
 import com.us.android.core.media.upload.MediaAltTextRequest
@@ -24,6 +25,7 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.PostApi
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
+import com.us.android.feature.post.data.dto.CONTENT_TYPE_LONG_VIDEO
 import com.us.android.feature.post.data.dto.CreatePostRequest
 import com.us.android.feature.post.data.dto.POST_TYPE_VIDEO
 import com.us.android.feature.post.data.dto.REMIX_ALLOW
@@ -237,6 +239,53 @@ class ReelPublishPipelineTest {
         assertThat(request.taggedUserIds).isNull()
         assertThat(request.locationName).isNull()
         assertThat(h.repository.keys).containsExactly("key-1")
+    }
+
+    /**
+     * Tube (2026-09-05): the same record as a LONG video is a `long_video`
+     * with the title the form required and NO `remix_setting` — the server
+     * keeps no remix for long form. Everything else is the reel's mapping.
+     */
+    @Test
+    fun `a long video maps to long_video with its title and no remix`() = runTest {
+        val h = harness()
+
+        val outcome = run(
+            h,
+            pending("Full walkthrough").copy(
+                kind = VideoKind.LONG,
+                title = "  How the feed ranks  ",
+                allowRemix = false,
+                hideShare = true,
+            ),
+        )
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        val request = h.repository.requests.single()
+        assertThat(request.contentType).isEqualTo(CONTENT_TYPE_LONG_VIDEO)
+        assertThat(request.title).isEqualTo("How the feed ranks")
+        assertThat(request.remixSetting).isNull()
+        assertThat(request.postType).isEqualTo(POST_TYPE_VIDEO)
+        assertThat(request.text).isEqualTo("Full walkthrough")
+        assertThat(request.hideShare).isTrue()
+        assertThat(request.mediaIds).containsExactly("video-1")
+        assertThat(request.coverMediaId).isEqualTo("image-2")
+    }
+
+    /** The builder alone, both kinds side by side: the ONE place the form becomes bytes. */
+    @Test
+    fun `buildRequest differs between the kinds in exactly three fields`() {
+        val reel = ReelPublishPipeline.buildRequest(pending("hi"), "v", "c")
+        val long = ReelPublishPipeline.buildRequest(pending("hi").copy(kind = VideoKind.LONG, title = "T"), "v", "c")
+
+        assertThat(reel.contentType).isEqualTo(CONTENT_TYPE_FLICK)
+        assertThat(long.contentType).isEqualTo(CONTENT_TYPE_LONG_VIDEO)
+        assertThat(reel.title).isEmpty()
+        assertThat(long.title).isEqualTo("T")
+        assertThat(reel.remixSetting).isEqualTo(REMIX_ALLOW)
+        assertThat(long.remixSetting).isNull()
+        assertThat(long.copy(contentType = reel.contentType, title = reel.title, remixSetting = reel.remixSetting))
+            .isEqualTo(reel)
     }
 
     @Test

@@ -26,7 +26,7 @@ enum class AppModule(
     DATING("dating", "Dating", hasScreen = false),
     FOOD("food", "Food", hasScreen = false),
     QA("qa", "QA", hasScreen = false),
-    POSTTUBE("posttube", "PostTube", hasScreen = false),
+    POSTTUBE("posttube", "PostTube", hasScreen = true),
     ;
 
     companion object {

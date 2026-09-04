@@ -48,11 +48,11 @@ import androidx.paging.compose.LazyPagingItems
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.PostCard
 import com.us.android.core.ui.PostCardMediaPage
-import com.us.android.feature.feed.data.offersFollow
 
 /**
  * The Home feed's in-place viewer: Instagram's post detail, over the feed.
