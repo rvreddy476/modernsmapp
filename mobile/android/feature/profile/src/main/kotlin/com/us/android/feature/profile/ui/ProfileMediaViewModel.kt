@@ -17,6 +17,7 @@ import com.us.android.core.media.upload.SUBTYPE_AVATAR
 import com.us.android.core.media.upload.SUBTYPE_COVER
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -105,7 +106,10 @@ class ProfileMediaViewModel @Inject constructor(
                 error = null,
             )
         }
-        viewModelScope.launch {
+        // IO, not Main: the presigned PUT is a blocking OkHttp execute() and
+        // crashed the app with NetworkOnMainThreadException on the founder's
+        // phone (2026-09-04). State updates go through the StateFlow.
+        viewModelScope.launch(Dispatchers.IO) {
             performUpload(source, kind)
         }
     }
