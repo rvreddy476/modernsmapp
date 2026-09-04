@@ -1,12 +1,21 @@
 package com.us.android.feature.feed.ui.reels
 
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +50,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -77,13 +87,13 @@ import com.us.android.core.media.Playback
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.formatCount
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.data.offersFollow
-import com.us.android.feature.feed.ui.MomentumHeader
 import com.us.android.feature.feed.ui.comments.CommentsSheet
 import com.us.android.feature.feed.ui.more.PostMoreSheetHost
 import com.us.android.feature.feed.ui.more.PostMoreViewModel
@@ -91,11 +101,21 @@ import java.io.File
 
 /**
  * The reels surface: Instagram Reels on Momentum's palette (founder,
- * 2026-09-04). A full-screen vertical pager of short video; the Momentum
- * header laid over the top on a translucent scrim; the right rail —
+ * 2026-09-04). A full-screen vertical pager of short video that fills the
+ * frame from the very top — NO Momentum header (founder, 2026-09-04,
+ * evening; the shell hands this tab no status-bar inset, and the system's
+ * light icons read fine over video without a scrim); the right rail —
  * like, comment, share, save, more, mute — bottom-right; the author,
  * Follow and the caption bottom-left over a bottom scrim. No For You /
  * Following tabs: Reels is one surface.
+ *
+ * Full mode: a DOUBLE-TAP on the video hides the rail, the author block
+ * and the app's bottom bar, leaving the video and the status bar; a second
+ * double-tap brings everything back. The rule is [ReelsMode.chrome]; the
+ * bar is hidden through the shell ([HideShellBottomBar]) because only the
+ * shell owns it. A double-tap never likes the reel — the rail's heart is
+ * the one way to do that. Single tap on the video does what it always did:
+ * nothing.
  *
  * This is the screen the native migration was justified by, and its behaviour
  * is deliberately narrow:
@@ -122,14 +142,13 @@ import java.io.File
 fun ReelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
-    onOpenSearch: () -> Unit,
-    onOpenMessages: () -> Unit,
-    onOpenNotifications: () -> Unit,
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
 ) {
     val head by viewModel.head.collectAsStateWithLifecycle()
     val muted by viewModel.muted.collectAsStateWithLifecycle()
+    val mode by viewModel.mode.collectAsStateWithLifecycle()
+    val chrome = mode.chrome()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
@@ -146,6 +165,15 @@ fun ReelsScreen(
 
     ReleaseOnLifecycle(pool)
 
+    // The shell's bar follows the mode, and both are given back when the
+    // screen is left: the bar by HideShellBottomBar's own dispose, the mode
+    // by the reset here — so a tab switch out of full mode lands on a Home
+    // with its bar, and the next visit to Reels opens with its controls.
+    HideShellBottomBar(hidden = !chrome.showBottomBar)
+    DisposableEffect(viewModel) {
+        onDispose { viewModel.resetMode() }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -156,12 +184,14 @@ fun ReelsScreen(
             head = head,
             pool = pool,
             muted = muted,
+            chrome = chrome,
             overlays = overlays,
             followEdges = followEdges,
             ownUserId = viewModel.ownUserId,
             playbackFor = viewModel::playback,
             actions = ReelActions(
                 onToggleMute = viewModel::toggleMuted,
+                onToggleMode = viewModel::toggleMode,
                 onOpenAuthor = onOpenAuthor,
                 onReact = viewModel::onReact,
                 onBookmark = viewModel::onBookmark,
@@ -173,17 +203,6 @@ fun ReelsScreen(
                 onRetryPublish = viewModel::retryPublish,
                 onDiscardPublish = viewModel::discardPublish,
             ),
-        )
-        // The Momentum header over the video: wordmark, search (scoped to
-        // reels by the host), messages, the bell — on its own scrim.
-        MomentumHeader(
-            onOpenSearch = onOpenSearch,
-            onOpenMessages = onOpenMessages,
-            onOpenNotifications = onOpenNotifications,
-            translucent = true,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .testTag("reels_header"),
         )
         UsMessageHost(message = moreMessage, onDismiss = more::dismissMessage)
     }
@@ -217,6 +236,8 @@ fun ReelsScreen(
 @Suppress("LongParameterList")
 internal class ReelActions(
     val onToggleMute: () -> Unit,
+    /** A double-tap on the video: normal ↔ full mode. Never a like. */
+    val onToggleMode: () -> Unit,
     val onOpenAuthor: (String) -> Unit,
     val onReact: (postId: String, serverReacted: Boolean) -> Unit,
     val onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
@@ -242,6 +263,7 @@ private fun ReelsBody(
     head: ReelsHead?,
     pool: PlayerPool,
     muted: Boolean,
+    chrome: ReelsChrome,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
     ownUserId: String,
@@ -268,6 +290,7 @@ private fun ReelsBody(
             head = head,
             pool = pool,
             muted = muted,
+            chrome = chrome,
             overlays = overlays,
             followEdges = followEdges,
             ownUserId = ownUserId,
@@ -284,6 +307,7 @@ private fun ReelsPager(
     head: ReelsHead?,
     pool: PlayerPool,
     muted: Boolean,
+    chrome: ReelsChrome,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
     ownUserId: String,
@@ -324,6 +348,7 @@ private fun ReelsPager(
                     head = content.head,
                     onRetry = actions.onRetryPublish,
                     onDiscard = actions.onDiscardPublish,
+                    onToggleMode = actions.onToggleMode,
                 )
 
             is ReelsPage.Reel -> {
@@ -336,6 +361,7 @@ private fun ReelsPager(
                     pool = pool,
                     page = page,
                     muted = muted,
+                    chrome = chrome,
                     actions = actions,
                 )
             }
@@ -387,11 +413,15 @@ private fun PendingReelPage(
     head: ReelsHead.Pending,
     onRetry: () -> Unit,
     onDiscard: () -> Unit,
+    onToggleMode: () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(UsTheme.extended.bgCanvas)
+            // The same double-tap as a real reel, so full mode is one gesture
+            // wherever the pager is; the cover has no rail to hide.
+            .pointerInput(onToggleMode) { detectTapGestures(onDoubleTap = { onToggleMode() }) }
             .testTag("reel_pending"),
     ) {
         if (head.coverPath != null) {
@@ -503,9 +533,19 @@ private fun ReelPage(
     pool: PlayerPool,
     page: Int,
     muted: Boolean,
+    chrome: ReelsChrome,
     actions: ReelActions,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // The double-tap lives on the PAGE, under the rail and the author
+            // block, so a tap that lands on a control is that control's and
+            // never a mode change. Only onDoubleTap is set: a single tap on
+            // the video has never done anything here, and the detector
+            // leaves it that way rather than inventing a pause.
+            .pointerInput(actions) { detectTapGestures(onDoubleTap = { actions.onToggleMode() }) },
+    ) {
         if (playback != null) {
             val player = remember(page, playback) { pool.acquire(page, playback) }
             LaunchedEffect(muted, player) { player.volume = if (muted) 0f else 1f }
@@ -531,28 +571,51 @@ private fun ReelPage(
         // The bottom 40% of the page darkens under BOTH the caption and the
         // rail. The scrim goes on the page, not the text, so it also covers
         // the padding — a caption whose descenders fall outside the dark area
-        // is exactly as unreadable as one with no scrim at all.
-        BottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
+        // is exactly as unreadable as one with no scrim at all. It goes with
+        // the chrome: full mode is the whole frame, undarkened.
+        AnimatedVisibility(
+            visible = chrome.showAuthor || chrome.showRail,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = fadeIn(tween(CHROME_ANIM_MILLIS)),
+            exit = fadeOut(tween(CHROME_ANIM_MILLIS)),
+        ) {
+            BottomScrim()
+        }
 
-        ReelOverlay(
-            item = item,
-            offersFollow = offersFollow,
-            onOpenAuthor = actions.onOpenAuthor,
-            onFollow = { actions.onFollow(item.author.id) },
+        // Each block leaves towards its own edge — the author block down,
+        // the rail right — and fades on the way, ~200ms, the same as the
+        // shell's bar below them, so the three read as one gesture.
+        AnimatedVisibility(
+            visible = chrome.showAuthor,
             modifier = Modifier.align(Alignment.BottomStart),
-        )
+            enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInVertically(tween(CHROME_ANIM_MILLIS)) { it / 2 },
+            exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { it / 2 },
+        ) {
+            ReelOverlay(
+                item = item,
+                offersFollow = offersFollow,
+                onOpenAuthor = actions.onOpenAuthor,
+                onFollow = { actions.onFollow(item.author.id) },
+            )
+        }
 
         // The rail sits on the right edge, clear of the caption, because that
         // is where a thumb rests while the other hand holds nothing. Putting
         // controls under the caption means reaching across the video to use
         // them.
-        ReelActionRail(
-            item = item,
-            overlay = overlay,
-            muted = muted,
-            actions = actions,
+        AnimatedVisibility(
+            visible = chrome.showRail,
             modifier = Modifier.align(Alignment.BottomEnd),
-        )
+            enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInHorizontally(tween(CHROME_ANIM_MILLIS)) { it / 2 },
+            exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutHorizontally(tween(CHROME_ANIM_MILLIS)) { it / 2 },
+        ) {
+            ReelActionRail(
+                item = item,
+                overlay = overlay,
+                muted = muted,
+                actions = actions,
+            )
+        }
     }
 }
 
@@ -836,6 +899,9 @@ private fun ReleaseOnLifecycle(pool: PlayerPool) {
 
 /** Instagram clamps the reel caption to two lines before "more". */
 private const val CAPTION_LINES = 2
+
+/** Chrome in and out — the rail, the author block, the scrim — matched to the shell's bar. */
+private const val CHROME_ANIM_MILLIS = 200
 
 /** The bottom scrim covers the lowest 40% of the page. */
 private const val SCRIM_FRACTION = 0.4f

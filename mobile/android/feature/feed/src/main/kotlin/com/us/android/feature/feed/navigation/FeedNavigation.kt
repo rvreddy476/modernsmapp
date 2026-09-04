@@ -115,18 +115,13 @@ data object ReelsRoute
 fun NavGraphBuilder.reelsScreen(
     pool: PlayerPool,
     onOpenAuthor: (userId: String) -> Unit,
-    /** The translucent Momentum header over the video; `:app` scopes search to reels. */
-    onOpenMessages: () -> Unit,
-    onOpenNotifications: () -> Unit,
-    onOpenSearch: () -> Unit,
 ) {
+    // No header destinations: Reels wears no Momentum header (founder,
+    // 2026-09-04, evening) — the video fills the frame from the top.
     composable<ReelsRoute> {
         ReelsScreen(
             pool = pool,
             onOpenAuthor = onOpenAuthor,
-            onOpenSearch = onOpenSearch,
-            onOpenMessages = onOpenMessages,
-            onOpenNotifications = onOpenNotifications,
         )
     }
 }

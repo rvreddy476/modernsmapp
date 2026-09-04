@@ -1,13 +1,22 @@
 package com.us.android.navigation
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +43,8 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.model.NotificationTarget
 import com.us.android.core.model.SessionState
+import com.us.android.core.ui.ChromeVisibility
+import com.us.android.core.ui.LocalChromeVisibility
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
@@ -249,9 +260,25 @@ fun UsNavHost(
     // tile is picked. Saveable so a rotation mid-choice keeps it open.
     var createSheetOpen by rememberSaveable { mutableStateOf(false) }
 
+    // A screen's request about the chrome — today only "hide the bar", made
+    // by Reels' full mode. The shell owns the holder and the decision
+    // (bottomBarVisible); the screen only asks, through the local it is
+    // handed below. Screen-scoped by construction: the request is withdrawn
+    // when the screen leaves, so the bar is back on every other tab.
+    val chrome = remember { ChromeVisibility() }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
+        // Reels fills the frame from the very top: no header, the video under
+        // the status bar. The shell hands that tab no inset at all; every other
+        // screen's own scaffold reserves the system bars as before, because
+        // the NavHost below consumes only what it was given.
+        contentWindowInsets = if (currentTab?.drawsUnderStatusBar == true) {
+            WindowInsets(0)
+        } else {
+            ScaffoldDefaults.contentWindowInsets
+        },
         bottomBar = {
             // Null tab means the current screen is not a top-level root — an
             // auth screen, the splash, the picker, or a pushed profile. No
@@ -259,36 +286,50 @@ fun UsNavHost(
             // hides it too: those open from the header and leave by Back, and
             // a bar with nothing selected under them would only say "you are
             // nowhere". An empty tab list means the shell is not Ready yet.
-            if (currentTab != null && currentTab in tabs) {
-                UsNavigationBar(
-                    items = tabs.map { it.item },
-                    selectedIndex = tabs.indexOf(currentTab),
-                    onSelect = { index -> navController.navigateToTopLevel(tabs[index]) },
-                    // Momentum's raised centre button is always Create, not a
-                    // tab. It opens the Create SHEET over the current screen;
-                    // while the sheet is up the "+" reads as "×" and closes it.
-                    centerAction = { createSheetOpen = !createSheetOpen },
-                    centerActive = createSheetOpen,
-                )
+            //
+            // The route decides instantly; only the SCREEN's request animates.
+            // A pushed screen replaces the bar with its own frame in one
+            // navigation transition, whereas full mode hides the bar under a
+            // video that stays put, and there a bar that vanishes reads as a
+            // glitch — so it slides down and fades, and slides back in.
+            if (routeShowsBottomBar(currentTab, tabs)) {
+                AnimatedVisibility(
+                    visible = bottomBarVisible(currentTab, tabs, chrome.bottomBarHidden),
+                    enter = fadeIn(tween(BAR_ANIM_MILLIS)) + slideInVertically(tween(BAR_ANIM_MILLIS)) { it },
+                    exit = fadeOut(tween(BAR_ANIM_MILLIS)) + slideOutVertically(tween(BAR_ANIM_MILLIS)) { it },
+                ) {
+                    UsNavigationBar(
+                        items = tabs.map { it.item },
+                        selectedIndex = tabs.indexOf(currentTab),
+                        onSelect = { index -> navController.navigateToTopLevel(tabs[index]) },
+                        // Momentum's raised centre button is always Create, not a
+                        // tab. It opens the Create SHEET over the current screen;
+                        // while the sheet is up the "+" reads as "×" and closes it.
+                        centerAction = { createSheetOpen = !createSheetOpen },
+                        centerActive = createSheetOpen,
+                    )
+                }
             }
         },
     ) { shellPadding ->
-        NavHost(
-            navController = navController,
-            startDestination = startDestination,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(shellPadding)
-                // Padding does not CONSUME insets. Without this, every
-                // screen's own scaffold and top bar saw the status bar and
-                // the navigation bar again and reserved them a second time:
-                // a band above the wordmark and a band between the last
-                // card and the tab bar (founder's phone, 2026-09-04).
-                .consumeWindowInsets(shellPadding),
-        ) {
-            authDestinations(navController)
-            shellDestinations()
-            tabDestinations(navController, pool)
+        CompositionLocalProvider(LocalChromeVisibility provides chrome) {
+            NavHost(
+                navController = navController,
+                startDestination = startDestination,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(shellPadding)
+                    // Padding does not CONSUME insets. Without this, every
+                    // screen's own scaffold and top bar saw the status bar and
+                    // the navigation bar again and reserved them a second time:
+                    // a band above the wordmark and a band between the last
+                    // card and the tab bar (founder's phone, 2026-09-04).
+                    .consumeWindowInsets(shellPadding),
+            ) {
+                authDestinations(navController)
+                shellDestinations()
+                tabDestinations(navController, pool)
+            }
         }
     }
 
@@ -599,12 +640,13 @@ private fun NavGraphBuilder.tabDestinations(
     // to the composition root rather than a composable the pager recomposes —
     // it holds decoder sessions, and reacquiring those mid-scroll is exactly
     // the stutter this surface exists to avoid.
+    //
+    // No header destinations: Reels wears no Momentum header (founder,
+    // 2026-09-04, evening). ExploreMode.REELS stays for the day search gets
+    // a surface of its own.
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
-        onOpenNotifications = { navController.navigateToNotifications() },
-        onOpenSearch = { navController.navigateToExplore(ExploreMode.REELS) },
     )
     composable<ExploreRoute> { entry ->
         val mode = ExploreMode.fromWire(entry.toRoute<ExploreRoute>().mode)
@@ -712,6 +754,9 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     // Recently deleted: the 30-day restore window for soft-deleted posts.
     recentlyDeletedScreen(onBack = { navController.popBackStack() })
 }
+
+/** The bar's slide-and-fade for a screen's hide request; matched by the reel's own chrome. */
+private const val BAR_ANIM_MILLIS = 200
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */
 @Composable

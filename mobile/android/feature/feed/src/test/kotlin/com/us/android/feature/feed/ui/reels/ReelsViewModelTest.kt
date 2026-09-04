@@ -307,6 +307,63 @@ class ReelsViewModelTest {
         assertThat(viewModel().posterUrl(item(video()))).isNull()
     }
 
+    // ── Full mode ───────────────────────────────────────────────────────
+
+    /** A double-tap toggles between the two modes; nothing else about the reel changes. */
+    @Test
+    fun `reels open in normal mode and a double-tap toggles full mode`() {
+        val vm = viewModel()
+        assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+
+        vm.toggleMode()
+        assertThat(vm.mode.value).isEqualTo(ReelsMode.FULL)
+
+        vm.toggleMode()
+        assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+    }
+
+    /** Leaving the tab in full mode must not bring the viewer back to a bare video. */
+    @Test
+    fun `leaving the screen resets full mode`() {
+        val vm = viewModel()
+        vm.toggleMode()
+
+        vm.resetMode()
+
+        assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+    }
+
+    /** Resetting an already-normal screen is a no-op, not a toggle. */
+    @Test
+    fun `reset from normal stays normal`() {
+        val vm = viewModel()
+
+        vm.resetMode()
+
+        assertThat(vm.mode.value).isEqualTo(ReelsMode.NORMAL)
+    }
+
+    @Test
+    fun `normal mode shows every piece of chrome`() {
+        assertThat(ReelsMode.NORMAL.chrome())
+            .isEqualTo(ReelsChrome(showRail = true, showAuthor = true, showBottomBar = true))
+    }
+
+    /** Full mode is the video and the status bar: no rail, no author block, no bottom bar. */
+    @Test
+    fun `full mode shows nothing but the video`() {
+        assertThat(ReelsMode.FULL.chrome())
+            .isEqualTo(ReelsChrome(showRail = false, showAuthor = false, showBottomBar = false))
+    }
+
+    @Test
+    fun `toggling is its own inverse`() {
+        ReelsMode.entries.forEach { mode ->
+            assertThat(mode.toggled()).isNotEqualTo(mode)
+            assertThat(mode.toggled().toggled()).isEqualTo(mode)
+        }
+    }
+
     /**
      * Mute is held in the ViewModel, not per player. A per-player flag resets
      * the moment the pool recycles that instance, so the sound would silently

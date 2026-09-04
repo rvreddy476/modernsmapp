@@ -75,6 +75,48 @@ fun FeedPostControls.railVisibility() = ReelRailVisibility(
     showShare = !hideShare,
 )
 
+/**
+ * How much chrome sits over the video (founder, 2026-09-04, evening).
+ *
+ * [NORMAL] is the reel as designed: the rail, the author block with Follow
+ * and the caption, and the app's bottom bar under it. [FULL] is the video
+ * and the status bar and nothing else — a double-tap gets there, a second
+ * one comes back. Per session and per visit: leaving the tab resets it.
+ */
+enum class ReelsMode {
+    NORMAL,
+    FULL,
+    ;
+
+    /** The other mode — what a double-tap on the video does. */
+    fun toggled(): ReelsMode = if (this == NORMAL) FULL else NORMAL
+}
+
+/**
+ * What each mode leaves on screen. Three flags rather than one because they
+ * are drawn by three different owners: the rail and the author block by the
+ * reel page, the bottom bar by the app shell.
+ */
+data class ReelsChrome(
+    /** Like, comment, share, save, more, mute — the right rail. */
+    val showRail: Boolean,
+    /** Avatar, username, Follow and the caption — bottom-left. */
+    val showAuthor: Boolean,
+    /** The shell's bottom navigation bar. */
+    val showBottomBar: Boolean,
+) {
+    companion object {
+        val ALL = ReelsChrome(showRail = true, showAuthor = true, showBottomBar = true)
+        val NONE = ReelsChrome(showRail = false, showAuthor = false, showBottomBar = false)
+    }
+}
+
+/** The one rule: normal shows everything, full shows nothing but the video. */
+fun ReelsMode.chrome(): ReelsChrome = when (this) {
+    ReelsMode.NORMAL -> ReelsChrome.ALL
+    ReelsMode.FULL -> ReelsChrome.NONE
+}
+
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
 // indirection, not clarity.
@@ -182,6 +224,31 @@ class ReelsViewModel @Inject constructor(
 
     fun toggleMuted() {
         _muted.value = !_muted.value
+    }
+
+    private val _mode = MutableStateFlow(ReelsMode.NORMAL)
+
+    /**
+     * Normal or full mode — see [ReelsMode]. Session state, never persisted:
+     * full mode is a way of watching THIS reel, not a setting, and a viewer
+     * who comes back to the tab tomorrow expects the controls to be there.
+     * It survives swipes (the pager keeps playing in whatever mode it is in)
+     * and is reset by [resetMode] when the screen is left.
+     */
+    val mode: StateFlow<ReelsMode> = _mode.asStateFlow()
+
+    /** A double-tap on the video. Never a like: a double-tap here is about the frame, not the post. */
+    fun toggleMode() {
+        _mode.value = _mode.value.toggled()
+    }
+
+    /**
+     * Back to normal. Called when the screen leaves composition — a tab
+     * switch, a pushed profile, Back — so the next visit opens with its
+     * controls, and the shell's bar has already been given back by then.
+     */
+    fun resetMode() {
+        _mode.value = ReelsMode.NORMAL
     }
 
     /**
