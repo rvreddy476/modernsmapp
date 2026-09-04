@@ -8,11 +8,11 @@
 
 | Layer | State | Where |
 |---|---|---|
-| **CI** | GitHub Actions | `.github/workflows/`: `go-ci` (`go test -race ./...`), `lint` (golangci v1.61), `security` (govulncheck/gosec/trivy, weekly cron), `build-push`, `promote`, `frontend-ci` (flutter analyze+test) |
+| **CI** | GitHub Actions | `.github/workflows/`: `go-ci` (`go test -race ./...`), `lint` (golangci v1.61), `security` (govulncheck/gosec/trivy, weekly cron), `build-push`, `promote`, `android-native` (assemble, test, detekt) |
 | **Go unit** | 186 test files; **22/31 services** have tests → **9 with none** | `Architecture/services/*`, `identity-platform/*`, `chat-service/*` |
 | **Integration** | build-tagged (`-tags integration`), HTTP-level vs a running stack, **run by hand**, not in CI | `Architecture/tools/integration/` (+ `run-integration.sh`) |
 | **Load** | k6-style, **only** rider + dating, not automated | `Architecture/services/{rider,dating}-service/loadtest` |
-| **Mobile** | 19 Flutter tests, **in CI** | `mobile/atpost_app/test/`, `frontend-ci.yml` |
+| **Mobile** | 98 Android (Kotlin) unit-test files, **in CI** | `mobile/android/*/src/test/`, `android-native.yml` |
 | **Web (postbook-ui)** | **Zero tests, not in CI** — biggest gap | — |
 
 ## 2. Known issue fixed (W1 — done)
