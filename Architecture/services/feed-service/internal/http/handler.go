@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -69,6 +70,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/preference", h.SetPreference)
 		v1.GET("/preference", h.GetPreference)
 		v1.POST("/signal", h.PostSignal)
+		// Post "more" sheet: Interested / Not interested.
+		v1.POST("/feedback", h.PostFeedback)
 		// MF9 — /internal/debug requires an admin scope at the
 		// gateway (requireAdminForInternalPaths). The legacy /debug
 		// path is kept as a 410 Gone so any deployed client surfaces
@@ -457,6 +460,50 @@ func (h *Handler) PostSignal(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "recorded"}, nil)
+}
+
+type feedbackRequest struct {
+	PostID string `json:"post_id" binding:"required"`
+	Signal string `json:"signal" binding:"required"` // interested | not_interested
+}
+
+// PostFeedback — POST /v1/feed/feedback. "Interested" / "Not interested"
+// on the post "more" sheet. Latest answer per (viewer, post) wins;
+// not_interested removes the post from every surface on the next fetch.
+// Distinct from /signal (see_less / see_more, a ranking-only impression)
+// and from post-service's /v1/feedback (product feedback notes).
+func (h *Handler) PostFeedback(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	var req feedbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	if !service.ValidFeedbackSignal(req.Signal) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "signal must be 'interested' or 'not_interested'", nil)
+		return
+	}
+	postID, err := uuid.Parse(req.PostID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+
+	f, err := h.svc.RecordFeedback(c.Request.Context(), userID, postID, req.Signal)
+	if err != nil {
+		if errors.Is(err, service.ErrFeedbackPostNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
+			return
+		}
+		log.Printf("feed feedback failed: %v", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "FEEDBACK_FAILED", "Could not record feedback — try again", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, f, nil)
 }
 
 // feedRateLimit enforces a per-user 120 req/min cap on the feed

@@ -16,6 +16,22 @@ type Candidate struct {
 	CreatedAt   time.Time
 	ContentType string // "text", "image", "video"
 	Score       float64
+	// Source is where the service found the candidate ("timeline",
+	// "cold_start", "circle"). Carried through untouched so the reason a
+	// post is in the feed survives re-ordering; the scorer never reads it.
+	Source string
+}
+
+// AuthorPenalty converts the viewer's net feedback about an author into the
+// scorer's authorPenalty term. Only a net-negative history penalises —
+// each "Not interested" costs 0.25 — capped at 0.5 so one author can never
+// be pushed below what an already-interacted post gets. "Interested"
+// answers only ever cancel earlier "Not interested" ones; there is no boost.
+func AuthorPenalty(netFeedback float64) float64 {
+	if netFeedback >= 0 {
+		return 0
+	}
+	return math.Min(0.5, 0.25*-netFeedback)
 }
 
 // ScoreCandidates computes a ranking score for each candidate using the
@@ -109,7 +125,12 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 			qualityBoost = cqs * 0.25
 		}
 
-		c.Score = (interest * recency * mediaBoost) + momentum + socialProximity + qualityBoost - interactionPenalty
+		// 8. author_penalty (0.0-0.5): the formula's authorPenalty term,
+		// fed by the viewer's "Not interested" answers on this author's
+		// posts (post "more" sheet). See AuthorPenalty.
+		authorPenalty := AuthorPenalty(signals.AuthorFeedback[aid])
+
+		c.Score = (interest * recency * mediaBoost) + momentum + socialProximity + qualityBoost - authorPenalty - interactionPenalty
 	}
 
 	return scored

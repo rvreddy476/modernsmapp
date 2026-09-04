@@ -51,6 +51,9 @@ type Service struct {
 	// lvTiers is the long-video frequency configuration (P0-4), loaded
 	// once at construction from defaults + env overrides.
 	lvTiers map[string]lvTier
+	// feedback is the per-viewer Interested / Not-interested store — the
+	// Postgres MetaStore in production, swapped by tests. See feedback.go.
+	feedback feedbackStore
 }
 
 func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client) *Service {
@@ -78,7 +81,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	if trustSafetyURL == "" {
 		trustSafetyURL = "http://trust-safety-service:8091"
 	}
-	return &Service{
+	svc := &Service{
 		scyllaStore:       scylla,
 		pgStore:           pg,
 		rdb:               rdb,
@@ -97,6 +100,12 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		kwCache:           make(map[uuid.UUID]keywordCacheEntry),
 		lvTiers:           loadLVTiers(),
 	}
+	// A typed-nil *MetaStore must not become a non-nil interface, or every
+	// hydration would fail closed on a nil pool instead of on a real error.
+	if pg != nil {
+		svc.feedback = pg
+	}
+	return svc
 }
 
 // SetRanker injects the ranking middleware after construction.
@@ -118,7 +127,20 @@ type FeedItem struct {
 	// opt-out — which lets degraded mode keep them while dropping only
 	// genuinely uncertain candidates. Not serialized: internal only.
 	PolicyGoverned bool `json:"-"`
+	// Source records which path produced the candidate, so hydration can
+	// tell the viewer WHY the post is in front of them (reason.go). Empty
+	// or sourceTimeline: a fanout row on the viewer's own timeline.
+	// sourceColdStart: post-service's recent-public fallback. sourceCircle:
+	// the circle_only view. Not serialized: `reason` on the hydrated post
+	// is the client-facing form.
+	Source string `json:"-"`
 }
+
+const (
+	sourceTimeline  = "timeline"
+	sourceColdStart = "cold_start"
+	sourceCircle    = "circle"
+)
 
 func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) ([]FeedItem, error) {
 	// Audit HF1: ranking over-fetch was 5x with a 500-row ceiling — each
@@ -195,6 +217,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			filtered := candidates[:0]
 			for _, c := range candidates {
 				if _, ok := friendSet[c.AuthorID]; ok {
+					c.Source = sourceCircle
 					filtered = append(filtered, c)
 				}
 			}
@@ -1111,6 +1134,7 @@ func (s *Service) getRecentPublicPosts(ctx context.Context, limit int) ([]FeedIt
 			AuthorID:    authorID,
 			CreatedAt:   p.CreatedAt,
 			ContentType: ct,
+			Source:      sourceColdStart,
 		})
 	}
 	return items, nil
@@ -1126,6 +1150,7 @@ func feedItemsToCandidates(items []FeedItem) []ranking.Candidate {
 			CreatedAt:   item.CreatedAt,
 			Score:       item.Score,
 			ContentType: item.ContentType,
+			Source:      item.Source,
 		}
 	}
 	return out
@@ -1264,6 +1289,7 @@ func candidatesToFeedItems(candidates []ranking.Candidate) []FeedItem {
 			CreatedAt:   c.CreatedAt,
 			Score:       c.Score,
 			ContentType: c.ContentType,
+			Source:      c.Source,
 		}
 	}
 	return out

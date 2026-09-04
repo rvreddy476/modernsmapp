@@ -104,6 +104,18 @@ type HydratedPost struct {
 	RepostedBy      *uuid.UUID `json:"reposted_by,omitempty"`
 	FeedContentType string     `json:"feed_content_type,omitempty"` // "post", "repost", "reel", etc.
 	Author          Author     `json:"author"`
+
+	// "Why you're seeing this post" (post "more" sheet, 2026-09-04). Reason
+	// is a stable token ("following", "connection", "trending",
+	// "category:<id>", "recommended", "hashtag:<tag>"); ReasonText is a
+	// sentence to show verbatim. Both omitted on the viewer's own posts.
+	// Derived at merge time from the candidate's source — see reason.go.
+	Reason     string `json:"reason,omitempty"`
+	ReasonText string `json:"reason_text,omitempty"`
+	// source is the FeedItem.Source that produced this row, kept only so
+	// enrichReasons can tell recommendation-path posts apart after the
+	// filters have run. Never serialized, never cached.
+	source string
 }
 
 // Author is the deliberately small, public identity needed to render a feed
@@ -211,7 +223,7 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 
 	if len(ids) == 0 {
 		// Entire batch served from cache — skip the HTTP call.
-		merged := s.mergeHydratedItems(items, envelopeData, nil)
+		merged := s.mergeHydratedItems(items, envelopeData, nil, viewerID)
 		// Instant publish: a post still processing is the author's alone.
 		// post-service's batch already dropped it for anyone else; this
 		// re-checks the cached rows too. Pure and viewer-keyed — see
@@ -235,7 +247,15 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		if err != nil {
 			return nil, err
 		}
+		// "Not interested" / hidden posts — same tail, same fail-closed
+		// policy. A cached row is exactly what this step exists for: the
+		// answer was given after the row was cached. See feedback.go.
+		merged, err = s.applyFeedbackFilter(ctx, viewerID, merged)
+		if err != nil {
+			return nil, err
+		}
 		s.enrichViewCounts(ctx, merged)
+		s.enrichReasons(ctx, merged, viewerID)
 		if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
 			return nil, err
 		}
@@ -295,7 +315,7 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	// reuse them. Fire-and-forget; never block the response.
 	s.storeHydratedCache(viewerID, envelope.Data)
 
-	merged := s.mergeHydratedItems(items, envelopeData, nil)
+	merged := s.mergeHydratedItems(items, envelopeData, nil, viewerID)
 	// Instant publish: a post still processing is the author's alone.
 	// post-service's batch already dropped it for anyone else; this
 	// re-checks the cached rows too. Pure and viewer-keyed — see
@@ -312,7 +332,13 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	if err != nil {
 		return nil, err
 	}
+	// "Not interested" / hidden posts — same step as the cache-only path.
+	merged, err = s.applyFeedbackFilter(ctx, viewerID, merged)
+	if err != nil {
+		return nil, err
+	}
 	s.enrichViewCounts(ctx, merged)
+	s.enrichReasons(ctx, merged, viewerID)
 	if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
 		return nil, err
 	}
@@ -558,7 +584,7 @@ func (s *Service) enrichViewCounts(ctx context.Context, posts []HydratedPost) {
 // repost is a distinct feed event — "User X reposted this"); other
 // duplicates are dropped. The optional `score` map overrides item.Score
 // when non-nil — kept around for future re-ranking, currently unused.
-func (s *Service) mergeHydratedItems(items []FeedItem, envelopeData map[string]HydratedPost, score map[uuid.UUID]float64) []HydratedPost {
+func (s *Service) mergeHydratedItems(items []FeedItem, envelopeData map[string]HydratedPost, score map[uuid.UUID]float64, viewerID uuid.UUID) []HydratedPost {
 	hydrated := make([]HydratedPost, 0, len(items))
 	emitted := make(map[uuid.UUID]bool, len(items))
 	for _, item := range items {
@@ -584,6 +610,10 @@ func (s *Service) mergeHydratedItems(items []FeedItem, envelopeData map[string]H
 			authorID := item.AuthorID
 			post.RepostedBy = &authorID
 		}
+		// The cached row was serialized without these; set them from the
+		// candidate every time so a cache hit answers the same as a miss.
+		post.source = item.Source
+		post.Reason, post.ReasonText = deriveReason(item.Source, post, viewerID, 0)
 		hydrated = append(hydrated, post)
 		emitted[item.PostID] = true
 	}

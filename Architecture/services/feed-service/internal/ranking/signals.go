@@ -19,6 +19,17 @@ type ViewerSignals struct {
 	Interactions     map[string]bool    // post_id -> already interacted
 	MutualFollows    map[string]bool    // author_id -> mutual follow
 	ContentQuality   map[string]float64 // post_id -> CQS (Content Quality Score)
+	// AuthorFeedback is the viewer's net "Interested" (+1) / "Not
+	// interested" (-1) answers per author, mirrored from feed_feedback by
+	// service.RecordFeedback into feed:author_feedback:{viewerID}. Absent
+	// authors are 0. Feeds the authorPenalty term in ScoreCandidates.
+	AuthorFeedback map[string]float64 // author_id -> net feedback
+}
+
+// AuthorFeedbackKey is the Redis hash (author_id -> net feedback) the
+// scorer reads for a viewer. Written by feed-service's feedback path.
+func AuthorFeedbackKey(viewerID uuid.UUID) string {
+	return fmt.Sprintf("feed:author_feedback:%s", viewerID.String())
 }
 
 // MediaPrefs stores the viewer's per-media-type dwell time percentiles.
@@ -52,6 +63,7 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		Interactions:     make(map[string]bool, len(candidates)),
 		MutualFollows:    make(map[string]bool),
 		ContentQuality:   make(map[string]float64, len(candidates)),
+		AuthorFeedback:   make(map[string]float64, len(candidates)),
 	}
 
 	if len(candidates) == 0 {
@@ -74,6 +86,10 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 	// --- 1. Author affinities: HMGET user:affinities:{viewerID} author1 author2 ...
 	affinityKey := fmt.Sprintf("user:affinities:%s", viewerID.String())
 	affinityCmd := pipe.HMGet(ctx, affinityKey, authorFields...)
+
+	// --- 1b. Author feedback: HMGET feed:author_feedback:{viewerID} author1 ...
+	// Same shape as the affinity hash, same single command.
+	feedbackCmd := pipe.HMGet(ctx, AuthorFeedbackKey(viewerID), authorFields...)
 
 	// --- 2. Media preferences: HGETALL user:media_prefs:{viewerID}
 	mediaKey := fmt.Sprintf("user:media_prefs:%s", viewerID.String())
@@ -135,6 +151,19 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		}
 	} else {
 		log.Printf("ranking/signals: affinities fetch error: %v", err)
+	}
+
+	// --- Harvest 1b: author feedback (absent field ⇒ 0, nothing to record)
+	if vals, err := feedbackCmd.Result(); err == nil {
+		for i, v := range vals {
+			if s, ok := v.(string); ok {
+				if f, err := strconv.ParseFloat(s, 64); err == nil {
+					vs.AuthorFeedback[authorFields[i]] = f
+				}
+			}
+		}
+	} else {
+		log.Printf("ranking/signals: author feedback fetch error: %v", err)
 	}
 
 	// --- Harvest 2: media preferences

@@ -30,6 +30,10 @@ var legacyReportReasonAliases = map[string]string{
 	"hate_speech": "hate_abuse",
 	"violence":    "violence_threat",
 	"nudity":      "sexual_content",
+	// Post "more" sheet (2026-09-04) short forms — the sheet's picker says
+	// "hate" and "false_info"; the stored category stays the §10.5 value.
+	"hate":       "hate_abuse",
+	"false_info": "misinformation",
 }
 
 // validReportCategories is the report category/reason allowlist from

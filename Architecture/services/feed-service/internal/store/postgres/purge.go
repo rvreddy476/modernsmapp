@@ -83,6 +83,7 @@ func (s *MetaStore) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		`DELETE FROM user_preferences WHERE user_id = $1`,
 		`DELETE FROM feed_hides WHERE user_id = $1`,
 		`DELETE FROM feed_mutes WHERE user_id = $1`,
+		`DELETE FROM feed_feedback WHERE user_id = $1 OR author_id = $1`,
 		`DELETE FROM celeb_authors WHERE author_id = $1`,
 		`DELETE FROM hidden_authors WHERE author_id = $1`,
 	}
