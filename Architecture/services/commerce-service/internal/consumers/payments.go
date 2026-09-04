@@ -5,6 +5,7 @@ package consumers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -22,8 +23,17 @@ import (
 // On payment.failed, it marks the order as payment_failed so the UI can
 // prompt the customer to retry, and stock reservations age out naturally.
 type PaymentsConsumer struct {
-	svc      *service.Service
+	svc      PaymentApplier
 	consumer *sharedkafka.Consumer
+}
+
+// PaymentApplier is the slice of *service.Service the consumer drives.
+// An interface so the routing + error-classification logic in handle is
+// unit-testable with a recording fake.
+type PaymentApplier interface {
+	ApplyVerifiedPaymentEvent(ctx context.Context, orderID uuid.UUID, paymentID string) error
+	MarkPaymentFailed(ctx context.Context, orderID uuid.UUID, paymentID string) error
+	ApplyRefundEvent(ctx context.Context, intentID string) error
 }
 
 // paymentEventPayload mirrors the JSON-marshalled PaymentIntent that
@@ -47,7 +57,7 @@ type paymentEventPayload struct {
 }
 
 func NewPaymentsConsumer(
-	svc *service.Service,
+	svc PaymentApplier,
 	brokers []string,
 	rdb *redis.Client,
 	m *metrics.KafkaConsumerMetrics,
@@ -125,9 +135,23 @@ func (c *PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope
 		// payment.succeeded is published only after payments-service has
 		// already HMAC-verified the Razorpay webhook upstream, so this
 		// is the system-trusted entry. ApplyVerifiedPaymentEvent is
-		// idempotent — UpdatePaymentStatus is row-level, and DeductStock
-		// + invoice + shipment fan out from there.
+		// idempotent — the paid transition is one guarded UPDATE, so a
+		// replay (or a race with the customer's confirm call) converges
+		// without re-running DeductStock / invoice / shipment.
 		if err := c.svc.ApplyVerifiedPaymentEvent(ctx, orderID, p.ProviderRef); err != nil {
+			switch {
+			case errors.Is(err, service.ErrOrderNotFound):
+				// Retrying will never make the order appear. Park it in
+				// the DLQ (Permanent) rather than spinning the consumer.
+				return sharedkafka.Permanent(fmt.Errorf("confirm payment for order %s: %w", orderID, err))
+			case errors.Is(err, service.ErrOrderNotPayable):
+				// Money was captured for an order that can no longer be
+				// paid (cancelled / refunded). Needs a refund by ops —
+				// loud log + DLQ, not an infinite retry.
+				slog.Error("payments consumer: captured payment for non-payable order — refund required",
+					"order_id", orderID, "provider_ref", p.ProviderRef, "intent_id", p.ID, "error", err)
+				return sharedkafka.Permanent(fmt.Errorf("confirm payment for order %s: %w", orderID, err))
+			}
 			return fmt.Errorf("confirm payment for order %s: %w", orderID, err)
 		}
 		slog.Info("payments consumer: confirmed order",

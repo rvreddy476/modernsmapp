@@ -21,7 +21,7 @@ import (
 // queue).
 func (s *Service) EnqueueFulfillPaidOrder(ctx context.Context, orderID uuid.UUID) {
 	payload, _ := json.Marshal(map[string]any{"order_id": orderID})
-	if err := s.store.EnqueueJobPool(ctx, "fulfill_paid_order", payload); err != nil {
+	if err := s.orders.EnqueueJobPool(ctx, "fulfill_paid_order", payload); err != nil {
 		slog.Error("enqueue fulfill_paid_order failed",
 			"order_id", orderID, "error", err)
 	}

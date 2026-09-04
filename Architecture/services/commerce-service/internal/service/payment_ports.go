@@ -1,0 +1,58 @@
+package service
+
+import (
+	"context"
+	"os"
+
+	"github.com/atpost/commerce-service/internal/payments"
+	"github.com/atpost/commerce-service/internal/store/postgres"
+	"github.com/google/uuid"
+)
+
+// orderPaymentStore is the slice of *postgres.Store the money path
+// (checkout → paid → confirmed, payment failed) depends on. Narrowed to an
+// interface so the transition logic in ConfirmPayment /
+// ApplyVerifiedPaymentEvent / MarkPaymentFailed is unit-testable with an
+// in-memory fake; production wires the real store through NewWithDialer.
+type orderPaymentStore interface {
+	GetOrderByID(ctx context.Context, id uuid.UUID) (*postgres.Order, error)
+	GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*postgres.OrderItem, error)
+	MarkOrderPaid(ctx context.Context, orderID uuid.UUID, paymentID, gateway string, actorID *uuid.UUID, actorType string) (postgres.PaidTransition, error)
+	TransitionPaymentStatus(ctx context.Context, orderID uuid.UUID, to, paymentID, gateway string) (bool, error)
+	DeductStock(ctx context.Context, variantID uuid.UUID, qty int, orderID uuid.UUID) error
+	ReleaseReservation(ctx context.Context, variantID, userID uuid.UUID, qty int) error
+	EnqueueJobPool(ctx context.Context, kind string, payload []byte) error
+}
+
+// paymentsClient is the slice of *payments.Client commerce-service calls.
+type paymentsClient interface {
+	VerifyIntent(ctx context.Context, intentID uuid.UUID, rzpOrderID, rzpPaymentID, rzpSignature string, amountMinor int64) (*payments.VerifyResult, error)
+	FindOrderIntent(ctx context.Context, orderID, actorID uuid.UUID) (*payments.PaymentIntent, error)
+	InitiateRefund(ctx context.Context, intentID, actorID uuid.UUID, amountMinor int64, reason string) (*payments.PaymentIntent, error)
+}
+
+// WithAllowStubGateway lets ConfirmPayment accept gateway="stub". Wired
+// from PAYMENTS_ALLOW_STUB in cmd/server/main.go (docker-compose sets it
+// for the dev stack); production leaves it false so a client can never
+// name the stub gateway. The env var is still honoured as a fallback so
+// an operator setting it on the container alone keeps working.
+func (s *Service) WithAllowStubGateway(allow bool) *Service {
+	s.allowStubGateway = allow
+	return s
+}
+
+func (s *Service) stubGatewayAllowed() bool {
+	return s.allowStubGateway || os.Getenv("PAYMENTS_ALLOW_STUB") == "true"
+}
+
+// withOrderPaymentStore swaps the money-path store (tests only).
+func (s *Service) withOrderPaymentStore(st orderPaymentStore) *Service {
+	s.orders = st
+	return s
+}
+
+// withPaymentsClient swaps the payments client (tests only).
+func (s *Service) withPaymentsClient(c paymentsClient) *Service {
+	s.payments = c
+	return s
+}

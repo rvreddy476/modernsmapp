@@ -70,12 +70,15 @@ type envelope[T any] struct {
 
 // FindOrderIntent returns the most recent succeeded payment intent for an
 // order, or nil if none. Used by ApproveReturn to pick which intent to
-// refund. We pass actorID so the upstream call has a sensible X-User-Id.
+// refund. Uses the /internal (unfiltered) list: the actor here is the
+// seller approving a return or an admin cancelling, who is usually not a
+// party to the intent (the user-facing list only returns the caller's
+// own intents). actorID is still forwarded as X-User-Id for attribution.
 func (c *Client) FindOrderIntent(ctx context.Context, orderID, actorID uuid.UUID) (*PaymentIntent, error) {
 	if c == nil || c.baseURL == "" {
 		return nil, nil
 	}
-	url := fmt.Sprintf("%s/v1/payments/intents?ref_type=order&ref_id=%s", c.baseURL, orderID)
+	url := fmt.Sprintf("%s/v1/payments/internal/intents?ref_type=order&ref_id=%s", c.baseURL, orderID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -112,6 +115,12 @@ type VerifyResult struct {
 	Status      string    `json:"status"`
 	AmountMinor int64     `json:"amount_minor"`
 	ProviderRef string    `json:"provider_ref"`
+	// Parties + reference echoed by payments-service so ConfirmPayment can
+	// bind the verified intent to the order/actor being confirmed.
+	PayerID       uuid.UUID `json:"payer_id"`
+	PayeeID       uuid.UUID `json:"payee_id"`
+	ReferenceType string    `json:"reference_type"`
+	ReferenceID   uuid.UUID `json:"reference_id"`
 }
 
 // VerifyIntent asks payments-service to validate the Razorpay signature
@@ -119,13 +128,13 @@ type VerifyResult struct {
 // Verified=true only on a successful verification; any error means
 // commerce-service must NOT mark the order paid.
 //
-// Server-to-server call — only the internal-service-key gate authenticates;
-// no X-User-Id is required by the verify endpoint.
+// Server-to-server call on the /internal route family — only the
+// internal-service-key gate authenticates; no X-User-Id is required.
 func (c *Client) VerifyIntent(ctx context.Context, intentID uuid.UUID, rzpOrderID, rzpPaymentID, rzpSignature string, amountMinor int64) (*VerifyResult, error) {
 	if c == nil || c.baseURL == "" {
 		return nil, fmt.Errorf("payments client not configured")
 	}
-	url := fmt.Sprintf("%s/v1/payments/intents/%s/verify", c.baseURL, intentID)
+	url := fmt.Sprintf("%s/v1/payments/internal/intents/%s/verify", c.baseURL, intentID)
 	body, _ := json.Marshal(map[string]interface{}{
 		"razorpay_order_id":   rzpOrderID,
 		"razorpay_payment_id": rzpPaymentID,
@@ -170,7 +179,10 @@ func (c *Client) InitiateRefund(ctx context.Context, intentID, actorID uuid.UUID
 	if c == nil || c.baseURL == "" {
 		return nil, fmt.Errorf("payments client not configured")
 	}
-	url := fmt.Sprintf("%s/v1/payments/intents/%s/refund", c.baseURL, intentID)
+	// /internal: commerce-service has already authorised the actor against
+	// the order (seller of the returned item, customer cancelling), so the
+	// payer/payee party check on the user-facing route does not apply.
+	url := fmt.Sprintf("%s/v1/payments/internal/intents/%s/refund", c.baseURL, intentID)
 	payload := map[string]interface{}{"reason": reason}
 	if amountMinor > 0 {
 		payload["amount_minor"] = amountMinor

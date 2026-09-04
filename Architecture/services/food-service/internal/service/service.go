@@ -571,7 +571,9 @@ func (s *Service) verifyPaymentsServiceIntent(ctx context.Context, details *post
 		"razorpay_signature":  in.RazorpaySignature,
 		"amount_minor":        in.AmountMinor,
 	})
-	url := strings.TrimRight(s.paymentsURL, "/") + "/v1/payments/intents/" + details.ProviderPaymentID + "/verify"
+	// /internal route family: verify is service-only in payments-service
+	// (the user-facing group no longer exposes it).
+	url := strings.TrimRight(s.paymentsURL, "/") + "/v1/payments/internal/intents/" + details.ProviderPaymentID + "/verify"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -655,7 +657,9 @@ func (s *Service) refundPaymentsServiceIntent(ctx context.Context, details *post
 		return fmt.Errorf("PAYMENTS_SERVICE_URL is required for online refunds")
 	}
 	body, _ := json.Marshal(map[string]string{"reason": reason})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.paymentsURL, "/")+"/v1/payments/intents/"+details.ProviderPaymentID+"/refund", bytes.NewReader(body))
+	// /internal: food-service has already authorised the actor against its
+	// own order; the user-facing refund route enforces payer/payee parity.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.paymentsURL, "/")+"/v1/payments/internal/intents/"+details.ProviderPaymentID+"/refund", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

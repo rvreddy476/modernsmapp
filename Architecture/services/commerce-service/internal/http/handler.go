@@ -1353,7 +1353,8 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "ORDER_NOT_FOUND", err.Error(), nil)
 		case errors.Is(err, service.ErrNotOrderOwner):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
-		case errors.Is(err, service.ErrOrderNotPaymentPending):
+		case errors.Is(err, service.ErrOrderNotPaymentPending),
+			errors.Is(err, service.ErrOrderNotPayable):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ORDER_NOT_PAYMENT_PENDING", err.Error(), nil)
 		case errors.Is(err, service.ErrPaymentVerifyFailed),
 			errors.Is(err, service.ErrPaymentAmountMismatch):

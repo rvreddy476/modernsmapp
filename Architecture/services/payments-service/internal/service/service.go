@@ -7,14 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/atpost/payments-service/internal/gateway"
 	"github.com/atpost/payments-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
-	kafka "github.com/segmentio/kafka-go"
 )
 
 // rupeesToPaise converts the API's rupees-major amount to the paise-minor
@@ -29,25 +27,60 @@ func rupeesToPaise(amountRupees float64) int64 {
 
 type Service struct {
 	store   *postgres.Store
-	writer  *kafka.Writer
 	gateway gateway.PaymentGateway
 }
 
-func New(store *postgres.Store, kafkaBrokers string, gw gateway.PaymentGateway) *Service {
-	return NewWithDialer(store, kafkaBrokers, gw, nil)
+// New wires the service. Events are no longer written to Kafka from the
+// request path: publishEvent INSERTs into payments.outbox_events and the
+// shared/outbox.Publisher started in cmd/server/main.go relays them.
+func New(store *postgres.Store, gw gateway.PaymentGateway) *Service {
+	return &Service{store: store, gateway: gw}
 }
 
-func NewWithDialer(store *postgres.Store, kafkaBrokers string, gw gateway.PaymentGateway, dialer *kafka.Dialer) *Service {
-	return &Service{
-		store: store,
-		writer: kafka.NewWriter(kafka.WriterConfig{
-			Brokers:  strings.Split(kafkaBrokers, ","),
-			Topic:    "social.events.v1",
-			Balancer: &kafka.LeastBytes{},
-			Dialer:   dialer,
-		}),
-		gateway: gw,
+// ErrNotIntentParty is returned by the ownership-checked read paths when
+// the acting user is neither the payer nor the payee of the intent. The
+// gateway injects X-Internal-Service-Key on every proxied request, so the
+// key alone cannot distinguish a service from a logged-in user; the
+// user-facing routes therefore always check the intent's parties against
+// X-User-Id, and service-only mutations live under /v1/payments/internal.
+var ErrNotIntentParty = fmt.Errorf("not a party to this payment")
+
+// IsParty reports whether actor is the payer or the payee of intent.
+func IsParty(intent *postgres.PaymentIntent, actor uuid.UUID) bool {
+	if intent == nil || actor == uuid.Nil {
+		return false
 	}
+	return actor == intent.PayerID || actor == intent.PayeeID
+}
+
+// GetIntentForActor is GetIntent with the ownership check applied.
+func (s *Service) GetIntentForActor(ctx context.Context, id, actor uuid.UUID) (*postgres.PaymentIntent, error) {
+	intent, err := s.store.GetIntent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !IsParty(intent, actor) {
+		return nil, ErrNotIntentParty
+	}
+	return intent, nil
+}
+
+// ListByReferenceForActor lists the intents on a reference that the actor
+// is a party to. Intents belonging to other users are filtered out rather
+// than erroring so a buyer sees "no intents" instead of learning that a
+// reference exists.
+func (s *Service) ListByReferenceForActor(ctx context.Context, refType string, refID, actor uuid.UUID) ([]postgres.PaymentIntent, error) {
+	all, err := s.store.ListByReference(ctx, refType, refID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]postgres.PaymentIntent, 0, len(all))
+	for i := range all {
+		if IsParty(&all[i], actor) {
+			out = append(out, all[i])
+		}
+	}
+	return out, nil
 }
 
 type InitiateInput struct {
@@ -211,12 +244,21 @@ var ErrHoldReleaseNotAuthorized = fmt.Errorf("not authorized to release this hol
 // is unit-testable without a real Postgres pool. Errors map 1:1 to the
 // surfaceable Err* constants InitiateRefund returns.
 func resolveRefundAmount(intent *postgres.PaymentIntent, actorID uuid.UUID, amountMinor int64) (refundMinor, intentAmountMinor int64, err error) {
+	return resolveRefundAmountAs(intent, actorID, amountMinor, true)
+}
+
+// resolveRefundAmountAs is resolveRefundAmount with the ownership check
+// made optional. requireParty=false is reserved for the internal
+// (service-to-service) refund path, where the calling service — e.g.
+// commerce-service approving a return — has already authorised the
+// actor against its own domain model.
+func resolveRefundAmountAs(intent *postgres.PaymentIntent, actorID uuid.UUID, amountMinor int64, requireParty bool) (refundMinor, intentAmountMinor int64, err error) {
 	// Allow refunds on succeeded (first refund) and partially_refunded
 	// (subsequent partial top-ups until fully refunded).
 	if intent.Status != "succeeded" && intent.Status != "partially_refunded" {
 		return 0, 0, fmt.Errorf("can only refund succeeded payments, current status: %s", intent.Status)
 	}
-	if actorID != intent.PayerID && actorID != intent.PayeeID {
+	if requireParty && !IsParty(intent, actorID) {
 		return 0, 0, ErrRefundNotAuthorized
 	}
 
@@ -279,11 +321,22 @@ func computeRefundStatus(currentRefundedMinor, refundMinor, intentAmountMinor in
 // (the gateway leg can be reconciled separately). The webhook is the
 // canonical signal for provider settlement.
 func (s *Service) InitiateRefund(ctx context.Context, id, actorID uuid.UUID, amountMinor int64, reason string) (*postgres.PaymentIntent, error) {
+	return s.initiateRefund(ctx, id, actorID, amountMinor, reason, true)
+}
+
+// InitiateServiceRefund is the trusted, service-to-service variant used
+// by /v1/payments/internal/intents/:id/refund. The party check is
+// skipped; actorID is recorded on the audit row for attribution only.
+func (s *Service) InitiateServiceRefund(ctx context.Context, id, actorID uuid.UUID, amountMinor int64, reason string) (*postgres.PaymentIntent, error) {
+	return s.initiateRefund(ctx, id, actorID, amountMinor, reason, false)
+}
+
+func (s *Service) initiateRefund(ctx context.Context, id, actorID uuid.UUID, amountMinor int64, reason string, requireParty bool) (*postgres.PaymentIntent, error) {
 	intent, err := s.store.GetIntent(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	refundMinor, intentAmountMinor, err := resolveRefundAmount(intent, actorID, amountMinor)
+	refundMinor, intentAmountMinor, err := resolveRefundAmountAs(intent, actorID, amountMinor, requireParty)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +381,13 @@ type VerifyResult struct {
 	Status      string    `json:"status"`
 	AmountMinor int64     `json:"amount_minor"`
 	ProviderRef string    `json:"provider_ref"`
+	// Parties + reference are echoed so the calling service can assert the
+	// intent belongs to the order/actor it is confirming (no cross-order or
+	// cross-user replay of a genuinely valid signature).
+	PayerID       uuid.UUID `json:"payer_id"`
+	PayeeID       uuid.UUID `json:"payee_id"`
+	ReferenceType string    `json:"reference_type"`
+	ReferenceID   uuid.UUID `json:"reference_id"`
 }
 
 // VerifyIntent is the synchronous gateway-verification path commerce-service
@@ -377,11 +437,15 @@ func (s *Service) VerifyIntent(ctx context.Context, id uuid.UUID, rzpOrderID, rz
 		return nil, err
 	}
 	return &VerifyResult{
-		Verified:    true,
-		IntentID:    id,
-		Status:      current.Status,
-		AmountMinor: intentAmountMinor,
-		ProviderRef: current.ProviderRef,
+		Verified:      true,
+		IntentID:      id,
+		Status:        current.Status,
+		AmountMinor:   intentAmountMinor,
+		ProviderRef:   current.ProviderRef,
+		PayerID:       current.PayerID,
+		PayeeID:       current.PayeeID,
+		ReferenceType: current.ReferenceType,
+		ReferenceID:   current.ReferenceID,
 	}, nil
 }
 
@@ -419,7 +483,7 @@ func (s *Service) MarkWebhookSeen(ctx context.Context, eventID, eventType, provi
 // transition actually applied — the store returns
 // ErrInvalidStatusTransition / ErrPaymentNotFound for the no-op cases.
 func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string) {
-	err := s.store.UpdateStatusByProviderRef(ctx, providerRef, newStatus, paymentID)
+	intent, err := s.store.UpdateStatusByProviderRef(ctx, providerRef, newStatus, paymentID)
 	if err != nil {
 		// Quiet log for the expected no-op cases; loud for everything else.
 		if errors.Is(err, postgres.ErrInvalidStatusTransition) || errors.Is(err, postgres.ErrPaymentNotFound) {
@@ -440,19 +504,15 @@ func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, ne
 	case "refunded":
 		eventType = "payment.refunded"
 	}
-	// Look up the intent so the event payload carries reference_type +
-	// reference_id, matching the shape consumers expect. Falls back to
-	// the legacy bare-keys payload only on a lookup miss so a transient
-	// DB blip can't silently swallow the event.
-	if intent, lookupErr := s.store.GetIntentByProviderRef(ctx, providerRef); lookupErr == nil && intent != nil {
-		s.publishEvent(ctx, eventType, "", intent)
-		return
-	}
-	s.publishEvent(ctx, eventType, "", map[string]any{
-		"provider_ref": providerRef,
-		"payment_id":   paymentID,
-		"new_status":   newStatus,
-	})
+	// Publish the row the UPDATE returned so the event carries
+	// reference_type + reference_id (what commerce-service keys on).
+	// Previously this re-read the intent by the OLD provider_ref after
+	// the UPDATE had just replaced provider_ref with the payment id, so
+	// the lookup always missed and a bare {provider_ref, payment_id,
+	// new_status} payload went out — which the commerce consumer drops
+	// for lack of a reference. Every webhook-driven order confirmation
+	// was lost that way.
+	s.publishEvent(ctx, eventType, "", intent)
 }
 
 // ApplyWebhookRefund settles a refund.processed webhook from Razorpay.
@@ -478,16 +538,30 @@ func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, ne
 // 200 — Razorpay's retry loop will redeliver on a 5xx, but a refund
 // that genuinely can't be booked (intent not found, amount overflows
 // cap) is a permanent failure that re-trying doesn't fix.
-func (s *Service) ApplyWebhookRefund(ctx context.Context, paymentProviderRef, refundProviderRef string, amountMinor int64) {
+//
+// Lookup order: provider_ref holds the Razorpay ORDER id until capture and
+// the Razorpay PAYMENT id afterwards (UpdateStatusByProviderRef swaps it so
+// gateway refunds can address the payment). A refund always follows a
+// capture, so the payment id is tried first and the order id second.
+func (s *Service) ApplyWebhookRefund(ctx context.Context, paymentID, orderProviderRef, refundProviderRef string, amountMinor int64) {
 	if amountMinor <= 0 {
 		slog.Warn("webhook refund: skipping zero/negative amount",
 			"refund_id", refundProviderRef, "amount_minor", amountMinor)
 		return
 	}
-	intent, err := s.store.GetIntentByProviderRef(ctx, paymentProviderRef)
-	if err != nil || intent == nil {
-		slog.Warn("webhook refund: intent not found for provider_ref",
-			"payment_id", paymentProviderRef, "refund_id", refundProviderRef, "error", err)
+	var intent *postgres.PaymentIntent
+	var err error
+	for _, ref := range []string{paymentID, orderProviderRef} {
+		if ref == "" {
+			continue
+		}
+		if intent, err = s.store.GetIntentByProviderRef(ctx, ref); err == nil && intent != nil {
+			break
+		}
+	}
+	if intent == nil {
+		slog.Warn("webhook refund: intent not found for provider refs",
+			"payment_id", paymentID, "order_id", orderProviderRef, "refund_id", refundProviderRef, "error", err)
 		return
 	}
 
@@ -558,12 +632,16 @@ func (s *Service) publishEvent(ctx context.Context, eventType, key string, paylo
 		slog.Error("failed to marshal envelope", "event_type", eventType, "error", err)
 		return
 	}
-	if err := s.writer.WriteMessages(ctx, kafka.Message{
-		Key:     []byte(key),
-		Value:   value,
-		Headers: []kafka.Header{{Key: "event_type", Value: []byte(eventType)}},
-	}); err != nil {
-		slog.Error("failed to publish event", "event_type", eventType, "error", err)
+	// Transactional-outbox write. The row lands in the same database as
+	// the intent it describes; shared/outbox.Publisher relays it to Kafka
+	// with retries. A failed INSERT is logged loudly — it means Postgres
+	// itself is unhealthy, in which case the status write that preceded
+	// this call would also have failed.
+	if s.store == nil {
+		return
+	}
+	if err := s.store.EnqueueOutboxEvent(ctx, eventType, key, value); err != nil {
+		slog.Error("failed to enqueue outbox event", "event_type", eventType, "error", err)
 	}
 }
 

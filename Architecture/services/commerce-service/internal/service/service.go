@@ -10,19 +10,18 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/atpost/commerce-service/internal/courier"
 	"github.com/atpost/commerce-service/internal/identity"
 	"github.com/atpost/commerce-service/internal/kyc"
-	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/events"
 	tracepkg "github.com/atpost/shared/o11y/trace"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	kafka "github.com/segmentio/kafka-go"
@@ -33,7 +32,12 @@ import (
 var (
 	ErrOrderNotFound          = fmt.Errorf("order not found")
 	ErrNotOrderOwner          = fmt.Errorf("not authorized for this order")
-	ErrOrderNotPaymentPending = fmt.Errorf("order is not in payment_pending state")
+	ErrOrderNotPaymentPending = fmt.Errorf("order is not awaiting payment")
+	// ErrOrderNotPayable is returned when a verified payment arrives for an
+	// order the transition guard refuses (cancelled, refunded, …). Distinct
+	// from ErrOrderNotPaymentPending so the consumer can treat it as a
+	// permanent, alert-worthy condition rather than retrying.
+	ErrOrderNotPayable = fmt.Errorf("order cannot accept payment in its current state")
 	ErrPaymentVerifyFailed    = fmt.Errorf("payment verification failed")
 	ErrPaymentAmountMismatch  = fmt.Errorf("payment amount does not match order")
 	ErrStubGatewayInProd      = fmt.Errorf("stub gateway not permitted; set PAYMENTS_ALLOW_STUB=true for dev/test")
@@ -64,15 +68,20 @@ type ConfirmPaymentInput struct {
 
 // Service is the main commerce service.
 type Service struct {
-	store     *postgres.Store
+	store *postgres.Store
+	// orders is the money-path view of store (see payment_ports.go). Same
+	// object in production; a fake in the payment unit tests.
+	orders    orderPaymentStore
 	rdb       *redis.Client
 	writer    *kafka.Writer
 	courier   courier.Provider
 	blob      BlobStore
 	identity  *identity.Client
-	payments  *payments.Client
+	payments  paymentsClient
 	kyc       kyc.Validator
 	payoutCfg PayoutConfig
+	// allowStubGateway — see WithAllowStubGateway.
+	allowStubGateway bool
 
 	// productViewCounter shards products.view_count across Redis so a
 	// trending product taking 100k+ views/hour doesn't bottleneck on a
@@ -126,6 +135,9 @@ func NewWithDialer(store *postgres.Store, rdb *redis.Client, kafkaBrokers string
 		Dialer:   dialer,
 	})
 	svc := &Service{store: store, rdb: rdb, writer: w}
+	if store != nil {
+		svc.orders = store
+	}
 	if rdb != nil {
 		svc.productViewCounter = counters.New(rdb, counters.Config{EntityKind: "product_view_count", Shards: 32})
 	}
@@ -1363,11 +1375,7 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 	addrSnapshot, _ := json.Marshal(map[string]any{"address_id": in.AddressID})
 	pm := in.PaymentMethod
 	isCOD := strings.EqualFold(pm, "cod")
-	paymentStatus := "pending"
-	orderStatus := "payment_pending"
-	if isCOD {
-		orderStatus = "confirmed"
-	}
+	orderStatus, paymentStatus := checkoutInitialState(isCOD)
 
 	// Phase 5 — B2B context: validate org membership, apply approval
 	// threshold + credit terms. A buyer on an org with approval_threshold
@@ -1513,6 +1521,22 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 	return order, nil
 }
 
+// checkoutInitialState is the (status, payment_status) pair a fresh order
+// is created in. Prepaid orders park in payment_pending/pending until the
+// gateway confirms; COD orders are confirmed immediately with payment
+// still pending (there is no cod_pending value — downstream code reads
+// payment_method='cod'). The pair MUST satisfy postgres.OrderPayable, or
+// ConfirmPayment / the payments consumer can never move the order to
+// paid — that was the bug behind the always-409 confirm endpoint, which
+// compared payment_status against the *order* status value
+// "payment_pending". The unit test pins the two together.
+func checkoutInitialState(isCOD bool) (orderStatus, paymentStatus string) {
+	if isCOD {
+		return "confirmed", "pending"
+	}
+	return "payment_pending", "pending"
+}
+
 func sellerIDOrNil(items []*postgres.OrderItem) *uuid.UUID {
 	if len(items) == 0 {
 		return nil
@@ -1526,20 +1550,25 @@ func sellerIDOrNil(items []*postgres.OrderItem) *uuid.UUID {
 // client sent and marked the order paid. Now we:
 //
 //  1. Require the actor to own the order.
-//  2. Require the order to actually be payment_pending.
+//  2. Require the order to be in a payable state (postgres.OrderPayable —
+//     the same predicate MarkOrderPaid enforces in SQL). The old check
+//     compared payment_status against "payment_pending", a value that
+//     column can never hold, so every confirm 409'd.
 //  3. Forward the Razorpay signature triple to payments-service for HMAC
-//     verification + amount check.
-//  4. Refuse gateway=stub unless PAYMENTS_ALLOW_STUB is explicitly set.
+//     verification + amount check, then bind the verified intent to THIS
+//     order and THIS actor (a valid signature for someone else's intent
+//     must not confirm this order).
+//  4. Refuse gateway=stub unless the stub is explicitly allowed. The stub
+//     gateway still goes through payments-service verify — the stub
+//     accepts any signature, but the intent/order/amount binding holds.
 //
 // Idempotent — an already-paid order returns nil without re-running the
-// fulfillment side effects.
+// fulfillment side effects, including when the webhook consumer wins a
+// race with this call (MarkOrderPaid reports Applied=false, paid).
 func (s *Service) ConfirmPayment(ctx context.Context, orderID, actorID uuid.UUID, in ConfirmPaymentInput) error {
-	order, err := s.store.GetOrderByID(ctx, orderID)
+	order, err := s.getOrderForPayment(ctx, orderID)
 	if err != nil {
 		return err
-	}
-	if order == nil {
-		return ErrOrderNotFound
 	}
 	if order.CustomerUserID != actorID {
 		return ErrNotOrderOwner
@@ -1547,38 +1576,72 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID, actorID uuid.UUID
 	if order.PaymentStatus == "paid" {
 		return nil // idempotent: payment already applied
 	}
-	if order.PaymentStatus != "payment_pending" {
-		return ErrOrderNotPaymentPending
+	if !postgres.OrderPayable(order.Status, order.PaymentStatus) {
+		return fmt.Errorf("%w (status=%s payment_status=%s)", ErrOrderNotPaymentPending, order.Status, order.PaymentStatus)
 	}
 
 	gateway := in.Gateway
 	if gateway == "" {
 		gateway = "razorpay"
 	}
-	if gateway == "stub" && os.Getenv("PAYMENTS_ALLOW_STUB") != "true" {
+	if gateway == "stub" && !s.stubGatewayAllowed() {
 		return ErrStubGatewayInProd
 	}
+	if s.payments == nil {
+		return ErrPaymentsClientMissing
+	}
 
-	if gateway != "stub" {
-		if s.payments == nil {
-			return ErrPaymentsClientMissing
-		}
-		expectedMinor := int64(math.Round(order.FinalAmount * 100))
-		if in.AmountMinor != 0 && in.AmountMinor != expectedMinor {
-			return ErrPaymentAmountMismatch
-		}
-		res, err := s.payments.VerifyIntent(ctx, in.PaymentIntentID, in.RazorpayOrderID, in.RazorpayPaymentID, in.RazorpaySignature, expectedMinor)
-		if err != nil {
-			slog.Warn("payment verify failed",
-				"order_id", orderID, "intent_id", in.PaymentIntentID, "error", err)
-			return ErrPaymentVerifyFailed
-		}
-		if res == nil || !res.Verified {
-			return ErrPaymentVerifyFailed
-		}
+	expectedMinor := int64(math.Round(order.FinalAmount * 100))
+	if in.AmountMinor != 0 && in.AmountMinor != expectedMinor {
+		return ErrPaymentAmountMismatch
+	}
+	res, err := s.payments.VerifyIntent(ctx, in.PaymentIntentID, in.RazorpayOrderID, in.RazorpayPaymentID, in.RazorpaySignature, expectedMinor)
+	if err != nil {
+		slog.Warn("payment verify failed",
+			"order_id", orderID, "intent_id", in.PaymentIntentID, "error", err)
+		return ErrPaymentVerifyFailed
+	}
+	if res == nil || !res.Verified {
+		return ErrPaymentVerifyFailed
+	}
+	// Bind the verified intent to this order + actor. payments-service
+	// echoes the intent's reference/payer; an intent minted for another
+	// order (or by another user) is refused even with a valid signature.
+	if res.ReferenceID != uuid.Nil && res.ReferenceID != orderID {
+		slog.Warn("payment verify: intent references a different order",
+			"order_id", orderID, "intent_id", in.PaymentIntentID, "intent_ref", res.ReferenceID)
+		return ErrPaymentVerifyFailed
+	}
+	if res.PayerID != uuid.Nil && res.PayerID != actorID {
+		slog.Warn("payment verify: intent payer is not the order customer",
+			"order_id", orderID, "intent_id", in.PaymentIntentID)
+		return ErrPaymentVerifyFailed
+	}
+	if res.AmountMinor != 0 && res.AmountMinor != expectedMinor {
+		return ErrPaymentAmountMismatch
 	}
 
 	return s.applyPaidStatus(ctx, orderID, in.RazorpayPaymentID, gateway, &actorID, "customer")
+}
+
+// getOrderForPayment loads an order for the money path, mapping the
+// store's "no rows" into ErrOrderNotFound (GetOrderByID returns a
+// non-nil pointer alongside pgx.ErrNoRows).
+func (s *Service) getOrderForPayment(ctx context.Context, orderID uuid.UUID) (*postgres.Order, error) {
+	if s.orders == nil {
+		return nil, fmt.Errorf("order store not configured")
+	}
+	order, err := s.orders.GetOrderByID(ctx, orderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOrderNotFound
+		}
+		return nil, err
+	}
+	if order == nil {
+		return nil, ErrOrderNotFound
+	}
+	return order, nil
 }
 
 // OrderActorRole describes how the supplied actor relates to an order —
@@ -1616,39 +1679,46 @@ func (s *Service) OrderActor(ctx context.Context, orderID, actorID uuid.UUID) (O
 // webhook has already verified the Razorpay signature upstream, so we
 // trust the event and apply the paid status directly. Idempotent.
 func (s *Service) ApplyVerifiedPaymentEvent(ctx context.Context, orderID uuid.UUID, paymentID string) error {
-	order, err := s.store.GetOrderByID(ctx, orderID)
-	if err != nil {
-		return err
-	}
-	if order == nil {
-		return ErrOrderNotFound
-	}
-	if order.PaymentStatus == "paid" {
-		return nil
-	}
 	return s.applyPaidStatus(ctx, orderID, paymentID, "razorpay", nil, "system")
 }
 
 // applyPaidStatus is the shared "actually mark this order paid + fire the
 // downstream side effects" core, called from both the customer-driven
 // ConfirmPayment and the webhook-driven ApplyVerifiedPaymentEvent.
+//
+// The transition itself is one guarded UPDATE (store.MarkOrderPaid), so
+// when the two callers race exactly one sees Applied=true and runs the
+// side effects; the other observes payment_status=paid and returns nil.
+// An order that is not payable any more (cancelled, refunded, …) yields
+// ErrOrderNotPayable — money arrived for a dead order and someone has to
+// refund it; the caller decides how loudly to report that.
 func (s *Service) applyPaidStatus(ctx context.Context, orderID uuid.UUID, paymentID, gateway string, actorID *uuid.UUID, actorType string) error {
-	if err := s.store.UpdatePaymentStatus(ctx, orderID, "paid", paymentID, gateway); err != nil {
+	if s.orders == nil {
+		return fmt.Errorf("order store not configured")
+	}
+	t, err := s.orders.MarkOrderPaid(ctx, orderID, paymentID, gateway, actorID, actorType)
+	if err != nil {
+		if errors.Is(err, postgres.ErrOrderNotFound) {
+			return ErrOrderNotFound
+		}
 		return err
 	}
-	if err := s.store.UpdateOrderStatus(ctx, orderID, "confirmed", actorID, actorType, "payment confirmed"); err != nil {
-		return err
+	if !t.Applied {
+		if t.PaymentStatus == "paid" {
+			return nil // converged: the other caller won the race
+		}
+		return fmt.Errorf("%w (status=%s payment_status=%s)", ErrOrderNotPayable, t.Status, t.PaymentStatus)
 	}
 
 	// Deduct inventory (best-effort).
-	items, _ := s.store.GetOrderItems(ctx, orderID)
+	items, _ := s.orders.GetOrderItems(ctx, orderID)
 	for _, item := range items {
-		if err := s.store.DeductStock(ctx, item.VariantID, item.Quantity, orderID); err != nil {
+		if err := s.orders.DeductStock(ctx, item.VariantID, item.Quantity, orderID); err != nil {
 			slog.Warn("failed to deduct stock", "variant", item.VariantID, "error", err)
 		}
 	}
 
-	order, _ := s.store.GetOrderByID(ctx, orderID)
+	order, _ := s.orders.GetOrderByID(ctx, orderID)
 	var buyerEmail, orderNumber string
 	var amount float64
 	if order != nil {
@@ -1664,10 +1734,9 @@ func (s *Service) applyPaidStatus(ctx context.Context, orderID uuid.UUID, paymen
 		"buyer_email":  buyerEmail,
 	})
 
-	// Phase 6.1 — enqueue a durable fulfillment job rather than firing
-	// `go s.fulfillPaidOrder(orderID)`. A service restart between this
-	// point and the side effects (invoice + shipment) used to drop the
-	// work entirely; now the worker picks it back up.
+	// Phase 6.1 — enqueue a durable fulfillment job. A service restart
+	// between this point and the side effects (invoice + shipment) used
+	// to drop the work entirely; now the worker picks it back up.
 	s.EnqueueFulfillPaidOrder(ctx, orderID)
 	return nil
 }
@@ -1676,40 +1745,33 @@ func (s *Service) applyPaidStatus(ctx context.Context, orderID uuid.UUID, paymen
 // reservation made at checkout so other customers can buy the units. The
 // order itself stays in payment_pending so the customer can retry — switching
 // to a hard "payment_failed" terminal state would force them to rebuild the
-// cart. Idempotent: a second call on an already-failed intent is a no-op.
+// cart. Idempotent: a second call on an already-failed intent is a no-op,
+// and a late payment.failed arriving after the order was paid is refused
+// by the transition guard (failed is only reachable from pending /
+// processing) so it can never clobber a captured payment.
 func (s *Service) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID, paymentID string) error {
-	if err := s.store.UpdatePaymentStatus(ctx, orderID, "failed", paymentID, "razorpay"); err != nil {
+	if s.orders == nil {
+		return fmt.Errorf("order store not configured")
+	}
+	applied, err := s.orders.TransitionPaymentStatus(ctx, orderID, "failed", paymentID, "razorpay")
+	if err != nil {
 		return err
 	}
-	items, _ := s.store.GetOrderItems(ctx, orderID)
-	order, _ := s.store.GetOrderByID(ctx, orderID)
-	if order == nil {
+	if !applied {
+		return nil
+	}
+	items, _ := s.orders.GetOrderItems(ctx, orderID)
+	order, err := s.getOrderForPayment(ctx, orderID)
+	if err != nil {
 		return nil
 	}
 	for _, item := range items {
-		if err := s.store.ReleaseReservation(ctx, item.VariantID, order.CustomerUserID, item.Quantity); err != nil {
+		if err := s.orders.ReleaseReservation(ctx, item.VariantID, order.CustomerUserID, item.Quantity); err != nil {
 			slog.Warn("failed to release reservation",
 				"variant", item.VariantID, "order", orderID, "error", err)
 		}
 	}
 	return nil
-}
-
-// fulfillPaidOrder issues the invoice and books a shipment once payment is settled.
-// Uses a fresh context so it survives the caller's deadline.
-func (s *Service) fulfillPaidOrder(orderID uuid.UUID) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if s.blob != nil {
-		if _, err := s.IssueInvoice(ctx, orderID); err != nil {
-			slog.Warn("auto invoice failed", "order_id", orderID, "error", err)
-		}
-	}
-	if s.courier != nil {
-		if _, err := s.CreateShipmentForOrder(ctx, orderID); err != nil {
-			slog.Warn("auto shipment failed", "order_id", orderID, "error", err)
-		}
-	}
 }
 
 // CancelOrder cancels an order that hasn't shipped yet. For prepaid

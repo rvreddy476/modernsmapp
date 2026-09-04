@@ -47,7 +47,11 @@ func (s *Service) WithIdentity(c *identity.Client) *Service {
 
 // WithPayments attaches the payments-service client for refund initiation.
 func (s *Service) WithPayments(c *payments.Client) *Service {
-	s.payments = c
+	// Guard the typed-nil trap: storing a nil *payments.Client in the
+	// interface field would make `s.payments == nil` false.
+	if c != nil {
+		s.payments = c
+	}
 	return s
 }
 

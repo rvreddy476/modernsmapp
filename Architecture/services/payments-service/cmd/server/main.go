@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/atpost/payments-service/database"
+	"github.com/atpost/payments-service/internal/config"
 	"github.com/atpost/payments-service/internal/gateway"
 	nethttp "github.com/atpost/payments-service/internal/http"
 	"github.com/atpost/payments-service/internal/service"
@@ -15,6 +16,7 @@ import (
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/outbox"
 	tracepkg "github.com/atpost/shared/o11y/trace"
 	sharedserver "github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
@@ -74,8 +76,10 @@ func main() {
 	}
 	slog.Info("payments schema ready")
 
-	kafkaDialer, err := transport.KafkaDialerFromEnv()
-	if err != nil {
+	// Kafka dialer config is validated up front so a bad TLS/SASL env
+	// fails at boot rather than inside the outbox publisher goroutine
+	// (shared/outbox builds its own dialer from the same env).
+	if _, err := transport.KafkaDialerFromEnv(); err != nil {
 		slog.Error("failed to configure kafka dialer", "error", err)
 		os.Exit(1)
 	}
@@ -108,37 +112,53 @@ func main() {
 	store := postgres.New(dbPool)
 
 	// Select payment gateway. Audit P8: previously a missing
-	// RAZORPAY_KEY_ID silently selected the stub — production deploys
-	// that forgot the env ran with a stub that never moved real money
-	// (matches media-service H8 stub-in-prod pattern). Now require
-	// PAYMENTS_ALLOW_STUB=true to opt into the stub explicitly; if
-	// neither real creds nor the opt-in are set, refuse to start so
-	// the misconfiguration is visible at boot.
+	// RAZORPAY_KEY_ID silently selected the stub. config.Resolve now owns
+	// the boot rules (see its tests): real credentials always require
+	// RAZORPAY_WEBHOOK_SECRET (the old check was keyed on the stub flag,
+	// so creds + PAYMENTS_ALLOW_STUB=true booted with signature checks
+	// off), the stub needs an explicit PAYMENTS_ALLOW_STUB=true, and
+	// anything else refuses to start.
+	cfg, err := config.Resolve(os.Getenv)
+	if err != nil {
+		slog.Error("payments: invalid boot configuration", "error", err)
+		os.Exit(1)
+	}
 	var gw gateway.PaymentGateway
-	if keyID := os.Getenv("RAZORPAY_KEY_ID"); keyID != "" {
-		gw = gateway.NewRazorpayGateway(keyID, os.Getenv("RAZORPAY_KEY_SECRET"))
+	switch cfg.Mode {
+	case config.ModeRazorpay:
+		gw = gateway.NewRazorpayGateway(cfg.RazorpayKeyID, cfg.RazorpayKeySecret)
 		slog.Info("payments: using Razorpay gateway (production credentials detected)")
-	} else if os.Getenv("PAYMENTS_ALLOW_STUB") == "true" {
+	case config.ModeStub:
 		gw = &gateway.StubGateway{}
 		slog.Warn("payments: STUB GATEWAY ACTIVE — no real money will move. Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in production and remove PAYMENTS_ALLOW_STUB.")
-	} else {
-		slog.Error("payments: RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
-		os.Exit(1)
+		if cfg.WebhookSecret == "" {
+			slog.Warn("payments: RAZORPAY_WEBHOOK_SECRET not set — webhook signature checks are OFF (stub mode only)")
+		}
 	}
 
-	webhookSecret := os.Getenv("RAZORPAY_WEBHOOK_SECRET")
-	if webhookSecret == "" && os.Getenv("PAYMENTS_ALLOW_STUB") != "true" {
-		slog.Error("payments: RAZORPAY_WEBHOOK_SECRET is required when running with the Razorpay gateway")
-		os.Exit(1)
-	}
+	svc := service.New(store, gw)
 
-	svc := service.NewWithDialer(store, kafkaBrokers, gw, kafkaDialer)
-	handler := nethttp.New(svc).WithWebhookSecret(webhookSecret)
+	// Outbox relay. Every payment.* event is INSERTed into
+	// payments.outbox_events by the service (same DB as the intent row)
+	// and drained here with at-least-once delivery. Replaces the
+	// request-path kafka.Writer that dropped payment.succeeded on any
+	// broker blip and left the order unpaid forever.
+	outboxCtx, outboxCancel := context.WithCancel(ctx)
+	defer outboxCancel()
+	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		DBSchema:     "payments",
+		KafkaBrokers: kafkaBrokers,
+		DefaultTopic: "social.events.v1",
+	})
+	go outboxPublisher.Run(outboxCtx)
+	slog.Info("payments outbox publisher started", "topic", "social.events.v1")
+
+	handler := nethttp.New(svc).WithWebhookSecret(cfg.WebhookSecret)
 	// Audit P-internal: gate /v1/payments/* behind the shared internal-
 	// service-key. /webhook is registered outside this gate inside
 	// handler.RegisterRoutes (audit P5). Empty key keeps dev unblocked
 	// behind a loud WARN, matching every other service in the platform.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+	if key := cfg.InternalKey; key != "" {
 		handler.WithInternalKey(key)
 		slog.Info("payments-service: internal-service-key gate enabled")
 	} else {
@@ -159,6 +179,7 @@ func main() {
 	sharedserver.Run(r, sharedserver.Config{
 		Port: port,
 		OnShutdown: func() {
+			outboxCancel()
 			dbPool.Close()
 		},
 	})

@@ -65,8 +65,11 @@ jobs:
             health: "http://localhost:8080 http://localhost:8114"
             run: "TestE2E_Wallet"
           - domain: commerce
-            services: "api-gateway commerce-service"
-            health: "http://localhost:8080 http://localhost:8109"
+            # TestE2E_Commerce_FullJourney approves the seller + product via
+            # /v1/admin/commerce/* on admin-service; the prepaid confirm path
+            # verifies intents against payments-service.
+            services: "api-gateway commerce-service admin-service payments-service"
+            health: "http://localhost:8080 http://localhost:8109 http://localhost:8096 http://localhost:8102"
             run: "TestE2E_Commerce"
           - domain: dating
             services: "api-gateway dating-service"
@@ -106,9 +109,18 @@ jobs:
         run: |
           set -e
           for url in ${{ matrix.health }}; do
-            echo "waiting for $url/health ..."
+            echo "waiting for $url ..."
             for i in $(seq 1 60); do
-              if curl -fsS --max-time 2 "$url/health" >/dev/null 2>&1; then
+              # "Up" means the listener answers with any non-5xx status on
+              # /health or /healthz: the gateway serves /health, the shared
+              # health checker serves /healthz, and admin-service answers 401
+              # to everything without the internal key.
+              up=0
+              for p in /health /healthz; do
+                code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "$url$p" 2>/dev/null || echo 000)
+                if [ "$code" != "000" ] && [ "$code" -lt 500 ]; then up=1; break; fi
+              done
+              if [ "$up" = "1" ]; then
                 echo "  ✓ $url"; break
               fi
               if [ "$i" = "60" ]; then

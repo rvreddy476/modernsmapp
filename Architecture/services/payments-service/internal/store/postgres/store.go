@@ -418,12 +418,19 @@ var validStatusTransitions = map[string]map[string]bool{
 var ErrInvalidStatusTransition = errors.New("invalid payment status transition")
 
 // UpdateStatusByProviderRef updates the status of an intent matched by
-// its provider_ref (gateway order ID). Returns ErrPaymentNotFound when
-// no intent matches, ErrInvalidStatusTransition when the requested
-// transition is forbidden by the state machine. The transition is
-// applied atomically inside a single UPDATE so two concurrent webhook
-// retries can't both succeed.
-func (s *Store) UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string) error {
+// its provider_ref (gateway order ID) and returns the updated row.
+// Returns ErrPaymentNotFound when no intent matches,
+// ErrInvalidStatusTransition when the requested transition is forbidden
+// by the state machine. The transition is applied atomically inside a
+// single UPDATE so two concurrent webhook retries can't both succeed.
+//
+// The UPDATE replaces provider_ref with paymentID (the Razorpay payment
+// id — what gateway refunds must address), so the row can no longer be
+// found by the incoming providerRef afterwards. That is why the updated
+// row is RETURNED here rather than re-read by the caller: the old
+// re-read-by-provider_ref always missed and the resulting event lost
+// its reference_type/reference_id.
+func (s *Store) UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string) (*PaymentIntent, error) {
 	// Build the allowed-current-status list for newStatus.
 	allowedCurrent := make([]string, 0, 4)
 	for from, edges := range validStatusTransitions {
@@ -432,32 +439,40 @@ func (s *Store) UpdateStatusByProviderRef(ctx context.Context, providerRef, newS
 		}
 	}
 	if len(allowedCurrent) == 0 {
-		return fmt.Errorf("%w: unknown target status %q", ErrInvalidStatusTransition, newStatus)
+		return nil, fmt.Errorf("%w: unknown target status %q", ErrInvalidStatusTransition, newStatus)
 	}
 
-	cmd, err := s.db.Exec(ctx, `
+	var p PaymentIntent
+	err := s.db.QueryRow(ctx, `
 		UPDATE payments.payment_intents
 		SET status = $1,
 		    provider_ref = CASE WHEN $2 <> '' THEN $2 ELSE provider_ref END,
 		    updated_at = NOW()
 		WHERE provider_ref = $3 AND status = ANY($4)
-	`, newStatus, paymentID, providerRef, allowedCurrent)
-	if err != nil {
-		return err
+		RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
+		          currency, method, status,
+		          COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
+		          COALESCE(refunded_amount_minor, 0), created_at, updated_at
+	`, newStatus, paymentID, providerRef, allowedCurrent).Scan(
+		&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
+		&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
+		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt)
+	if err == nil {
+		return &p, nil
 	}
-	if cmd.RowsAffected() == 0 {
-		// Distinguish "no such intent" from "invalid transition" so the
-		// caller (handler) can return the right error to the caller.
-		var existsCount int
-		_ = s.db.QueryRow(ctx,
-			`SELECT COUNT(*) FROM payments.payment_intents WHERE provider_ref = $1`,
-			providerRef).Scan(&existsCount)
-		if existsCount == 0 {
-			return ErrPaymentNotFound
-		}
-		return ErrInvalidStatusTransition
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
 	}
-	return nil
+	// Distinguish "no such intent" from "invalid transition" so the
+	// caller (handler) can return the right error to the caller.
+	var existsCount int
+	_ = s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM payments.payment_intents WHERE provider_ref = $1`,
+		providerRef).Scan(&existsCount)
+	if existsCount == 0 {
+		return nil, ErrPaymentNotFound
+	}
+	return nil, ErrInvalidStatusTransition
 }
 
 // RecordWebhookEventIfNew inserts a row into payments.webhook_events
@@ -508,3 +523,17 @@ func (s *Store) ReleaseHold(ctx context.Context, intentID uuid.UUID, releasedBy 
 
 // ensure pgx import is used
 var _ pgx.Tx
+
+// EnqueueOutboxEvent inserts one already-enveloped event into
+// payments.outbox_events. shared/outbox.Publisher (started in
+// cmd/server/main.go with DBSchema "payments") drains the table to Kafka
+// with at-least-once delivery. Replaces the previous direct
+// kafka.Writer.WriteMessages on the request path, which dropped
+// payment.succeeded on any broker blip and left the order unpaid forever.
+func (s *Store) EnqueueOutboxEvent(ctx context.Context, eventType, partitionKey string, payload []byte) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO payments.outbox_events (event_type, partition_key, payload)
+		VALUES ($1, $2, $3)`,
+		eventType, partitionKey, payload)
+	return err
+}

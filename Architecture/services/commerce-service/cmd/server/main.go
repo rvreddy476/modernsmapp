@@ -159,6 +159,15 @@ func main() {
 	svc.WithPayments(payments.New(paymentsURL, internalKey))
 	slog.Info("payments client ready", "payments_url", paymentsURL)
 
+	// Stub gateway opt-in for ConfirmPayment(gateway="stub"). Must match
+	// payments-service's PAYMENTS_ALLOW_STUB — docker-compose sets both;
+	// production leaves it unset so a client can never name the stub.
+	allowStub := env("PAYMENTS_ALLOW_STUB", "") == "true"
+	svc.WithAllowStubGateway(allowStub)
+	if allowStub {
+		slog.Warn("commerce: PAYMENTS_ALLOW_STUB=true — ConfirmPayment accepts gateway=stub. Never enable in production.")
+	}
+
 	// KYC validator (Phase 3.2). The stub does format-only checks and tags
 	// every verdict with Source="stub" so admins know they're approving on
 	// incomplete verification. Wire a vendor (Karza/Signzy/Hyperverge)

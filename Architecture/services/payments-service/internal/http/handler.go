@@ -1,28 +1,50 @@
 package http
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/atpost/payments-service/internal/service"
+	"github.com/atpost/payments-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
+// Service is the slice of *service.Service the HTTP layer depends on.
+// Declared as an interface so the handler tests can drive the webhook /
+// ownership paths with an in-memory fake instead of a Postgres pool.
+type Service interface {
+	InitiatePayment(ctx context.Context, in service.InitiateInput) (*postgres.PaymentIntent, error)
+	GetIntent(ctx context.Context, id uuid.UUID) (*postgres.PaymentIntent, error)
+	GetIntentForActor(ctx context.Context, id, actor uuid.UUID) (*postgres.PaymentIntent, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, newStatus, providerRef string, actorID uuid.UUID) (*postgres.PaymentIntent, error)
+	InitiateRefund(ctx context.Context, id, actorID uuid.UUID, amountMinor int64, reason string) (*postgres.PaymentIntent, error)
+	InitiateServiceRefund(ctx context.Context, id, actorID uuid.UUID, amountMinor int64, reason string) (*postgres.PaymentIntent, error)
+	VerifyIntent(ctx context.Context, id uuid.UUID, rzpOrderID, rzpPaymentID, rzpSignature string, amountMinor int64) (*service.VerifyResult, error)
+	ListByReference(ctx context.Context, refType string, refID uuid.UUID) ([]postgres.PaymentIntent, error)
+	ListByReferenceForActor(ctx context.Context, refType string, refID, actor uuid.UUID) ([]postgres.PaymentIntent, error)
+	ReleaseHold(ctx context.Context, intentID uuid.UUID, releasedBy string) error
+	MarkWebhookSeen(ctx context.Context, eventID, eventType, providerRef string) (bool, error)
+	UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string)
+	ApplyWebhookRefund(ctx context.Context, paymentID, orderProviderRef, refundProviderRef string, amountMinor int64)
+}
+
 type Handler struct {
-	svc           *service.Service
+	svc           Service
 	internalKey   string
 	webhookSecret string
 }
 
-func New(svc *service.Service) *Handler {
+func New(svc Service) *Handler {
 	return &Handler{svc: svc}
 }
 
@@ -50,6 +72,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// engine before applying the internal-key middleware to /v1/payments.
 	r.POST("/v1/payments/webhook", h.HandleWebhook)
 
+	// Two route families, both behind the internal-service-key gate:
+	//
+	//   /v1/payments/*           user-facing. The gateway proxies these for
+	//                            any logged-in user, so every handler
+	//                            authorises against X-User-Id (the intent's
+	//                            payer or payee).
+	//   /v1/payments/internal/*  service-only mutations (status PATCH,
+	//                            signature verify, trusted refund, unfiltered
+	//                            list). The gateway's requireAdminForInternal-
+	//                            Paths refuses these for non-admin JWTs, and
+	//                            sibling services (commerce, food) call
+	//                            payments-service directly with the key.
+	//
+	// The key alone cannot tell a service from a user because the gateway
+	// injects it on every proxied request; that is why the split exists.
 	v1 := r.Group("/v1/payments")
 	if h.internalKey != "" {
 		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
@@ -57,12 +94,27 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.POST("/intents", h.InitiatePayment)
 		v1.GET("/intents/:id", h.GetIntent)
-		v1.PATCH("/intents/:id/status", h.UpdateStatus)
-		v1.POST("/intents/:id/verify", h.VerifyIntent) // Phase 0.1b — synchronous signature verify for commerce-service
 		v1.POST("/intents/:id/refund", h.InitiateRefund)
 		v1.GET("/intents", h.ListByReference)
 		v1.POST("/holds/:intentId/release", h.ReleaseHold)
+
+		internal := v1.Group("/internal")
+		internal.PATCH("/intents/:id/status", h.UpdateStatus)
+		internal.POST("/intents/:id/verify", h.VerifyIntent) // Phase 0.1b — synchronous signature verify for commerce-service
+		internal.POST("/intents/:id/refund", h.InitiateServiceRefund)
+		internal.GET("/intents", h.ListByReferenceInternal)
 	}
+}
+
+// optionalUserID reads X-User-Id when present. Internal routes are called
+// by services that may or may not forward an acting user; a missing or
+// malformed header yields uuid.Nil rather than a 401.
+func optionalUserID(c *gin.Context) uuid.UUID {
+	id, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		return uuid.Nil
+	}
+	return id
 }
 
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
@@ -132,9 +184,10 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusCreated, intent, nil)
 }
 
-// GetIntent GET /v1/payments/intents/:id
+// GetIntent GET /v1/payments/intents/:id — the caller must be the payer
+// or the payee. A stranger gets 403, not the intent's amounts/parties.
 func (h *Handler) GetIntent(c *gin.Context) {
-	_, ok := getUserID(c)
+	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
@@ -143,20 +196,27 @@ func (h *Handler) GetIntent(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
 		return
 	}
-	intent, err := h.svc.GetIntent(c.Request.Context(), id)
+	intent, err := h.svc.GetIntentForActor(c.Request.Context(), id, userID)
 	if err != nil {
+		if errors.Is(err, service.ErrNotIntentParty) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "intent not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intent, nil)
 }
 
-// UpdateStatus PATCH /v1/payments/intents/:id/status
+// UpdateStatus PATCH /v1/payments/internal/intents/:id/status
+//
+// Service-only: it moves an intent between states on the caller's word,
+// with no gateway proof. It used to sit on the user-facing group, where
+// the gateway's injected internal key let any logged-in user flip any
+// intent to succeeded. X-User-Id is optional here and recorded for
+// attribution only.
 func (h *Handler) UpdateStatus(c *gin.Context) {
-	userID, ok := getUserID(c)
-	if !ok {
-		return
-	}
+	userID := optionalUserID(c)
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
@@ -200,18 +260,48 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 	// Validation (sign + cap) lives in the service.
 	intent, err := h.svc.InitiateRefund(c.Request.Context(), id, userID, body.AmountMinor, body.Reason)
 	if err != nil {
+		if errors.Is(err, service.ErrRefundNotAuthorized) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REFUND_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intent, nil)
 }
 
-// VerifyIntent POST /v1/payments/intents/:id/verify — Phase 0.1b.
-// Internal-only (gated by the X-Internal-Service-Key middleware that wraps
-// the /v1/payments group) so commerce-service can synchronously verify a
-// Razorpay signature + amount and confirm the customer's order without
-// waiting for webhook delivery. Returns 400 on signature / amount / order
-// mismatch so the caller can refuse to mark the order paid.
+// InitiateServiceRefund POST /v1/payments/internal/intents/:id/refund —
+// the trusted variant commerce-service uses for return / cancellation
+// refunds. The calling service has already authorised the actor against
+// its own order model, so the payer/payee party check is skipped; the
+// actor (when forwarded) lands on the audit row.
+func (h *Handler) InitiateServiceRefund(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
+		return
+	}
+	var body struct {
+		Reason      string `json:"reason"`
+		AmountMinor int64  `json:"amount_minor"`
+	}
+	c.ShouldBindJSON(&body) //nolint:errcheck
+	intent, err := h.svc.InitiateServiceRefund(c.Request.Context(), id, optionalUserID(c), body.AmountMinor, body.Reason)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REFUND_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, intent, nil)
+}
+
+// VerifyIntent POST /v1/payments/internal/intents/:id/verify — Phase 0.1b.
+// Service-only so commerce-service can synchronously verify a Razorpay
+// signature + amount and confirm the customer's order without waiting
+// for webhook delivery. Returns 400 on signature / amount / order
+// mismatch so the caller can refuse to mark the order paid. Lives under
+// /internal because with the stub gateway a verify call flips the intent
+// to succeeded on any signature — that must never be reachable from a
+// user JWT through the gateway.
 func (h *Handler) VerifyIntent(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -236,21 +326,30 @@ func (h *Handler) VerifyIntent(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
-// ListByReference GET /v1/payments/intents?ref_type=order&ref_id=uuid
+// ListByReference GET /v1/payments/intents?ref_type=order&ref_id=uuid —
+// user-facing; only intents the caller is a party to are returned.
 func (h *Handler) ListByReference(c *gin.Context) {
-	_, ok := getUserID(c)
+	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
-	refType := c.Query("ref_type")
-	refIDStr := c.Query("ref_id")
-	if refType == "" || refIDStr == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MISSING_PARAMS", "ref_type and ref_id required", nil)
+	refType, refID, ok := parseReference(c)
+	if !ok {
 		return
 	}
-	refID, err := uuid.Parse(refIDStr)
+	intents, err := h.svc.ListByReferenceForActor(c.Request.Context(), refType, refID, userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REF_ID", "invalid ref_id", nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, intents, nil)
+}
+
+// ListByReferenceInternal GET /v1/payments/internal/intents?ref_type=&ref_id=
+// — unfiltered, for services locating the intent behind an order.
+func (h *Handler) ListByReferenceInternal(c *gin.Context) {
+	refType, refID, ok := parseReference(c)
+	if !ok {
 		return
 	}
 	intents, err := h.svc.ListByReference(c.Request.Context(), refType, refID)
@@ -259,6 +358,21 @@ func (h *Handler) ListByReference(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intents, nil)
+}
+
+func parseReference(c *gin.Context) (string, uuid.UUID, bool) {
+	refType := c.Query("ref_type")
+	refIDStr := c.Query("ref_id")
+	if refType == "" || refIDStr == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MISSING_PARAMS", "ref_type and ref_id required", nil)
+		return "", uuid.Nil, false
+	}
+	refID, err := uuid.Parse(refIDStr)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REF_ID", "invalid ref_id", nil)
+		return "", uuid.Nil, false
+	}
+	return refType, refID, true
 }
 
 // HandleWebhook POST /v1/payments/webhook
@@ -346,6 +460,7 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 		// events). amount is in paise per Razorpay's API.
 		h.svc.ApplyWebhookRefund(
 			c.Request.Context(),
+			paymentID,
 			orderID,
 			payloadData.Refund.Entity.ID,
 			payloadData.Refund.Entity.Amount,

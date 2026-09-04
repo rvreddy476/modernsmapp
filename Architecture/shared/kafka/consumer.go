@@ -41,6 +41,10 @@ type ConsumerConfig struct {
 
 type permanentError struct{ error }
 
+// Unwrap lets errors.Is / errors.As see through the Permanent marker to the
+// underlying cause (e.g. a domain sentinel the handler wrapped).
+func (p *permanentError) Unwrap() error { return p.error }
+
 // Permanent marks a handler error that redelivery cannot repair (malformed or
 // cryptographically invalid input). It is durably DLQed rather than stalling.
 func Permanent(err error) error {
@@ -54,6 +58,11 @@ func isPermanent(err error) bool {
 	var p *permanentError
 	return errors.As(err, &p)
 }
+
+// IsPermanent reports whether err (or anything it wraps) was marked with
+// Permanent. Exported so consumer packages can unit-test their error
+// classification without reaching into the retry loop.
+func IsPermanent(err error) bool { return isPermanent(err) }
 
 // Consumer is a resilient Kafka consumer with retry, DLQ, dedup, and metrics.
 type Consumer struct {

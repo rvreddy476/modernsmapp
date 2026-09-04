@@ -1391,13 +1391,30 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Sibling services. AUTH_SERVICE_URL's compiled-in default is
+      # http://auth-service:8081, which is not a compose service name —
+      # buyer-email resolution for order events silently failed until it
+      # was declared here against identity-auth.
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
+      # Stub gateway opt-in for POST /orders/:id/payment/confirm with
+      # gateway=stub. Mirrors payments-service's flag; prod leaves both unset.
+      PAYMENTS_ALLOW_STUB: ${PAYMENTS_ALLOW_STUB:-true}
+      # Invoice PDFs (IssueInvoice) go to MinIO.
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      MINIO_ACCESS_KEY: *minio_access_key
+      MINIO_SECRET_KEY: *minio_secret_key
+      MINIO_USE_SSL: "false"
+      COMMERCE_INVOICE_BUCKET: ${COMMERCE_INVOICE_BUCKET:-commerce-invoices}
       # Courier integration. COURIER_PROVIDER=stub auto-confirms shipments
       # locally without booking; =shiprocket calls the real Shiprocket API
       # (production endpoint apiv2.shiprocket.in — no sandbox available).
+      # SHIPROCKET_PICKUP_LOCATION_ID was passed but never read; dropped.
       COURIER_PROVIDER: ${COURIER_PROVIDER:-stub}
       SHIPROCKET_EMAIL: ${SHIPROCKET_EMAIL:-}
       SHIPROCKET_PASSWORD: ${SHIPROCKET_PASSWORD:-}
-      SHIPROCKET_PICKUP_LOCATION_ID: ${SHIPROCKET_PICKUP_LOCATION_ID:-}
       SHIPROCKET_WEBHOOK_TOKEN: ${SHIPROCKET_WEBHOOK_TOKEN:-}
       SHIPROCKET_WEBHOOK_HMAC: ${SHIPROCKET_WEBHOOK_HMAC:-}
     ports:

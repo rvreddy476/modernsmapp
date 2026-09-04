@@ -1178,12 +1178,9 @@ func (s *Store) GetOrderItemByID(ctx context.Context, id uuid.UUID) (*OrderItem,
 	return &item, nil
 }
 
-func (s *Store) UpdatePaymentStatus(ctx context.Context, orderID uuid.UUID, paymentStatus, paymentID, gateway string) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE orders SET payment_status=$2, payment_id=$3, payment_gateway=$4, updated_at=NOW()
-		WHERE id=$1`, orderID, paymentStatus, paymentID, gateway)
-	return err
-}
+// Payment-status writes live in order_transitions.go (MarkOrderPaid /
+// TransitionPaymentStatus) — every transition is guarded by the allowed
+// source states so concurrent callers converge on one applied write.
 
 // ─── Customer Addresses ──────────────────────────────────────
 
