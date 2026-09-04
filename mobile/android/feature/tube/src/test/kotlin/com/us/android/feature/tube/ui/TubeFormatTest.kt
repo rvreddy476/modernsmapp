@@ -31,13 +31,22 @@ class TubeFormatTest {
     }
 
     @Test
-    fun `the meta line joins only what exists`() {
+    fun `the meta line reads author, views, age and joins only what exists`() {
         val now = Instant.parse("2026-09-05T12:00:00Z")
         val threeHoursAgo = "2026-09-05T09:00:00Z"
-        assertThat(videoMetaLine("Ada", threeHoursAgo, 1_200, now)).isEqualTo("Ada · 3h · 1.2K views")
+        assertThat(videoMetaLine("Ada", threeHoursAgo, 1_200, now)).isEqualTo("Ada · 1.2K views · 3h")
         assertThat(videoMetaLine(null, "", 0, now)).isEmpty()
         assertThat(videoMetaLine("Ada", "not-a-date", 0, now)).isEqualTo("Ada")
         assertThat(videoMetaLine("", "not-a-date", 7, now)).isEqualTo("7 views")
         assertThat(videoMetaLine(null, threeHoursAgo, 0, now)).isEqualTo("3h")
+    }
+
+    @Test
+    fun `a view count is compact with its noun, and absent rather than zero`() {
+        assertThat(viewsLabel(1_200)).isEqualTo("1.2K views")
+        assertThat(viewsLabel(1_500_000)).isEqualTo("1.5M views")
+        assertThat(viewsLabel(7)).isEqualTo("7 views")
+        assertThat(viewsLabel(0)).isNull()
+        assertThat(viewsLabel(-3)).isNull()
     }
 }

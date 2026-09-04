@@ -1,12 +1,6 @@
 package com.us.android.feature.tube.ui.home
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,21 +8,22 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -37,62 +32,163 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.FeedItem
 import com.us.android.feature.tube.ui.BlurHashImage
 import com.us.android.feature.tube.ui.VideoThumb
 import com.us.android.feature.tube.ui.formatDuration
+import com.us.android.feature.tube.ui.pressScale
 import com.us.android.feature.tube.ui.videoMetaLine
 import java.io.File
 
+/** The title a card shows: the video's title, its caption, or the fallback. */
+internal val FeedItem.displayTitle: String
+    get() = title.ifBlank { text }.ifBlank { UNTITLED }
+
 /**
- * One video on Tube home (founder, 2026-09-05, from YouTube's list): a 16:9
- * still with the length in its corner, then the author's avatar beside the
- * title — two lines, Outfit semibold — and a quiet line of author · age ·
- * views. The whole card is one target; there is no button on it.
+ * One video as a full-width card (Tube redesign, 2026-09-05, from YouTube's
+ * list): a 16:9 still with the length in its corner, then the author's
+ * avatar beside the title — two lines, Outfit semibold — the quiet line of
+ * author · views · age, and ⋮ at the right end. The card opens the video;
+ * ⋮ opens the "more" sheet.
  */
 @Composable
 internal fun VideoCard(
     item: FeedItem,
     thumb: VideoThumb,
     onClick: () -> Unit,
+    onMore: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val title = item.title.ifBlank { item.text }.ifBlank { UNTITLED }
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .pressScale(onClick)
-            .semantics {
-                role = Role.Button
-                contentDescription = "Play $title"
-            }
-            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m)
+            .padding(vertical = UsTheme.spacing.m)
             .testTag("tube_card:${item.id}"),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        Thumbnail(thumb = thumb, coverPath = null)
-        Row(
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        Thumbnail(
+            thumb = thumb,
+            coverPath = null,
+            shape = RoundedCornerShape(UsTheme.radii.medium),
+            modifier = Modifier
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .pressScale(onClick)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "Play ${item.displayTitle}"
+                },
+        )
+        CardMeta(item = item, onClick = onClick, onMore = onMore, titleSize = TITLE_SIZE)
+    }
+}
+
+/**
+ * The first video, large: the still runs edge to edge under a soft dark
+ * ramp that lifts the length badge, and the description gets two lines of
+ * its own under the title. Otherwise the same card.
+ */
+@Composable
+internal fun HeroCard(
+    item: FeedItem,
+    thumb: VideoThumb,
+    onClick: () -> Unit,
+    onMore: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = UsTheme.spacing.m)
+            .testTag("tube_hero:${item.id}"),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        Box(
+            modifier = Modifier
+                .pressScale(onClick)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "Play ${item.displayTitle}"
+                },
         ) {
-            UsAvatar(name = item.author.nameForDisplay, seed = item.author.id, size = UsAvatarSize.Post)
-            Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
-                TitleText(title)
+            Thumbnail(thumb = thumb, coverPath = null, shape = RoundedCornerShape(0.dp), scrim = true)
+        }
+        CardMeta(
+            item = item,
+            onClick = onClick,
+            onMore = onMore,
+            titleSize = HERO_TITLE_SIZE,
+            description = item.text.takeIf { it.isNotBlank() && it != item.displayTitle },
+        )
+    }
+}
+
+/** Avatar, title (+ description on the hero), the meta line, and ⋮ — the text half of a card. */
+@Composable
+private fun CardMeta(
+    item: FeedItem,
+    onClick: () -> Unit,
+    onMore: () -> Unit,
+    titleSize: androidx.compose.ui.unit.TextUnit,
+    description: String? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = UsTheme.spacing.pageHorizontal, end = UsTheme.spacing.s),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        UsAvatar(name = item.author.nameForDisplay, seed = item.author.id, size = UsAvatarSize.Post)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .pressScale(onClick),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        ) {
+            TitleText(item.displayTitle, size = titleSize)
+            if (description != null) {
                 Text(
-                    text = videoMetaLine(item.author.nameForDisplay, item.createdAt, item.counts.views),
-                    style = MaterialTheme.typography.bodySmall,
+                    text = description,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = UsTheme.extended.textMuted,
-                    maxLines = 1,
+                    maxLines = TITLE_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            Text(
+                text = videoMetaLine(item.author.nameForDisplay, item.createdAt, item.counts.views),
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
+        MoreGlyph(onClick = onMore, modifier = Modifier.testTag("tube_more:${item.id}"))
+    }
+}
+
+/** ⋮ — a 32dp target, no ripple. */
+@Composable
+internal fun MoreGlyph(onClick: () -> Unit, modifier: Modifier = Modifier, tint: Color = UsTheme.extended.textPrimary) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(MORE_TARGET)
+            .pressScale(onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = "More"
+            },
+    ) {
+        Icon(imageVector = UsIcons.More, contentDescription = null, tint = tint, modifier = Modifier.size(MORE_GLYPH))
     }
 }
 
@@ -117,7 +213,11 @@ internal fun PendingVideoCard(
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
         Box {
-            Thumbnail(thumb = VideoThumb(url = null, blurhash = "", durationMs = 0L), coverPath = head.coverPath)
+            Thumbnail(
+                thumb = VideoThumb(url = null, blurhash = "", durationMs = 0L),
+                coverPath = head.coverPath,
+                shape = RoundedCornerShape(UsTheme.radii.medium),
+            )
             if (head.failure == null) {
                 PublishingOverlay(modifier = Modifier.matchParentSize())
             }
@@ -125,7 +225,7 @@ internal fun PendingVideoCard(
         head.failure?.let { failure ->
             PublishFailureStrip(message = failure.message, retryable = failure.retryable, onRetry, onDiscard)
         }
-        TitleText(head.title.ifBlank { head.caption }.ifBlank { UNTITLED })
+        TitleText(head.title.ifBlank { head.caption }.ifBlank { UNTITLED }, size = TITLE_SIZE)
     }
 }
 
@@ -137,30 +237,26 @@ internal fun VideoRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val title = item.title.ifBlank { item.text }.ifBlank { UNTITLED }
     Row(
         modifier = modifier
             .fillMaxWidth()
             .pressScale(onClick)
             .semantics {
                 role = Role.Button
-                contentDescription = "Play $title"
+                contentDescription = "Play ${item.displayTitle}"
             }
             .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s)
             .testTag("tube_row:${item.id}"),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        Thumbnail(thumb = thumb, coverPath = null, modifier = Modifier.width(ROW_THUMB_WIDTH))
+        Thumbnail(
+            thumb = thumb,
+            coverPath = null,
+            shape = RoundedCornerShape(UsTheme.radii.medium),
+            modifier = Modifier.width(ROW_THUMB_WIDTH),
+        )
         Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontSize = ROW_TITLE_SIZE,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.textPrimary,
-                maxLines = TITLE_LINES,
-                overflow = TextOverflow.Ellipsis,
-            )
+            TitleText(item.displayTitle, size = ROW_TITLE_SIZE)
             Text(
                 text = videoMetaLine(item.author.nameForDisplay, item.createdAt, item.counts.views),
                 style = MaterialTheme.typography.bodySmall,
@@ -173,14 +269,14 @@ internal fun VideoRow(
 }
 
 @Composable
-private fun TitleText(title: String) {
+internal fun TitleText(title: String, size: androidx.compose.ui.unit.TextUnit, maxLines: Int = TITLE_LINES) {
     Text(
         text = title,
         style = MaterialTheme.typography.titleMedium,
-        fontSize = TITLE_SIZE,
+        fontSize = size,
         fontWeight = FontWeight.SemiBold,
         color = UsTheme.extended.textPrimary,
-        maxLines = TITLE_LINES,
+        maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
     )
 }
@@ -188,15 +284,22 @@ private fun TitleText(title: String) {
 /**
  * The 16:9 frame: the BlurHash wash first, the still over it as it loads,
  * the length badge bottom-right. [coverPath] is a local file — the pending
- * card's cover — and wins over a URL when set.
+ * card's cover — and wins over a URL when set. [scrim] draws the hero's
+ * soft bottom ramp so the badge and the edge read over a bright frame.
  */
 @Composable
-private fun Thumbnail(thumb: VideoThumb, coverPath: String?, modifier: Modifier = Modifier) {
+internal fun Thumbnail(
+    thumb: VideoThumb,
+    coverPath: String?,
+    shape: Shape,
+    modifier: Modifier = Modifier,
+    scrim: Boolean = false,
+) {
     Box(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(LANDSCAPE)
-            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .clip(shape)
             .background(UsTheme.extended.bgCard),
     ) {
         BlurHashImage(hash = thumb.blurhash, modifier = Modifier.fillMaxSize())
@@ -207,6 +310,15 @@ private fun Thumbnail(thumb: VideoThumb, coverPath: String?, modifier: Modifier 
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
+            )
+        }
+        if (scrim) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(SCRIM_HEIGHT)
+                    .background(BottomScrim),
             )
         }
         if (thumb.durationMs > 0L) {
@@ -222,7 +334,7 @@ private fun Thumbnail(thumb: VideoThumb, coverPath: String?, modifier: Modifier 
 
 /** `m:ss` on a dark plate, YouTube's corner badge. */
 @Composable
-private fun DurationBadge(text: String, modifier: Modifier = Modifier) {
+internal fun DurationBadge(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
         style = MaterialTheme.typography.labelMedium,
@@ -313,37 +425,23 @@ private fun StripAction(label: String, onClick: () -> Unit) {
     )
 }
 
-/**
- * No ripple. The press is shown by the card dipping to 97% on a spring —
- * the feed card's gesture, quieter for a card this size.
- */
-@Composable
-internal fun Modifier.pressScale(onClick: () -> Unit): Modifier {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) PRESS_SCALE else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS),
-        label = "tubePress",
-    )
-    return this
-        .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-        .graphicsLayer {
-            scaleX = scale
-            scaleY = scale
-        }
-}
+/** Black at 55% on the bottom edge, gone a third of the way up the frame. */
+private val BottomScrim: Brush = Brush.verticalGradient(
+    listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)),
+)
 
 private const val UNTITLED = "Untitled video"
-private const val LANDSCAPE = 16f / 9f
+internal const val LANDSCAPE = 16f / 9f
 private const val TITLE_LINES = 2
 private const val BADGE_PLATE_ALPHA = 0.7f
 private const val OVERLAY_ALPHA = 0.45f
 private const val LOADER_TRACK_ALPHA = 0.25f
-private const val PRESS_SCALE = 0.97f
-private const val PRESS_STIFFNESS = 1200f
 private val TITLE_SIZE = 16.sp
+private val HERO_TITLE_SIZE = 17.sp
 private val ROW_TITLE_SIZE = 14.sp
 private val ROW_THUMB_WIDTH = 160.dp
 private val LOADER_SIZE = 40.dp
 private val LOADER_STROKE = 3.dp
+private val MORE_TARGET = 32.dp
+private val MORE_GLYPH = 20.dp
+private val SCRIM_HEIGHT: Dp = 72.dp

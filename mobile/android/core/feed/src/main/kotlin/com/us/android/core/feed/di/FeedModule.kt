@@ -3,6 +3,7 @@ package com.us.android.core.feed.di
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedItemHydrator
 import com.us.android.core.feed.data.HashtagPostHydrator
+import com.us.android.core.feed.data.VideoFeedApi
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -18,6 +19,10 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideFeedApi(retrofit: Retrofit): FeedApi = retrofit.create(FeedApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideVideoFeedApi(retrofit: Retrofit): VideoFeedApi = retrofit.create(VideoFeedApi::class.java)
 
     /** The real hydrator behind the seam; tests bind the identity instead. */
     @Provides

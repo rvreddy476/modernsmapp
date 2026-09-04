@@ -1,31 +1,42 @@
 package com.us.android.feature.tube.ui.home
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
+import com.us.android.core.feed.data.ContinueWatching
 import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.hides
 import com.us.android.core.media.MediaUrlResolver
+import com.us.android.core.media.ReelsEntry
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.model.FeedItem
-import com.us.android.core.model.FeedQuery
+import com.us.android.core.model.FollowStatus
 import com.us.android.feature.tube.data.TubeQueue
 import com.us.android.feature.tube.ui.VideoThumb
 import com.us.android.feature.tube.ui.videoThumb
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -53,8 +64,18 @@ sealed interface TubeHead {
 data class TubePendingFailure(val message: String, val retryable: Boolean)
 
 /**
- * Tube home: the `videos` surface as the server ranks it, with the viewer's
- * own long video at the head while it posts (Tube, 2026-09-05).
+ * The two shelves between the ranked cards. Both are extras: either may be
+ * empty, and an empty shelf is simply not drawn.
+ */
+data class TubeShelves(
+    val continueWatching: List<ContinueWatching> = emptyList(),
+    val shorts: List<FeedItem> = emptyList(),
+)
+
+/**
+ * Tube home (redesign, 2026-09-05): the chip rail's query paged through
+ * the video surface, the two shelves, and the viewer's own long video at
+ * the head while it posts.
  *
  * The publish tracker is process-wide and shared with Reels; the two
  * surfaces split it by [VideoKind] — a reel posting never shows here and a
@@ -65,25 +86,45 @@ data class TubePendingFailure(val message: String, val retryable: Boolean)
 // Constructor injection of the surface's collaborators; a wrapper would add
 // indirection, not clarity.
 @Suppress("LongParameterList")
+@OptIn(ExperimentalCoroutinesApi::class)
 class TubeHomeViewModel @Inject constructor(
+    private val savedStateHandle: SavedStateHandle,
+    private val videos: VideoFeedRepository,
     private val repository: FeedRepository,
     private val urlResolver: MediaUrlResolver,
     private val tracker: ReelPublishTracker,
     private val publishActions: ReelPublishActions,
     private val queue: TubeQueue,
+    private val reelsEntry: ReelsEntry,
+    private val engagement: EngagementStore,
+    private val follows: FollowGraph,
     hidden: HiddenPosts,
 ) : ViewModel() {
+
+    /** The rail: All and Following at once, the taxonomy once it loads. */
+    private val _chips = MutableStateFlow(tubeChips(emptyList()))
+    val chips: StateFlow<List<TubeChip>> = _chips
+
+    /** The selected chip's key survives process death; the chip itself is resolved against the rail. */
+    private val selectedKey = MutableStateFlow(savedStateHandle.get<String>(KEY_CHIP) ?: TubeChip.All.key)
+    val selected: StateFlow<TubeChip> = combine(_chips, selectedKey) { rail, key -> rail.chipFor(key) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, TubeChip.All)
 
     /** The long video this session just published, once fetched — pinned above the ranked rows. */
     private val _live = MutableStateFlow<FeedItem?>(null)
 
+    private val _shelves = MutableStateFlow(TubeShelves())
+    val shelves: StateFlow<TubeShelves> = _shelves
+
     /**
-     * The ranked videos, one cached stream so rotation replays the pages
-     * rather than refetching. A video that went live this session leaves the
-     * ranked page once the feed carries it: the head already shows it.
+     * The ranked videos for the selected chip, one cached stream per
+     * selection so rotation replays the pages rather than refetching. A
+     * video that went live this session leaves the ranked page once the
+     * feed carries it: the head already shows it.
      */
-    val items: Flow<PagingData<FeedItem>> = repository.feed(FeedQuery.Videos)
-        .cachedIn(viewModelScope)
+    val items: Flow<PagingData<FeedItem>> = selectedKey
+        .map { key -> _chips.value.chipFor(key).toQuery() }
+        .flatMapLatest { query -> videos.videos(query).cachedIn(viewModelScope) }
         .combine(_live) { page, live ->
             if (live == null) page else page.filter { it.id != live.id }
         }
@@ -108,7 +149,15 @@ class TubeHomeViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), null)
 
+    // ── Engagement, the shared lanes (for the "more" sheet) ──────────────
+
+    val overlays: StateFlow<Map<String, EngagementOverlay>> = engagement.overlays
+    val followEdges: StateFlow<Map<String, FollowStatus>> = follows.edges
+    val ownUserId: String get() = follows.ownId
+
     init {
+        viewModelScope.launch { _chips.value = tubeChips(videos.categories()) }
+        refreshShelves()
         // The moment the worker reports the post id, fetch the post the server
         // made of it and let the tracker go — the pending card becomes the
         // real thing without a refresh.
@@ -118,6 +167,21 @@ class TubeHomeViewModel @Inject constructor(
                     becomeLive(state.postId)
                 }
             }
+        }
+    }
+
+    /** A chip was tapped: the list reloads for it. */
+    fun select(chip: TubeChip) {
+        savedStateHandle[KEY_CHIP] = chip.key
+        selectedKey.value = chip.key
+    }
+
+    /** Pull-to-refresh reloads the shelves too; the ranked list refreshes through Paging. */
+    fun refreshShelves() {
+        viewModelScope.launch {
+            val continueWatching = async { videos.continueWatching(CONTINUE_LIMIT) }
+            val shorts = async { videos.shorts(SHORTS_LIMIT) }
+            _shelves.value = TubeShelves(continueWatching = continueWatching.await(), shorts = shorts.await())
         }
     }
 
@@ -154,11 +218,24 @@ class TubeHomeViewModel @Inject constructor(
         queue.set(listOfNotNull(_live.value) + loaded)
     }
 
+    /** A continue-watching card was tapped: the shelf is the queue, so "Up next" is the rest of it. */
+    fun onOpenContinue(item: FeedItem) {
+        queue.set(_shelves.value.continueWatching.map { it.item }.sortedBy { it.id != item.id })
+    }
+
+    /** A short was tapped: leave the id for Reels to open on, the way the Home feed does. */
+    fun openInReels(item: FeedItem) = reelsEntry.open(item.id)
+
     private companion object {
+        const val KEY_CHIP = "tube_chip"
         const val STOP_TIMEOUT_MILLIS = 5_000L
 
         /** post-service can lag the worker's answer by a beat; three tries a second apart covers it. */
         const val LIVE_FETCH_ATTEMPTS = 3
         const val LIVE_FETCH_RETRY_MILLIS = 1_000L
+
+        /** A shelf's worth: enough to scroll, not a page of fetches per card. */
+        const val CONTINUE_LIMIT = 10
+        const val SHORTS_LIMIT = 10
     }
 }

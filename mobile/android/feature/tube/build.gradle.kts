@@ -25,6 +25,10 @@ dependencies {
     // more / comments sheets.
     implementation(projects.core.feed)
     implementation(projects.core.engagement)
+    // The header's bell count (the same ViewModel the Momentum header reads).
+    implementation(projects.core.notifications)
+    // The You page's own name and avatar.
+    implementation(projects.core.profile)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)

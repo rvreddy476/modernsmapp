@@ -444,6 +444,27 @@ object UsIcons {
     /** Lucide `menu` — three lines. Over a reel it opens the reel's More sheet. */
     val Menu: ImageVector = lucideStroked("Menu", "M4 12h16", "M4 6h16", "M4 18h16")
 
+    /**
+     * Lucide `compass` — the square at the head of Tube's chip rail that
+     * opens the Explore launcher (Tube, 2026-09-05): "the rest of the app"
+     * as a direction, distinct from the grid glyph the bar's Explore tab
+     * wears so the two are not read as the same control.
+     */
+    val Compass: ImageVector = lucideStroked(
+        "Compass",
+        "M12,12 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0",
+        "m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z",
+    )
+
+    /** Lucide `list-video` — Tube's Subscriptions tab: a list with a play on its tail. */
+    val ListVideo: ImageVector = lucideStroked(
+        "ListVideo",
+        "M12 12H3",
+        "M16 6H3",
+        "M12 18H3",
+        "m16 12 5 3-5 3v-6Z",
+    )
+
     /** Lucide `shopping-bag` — the Shop launcher tile. */
     val ShoppingBag: ImageVector = lucideStroked(
         "ShoppingBag",

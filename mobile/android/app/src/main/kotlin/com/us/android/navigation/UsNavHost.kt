@@ -87,6 +87,7 @@ import com.us.android.feature.live.navigation.navigateToLiveWatch
 import com.us.android.feature.notifications.navigation.navigateToNotifications
 import com.us.android.feature.notifications.navigation.notificationsScreen
 import com.us.android.feature.post.createhub.CreateSheet
+import com.us.android.feature.post.createhub.CreateSurface
 import com.us.android.feature.post.navigation.ComposerRoute
 import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
@@ -129,8 +130,10 @@ import com.us.android.feature.settings.navigation.navigateToScreenTime
 import com.us.android.feature.settings.navigation.onboardingScreen
 import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
+import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.navigation.TubeHomeRoute
 import com.us.android.feature.tube.navigation.navigateToTube
+import com.us.android.feature.tube.navigation.navigateToTubeTab
 import com.us.android.feature.tube.navigation.navigateToWatch
 import com.us.android.feature.tube.navigation.tubeScreens
 import kotlinx.serialization.Serializable
@@ -700,14 +703,26 @@ private fun NavGraphBuilder.tabDestinations(
     )
     exploreDestinations(navController, launcher)
 
-    // Tube — long video (2026-09-05): the list, pushed from the Explore
-    // launcher, and the watch screen pushed over it. Search opens Explore
-    // scoped to videos; an author opens a profile.
+    // Tube — the long-video mini-app (redesign, 2026-09-05): home, pushed
+    // from the Explore launcher, with Subscriptions and You beside it under
+    // Tube's own bar, and the watch screen over any of them. Every route is
+    // a pushed screen, so the shell's bar is already gone inside Tube.
+    // Search opens Explore scoped to videos; the compass opens the Explore
+    // tab itself; Shorts is the app's Reels tab (the screen has left the
+    // reel id in ReelsEntry, as the Home feed does); "+" is the Create hub
+    // opened on Video.
     tubeScreens(
-        onBack = { navController.popBackStack() },
-        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenSearch = { navController.navigateToExplore(ExploreMode.TUBE) },
-        onOpenVideo = { postId -> navController.navigateToWatch(postId) },
+        TubeDestinations(
+            onBack = { navController.popBackStack() },
+            onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+            onOpenSearch = { navController.navigateToExplore(ExploreMode.TUBE) },
+            onOpenVideo = { postId -> navController.navigateToWatch(postId) },
+            onOpenNotifications = { navController.navigateToNotifications() },
+            onOpenExplore = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
+            onOpenReels = onOpenReels,
+            onCreateVideo = { navController.navigateToCreate(CreateSurface.Video) },
+            onOpenTab = { tab -> navController.navigateToTubeTab(tab) },
+        ),
     )
 
     profileDestinations(navController)

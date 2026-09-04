@@ -30,6 +30,9 @@ data class FeedPage(
     val errorCode: String? = null,
 )
 
+/** What a paged loader is asked for: the page size and the cursor after the last page. */
+data class FeedPageRequest(val limit: Int, val cursor: String?)
+
 /**
  * Fetches one page. The ONLY thing that differs between the home timeline,
  * its Following and Friends narrowings, reels, and a hashtag's posts is which
@@ -186,7 +189,10 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     text = text,
     title = title,
     visibility = visibility,
-    feedContentType = feedContentType,
+    // A bare post-service row (a hashtag page, the viewer's own posts, a
+    // bookmark) says `content_type`; a feed row says both. One field on the
+    // domain, so Tube can tell a long video from a photo on either.
+    feedContentType = feedContentType.ifBlank { contentType },
     postType = postType,
     createdAt = createdAt,
     isPinned = isPinned,

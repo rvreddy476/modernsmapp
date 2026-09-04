@@ -48,7 +48,7 @@ import com.us.android.core.model.FeedPostControls
 import com.us.android.core.ui.formatCount
 import com.us.android.feature.tube.ui.VideoThumb
 import com.us.android.feature.tube.ui.home.VideoRow
-import com.us.android.feature.tube.ui.home.pressScale
+import com.us.android.feature.tube.ui.pressScale
 import com.us.android.feature.tube.ui.videoMetaLine
 
 /** The row of actions under a video, in order. Which appear is [watchActions]'s rule. */
