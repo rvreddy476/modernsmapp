@@ -43,6 +43,10 @@ func TestPostMediaSerializesItsAccessibilityDecision(t *testing.T) {
 				"alt_text":       "a cat asleep on a keyboard",
 				"alt_decorative": false,
 				"position":       float64(0),
+				// Instant publish: live pipeline state, always emitted (empty until
+				// the service overlays it from media_assets).
+				"processing_status": "",
+				"moderation_status": "",
 			},
 		},
 		{
@@ -58,6 +62,10 @@ func TestPostMediaSerializesItsAccessibilityDecision(t *testing.T) {
 				"alt_text":       "",
 				"alt_decorative": true,
 				"position":       float64(2),
+				// Instant publish: live pipeline state, always emitted (empty until
+				// the service overlays it from media_assets).
+				"processing_status": "",
+				"moderation_status": "",
 			},
 		},
 		{
@@ -75,6 +83,10 @@ func TestPostMediaSerializesItsAccessibilityDecision(t *testing.T) {
 				// ordinal 0 must not be the same bytes, or a reader cannot
 				// tell "first" from "unknown".
 				"position": float64(0),
+				// Instant publish: live pipeline state, always emitted (empty until
+				// the service overlays it from media_assets).
+				"processing_status": "",
+				"moderation_status": "",
 			},
 		},
 	}

@@ -90,6 +90,15 @@ type HydratedPost struct {
 	LocationLat   *float64    `json:"location_lat,omitempty"`
 	LocationLng   *float64    `json:"location_lng,omitempty"`
 
+	// IsProcessing (instant publish, 2026-09-04): post-service sets it while
+	// any attached asset is not yet ready+passed. Such a post is the
+	// author's alone — post-service's batch already drops it for anyone
+	// else, and applyProcessingFilter re-checks at the hydration tail so a
+	// cached row cannot slip through. Never omitempty: the reel player
+	// shows "improving quality" on true and must not confuse false with
+	// missing.
+	IsProcessing bool `json:"is_processing"`
+
 	// Repost metadata — populated when this entry is a repost in someone's timeline
 	IsRepost        bool       `json:"is_repost,omitempty"`
 	RepostedBy      *uuid.UUID `json:"reposted_by,omitempty"`
@@ -143,6 +152,21 @@ type HydratedMedia struct {
 	Variants      map[string]string `json:"variants,omitempty"`
 	HLSURL        string            `json:"hls_url,omitempty"`
 	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
+
+	// Pipeline state, decoded from post-service and re-emitted (instant
+	// publish). processing_status: pending_upload|uploaded|processing|
+	// ready|failed; moderation_status: pending|passed|rejected|manual_review.
+	ProcessingStatus string `json:"processing_status,omitempty"`
+	ModerationStatus string `json:"moderation_status,omitempty"`
+
+	// PlaybackURL is the ONE URL a video player should open, and
+	// PlaybackKind says what it is: "hls" (the authorized master playlist,
+	// gateway-relative like hls_url) once transcoding is done, or
+	// "original" (the signed progressive MP4 the phone uploaded) while it
+	// is still running. Filled from media-service's delivery DTO; absent
+	// for images.
+	PlaybackURL  string `json:"playback_url,omitempty"`
+	PlaybackKind string `json:"playback_kind,omitempty"`
 }
 
 // HydratePosts calls post-service's batch endpoint to enrich timeline entries
@@ -188,6 +212,11 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	if len(ids) == 0 {
 		// Entire batch served from cache — skip the HTTP call.
 		merged := s.mergeHydratedItems(items, envelopeData, nil)
+		// Instant publish: a post still processing is the author's alone.
+		// post-service's batch already dropped it for anyone else; this
+		// re-checks the cached rows too. Pure and viewer-keyed — see
+		// processingfilter.go.
+		merged = applyProcessingFilter(viewerID, merged)
 		// Viewer keyword filter ("Filter keywords"): every surface — home,
 		// reels, flicks, videos, watch — funnels through HydratePosts, so
 		// applying it here is the one place no surface can bypass. It runs
@@ -267,6 +296,11 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	s.storeHydratedCache(viewerID, envelope.Data)
 
 	merged := s.mergeHydratedItems(items, envelopeData, nil)
+	// Instant publish: a post still processing is the author's alone.
+	// post-service's batch already dropped it for anyone else; this
+	// re-checks the cached rows too. Pure and viewer-keyed — see
+	// processingfilter.go.
+	merged = applyProcessingFilter(viewerID, merged)
 	// Viewer keyword filter — same step as the cache-only path above; see
 	// that comment. Fail-closed by design.
 	merged, err = s.applyKeywordHideFilter(ctx, viewerID, merged)
@@ -302,6 +336,10 @@ type mediaDelivery struct {
 	Variants  map[string]string `json:"variants,omitempty"`
 	HLSURL    string            `json:"hls_url,omitempty"`
 	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+	// Instant publish: the one URL to play and what it is ("hls" |
+	// "original"). See HydratedMedia.PlaybackURL.
+	PlaybackURL  string `json:"playback_url,omitempty"`
+	PlaybackKind string `json:"playback_kind,omitempty"`
 }
 
 // enrichRenderData resolves author identity and media delivery concurrently,
@@ -377,6 +415,8 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 			m.Blurhash = delivery.Blurhash
 			m.Variants = delivery.Variants
 			m.HLSURL = delivery.HLSURL
+			m.PlaybackURL = delivery.PlaybackURL
+			m.PlaybackKind = delivery.PlaybackKind
 			if delivery.ExpiresAt != nil && !delivery.ExpiresAt.IsZero() {
 				expires := *delivery.ExpiresAt
 				m.ExpiresAt = &expires
@@ -597,6 +637,13 @@ func (s *Service) storeHydratedCache(viewerID uuid.UUID, fresh map[string]Hydrat
 		for idStr, hp := range fresh {
 			pid, err := uuid.Parse(idStr)
 			if err != nil {
+				continue
+			}
+			// Instant publish: never cache a processing post. Only its
+			// author receives one, and the author's next scroll must see
+			// is_processing flip the moment transcoding lands, not five
+			// minutes later.
+			if hp.IsProcessing {
 				continue
 			}
 			data, err := json.Marshal(hp)

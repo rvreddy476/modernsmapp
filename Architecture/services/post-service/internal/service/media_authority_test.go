@@ -95,10 +95,12 @@ func TestCheckMediaAuthority(t *testing.T) {
 		},
 
 		// PROCESSING. The column is CHECK-constrained to
-		// (pending_upload, uploaded, processing, ready, failed). Every value
-		// that is not `ready` is listed, so adding a state to the enum without
-		// deciding about it here shows up as an untested value rather than as
-		// an accidental allow.
+		// (pending_upload, uploaded, processing, ready, failed). Instant
+		// publish (2026-09-04): every CONFIRMED state is accepted — the exact
+		// `ready`+`passed` rule became the author-only visibility rule
+		// (processing_test.go). Every value is still listed, so adding a state
+		// to the enum without deciding about it here shows up as an untested
+		// value rather than as an accidental allow.
 		{
 			name:        "pending_upload is refused",
 			row:         withProcessing("pending_upload"),
@@ -109,22 +111,22 @@ func TestCheckMediaAuthority(t *testing.T) {
 			why:         "the bytes have not arrived; the post would show a broken image",
 		},
 		{
-			name:        "uploaded is refused",
+			name:        "uploaded is accepted",
 			row:         withProcessing("uploaded"),
 			found:       true,
 			contentType: "post",
 			postType:    "image",
-			wantErr:     ErrMediaNotReady,
-			why:         "bytes landed but derivatives do not exist yet",
+			wantErr:     nil,
+			why:         "the bytes are confirmed; derivatives are a background job, and the post stays author-only until they land",
 		},
 		{
-			name:        "processing is refused",
+			name:        "processing is accepted",
 			row:         withProcessing("processing"),
 			found:       true,
 			contentType: "post",
 			postType:    "image",
-			wantErr:     ErrMediaNotReady,
-			why:         "in flight is not finished",
+			wantErr:     nil,
+			why:         "a reel is visible to its author the moment the upload finishes; transcoding must not gate publishing",
 		},
 		{
 			name:        "failed is refused",
@@ -146,18 +148,27 @@ func TestCheckMediaAuthority(t *testing.T) {
 				"turned the gate into a denylist that admitted every pre-ready state",
 		},
 
-		// MODERATION. CHECK-constrained to (pending, passed, rejected) and
-		// DEFAULTING to `pending`, so `pending` is the state of every asset
-		// between upload and the safety verdict — the exact population the old
-		// not-rejected check let through.
+		// MODERATION. DEFAULTS to `pending`, so `pending` is the state of every
+		// asset between upload and the safety verdict. Instant publish accepts
+		// it at create time — the post is held author-only until `passed` —
+		// and refuses only an actual refusal (`rejected`) or an unset value.
 		{
-			name:        "pending moderation is refused",
+			name:        "pending moderation is accepted",
 			row:         withModeration("pending"),
 			found:       true,
 			contentType: "post",
 			postType:    "image",
-			wantErr:     ErrMediaNotReady,
-			why:         "publishing on pending publishes content review has not looked at",
+			wantErr:     nil,
+			why:         "not yet scanned is held author-only by the visibility rule, not refused at create",
+		},
+		{
+			name:        "manual_review moderation is accepted",
+			row:         withModeration("manual_review"),
+			found:       true,
+			contentType: "post",
+			postType:    "image",
+			wantErr:     nil,
+			why:         "no verdict is not a refusal; the post stays author-only until one lands",
 		},
 		{
 			name:        "rejected moderation is refused",

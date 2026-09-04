@@ -568,6 +568,46 @@ type MediaURLResponse struct {
 	// refresh boundary keeps one DTO valid when visibility later becomes
 	// protected and covers the signed HLS child/segment URLs.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// PlaybackURL / PlaybackKind (instant publish, 2026-09-04): the ONE URL
+	// a video player should open and what it is.
+	//
+	//   - "hls": the authorized master playlist (gateway-relative, same
+	//     value as hls_url) — once the transcode has produced a ladder.
+	//   - "original": the signed URL of the object the phone uploaded, a
+	//     progressive MP4 — while the transcode is still running (or if it
+	//     produced no HLS). A reel is playable the moment its upload
+	//     finishes; the ladder is a quality upgrade that lands later.
+	//
+	// Absent for images and audio. The poster/thumbnail may still be
+	// missing while the kind is "original"; the worker generates it.
+	PlaybackURL  string `json:"playback_url,omitempty"`
+	PlaybackKind string `json:"playback_kind,omitempty"`
+}
+
+// Playback kinds. See MediaURLResponse.PlaybackKind.
+const (
+	PlaybackKindHLS      = "hls"
+	PlaybackKindOriginal = "original"
+)
+
+// choosePlayback picks the playback URL for a video asset. Pure, so it is
+// the one place the fallback rule lives and it is unit-tested without a
+// blob store. `urls` is the signed map from the delivery gate; it always
+// carries "original" once the asset is authorized, whatever its processing
+// state, because the original object exists from the moment the upload is
+// confirmed.
+func choosePlayback(fileType, hlsURL string, urls map[string]string) (url, kind string) {
+	if fileType != "video" {
+		return "", ""
+	}
+	if hlsURL != "" {
+		return hlsURL, PlaybackKindHLS
+	}
+	if orig := urls["original"]; orig != "" {
+		return orig, PlaybackKindOriginal
+	}
+	return "", ""
 }
 
 // GetMediaURL returns authorized delivery URLs for a media item and all its
@@ -609,16 +649,27 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 			"media_id", media.ID,
 			"viewer_id", viewerID,
 			"status", media.ProcessingStatus)
-		return &MediaURLResponse{
-			MediaID:  media.ID,
-			FileType: media.FileType,
-			Status:   media.ProcessingStatus,
-			Width:    media.Width,
-			Height:   media.Height,
-			Blurhash: media.Blurhash,
-			Variants: nil,
-			HLSURL:   "",
-		}, nil
+		// Instant publish: no variants yet, but a confirmed video is
+		// playable as the original progressive MP4 right now. The URL is
+		// signed, so it carries the same refresh boundary as a ready asset.
+		playbackURL, playbackKind := choosePlayback(media.FileType, "", urls)
+		res := &MediaURLResponse{
+			MediaID:      media.ID,
+			FileType:     media.FileType,
+			Status:       media.ProcessingStatus,
+			Width:        media.Width,
+			Height:       media.Height,
+			Blurhash:     media.Blurhash,
+			Variants:     nil,
+			HLSURL:       "",
+			PlaybackURL:  playbackURL,
+			PlaybackKind: playbackKind,
+		}
+		if playbackURL != "" {
+			expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+			res.ExpiresAt = &expires
+		}
+		return res, nil
 	}
 
 	hlsURL := ""
@@ -630,17 +681,20 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 	}
 	delete(urls, "hls")
 	expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+	playbackURL, playbackKind := choosePlayback(media.FileType, hlsURL, urls)
 
 	return &MediaURLResponse{
-		MediaID:   media.ID,
-		FileType:  media.FileType,
-		Status:    media.ProcessingStatus,
-		Width:     media.Width,
-		Height:    media.Height,
-		Blurhash:  media.Blurhash,
-		Variants:  urls,
-		HLSURL:    hlsURL,
-		ExpiresAt: &expires,
+		MediaID:      media.ID,
+		FileType:     media.FileType,
+		Status:       media.ProcessingStatus,
+		Width:        media.Width,
+		Height:       media.Height,
+		Blurhash:     media.Blurhash,
+		Variants:     urls,
+		HLSURL:       hlsURL,
+		ExpiresAt:    &expires,
+		PlaybackURL:  playbackURL,
+		PlaybackKind: playbackKind,
 	}, nil
 }
 
@@ -816,16 +870,27 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 				"viewer_id", viewerID,
 				"media_id", m.ID,
 				"status", m.ProcessingStatus)
-			result[m.ID] = &MediaURLResponse{
-				MediaID:  m.ID,
-				FileType: m.FileType,
-				Status:   m.ProcessingStatus,
-				Width:    m.Width,
-				Height:   m.Height,
-				Blurhash: m.Blurhash,
-				Variants: nil,
-				HLSURL:   "",
+			// Instant publish: a confirmed video plays as the original
+			// progressive MP4 until the ladder lands (feed hydration reads
+			// this DTO, so the reels surface gets it too).
+			playbackURL, playbackKind := choosePlayback(m.FileType, "", urls)
+			res := &MediaURLResponse{
+				MediaID:      m.ID,
+				FileType:     m.FileType,
+				Status:       m.ProcessingStatus,
+				Width:        m.Width,
+				Height:       m.Height,
+				Blurhash:     m.Blurhash,
+				Variants:     nil,
+				HLSURL:       "",
+				PlaybackURL:  playbackURL,
+				PlaybackKind: playbackKind,
 			}
+			if playbackURL != "" {
+				expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+				res.ExpiresAt = &expires
+			}
+			result[m.ID] = res
 			continue
 		}
 
@@ -835,16 +900,19 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 		}
 		delete(urls, "hls")
 		expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+		playbackURL, playbackKind := choosePlayback(m.FileType, hlsURL, urls)
 		result[m.ID] = &MediaURLResponse{
-			MediaID:   m.ID,
-			FileType:  m.FileType,
-			Status:    m.ProcessingStatus,
-			Width:     m.Width,
-			Height:    m.Height,
-			Blurhash:  m.Blurhash,
-			Variants:  urls,
-			HLSURL:    hlsURL,
-			ExpiresAt: &expires,
+			MediaID:      m.ID,
+			FileType:     m.FileType,
+			Status:       m.ProcessingStatus,
+			Width:        m.Width,
+			Height:       m.Height,
+			Blurhash:     m.Blurhash,
+			Variants:     urls,
+			HLSURL:       hlsURL,
+			ExpiresAt:    &expires,
+			PlaybackURL:  playbackURL,
+			PlaybackKind: playbackKind,
 		}
 	}
 

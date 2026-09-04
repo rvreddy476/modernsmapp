@@ -1134,6 +1134,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			if getErr != nil {
 				return nil, fmt.Errorf("replay created post: %w", getErr)
 			}
+			if err := s.attachMediaState(ctx, []*postgres.Post{existing}); err != nil {
+				return nil, err
+			}
 			return existing, nil
 		}
 		if errors.Is(err, postgres.ErrCreateKeyConflict) {
@@ -1159,27 +1162,51 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		DetectAndStoreMentions(ctx, p.ID, p.ContentType, p.Text, s.pgStore)
 	}
 
-	// Create video_metadata for video content types
-	if videoMediaID != uuid.Nil && maxDuration > 0 {
-		width, height, _ := s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
-		category, orientation := ClassifyVideo(float64(maxDuration), width, height)
+	// Create video_metadata for video content types.
+	//
+	// ALWAYS for a video attachment, even before transcode has measured it
+	// (instant publish, 2026-09-04). The row is the join the
+	// MediaTranscodeConsumer uses to find this post when the transcode
+	// completes — to flip the `pending` review gate, wire the HLS URL and
+	// reclassify. A post created while its media was still processing used
+	// to get no row at all, so it could never be released.
+	if videoMediaID != uuid.Nil {
 		vm := &postgres.VideoMetadata{
-			PostID:           p.ID,
-			DurationSeconds:  float64(maxDuration),
-			Width:            &width,
-			Height:           &height,
-			Orientation:      orientation,
-			ComputedCategory: category,
-			FinalCategory:    category,
-			UploadStatus:     "pending",
-			MediaAssetID:     &videoMediaID,
+			PostID:       p.ID,
+			UploadStatus: "pending",
+			MediaAssetID: &videoMediaID,
+		}
+		if maxDuration > 0 {
+			width, height, _ := s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
+			category, orientation := ClassifyVideo(float64(maxDuration), width, height)
+			vm.DurationSeconds = float64(maxDuration)
+			vm.Width = &width
+			vm.Height = &height
+			vm.Orientation = orientation
+			vm.ComputedCategory = category
+			vm.FinalCategory = category
+			// Ensure post content_type matches classification
+			p.ContentType = category
+			s.pgStore.UpdatePostContentType(ctx, p.ID, category)
+		} else {
+			// Duration unknown: the classification block above already
+			// honoured the caller's short-form intent on p.ContentType.
+			// Record the same provisional answer; the consumer rewrites it
+			// from the measured duration + dimensions.
+			category := "long_video"
+			if p.ContentType == "flick" {
+				category = "flick"
+			}
+			vm.Orientation = deriveOrientation(0, 0)
+			if category == "flick" {
+				vm.Orientation = "portrait"
+			}
+			vm.ComputedCategory = category
+			vm.FinalCategory = category
 		}
 		if err := s.pgStore.CreateVideoMetadata(ctx, vm); err != nil {
 			log.Printf("Warning: failed to create video_metadata for post %s: %v", p.ID, err)
 		}
-		// Ensure post content_type matches classification
-		p.ContentType = category
-		s.pgStore.UpdatePostContentType(ctx, p.ID, category)
 	}
 
 	// Resolve @mentions and emit user.mentioned events (fire and forget)
@@ -1285,6 +1312,13 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		}
 	}()
 
+	// The create response is the first render of the post the composer
+	// navigates to. It carries the per-media pipeline state and
+	// is_processing so the client can show "uploading… improving quality"
+	// instead of a broken player.
+	if err := s.attachMediaState(ctx, []*postgres.Post{p}); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -1389,6 +1423,16 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 		if viewerID == nil || *viewerID != p.AuthorID {
 			return nil, nil
 		}
+	}
+
+	// Instant publish (processing.go): overlay the live media pipeline
+	// state — AFTER the cache, never from it — and hide a still-processing
+	// post from everyone but its author. Same 404 as the other gates.
+	if err := s.attachMediaState(ctx, []*postgres.Post{p}); err != nil {
+		return nil, err
+	}
+	if hiddenWhileProcessing(p, viewerID) {
+		return nil, nil
 	}
 
 	// Visibility gate on the direct-link read. The engagement endpoints,
@@ -1521,6 +1565,12 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 		details = append(details, PostDetail{Post: &post, Counts: counts})
 	}
 
+	// Instant publish (processing.go): overlay live media state, drop what
+	// this viewer may not see while it processes.
+	details, err = s.attachMediaStateToDetails(ctx, details, viewerID)
+	if err != nil {
+		return nil, "", err
+	}
 	return details, nextCursor, nil
 }
 
@@ -1570,6 +1620,12 @@ func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, exclu
 		details = append(details, PostDetail{Post: &post, Counts: counts})
 	}
 
+	// Instant publish (processing.go): overlay live media state, drop what
+	// this viewer may not see while it processes.
+	details, err = s.attachMediaStateToDetails(ctx, details, viewerID)
+	if err != nil {
+		return nil, "", err
+	}
 	return details, nextCursor, nil
 }
 
@@ -1578,6 +1634,16 @@ func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, exclu
 func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error) {
 	posts, err := s.pgStore.GetPostsByIDs(ctx, ids)
 	if err != nil {
+		return nil, err
+	}
+
+	// Instant publish (processing.go): one media_assets round trip for the
+	// whole page, overlaid onto each post before the visibility loop.
+	postPtrs := make([]*postgres.Post, len(posts))
+	for i := range posts {
+		postPtrs[i] = &posts[i]
+	}
+	if err := s.attachMediaState(ctx, postPtrs); err != nil {
 		return nil, err
 	}
 
@@ -1666,6 +1732,14 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 			if viewerID == nil || *viewerID != post.AuthorID {
 				continue
 			}
+		}
+
+		// Instant publish: a post whose media is not yet ready+passed is
+		// the author's alone. Feed fanout wrote the follower timeline rows
+		// at create time; this is where they stay hidden until the media
+		// lands (feed-service mirrors it at its hydration tail).
+		if hiddenWhileProcessing(&post, viewerID) {
+			continue
 		}
 
 		counts := countsByPost[post.ID]
@@ -1919,6 +1993,11 @@ func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int,
 		details[i] = PostDetail{Post: &post, Counts: counts, IsBookmarked: true}
 	}
 
+	// Instant publish (processing.go): the bookmarker is the viewer.
+	details, err = s.attachMediaStateToDetails(ctx, details, &userID)
+	if err != nil {
+		return nil, "", err
+	}
 	return details, nextCursor, nil
 }
 
@@ -3068,6 +3147,12 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 		details[i] = PostDetail{Post: &post, Counts: counts}
 	}
 
+	// Instant publish (processing.go): public discovery surface with no
+	// viewer — a still-processing post is nobody's to see here.
+	details, err = s.attachMediaStateToDetails(ctx, details, nil)
+	if err != nil {
+		return nil, "", err
+	}
 	return details, nextCursor, nil
 }
 
@@ -3085,6 +3170,12 @@ func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, l
 		post := p
 		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
 		details[i] = PostDetail{Post: &post, Counts: counts}
+	}
+	// Instant publish (processing.go): public discovery surface with no
+	// viewer — a still-processing post is nobody's to see here.
+	details, err = s.attachMediaStateToDetails(ctx, details, nil)
+	if err != nil {
+		return nil, "", err
 	}
 	return details, nextCursor, nil
 }

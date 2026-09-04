@@ -185,7 +185,9 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 		return
 	}
 
-	feedItems, next, err := h.svc.GetReelFeedPage(c.Request.Context(), userID, limit, before)
+	// Reels "Following" tab: only reels by authors the viewer follows.
+	followingOnly := c.DefaultQuery("following_only", "") == "true"
+	feedItems, next, err := h.svc.GetReelFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -222,7 +224,8 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 		return
 	}
 
-	feedItems, next, err := h.svc.GetFlickFeedPage(c.Request.Context(), userID, limit, before)
+	followingOnly := c.DefaultQuery("following_only", "") == "true"
+	feedItems, next, err := h.svc.GetFlickFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

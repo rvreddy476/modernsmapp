@@ -80,6 +80,16 @@ type Post struct {
 	UpdatedAt       time.Time   `json:"updated_at"`
 	Media           []PostMedia `json:"media,omitempty"`
 	Poll            *PollData   `json:"poll,omitempty"`
+
+	// IsProcessing is true until EVERY attached asset is processing_status
+	// "ready" AND moderation_status "passed" (2026-09-04: a reel is
+	// publishable the moment its upload is confirmed; transcoding improves
+	// it later). While true the post is returned only to its author. Never
+	// omitempty: a client must not confuse "false" with "unknown".
+	//
+	// Computed at read time from media_assets (service.attachMediaState),
+	// never persisted and never trusted from the post-body cache.
+	IsProcessing bool `json:"is_processing"`
 }
 
 // PostMedia is one attached asset as a READER sees it — Slice C, C-CLB-3.
@@ -112,6 +122,13 @@ type PostMedia struct {
 	// omitempty: an absent ordinal and ordinal 0 must not be the same bytes,
 	// or a client cannot tell "first" from "unknown".
 	Position int `json:"position"`
+
+	// Live media-service pipeline state, overlaid at read time from
+	// media_assets (see Post.IsProcessing). processing_status is one of
+	// pending_upload|uploaded|processing|ready|failed|rejected;
+	// moderation_status is pending|passed|rejected|manual_review.
+	ProcessingStatus string `json:"processing_status"`
+	ModerationStatus string `json:"moderation_status"`
 }
 
 // The one projection every post-media read uses.

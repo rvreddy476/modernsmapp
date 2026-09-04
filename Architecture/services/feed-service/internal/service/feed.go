@@ -295,13 +295,19 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 
 // GetFlickFeed returns the first flick page for backward-compatible callers.
 func (s *Service) GetFlickFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, _, err := s.GetFlickFeedPage(ctx, userID, limit, "")
+	items, _, err := s.GetFlickFeedPage(ctx, userID, limit, "", false)
 	return items, err
 }
 
 // GetFlickFeedPage returns a timestamp-keyset page. Ranking only reorders the
 // fixed chronological window, so no candidate is skipped between pages.
-func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string) ([]FeedItem, string, error) {
+//
+// followingOnly is the reels "Following" tab: only reels by authors the
+// viewer FOLLOWS (one-way, the social graph — the same meaning as the home
+// feed's following_only, NOT the PostTube channel-subscription filter the
+// watch surface uses). The viewer's own reels are not "followed" and are
+// excluded, matching the home feed.
+func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
 	target := limit + 1
 	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"flick", "reel"}, before, target*3)
 	if err != nil {
@@ -328,8 +334,40 @@ func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit 
 	candidates = applyBlockFilter(candidates, blocked)
 	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 
+	// Reels "Following" tab. Fail CLOSED, unlike the home feed's older
+	// version of this filter: an unresolved follow graph is an error, never
+	// a page of reels from strangers labelled "Following".
+	if followingOnly && len(candidates) > 0 {
+		following, err := s.fetchFollowing(ctx, userID)
+		if err != nil {
+			log.Printf("reels following_only: failed to fetch follows for %s: %v", userID, err)
+			return nil, "", fmt.Errorf("reels following filter: %w", err)
+		}
+		candidates = filterByAuthorSet(candidates, following)
+	}
+
 	window, next := keysetWindow(candidates, limit)
 	return scoreReels(window), next, nil
+}
+
+// filterByAuthorSet keeps only candidates whose author is in `authors`. An
+// empty set yields an empty page: a viewer who follows nobody has an empty
+// Following tab, not their whole feed.
+func filterByAuthorSet(candidates []FeedItem, authors []uuid.UUID) []FeedItem {
+	if len(authors) == 0 {
+		return nil
+	}
+	set := make(map[uuid.UUID]struct{}, len(authors))
+	for _, a := range authors {
+		set[a] = struct{}{}
+	}
+	out := candidates[:0]
+	for _, c := range candidates {
+		if _, ok := set[c.AuthorID]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // GetLongVideoFeed returns the first long-video page for backward-compatible callers.
@@ -382,13 +420,13 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 // GetReelFeed returns the user's reel-only timeline, scored by recency.
 // Acts as an alias for GetFlickFeed (backward compat).
 func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, _, err := s.GetReelFeedPage(ctx, userID, limit, "")
+	items, _, err := s.GetReelFeedPage(ctx, userID, limit, "", false)
 	return items, err
 }
 
 // GetReelFeedPage is the legacy /reels spelling of the Flick page.
-func (s *Service) GetReelFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string) ([]FeedItem, string, error) {
-	return s.GetFlickFeedPage(ctx, userID, limit, before)
+func (s *Service) GetReelFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
+	return s.GetFlickFeedPage(ctx, userID, limit, before, followingOnly)
 }
 
 // GetVideoFeed returns the user's long-video-only timeline.

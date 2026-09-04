@@ -136,40 +136,41 @@ func checkMediaAuthority(
 		return ErrMediaNotOwned
 	}
 
-	// EXACT `ready`, not "anything that is not rejected".
+	// CONFIRMED, not "ready". Product decision 2026-09-04: a reel is
+	// publishable the moment its upload finishes, like Instagram/YouTube.
+	// Transcoding is a background job that improves quality later and must
+	// not gate publishing. So the create gate asks only "did the bytes
+	// arrive and did nothing refuse them?":
 	//
-	// This previously accepted an EMPTY processing status as "legacy
-	// synchronous media", and rejected only the literal string `rejected`.
-	// That is an allowlist written as a denylist, and it admitted
-	// `pending_upload`, `uploaded`, `processing` and `failed` — every state
-	// an asset passes through before it is publishable, plus the one that
-	// means processing gave up. A post could therefore attach an image
-	// whose bytes had never arrived.
+	//   - `pending_upload`: the bytes never arrived (no /confirm). Refused —
+	//     a post that attaches it would render a broken image forever.
+	//   - `failed` / `rejected`: processing gave up, or confirm refused the
+	//     file (magic bytes). Refused with the same error as before.
+	//   - `uploaded` / `processing` / `ready`: confirmed. Accepted.
 	//
-	// `media_assets.processing_status` is CHECK-constrained to
-	// (pending_upload, uploaded, processing, ready, failed) by media-service
-	// migration 009, so `ready` is a real, enumerated terminal state and
-	// there is no legacy population to be generous about.
-	if m.ProcessingStatus != mediaReady {
-		return fmt.Errorf("%w: %s is %q, not %q",
-			ErrMediaNotReady, mediaID, m.ProcessingStatus, mediaReady)
+	// Still an ALLOWLIST, not a denylist: an empty or unknown status is
+	// refused. `media_assets.processing_status` is CHECK-constrained, so an
+	// unknown value is a bug, not a legacy population to be generous about.
+	//
+	// The exact `ready` + `passed` rule this replaces did not go away — it
+	// became the AUTHOR-ONLY VISIBILITY rule (mediaPublishable, processing.go):
+	// until every attached asset is ready and passed, the post is returned
+	// only to its author. Nobody else can reach an unprocessed or unscanned
+	// asset through a post.
+	if !mediaConfirmed(m.ProcessingStatus) {
+		return fmt.Errorf("%w: %s is %q, not confirmed",
+			ErrMediaNotReady, mediaID, m.ProcessingStatus)
 	}
 
-	// EXACT `passed`, not "anything that is not rejected".
-	//
-	// The column is CHECK-constrained to (pending, passed, rejected) by
-	// migration 008 and DEFAULTS TO `pending`. So the old check admitted
-	// every asset that had not yet been scanned — which is every asset
-	// between upload and the safety verdict. Publishing on `pending` is
-	// publishing content review has not looked at, which is precisely the
-	// boundary this gate exists to hold.
-	//
-	// media-service already gates chat attachments on exactly
-	// `ready` + `passed` (`chat_attachment.go:30`). Posts are the more
-	// public surface and had the weaker gate.
-	if m.ModerationStatus != mediaPassed {
-		return fmt.Errorf("%w: %s moderation is %q, not %q",
-			ErrMediaNotReady, mediaID, m.ModerationStatus, mediaPassed)
+	// Moderation: only a REFUSAL blocks creation. `pending` (not yet
+	// scanned) and `manual_review` (scanner produced no verdict) are
+	// accepted here and held author-only by the visibility rule until a
+	// `passed` verdict lands; `rejected` is content review already refused
+	// and is never attachable. Empty is refused: the column defaults to
+	// `pending`, so empty means a row this service does not understand.
+	if m.ModerationStatus == "" || m.ModerationStatus == mediaRejected {
+		return fmt.Errorf("%w: %s moderation is %q",
+			ErrMediaNotReady, mediaID, m.ModerationStatus)
 	}
 
 	// The asset's KIND must suit the post it is being attached to.
@@ -226,6 +227,7 @@ func checkMediaCompatibility(contentType, postType, kind string) error {
 const (
 	mediaReady     = "ready"
 	mediaPassed    = "passed"
+	mediaRejected  = "rejected"
 	mediaKindImage = "image"
 	mediaKindVideo = "video"
 	postTypeImage  = "image"
