@@ -85,9 +85,26 @@ class ScreenTimeGuardCoordinator @Inject constructor(
         _message.value = null
     }
 
+    /**
+     * Ticks left before the nudge may show again. Counted in ticks rather
+     * than wall-clock so the quarter hour is exact under the test scheduler
+     * and needs no clock to inject.
+     */
+    private var snoozeTicksRemaining = 0
+
+    /** "Remind me in 15 minutes": hides the nudge and holds it for [SNOOZE_TICKS] ticks. */
+    fun snooze() {
+        snoozeTicksRemaining = SNOOZE_TICKS
+        _message.value = null
+    }
+
     /** Purely local: no network, just the cached snapshot and the local usage ledger. */
     private fun check() {
         if (dismissed) return
+        if (snoozeTicksRemaining > 0) {
+            snoozeTicksRemaining--
+            return
+        }
         val snapshot = repository.guardSnapshot.value
         _message.value = snapshot?.let { resolve(it, accumulator.todaySeconds.value / SECONDS_PER_MINUTE) }
     }
@@ -114,6 +131,9 @@ class ScreenTimeGuardCoordinator @Inject constructor(
     private companion object {
         const val CHECK_INTERVAL_MILLIS = 60_000L
         const val SECONDS_PER_MINUTE = 60L
+
+        /** Fifteen one-minute ticks. */
+        const val SNOOZE_TICKS = 15
         val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
     }
 }

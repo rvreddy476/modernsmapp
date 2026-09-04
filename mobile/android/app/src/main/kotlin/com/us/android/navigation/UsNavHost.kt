@@ -349,7 +349,9 @@ fun UsNavHost(
     // session: the wellbeing endpoint it polls needs a session, and the nudge
     // has no meaning on the sign-in screen.
     if (sessionState.isAuthenticated) {
-        com.us.android.screentime.ScreenTimeGuardHost()
+        com.us.android.screentime.ScreenTimeGuardHost(
+            onChangeLimit = { navController.navigateToScreenTime() },
+        )
     }
 }
 

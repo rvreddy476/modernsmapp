@@ -194,7 +194,7 @@ fun ReelsScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(UsTheme.extended.bgCanvas),
     ) {
         ReelsBody(
             items = items,
@@ -425,7 +425,7 @@ private fun ReelsPager(
         beyondViewportPageCount = 1,
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(UsTheme.extended.bgCanvas),
     ) { page ->
         when (val content = pageAt(page, head, items, load = true)) {
             null -> Unit

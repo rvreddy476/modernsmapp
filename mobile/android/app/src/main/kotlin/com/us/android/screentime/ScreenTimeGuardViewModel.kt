@@ -12,4 +12,5 @@ class ScreenTimeGuardViewModel @Inject constructor(
 ) : ViewModel() {
     val message: StateFlow<ScreenTimeGuardMessage?> = coordinator.message
     fun dismiss() = coordinator.dismiss()
+    fun snooze() = coordinator.snooze()
 }

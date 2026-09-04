@@ -182,6 +182,29 @@ class ScreenTimeGuardCoordinatorTest {
         assertThat(coordinator.message.value).isNull()
     }
 
+    /** "Remind me in 15 minutes" hides the nudge for a quarter hour, then it returns. */
+    @Test
+    fun `snooze hides the nudge for fifteen ticks and then shows it again`() = runTest {
+        val api = FakeApi().apply { wellbeing = wellbeing.copy(dailyLimitMins = 60) }
+        val coordinator = buildCoordinator(api, buildAccumulator(todayMinutes = 65))
+
+        coordinator.onAppForeground()
+        runCurrent()
+        coordinator.start()
+        runCurrent()
+        assertThat(coordinator.message.value).isEqualTo(ScreenTimeGuardMessage.DAILY_LIMIT)
+
+        coordinator.snooze()
+        assertThat(coordinator.message.value).isNull()
+        advanceTimeBy(TEN_TICKS_MILLIS)
+        runCurrent()
+        assertThat(coordinator.message.value).isNull()
+
+        advanceTimeBy(TEN_TICKS_MILLIS)
+        runCurrent()
+        assertThat(coordinator.message.value).isEqualTo(ScreenTimeGuardMessage.DAILY_LIMIT)
+    }
+
     private companion object {
         const val MILLIS_PER_MINUTE = 60_000L
         const val ONE_HOUR_MILLIS = 60 * MILLIS_PER_MINUTE
