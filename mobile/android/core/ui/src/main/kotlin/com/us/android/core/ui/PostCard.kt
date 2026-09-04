@@ -27,6 +27,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,8 +39,11 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -275,7 +283,9 @@ fun PostCard(
             .border(HAIRLINE_FULL, UsTheme.extended.borderMedium, shape)
             .clickable(onClick = onClick)
             .padding(UsTheme.spacing.xxl),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        // 8dp between the header, media, actions and caption: enough to
+        // separate them, not enough to read as a gap (founder, 2026-09-04).
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
         PostCardHeader(state, onAuthorClick, onFollow, onOptionClick)
 
@@ -413,17 +423,7 @@ private fun PostCardCaption(state: PostCardState, onComment: () -> Unit) {
             )
         }
         if (state.text.isNotBlank()) {
-            Text(
-                text = buildAnnotatedString {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(state.authorName) }
-                    append(" ")
-                    append(state.text)
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textBody,
-                maxLines = MAX_LINES,
-                overflow = TextOverflow.Ellipsis,
-            )
+            CaptionText(postId = state.postId, authorName = state.authorName, text = state.text)
         }
         val comments = state.actions.commentCount
         if (comments > 0) {
@@ -748,7 +748,10 @@ fun PostMedia(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(aspectRatio)
+            // Never taller than 4:5. A full-height portrait photo pushed the
+            // action row and caption off the screen, so a post could not be
+            // taken in at once; Crop below keeps the frame filled.
+            .aspectRatio(aspectRatio.coerceAtLeast(MIN_MEDIA_ASPECT))
             .clip(mediaShape)
             .background(UsTheme.extended.bgCanvas)
             .border(
@@ -940,7 +943,53 @@ private fun PollResultRow(option: PostCardPollOption, chosen: Boolean) {
     }
 }
 
-private const val MAX_LINES = 8
+/**
+ * The caption, three lines at most until the reader asks for the rest.
+ *
+ * A long post used to run eight lines under its media and push the next
+ * card a screen away. Now it shows [CAPTION_LINES] and a "Show more" link,
+ * which only appears when the text actually overflowed — measured from the
+ * layout, not guessed from a character count, so a three-line caption never
+ * gets a link that reveals nothing. Expanded state is per post and survives
+ * a rotation, but resets when the card leaves the list, which is what a
+ * reader expects of a feed.
+ */
+@Composable
+private fun CaptionText(postId: String, authorName: String, text: String) {
+    var expanded by rememberSaveable(postId) { mutableStateOf(false) }
+    var overflowed by remember(postId, text) { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(authorName) }
+                append(" ")
+                append(text)
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textBody,
+            maxLines = if (expanded) Int.MAX_VALUE else CAPTION_LINES,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { if (!expanded) overflowed = it.hasVisualOverflow },
+        )
+        if (overflowed || expanded) {
+            Text(
+                text = if (expanded) "Show less" else "Show more",
+                style = MaterialTheme.typography.labelLarge,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .semantics { role = Role.Button }
+                    .testTag("post-caption-toggle"),
+            )
+        }
+    }
+}
+
+/** Lines of caption shown before "Show more". */
+private const val CAPTION_LINES = 3
+
+/** Media is never taller than 4:5 — Instagram's portrait limit. */
+private const val MIN_MEDIA_ASPECT = 4f / 5f
 private const val PERCENT_D = 100.0
 private const val RESULT_BAR_ALPHA = 0.35f
 

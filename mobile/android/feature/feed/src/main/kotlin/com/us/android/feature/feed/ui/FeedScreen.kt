@@ -289,13 +289,16 @@ private fun FeedList(
             // edges and insets only the first and last.
             //
             // Figma redesign: contained cards float on the canvas with a
-            // 20dp side gutter and 16dp between neighbours — the separation
-            // the old full-bleed rows drew as divider lines.
+            // 20dp side gutter and 12dp between neighbours — the separation
+            // the old full-bleed rows drew as divider lines. Only 8dp above
+            // the first card and below the last: the tabs row and the bar
+            // are edges already, and the founder read the 16dp as a gap
+            // (phone screenshot, 2026-09-04).
             contentPadding = PaddingValues(
                 horizontal = UsTheme.spacing.xxxxl,
-                vertical = UsTheme.spacing.xxl,
+                vertical = UsTheme.spacing.m,
             ),
-            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
             // `key` is what lets Compose keep an item's state across a page
             // append. Without it every append re-keys by index and the whole
