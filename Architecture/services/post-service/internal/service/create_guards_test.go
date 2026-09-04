@@ -167,3 +167,49 @@ func TestCheckMediaCompatibility(t *testing.T) {
 		})
 	}
 }
+
+// Tube (2026-09-05): a long video is listed by its title, so it needs one;
+// the 100-code-point ceiling applies to every kind of post.
+func TestValidateTitle(t *testing.T) {
+	long := strings.Repeat("क", 101) // 101 code points, far more bytes
+	cases := []struct {
+		name        string
+		contentType string
+		title       string
+		wantErr     error
+	}{
+		{"long video without a title", "long_video", "", ErrTitleRequired},
+		{"long video with a whitespace title", "long_video", " \t ", ErrTitleRequired},
+		{"long video with a title", "long_video", "How to make chai", nil},
+		{"long video at the ceiling", "long_video", strings.Repeat("क", 100), nil},
+		{"long video over the ceiling", "long_video", long, ErrTitleTooLong},
+		{"flick may omit the title", "flick", "", nil},
+		{"post may omit the title", "post", "", nil},
+		{"post over the ceiling is still refused", "post", long, ErrTitleTooLong},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateTitle(tc.contentType, tc.title)
+			if tc.wantErr == nil && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err=%v want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCanonicalContentType(t *testing.T) {
+	for in, want := range map[string]string{"video": "long_video", "reel": "flick", "long_video": "long_video", "post": "post"} {
+		got, ok := CanonicalContentType(in)
+		if !ok || got != want {
+			t.Errorf("CanonicalContentType(%q) = %q,%v want %q,true", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "movie", "LONG_VIDEO"} {
+		if _, ok := CanonicalContentType(in); ok {
+			t.Errorf("CanonicalContentType(%q) accepted", in)
+		}
+	}
+}

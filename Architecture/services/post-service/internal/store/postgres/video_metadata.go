@@ -113,7 +113,10 @@ func (s *Store) UpdateUploadStatus(ctx context.Context, postID uuid.UUID, status
 	return err
 }
 
-// UpdateFinalCategory sets the final_category and updates posts.content_type to match.
+// UpdateFinalCategory sets the final_category and updates posts.content_type
+// to match. An override is the author's explicit choice, so the post is also
+// marked content_type_explicit: the MediaTranscodeConsumer must not undo it
+// when the transcode measurement lands afterwards.
 func (s *Store) UpdateFinalCategory(ctx context.Context, postID uuid.UUID, category string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -127,7 +130,7 @@ func (s *Store) UpdateFinalCategory(ctx context.Context, postID uuid.UUID, categ
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE posts SET content_type = $2, updated_at = NOW() WHERE id = $1
+		UPDATE posts SET content_type = $2, content_type_explicit = TRUE, updated_at = NOW() WHERE id = $1
 	`, postID, category); err != nil {
 		return err
 	}

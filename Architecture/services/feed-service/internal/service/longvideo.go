@@ -472,3 +472,34 @@ func (s *Service) filterMainFeedExcludedDegraded(ctx context.Context, candidates
 	}
 	return out
 }
+
+// mergeDiscoveryFill tops a short first page up to `limit` with discovery
+// candidates. Timeline rows keep their place; a fill row already on the
+// page (the viewer follows its author) is dropped rather than shown twice;
+// the rest are marked sourceColdStart so the "why am I seeing this" reason
+// says "recommended" instead of "following". Pure, for the unit test.
+func mergeDiscoveryFill(candidates, fill []FeedItem, limit int) []FeedItem {
+	if limit <= 0 || len(candidates) >= limit || len(fill) == 0 {
+		return candidates
+	}
+	seen := make(map[uuid.UUID]struct{}, len(candidates)+len(fill))
+	for _, c := range candidates {
+		seen[c.PostID] = struct{}{}
+	}
+	out := candidates
+	for _, f := range fill {
+		if len(out) >= limit {
+			break
+		}
+		if _, dup := seen[f.PostID]; dup {
+			continue
+		}
+		if !isLongVideoType(f.ContentType) {
+			continue // post-service filtered by type; belt and braces
+		}
+		seen[f.PostID] = struct{}{}
+		f.Source = sourceColdStart
+		out = append(out, f)
+	}
+	return out
+}

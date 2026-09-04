@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -426,6 +427,28 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 	candidates = applyBlockFilter(candidates, blocked)
 	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 	candidates, next := keysetWindow(candidates, limit)
+
+	// Discovery fill (Tube, 2026-09-05). The timeline only holds long
+	// videos from people the viewer follows, so a new viewer — or one whose
+	// follows post no long-form — got an empty Tube. When the FIRST page
+	// comes up short, top it up from recent public long videos through the
+	// same post-service path the home cold start uses, evaluated as the
+	// viewer so post-service's own read rules (private authors, a post
+	// still processing is its author's alone, own posts included) hold.
+	// The fill passes the SAME block/mute and hidden-author filters as the
+	// timeline rows and fails closed with them: a fill error leaves the
+	// page as the timeline produced it rather than serving unfiltered
+	// strangers. Later pages stay timeline-only, keyed by the cursor.
+	if before == "" && len(candidates) < limit {
+		viewer := userID
+		fill, err := s.getRecentPublicPostsFor(ctx, &viewer, []string{"long_video"}, limit*2)
+		if err != nil {
+			log.Printf("long video discovery fill failed for %s: %v", userID, err)
+		} else {
+			fill = s.applyHiddenAuthorFilter(ctx, applyBlockFilter(fill, blocked))
+			candidates = mergeDiscoveryFill(candidates, fill, limit)
+		}
+	}
 
 	if s.ranker != nil && len(candidates) > 0 {
 		rc := feedItemsToCandidates(candidates)
@@ -1085,12 +1108,28 @@ func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]u
 // getRecentPublicPosts fetches recent public posts from post-service as a cold-start fallback
 // for users with an empty home timeline (new users, no follows, etc.).
 func (s *Service) getRecentPublicPosts(ctx context.Context, limit int) ([]FeedItem, error) {
+	return s.getRecentPublicPostsFor(ctx, nil, nil, limit)
+}
+
+// getRecentPublicPostsFor is the discovery source behind the cold-start
+// fills: post-service's recent-public page, optionally narrowed to content
+// types and evaluated AS the viewer. With a viewer, post-service applies its
+// own read rules for that person: private authors are dropped, a post still
+// processing is returned only to its author, and the viewer's own posts are
+// included. Without one it behaves as an anonymous read.
+func (s *Service) getRecentPublicPostsFor(ctx context.Context, viewerID *uuid.UUID, contentTypes []string, limit int) ([]FeedItem, error) {
 	url := fmt.Sprintf("%s/v1/posts/recent?limit=%d", s.postServiceURL, limit)
+	if len(contentTypes) > 0 {
+		url += "&content_type=" + strings.Join(contentTypes, ",")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("X-Internal-Service-Key", os.Getenv("INTERNAL_SERVICE_KEY"))
+	if viewerID != nil {
+		req.Header.Set("X-User-Id", viewerID.String())
+	}
 
 	resp, err := s.postClient.Do(req)
 	if err != nil {

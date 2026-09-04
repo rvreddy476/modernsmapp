@@ -57,9 +57,11 @@ func applyMediaState(p *postgres.Post, state map[uuid.UUID]postgres.MediaOwnersh
 		if ok {
 			p.Media[i].ProcessingStatus = m.ProcessingStatus
 			p.Media[i].ModerationStatus = m.ModerationStatus
+			p.Media[i].DurationMs = m.DurationMs
 		} else {
 			p.Media[i].ProcessingStatus = ""
 			p.Media[i].ModerationStatus = ""
+			p.Media[i].DurationMs = 0
 		}
 		if !mediaPublishable(p.Media[i].ProcessingStatus, p.Media[i].ModerationStatus) {
 			processing = true

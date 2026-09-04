@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 )
 
 const watchProgressTTL = 90 * 24 * time.Hour
+
+// ErrWatchProgressNotFound: the viewer has never reported progress on the post.
+var ErrWatchProgressNotFound = errors.New("watch progress not found")
 
 // SaveWatchProgress upserts watch progress in both the DB and Redis cache.
 func (s *Service) SaveWatchProgress(ctx context.Context, wp *postgres.WatchProgress) error {
@@ -66,7 +70,7 @@ func (s *Service) GetWatchProgress(ctx context.Context, userID, postID uuid.UUID
 		return nil, err
 	}
 	if dbWP == nil {
-		return nil, fmt.Errorf("watch progress not found")
+		return nil, ErrWatchProgressNotFound
 	}
 	return dbWP, nil
 }

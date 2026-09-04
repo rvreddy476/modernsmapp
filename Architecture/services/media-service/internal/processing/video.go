@@ -271,7 +271,9 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 
 // ReelMaxDurationSeconds is the maximum duration (inclusive) for a video to be
 // classified as a flick (short-form). Videos longer than this are considered long-form.
-const ReelMaxDurationSeconds = 180
+// 300s = 5 minutes (founder: shorts max 3–5 min; 5 chosen, 2026-09-05). Keep in
+// sync with shared/postclassify.FlickMaxDurationSeconds in post-service.
+const ReelMaxDurationSeconds = 300
 
 // MinVideoDurationSeconds is the minimum accepted video duration.
 const MinVideoDurationSeconds = 3

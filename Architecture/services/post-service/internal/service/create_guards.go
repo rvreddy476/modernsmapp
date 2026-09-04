@@ -40,7 +40,31 @@ var (
 
 	// ErrMediaTypeMismatch: the asset cannot back this kind of post (C-LB-4.1).
 	ErrMediaTypeMismatch = errors.New("media type does not match the post")
+
+	// ErrTitleRequired / ErrTitleTooLong guard the long-video title (Tube,
+	// 2026-09-05). A long video is listed by its title the way a YouTube
+	// video is, so it cannot be published without one; every other kind of
+	// post keeps the title optional. The ceiling applies to all of them.
+	ErrTitleRequired = errors.New("a long video needs a title")
+	ErrTitleTooLong  = errors.New("title is longer than the maximum")
 )
+
+// MaxTitleRunes is the title ceiling in Unicode code points, counted the same
+// way as MaxPostTextRunes so scripts are not discriminated against.
+const MaxTitleRunes = 100
+
+// ValidateTitle enforces the title invariants for a content type. Whitespace-
+// only is empty, matching ValidatePostContent.
+func ValidateTitle(contentType, title string) error {
+	if utf8.RuneCountInString(title) > MaxTitleRunes {
+		return fmt.Errorf("%w: %d code points, limit %d",
+			ErrTitleTooLong, utf8.RuneCountInString(title), MaxTitleRunes)
+	}
+	if contentType == "long_video" && strings.TrimSpace(title) == "" {
+		return ErrTitleRequired
+	}
+	return nil
+}
 
 // MaxPostTextRunes is the create-post ceiling in Unicode CODE POINTS.
 //

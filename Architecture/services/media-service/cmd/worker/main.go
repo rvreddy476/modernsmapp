@@ -577,7 +577,8 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 
 	// 8. Update media metadata (dimensions, duration, blurhash)
 	durationSeconds := meta.DurationSeconds
-	if err := pgStore.UpdateMediaMeta(ctx, mediaAssetID, meta.Width, meta.Height, videoBlurHash, &durationSeconds); err != nil {
+	durationMs := meta.DurationMs
+	if err := pgStore.UpdateMediaMeta(ctx, mediaAssetID, meta.Width, meta.Height, videoBlurHash, &durationSeconds, &durationMs); err != nil {
 		return fmt.Errorf("update meta: %w", err)
 	}
 

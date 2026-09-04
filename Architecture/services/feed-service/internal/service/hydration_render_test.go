@@ -57,8 +57,9 @@ func TestEnrichRenderDataBatchesAuthorAndMedia(t *testing.T) {
 			mediaID.String(): map[string]any{
 				"media_id": mediaID, "kind": "image", "status": "ready",
 				"width": 640, "height": 480,
-				"variants":   map[string]string{"thumb_150": "https://cdn.test/thumb"},
-				"expires_at": expires,
+				"duration_ms": 5070,
+				"variants":    map[string]string{"thumb_150": "https://cdn.test/thumb"},
+				"expires_at":  expires,
 			},
 		}})
 	}))
@@ -89,6 +90,9 @@ func TestEnrichRenderDataBatchesAuthorAndMedia(t *testing.T) {
 	media := posts[0].Media[0]
 	if media.Status != "ready" || media.Variants["thumb_150"] == "" || media.ExpiresAt == nil || !media.ExpiresAt.Equal(expires) {
 		t.Fatalf("media=%+v", media)
+	}
+	if media.DurationMs != 5070 {
+		t.Fatalf("duration_ms not carried from the delivery DTO: %+v", media)
 	}
 }
 

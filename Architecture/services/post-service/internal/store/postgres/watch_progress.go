@@ -17,22 +17,27 @@ type WatchProgress struct {
 	DurationMs     int       `json:"duration_ms"`
 	PercentWatched float32   `json:"percent_watched"`
 	Completed      bool      `json:"completed"`
-	LastWatchedAt  time.Time `json:"last_watched_at"`
+	// LastWatchedAt is the row's last_watched_at; on the wire it is
+	// `updated_at` (the Tube contract, 2026-09-05).
+	LastWatchedAt time.Time `json:"updated_at"`
 }
 
-// UpsertWatchProgress inserts or updates a watch_progress row.
+// UpsertWatchProgress inserts or updates a watch_progress row and reads the
+// stored row back into wp, so the response carries the kept duration and the
+// real updated_at rather than what the client happened to send.
 func (s *Store) UpsertWatchProgress(ctx context.Context, wp *WatchProgress) error {
-	_, err := s.db.Exec(ctx, `
+	return s.db.QueryRow(ctx, `
 		INSERT INTO watch_progress (user_id, post_id, position_ms, duration_ms, percent_watched, completed, last_watched_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		ON CONFLICT (user_id, post_id) DO UPDATE SET
 			position_ms     = EXCLUDED.position_ms,
-			duration_ms     = EXCLUDED.duration_ms,
+			duration_ms     = COALESCE(NULLIF(EXCLUDED.duration_ms, 0), watch_progress.duration_ms),
 			percent_watched = EXCLUDED.percent_watched,
 			completed       = EXCLUDED.completed,
-			last_watched_at = NOW()`,
-		wp.UserID, wp.PostID, wp.PositionMs, wp.DurationMs, wp.PercentWatched, wp.Completed)
-	return err
+			last_watched_at = NOW()
+		RETURNING duration_ms, last_watched_at`,
+		wp.UserID, wp.PostID, wp.PositionMs, wp.DurationMs, wp.PercentWatched, wp.Completed,
+	).Scan(&wp.DurationMs, &wp.LastWatchedAt)
 }
 
 // GetWatchProgress retrieves a single watch_progress row. Returns nil, nil if not found.

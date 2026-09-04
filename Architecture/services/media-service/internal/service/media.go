@@ -498,7 +498,7 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 	}
 
 	// Update media metadata (including blurhash)
-	if err := s.pgStore.UpdateMediaMeta(ctx, media.ID, meta.Width, meta.Height, meta.Blurhash, nil); err != nil {
+	if err := s.pgStore.UpdateMediaMeta(ctx, media.ID, meta.Width, meta.Height, meta.Blurhash, nil, nil); err != nil {
 		return fmt.Errorf("update media meta: %w", err)
 	}
 
@@ -555,14 +555,17 @@ func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*postgres.Me
 
 // MediaURLResponse is the response for serving media URLs.
 type MediaURLResponse struct {
-	MediaID  uuid.UUID         `json:"media_id"`
-	FileType string            `json:"kind"`
-	Status   string            `json:"status"`
-	Width    *int              `json:"width,omitempty"`
-	Height   *int              `json:"height,omitempty"`
-	Blurhash *string           `json:"blurhash,omitempty"`
-	Variants map[string]string `json:"variants,omitempty"`
-	HLSURL   string            `json:"hls_url,omitempty"`
+	MediaID  uuid.UUID `json:"media_id"`
+	FileType string    `json:"kind"`
+	Status   string    `json:"status"`
+	Width    *int      `json:"width,omitempty"`
+	Height   *int      `json:"height,omitempty"`
+	Blurhash *string   `json:"blurhash,omitempty"`
+	// DurationMs is the ffprobe duration in milliseconds for video and
+	// audio; omitted (0) while unknown and for images (Tube, 2026-09-05).
+	DurationMs int               `json:"duration_ms,omitempty"`
+	Variants   map[string]string `json:"variants,omitempty"`
+	HLSURL     string            `json:"hls_url,omitempty"`
 	// ExpiresAt tells native clients when the bounded delivery capability
 	// must be refreshed. Public variants may be stable, but using the same
 	// refresh boundary keeps one DTO valid when visibility later becomes
@@ -660,6 +663,7 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 			Width:        media.Width,
 			Height:       media.Height,
 			Blurhash:     media.Blurhash,
+			DurationMs:   media.DurationMsValue(),
 			Variants:     nil,
 			HLSURL:       "",
 			PlaybackURL:  playbackURL,
@@ -690,6 +694,7 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 		Width:        media.Width,
 		Height:       media.Height,
 		Blurhash:     media.Blurhash,
+		DurationMs:   media.DurationMsValue(),
 		Variants:     urls,
 		HLSURL:       hlsURL,
 		ExpiresAt:    &expires,
@@ -881,6 +886,7 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 				Width:        m.Width,
 				Height:       m.Height,
 				Blurhash:     m.Blurhash,
+				DurationMs:   m.DurationMsValue(),
 				Variants:     nil,
 				HLSURL:       "",
 				PlaybackURL:  playbackURL,
@@ -908,6 +914,7 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 			Width:        m.Width,
 			Height:       m.Height,
 			Blurhash:     m.Blurhash,
+			DurationMs:   m.DurationMsValue(),
 			Variants:     urls,
 			HLSURL:       hlsURL,
 			ExpiresAt:    &expires,
@@ -1071,6 +1078,7 @@ type MediaStatusResponse struct {
 	Width            *int                      `json:"width,omitempty"`
 	Height           *int                      `json:"height,omitempty"`
 	DurationSeconds  *int                      `json:"duration_seconds,omitempty"`
+	DurationMs       int                       `json:"duration_ms,omitempty"`
 	TranscodingJobs  []postgres.TranscodingJob `json:"transcoding_jobs,omitempty"`
 }
 
@@ -1124,6 +1132,7 @@ func (s *Service) GetMediaStatus(ctx context.Context, mediaID uuid.UUID) (*Media
 		Width:            media.Width,
 		Height:           media.Height,
 		DurationSeconds:  media.DurationSeconds,
+		DurationMs:       media.DurationMsValue(),
 	}
 
 	// Include transcoding jobs for videos

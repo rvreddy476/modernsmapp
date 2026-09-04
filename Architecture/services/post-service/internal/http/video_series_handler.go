@@ -1,10 +1,13 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -576,9 +579,17 @@ func (h *Handler) GetVideoCards(c *gin.Context) {
 
 // ─── Watch Progress ───────────────────────────────────────────────────────────
 
+// saveWatchProgressRequest is the Tube contract (2026-09-05):
+// {"position_ms": int, "duration_ms": int, "completed": bool}. duration_ms
+// may be 0 when the player has not learned it yet; the server then falls
+// back to the duration it already knows (video_metadata, else the viewer's
+// previous progress row) so percent_watched is real rather than 0%, and the
+// store keeps the last known value. completed=true is honored as sent;
+// otherwise it is derived from the 90% rule.
 type saveWatchProgressRequest struct {
-	PositionMs int `json:"position_ms"`
-	DurationMs int `json:"duration_ms" binding:"required"`
+	PositionMs int   `json:"position_ms"`
+	DurationMs int   `json:"duration_ms"`
+	Completed  *bool `json:"completed"`
 }
 
 func (h *Handler) SaveWatchProgress(c *gin.Context) {
@@ -597,23 +608,94 @@ func (h *Handler) SaveWatchProgress(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-
-	var pct float32
-	if req.DurationMs > 0 {
-		pct = float32(req.PositionMs) / float32(req.DurationMs) * 100
+	if req.PositionMs < 0 || req.DurationMs < 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "position_ms and duration_ms must not be negative", nil)
+		return
 	}
-	completed := pct >= 90.0
+
+	known := 0
+	if req.DurationMs == 0 {
+		known = h.knownWatchDurationMs(c.Request.Context(), userID, postID)
+	}
+	durationMs := effectiveWatchDurationMs(req.DurationMs, known)
+	pct, completed := watchProgressState(req.PositionMs, durationMs, req.Completed)
 
 	wp := &postgres.WatchProgress{
 		UserID:         userID,
 		PostID:         postID,
 		PositionMs:     req.PositionMs,
-		DurationMs:     req.DurationMs,
+		DurationMs:     durationMs,
 		PercentWatched: pct,
 		Completed:      completed,
 	}
 
 	if err := h.svc.SaveWatchProgress(c.Request.Context(), wp); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, wp, nil)
+}
+
+// knownWatchDurationMs is the duration the server already holds for a post
+// when the player sent duration_ms: 0 — the transcode measurement on
+// video_metadata first, else what this viewer's last progress report
+// carried. 0 when neither knows (transcode pending, first report).
+func (h *Handler) knownWatchDurationMs(ctx context.Context, userID, postID uuid.UUID) int {
+	if vm, err := h.svc.GetVideoDetail(ctx, postID); err == nil && vm != nil && vm.DurationSeconds > 0 {
+		return int(vm.DurationSeconds * 1000)
+	}
+	if prev, err := h.svc.GetWatchProgress(ctx, userID, postID); err == nil && prev != nil && prev.DurationMs > 0 {
+		return prev.DurationMs
+	}
+	return 0
+}
+
+// effectiveWatchDurationMs picks the duration percent_watched is computed
+// against: what the player sent when it knows, else what the server knows.
+func effectiveWatchDurationMs(sentMs, knownMs int) int {
+	if sentMs > 0 {
+		return sentMs
+	}
+	return knownMs
+}
+
+// watchProgressState derives percent_watched and completed from the
+// position and the duration in effect (the client's, or the server's known
+// one when the client sent 0). An explicit completed=true from the player
+// wins (it saw the end); otherwise 90% of a known duration counts as
+// finished, and an unknown duration never does.
+func watchProgressState(positionMs, durationMs int, explicit *bool) (pct float32, completed bool) {
+	if durationMs > 0 {
+		pct = float32(positionMs) / float32(durationMs) * 100
+		if pct > 100 {
+			pct = 100
+		}
+	}
+	if explicit != nil && *explicit {
+		return pct, true
+	}
+	return pct, pct >= 90.0
+}
+
+// GetWatchProgress — GET /v1/videos/:videoId/progress. 404 when the viewer
+// has never reported progress on the post.
+func (h *Handler) GetWatchProgress(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("videoId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	wp, err := h.svc.GetWatchProgress(c.Request.Context(), userID, postID)
+	if err != nil {
+		if errors.Is(err, service.ErrWatchProgressNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "No watch progress for this video", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

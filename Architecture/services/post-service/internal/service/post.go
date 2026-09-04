@@ -21,6 +21,7 @@ import (
 	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/events"
+	"github.com/atpost/shared/postclassify"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -565,8 +566,9 @@ func DetectAndStoreMentions(ctx context.Context, postID uuid.UUID, postType stri
 
 // flickMaxDurationSeconds is the maximum duration (inclusive) for a video to
 // be auto-classified as a "reel" (Flick). Videos longer than this are "video" (Long Video).
-// Flick = up to 3 minutes, Long Video = more than 3 minutes.
-const flickMaxDurationSeconds = 180
+// Flick = up to 5 minutes, Long Video = more than 5 minutes (founder: shorts
+// max 3–5 min; 5 chosen, 2026-09-05). Must match postclassify.FlickMaxDurationSeconds.
+const flickMaxDurationSeconds = postclassify.FlickMaxDurationSeconds
 
 // validContentTypes is the allowed set for content_type.
 // "voice" is Module 1 P0-6: a voice-only post (audio media + optional
@@ -615,7 +617,11 @@ func classifyVideoContentType(durationSeconds int) string {
 	return "long_video"
 }
 
-// ClassifyVideo returns the computed category and orientation based on duration and dimensions.
+// ClassifyVideo returns the computed category and orientation based on
+// duration and dimensions. This is the *measurement*, recorded on
+// video_metadata.computed_category for analytics. It decides a post's
+// content_type only when the author expressed no kind — see
+// resolveVideoContentType for the rule.
 func ClassifyVideo(durationSeconds float64, width, height int) (category, orientation string) {
 	orientation = deriveOrientation(width, height)
 	if durationSeconds <= float64(flickMaxDurationSeconds) && (orientation == "portrait" || orientation == "square") {
@@ -639,7 +645,41 @@ func deriveOrientation(width, height int) string {
 	return "square"
 }
 
+// resolveVideoContentType decides the content_type of a post that carries a
+// video, from the caller's (already-normalized) content_type intent and the
+// measured duration + dimensions when transcode has produced them
+// (durationSeconds <= 0 means "not yet").
+//
+// The rule (founder, 2026-09-04/05): a reel is what the author posted as a
+// reel; a video is what the author posted as a video. An explicit "flick"
+// stays a flick even when the frame is landscape or the clip runs long, and
+// an explicit "long_video" stays a long video even when the clip is portrait
+// and short — a vertical clip posted from Tube belongs in Tube, not Reels.
+// Legacy "reel"/"video" spellings were folded into these before this runs.
+//
+// Only the generic "post" intent — a plain post that happens to attach a
+// video, no kind chosen — is classified from the measurement, and defaults
+// to long_video while the measurement is pending; the MediaTranscodeConsumer
+// then reclassifies it once the numbers land. `explicit` reports whether the
+// answer was the author's choice, so that consumer knows to leave it alone.
+func resolveVideoContentType(intent string, durationSeconds int, width, height int) (contentType string, explicit bool) {
+	switch intent {
+	case "flick", "reel":
+		return "flick", true
+	case "long_video", "video":
+		return "long_video", true
+	}
+	if durationSeconds <= 0 {
+		return "long_video", false
+	}
+	cat, _ := ClassifyVideo(float64(durationSeconds), width, height)
+	return cat, false
+}
+
 // ValidateCategoryOverride checks if a category override request is valid.
+// This guards the PATCH category endpoint only: an author may always move a
+// video to long_video, but may only call it a flick when the measurement
+// allows (≤ flickMaxDurationSeconds, not landscape).
 func ValidateCategoryOverride(vm *postgres.VideoMetadata, requested string) error {
 	if requested == "flick" {
 		if vm.DurationSeconds > float64(flickMaxDurationSeconds) {
@@ -650,6 +690,16 @@ func ValidateCategoryOverride(vm *postgres.VideoMetadata, requested string) erro
 		}
 	}
 	return nil // long_video is always valid
+}
+
+// CanonicalContentType normalizes a client-supplied content type (legacy
+// spellings included) and reports whether it is one this service accepts.
+func CanonicalContentType(ct string) (string, bool) {
+	if ct == "" {
+		return "", false
+	}
+	ct = normalizeLegacyContentType(ct)
+	return ct, validContentTypes[ct]
 }
 
 // normalizeLegacyContentType maps old content types to new ones.
@@ -716,6 +766,13 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Validate content_type
 	if !validContentTypes[contentType] {
 		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, flick, or long_video", contentType)
+	}
+
+	// Tube: a long video is listed by its title, so it must have one; the
+	// ceiling applies to every kind of post. Stored trimmed.
+	title := strings.TrimSpace(input.Title)
+	if err := ValidateTitle(contentType, title); err != nil {
+		return nil, err
 	}
 
 	// Flick category is a closed taxonomy (categories.go). Only flicks: the
@@ -840,7 +897,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		PostType:          postType,
 		AppOrigin:         appOrigin,
 		ShareToPostbook:   input.ShareToPostbook,
-		Title:             input.Title,
+		Title:             title,
 		Tags:              input.Tags,
 		Category:          category,
 		Language:          lang,
@@ -960,9 +1017,13 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		}
 	}
 
-	// Auto-classify video content type per spec v2.1:
-	// Flick = ≤180s AND (portrait/square); LongVideo = everything else.
-	// If duration is unknown (async processing not done), default to long_video as safe fallback.
+	// Decide the content_type of a post that carries a video. A reel is what
+	// the author posted as a reel; a video is what the author posted as a
+	// video (founder, 2026-09-04/05). Only a plain "post" with a video is
+	// classified from the measurement (spec v2.1: flick = ≤300s AND
+	// portrait/square; long_video = everything else), and defaults to
+	// long_video while transcode is still pending. See
+	// resolveVideoContentType.
 	var videoMediaID uuid.UUID
 	hasVideo := false
 	for _, m := range p.Media {
@@ -985,46 +1046,21 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		p.ContentType = "voice"
 		contentType = "voice"
 	}
+	// videoW/videoH are the dimensions transcode measured (0 when pending).
+	// Reuse the batch when available; fall back to the per-row helper for
+	// the unlikely batch-failed-but-loop-succeeded path.
+	var videoW, videoH int
 	if hasVideo {
-		if maxDuration > 0 {
-			// Duration known — classify properly via the shared rule.
-			// Reuse the dimensions from the batch when available;
-			// fall back to the per-row helper for the unlikely
-			// batch-failed-but-loop-succeeded path.
-			var w, h int
-			if meta, ok := mediaMeta[videoMediaID]; ok {
-				w, h = meta.Width, meta.Height
-			} else {
-				w, h, _ = s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
-			}
-			// A reel is what the author posted as a reel (founder, 2026-09-04):
-			// a landscape or two-minute phone video sent from the Reel
-			// composer stays a flick. Only a caller with no short-form
-			// intent ("post", "video", "long_video") takes the measured
-			// classification.
-			if contentType == "flick" || contentType == "reel" {
-				p.ContentType = "flick"
-			} else {
-				cat, _ := ClassifyVideo(float64(maxDuration), w, h)
-				p.ContentType = cat
-			}
+		if meta, ok := mediaMeta[videoMediaID]; ok {
+			videoW, videoH = meta.Width, meta.Height
 		} else {
-			// Duration unknown (transcode pending). Respect the
-			// caller's intent: if mobile said "flick"/"reel" — keep
-			// it. The MediaTranscodeConsumer reclassifies once
-			// duration + dimensions land. If the caller said "post"
-			// (a generic post happens to attach a video) we still
-			// safe-default to long_video because there's no explicit
-			// short-form intent to preserve.
-			switch contentType {
-			case "flick", "reel":
-				p.ContentType = "flick"
-			case "post":
-				p.ContentType = "long_video"
-			}
-			// content_type "long_video" or "video" stays as the
-			// caller specified.
+			videoW, videoH, _ = s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
 		}
+		// Persisting `explicit` is what lets the MediaTranscodeConsumer
+		// tell an author's long_video from a "post" that defaulted to
+		// long_video while transcode was pending: it reclassifies only the
+		// latter once the measurement lands.
+		p.ContentType, p.ContentTypeExplicit = resolveVideoContentType(contentType, maxDuration, videoW, videoH)
 	}
 
 	// Attach poll
@@ -1190,32 +1226,28 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			UploadStatus: "pending",
 			MediaAssetID: &videoMediaID,
 		}
+		// final_category is the kind the post *is* — what the author chose,
+		// or the measurement when they chose nothing (resolveVideoContentType
+		// already settled that on p.ContentType). computed_category is the
+		// measurement alone, kept for analytics: how many author-flicks are
+		// landscape, how many author-videos are short verticals.
+		vm.FinalCategory = p.ContentType
 		if maxDuration > 0 {
-			width, height, _ := s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
-			category, orientation := ClassifyVideo(float64(maxDuration), width, height)
+			category, orientation := ClassifyVideo(float64(maxDuration), videoW, videoH)
 			vm.DurationSeconds = float64(maxDuration)
-			vm.Width = &width
-			vm.Height = &height
+			vm.Width = &videoW
+			vm.Height = &videoH
 			vm.Orientation = orientation
 			vm.ComputedCategory = category
-			vm.FinalCategory = category
-			// The computed category is analytics; the post keeps the type
-			// the author chose (see the classification block above).
 		} else {
-			// Duration unknown: the classification block above already
-			// honoured the caller's short-form intent on p.ContentType.
-			// Record the same provisional answer; the consumer rewrites it
-			// from the measured duration + dimensions.
-			category := "long_video"
-			if p.ContentType == "flick" {
-				category = "flick"
-			}
+			// Duration unknown: record the provisional answer; the
+			// MediaTranscodeConsumer rewrites the measurement once the
+			// transcode reports duration + dimensions.
+			vm.ComputedCategory = p.ContentType
 			vm.Orientation = deriveOrientation(0, 0)
-			if category == "flick" {
+			if p.ContentType == "flick" {
 				vm.Orientation = "portrait"
 			}
-			vm.ComputedCategory = category
-			vm.FinalCategory = category
 		}
 		if err := s.pgStore.CreateVideoMetadata(ctx, vm); err != nil {
 			log.Printf("Warning: failed to create video_metadata for post %s: %v", p.ID, err)
@@ -1596,8 +1628,9 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 // deactivated/pending-delete author's posts (post_hidden_authors), surface here
 // even though every other surface correctly hid them. viewerID is now
 // threaded through so the same fail-closed gate applies.
-func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, excludeAuthor *uuid.UUID, limit int, cursor string) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetRecentPosts(ctx, excludeAuthor, limit, cursor)
+// contentTypes narrows the page (legacy spellings normalized); empty = all.
+func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, excludeAuthor *uuid.UUID, contentTypes []string, limit int, cursor string) ([]PostDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetRecentPosts(ctx, excludeAuthor, contentTypes, limit, cursor)
 	if err != nil {
 		return nil, "", err
 	}

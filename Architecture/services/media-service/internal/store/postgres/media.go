@@ -32,8 +32,11 @@ type MediaAsset struct {
 	Width            *int      `json:"width,omitempty"`
 	Height           *int      `json:"height,omitempty"`
 	DurationSeconds  *int      `json:"duration_seconds,omitempty"`
-	Blurhash         *string   `json:"blurhash,omitempty"`
-	AltText          string    `json:"alt_text"`
+	// DurationMs is the ffprobe duration in milliseconds (migration 016).
+	// NULL on rows written before it existed; see DurationMsValue.
+	DurationMs *int    `json:"duration_ms,omitempty"`
+	Blurhash   *string `json:"blurhash,omitempty"`
+	AltText    string  `json:"alt_text"`
 	// AltDecorative marks media the author explicitly declared decorative
 	// — distinct from "not described yet" (Codex P1-7). Hydrated media
 	// carries it so every referencing surface can skip it correctly.
@@ -81,11 +84,16 @@ func (s *MediaAssetStore) UpdateStatus(ctx context.Context, id uuid.UUID, status
 }
 
 // UpdateMediaMeta sets dimensions, blurhash, and optionally duration.
-func (s *MediaAssetStore) UpdateMediaMeta(ctx context.Context, id uuid.UUID, width, height int, blurhash string, durationSeconds *int) error {
+// durationMs is the ffprobe millisecond value; nil (images) leaves both
+// duration columns untouched.
+func (s *MediaAssetStore) UpdateMediaMeta(ctx context.Context, id uuid.UUID, width, height int, blurhash string, durationSeconds, durationMs *int) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE media_assets SET width = $1, height = $2, blurhash = $3, duration_seconds = $4, updated_at = NOW()
-		WHERE id = $5
-	`, width, height, blurhash, durationSeconds, id)
+		UPDATE media_assets SET width = $1, height = $2, blurhash = $3,
+		       duration_seconds = COALESCE($4, duration_seconds),
+		       duration_ms = COALESCE($5, duration_ms),
+		       updated_at = NOW()
+		WHERE id = $6
+	`, width, height, blurhash, durationSeconds, durationMs, id)
 	return err
 }
 
@@ -111,12 +119,12 @@ func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAss
 	var m MediaAsset
 	err := s.db.QueryRow(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
-		       width, height, duration_seconds, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
+		       width, height, duration_seconds, duration_ms, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
 		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
-		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+		&m.Width, &m.Height, &m.DurationSeconds, &m.DurationMs, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 		&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
@@ -203,7 +211,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
-		       width, height, duration_seconds, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
+		       width, height, duration_seconds, duration_ms, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = ANY($1)
 	`, ids)
@@ -218,7 +226,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 		var m MediaAsset
 		if err := rows.Scan(
 			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
-			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+			&m.Width, &m.Height, &m.DurationSeconds, &m.DurationMs, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 			&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -532,4 +540,20 @@ func (s *MediaAssetStore) UpdateAltTextWithDecorative(ctx context.Context, id uu
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// DurationMsValue is the duration to put on the wire: the ffprobe
+// millisecond value when the row has one, else the legacy whole-second
+// column scaled up, else 0 ("unknown" — callers omit it).
+func (m *MediaAsset) DurationMsValue() int {
+	if m == nil {
+		return 0
+	}
+	if m.DurationMs != nil && *m.DurationMs > 0 {
+		return *m.DurationMs
+	}
+	if m.DurationSeconds != nil && *m.DurationSeconds > 0 {
+		return *m.DurationSeconds * 1000
+	}
+	return 0
 }

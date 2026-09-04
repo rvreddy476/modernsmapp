@@ -263,6 +263,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// Watch Progress
 	r.POST("/v1/videos/:videoId/progress", h.SaveWatchProgress)
+	r.GET("/v1/videos/:videoId/progress", h.GetWatchProgress)
 	r.GET("/v1/videos/continue-watching", h.GetContinueWatching)
 	r.DELETE("/v1/videos/:videoId/progress", h.DeleteWatchProgress)
 
@@ -406,6 +407,10 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 	case errors.Is(err, service.ErrTooManyTaggedUsers):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TOO_MANY_TAGGED_USERS",
 			fmt.Sprintf("a post may tag at most %d people", service.MaxTaggedUsers), nil)
+	case errors.Is(err, service.ErrTitleRequired):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TITLE_REQUIRED", err.Error(), nil)
+	case errors.Is(err, service.ErrTitleTooLong):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TITLE_TOO_LONG", err.Error(), nil)
 	default:
 		return false
 	}
@@ -820,6 +825,15 @@ func (h *Handler) GetRecentPosts(c *gin.Context) {
 		limit = l
 	}
 
+	// Optional content_type filter: comma-separated, legacy spellings
+	// accepted ("video" -> long_video). An unknown type is a 400 rather
+	// than a silently unfiltered page.
+	contentTypes, err := parseContentTypeFilter(c.Query("content_type"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE", err.Error(), nil)
+		return
+	}
+
 	var viewerID *uuid.UUID
 	if v := c.GetHeader("X-User-Id"); v != "" {
 		if id, err := uuid.Parse(v); err == nil {
@@ -827,7 +841,7 @@ func (h *Handler) GetRecentPosts(c *gin.Context) {
 		}
 	}
 
-	posts, nextCursor, err := h.svc.GetRecentPosts(c.Request.Context(), viewerID, nil, limit, cursor)
+	posts, nextCursor, err := h.svc.GetRecentPosts(c.Request.Context(), viewerID, nil, contentTypes, limit, cursor)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -2740,4 +2754,25 @@ func (h *Handler) ListUserReposts(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, result, nil)
+}
+
+// parseContentTypeFilter turns "?content_type=long_video,flick" into the
+// canonical list the store filters on. Empty input means no filter.
+func parseContentTypeFilter(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		ct, ok := service.CanonicalContentType(strings.TrimSpace(part))
+		if !ok {
+			return nil, fmt.Errorf("unknown content_type %q", strings.TrimSpace(part))
+		}
+		if !seen[ct] {
+			seen[ct] = true
+			out = append(out, ct)
+		}
+	}
+	return out, nil
 }

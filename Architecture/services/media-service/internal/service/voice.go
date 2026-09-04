@@ -76,10 +76,12 @@ func (s *Service) processVoice(ctx context.Context, media *postgres.MediaAsset) 
 	}
 
 	durationRounded := int(durationSec + 0.5)
-	if err := s.pgStore.UpdateMediaDuration(ctx, media.ID, durationRounded); err != nil {
+	if err := s.pgStore.UpdateMediaDuration(ctx, media.ID, durationRounded, meta.DurationMs); err != nil {
 		slog.Warn("voice: failed to persist duration", "media_id", media.ID, "error", err)
 	}
 	media.DurationSeconds = &durationRounded
+	durationMs := meta.DurationMs
+	media.DurationMs = &durationMs
 
 	// Waveform for the player scrubber — best-effort; a missing waveform
 	// degrades to a plain progress bar, it never fails the upload.

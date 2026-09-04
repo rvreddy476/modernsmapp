@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	postEvents "github.com/atpost/post-service/internal/events"
+	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	sharedkafka "github.com/atpost/shared/kafka"
@@ -136,45 +137,64 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 	if vm.UploadStatus != "ready" {
 		vm.UploadStatus = "ready"
 	}
+
+	// The measurement — duration, dimensions, orientation and the category
+	// they imply — is recorded on video_metadata for analytics whatever the
+	// post's content_type ends up being. Whether that measurement also
+	// rewrites the post is decided below.
+	duration, w, h, measured := lookupMediaDims(ctx, c.store, mediaID)
+	measuredType := ""
+	if measured {
+		measuredType = postclassify.Classify(duration, w, h)
+		_, orientation := service.ClassifyVideo(float64(duration), w, h)
+		vm.DurationSeconds = float64(duration)
+		vm.Width = &w
+		vm.Height = &h
+		vm.Orientation = orientation
+		vm.ComputedCategory = measuredType
+	}
 	if err := c.store.UpdateVideoMetadata(ctx, vm); err != nil {
 		return fmt.Errorf("update video_metadata for media %s: %w", mediaID, err)
 	}
 
-	// Reclassify the post's content_type now that we know duration +
-	// dimensions. CreatePost falls back to "long_video" when the
-	// video hasn't been transcoded yet, so a vertical reel ≤180s
-	// comes in as long_video and stays there until this consumer
-	// flips it back to "flick". Without this, the reel never
-	// appears in /v1/feed/reels.
+	// Reclassify the post's content_type now that duration + dimensions are
+	// known — but only when nobody chose the kind. A reel is what the
+	// author posted as a reel; a video is what the author posted as a video
+	// (founder, 2026-09-04/05): an explicit flick or long_video is never
+	// rewritten from the measurement, a landscape reel stays a reel and a
+	// short vertical clip posted from Tube stays a long video.
 	//
-	// On a successful flip, fan a PostContentTypeChanged event out
-	// so feed-service can rewrite the matching content_type column
-	// on its Scylla timeline rows — those carry their own copy and
-	// would otherwise stay stale.
-	if duration, w, h, ok := lookupMediaDims(ctx, c.store, mediaID); ok {
-		newType := postclassify.Classify(duration, w, h)
-		authorID, oldType, err := c.store.GetPostAuthorAndContentType(ctx, vm.PostID)
+	// The row that does get rewritten is a plain "post" that carried a
+	// video and defaulted to long_video while transcode was pending
+	// (content_type_explicit = FALSE): a vertical ≤300s clip flips to
+	// "flick" here, otherwise it would never appear in /v1/feed/reels.
+	//
+	// On a successful flip, fan a PostContentTypeChanged event out so
+	// feed-service can rewrite the matching content_type column on its
+	// Scylla timeline rows — those carry their own copy and would
+	// otherwise stay stale.
+	if measured {
+		st, err := c.store.GetPostClassificationState(ctx, vm.PostID)
 		if err != nil {
-			slog.Warn("media transcode consumer: read author+content_type failed",
+			slog.Warn("media transcode consumer: read post classification state failed",
 				"post_id", vm.PostID, "error", err)
-		} else if oldType == "flick" && newType != "flick" {
-			// Never downgrade a reel. The author posted it from the Reel
-			// composer; a landscape frame or a long duration is their
-			// choice, not a misclassification (founder, 2026-09-04). The
-			// measured category stays on video_metadata for analytics.
-			slog.Info("media transcode consumer: keeping author's flick",
-				"post_id", vm.PostID, "measured_type", newType, "duration_s", duration, "w", w, "h", h)
-		} else if oldType != newType {
+		} else if newType, keep := reclassifyDecision(st.ContentType, st.ContentTypeExplicit, measuredType); keep {
+			if st.ContentType != measuredType {
+				slog.Info("media transcode consumer: keeping author's kind",
+					"post_id", vm.PostID, "content_type", st.ContentType, "measured_type", measuredType,
+					"duration_s", duration, "w", w, "h", h)
+			}
+		} else if newType != st.ContentType {
 			if err := c.store.UpdatePostContentType(ctx, vm.PostID, newType); err != nil {
 				slog.Warn("media transcode consumer: reclassify failed",
 					"post_id", vm.PostID, "new_type", newType, "error", err)
 			} else {
 				slog.Info("media transcode consumer: post reclassified",
-					"post_id", vm.PostID, "old_type", oldType, "new_type", newType,
+					"post_id", vm.PostID, "old_type", st.ContentType, "new_type", newType,
 					"duration_s", duration, "w", w, "h", h)
 				if c.producer != nil {
 					if err := c.producer.PublishPostContentTypeChanged(
-						ctx, vm.PostID, authorID, oldType, newType,
+						ctx, vm.PostID, st.AuthorID, st.ContentType, newType,
 					); err != nil {
 						slog.Warn("media transcode consumer: publish content_type_changed failed",
 							"post_id", vm.PostID, "error", err)
@@ -188,6 +208,25 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 		"media_id", mediaID, "post_id", vm.PostID,
 		"hls", p.HLSMasterURL != "")
 	return nil
+}
+
+// reclassifyDecision applies the rule "a reel is what the author posted as
+// a reel; a video is what the author posted as a video" to a post whose
+// video has just been measured. It returns the content_type the post should
+// have, and keep=true when the current kind must stand regardless of the
+// measurement:
+//
+//   - an explicit kind (content_type_explicit) is the author's choice —
+//     flick stays flick, long_video stays long_video;
+//   - a flick is never downgraded even when the row predates the explicit
+//     flag: every flick was posted from the Reel composer;
+//   - anything else — a plain post that defaulted to long_video while
+//     transcode was pending — takes the measured type.
+func reclassifyDecision(current string, explicit bool, measured string) (newType string, keep bool) {
+	if explicit || current == postclassify.Flick {
+		return current, true
+	}
+	return measured, false
 }
 
 // lookupMediaDims fetches the duration + dimensions written by the

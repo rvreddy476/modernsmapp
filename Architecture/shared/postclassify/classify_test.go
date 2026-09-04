@@ -14,13 +14,15 @@ func TestClassify(t *testing.T) {
 	}{
 		// Happy paths
 		{"30s portrait → flick", 30, 720, 1280, Flick},
-		{"180s portrait at the cap → flick", 180, 720, 1280, Flick},
+		{"300s portrait at the cap → flick", 300, 720, 1280, Flick},
+		{"181s portrait (old 3-min cap) → flick", 181, 720, 1280, Flick},
 		{"square video at boundary → flick", 60, 1080, 1080, Flick},
 
 		// Long-form paths
-		{"181s portrait → long_video (over cap)", 181, 720, 1280, LongVideo},
+		{"301s portrait → long_video (over cap)", 301, 720, 1280, LongVideo},
 		{"30s landscape → long_video (orientation)", 30, 1920, 1080, LongVideo},
 		{"5min landscape → long_video", 300, 1920, 1080, LongVideo},
+		{"10min landscape → long_video", 600, 1920, 1080, LongVideo},
 
 		// Unknown-input paths default safely to long_video
 		{"duration 0 → long_video (unknown)", 0, 720, 1280, LongVideo},

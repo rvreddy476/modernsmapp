@@ -16,10 +16,10 @@ import (
 // UpdateMediaDuration persists the server-measured duration (seconds).
 // Voice posts never trust a client-declared duration: this value comes
 // from ffprobe at confirm time and backs the 180 s cap.
-func (s *MediaAssetStore) UpdateMediaDuration(ctx context.Context, mediaID uuid.UUID, seconds int) error {
+func (s *MediaAssetStore) UpdateMediaDuration(ctx context.Context, mediaID uuid.UUID, seconds, ms int) error {
 	_, err := s.db.Exec(ctx,
-		`UPDATE media_assets SET duration_seconds = $2 WHERE id = $1`,
-		mediaID, seconds)
+		`UPDATE media_assets SET duration_seconds = $2, duration_ms = $3 WHERE id = $1`,
+		mediaID, seconds, ms)
 	return err
 }
 

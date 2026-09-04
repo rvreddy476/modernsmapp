@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS media_assets (
     processing_status TEXT NOT NULL,      -- pending_upload, uploaded, processing, ready, failed
     width INT,
     height INT,
-    duration_seconds INT,                -- video duration in seconds
+    duration_seconds INT,                -- video duration in whole seconds
+    duration_ms INT,                     -- video/audio duration in milliseconds (ffprobe)
     blurhash TEXT,                        -- blur placeholder hash
     alt_text TEXT DEFAULT '',
     original_url VARCHAR(500),

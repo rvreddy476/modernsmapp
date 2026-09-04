@@ -54,7 +54,7 @@ func TestApplyMediaStateDerivesIsProcessing(t *testing.T) {
 	ready := uuid.New()
 	transcoding := uuid.New()
 	state := map[uuid.UUID]postgres.MediaOwnership{
-		ready:       {ProcessingStatus: "ready", ModerationStatus: "passed"},
+		ready:       {ProcessingStatus: "ready", ModerationStatus: "passed", DurationMs: 5070},
 		transcoding: {ProcessingStatus: "processing", ModerationStatus: "pending"},
 	}
 
@@ -66,6 +66,9 @@ func TestApplyMediaStateDerivesIsProcessing(t *testing.T) {
 		}
 		if p.Media[0].ProcessingStatus != "ready" || p.Media[0].ModerationStatus != "passed" {
 			t.Fatalf("per-media state not overlaid: %+v", p.Media[0])
+		}
+		if p.Media[0].DurationMs != 5070 {
+			t.Fatalf("duration_ms not overlaid from media_assets: %+v", p.Media[0])
 		}
 	})
 

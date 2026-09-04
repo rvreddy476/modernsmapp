@@ -155,15 +155,19 @@ type HydratedMedia struct {
 	// required to reject.
 	Position int `json:"position"`
 
-	AltText       string            `json:"alt_text"`
-	AltDecorative bool              `json:"alt_decorative"`
-	Status        string            `json:"status,omitempty"`
-	Width         *int              `json:"width,omitempty"`
-	Height        *int              `json:"height,omitempty"`
-	Blurhash      *string           `json:"blurhash,omitempty"`
-	Variants      map[string]string `json:"variants,omitempty"`
-	HLSURL        string            `json:"hls_url,omitempty"`
-	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
+	AltText       string  `json:"alt_text"`
+	AltDecorative bool    `json:"alt_decorative"`
+	Status        string  `json:"status,omitempty"`
+	Width         *int    `json:"width,omitempty"`
+	Height        *int    `json:"height,omitempty"`
+	Blurhash      *string `json:"blurhash,omitempty"`
+	// DurationMs is the ffprobe duration of a video or audio asset in
+	// milliseconds, from media-service's delivery DTO (Tube, 2026-09-05).
+	// Omitted while unknown and for images.
+	DurationMs int               `json:"duration_ms,omitempty"`
+	Variants   map[string]string `json:"variants,omitempty"`
+	HLSURL     string            `json:"hls_url,omitempty"`
+	ExpiresAt  *time.Time        `json:"expires_at,omitempty"`
 
 	// Pipeline state, decoded from post-service and re-emitted (instant
 	// publish). processing_status: pending_upload|uploaded|processing|
@@ -357,15 +361,16 @@ type publicProfile struct {
 }
 
 type mediaDelivery struct {
-	MediaID   uuid.UUID         `json:"media_id"`
-	Kind      string            `json:"kind"`
-	Status    string            `json:"status"`
-	Width     *int              `json:"width,omitempty"`
-	Height    *int              `json:"height,omitempty"`
-	Blurhash  *string           `json:"blurhash,omitempty"`
-	Variants  map[string]string `json:"variants,omitempty"`
-	HLSURL    string            `json:"hls_url,omitempty"`
-	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+	MediaID    uuid.UUID         `json:"media_id"`
+	Kind       string            `json:"kind"`
+	Status     string            `json:"status"`
+	Width      *int              `json:"width,omitempty"`
+	Height     *int              `json:"height,omitempty"`
+	Blurhash   *string           `json:"blurhash,omitempty"`
+	DurationMs int               `json:"duration_ms,omitempty"`
+	Variants   map[string]string `json:"variants,omitempty"`
+	HLSURL     string            `json:"hls_url,omitempty"`
+	ExpiresAt  *time.Time        `json:"expires_at,omitempty"`
 	// Instant publish: the one URL to play and what it is ("hls" |
 	// "original"). See HydratedMedia.PlaybackURL.
 	PlaybackURL  string `json:"playback_url,omitempty"`
@@ -443,6 +448,7 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 			m.Width = delivery.Width
 			m.Height = delivery.Height
 			m.Blurhash = delivery.Blurhash
+			m.DurationMs = delivery.DurationMs
 			m.Variants = delivery.Variants
 			m.HLSURL = delivery.HLSURL
 			m.PlaybackURL = delivery.PlaybackURL

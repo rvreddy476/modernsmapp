@@ -59,6 +59,13 @@ type Post struct {
 	// RemixSetting above.
 	HideShare     bool `json:"hide_share"`
 	AllowDownload bool `json:"allow_download"`
+	// ContentTypeExplicit is TRUE when ContentType was the author's choice
+	// (flick / long_video sent by the Reel or Tube composer, or a category
+	// override) rather than the server's measurement of a plain "post" that
+	// carried a video. A reel is what the author posted as a reel; a video
+	// is what the author posted as a video — the MediaTranscodeConsumer
+	// only reclassifies rows where this is FALSE.
+	ContentTypeExplicit bool `json:"content_type_explicit"`
 	// TaggedUserIDs is the people picked in the composer, distinct from
 	// Mentions, which are parsed out of the text.
 	TaggedUserIDs  []uuid.UUID `json:"tagged_user_ids,omitempty"`
@@ -136,6 +143,11 @@ type PostMedia struct {
 	// moderation_status is pending|passed|rejected|manual_review.
 	ProcessingStatus string `json:"processing_status"`
 	ModerationStatus string `json:"moderation_status"`
+
+	// DurationMs is the ffprobe duration of a video or audio asset in
+	// milliseconds, overlaid from media_assets with the pipeline state
+	// (Tube, 2026-09-05). Omitted while unknown and for images.
+	DurationMs int `json:"duration_ms,omitempty"`
 }
 
 // The one projection every post-media read uses.
@@ -193,7 +205,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	comment_moderation, comment_access,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
-	hide_share, allow_download, tagged_user_ids,
+	hide_share, allow_download, tagged_user_ids, content_type_explicit,
 	tier_required_id,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
@@ -224,7 +236,7 @@ func postScanDestinations(p *Post) []any {
 		&p.CommentModeration, &p.CommentAccess,
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
-		&p.HideShare, &p.AllowDownload, &p.TaggedUserIDs,
+		&p.HideShare, &p.AllowDownload, &p.TaggedUserIDs, &p.ContentTypeExplicit,
 		&p.TierRequiredID,
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
@@ -374,6 +386,9 @@ type MediaOwnership struct {
 	Kind             string
 	ProcessingStatus string
 	ModerationStatus string
+	// DurationMs: media_assets.duration_ms (media-service migration 016),
+	// falling back to the whole-second column for older rows; 0 = unknown.
+	DurationMs int
 }
 
 // BatchGetMediaOwnership returns ownership and state for the given media
@@ -386,7 +401,8 @@ func (s *Store) BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (ma
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type,
-		       COALESCE(processing_status,''), COALESCE(moderation_status,'')
+		       COALESCE(processing_status,''), COALESCE(moderation_status,''),
+		       COALESCE(duration_ms, duration_seconds * 1000, 0)
 		FROM media_assets WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("batch media ownership: %w", err)
@@ -397,7 +413,7 @@ func (s *Store) BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (ma
 			id uuid.UUID
 			m  MediaOwnership
 		)
-		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.ProcessingStatus, &m.ModerationStatus); err != nil {
+		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.ProcessingStatus, &m.ModerationStatus, &m.DurationMs); err != nil {
 			return nil, fmt.Errorf("batch media ownership scan: %w", err)
 		}
 		out[id] = m
@@ -592,7 +608,7 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			tier_required_id,
 			distribution, distribution_rev,
 			thread_root_id, thread_reply_to_id, thread_seq,
-			hide_share, allow_download, tagged_user_ids,
+			hide_share, allow_download, tagged_user_ids, content_type_explicit,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
@@ -605,8 +621,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			$40,
 			$41, $42,
 			$43, $44, $45,
-			$46, $47, $48,
-			$49, $49)
+			$46, $47, $48, $49,
+			$50, $50)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -621,7 +637,7 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		p.TierRequiredID,
 		p.Distribution, p.DistributionRev,
 		p.ThreadRootID, p.ThreadReplyToID, p.ThreadSeq,
-		p.HideShare, p.AllowDownload, p.TaggedUserIDs,
+		p.HideShare, p.AllowDownload, p.TaggedUserIDs, p.ContentTypeExplicit,
 		p.CreatedAt)
 	if err != nil {
 		return err
@@ -868,7 +884,9 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 
 // GetRecentPosts returns recent public posts from all users, paginated by cursor.
 // If excludeAuthor is non-nil, posts by that author are excluded.
-func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, limit int, cursor string) ([]Post, string, error) {
+// contentTypes, when non-empty, restricts the page to those content types
+// (feed-service's /v1/feed/videos discovery fill asks for long_video only).
+func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, contentTypes []string, limit int, cursor string) ([]Post, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -885,6 +903,11 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, li
 	if excludeAuthor != nil {
 		query += fmt.Sprintf(` AND author_id != $%d`, argIdx)
 		args = append(args, *excludeAuthor)
+		argIdx++
+	}
+	if len(contentTypes) > 0 {
+		query += fmt.Sprintf(` AND content_type = ANY($%d)`, argIdx)
+		args = append(args, contentTypes)
 		argIdx++
 	}
 
@@ -1091,19 +1114,33 @@ func (s *Store) GetPostAuthorID(ctx context.Context, postID uuid.UUID) (uuid.UUI
 	return authorID, err
 }
 
-// GetPostAuthorAndContentType returns the (author_id, content_type)
-// pair for a post in one query. Used by the MediaTranscodeConsumer
-// to detect whether a reclassification actually changed the value
-// (so a no-op doesn't fan out a useless event) and to populate the
-// downstream PostContentTypeChanged payload.
-func (s *Store) GetPostAuthorAndContentType(ctx context.Context, postID uuid.UUID) (uuid.UUID, string, error) {
-	var authorID uuid.UUID
-	var contentType string
+// PostClassificationState is what the MediaTranscodeConsumer needs to
+// decide whether a post may be reclassified once transcode has measured
+// its video: who owns it (for the PostContentTypeChanged payload), what it
+// is now (so a no-op doesn't fan out a useless event), and whether that
+// kind was the author's explicit choice (in which case it is never
+// rewritten from the measurement).
+type PostClassificationState struct {
+	AuthorID            uuid.UUID
+	ContentType         string
+	ContentTypeExplicit bool
+}
+
+// GetPostClassificationState reads the three fields above in one query.
+func (s *Store) GetPostClassificationState(ctx context.Context, postID uuid.UUID) (PostClassificationState, error) {
+	var st PostClassificationState
 	err := s.db.QueryRow(ctx,
-		`SELECT author_id, content_type FROM posts WHERE id = $1 AND deleted_at IS NULL`,
+		`SELECT author_id, content_type, content_type_explicit FROM posts WHERE id = $1 AND deleted_at IS NULL`,
 		postID,
-	).Scan(&authorID, &contentType)
-	return authorID, contentType, err
+	).Scan(&st.AuthorID, &st.ContentType, &st.ContentTypeExplicit)
+	return st, err
+}
+
+// GetPostAuthorAndContentType returns the (author_id, content_type)
+// pair for a post in one query.
+func (s *Store) GetPostAuthorAndContentType(ctx context.Context, postID uuid.UUID) (uuid.UUID, string, error) {
+	st, err := s.GetPostClassificationState(ctx, postID)
+	return st.AuthorID, st.ContentType, err
 }
 
 // UpdatePostCoverMedia updates the cover_media_id of a post.
