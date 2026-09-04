@@ -31,7 +31,8 @@ import com.us.android.core.designsystem.theme.UsTheme
  * in the Figma home frame (YsWb936muw8pwIxgb0je2A, node 2:10).
  *
  * Three equal columns at 44dp; the label 13sp bold, the active one in the
- * primary text colour over a 2dp accent underline, the others muted; a 1dp
+ * primary text colour over a 2dp WHITE underline (the ember one read as a
+ * stray accent — founder, 2026-09-05), the others muted; a 1dp
  * `borderMedium` rule closes the row. The underline is the label's width,
  * not the column's — a full-width bar under a short word reads as a border,
  * not a selection.
@@ -104,7 +105,7 @@ private fun FeedTabItem(
                     .padding(top = UNDERLINE_GAP)
                     .fillMaxWidth()
                     .height(UNDERLINE_HEIGHT)
-                    .background(if (active) UsTheme.extended.accentSolid else Color.Transparent),
+                    .background(if (active) UsTheme.extended.textPrimary else Color.Transparent),
             )
         }
     }
