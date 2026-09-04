@@ -214,7 +214,8 @@ fun UsPillButton(
  * odd"; one colour, kept consistent). A capsule, 32dp tall, 13sp semibold —
  * a real button, not an inline text link. The ground navy, not the accent,
  * for the text: white-on-navy is the brand pairing and it holds up over
- * any video frame.
+ * any video frame. The text is the theme's brand navy — a visible blue,
+ * not the near-black ground.
  */
 @Composable
 fun UsFollowButton(
@@ -240,7 +241,7 @@ fun UsFollowButton(
             CircularProgressIndicator(
                 modifier = Modifier.size(PILL_SPINNER),
                 strokeWidth = 2.dp,
-                color = FOLLOW_TEXT_NAVY,
+                color = UsTheme.extended.brandNavy,
             )
         } else {
             Text(
@@ -248,7 +249,7 @@ fun UsFollowButton(
                 style = MaterialTheme.typography.labelLarge,
                 fontSize = FOLLOW_TEXT,
                 fontWeight = FontWeight.SemiBold,
-                color = FOLLOW_TEXT_NAVY,
+                color = UsTheme.extended.brandNavy,
                 maxLines = 1,
             )
         }
@@ -262,9 +263,6 @@ private val PILL_SPINNER = 12.dp
 private val FOLLOW_HORIZONTAL = 16.dp
 private val FOLLOW_VERTICAL = 7.dp
 private val FOLLOW_TEXT = 13.sp
-
-/** Momentum ground navy — the same value the bar's create tile cuts its plus in. */
-private val FOLLOW_TEXT_NAVY = Color(0xFF041122)
 
 @Preview(name = "Pills", showBackground = true, backgroundColor = 0xFF041122)
 @Composable

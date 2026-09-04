@@ -70,6 +70,13 @@ data class UsExtendedColors(
      * drop shadow and the count inside the header's white badge.
      */
     val accentDeep: Color,
+    /**
+     * Brand navy for text ON a white control — the Follow button. A step
+     * lighter than the ground so it reads as navy blue, not black, on white
+     * (founder, 2026-09-05). Identical in both themes: it is a brand colour,
+     * not a surface.
+     */
+    val brandNavy: Color,
     /** The raised inline-panel surface (`#071D33` dark, `#EEF3F9` light). */
     val bgRaised: Color,
     /** The Create sheet's per-type circle gradients. See [UsCreateColors]. */
@@ -220,6 +227,7 @@ internal val DarkExtendedColors = UsExtendedColors(
     unreadRow = UsColorTokens.UnreadRow,
     accentSolid = UsColorTokens.AccentOrange,
     accentDeep = UsColorTokens.AccentRed,
+    brandNavy = UsColorTokens.BrandNavy,
     bgRaised = UsColorTokens.BgTertiary,
     create = UsCreateColors(
         text = EmberSwatch,

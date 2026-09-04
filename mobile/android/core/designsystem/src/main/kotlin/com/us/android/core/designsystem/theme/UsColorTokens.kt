@@ -49,6 +49,9 @@ internal object UsColorTokens {
     val AccentOrange = Color(0xFFFB923C)
     val AccentRed = Color(0xFFDC2626)
 
+    /** Navy that stays legibly blue on white — the Follow button's text. */
+    val BrandNavy = Color(0xFF0F3460)
+
     // ── Brand (legacy per-product gradients, kept for the story ring and
     // surfaces that have not moved to the single Momentum accent) ───────
     val PostbookPrimary = Color(0xFFFF6B35)
