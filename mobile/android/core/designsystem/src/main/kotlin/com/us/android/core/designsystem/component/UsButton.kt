@@ -209,10 +209,12 @@ fun UsPillButton(
  * THE follow button — the same control wherever an account can be
  * followed: the post header's right end, the reel's author row, a profile.
  *
- * Ember flame, Momentum's one action colour, so "follow" reads the same on
- * a navy card, over a video and on a profile (founder, 2026-09-04: "pick a
- * colour, but keep it consistent"). A capsule, 32dp tall, 13sp semibold —
- * a real button, not an inline text link.
+ * WHITE with navy text, so "follow" reads the same on a navy card, over a
+ * video and on a profile (founder, 2026-09-05: the ember version "looked
+ * odd"; one colour, kept consistent). A capsule, 32dp tall, 13sp semibold —
+ * a real button, not an inline text link. The ground navy, not the accent,
+ * for the text: white-on-navy is the brand pairing and it holds up over
+ * any video frame.
  */
 @Composable
 fun UsFollowButton(
@@ -225,7 +227,7 @@ fun UsFollowButton(
     Box(
         modifier = modifier
             .clip(shape)
-            .background(UsTheme.extended.ctaGradient, shape)
+            .background(Color.White, shape)
             .clickable(enabled = !busy, onClick = onClick)
             .semantics {
                 role = Role.Button
@@ -238,7 +240,7 @@ fun UsFollowButton(
             CircularProgressIndicator(
                 modifier = Modifier.size(PILL_SPINNER),
                 strokeWidth = 2.dp,
-                color = Color.White,
+                color = FOLLOW_TEXT_NAVY,
             )
         } else {
             Text(
@@ -246,7 +248,7 @@ fun UsFollowButton(
                 style = MaterialTheme.typography.labelLarge,
                 fontSize = FOLLOW_TEXT,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = FOLLOW_TEXT_NAVY,
                 maxLines = 1,
             )
         }
@@ -260,6 +262,9 @@ private val PILL_SPINNER = 12.dp
 private val FOLLOW_HORIZONTAL = 16.dp
 private val FOLLOW_VERTICAL = 7.dp
 private val FOLLOW_TEXT = 13.sp
+
+/** Momentum ground navy — the same value the bar's create tile cuts its plus in. */
+private val FOLLOW_TEXT_NAVY = Color(0xFF041122)
 
 @Preview(name = "Pills", showBackground = true, backgroundColor = 0xFF041122)
 @Composable
