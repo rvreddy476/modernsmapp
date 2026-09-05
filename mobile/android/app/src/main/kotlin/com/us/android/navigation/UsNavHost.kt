@@ -704,8 +704,8 @@ private fun NavGraphBuilder.tabDestinations(
     exploreDestinations(navController, launcher)
 
     // Tube — the long-video mini-app (redesign, 2026-09-05): home, pushed
-    // from the Explore launcher, with Subscriptions and You beside it under
-    // Tube's own bar, and the watch screen over any of them. Every route is
+    // from the Explore launcher, with You beside it under Tube's own bar
+    // (Subscriptions hangs off You), and the watch screen over any of them. Every route is
     // a pushed screen, so the shell's bar is already gone inside Tube.
     // Search opens Explore scoped to videos; Reels is the app's Reels tab
     // (the screen has left the reel id in ReelsEntry, as the Home feed does);
@@ -720,6 +720,7 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenNotifications = { navController.navigateToNotifications() },
             onOpenReels = onOpenReels,
             onCreateVideo = { navController.navigateToCreate(CreateSurface.Video) },
+            onOpenExplore = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
             onOpenTab = { tab -> navController.navigateToTubeTab(tab) },
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
         ),

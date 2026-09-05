@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,6 +42,7 @@ import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsPillButton
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.feed.data.ContinueWatching
@@ -63,6 +66,7 @@ import com.us.android.feature.tube.ui.home.SectionTitle
 import com.us.android.feature.tube.ui.home.ShelfSkeleton
 import com.us.android.feature.tube.ui.home.TubeGridSkeleton
 import com.us.android.feature.tube.ui.home.appendFooter
+import com.us.android.feature.tube.ui.pressScale
 import com.us.android.feature.tube.ui.rememberTubeMoreState
 
 /**
@@ -136,6 +140,9 @@ fun YouScreen(
                 item(key = "channel", span = StaggeredGridItemSpan.FullLine) {
                     ChannelHeader(state = channel, viewer = viewer, actions = actions)
                 }
+                item(key = "subscriptions", span = StaggeredGridItemSpan.FullLine) {
+                    SubscriptionsRow(onOpen = { destinations.onOpenTab(TubeTab.SUBSCRIPTIONS) })
+                }
                 ownVideosSection(own, actions)
                 continueWatchingSection(continueWatching, actions)
                 savedSection(saved, actions)
@@ -154,6 +161,59 @@ fun YouScreen(
 }
 
 private enum class YouSheet { None, Create, Edit }
+
+/**
+ * The way into Subscriptions — videos from the channels the viewer follows.
+ * It left Tube's bar for this page (founder, 2026-09-05: "keep it inside
+ * profile only"), so the row is the one door to it: a glass row with the
+ * list glyph, the title, a line saying what is behind it, and a chevron.
+ */
+@Composable
+private fun SubscriptionsRow(onOpen: () -> Unit) {
+    val shape = RoundedCornerShape(ROW_RADIUS)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(UsTheme.extended.glassBg)
+            .border(ROW_HAIRLINE, UsTheme.extended.glassBorder, shape)
+            .pressScale(onOpen)
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.l)
+            .testTag("tube_you_subscriptions"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        RowGlyph(UsIcons.ListVideo)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Subscriptions",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.textPrimary,
+            )
+            Text(
+                text = "Videos from channels you follow",
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textMuted,
+            )
+        }
+        RowGlyph(UsIcons.ChevronRight)
+    }
+}
+
+@Composable
+private fun RowGlyph(icon: ImageVector) {
+    Icon(
+        imageVector = icon,
+        contentDescription = null,
+        tint = UsTheme.extended.textPrimary,
+        modifier = Modifier.width(ROW_GLYPH),
+    )
+}
+
+private val ROW_RADIUS = 18.dp
+private val ROW_HAIRLINE = 1.dp
+private val ROW_GLYPH = 22.dp
 
 /** The create sheet, the edit sheet, or nothing — one at a time over the page. */
 @Composable

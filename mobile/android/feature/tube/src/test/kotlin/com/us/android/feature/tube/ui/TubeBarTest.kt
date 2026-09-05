@@ -7,9 +7,9 @@ import org.junit.Test
 class TubeBarTest {
 
     @Test
-    fun `the slots are Home, Reels, Subscriptions, You - the plus sits between the pairs`() {
+    fun `the slots are Home, Reels, Explore, You - the plus sits between the pairs`() {
         assertThat(TubeBarItem.entries.map { it.label })
-            .containsExactly("Home", "Reels", "Subscriptions", "You")
+            .containsExactly("Home", "Reels", "Explore", "You")
             .inOrder()
     }
 
@@ -22,23 +22,30 @@ class TubeBarTest {
     }
 
     @Test
-    fun `Home, Subscriptions and You are Tube pages`() {
+    fun `Home and You are Tube pages`() {
         assertThat(TubeBarItem.HOME.action()).isEqualTo(TubeBarAction.OpenTab(TubeTab.HOME))
-        assertThat(TubeBarItem.SUBSCRIPTIONS.action()).isEqualTo(TubeBarAction.OpenTab(TubeTab.SUBSCRIPTIONS))
         assertThat(TubeBarItem.YOU.action()).isEqualTo(TubeBarAction.OpenTab(TubeTab.YOU))
     }
 
     @Test
-    fun `Reels leaves for the app Reels tab`() {
+    fun `Reels and Explore leave Tube for the app`() {
         assertThat(TubeBarItem.REELS.action()).isEqualTo(TubeBarAction.OpenReels)
+        assertThat(TubeBarItem.EXPLORE.action()).isEqualTo(TubeBarAction.OpenExplore)
     }
 
     @Test
-    fun `each page lights its own slot and Reels is never lit`() {
+    fun `Subscriptions is not on the bar - it lives under You`() {
+        assertThat(TubeBarItem.entries.map { it.label }).doesNotContain("Subscriptions")
+        assertThat(TubeTab.SUBSCRIPTIONS.barIndex()).isEqualTo(TubeBarItem.YOU.ordinal)
+    }
+
+    @Test
+    fun `each page lights its slot and Reels and Explore are never lit`() {
         assertThat(TubeTab.HOME.barIndex()).isEqualTo(TubeBarItem.HOME.ordinal)
-        assertThat(TubeTab.SUBSCRIPTIONS.barIndex()).isEqualTo(TubeBarItem.SUBSCRIPTIONS.ordinal)
         assertThat(TubeTab.YOU.barIndex()).isEqualTo(TubeBarItem.YOU.ordinal)
-        assertThat(TubeTab.entries.map { it.barIndex() }).doesNotContain(TubeBarItem.REELS.ordinal)
+        val lit = TubeTab.entries.map { it.barIndex() }
+        assertThat(lit).doesNotContain(TubeBarItem.REELS.ordinal)
+        assertThat(lit).doesNotContain(TubeBarItem.EXPLORE.ordinal)
     }
 
     @Test

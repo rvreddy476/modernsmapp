@@ -6,15 +6,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -23,7 +20,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -51,16 +47,17 @@ enum class TubeTab(val label: String, val icon: ImageVector) {
 }
 
 /**
- * The five slots on Tube's bar, in order: Home, Reels, "+", Subscriptions,
- * You (founder, 2026-09-05; "Shorts" renamed to Reels the same day — the
- * app has one word for short video). Two of them leave Tube — Reels is the
- * app's Reels tab and "+" the Create hub on its Video surface — so the slot
- * is not the same thing as a [TubeTab].
+ * The five slots on Tube's bar, in order: Home, Reels, "+", Explore, You
+ * (founder, 2026-09-05: Subscriptions left the bar for the You page, and
+ * Explore took its slot "so the user can go to any app from there";
+ * "Shorts" was renamed to Reels the same day). Three of them leave Tube —
+ * Reels is the app's Reels tab, Explore the launcher, "+" the Create hub
+ * on its Video surface — so the slot is not the same thing as a [TubeTab].
  */
 enum class TubeBarItem(val label: String, val icon: ImageVector, val contentDescription: String = label) {
     HOME("Home", UsIcons.Home, "Tube home"),
     REELS("Reels", UsIcons.Reels),
-    SUBSCRIPTIONS("Subscriptions", UsIcons.ListVideo),
+    EXPLORE("Explore", UsIcons.Explore, "Explore apps"),
     YOU("You", UsIcons.Profile, "Your videos"),
 }
 
@@ -71,6 +68,9 @@ sealed interface TubeBarAction {
     /** The app's Reels tab. */
     data object OpenReels : TubeBarAction
 
+    /** The app's Explore launcher — the way to every other mini-app. */
+    data object OpenExplore : TubeBarAction
+
     /** The Create hub, opened on Video. */
     data object CreateVideo : TubeBarAction
 }
@@ -79,22 +79,27 @@ sealed interface TubeBarAction {
 fun TubeBarItem.action(): TubeBarAction = when (this) {
     TubeBarItem.HOME -> TubeBarAction.OpenTab(TubeTab.HOME)
     TubeBarItem.REELS -> TubeBarAction.OpenReels
-    TubeBarItem.SUBSCRIPTIONS -> TubeBarAction.OpenTab(TubeTab.SUBSCRIPTIONS)
+    TubeBarItem.EXPLORE -> TubeBarAction.OpenExplore
     TubeBarItem.YOU -> TubeBarAction.OpenTab(TubeTab.YOU)
 }
 
-/** Which slot lights for a page; Reels never does — it is not a Tube page. */
+/**
+ * Which slot lights for a page. Subscriptions lives under You (it is reached
+ * from the You page), so You stays lit there; Reels and Explore never light —
+ * they are not Tube pages.
+ */
 fun TubeTab.barIndex(): Int = when (this) {
     TubeTab.HOME -> TubeBarItem.HOME.ordinal
-    TubeTab.SUBSCRIPTIONS -> TubeBarItem.SUBSCRIPTIONS.ordinal
+    TubeTab.SUBSCRIPTIONS -> TubeBarItem.YOU.ordinal
     TubeTab.YOU -> TubeBarItem.YOU.ordinal
 }
 
 /**
  * Tube's bottom bar (Momentum look, 2026-09-05): NOT the shell's flat bar
  * but a floating glass pill — 64dp tall, 16dp above the navigation inset,
- * a hairline border — with Home, Reels, Subscriptions, You, and a raised
- * ember "+" overlapping its top edge at the centre, casting the ember glow.
+ * a hairline border — with Home, Reels, Explore, You, and the shell's own
+ * "+" in the middle: the outlined rounded square the founder asked to keep
+ * ("it was looking awesome"; the raised ember disc was dropped 2026-09-05).
  * The selected item is white; the rest are muted. No ripples: a slot dips
  * on press like everything else in Tube.
  *
@@ -112,7 +117,7 @@ fun TubeBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = BAR_SIDE, end = BAR_SIDE, bottom = BAR_LIFT, top = PLUS_OVERLAP)
+            .padding(start = BAR_SIDE, end = BAR_SIDE, bottom = BAR_LIFT)
             .testTag("tube_bar"),
         contentAlignment = Alignment.TopCenter,
     ) {
@@ -130,7 +135,7 @@ fun TubeBottomBar(
         ) {
             val split = TubeBarItem.entries.size / 2
             TubeBarItem.entries.forEachIndexed { index, item ->
-                if (index == split) Spacer(Modifier.width(PLUS_SLOT))
+                if (index == split) PlusSlot(onClick = { onAction(TubeBarAction.CreateVideo) })
                 BarSlot(
                     item = item,
                     selected = index == lit,
@@ -139,10 +144,6 @@ fun TubeBottomBar(
                 )
             }
         }
-        PlusButton(
-            onClick = { onAction(TubeBarAction.CreateVideo) },
-            modifier = Modifier.offset(y = -PLUS_OVERLAP),
-        )
     }
 }
 
@@ -174,16 +175,27 @@ private fun BarSlot(item: TubeBarItem, selected: Boolean, onClick: () -> Unit, m
     }
 }
 
-/** The raised "+": a 56dp ember disc with the ember glow beneath it, a white plus in it. */
+/**
+ * The "+" slot: the shell bar's create tile — a 40dp outlined rounded square
+ * with a muted plus, no fill, no glow — centred in a slot as wide as the
+ * others. Same drawing as the shell's so the two bars read as one family.
+ */
 @Composable
-private fun PlusButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val glow = UsTheme.extended.accentSolid
+private fun PlusSlot(onClick: () -> Unit) {
+    val muted = UsTheme.extended.textMuted
+    val shape = RoundedCornerShape(PLUS_RADIUS)
+    Box(modifier = Modifier.width(PLUS_SLOT), contentAlignment = Alignment.Center) {
+        PlusTile(onClick = onClick, muted = muted, shape = shape)
+    }
+}
+
+@Composable
+private fun PlusTile(onClick: () -> Unit, muted: Color, shape: RoundedCornerShape) {
     Box(
         contentAlignment = Alignment.Center,
-        modifier = modifier
+        modifier = Modifier
             .size(PLUS_SIZE)
-            .shadow(elevation = PLUS_GLOW, shape = CircleShape, ambientColor = glow, spotColor = glow)
-            .background(UsTheme.extended.ctaGradient, CircleShape)
+            .border(PLUS_OUTLINE, muted, shape)
             .pressScale(onClick)
             .semantics {
                 contentDescription = "Post a video"
@@ -194,24 +206,24 @@ private fun PlusButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
         Icon(
             imageVector = UsIcons.Create,
             contentDescription = null,
-            tint = Color.White,
+            tint = muted,
             modifier = Modifier.size(PLUS_GLYPH),
         )
     }
 }
 
-/** How much of the screen's bottom the floating bar takes: its own height, its lift, and the overlap above it. */
-val TubeBarClearance: Dp get() = BAR_HEIGHT + BAR_LIFT + PLUS_OVERLAP
+/** How much of the screen's bottom the floating bar takes: its own height and its lift. */
+val TubeBarClearance: Dp get() = BAR_HEIGHT + BAR_LIFT
 
 private const val PILL_GROUND_ALPHA = 0.88f
 private val BAR_HEIGHT = 64.dp
 private val BAR_LIFT = 16.dp
 private val BAR_SIDE = 20.dp
 private val HAIRLINE = 1.dp
-private val PLUS_SIZE = 56.dp
+private val PLUS_SIZE = 40.dp
 private val PLUS_SLOT = 64.dp
-private val PLUS_OVERLAP = 20.dp
-private val PLUS_GLOW = 14.dp
-private val PLUS_GLYPH = 26.dp
+private val PLUS_RADIUS = 14.dp
+private val PLUS_OUTLINE = 1.5.dp
+private val PLUS_GLYPH = 22.dp
 private val SLOT_GLYPH = 22.dp
 private val SLOT_LABEL_SIZE = 10.sp

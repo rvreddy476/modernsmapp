@@ -63,7 +63,9 @@ data class TubeDestinations(
     val onOpenReels: () -> Unit,
     /** The bar's "+": the Create hub on its Video surface. */
     val onCreateVideo: () -> Unit,
-    /** The bar's Home / Subscriptions / You, and the header's avatar. */
+    /** The bar's Explore slot: the app's launcher, the way to every other mini-app. */
+    val onOpenExplore: () -> Unit,
+    /** The bar's Home / You, the header's avatar, and the You page's Subscriptions row. */
     val onOpenTab: (TubeTab) -> Unit,
     /** A channel bubble or a card's channel: the channel's page inside Tube. */
     val onOpenChannel: (userId: String) -> Unit,
@@ -73,6 +75,7 @@ data class TubeDestinations(
         is TubeBarAction.OpenTab -> onOpenTab(action.tab)
         TubeBarAction.OpenReels -> onOpenReels()
         TubeBarAction.CreateVideo -> onCreateVideo()
+        TubeBarAction.OpenExplore -> onOpenExplore()
     }
 }
 
