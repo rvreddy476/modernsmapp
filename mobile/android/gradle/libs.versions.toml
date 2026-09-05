@@ -245,6 +245,7 @@ banuba-ve-export-sdk              = { module = "com.banuba.sdk:ve-export-sdk", v
 banuba-ve-playback-sdk            = { module = "com.banuba.sdk:ve-playback-sdk", version.ref = "banuba" }
 banuba-ve-gallery-sdk             = { module = "com.banuba.sdk:ve-gallery-sdk", version.ref = "banuba" }
 banuba-effect-player-adapter      = { module = "com.banuba.sdk:effect-player-adapter", version.ref = "banuba" }
+banuba-ar-cloud                   = { module = "com.banuba.sdk:ar-cloud", version.ref = "banuba" }
 banuba-ffmpeg                      = { module = "com.banuba.sdk:ffmpeg", version.ref = "banubaFfmpeg" }
 
 [plugins]

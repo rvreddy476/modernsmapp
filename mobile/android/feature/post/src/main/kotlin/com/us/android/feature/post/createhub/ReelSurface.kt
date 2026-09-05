@@ -275,7 +275,8 @@ private fun rememberReelEditing(
  * not a failure the person can act on.
  */
 private fun advancedEditorNotice(state: BanubaState): String? = when (state) {
-    BanubaState.Invalid, is BanubaState.Failed -> "Advanced editor unavailable"
+    BanubaState.Invalid -> "Advanced editor unavailable: the licence is expired or revoked"
+    is BanubaState.Failed -> "Advanced editor unavailable: ${state.message}"
     BanubaState.Unlicensed, BanubaState.Initialising, BanubaState.Ready -> null
 }
 

@@ -1,6 +1,7 @@
 package com.us.android.feature.post.createhub.banuba
 
 import android.content.Context
+import com.banuba.sdk.arcloud.di.ArCloudKoinModule
 import com.banuba.sdk.core.license.EditorSdk
 import com.banuba.sdk.effectplayer.adapter.BanubaEffectPlayerKoinModule
 import com.banuba.sdk.export.di.VeExportKoinModule
@@ -38,7 +39,8 @@ fun interface BanubaLicence {
  * Momentum's graph is Hilt; the SDK's is Koin, and it is started here — once,
  * lazily, from the reel flow — never in `Application.onCreate`. The modules
  * are the vendor's, in the vendor's order, with Momentum's overrides last.
- * Absent on purpose: the audio browser and AR cloud modules (paid, unneeded).
+ * Absent on purpose: the audio browser module (paid). AR cloud is present
+ * because the SDK core references it at start even when unused.
  */
 class KoinBanubaSdk @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -58,6 +60,7 @@ class KoinBanubaSdk @Inject constructor(
                 VeFlowKoinModule().module,
                 GalleryKoinModule().module,
                 BanubaEffectPlayerKoinModule().module,
+                ArCloudKoinModule().module,
                 momentumBanubaModule(exportTarget),
             )
         }

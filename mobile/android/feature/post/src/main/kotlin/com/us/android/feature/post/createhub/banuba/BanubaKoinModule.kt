@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import androidx.core.content.res.ResourcesCompat
 import androidx.fragment.app.Fragment
+import com.banuba.sdk.arcloud.data.source.ArEffectsRepositoryProvider
 import com.banuba.sdk.cameraui.data.CameraConfig
 import com.banuba.sdk.core.data.TrackData
 import com.banuba.sdk.core.domain.DraftConfig
@@ -38,6 +39,12 @@ private const val FIFTEEN_SECONDS_MS = 15_000L
  *  - text on video: Outfit and Figtree, not the SDK's Roboto.
  */
 internal fun momentumBanubaModule(exportTarget: BanubaExportTarget): Module = module {
+    // The SDK core resolves the AR-cloud effects repository even when no cloud
+    // effects are used (a missing binding fails the graph at start), so it is
+    // bound the way the vendor sample does: eagerly, on the backend repository.
+    single<ArEffectsRepositoryProvider>(createdAtStart = true) {
+        ArEffectsRepositoryProvider(arEffectsRepository = get(named("backendArEffectsRepository")))
+    }
     factory<ExportParamsProvider> {
         MomentumExportParamsProvider(
             target = exportTarget,

@@ -75,6 +75,7 @@ dependencies {
     implementation(libs.banuba.ve.playback.sdk)
     implementation(libs.banuba.ve.gallery.sdk)
     implementation(libs.banuba.effect.player.adapter)
+    implementation(libs.banuba.ar.cloud)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

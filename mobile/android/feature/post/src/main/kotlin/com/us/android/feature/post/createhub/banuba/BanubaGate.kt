@@ -1,5 +1,6 @@
 package com.us.android.feature.post.createhub.banuba
 
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,17 +37,23 @@ class BanubaGate @Inject constructor(
             sdk.startGraph()
             sdk.initialize(token)
         }.getOrElse { failure ->
+            Log.w(TAG, "SDK start failed", failure)
             _state.value = BanubaState.Failed(failure.message ?: failure.javaClass.simpleName)
             return
         }
         if (licence == null) {
+            Log.w(TAG, "initialize returned null: token rejected (length ${token.length})")
             _state.value = BanubaState.Failed(TOKEN_REJECTED)
             return
         }
-        licence.check { valid -> _state.value = if (valid) BanubaState.Ready else BanubaState.Invalid }
+        licence.check { valid ->
+            Log.i(TAG, "licence state valid=$valid")
+            _state.value = if (valid) BanubaState.Ready else BanubaState.Invalid
+        }
     }
 
     private companion object {
+        const val TAG = "BanubaGate"
         const val TOKEN_REJECTED = "The licence token was rejected as empty or truncated."
     }
 }
