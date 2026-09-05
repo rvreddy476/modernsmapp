@@ -116,7 +116,16 @@ func (s *Service) PrepareQuote(ctx context.Context, in QuoteInputP0) (*QuoteResu
 		PaymentMethod: "prepaid", // A5: prepaid only, never "cod"
 	})
 	if err != nil {
-		return nil, fmt.Errorf("commerce: courier quote failed: %w", err)
+		// 503, not 500. The carrier is a third party, and it being
+		// unreachable or refusing our credentials is not a defect in the
+		// buyer's request — it is retryable, and it must read that way so
+		// the client offers "try again" rather than "something went wrong".
+		//
+		// Found while re-running the launch journey: a Shiprocket
+		// credential failure surfaced as a bare INTERNAL_ERROR, and the
+		// only way to learn that the quote was down (rather than broken)
+		// was to read the server log.
+		return nil, fmt.Errorf("%w: %v", ErrCourierUnavailable, err)
 	}
 	if !res.Serviceable {
 		return &QuoteResult{Serviceable: false, Reason: res.Reason}, nil

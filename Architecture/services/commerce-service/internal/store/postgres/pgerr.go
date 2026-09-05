@@ -63,6 +63,30 @@ func IsRetryable(err error) bool {
 	return false
 }
 
+// ConstraintViolation reports whether err is a CHECK or foreign-key
+// violation, and names the constraint that refused the write.
+//
+// The edge uses it as the LAST arm before the unmapped-500 default. A check
+// constraint firing means the client sent a value the schema does not
+// permit — `document_type: "drivers_license"` was the case that found this —
+// and answering that with 500 tells the caller our database is broken when
+// in fact their request is. Every violation that has a domain meaning
+// (oversell, reserved stock) is still mapped ahead of this by its own
+// sentinel; this arm only catches the ones nothing else claimed, and it
+// carries the constraint name into the log so the next one is a five-second
+// diagnosis instead of a code trace.
+func ConstraintViolation(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return "", false
+	}
+	switch pgErr.Code {
+	case sqlStateCheckViolation, sqlStateForeignKeyViolation:
+		return pgErr.ConstraintName, true
+	}
+	return "", false
+}
+
 // IsFenced reports a write refused by a migration-012 fence trigger.
 func IsFenced(err error) bool {
 	if pgCode(err) != sqlStateInsufficientPrivilege {

@@ -152,18 +152,46 @@ func main() {
 		// wired as the legacy gateway only: a RazorpayProvider built on
 		// "stub" credentials would make real HTTP calls to Razorpay and
 		// fail every checkout, and a stub cannot verify a webhook anyway.
-		// commerce-service's ConfirmPayment(gateway="stub") is what settles
-		// a stub order (the dev E2E journey); real gateways settle by
-		// webhook and never by the client's callback.
+		//
+		// So `provider` stays nil here, and POST /v1/payments/webhook
+		// answers 503 — deliberately, because there is nothing to verify a
+		// signature against. The reconciler is not started either, for the
+		// same reason. Those are the only two authorities A1 permits, so on
+		// this deployment a stub intent had NOTHING that could ever make it
+		// terminal, and the order behind it could never be paid.
+		//
+		// The settlement path in stub mode, and only in stub mode, is
+		// therefore:
+		//
+		//	commerce POST /orders/:id/payment/confirm  {gateway:"stub"}
+		//	  └─ payments POST /internal/intents/:id/verify
+		//	       └─ Service.VerifyIntent, with stub settlement on, applies
+		//	          the SAME atomic ApplyWebhook transaction a real
+		//	          provider event would (inbox + effect + outbox)
+		//
+		// Both halves are wired from their own service's configuration:
+		// WithStubSettlement below from cfg.Mode here, and commerce's route
+		// registration + fence exemption from its own PAYMENTS_ALLOW_STUB —
+		// and commerce additionally asks payments which provider is live
+		// before settling, so a stack with the flag left on next to real
+		// credentials refuses rather than settling on a callback. With real
+		// credentials this branch is not taken at all, and the
+		// signature-verified webhook is the only settlement path there is.
 		gw = &gateway.StubGateway{}
-		slog.Warn("payments: STUB GATEWAY ACTIVE — no real money will move, and no provider webhook can be verified. " +
+		slog.Warn("payments: STUB GATEWAY ACTIVE — no real money will move, and no provider webhook can be verified " +
+			"(POST /v1/payments/webhook answers 503 because there is no provider adapter). Intents settle through " +
+			"VerifyIntent instead, which is permitted ONLY in this mode. " +
 			"Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET + RAZORPAY_WEBHOOK_SECRET in production and remove PAYMENTS_ALLOW_STUB.")
 	}
 
 	// N3: the money path gets the RECOVERABLE provider port, not just the
 	// legacy gateway, so an ambiguous CreateOrder timeout has
 	// FetchByIdempotencyKey recovery available to it.
-	svc := service.New(store, gw).WithProvider(provider)
+	// The stub-settlement exception is wired from THIS service's own resolved
+	// mode, not from any caller's claim: ModeStub is selected only when there
+	// are no Razorpay credentials, and ENV=prod refuses it outright above.
+	svc := service.New(store, gw).WithProvider(provider).
+		WithStubSettlement(cfg.Mode == config.ModeStub)
 
 	// A2: build the caller allowlist. Each calling service has its OWN
 	// public key and its OWN permitted operations and reference types, so

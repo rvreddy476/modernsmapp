@@ -190,6 +190,13 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
 		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt, &p.SourceImageURL, &p.RetailerName,
 	)
+	// A product id that does not exist is a 404, not an outage. pgx's raw
+	// "no rows in result set" travelled all the way to the edge, where the
+	// unmapped-error arm answered 500 — so GET /products/<any uuid> reported
+	// the service as broken rather than the product as absent.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrProductNotFound
+	}
 	return &p, err
 }
 
@@ -688,24 +695,46 @@ func (s *Store) CreateVariant(ctx context.Context, v *ProductVariant) error {
 	return err
 }
 
+// variantMoneyAndStockSQL is the SELECT-list fragment every variant read
+// appends, so the three fields a client renders a variant from come from
+// ONE definition rather than from whichever query happened to be edited.
+//
+// The COALESCE(NULLIF(...)) shape is deliberately identical to the one
+// ListProductsFiltered uses for `min_price_minor`: migration 007 defaulted
+// the minor columns to 0 rather than NULL, so a plain COALESCE finds a
+// non-NULL zero on an unmigrated row and advertises the item as free.
+//
+// `v` must be the alias of product_variants in the enclosing query.
+const variantMoneyAndStockSQL = `
+	COALESCE(NULLIF(v.selling_price_minor, 0), ROUND(v.selling_price*100))::bigint AS selling_price_minor,
+	COALESCE(NULLIF(v.mrp_minor, 0),           ROUND(v.mrp*100))::bigint           AS mrp_minor,
+	(SELECT GREATEST(i.total_qty - i.reserved_qty, 0)
+	   FROM inventory_items i WHERE i.variant_id = v.id) AS available_qty`
+
 func (s *Store) GetVariantByID(ctx context.Context, id uuid.UUID) (*ProductVariant, error) {
 	var v ProductVariant
-	err := s.db.QueryRow(ctx, `SELECT id,product_id,sku,barcode,option_1_name,option_1_value,
-		option_2_name,option_2_value,option_3_name,option_3_value,mrp,selling_price,cost_price,
-		currency_code,status,image_media_id,weight_grams,created_at,updated_at
-		FROM product_variants WHERE id=$1`, id).Scan(
+	err := s.db.QueryRow(ctx, `SELECT v.id,v.product_id,v.sku,v.barcode,v.option_1_name,v.option_1_value,
+		v.option_2_name,v.option_2_value,v.option_3_name,v.option_3_value,v.mrp,v.selling_price,v.cost_price,
+		v.currency_code,v.status,v.image_media_id,v.weight_grams,v.created_at,v.updated_at,`+
+		variantMoneyAndStockSQL+`
+		FROM product_variants v WHERE v.id=$1`, id).Scan(
 		&v.ID, &v.ProductID, &v.SKU, &v.Barcode, &v.Option1Name, &v.Option1Value,
 		&v.Option2Name, &v.Option2Value, &v.Option3Name, &v.Option3Value,
 		&v.MRP, &v.SellingPrice, &v.CostPrice, &v.CurrencyCode, &v.Status,
 		&v.ImageMediaID, &v.WeightGrams, &v.CreatedAt, &v.UpdatedAt,
+		&v.SellingPriceMinor, &v.MRPMinor, &v.AvailableQty,
 	)
 	return &v, err
 }
 
+// GetVariantsByProduct is what product detail, the variants list and the
+// seller's product views all render from — so it is where the variant's
+// paise and available stock have to come from.
 func (s *Store) GetVariantsByProduct(ctx context.Context, productID uuid.UUID) ([]*ProductVariant, error) {
-	rows, err := s.db.Query(ctx, `SELECT id,product_id,sku,option_1_name,option_1_value,
-		option_2_name,option_2_value,mrp,selling_price,currency_code,status,image_media_id,created_at
-		FROM product_variants WHERE product_id=$1 AND status='active' ORDER BY created_at`, productID)
+	rows, err := s.db.Query(ctx, `SELECT v.id,v.product_id,v.sku,v.option_1_name,v.option_1_value,
+		v.option_2_name,v.option_2_value,v.mrp,v.selling_price,v.currency_code,v.status,
+		v.image_media_id,v.created_at,`+variantMoneyAndStockSQL+`
+		FROM product_variants v WHERE v.product_id=$1 AND v.status='active' ORDER BY v.created_at`, productID)
 	if err != nil {
 		return nil, err
 	}
@@ -715,12 +744,13 @@ func (s *Store) GetVariantsByProduct(ctx context.Context, productID uuid.UUID) (
 		var v ProductVariant
 		if err := rows.Scan(&v.ID, &v.ProductID, &v.SKU, &v.Option1Name, &v.Option1Value,
 			&v.Option2Name, &v.Option2Value, &v.MRP, &v.SellingPrice, &v.CurrencyCode,
-			&v.Status, &v.ImageMediaID, &v.CreatedAt); err != nil {
+			&v.Status, &v.ImageMediaID, &v.CreatedAt,
+			&v.SellingPriceMinor, &v.MRPMinor, &v.AvailableQty); err != nil {
 			return nil, err
 		}
 		variants = append(variants, &v)
 	}
-	return variants, nil
+	return variants, rows.Err()
 }
 
 // UpdateVariant patches the mutable fields of an existing variant.
@@ -1186,7 +1216,14 @@ func (s *Store) GetOrderByID(ctx context.Context, id uuid.UUID) (*Order, error) 
 		delivery_address_snapshot,gift_message,status,cancellation_reason,cancelled_by,
 		idempotency_key,created_at,updated_at,
 		organization_id,po_number,cost_center,billing_address_snapshot,invoice_email,
-		approval_status,approved_by_user_id,approved_at,approval_notes,credit_terms_days,payment_due_date
+		approval_status,approved_by_user_id,approved_at,approval_notes,credit_terms_days,payment_due_date,
+		-- The columns migration 007 made authoritative. Reading the order
+		-- without them is what left ConfirmPayment expecting ₹0 and the
+		-- seller's order detail summing a zero subtotal.
+		COALESCE(subtotal_minor,0),COALESCE(discount_amount_minor,0),
+		COALESCE(shipping_charges_minor,0),COALESCE(tax_amount_minor,0),
+		COALESCE(coupon_discount_minor,0),COALESCE(final_amount_minor,0),
+		delivery_address_snapshot_enc
 		FROM orders WHERE id=$1`, id).Scan(
 		&o.ID, &o.CustomerUserID, &o.OrderNumber, &o.Subtotal, &o.DiscountAmount,
 		&o.ShippingCharges, &o.TaxAmount, &o.CouponCode, &o.CouponDiscount, &o.FinalAmount,
@@ -1196,9 +1233,30 @@ func (s *Store) GetOrderByID(ctx context.Context, id uuid.UUID) (*Order, error) 
 		&o.OrganizationID, &o.PONumber, &o.CostCenter, &o.BillingAddressSnapshot, &o.InvoiceEmail,
 		&o.ApprovalStatus, &o.ApprovedByUserID, &o.ApprovedAt, &o.ApprovalNotes,
 		&o.CreditTermsDays, &o.PaymentDueDate,
+		&o.SubtotalMinor, &o.DiscountAmountMinor, &o.ShippingChargesMinor,
+		&o.TaxAmountMinor, &o.CouponDiscountMinor, &o.FinalAmountMinor,
+		&o.DeliveryAddressSnapshotEnc,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrOrderNotFound
+	}
 	return &o, err
 }
+
+// customerCancellableStatuses are the order statuses a CUSTOMER may cancel
+// from.
+//
+// It mirrors the ('<status>','cancelled','customer') rows of the D6
+// cancellation matrix installed by migration 010 — the same matrix
+// Store.CancelOrder is refused by. Kept as data next to a named function so
+// `can_cancel` on the order detail is the button's actual precondition and
+// not a second, drifting opinion. Note what is absent: `shipped` and beyond,
+// which only an admin may cancel.
+var customerCancellableStatuses = []string{"payment_pending", "payment_failed", "confirmed", "packed"}
+
+// CustomerCanCancel reports whether a customer may still cancel an order in
+// this status.
+func CustomerCanCancel(status string) bool { return contains(customerCancellableStatuses, status) }
 
 // OrderCard is the customer order-list row — Phase 2.1. Adds item +
 // seller counts and the first item's product so the customer can tell
@@ -1394,8 +1452,10 @@ func (s *Store) UpdateOrderStatus(ctx context.Context, orderID uuid.UUID, toStat
 func (s *Store) GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*OrderItem, error) {
 	rows, err := s.db.Query(ctx, `SELECT id,order_id,product_id,variant_id,seller_id,product_title,
 		variant_details,sku,quantity,unit_mrp,unit_price,discount_amount,tax_amount,final_price,
-		status,shipment_id,tracking_number,return_eligible_until,delivered_at,created_at
-		FROM order_items WHERE order_id=$1`, orderID)
+		status,shipment_id,tracking_number,return_eligible_until,delivered_at,created_at,
+		COALESCE(unit_mrp_minor,0),COALESCE(unit_price_minor,0),
+		COALESCE(discount_amount_minor,0),COALESCE(tax_amount_minor,0),COALESCE(final_price_minor,0)
+		FROM order_items WHERE order_id=$1 ORDER BY created_at`, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -1407,12 +1467,14 @@ func (s *Store) GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*OrderI
 			&item.ProductTitle, &item.VariantDetails, &item.SKU, &item.Quantity,
 			&item.UnitMRP, &item.UnitPrice, &item.DiscountAmount, &item.TaxAmount, &item.FinalPrice,
 			&item.Status, &item.ShipmentID, &item.TrackingNumber, &item.ReturnEligibleUntil,
-			&item.DeliveredAt, &item.CreatedAt); err != nil {
+			&item.DeliveredAt, &item.CreatedAt,
+			&item.UnitMRPMinor, &item.UnitPriceMinor, &item.DiscountAmountMinor,
+			&item.TaxAmountMinor, &item.FinalPriceMinor); err != nil {
 			return nil, err
 		}
 		items = append(items, &item)
 	}
-	return items, nil
+	return items, rows.Err()
 }
 
 // GetOrderItemByID fetches a single order item. Used by the review-create

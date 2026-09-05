@@ -270,7 +270,11 @@ func main() {
 	allowStub := env("PAYMENTS_ALLOW_STUB", "") == "true"
 	svc.WithAllowStubGateway(allowStub)
 	if allowStub {
-		slog.Warn("commerce: PAYMENTS_ALLOW_STUB=true — ConfirmPayment accepts gateway=stub. Never enable in production.")
+		slog.Warn("commerce: PAYMENTS_ALLOW_STUB=true — POST /v1/commerce/orders/:orderId/payment/confirm " +
+			"is REGISTERED and UN-FENCED, and settles an order when the caller names gateway=stub. " +
+			"This exists because payments-service in stub mode has no provider adapter, so its webhook " +
+			"answers 503 and nothing else can move a dev order to paid. Never enable in production: " +
+			"with real credentials the signature-verified webhook is the only settlement path.")
 	}
 
 	// KYC validator (Phase 3.2). The stub does format-only checks and tags
@@ -369,7 +373,7 @@ func main() {
 	}
 
 	// 11. HTTP handler
-	handler := commercehttp.New(svc).WithInternalKey(internalKey)
+	handler := commercehttp.New(svc).WithInternalKey(internalKey).WithStubSettlement(allowStub)
 
 	// 11. Gin engine
 	gin.SetMode(gin.ReleaseMode)
@@ -388,7 +392,7 @@ func main() {
 	// the route" means a later edit that re-adds one is still refused, and
 	// the same list is exported so the reachability proof enumerates what
 	// the server actually enforces instead of a copy that can drift.
-	r.Use(commercehttp.FenceMiddleware())
+	r.Use(commercehttp.FenceMiddlewareWithStubSettlement(allowStub))
 
 	// Every authenticated route in this service reads the caller's identity
 	// from the X-User-Id header. Nothing verified that header, so anything

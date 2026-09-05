@@ -123,6 +123,19 @@ type fakePayments struct {
 	calls   int
 	// lastIntent records which intent the service asked payments about.
 	lastIntent uuid.UUID
+
+	// providerSession is what GetIntent reports as `client_session`.
+	//
+	// payments-service attaches it if and only if a real Provider adapter is
+	// configured there, so its presence is how commerce learns that a
+	// signature-verified webhook is coming and that a client callback must
+	// therefore stay advisory. Nil (the default) is the stub deployment: no
+	// provider, no webhook, and the callback is the only settlement path
+	// that exists.
+	providerSession map[string]string
+	// intentErr makes GetIntent fail, standing in for payments being
+	// unreachable.
+	intentErr error
 }
 
 func (p *fakePayments) VerifyCallback(_ context.Context, intentID uuid.UUID, _, _, _ string, _ money.Paise) (*payments.CallbackVerdict, error) {
@@ -133,8 +146,11 @@ func (p *fakePayments) VerifyCallback(_ context.Context, intentID uuid.UUID, _, 
 func (p *fakePayments) CreateIntent(context.Context, payments.CreateIntentInput) (*payments.Intent, error) {
 	return nil, errors.New("not scripted")
 }
-func (p *fakePayments) GetIntent(context.Context, uuid.UUID) (*payments.Intent, error) {
-	return nil, errors.New("not scripted")
+func (p *fakePayments) GetIntent(_ context.Context, id uuid.UUID) (*payments.Intent, error) {
+	if p.intentErr != nil {
+		return nil, p.intentErr
+	}
+	return &payments.Intent{ID: id, ClientSession: p.providerSession}, nil
 }
 func (p *fakePayments) Refund(context.Context, uuid.UUID, money.Paise, string, string) (*payments.RefundAccepted, error) {
 	return nil, errors.New("not scripted")
@@ -360,6 +376,66 @@ func TestConfirmPayment(t *testing.T) {
 		}
 		if pay.calls != 1 || st.deducted != 1 || len(st.enqueued) != 1 {
 			t.Fatalf("second confirm re-ran work: verify=%d deducted=%d enqueued=%v", pay.calls, st.deducted, st.enqueued)
+		}
+	})
+
+	// A REAL provider keeps the webhook as the only settlement path, even
+	// when commerce's own stub flag is on.
+	//
+	// PAYMENTS_ALLOW_STUB is a commerce-side flag and says nothing about
+	// what payments-service is running; the two can be misconfigured apart,
+	// and this dev stack was found in exactly that state (flag on here, real
+	// Razorpay test credentials over there). Settling on the callback in
+	// that configuration restores the authority A1/LB-3 removed: whoever
+	// holds a genuine signature marks the order paid, and the webhook's
+	// amount, currency, payer and intent re-checks never run.
+	//
+	// So the fact is taken from payments-service — an intent carries
+	// `client_session` if and only if a Provider adapter is configured
+	// there — rather than from our own environment.
+	t.Run("a real provider refuses stub settlement even with the flag on", func(t *testing.T) {
+		pay := &fakePayments{providerSession: map[string]string{
+			"provider": "razorpay", "key_id": "rzp_test_x", "order_id": "order_x",
+		}}
+		st, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
+		svc.WithAllowStubGateway(true)
+
+		stub := input
+		stub.Gateway = "stub"
+		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, stub); !errors.Is(err, ErrStubGatewayInProd) {
+			t.Fatalf("err = %v, want ErrStubGatewayInProd — payments-service has a real "+
+				"provider, so the signature-verified webhook is the settlement path", err)
+		}
+		got, _ := st.GetOrderByID(context.Background(), o.ID)
+		if got.PaymentStatus == "paid" {
+			t.Fatal("the order was settled on a client callback while a real provider was " +
+				"configured; the webhook must be the only path that marks it paid")
+		}
+		if st.deducted != 0 || len(st.enqueued) != 0 {
+			t.Fatalf("side effects ran on a refused settlement: deducted=%d enqueued=%v",
+				st.deducted, st.enqueued)
+		}
+	})
+
+	// And an unreachable payments-service is not evidence that no provider
+	// exists. Failing closed here is the difference between "we could not
+	// check" and "we checked and there is nothing to wait for".
+	t.Run("stub settlement fails closed when payments cannot be asked", func(t *testing.T) {
+		pay := &fakePayments{intentErr: errors.New("payments unreachable")}
+		st, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
+		svc.WithAllowStubGateway(true)
+
+		stub := input
+		stub.Gateway = "stub"
+		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, stub); err == nil {
+			t.Fatal("stub settlement succeeded while payments-service could not be asked " +
+				"which provider is configured")
+		}
+		got, _ := st.GetOrderByID(context.Background(), o.ID)
+		if got.PaymentStatus == "paid" {
+			t.Fatal("the order was settled without establishing that no webhook is coming")
 		}
 	})
 

@@ -19,6 +19,10 @@ import (
 // vendor adapter or accept the stub for dev/QA.
 var ErrKYCNotConfigured = fmt.Errorf("kyc validator not configured")
 
+// ErrInvalidDocumentType is a KYC document kind the schema does not accept.
+// Mapped to 400 at the edge, with the permitted vocabulary in the message.
+var ErrInvalidDocumentType = errors.New("unsupported document_type")
+
 // ─── Onboarding wizard ───────────────────────────────────────────
 
 type StartOnboardingInput struct {
@@ -97,6 +101,20 @@ func (s *Service) SaveStorefront(ctx context.Context, userID uuid.UUID, in postg
 // makes the review meaningless, and it is how one person's identity documents
 // end up attached to another person's payout account.
 func (s *Service) SaveDocuments(ctx context.Context, userID uuid.UUID, docs []postgres.SellerDocument) error {
+	// The allowed set, checked here rather than discovered in Postgres.
+	//
+	// `seller_documents.document_type` carries a CHECK constraint, so an
+	// unknown type was refused — correctly — but the violation travelled to
+	// the edge as an unmapped store error and became a 500. A seller who
+	// typed the wrong document kind was told the platform was broken and
+	// was never told which kinds exist. This names them.
+	for _, d := range docs {
+		if !postgres.ValidDocumentType(d.DocumentType) {
+			return fmt.Errorf("%w: %q (allowed: %s)",
+				ErrInvalidDocumentType, d.DocumentType,
+				strings.Join(postgres.SellerDocumentTypes, ", "))
+		}
+	}
 	sel, err := s.store.GetSellerByUserID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("seller not found: %w", err)

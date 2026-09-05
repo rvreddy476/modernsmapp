@@ -692,11 +692,12 @@ func applyProviderRefundTx(
 	}
 
 	var amount, refunded, reserved int64
-	var intentCurrency string
+	var intentCurrency, refType, refID string
 	if err := tx.QueryRow(ctx,
-		`SELECT COALESCE(amount_minor,0), COALESCE(refunded_amount_minor,0), COALESCE(refund_reserved_minor,0), currency
+		`SELECT COALESCE(amount_minor,0), COALESCE(refunded_amount_minor,0), COALESCE(refund_reserved_minor,0),
+		        currency, COALESCE(reference_type,''), COALESCE(reference_id::text,'')
 		   FROM payments.payment_intents WHERE id = $1 FOR UPDATE`, intentID).
-		Scan(&amount, &refunded, &reserved, &intentCurrency); err != nil {
+		Scan(&amount, &refunded, &reserved, &intentCurrency, &refType, &refID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, "", ErrIntentNotFound
 		}
@@ -783,6 +784,23 @@ func applyProviderRefundTx(
 		"provider_refund_id": providerRefundID,
 		"amount_minor":       amountMinor,
 		"status":             newStatus,
+		// The intent's REFERENCE, without which the event cannot be
+		// attributed to anything.
+		//
+		// This payload carried neither field, and commerce's consumer keys
+		// its refund handler on exactly them: `applyRefund` parses
+		// reference_id as an order id and returns nil — silently, because a
+		// refund for another domain is a legitimate no-op — the moment the
+		// parse fails. So EVERY refund event was dropped on the floor. The
+		// order stayed `refund_pending` for ever with the money already
+		// credited at the provider, and commerce's refund worker, which
+		// waits for this event to settle its command, re-sent the same
+		// refund every forty seconds.
+		//
+		// payment.succeeded has always carried them, which is why that half
+		// of the loop worked and this half did not.
+		"reference_type": refType,
+		"reference_id":   refID,
 	}); err != nil {
 		return false, "", err
 	}
@@ -994,6 +1012,30 @@ func (s *Store) SetOwnerDomain(ctx context.Context, id uuid.UUID, domain string)
 	_, err := s.db.Exec(ctx,
 		`UPDATE payments.payment_intents SET owner_domain = $2 WHERE id = $1`, id, domain)
 	return err
+}
+
+// IntentProviderAndOrder returns the provider name and provider order id an
+// intent was written with.
+//
+// Both are needed to address an intent the way ApplyWebhookAtomically does —
+// it resolves on (provider, provider_order_id) — and neither is on the
+// PaymentIntent struct. The provider in particular is NOT inferable from the
+// running gateway: intents are stamped 'razorpay' by default even on a stub
+// deployment, so a caller that assumed 'stub' looked up nothing and the
+// settlement failed with "no intent for provider order".
+func (s *Store) IntentProviderAndOrder(ctx context.Context, intentID uuid.UUID) (string, string, error) {
+	var provider, order string
+	err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(provider,'razorpay'),
+		        COALESCE(NULLIF(provider_order_id,''), COALESCE(provider_ref,''))
+		   FROM payments.payment_intents WHERE id = $1`, intentID).Scan(&provider, &order)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", ErrIntentNotFound
+		}
+		return "", "", err
+	}
+	return provider, order, nil
 }
 
 // SetProviderOrder attaches a PSP order reference to an existing intent.

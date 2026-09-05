@@ -1,7 +1,9 @@
 package postgres
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,6 +80,27 @@ type SellerDocument struct {
 	UploadedAt         time.Time  `db:"uploaded_at" json:"uploaded_at"`
 	ReviewedAt         *time.Time `db:"reviewed_at" json:"reviewed_at,omitempty"`
 	ReviewedBy         *uuid.UUID `db:"reviewed_by" json:"reviewed_by,omitempty"`
+}
+
+// SellerDocumentTypes is the KYC document vocabulary.
+//
+// It MUST stay identical to the seller_documents.document_type CHECK
+// constraint in migration 001. It lives here so the service can refuse an
+// unknown type with a 400 that names the alternatives, instead of letting
+// Postgres refuse it with a constraint violation the edge reported as 500.
+var SellerDocumentTypes = []string{
+	"gst_certificate", "pan_card", "aadhaar", "passport",
+	"business_registration", "address_proof", "cancelled_cheque", "other",
+}
+
+// ValidDocumentType reports whether t is in SellerDocumentTypes.
+func ValidDocumentType(t string) bool {
+	for _, v := range SellerDocumentTypes {
+		if v == t {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── Onboarding input types ──────────────────────────────────
@@ -171,7 +194,14 @@ type Product struct {
 	ImageURL         string     `db:"-" json:"image_url,omitempty"`
 	ThumbnailURL     string     `db:"-" json:"thumbnail_url,omitempty"`
 	ImageBlurhash    *string    `db:"-" json:"image_blurhash,omitempty"`
-	SourceImageURL   *string    `db:"source_image_url" json:"source_image_url,omitempty"`
+	SourceImageURL *string `db:"source_image_url" json:"source_image_url,omitempty"`
+	// RetailerName is `sellers.store_name` — the shop the listing belongs to.
+	//
+	// It goes out under TWO json names. `seller_name` is the contract (it is
+	// what the Android `ProductDto` reads, and what the cart and seller
+	// surfaces have always called this field); `retailer_name` is retained
+	// as an alias because the existing web caller reads it. Both are emitted
+	// from this one field by Product.MarshalJSON, so they cannot drift.
 	RetailerName     *string    `db:"retailer_name" json:"retailer_name,omitempty"`
 	WeightGrams      *int       `db:"weight_grams" json:"weight_grams,omitempty"`
 	LengthCm         *float64   `db:"length_cm" json:"length_cm,omitempty"`
@@ -233,6 +263,22 @@ type Product struct {
 	TotalStock      *int     `json:"total_stock,omitempty"`
 }
 
+// MarshalJSON emits the store name under both wire names.
+//
+// The product body sent `retailer_name` and the app reads `seller_name`, so
+// the shop's name was simply absent from every product screen. Renaming the
+// field would break the web caller that reads `retailer_name`; emitting one
+// value under both names breaks nobody, and doing it here — rather than by
+// adding a second struct field that four separate scan sites would have to
+// remember to fill — means the two can never disagree.
+func (p Product) MarshalJSON() ([]byte, error) {
+	type alias Product // sheds this method, so this is not infinite recursion
+	return json.Marshal(struct {
+		alias
+		SellerName *string `json:"seller_name,omitempty"`
+	}{alias(p), p.RetailerName})
+}
+
 // ProductMedia is one image / video / size-chart / infographic in a
 // product's gallery. media_id refers to a media-service-owned asset.
 type ProductMedia struct {
@@ -286,6 +332,30 @@ type ProductVariant struct {
 	WeightGrams         *int       `db:"weight_grams" json:"weight_grams,omitempty"`
 	CreatedAt           time.Time  `db:"created_at" json:"created_at,omitempty"`
 	UpdatedAt           time.Time  `db:"updated_at" json:"updated_at,omitempty"`
+
+	// ─── The variant's money and stock, ON THE WIRE ──────────────
+	//
+	// Every read that returns a variant to a client populates these. The
+	// float pair above stayed the ONLY money a variant carried long after
+	// the product LIST learned to send `min_price_minor` (see the comment
+	// at the Product struct), so the catalogue grid showed the right price
+	// and the product DETAIL page — the screen a buyer actually taps
+	// "add to cart" on — rendered every variant at ₹0.00 and out of stock.
+	// The Android `VariantDto` reads exactly these three names.
+	//
+	// Sourced the same way `min_price_minor` is: the minor column when it
+	// holds a real value, and `ROUND(rupees*100)` when a legacy row still
+	// carries the DEFAULT 0 there. A variant whose minor column is zero is
+	// not a free variant, it is an unmigrated one.
+	//
+	// AvailableQty is `total_qty - reserved_qty` clamped at zero — the same
+	// arithmetic InventoryItem.AvailableQty does in Go, done in SQL so the
+	// read is one round trip instead of one per variant. Nil (rather than
+	// 0) when the variant has no inventory row at all, so "no stock record"
+	// and "sold out" stay distinguishable.
+	MRPMinor          *int64 `db:"-" json:"mrp_minor,omitempty"`
+	SellingPriceMinor *int64 `db:"-" json:"selling_price_minor,omitempty"`
+	AvailableQty      *int   `db:"-" json:"available_qty,omitempty"`
 }
 
 // ─── Inventory ───────────────────────────────────────────────
@@ -339,6 +409,25 @@ type Order struct {
 	CouponCode              *string    `db:"coupon_code" json:"coupon_code,omitempty"`
 	CouponDiscount          float64    `db:"coupon_discount" json:"coupon_discount,omitempty"`
 	FinalAmount             float64    `db:"final_amount" json:"final_amount,omitempty"`
+
+	// ─── The authoritative money ────────────────────────────────
+	//
+	// Migration 007 made these the truth and stopped maintaining the
+	// NUMERIC columns above, so on every order the P0 checkout has written
+	// the rupee fields read 0.00. Anything that computed from them — the
+	// order list before it moved to OrderCard, and ConfirmPayment's
+	// expected-amount check, which derived paise as ROUND(FinalAmount*100)
+	// and therefore expected ZERO — was working from a column nobody fills.
+	//
+	// Read them through Order.TotalMinor and friends, never directly: an
+	// order written before 007 has the rupee column and a zero here, and
+	// the accessors are where that fallback lives.
+	SubtotalMinor        int64 `db:"subtotal_minor" json:"subtotal_minor,omitempty"`
+	DiscountAmountMinor  int64 `db:"discount_amount_minor" json:"discount_minor,omitempty"`
+	ShippingChargesMinor int64 `db:"shipping_charges_minor" json:"shipping_minor,omitempty"`
+	TaxAmountMinor       int64 `db:"tax_amount_minor" json:"tax_minor,omitempty"`
+	CouponDiscountMinor  int64 `db:"coupon_discount_minor" json:"coupon_discount_minor,omitempty"`
+	FinalAmountMinor     int64 `db:"final_amount_minor" json:"total_minor,omitempty"`
 	CurrencyCode            string     `db:"currency_code" json:"currency_code,omitempty"`
 	PaymentMethod           *string    `db:"payment_method" json:"payment_method,omitempty"`
 	PaymentStatus           string     `db:"payment_status" json:"payment_status,omitempty"`
@@ -346,6 +435,12 @@ type Order struct {
 	PaymentGateway          *string    `db:"payment_gateway" json:"payment_gateway,omitempty"`
 	DeliveryAddressID       *uuid.UUID `db:"delivery_address_id" json:"delivery_address_id,omitempty"`
 	DeliveryAddressSnapshot []byte     `db:"delivery_address_snapshot" json:"delivery_address_snapshot,omitempty"`
+	// The sealed copy (scope order-snapshot). `json:"-"` is load-bearing:
+	// this is ciphertext, it is useless to a client, and after the PII
+	// cutover it is the ONLY place the buyer's name, phone, street and
+	// landmark live. Order detail opens it through the cipher and returns
+	// a real address; nothing serialises the blob itself.
+	DeliveryAddressSnapshotEnc []byte `db:"delivery_address_snapshot_enc" json:"-"`
 	GiftMessage             *string    `db:"gift_message" json:"gift_message,omitempty"`
 	Status                  string     `db:"status" json:"status,omitempty"`
 	CancellationReason      *string    `db:"cancellation_reason" json:"cancellation_reason,omitempty"`
@@ -388,6 +483,54 @@ type OrderItem struct {
 	ReturnEligibleUntil *time.Time `db:"return_eligible_until" json:"return_eligible_until,omitempty"`
 	DeliveredAt         *time.Time `db:"delivered_at" json:"delivered_at,omitempty"`
 	CreatedAt           time.Time  `db:"created_at" json:"created_at,omitempty"`
+
+	// The line's money, in paise — same story as the order header above:
+	// migration 007 stopped maintaining the NUMERIC columns, so summing
+	// FinalPrice over a seller's lines produced 0 (which is exactly what
+	// `seller_subtotal` reported on a ₹929 order).
+	UnitMRPMinor        int64 `db:"unit_mrp_minor" json:"unit_mrp_minor,omitempty"`
+	UnitPriceMinor      int64 `db:"unit_price_minor" json:"unit_price_minor,omitempty"`
+	DiscountAmountMinor int64 `db:"discount_amount_minor" json:"discount_minor,omitempty"`
+	TaxAmountMinor      int64 `db:"tax_amount_minor" json:"tax_minor,omitempty"`
+	FinalPriceMinor     int64 `db:"final_price_minor" json:"final_price_minor,omitempty"`
+}
+
+// LineTotalMinor is the line's payable amount in paise, falling back to the
+// deprecated rupee column for a row written before migration 007.
+func (i *OrderItem) LineTotalMinor() int64 {
+	return minorOrRupee(i.FinalPriceMinor, i.FinalPrice)
+}
+
+// TotalMinor is the order's payable amount in paise.
+//
+// Everything that needs the order total goes through here rather than
+// reading either column, so the pre-007 fallback exists in one place.
+func (o *Order) TotalMinor() int64 { return minorOrRupee(o.FinalAmountMinor, o.FinalAmount) }
+
+// SubtotalMinorOrRupees etc. mirror TotalMinor for the remaining components.
+func (o *Order) SubtotalMinorValue() int64 {
+	return minorOrRupee(o.SubtotalMinor, o.Subtotal)
+}
+func (o *Order) DiscountMinorValue() int64 {
+	return minorOrRupee(o.DiscountAmountMinor, o.DiscountAmount)
+}
+func (o *Order) ShippingMinorValue() int64 {
+	return minorOrRupee(o.ShippingChargesMinor, o.ShippingCharges)
+}
+func (o *Order) TaxMinorValue() int64 { return minorOrRupee(o.TaxAmountMinor, o.TaxAmount) }
+
+// minorOrRupee prefers the paise column and converts the deprecated rupee
+// mirror only when paise is exactly zero.
+//
+// Zero is the sentinel because migration 007 defaulted these columns to 0
+// rather than NULL, so "unset" and "genuinely free" are indistinguishable in
+// the data. Reading a real ₹0 line as ₹0 either way makes that ambiguity
+// harmless.
+func minorOrRupee(minor int64, rupees float64) int64 {
+	if minor != 0 {
+		return minor
+	}
+	return int64(math.Round(rupees * 100))
 }
 
 type OrderStatusHistory struct {

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 
 	"strings"
@@ -41,11 +40,16 @@ var (
 	// order the transition guard refuses (cancelled, refunded, …). Distinct
 	// from ErrOrderNotPaymentPending so the consumer can treat it as a
 	// permanent, alert-worthy condition rather than retrying.
-	ErrOrderNotPayable     = fmt.Errorf("order cannot accept payment in its current state")
-	ErrPaymentVerifyFailed = fmt.Errorf("payment verification failed")
-	ErrPaymentAmountMismatch  = fmt.Errorf("payment amount does not match order")
-	ErrStubGatewayInProd      = fmt.Errorf("stub gateway not permitted; set PAYMENTS_ALLOW_STUB=true for dev/test")
-	ErrPaymentsClientMissing  = fmt.Errorf("payments client not configured")
+	ErrOrderNotPayable       = fmt.Errorf("order cannot accept payment in its current state")
+	ErrPaymentVerifyFailed   = fmt.Errorf("payment verification failed")
+	ErrPaymentAmountMismatch = fmt.Errorf("payment amount does not match order")
+	ErrStubGatewayInProd     = fmt.Errorf("stub gateway not permitted; set PAYMENTS_ALLOW_STUB=true for dev/test")
+	ErrPaymentsClientMissing = fmt.Errorf("payments client not configured")
+	// ErrCourierUnavailable means the carrier could not be asked — network
+	// failure, or credentials it rejected. The buyer did nothing wrong and
+	// retrying may work, so it is a 503, not a 500. Distinct from a
+	// serviceable=false answer, which is a real answer about a real pincode.
+	ErrCourierUnavailable     = fmt.Errorf("commerce: the delivery partner could not be reached")
 	ErrNotReturnSeller        = fmt.Errorf("actor is not the seller for this return")
 	ErrReviewOrderItemInvalid = fmt.Errorf("order item does not belong to reviewer or does not match product/seller")
 	ErrReviewItemNotDelivered = fmt.Errorf("order item must be delivered before review")
@@ -571,6 +575,19 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 	if seller == nil || seller.ID != product.SellerID {
 		return nil, ErrNotProductOwner
 	}
+	// A price, in whichever shape the caller sent it.
+	//
+	// The HTTP body no longer marks the rupee floats `required` — it could
+	// not, once paise became an accepted shape — so the "is there a price at
+	// all?" check moves here, where it applies to internal callers too. A
+	// variant with no positive selling price is not a cheap variant, it is a
+	// listing the buyer can take for nothing.
+	if v.SellingPriceMinorIn == nil || *v.SellingPriceMinorIn <= 0 {
+		return nil, fmt.Errorf("%w: selling_price_minor", postgres.ErrPriceNotPositive)
+	}
+	if v.MRPMinorIn == nil || *v.MRPMinorIn <= 0 {
+		return nil, fmt.Errorf("%w: mrp_minor", postgres.ErrPriceNotPositive)
+	}
 	v.ProductID = productID
 	if v.Status == "" {
 		v.Status = "active"
@@ -581,7 +598,36 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 	if err := s.store.CreateVariant(ctx, v); err != nil {
 		return nil, err
 	}
-	return v, nil
+	// Give the variant a stock row, at zero.
+	//
+	// POST /products does this for the variants it creates; this route did
+	// not, so a variant added after launch had NO inventory_items row at
+	// all. With `available_qty` now on the wire that difference is visible:
+	// the variant reported no stock figure rather than "0 in stock", and the
+	// seller's only way to create the row was PATCH …/stock, which needs a
+	// row to adjust. Zero is the honest starting quantity — the seller sets
+	// the real one next.
+	if err := s.store.UpsertInventory(ctx, v.ID, product.SellerID, 0); err != nil {
+		slog.Warn("failed to initialise inventory for a new variant",
+			"variant_id", v.ID, "error", err)
+	}
+	// Return what was STORED, not what was built in memory.
+	//
+	// The in-memory value carries the caller's paise in the `*MinorIn`
+	// fields, which are `json:"-"` — they are inputs. So the 201 body was
+	// the one variant response in the service with no `mrp_minor`,
+	// `selling_price_minor` or `available_qty` on it, and a client that
+	// rendered the create response got ₹0.00 and out-of-stock for the
+	// variant it had just priced. Re-reading also picks up the inventory row
+	// created a line above. UpdateProductVariant already works this way.
+	stored, err := s.store.GetVariantByID(ctx, v.ID)
+	if err != nil {
+		// The variant exists; only the read-back failed. Returning the
+		// in-memory value is worse than useless here — it is the shape that
+		// caused the defect — so report the failure.
+		return nil, fmt.Errorf("variant created but could not be read back: %w", err)
+	}
+	return stored, nil
 }
 
 // UpdateProductVariant patches an existing variant. Authorization same
@@ -740,11 +786,40 @@ func (s *Service) ListSellerOrders(ctx context.Context, sellerID uuid.UUID, limi
 // a multi-seller order are intentionally excluded — sellers only see what
 // they're responsible for shipping.
 type SellerOrderCard struct {
-	Order           *postgres.Order       `json:"order"`
-	Items           []*postgres.OrderItem `json:"items"`
-	Shipment        *postgres.Shipment    `json:"shipment,omitempty"`
-	SellerSubtotal  float64               `json:"seller_subtotal"` // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
-	DeliveryAddress []byte                `json:"delivery_address,omitempty"`
+	Order    *postgres.Order       `json:"order"`
+	Items    []*postgres.OrderItem `json:"items"`
+	Shipment *postgres.Shipment    `json:"shipment,omitempty"`
+
+	// SellerSubtotalMinor is what this seller is owed for THIS order, in
+	// paise, summed over their own lines.
+	//
+	// It reported 0 on a ₹929 order because it was summed from
+	// `order_items.final_price` — the NUMERIC column migration 007 stopped
+	// maintaining. Nothing was wrong with the arithmetic; it was adding up
+	// a column nobody writes. The sum is now over `final_price_minor`
+	// (with the pre-007 rupee fallback inside OrderItem.LineTotalMinor).
+	SellerSubtotalMinor int64 `json:"seller_subtotal_minor"`
+	// SellerSubtotal is the same figure in rupees, kept because the
+	// existing dashboard reads this name. Derived from the paise, never
+	// summed independently, so the two cannot disagree.
+	SellerSubtotal float64 `json:"seller_subtotal"` // money-exempt: rupee mirror of seller_subtotal_minor, derived not computed
+
+	DeliveryAddress []byte `json:"delivery_address,omitempty"`
+}
+
+// sellerLines splits an order's items into the ones belonging to sellerID
+// and totals them in paise. One definition, so the fulfillment list and the
+// order detail can never disagree about what a seller is owed.
+func sellerLines(items []*postgres.OrderItem, sellerID uuid.UUID) ([]*postgres.OrderItem, int64) {
+	mine := make([]*postgres.OrderItem, 0, len(items))
+	var subtotalMinor int64
+	for _, it := range items {
+		if it.SellerID == sellerID {
+			mine = append(mine, it)
+			subtotalMinor += it.LineTotalMinor()
+		}
+	}
+	return mine, subtotalMinor
 }
 
 // ListSellerFulfillment returns the seller's fulfillment queue, optionally
@@ -789,24 +864,17 @@ func (s *Service) ListSellerFulfillment(ctx context.Context, sellerID uuid.UUID,
 
 	out := make([]*SellerOrderCard, 0, len(orders))
 	for _, o := range orders {
-		items := itemsByOrder[o.ID]
-		mine := make([]*postgres.OrderItem, 0, len(items))
-		var subtotal float64 // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
-		for _, it := range items {
-			if it.SellerID == sellerID {
-				mine = append(mine, it)
-				subtotal += it.FinalPrice
-			}
-		}
+		mine, subtotalMinor := sellerLines(itemsByOrder[o.ID], sellerID)
 		if len(mine) == 0 {
 			continue
 		}
 		card := &SellerOrderCard{
-			Order:           o,
-			Items:           mine,
-			Shipment:        shipmentsByOrder[o.ID],
-			SellerSubtotal:  round2(subtotal),
-			DeliveryAddress: o.DeliveryAddressSnapshot,
+			Order:               o,
+			Items:               mine,
+			Shipment:            shipmentsByOrder[o.ID],
+			SellerSubtotalMinor: subtotalMinor,
+			SellerSubtotal:      round2(float64(subtotalMinor) / 100.0),
+			DeliveryAddress:     o.DeliveryAddressSnapshot,
 		}
 		if !fulfillmentMatchesStage(card, stage) {
 			continue
@@ -843,24 +911,18 @@ func (s *Service) GetSellerOrderDetail(ctx context.Context, sellerID, orderID uu
 		return nil, ErrOrderNotFound
 	}
 	items, _ := s.store.GetOrderItems(ctx, orderID)
-	mine := make([]*postgres.OrderItem, 0, len(items))
-	var subtotal float64 // money-exempt: legacy float pricing behind the fenced+unregistered POST /v1/commerce/orders/checkout (B5); the P0 path is internal/store/postgres/checkout.go in paise
-	for _, it := range items {
-		if it.SellerID == sellerID {
-			mine = append(mine, it)
-			subtotal += it.FinalPrice
-		}
-	}
+	mine, subtotalMinor := sellerLines(items, sellerID)
 	if len(mine) == 0 {
 		return nil, ErrNotOrderOwner
 	}
 	shipment, _ := s.store.GetShipmentByOrderAndSeller(ctx, orderID, sellerID)
 	return &SellerOrderCard{
-		Order:           order,
-		Items:           mine,
-		Shipment:        shipment,
-		SellerSubtotal:  round2(subtotal),
-		DeliveryAddress: order.DeliveryAddressSnapshot,
+		Order:               order,
+		Items:               mine,
+		Shipment:            shipment,
+		SellerSubtotalMinor: subtotalMinor,
+		SellerSubtotal:      round2(float64(subtotalMinor) / 100.0),
+		DeliveryAddress:     order.DeliveryAddressSnapshot,
 	}, nil
 }
 
@@ -892,10 +954,204 @@ func (s *Service) GetOrder(ctx context.Context, orderID, userID uuid.UUID) (*pos
 	if err != nil {
 		return nil, err
 	}
-	if order.CustomerUserID != userID {
-		return nil, fmt.Errorf("order not found")
+	if order == nil || order.CustomerUserID != userID {
+		return nil, ErrOrderNotFound
 	}
 	return order, nil
+}
+
+// ─── Order detail (the buyer's order screen) ─────────────────────────
+
+// OrderDetail is one order as the buyer's order screen renders it.
+//
+// ─── WHY THIS TYPE EXISTS AT ALL ────────────────────────────────────────
+//
+// GET /v1/commerce/orders/:orderId used to return the raw `postgres.Order`
+// row. Three things followed from that, all of them visible on the screen:
+//
+//	₹0.00 everywhere   the row's money fields are the NUMERIC columns
+//	                   migration 007 stopped maintaining. The LIST endpoint
+//	                   had already moved to `*_minor` (see OrderCard); detail
+//	                   had not, so the same order showed ₹929 in the list and
+//	                   ₹0.00 when you opened it.
+//	no lines           the row is the order header. Items lived behind a
+//	                   second call the app was not making.
+//	no address         `delivery_address_snapshot` went out as a base64 blob
+//	                   of a JSON object. After the PII cutover that blob is
+//	                   the ROUTING fields only — no name, no phone, no
+//	                   street — so it is not merely inconvenient to render,
+//	                   it is not the address any more. The real one is in
+//	                   `delivery_address_snapshot_enc` and has to be opened
+//	                   through the cipher.
+//
+// And `can_cancel`, which the screen needs to decide whether to draw the
+// cancel button at all, existed nowhere: the app was guessing from `status`
+// against its own copy of the rules.
+//
+// The money field names match OrderCard exactly, so the list and the detail
+// deserialise into the same client model.
+type OrderDetail struct {
+	ID          uuid.UUID `json:"id"`
+	OrderNumber string    `json:"order_number"`
+
+	SubtotalMinor money.Paise `json:"subtotal_minor"`
+	DiscountMinor money.Paise `json:"discount_minor"`
+	ShippingMinor money.Paise `json:"shipping_minor"`
+	TaxMinor      money.Paise `json:"tax_minor"`
+	TotalMinor    money.Paise `json:"total_minor"`
+	Currency      string      `json:"currency"`
+
+	PaymentMethod *string `json:"payment_method,omitempty"`
+	PaymentStatus string  `json:"payment_status"`
+	Status        string  `json:"status"`
+
+	Items []OrderDetailItem `json:"items"`
+
+	// DeliveryAddress is the decrypted order snapshot — the address as it
+	// was when the order was placed, not the address the customer has now.
+	// Nil when the order predates the snapshot, or when the cipher is not
+	// configured; the rest of the order still renders in that case, because
+	// a missing address is not a reason to fail an order screen.
+	DeliveryAddress *pii.Address `json:"delivery_address,omitempty"`
+
+	CanCancel   bool    `json:"can_cancel"`
+	TrackingURL *string `json:"tracking_url,omitempty"`
+
+	CreatedAt      time.Time `json:"created_at"`
+	CreatedAtEpoch int64     `json:"created_at_epoch"`
+}
+
+// OrderDetailItem is one line of the order, in paise.
+type OrderDetailItem struct {
+	ID             uuid.UUID   `json:"id"`
+	ProductID      uuid.UUID   `json:"product_id"`
+	VariantID      uuid.UUID   `json:"variant_id"`
+	SellerID       uuid.UUID   `json:"seller_id"`
+	ProductTitle   string      `json:"product_title"`
+	SKU            string      `json:"sku"`
+	Quantity       int         `json:"quantity"`
+	UnitMRPMinor   money.Paise `json:"unit_mrp_minor"`
+	UnitPriceMinor money.Paise `json:"unit_price_minor"`
+	TaxMinor       money.Paise `json:"tax_minor"`
+	LineTotalMinor money.Paise `json:"line_total_minor"`
+	Status         string      `json:"status"`
+	TrackingNumber *string     `json:"tracking_number,omitempty"`
+}
+
+// GetOrderDetail assembles the buyer's order screen: totals in paise, the
+// line items, the decrypted delivery address, whether the cancel button
+// applies, and a tracking URL once a shipment carries one.
+//
+// Ownership is checked the same way GetOrder checks it — a stranger gets
+// "not found" rather than a 403, so order ids cannot be probed.
+func (s *Service) GetOrderDetail(ctx context.Context, orderID, userID uuid.UUID) (*OrderDetail, error) {
+	order, err := s.store.GetOrderByID(ctx, orderID)
+	if err != nil {
+		if errors.Is(err, postgres.ErrOrderNotFound) || errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOrderNotFound
+		}
+		return nil, err
+	}
+	if order == nil || order.CustomerUserID != userID {
+		return nil, ErrOrderNotFound
+	}
+
+	items, err := s.store.GetOrderItems(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]OrderDetailItem, 0, len(items))
+	for _, it := range items {
+		lines = append(lines, OrderDetailItem{
+			ID:             it.ID,
+			ProductID:      it.ProductID,
+			VariantID:      it.VariantID,
+			SellerID:       it.SellerID,
+			ProductTitle:   it.ProductTitle,
+			SKU:            it.SKU,
+			Quantity:       it.Quantity,
+			UnitMRPMinor:   money.Paise(it.UnitMRPMinor),
+			UnitPriceMinor: money.Paise(it.UnitPriceMinor),
+			TaxMinor:       money.Paise(it.TaxAmountMinor),
+			LineTotalMinor: money.Paise(it.LineTotalMinor()),
+			Status:         it.Status,
+			TrackingNumber: it.TrackingNumber,
+		})
+	}
+
+	out := &OrderDetail{
+		ID:             order.ID,
+		OrderNumber:    order.OrderNumber,
+		SubtotalMinor:  money.Paise(order.SubtotalMinorValue()),
+		DiscountMinor:  money.Paise(order.DiscountMinorValue()),
+		ShippingMinor:  money.Paise(order.ShippingMinorValue()),
+		TaxMinor:       money.Paise(order.TaxMinorValue()),
+		TotalMinor:     money.Paise(order.TotalMinor()),
+		Currency:       coalesceStr(order.CurrencyCode, "INR"),
+		PaymentMethod:  order.PaymentMethod,
+		PaymentStatus:  order.PaymentStatus,
+		Status:         order.Status,
+		Items:          lines,
+		CanCancel:      postgres.CustomerCanCancel(order.Status),
+		CreatedAt:      order.CreatedAt,
+		CreatedAtEpoch: order.CreatedAt.Unix(),
+	}
+
+	out.DeliveryAddress = s.openOrderAddress(ctx, order)
+
+	// The first shipment that actually has a tracking URL. Multi-seller
+	// orders can hold several; the buyer's screen shows one link and
+	// GET /orders/:id/shipments carries the full set.
+	if shipments, err := s.store.ListShipmentsByOrder(ctx, orderID); err == nil {
+		for _, sh := range shipments {
+			if sh != nil && sh.TrackingURL != nil && *sh.TrackingURL != "" {
+				out.TrackingURL = sh.TrackingURL
+				break
+			}
+		}
+	} else {
+		slog.Warn("order detail: could not load shipments", "order_id", orderID, "error", err)
+	}
+
+	return out, nil
+}
+
+// openOrderAddress decrypts the order's delivery-address snapshot.
+//
+// The sealed blob is the authority. The plaintext column is read only as
+// the dual-write-window fallback the cutover mode permits — and after
+// cutover that column holds routing fields alone, so serving it as "the
+// address" would be quietly wrong rather than merely incomplete.
+//
+// Failures are logged and swallowed: an order screen that will not load
+// because one field could not be decrypted is worse than one that renders
+// the order without the address.
+func (s *Service) openOrderAddress(ctx context.Context, order *postgres.Order) *pii.Address {
+	if len(order.DeliveryAddressSnapshotEnc) > 0 && s.pii != nil {
+		plain, err := s.pii.Open(ctx, pii.ScopeOrderSnapshot, order.DeliveryAddressSnapshotEnc)
+		if err != nil {
+			slog.Error("order detail: could not open the sealed address snapshot",
+				"order_id", order.ID, "error", err)
+			return nil
+		}
+		var addr pii.Address
+		if err := json.Unmarshal([]byte(plain), &addr); err != nil {
+			slog.Error("order detail: sealed address snapshot is not an address",
+				"order_id", order.ID, "error", err)
+			return nil
+		}
+		return &addr
+	}
+	if len(order.DeliveryAddressSnapshot) > 0 && s.piiCutover.AllowsPlaintextRead() {
+		var addr pii.Address
+		if err := json.Unmarshal(order.DeliveryAddressSnapshot, &addr); err != nil {
+			slog.Error("order detail: plaintext address snapshot is not an address",
+				"order_id", order.ID, "error", err)
+			return nil
+		}
+		return &addr
+	}
+	return nil
 }
 
 // ─── Cart ────────────────────────────────────────────────────
@@ -1717,7 +1973,13 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID, actorID uuid.UUID
 			"order_id", orderID, "bound_intent", intentID, "claimed_intent", in.PaymentIntentID)
 		return ErrPaymentVerifyFailed
 	}
-	expectedMinor := int64(math.Round(order.FinalAmount * 100))
+	// The payable amount comes from `final_amount_minor`, which is what the
+	// checkout wrote and what the payment intent was opened for. It used to
+	// be ROUND(order.FinalAmount*100) — the NUMERIC mirror migration 007
+	// stopped maintaining — so on every P0 order the expected amount was
+	// ZERO, and a client that honestly reported what it paid was refused
+	// with PAYMENT_AMOUNT_MISMATCH.
+	expectedMinor := order.TotalMinor()
 	if in.AmountMinor != 0 && in.AmountMinor != expectedMinor {
 		return ErrPaymentAmountMismatch
 	}
@@ -1772,13 +2034,60 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID, actorID uuid.UUID
 		return nil
 	}
 
-	// The stub gateway is the one case where the callback IS the last
-	// word: no PSP exists to send a webhook, so nothing else can ever
-	// settle the order. It is reachable only with PAYMENTS_ALLOW_STUB (the
-	// dev stack) and even then goes through the same guarded transition the
-	// webhook consumer would — one UPDATE, converging with any concurrent
-	// caller, refusing a dead order.
+	// The stub gateway is the one case where the callback IS the last word:
+	// no PSP exists to send a webhook, so nothing else can ever settle the
+	// order.
+	//
+	// ─── AND THE FLAG ALONE IS NOT ENOUGH TO ESTABLISH THAT ──────────────
+	//
+	// PAYMENTS_ALLOW_STUB is a COMMERCE-side flag. It says what this service
+	// was told, not what payments-service is actually running, and the two
+	// can disagree — this dev stack currently does, with the flag on here
+	// and real Razorpay test credentials over there. In that configuration a
+	// webhook DOES exist, so treating a client callback as terminal would
+	// restore exactly the authority A1/LB-3 removed: whoever holds a genuine
+	// signature settles the order without the webhook's amount, currency,
+	// payer and intent re-checks ever running.
+	//
+	// So the last question is put to payments-service itself. An intent
+	// carries `client_session` if and only if a real Provider adapter is
+	// configured there (payments' withClientSession attaches it from
+	// h.provider). Its presence means a webhook is coming, and the callback
+	// goes back to being advisory.
+	//
+	// Failing to ask is fatal rather than permissive: an unreachable
+	// payments-service is not evidence that no provider exists.
+	if err := s.assertNoRealProvider(ctx, intentID); err != nil {
+		return err
+	}
+
+	// Same guarded transition the webhook consumer would take — one UPDATE,
+	// converging with any concurrent caller, refusing a dead order.
 	return s.applyPaidStatus(ctx, orderID, in.RazorpayPaymentID, gateway, &actorID, "customer")
+}
+
+// assertNoRealProvider refuses stub settlement when payments-service has a
+// real PSP adapter configured.
+//
+// The signal is `client_session` on the intent: payments attaches it only
+// when `h.provider != nil`, so it is present exactly when a provider exists
+// that can sign — and therefore send — a webhook. Reading the fact off the
+// intent rather than off our own environment means the two services cannot
+// disagree about which settlement path is live.
+func (s *Service) assertNoRealProvider(ctx context.Context, intentID uuid.UUID) error {
+	intent, err := s.payments.GetIntent(ctx, intentID)
+	if err != nil {
+		slog.Error("commerce: refusing stub settlement — payments-service could not be asked "+
+			"which provider is configured", "intent_id", intentID, "error", err)
+		return ErrPaymentVerifyFailed
+	}
+	if intent != nil && len(intent.ClientSession) > 0 {
+		slog.Warn("commerce: refusing stub settlement — payments-service has a real provider "+
+			"configured, so the signature-verified webhook is the settlement path",
+			"intent_id", intentID, "provider", intent.ClientSession["provider"])
+		return ErrStubGatewayInProd
+	}
+	return nil
 }
 
 // checkoutInitialState is the (status, payment_status) pair a fresh order
@@ -1806,7 +2115,7 @@ func (s *Service) getOrderForPayment(ctx context.Context, orderID uuid.UUID) (*p
 	}
 	order, err := s.orders.GetOrderByID(ctx, orderID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, postgres.ErrOrderNotFound) {
 			return nil, ErrOrderNotFound
 		}
 		return nil, err
@@ -1828,6 +2137,27 @@ type OrderActorRole struct {
 
 // OrderActor inspects the order + its items and reports whether the
 // supplied actor is the customer and/or a seller of any item.
+//
+// ─── TWO KINDS OF ID ────────────────────────────────────────────────────
+//
+// `actorID` is a USER id — it arrives as X-User-Id. `order_items.seller_id`
+// is a SELLER id, the primary key of a row in `sellers`. They are drawn
+// from different tables and never collide, so the comparison
+//
+//	if it.SellerID == actorID
+//
+// could not be true for any caller, and IsSeller was permanently false.
+// Every write it gates — POST /orders/:id/shipment, POST /orders/:id/invoice
+// — answered 403 to the seller who actually owned the line, and the reads
+// (GET …/shipment, …/shipments, …/invoice) answered 403 too because the
+// seller is not the customer either. A seller could not act on their own
+// order at all, and the 403 said "actor is not a seller on this order",
+// which is exactly what it looked like from the outside.
+//
+// The caller's seller profile is resolved first and the comparison is
+// seller-id to seller-id. A caller with no seller profile is simply not a
+// seller — that is not an error, so a plain buyer still gets the customer
+// half of the role rather than a 500.
 func (s *Service) OrderActor(ctx context.Context, orderID, actorID uuid.UUID) (OrderActorRole, error) {
 	order, err := s.store.GetOrderByID(ctx, orderID)
 	if err != nil {
@@ -1837,14 +2167,42 @@ func (s *Service) OrderActor(ctx context.Context, orderID, actorID uuid.UUID) (O
 		return OrderActorRole{}, ErrOrderNotFound
 	}
 	role := OrderActorRole{IsCustomer: order.CustomerUserID == actorID}
-	items, _ := s.store.GetOrderItems(ctx, orderID)
+
+	sellerID, err := s.actorSellerID(ctx, actorID)
+	if err != nil {
+		return OrderActorRole{}, err
+	}
+	if sellerID == uuid.Nil {
+		return role, nil
+	}
+	items, err := s.store.GetOrderItems(ctx, orderID)
+	if err != nil {
+		return OrderActorRole{}, err
+	}
 	for _, it := range items {
-		if it.SellerID == actorID {
+		if it.SellerID == sellerID {
 			role.IsSeller = true
 			break
 		}
 	}
 	return role, nil
+}
+
+// actorSellerID maps a user id to their seller id, or uuid.Nil when the
+// caller has no seller profile. "No seller row" is a fact about the caller,
+// not a failure, so it is not an error; anything else is.
+func (s *Service) actorSellerID(ctx context.Context, actorID uuid.UUID) (uuid.UUID, error) {
+	seller, err := s.store.GetSellerByUserID(ctx, actorID)
+	if err != nil {
+		if errors.Is(err, postgres.ErrNoSellerRow) || errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, nil
+		}
+		return uuid.Nil, err
+	}
+	if seller == nil {
+		return uuid.Nil, nil
+	}
+	return seller.ID, nil
 }
 
 // ApplyVerifiedPaymentEvent is the system entry point the Kafka payments

@@ -67,11 +67,11 @@ func (s *Store) GetVariantsByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid
 		return map[uuid.UUID]*ProductVariant{}, nil
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id,product_id,sku,barcode,option_1_name,option_1_value,
-		       option_2_name,option_2_value,option_3_name,option_3_value,
-		       mrp,selling_price,cost_price,currency_code,status,image_media_id,
-		       weight_grams,created_at,updated_at
-		FROM product_variants WHERE id = ANY($1)`, ids)
+		SELECT v.id,v.product_id,v.sku,v.barcode,v.option_1_name,v.option_1_value,
+		       v.option_2_name,v.option_2_value,v.option_3_name,v.option_3_value,
+		       v.mrp,v.selling_price,v.cost_price,v.currency_code,v.status,v.image_media_id,
+		       v.weight_grams,v.created_at,v.updated_at,`+variantMoneyAndStockSQL+`
+		FROM product_variants v WHERE v.id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +84,7 @@ func (s *Store) GetVariantsByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid
 			&v.Option3Name, &v.Option3Value,
 			&v.MRP, &v.SellingPrice, &v.CostPrice, &v.CurrencyCode, &v.Status,
 			&v.ImageMediaID, &v.WeightGrams, &v.CreatedAt, &v.UpdatedAt,
+			&v.SellingPriceMinor, &v.MRPMinor, &v.AvailableQty,
 		); err != nil {
 			return nil, err
 		}
@@ -107,7 +108,10 @@ func (s *Store) GetOrderItemsByOrderIDs(ctx context.Context, orderIDs []uuid.UUI
 		SELECT id,order_id,product_id,variant_id,seller_id,product_title,
 		       variant_details,sku,quantity,unit_mrp,unit_price,discount_amount,
 		       tax_amount,final_price,status,shipment_id,tracking_number,
-		       return_eligible_until,delivered_at,created_at
+		       return_eligible_until,delivered_at,created_at,
+		       COALESCE(unit_mrp_minor,0),COALESCE(unit_price_minor,0),
+		       COALESCE(discount_amount_minor,0),COALESCE(tax_amount_minor,0),
+		       COALESCE(final_price_minor,0)
 		FROM order_items
 		WHERE order_id = ANY($1)
 		ORDER BY order_id, created_at ASC`, orderIDs)
@@ -122,7 +126,9 @@ func (s *Store) GetOrderItemsByOrderIDs(ctx context.Context, orderIDs []uuid.UUI
 			&it.ProductTitle, &it.VariantDetails, &it.SKU, &it.Quantity,
 			&it.UnitMRP, &it.UnitPrice, &it.DiscountAmount, &it.TaxAmount, &it.FinalPrice,
 			&it.Status, &it.ShipmentID, &it.TrackingNumber, &it.ReturnEligibleUntil,
-			&it.DeliveredAt, &it.CreatedAt); err != nil {
+			&it.DeliveredAt, &it.CreatedAt,
+			&it.UnitMRPMinor, &it.UnitPriceMinor, &it.DiscountAmountMinor,
+			&it.TaxAmountMinor, &it.FinalPriceMinor); err != nil {
 			return nil, err
 		}
 		itCopy := it

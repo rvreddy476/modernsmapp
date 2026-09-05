@@ -37,6 +37,40 @@ type Service struct {
 	// recovery at all, and A6's "provider-native idempotency" was true of
 	// the adapter and false of the code that calls it.
 	provider gateway.Provider
+	// stubSettlement is set ONLY when boot selected the stub gateway. See
+	// WithStubSettlement.
+	stubSettlement bool
+}
+
+// WithStubSettlement lets VerifyIntent settle an intent, and must be wired
+// from payments' OWN boot configuration (config.ModeStub), never from a
+// caller's claim.
+//
+// ─── WHY AN EXCEPTION TO A1 EXISTS AT ALL ────────────────────────────────
+//
+// A1/R-3 removed every client-reachable route that could assert a payment,
+// because terminal state must come from a signature-verified provider
+// webhook or a server-initiated provider fetch. That rule is intact for
+// every real provider and this flag cannot switch it off: config.Resolve
+// selects ModeStub only when there are NO Razorpay credentials, and main.go
+// additionally refuses to boot in ModeStub when ENV=prod.
+//
+// The stub is the one deployment where those two authorities do not exist.
+// `provider` is nil (a RazorpayProvider on fake credentials would place real
+// HTTP calls to Razorpay), so POST /v1/payments/webhook answers 503 and the
+// reconciler is not started. With VerifyIntent also refusing to settle,
+// every dev intent stayed `pending` for ever — which meant the order behind
+// it could never be paid, and a refund of it was refused with "cannot refund
+// an intent in status pending". The whole post-payment half of the product
+// was untestable.
+//
+// What settles here is not a shortcut around the machinery: it goes through
+// ApplyWebhook, the same atomic inbox + effect + outbox transaction a real
+// provider event takes, so dev exercises the production path rather than a
+// parallel one.
+func (s *Service) WithStubSettlement(on bool) *Service {
+	s.stubSettlement = on
+	return s
 }
 
 // WithProvider supplies the recoverable provider port. Optional: when it is
@@ -675,6 +709,47 @@ func (s *Service) VerifyIntent(ctx context.Context, id uuid.UUID, rzpOrderID, rz
 	// Callers must read Verified=true as "looks genuine, keep polling",
 	// never as "paid". commerce-service's payment/status endpoint reports
 	// the stored status, which is unchanged by this call.
+	//
+	// …EXCEPT on the stub gateway, where there is no webhook and no
+	// reconciler, so "keep polling" polls forever. See WithStubSettlement
+	// for why that exception exists and why nothing but boot configuration
+	// can turn it on. The settlement runs through ApplyWebhook — the same
+	// atomic inbox + effect + outbox transaction a real provider event takes
+	// — with a deterministic event id derived from the payment id, so a
+	// retried callback is deduped rather than applied twice.
+	if s.stubSettlement {
+		// The provider name and order id are read back off the ROW, not
+		// assumed. ApplyWebhookAtomically resolves the intent on
+		// (provider, provider_order_id), and an intent is stamped
+		// `provider='razorpay'` by default even on a stub deployment — so
+		// passing the literal "stub" here addressed nothing and settlement
+		// failed with "no intent for provider order".
+		provider, providerOrder, err := s.store.IntentProviderAndOrder(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		err = s.ApplyWebhook(ctx, WebhookInput{
+			Provider:          provider,
+			EventID:           "stub_callback_" + rzpPaymentID,
+			EventType:         "payment.captured",
+			ProviderOrderID:   providerOrder,
+			ProviderPaymentID: rzpPaymentID,
+			// The amount is the INTENT's, never the caller's. The client
+			// does not name what it paid (LB-4), and the equality check
+			// above has already refused a caller who tried to.
+			AmountMinor: intentAmountMinor,
+			Currency:    intent.Currency,
+		})
+		switch {
+		case err == nil, errors.Is(err, ErrWebhookDuplicate):
+			// Settled, or already settled by an earlier callback.
+		default:
+			slog.Error("payments: stub settlement failed; the intent stays non-terminal",
+				"intent_id", id, "error", err)
+			return nil, err
+		}
+	}
+
 	current, err := s.store.GetIntent(ctx, id)
 	if err != nil {
 		return nil, err

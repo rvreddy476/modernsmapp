@@ -296,6 +296,47 @@ func (s *Service) attemptRefund(ctx context.Context, c postgres.RefundCommand) {
 	}
 	slog.Info("payments: refund submitted to provider",
 		"command_id", c.ID, "provider_refund_id", res.ID, "amount_minor", c.AmountMinor)
+
+	// Stub only: settle the refund the provider has already finished.
+	//
+	// A submitted refund stays `submitted` until a `payment.refunded`
+	// webhook credits the ledger. The stub has no webhook, so on a dev stack
+	// every refund stopped one step short: the command was durable and the
+	// provider refund id was recorded, but the intent's refunded balance
+	// stayed 0 and the order never left `refund_pending`. Testing a refund
+	// end to end was impossible for the same reason testing a payment was.
+	//
+	// The stub's refund is synchronous and final (StubGateway returns
+	// "processed"), so there is nothing left to wait for. It is applied
+	// through applyRefundWebhook — the same atomic inbox + ledger + outbox
+	// transaction a real refund event takes — keyed on the provider refund
+	// id, so it is deduped exactly like a redelivery would be.
+	//
+	// Guarded by the same boot-configured flag as payment settlement, so a
+	// real provider is untouched: there, the webhook credits the refund.
+	if s.stubSettlement {
+		// The provider name comes off the ROW, not from the running
+		// gateway: intents are stamped `provider='razorpay'` by default even
+		// on a stub deployment, and this lookup matches on it.
+		provider, providerOrderID, perr := s.store.IntentProviderAndOrder(ctx, intent.ID)
+		if perr != nil {
+			slog.Error("payments: stub refund settlement could not resolve the intent's provider",
+				"command_id", c.ID, "intent_id", intent.ID, "error", perr)
+			return
+		}
+		if err := s.ApplyWebhook(ctx, WebhookInput{
+			Provider:         provider,
+			EventID:          "stub_refund_" + res.ID,
+			EventType:        "refund.processed",
+			ProviderOrderID:  providerOrderID,
+			ProviderRefundID: res.ID,
+			AmountMinor:      c.AmountMinor,
+			Currency:         intent.Currency,
+		}); err != nil && !errors.Is(err, ErrWebhookDuplicate) {
+			slog.Error("payments: stub refund settlement failed; the command stays submitted",
+				"command_id", c.ID, "provider_refund_id", res.ID, "error", err)
+		}
+	}
 }
 
 // ─── Reconciliation ──────────────────────────────────────────────────

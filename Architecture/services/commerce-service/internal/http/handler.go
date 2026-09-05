@@ -21,6 +21,9 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// allowStubSettlement registers POST /orders/:orderId/payment/confirm.
+	// Set ONLY from PAYMENTS_ALLOW_STUB. See StubSettlementPattern.
+	allowStubSettlement bool
 }
 
 func New(svc *service.Service) *Handler {
@@ -29,6 +32,19 @@ func New(svc *service.Service) *Handler {
 
 func (h *Handler) WithInternalKey(key string) *Handler {
 	h.internalKey = key
+	return h
+}
+
+// WithStubSettlement registers the confirm route so a stub-gateway order can
+// reach `paid` on a dev stack, where no PSP exists to send a webhook.
+//
+// It must be wired from the same PAYMENTS_ALLOW_STUB the service's
+// WithAllowStubGateway reads, and the fence middleware must be built with
+// the same value — the route is otherwise 404'd ahead of routing. A
+// deployment holding real Razorpay credentials leaves it false, and the
+// signature-verified webhook stays the only settlement path.
+func (h *Handler) WithStubSettlement(allow bool) *Handler {
+	h.allowStubSettlement = allow
 	return h
 }
 
@@ -107,6 +123,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/orders/:orderId", h.GetOrder)
 	v1.GET("/orders/:orderId/items", h.GetOrderItems)
 	v1.POST("/orders/:orderId/cancel", h.CancelOrder)
+
+	// The dev-stack settlement path, and nothing else.
+	//
+	// Registered only when PAYMENTS_ALLOW_STUB is set, because in stub mode
+	// payments-service has no provider adapter and POST /v1/payments/webhook
+	// answers 503 — so without this a prepaid order can never leave
+	// payment_pending on dev, and refunds, shipments and delivery have
+	// nothing to test against. The handler still refuses any gateway but
+	// "stub", and the transition it performs is the same guarded UPDATE the
+	// webhook consumer uses. StubSettlementPattern documents the whole rule;
+	// FenceMiddlewareWithStubSettlement must be built with the same flag or
+	// this registration is unreachable by design.
+	if h.allowStubSettlement {
+		v1.POST("/orders/:orderId/payment/confirm", h.ConfirmPayment)
+	}
 
 	// ── Returns ──────────────────────────────────────────────
 	v1.POST("/orders/:orderId/returns", h.CreateReturn)
@@ -191,6 +222,13 @@ func (h *Handler) ListCategories(c *gin.Context) {
 	if err != nil {
 		handleErr(c, err)
 		return
+	}
+	if cats == nil {
+		// `null` is not an empty list. A client decoding this into an array
+		// type gets a decode failure rather than "no categories", which is
+		// how an unseeded table read as a broken endpoint. Migration 023
+		// seeds the taxonomy; this makes the empty case honest regardless.
+		cats = []*postgres.ProductCategory{}
 	}
 	api.JSON(c.Writer, http.StatusOK, cats, nil)
 }
@@ -507,17 +545,38 @@ func (h *Handler) ListProductVariants(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"items": variants}, nil)
 }
 
+// addVariantReq accepts money in PAISE, with the rupee floats as fallback.
+//
+// This was the ONE money-entry route still taking rupees only. POST
+// /products and PATCH /variants/:id both accept `*_minor` and prefer it; a
+// seller adding a variant to an existing listing had to send a float, and an
+// app that speaks paise everywhere else had to convert on the way out and
+// hope the server's rounding matched its own. `mrp`/`selling_price` keep
+// working — they are simply no longer the only shape.
+//
+// Neither pair is `binding:"required"` any more: requiring the float made it
+// impossible to send only paise. The service refuses a variant with no
+// positive price, which is the check that actually matters.
 type addVariantReq struct {
-	SKU          string   `json:"sku" binding:"required"`
-	Barcode      *string  `json:"barcode"`
-	Option1Name  *string  `json:"option_1_name"`
-	Option1Value *string  `json:"option_1_value"`
-	Option2Name  *string  `json:"option_2_name"`
-	Option2Value *string  `json:"option_2_value"`
-	Option3Name  *string  `json:"option_3_name"`
-	Option3Value *string  `json:"option_3_value"`
-	MRP          float64  `json:"mrp" binding:"required"`
-	SellingPrice float64  `json:"selling_price" binding:"required"`
+	SKU          string  `json:"sku" binding:"required"`
+	Barcode      *string `json:"barcode"`
+	Option1Name  *string `json:"option_1_name"`
+	Option1Value *string `json:"option_1_value"`
+	Option2Name  *string `json:"option_2_name"`
+	Option2Value *string `json:"option_2_value"`
+	Option3Name  *string `json:"option_3_name"`
+	Option3Value *string `json:"option_3_value"`
+
+	MRPMinor          *int64 `json:"mrp_minor"`
+	SellingPriceMinor *int64 `json:"selling_price_minor"`
+	CostPriceMinor    *int64 `json:"cost_price_minor"`
+
+	// money-exempt: the legacy rupee shape, read only when the matching
+	// *_minor field is absent.
+	MRP float64 `json:"mrp"`
+	// money-exempt: legacy rupee shape, superseded by selling_price_minor.
+	SellingPrice float64 `json:"selling_price"`
+	// money-exempt: legacy rupee shape, superseded by cost_price_minor.
 	CostPrice    *float64 `json:"cost_price"`
 	CurrencyCode string   `json:"currency_code"`
 	WeightGrams  *int     `json:"weight_grams"`
@@ -541,20 +600,31 @@ func (h *Handler) AddProductVariant(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	// Paise are resolved once, here at the boundary, exactly as POST
+	// /products does it — so the same price sent either way stores the same
+	// integer. The rupee mirrors are derived FROM the paise rather than
+	// copied from the request, which is what keeps the two columns from
+	// disagreeing when a caller sends both.
+	mrpMinor := minorOrRupees(req.MRPMinor, req.MRP)
+	sellMinor := minorOrRupees(req.SellingPriceMinor, req.SellingPrice)
+	costMinorPtr := addVariantCostMinor(req)
 	v := &postgres.ProductVariant{
-		SKU:          req.SKU,
-		Barcode:      req.Barcode,
-		Option1Name:  req.Option1Name,
-		Option1Value: req.Option1Value,
-		Option2Name:  req.Option2Name,
-		Option2Value: req.Option2Value,
-		Option3Name:  req.Option3Name,
-		Option3Value: req.Option3Value,
-		MRP:          req.MRP,
-		SellingPrice: req.SellingPrice,
-		CostPrice:    req.CostPrice,
-		CurrencyCode: req.CurrencyCode,
-		WeightGrams:  req.WeightGrams,
+		SKU:                 req.SKU,
+		Barcode:             req.Barcode,
+		Option1Name:         req.Option1Name,
+		Option1Value:        req.Option1Value,
+		Option2Name:         req.Option2Name,
+		Option2Value:        req.Option2Value,
+		Option3Name:         req.Option3Name,
+		Option3Value:        req.Option3Value,
+		MRP:                 float64(mrpMinor) / 100.0,  // money-exempt: NUMERIC mirror of mrp_minor
+		SellingPrice:        float64(sellMinor) / 100.0, // money-exempt: NUMERIC mirror of selling_price_minor
+		CostPrice:           rupeeMirrorPtr(costMinorPtr),
+		MRPMinorIn:          &mrpMinor,
+		SellingPriceMinorIn: &sellMinor,
+		CostPriceMinorIn:    costMinorPtr,
+		CurrencyCode:        req.CurrencyCode,
+		WeightGrams:         req.WeightGrams,
 	}
 	out, err := h.svc.AddProductVariant(c.Request.Context(), userID, productID, v)
 	if err != nil {
@@ -1376,9 +1446,12 @@ func (h *Handler) GetOrder(c *gin.Context) {
 	if !ok {
 		return
 	}
-	order, err := h.svc.GetOrder(c.Request.Context(), orderID, userID)
+	// The assembled screen, not the row. See service.OrderDetail for what
+	// the raw row was doing to the order page (₹0.00, no lines, no address,
+	// no cancel button) and why the shape now matches the list endpoint's.
+	order, err := h.svc.GetOrderDetail(c.Request.Context(), orderID, userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
+		writeCommerceError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, order, nil)
@@ -2042,4 +2115,27 @@ func costMinor(v createVariantReq) *int64 {
 	}
 	minor := int64(math.Round(*v.CostPrice * 100))
 	return &minor
+}
+
+// addVariantCostMinor is costMinor for the add-a-variant-to-an-existing-
+// product body, which carries the same optional pair.
+func addVariantCostMinor(v addVariantReq) *int64 {
+	if v.CostPriceMinor != nil {
+		return v.CostPriceMinor
+	}
+	if v.CostPrice == nil {
+		return nil
+	}
+	minor := int64(math.Round(*v.CostPrice * 100))
+	return &minor
+}
+
+// rupeeMirrorPtr is the NUMERIC mirror of an optional paise amount, for the
+// analytics readers still scanning the rupee columns. Nil stays nil.
+func rupeeMirrorPtr(minor *int64) *float64 {
+	if minor == nil {
+		return nil
+	}
+	r := float64(*minor) / 100.0 // money-exempt: NUMERIC mirror of cost_price_minor
+	return &r
 }

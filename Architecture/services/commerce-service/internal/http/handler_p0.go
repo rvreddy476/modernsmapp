@@ -28,6 +28,7 @@ import (
 	"github.com/atpost/shared/paymentmethod"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // FencedPrefixes are route families outside the Commerce P0 loop.
@@ -99,7 +100,7 @@ var FencedRoutes = []FencedRoute{
 	// this list did, and what TestFencedRoutesExplainThemselves caught.
 	{
 		Method:  http.MethodPost,
-		Pattern: "/v1/commerce/orders/:orderId/payment/confirm",
+		Pattern: StubSettlementPattern,
 		Why: "a client-asserted payment fact. The buyer posted their own gateway triple and the " +
 			"order became paid on the strength of it, which is the authority A1/LB-3 removed " +
 			"from payments-service and must not survive here. Terminal payment state arrives " +
@@ -117,6 +118,36 @@ var FencedRoutes = []FencedRoute{
 			"loop and have no refund money path behind them",
 	},
 }
+
+// StubSettlementPattern is POST /v1/commerce/orders/:orderId/payment/confirm.
+//
+// ─── WHY THIS ROUTE HAS A SWITCH RATHER THAN A VERDICT ───────────────────
+//
+// With a real PSP this route must not exist, for exactly the reason the
+// fence entry above gives: it lets the payer assert that they paid. That is
+// unchanged, and it is the DEFAULT.
+//
+// But the stub gateway has no PSP behind it, and therefore no webhook. In
+// stub mode payments-service builds `provider = nil` (a RazorpayProvider on
+// fake credentials would place real HTTP calls to Razorpay), so
+// POST /v1/payments/webhook answers 503 — correctly, since a stub cannot
+// verify a signature. With this route fenced as well, the dev stack had NO
+// settlement path at all: every prepaid order stopped at payment_pending,
+// which blocks refund, shipment and delivery testing on the one environment
+// where that testing happens.
+//
+// So the route is un-fenced and registered only when PAYMENTS_ALLOW_STUB is
+// explicitly set, and even then Service.ConfirmPayment settles ONLY when the
+// caller names gateway="stub" and stubGatewayAllowed() agrees; any other
+// gateway still returns without touching order state, because the callback
+// stays advisory. A deployment with Razorpay credentials leaves the flag
+// unset, the route is neither registered nor un-fenced, and the
+// signature-verified webhook remains the only way an order becomes paid.
+//
+// The settlement itself is not a new transition: it goes through
+// applyPaidStatus → MarkOrderPaid, the same guarded single UPDATE the
+// webhook consumer uses, so a race converges rather than double-applying.
+const StubSettlementPattern = "/v1/commerce/orders/:orderId/payment/confirm"
 
 // matchesPattern compares a request path against a gin-style pattern,
 // treating `:param` segments as single-segment wildcards.
@@ -142,21 +173,44 @@ func matchesPattern(path, pattern string) bool {
 
 // FencedRouteReason reports why a method+path is fenced, or "" if it is not.
 // Exported so the reachability proof enumerates the server's own list.
+//
+// This is the PRODUCTION answer — it never exempts the stub settlement
+// route. Callers that need the dev-stack answer pass the flag explicitly.
 func FencedRouteReason(method, path string) string {
+	return fencedRouteReason(method, path, false)
+}
+
+// fencedRouteReason is FencedRouteReason with the stub-settlement exemption
+// made explicit, so the only thing the flag can do is un-fence that ONE
+// method+pattern. Every other entry in FencedRoutes is unaffected by it.
+func fencedRouteReason(method, path string, allowStubSettlement bool) string {
 	for _, r := range FencedRoutes {
-		if r.Method == method && matchesPattern(path, r.Pattern) {
-			return r.Why
+		if r.Method != method || !matchesPattern(path, r.Pattern) {
+			continue
 		}
+		if allowStubSettlement && r.Pattern == StubSettlementPattern {
+			return ""
+		}
+		return r.Why
 	}
 	return ""
 }
 
-// FenceMiddleware answers 404 for any fenced path.
+// FenceMiddleware answers 404 for any fenced path, with the production
+// fence list — the stub settlement route included.
+func FenceMiddleware() gin.HandlerFunc {
+	return FenceMiddlewareWithStubSettlement(false)
+}
+
+// FenceMiddlewareWithStubSettlement is the fence, optionally opening the one
+// route the dev stack needs to settle a stub order. See StubSettlementPattern
+// for why that exemption exists and why it can only ever be set by
+// PAYMENTS_ALLOW_STUB.
 //
 // Default-deny, and it runs before routing, so it holds even if a route is
 // re-registered by a later edit. 404 rather than 403: a fenced surface
 // should not confirm it exists.
-func FenceMiddleware() gin.HandlerFunc {
+func FenceMiddlewareWithStubSettlement(allowStubSettlement bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
 		for _, f := range FencedPrefixes {
@@ -169,7 +223,7 @@ func FenceMiddleware() gin.HandlerFunc {
 		}
 		// B5: the legacy money routes, fenced by exact method+shape because
 		// they sit under prefixes the launch loop still uses.
-		if why := FencedRouteReason(c.Request.Method, p); why != "" {
+		if why := fencedRouteReason(c.Request.Method, p, allowStubSettlement); why != "" {
 			slog.Warn("commerce: refused a fenced legacy money route",
 				"method", c.Request.Method, "path", p, "why", why)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
@@ -574,6 +628,15 @@ func writeCommerceError(c *gin.Context, err error) {
 		// as "your product was deleted".
 		api.ErrorWithContext(ctx, w, http.StatusForbidden, "NOT_YOUR_PRODUCT",
 			"that product belongs to another seller", nil)
+	case errors.Is(err, postgres.ErrProductNotFound):
+		// GET /v1/commerce/products/<unknown uuid> answered 500 on pgx's
+		// raw "no rows in result set": the sentinel did not exist on the
+		// read path, so the store's error reached the default arm.
+		api.ErrorWithContext(ctx, w, http.StatusNotFound, "PRODUCT_NOT_FOUND", "product not found", nil)
+	case errors.Is(err, service.ErrInvalidDocumentType):
+		// The message carries the permitted vocabulary — this is one of the
+		// few errors whose text a client can act on directly.
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "INVALID_DOCUMENT_TYPE", err.Error(), nil)
 	case errors.Is(err, postgres.ErrVariantNotFound):
 		api.ErrorWithContext(ctx, w, http.StatusNotFound, "VARIANT_NOT_FOUND", "variant not found", nil)
 	case errors.Is(err, postgres.ErrNotYourVariant):
@@ -616,7 +679,33 @@ func writeCommerceError(c *gin.Context, err error) {
 		// same call changes nothing until the seller fixes their address.
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "PLACE_OF_SUPPLY_UNKNOWN",
 			"this seller cannot be checked out from yet: their pickup address is incomplete", nil)
+	case errors.Is(err, service.ErrCourierUnavailable):
+		// The carrier, not us. Retryable, and it must read that way.
+		slog.ErrorContext(ctx, "commerce: the courier could not be reached for a quote", "error", err)
+		api.ErrorWithContext(ctx, w, http.StatusServiceUnavailable, "COURIER_UNAVAILABLE",
+			"delivery could not be checked right now; please retry", nil)
+	case errors.Is(err, pgx.ErrNoRows):
+		// The sweep for "the row you named is not there".
+		//
+		// Every store read that forgets to translate pgx.ErrNoRows into a
+		// domain sentinel used to land in the default arm and be reported as
+		// an outage. A 404 is both truthful and the answer the client can act
+		// on. Reads that need a *specific* code still map their own sentinel
+		// above; this is what the ones nobody has claimed yet fall back to.
+		api.ErrorWithContext(ctx, w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
 	default:
+		// A schema constraint refusing a value the CLIENT chose is a 400,
+		// not a 500 — checked last so every violation with a domain meaning
+		// (oversell, reserved stock, cancellation matrix) keeps its own
+		// code above. The constraint name goes to the log, never to the
+		// client: it names our tables.
+		if name, ok := postgres.ConstraintViolation(err); ok {
+			slog.ErrorContext(ctx, "commerce: a database constraint refused a client-supplied value",
+				"constraint", name, "method", c.Request.Method, "path", c.FullPath(), "error", err)
+			api.ErrorWithContext(ctx, w, http.StatusBadRequest, "INVALID_VALUE",
+				"one of the supplied values is not permitted", nil)
+			return
+		}
 		// Genuinely unexpected. The message is NOT echoed: it can contain
 		// identifiers, and the client has nothing useful to do with it.
 		//
