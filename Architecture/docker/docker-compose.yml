@@ -807,6 +807,9 @@ services:
       POST_SERVICE_URL: http://post-service:8084
       CHAT_MESSAGE_SERVICE_URL: http://chat-message-service:8092
       PROFILE_SERVICE_URL: http://identity-profile:8098
+      # Product photos: commerce answers whether a product is live, so a
+      # shopper who is not signed in can still see the shop.
+      COMMERCE_SERVICE_URL: http://commerce-service:8109
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       REDIS_ADDR: redis:6379
     ports:

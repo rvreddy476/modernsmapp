@@ -14,8 +14,8 @@ import (
 	"github.com/atpost/media-service/internal/delivery"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	mediaHttp "github.com/atpost/media-service/internal/http"
-	"github.com/atpost/media-service/internal/purge"
 	"github.com/atpost/media-service/internal/processing"
+	"github.com/atpost/media-service/internal/purge"
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
@@ -328,11 +328,13 @@ func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, error) {
 	if profileURL == "" {
 		return nil, fmt.Errorf("PROFILE_SERVICE_URL is required: profile media privacy cannot be authorized")
 	}
+	commerceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 	authz := delivery.AnyContentAuthorizer{
 		delivery.NewHTTPContentAuthorizer(postURL, internalKey, nil),
 		delivery.NewHTTPChatAuthorizer(chatURL, internalKey, nil),
 		delivery.NewHTTPProfileAuthorizer(profileURL, internalKey, nil),
+		delivery.NewHTTPCommerceAuthorizer(commerceURL, internalKey, nil),
 	}
 
 	var signer delivery.URLSigner

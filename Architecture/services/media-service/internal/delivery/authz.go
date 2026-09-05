@@ -488,3 +488,17 @@ func (g *Gate) URLsForAssets(ctx context.Context, viewerID string, assets map[st
 	}
 	return result, nil
 }
+
+// NewHTTPCommerceAuthorizer asks commerce-service, which owns the product a
+// photo belongs to.
+//
+// Anonymous viewers are admitted for the same reason profile photos are: a
+// shopfront that only logged-in people can see is not a shopfront. Commerce
+// answers per product — live and approved is public, a draft is the seller's
+// alone — so the audience decision stays with the service that owns it.
+func NewHTTPCommerceAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
+	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
+	authorizer.path = "/v1/commerce/internal/media-access"
+	authorizer.allowAnonymous = true
+	return authorizer
+}
