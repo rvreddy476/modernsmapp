@@ -56,6 +56,7 @@ type Address struct {
 type ShipmentResponse struct {
 	CourierOrderID string
 	AWBNumber      string
+	CourierName    string
 	LabelURL       string
 	TrackingURL    string
 	EstimatedETA   time.Time

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -191,11 +192,30 @@ func (c *ShiprocketCourier) CreateShipment(ctx context.Context, req ShipmentRequ
 		return nil, fmt.Errorf("shiprocket create: no order id in response (pickup_location %q registered?): %s",
 			c.pickupLocation, string(raw))
 	}
+	// Ask for the waybill. Shiprocket's create step returns one only when
+	// the channel auto-assigns; otherwise this is where the courier is
+	// chosen. A failure here leaves a booked shipment without a waybill,
+	// which the seller can retry — see assignAWB.
+	awb, courierName := out.AWBCode, ""
+	if awb == "" && out.ShipmentID != 0 {
+		got, name, err := c.assignAWB(ctx, tok, out.ShipmentID)
+		if err != nil {
+			slog.Warn("shiprocket: shipment booked without a waybill",
+				"shiprocket_order_id", out.OrderID, "shipment_id", out.ShipmentID, "error", err)
+		} else {
+			awb, courierName = got, name
+		}
+	}
+	trackingURL := ""
+	if awb != "" {
+		trackingURL = "https://shiprocket.co/tracking/" + awb
+	}
 	return &ShipmentResponse{
 		CourierOrderID: fmt.Sprintf("%d", out.OrderID),
-		AWBNumber:      out.AWBCode,
+		AWBNumber:      awb,
+		CourierName:    courierName,
 		LabelURL:       out.LabelURL,
-		TrackingURL:    fmt.Sprintf("https://shiprocket.co/tracking/%s", out.AWBCode),
+		TrackingURL:    trackingURL,
 		EstimatedETA:   time.Now().Add(72 * time.Hour),
 		RawResponse:    raw,
 	}, nil
@@ -491,4 +511,48 @@ func (c *ShiprocketCourier) WithPickupLocation(name string) *ShiprocketCourier {
 		c.pickupLocation = name
 	}
 	return c
+}
+
+// assignAWB asks Shiprocket to pick a courier and issue an air waybill for
+// a shipment it has already accepted.
+//
+// This is the step that costs money: Shiprocket debits the seller's wallet
+// when the waybill is issued. It is therefore deliberately separate from
+// booking and its failure is not the booking's failure — a shipment with no
+// waybill is a real shipment awaiting one, while a booking rolled back
+// because a wallet was empty loses an order the buyer has already paid for.
+func (c *ShiprocketCourier) assignAWB(ctx context.Context, tok string, shipmentID int) (awb string, courierName string, err error) {
+	body, _ := json.Marshal(map[string]any{"shipment_id": shipmentID})
+	req, _ := http.NewRequestWithContext(ctx, "POST", c.base+"/courier/assign/awb", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("shiprocket assign awb: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("shiprocket assign awb %d: %s", resp.StatusCode, string(raw))
+	}
+	var out struct {
+		Response struct {
+			Data struct {
+				AWBCode     string `json:"awb_code"`
+				CourierName string `json:"courier_name"`
+			} `json:"data"`
+		} `json:"response"`
+		AWBAssignError string `json:"awb_assign_error"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", "", fmt.Errorf("shiprocket assign awb: %w", err)
+	}
+	if out.Response.Data.AWBCode == "" {
+		reason := out.AWBAssignError
+		if reason == "" {
+			reason = string(raw)
+		}
+		return "", "", fmt.Errorf("shiprocket assign awb: no waybill issued: %s", reason)
+	}
+	return out.Response.Data.AWBCode, out.Response.Data.CourierName, nil
 }

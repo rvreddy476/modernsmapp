@@ -245,7 +245,7 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 		sh := &postgres.Shipment{
 			OrderID:        orderID,
 			SellerID:       sellerID,
-			Courier:        s.courier.Name(),
+			Courier:        courierLabel(s.courier.Name(), resp.CourierName),
 			TrackingNumber: strPtr(resp.AWBNumber),
 			CourierOrderID: strPtr(resp.CourierOrderID),
 			LabelURL:       strPtr(resp.LabelURL),
@@ -827,4 +827,13 @@ func maxDimension(running float64, declared *float64) float64 {
 		return *declared
 	}
 	return running
+}
+
+// courierLabel prefers the carrier the aggregator actually chose — "Delhivery
+// Surface" tells a seller and a buyer something that "shiprocket" does not.
+func courierLabel(provider, chosen string) string {
+	if chosen != "" {
+		return chosen
+	}
+	return provider
 }
