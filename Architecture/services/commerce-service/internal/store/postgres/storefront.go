@@ -371,13 +371,37 @@ type CategoryCard struct {
 	ProductCount int        `json:"product_count"`
 }
 
-// ListCategoryCards returns the active taxonomy with live product counts.
+// ListCategoryCards returns the browsable top level with live product counts.
 //
 // The count is a correlated aggregate rather than a stored counter because a
 // stored one drifts the moment a product is unpublished, and a category strip
 // that says "Electronics (12)" and opens onto four products reads as broken.
+//
+// Two things this deliberately does NOT do, both because the phone reads this
+// route and is frozen:
+//
+// Only roots. Once the taxonomy has depth, a flat list of every node puts
+// "Textbooks" beside "Electronics" in a strip that is meant to be the top
+// level, and the phone would start showing children the moment one is
+// authored in the admin console. A picker that genuinely needs the hierarchy
+// asks for ?tree=true. Every category seeded to date is a root, so this is a
+// no-op on today's data and a fence against tomorrow's.
+//
+// The count spans the subtree. A root whose products all live under its
+// children would otherwise read as empty and be greyed out — the strip would
+// hide the very category the catalogue is filling up. Roots have no children
+// today, so this too returns exactly the numbers it returned before.
 func (s *Store) ListCategoryCards(ctx context.Context) ([]*CategoryCard, error) {
 	rows, err := s.db.Query(ctx, `
+		WITH RECURSIVE subtree AS (
+			SELECT id AS root_id, id AS node_id
+			FROM product_categories WHERE parent_id IS NULL AND is_active = TRUE
+			UNION ALL
+			SELECT s.root_id, c.id
+			FROM product_categories c
+			JOIN subtree s ON c.parent_id = s.node_id
+			WHERE c.is_active = TRUE
+		)
 		SELECT c.id, c.parent_id, c.name, c.slug, c.description, c.display_order,
 		       c.is_active, c.is_featured, c.created_at,
 		       COALESCE(c.icon_media_id, c.banner_media_id) AS image_media_id,
@@ -385,9 +409,10 @@ func (s *Store) ListCategoryCards(ctx context.Context) ([]*CategoryCard, error) 
 		FROM product_categories c
 		LEFT JOIN LATERAL (
 			SELECT COUNT(*)::int AS cnt FROM products p
-			WHERE p.category_id = c.id AND `+productSummaryLive+`
+			WHERE p.category_id IN (SELECT node_id FROM subtree WHERE root_id = c.id)
+			  AND `+productSummaryLive+`
 		) n ON true
-		WHERE c.is_active = TRUE
+		WHERE c.is_active = TRUE AND c.parent_id IS NULL
 		ORDER BY c.display_order, c.name`)
 	if err != nil {
 		return nil, err

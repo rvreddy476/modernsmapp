@@ -73,6 +73,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Catalog ──────────────────────────────────────────────
 	v1.GET("/categories", h.ListCategories)
+	// The form a category asks for: which attributes, in which groups, with
+	// which options and units. Public, like /tax-classes — these are the
+	// questions a listing must answer, not seller data.
+	v1.GET("/categories/:categoryId/attribute-schema", h.GetCategoryAttributeSchema)
 	v1.GET("/products", h.ListProducts)
 	v1.GET("/products/:productId", h.GetProduct)
 	v1.GET("/products/:productId/preview", h.GetProductPreview)
@@ -253,7 +257,31 @@ func handleErr(c *gin.Context, err error) {
 // category that would open onto nothing, which is what made
 // `?category_id=` look broken — the filter worked, and every seeded
 // category was empty.
+//
+// `?tree=true` nests children under their parents and adds `is_listable`,
+// which is what a category PICKER needs — a flat list cannot show that
+// "Textbooks" lives under "Books", and a seller choosing from it picks the
+// browse heading their listing may not sit on.
+//
+// The flat answer is BYTE-IDENTICAL when the parameter is absent. The
+// storefront and the phone both read this route and neither asked for a
+// different shape, so the tree is a second response behind a flag rather than
+// an extra field on the existing one — adding `children: []` to every row
+// would change every byte of a payload two shipped clients decode.
 func (h *Handler) ListCategories(c *gin.Context) {
+	if c.Query("tree") == "true" {
+		depth, _ := strconv.Atoi(c.Query("depth"))
+		roots, err := h.svc.CategoryTree(c.Request.Context(), false, depth)
+		if err != nil {
+			handleErr(c, err)
+			return
+		}
+		if roots == nil {
+			roots = []*postgres.CategoryTreeNode{}
+		}
+		api.JSON(c.Writer, http.StatusOK, roots, nil)
+		return
+	}
 	cats, err := h.svc.ListCategoryCards(c.Request.Context())
 	if err != nil {
 		handleErr(c, err)

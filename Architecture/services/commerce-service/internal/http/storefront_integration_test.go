@@ -96,14 +96,15 @@ func storefrontEngine(t *testing.T, mediaOwner uuid.UUID) (*gin.Engine, *int) {
 // catalogue: a discounted product, a full-price one, and a second seller who
 // owns none of it.
 type storefrontFixture struct {
-	sellerUserID  uuid.UUID
-	sellerID      uuid.UUID
-	intruderUser  uuid.UUID
-	shopper       uuid.UUID
-	categoryID    uuid.UUID
-	discounted    uuid.UUID // 25% off
-	fullPrice     uuid.UUID // no discount
-	otherCategory uuid.UUID // a product in a DIFFERENT category
+	sellerUserID   uuid.UUID
+	sellerID       uuid.UUID
+	intruderUser   uuid.UUID
+	intruderSeller uuid.UUID
+	shopper        uuid.UUID
+	categoryID     uuid.UUID
+	discounted     uuid.UUID // 25% off
+	fullPrice      uuid.UUID // no discount
+	otherCategory  uuid.UUID // a product in a DIFFERENT category
 }
 
 func seedStorefront(t *testing.T) storefrontFixture {
@@ -112,7 +113,8 @@ func seedStorefront(t *testing.T) storefrontFixture {
 	f := storefrontFixture{
 		sellerUserID: uuid.New(), sellerID: uuid.New(),
 		intruderUser: uuid.New(), shopper: uuid.New(),
-		categoryID: uuid.New(), otherCategory: uuid.New(),
+		intruderSeller: uuid.New(),
+		categoryID:     uuid.New(), otherCategory: uuid.New(),
 		discounted: uuid.New(), fullPrice: uuid.New(),
 	}
 	exec := func(sql string, args ...any) {
@@ -128,7 +130,7 @@ func seedStorefront(t *testing.T) storefrontFixture {
 	// about WHOSE product it is, not about having a seller profile at all.
 	exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state,status)
 	      VALUES ($1,$2,'Intruder Store',$3,'in@example.test','KA','approved')`,
-		uuid.New(), f.intruderUser, "in-"+uuid.NewString()[:8])
+		f.intruderSeller, f.intruderUser, "in-"+uuid.NewString()[:8])
 
 	for _, c := range []struct {
 		id   uuid.UUID
@@ -152,6 +154,38 @@ func seedStorefront(t *testing.T) storefrontFixture {
 	}
 	product(f.discounted, f.categoryID, "SF Discounted Widget", 99900, 74900)
 	product(f.fullPrice, f.otherCategory, "SF Full Price Widget", 50000, 50000)
+
+	// Without this, every run of these ten tests leaves two categories, two
+	// products, two variants and two sellers behind for good — and this suite
+	// runs against the shared dev database, where "SF Primary" and "SF
+	// Discounted Widget" then show up in the storefront's category strip and
+	// product grid. Deleting by the fixture's own ids keeps it exact: a
+	// slug-pattern sweep would also take rows another run is still using.
+	t.Cleanup(func() {
+		for _, sql := range []string{
+			`DELETE FROM inventory_items WHERE variant_id IN (
+			   SELECT id FROM product_variants WHERE product_id = ANY($1))`,
+			`DELETE FROM product_variants WHERE product_id = ANY($1)`,
+			`DELETE FROM product_media WHERE product_id = ANY($1)`,
+			`DELETE FROM product_attributes WHERE product_id = ANY($1)`,
+			`DELETE FROM products WHERE id = ANY($1)`,
+		} {
+			if _, err := edgePool.Exec(ctx, sql,
+				[]uuid.UUID{f.discounted, f.fullPrice}); err != nil {
+				t.Logf("storefront fixture cleanup: %v", err)
+			}
+		}
+		if _, err := edgePool.Exec(ctx,
+			`DELETE FROM product_categories WHERE id = ANY($1)`,
+			[]uuid.UUID{f.categoryID, f.otherCategory}); err != nil {
+			t.Logf("storefront fixture cleanup (categories): %v", err)
+		}
+		if _, err := edgePool.Exec(ctx,
+			`DELETE FROM sellers WHERE id = ANY($1)`,
+			[]uuid.UUID{f.sellerID, f.intruderSeller}); err != nil {
+			t.Logf("storefront fixture cleanup (sellers): %v", err)
+		}
+	})
 	return f
 }
 

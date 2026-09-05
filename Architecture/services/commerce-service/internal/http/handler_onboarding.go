@@ -50,6 +50,36 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	// Store-level MarkCODRemittanceSettled has existed since the COD
 	// schema landed; the HTTP route was the missing piece.
 	adm.POST("/cod-remittances/:remittanceId/settle", h.AdminSettleCODRemittance)
+
+	// ── Attribute schema authoring ───────────────────────────────
+	//
+	// admin-service proxies these; the founder edits the catalogue's
+	// questions through them. Nothing here is public — the resolved form
+	// is served by GET /v1/commerce/categories/:categoryId/attribute-schema,
+	// which reads what a publish here made live.
+	//
+	// No DELETE anywhere in this block, on purpose. A definition, an option
+	// and a category are each referenced by products that already exist;
+	// `is_active = false` retires them and leaves those products readable.
+	adm.GET("/attribute-definitions", h.AdminListAttributeDefinitions)
+	adm.POST("/attribute-definitions", h.AdminCreateAttributeDefinition)
+	adm.GET("/attribute-definitions/:defId", h.AdminGetAttributeDefinition)
+	adm.PATCH("/attribute-definitions/:defId", h.AdminPatchAttributeDefinition)
+	adm.GET("/attribute-definitions/:defId/impact", h.AdminAttributeDefinitionImpact)
+	adm.GET("/attribute-definitions/:defId/enum-values", h.AdminListEnumValues)
+	adm.POST("/attribute-definitions/:defId/enum-values", h.AdminCreateEnumValue)
+	// The static `order` child sits beside the `:valueId` param child. gin
+	// resolves that correctly but panics at REGISTRATION on a real conflict,
+	// and registration happens in cmd/server's init path — see
+	// TestAttributeRoutesRegisterWithoutConflict.
+	adm.PUT("/attribute-definitions/:defId/enum-values/order", h.AdminReorderEnumValues)
+	adm.PATCH("/attribute-definitions/:defId/enum-values/:valueId", h.AdminPatchEnumValue)
+	adm.GET("/categories/:categoryId/attributes", h.AdminGetCategoryAttributes)
+	adm.PUT("/categories/:categoryId/attributes", h.AdminPutCategoryAttributes)
+	adm.POST("/categories", h.AdminCreateCategory)
+	adm.PATCH("/categories/:categoryId", h.AdminPatchCategory)
+	adm.GET("/attribute-schema", h.AdminAttributeSchemaState)
+	adm.POST("/attribute-schema/publish", h.AdminPublishAttributeSchema)
 }
 
 // ─── Onboarding handlers ────────────────────────────────────────
