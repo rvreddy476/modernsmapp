@@ -331,68 +331,28 @@ func trimFloat(f float64) string {
 // nineteenth field is wrong, and the seller would see some of their edit
 // applied and some not, with no way to tell which.
 //
-// No HTTP route calls this yet — the write endpoint is the next step. It is
-// here now because the read side and the doc projection are meaningless
-// without the writer that maintains them, and because a storage design is
-// worth proving before a handler depends on it.
+// The answers are checked against the PRODUCT'S CATEGORY, not merely against
+// the definition registry, and every failing field is reported at once rather
+// than the first — both of which live in resolveAttributeValues
+// (productwrite.go), so this writer and the create path cannot disagree about
+// what a valid answer is.
+//
+// PATCH /v1/commerce/products/:productId is what calls it. The create route
+// does not: a create writes its values inside the transaction that makes the
+// product, so there is no window in which a listing exists without them.
 func (s *Service) SetProductAttributeValues(
 	ctx context.Context, productID uuid.UUID, inputs []AttributeValueInput,
 ) ([]ProductAttributeDoc, error) {
 
-	if _, err := s.store.GetProductByID(ctx, productID); err != nil {
-		return nil, err
-	}
-
-	codes := make([]string, 0, len(inputs))
-	for _, in := range inputs {
-		codes = append(codes, in.Code)
-	}
-	defs, err := s.store.AttributeDefinitionsByCodes(ctx, codes)
+	product, err := s.store.GetProductByID(ctx, productID)
 	if err != nil {
 		return nil, err
 	}
 
-	ids := make([]uuid.UUID, 0, len(defs))
-	families := []string{}
-	for _, d := range defs {
-		ids = append(ids, d.ID)
-		if d.UnitFamily != nil && *d.UnitFamily != "" {
-			families = append(families, *d.UnitFamily)
-		}
-	}
-	enums, err := s.store.EnumCodeSetsFor(ctx, ids)
+	sets, err := s.resolveAttributeValues(ctx, product.CategoryID, inputs)
 	if err != nil {
 		return nil, err
 	}
-	unitsByFamily, err := s.store.UnitsForFamilies(ctx, families)
-	if err != nil {
-		return nil, err
-	}
-
-	sets := make([]postgres.AttributeValueSet, 0, len(inputs))
-	for _, in := range inputs {
-		d := defs[in.Code]
-
-		// nil means "clear this field": an empty set, which the store's
-		// replace semantics turn into a delete.
-		if in.Value == nil {
-			sets = append(sets, postgres.AttributeValueSet{DefinitionID: d.ID})
-			continue
-		}
-
-		vc := attributeValueContext{enumCodes: enums[d.ID], units: map[string]bool{}}
-		if d.UnitFamily != nil {
-			for _, u := range unitsByFamily[*d.UnitFamily] {
-				vc.units[u.Code] = true
-			}
-		}
-		rows, err := validateAttributeValue(d, in, vc)
-		if err != nil {
-			return nil, err
-		}
-		sets = append(sets, postgres.AttributeValueSet{DefinitionID: d.ID, Values: rows})
-	}
-
 	if err := s.store.PutProductAttributeValues(ctx, productID, sets); err != nil {
 		return nil, err
 	}

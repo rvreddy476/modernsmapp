@@ -146,24 +146,25 @@ func (s *Store) ListCategories(ctx context.Context) ([]*ProductCategory, error) 
 
 // ─── Products ────────────────────────────────────────────────
 
+// CreateProduct inserts a product on its own.
+//
+// The bulk importer still uses it — it builds one product per CSV row and has
+// its own per-row error accounting. The seller-facing create path does NOT:
+// it goes through CreateProductAtomic, which writes the product, its variants,
+// their inventory and its attribute values in one transaction. See
+// productwrite.go for why that mattered.
+//
+// The INSERT itself lives in insertProductTx and is not repeated here.
 func (s *Store) CreateProduct(ctx context.Context, p *Product) error {
-	p.ID = uuid.New()
-	p.CreatedAt = time.Now()
-	p.UpdatedAt = time.Now()
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO products (id,seller_id,category_id,brand_id,tax_class_id,title,short_title,slug,description,
-		  short_description,brand_name,manufacturer_name,product_type,condition,sku_root,status,visibility,approval_status,
-		  primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
-		  country_of_origin,warranty_info,return_policy_type,return_policy_days,
-		  hsn_code,search_keywords,meta_title,meta_description,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)`,
-		p.ID, p.SellerID, p.CategoryID, p.BrandID, p.TaxClassID, p.Title, p.ShortTitle, p.Slug, p.Description,
-		p.ShortDescription, p.BrandName, p.ManufacturerName, p.ProductType, p.Condition, p.SKURoot, p.Status, p.Visibility, p.ApprovalStatus,
-		p.PrimaryImageMediaID, p.VideoMediaID, p.WeightGrams, p.LengthCm, p.WidthCm, p.HeightCm,
-		p.CountryOfOrigin, p.WarrantyInfo, p.ReturnPolicyType, p.ReturnPolicyDays,
-		p.HSNCode, p.SearchKeywords, p.MetaTitle, p.MetaDescription, p.CreatedAt, p.UpdatedAt,
-	)
-	return err
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := insertProductTx(ctx, tx, p); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, error) {
@@ -178,6 +179,11 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		  -- A real column since migration 026, not a per-row dig through
 		  -- product_attributes.
 		  ,source_image_url
+		  -- Which vintage of the category form produced this product's typed
+		  -- values. Selected here because the seller's edit screen has to
+		  -- show it: a listing stamped with an older version is one whose
+		  -- answers were checked against bounds that have since moved.
+		  ,schema_version
 		  ,(SELECT store_name FROM sellers WHERE id=products.seller_id)
 		  ,(SELECT name FROM product_categories WHERE id=products.category_id)
 		  -- The gallery cover, so a detail page whose seller used the gallery
@@ -196,8 +202,8 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		&p.ReturnPolicyType, &p.ReturnPolicyDays, &p.HSNCode, &p.SearchKeywords,
 		&p.MetaTitle, &p.MetaDescription, &p.AvgRating, &p.ReviewCount,
 		&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
-		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt, &p.SourceImageURL, &p.RetailerName,
-		&p.CategoryName, &p.CoverMediaID,
+		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt, &p.SourceImageURL, &p.SchemaVersion,
+		&p.RetailerName, &p.CategoryName, &p.CoverMediaID,
 	)
 	// A product id that does not exist is a 404, not an outage. pgx's raw
 	// "no rows in result set" travelled all the way to the edge, where the
@@ -589,25 +595,14 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 	return products, total, nil
 }
 
-func (s *Store) UpdateProduct(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	if len(updates) == 0 {
-		return nil
-	}
-	sets := make([]string, 0, len(updates))
-	args := make([]any, 0, len(updates)+1)
-	i := 1
-	for k, v := range updates {
-		sets = append(sets, fmt.Sprintf("%s=$%d", k, i))
-		args = append(args, v)
-		i++
-	}
-	args = append(args, id)
-	_, err := s.db.Exec(ctx,
-		"UPDATE products SET "+strings.Join(sets, ",")+",updated_at=NOW() WHERE id=$"+fmt.Sprint(i),
-		args...,
-	)
-	return err
-}
+// UpdateProduct is GONE. It took a `map[string]any` and interpolated the
+// caller's KEYS into the statement as column names, so it could write any
+// column in `products` — approval_status, seller_id, view_count — and had no
+// way to say which ones were permitted. It had zero callers, which is the
+// only reason it never did.
+//
+// Its replacement is Store.PatchProduct with the typed ProductPatch
+// allowlist, in productwrite.go.
 
 // IncrProductViewCount is the Redis-nil fallback for the sharded
 // product-view counter. Production traffic flows through
@@ -627,8 +622,24 @@ func (s *Store) SetProductViewCount(ctx context.Context, id uuid.UUID, total int
 
 // ─── Product Variants ────────────────────────────────────────
 
+// CreateVariant inserts one variant on its own. The statement lives in
+// insertVariantTx, which the transactional create path calls directly.
 func (s *Store) CreateVariant(ctx context.Context, v *ProductVariant) error {
-	v.ID = uuid.New()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := insertVariantTx(ctx, tx, v); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func insertVariantTx(ctx context.Context, tx pgx.Tx, v *ProductVariant) error {
+	if v.ID == uuid.Nil {
+		v.ID = uuid.New()
+	}
 	v.CreatedAt = time.Now()
 	v.UpdatedAt = time.Now()
 	// THE minor columns are written here, and they are not optional.
@@ -646,7 +657,7 @@ func (s *Store) CreateVariant(ctx context.Context, v *ProductVariant) error {
 	//
 	// Rupee floats are converted once, here, at the boundary. Below this line
 	// the money is integer paise and stays that way.
-	_, err := s.db.Exec(ctx, `
+	_, err := tx.Exec(ctx, `
 		INSERT INTO product_variants (id,product_id,sku,barcode,option_1_name,option_1_value,
 		  option_2_name,option_2_value,option_3_name,option_3_value,mrp,selling_price,cost_price,
 		  mrp_minor,selling_price_minor,cost_price_minor,
@@ -819,14 +830,18 @@ func (s *Store) ArchiveVariant(ctx context.Context, id uuid.UUID) error {
 
 // ─── Inventory ───────────────────────────────────────────────
 
+// UpsertInventory opens (or resets) a variant's stock row on its own. The
+// statement lives in upsertInventoryTx, which the transactional create calls.
 func (s *Store) UpsertInventory(ctx context.Context, variantID, sellerID uuid.UUID, totalQty int) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO inventory_items (id,variant_id,seller_id,total_qty,updated_at)
-		VALUES (gen_random_uuid(),$1,$2,$3,NOW())
-		ON CONFLICT (variant_id) DO UPDATE SET total_qty=$3, updated_at=NOW()`,
-		variantID, sellerID, totalQty,
-	)
-	return err
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := upsertInventoryTx(ctx, tx, variantID, sellerID, totalQty); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) GetInventory(ctx context.Context, variantID uuid.UUID) (*InventoryItem, error) {

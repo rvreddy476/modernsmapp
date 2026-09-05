@@ -255,6 +255,20 @@ type Product struct {
 	UpdatedAt        time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 	PublishedAt      *time.Time `db:"published_at" json:"published_at,omitempty"`
 
+	// SchemaVersion is which PUBLISHED attribute-schema version this
+	// product's typed values were last validated against (migration 026).
+	//
+	// It is stamped at write time from the version that was live when the
+	// values were checked, not read back from the schema at display time.
+	// The difference is the whole point: an operator who tightens a bound
+	// tomorrow needs to know which listings were checked against the looser
+	// one, and a field that always reported "current" could not tell them.
+	//
+	// 0 means "never validated" — the estate that predates the registry.
+	// Not `omitempty`, so a client can see that zero rather than an absent
+	// key it has to guess about.
+	SchemaVersion int `db:"schema_version" json:"schema_version"`
+
 	// Phase F1 — list-view enrichment. Populated by ListProducts via
 	// LATERAL subqueries against product_variants so mobile/web can
 	// render the catalog grid + add-to-cart without an N+1 detail

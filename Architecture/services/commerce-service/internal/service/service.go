@@ -345,6 +345,11 @@ type CreateProductInput struct {
 	MetaTitle           *string
 	MetaDescription     *string
 	Variants            []CreateVariantInput
+	// Attributes are the category-specific answers, validated against the
+	// category's published schema and written in the SAME transaction as the
+	// product. Incomplete is fine — see productwrite.go on why a create must
+	// not demand every required field.
+	Attributes []AttributeValueInput
 }
 
 type CreateVariantInput struct {
@@ -387,6 +392,35 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 		return nil, err
 	}
 
+	// The category, before anything is written and before the attribute
+	// values are checked against it. Nothing in this service verified it: the
+	// foreign key was the only guard, it reports an unnamed constraint
+	// violation, and an unknown category also means the create form the
+	// seller filled in had no fields on it at all.
+	if err := s.requireCategory(ctx, in.CategoryID); err != nil {
+		return nil, err
+	}
+
+	// Answers checked against the category's form. Every failure comes back
+	// at once, keyed by code, so a form can put each message under its own
+	// control. Incompleteness is NOT checked: a draft may be unfinished.
+	attrSets, err := s.resolveAttributeValues(ctx, in.CategoryID, in.Attributes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Which vintage of the form these answers were checked against. Stamped
+	// only when there were answers — a product with no typed values has not
+	// been validated against anything, and claiming a version for it would
+	// tell a later reconciliation pass to skip it.
+	schemaVersion := 0
+	if len(attrSets) > 0 {
+		schemaVersion, err = s.publishedSchemaVersion(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	productType := in.ProductType
 	if productType == "" {
 		productType = "physical"
@@ -423,12 +457,29 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 		SearchKeywords:      in.SearchKeywords,
 		MetaTitle:           in.MetaTitle,
 		MetaDescription:     in.MetaDescription,
+		SchemaVersion:       schemaVersion,
 	}
 
-	if err := s.store.CreateProduct(ctx, p); err != nil {
-		return nil, fmt.Errorf("create product: %w", err)
-	}
-
+	// ─── ONE TRANSACTION, AND WHY ────────────────────────────
+	//
+	// This used to be: insert the product; then, in a loop, insert each
+	// variant and upsert its inventory — three separate statements, none of
+	// them in a transaction, with the inventory error swallowed into a
+	// slog.Warn.
+	//
+	// Every early return in that loop leaked a half-built product. A create
+	// that failed on the second variant's duplicate SKU left the product and
+	// the first variant standing, invisible to the seller, who was shown an
+	// error and reasonably assumed nothing had happened. Worse, the swallowed
+	// inventory failure produced a variant with NO stock row: every
+	// availability read in this service derives from `inventory_items`, so
+	// the listing rendered, went into a cart, and was refused at checkout —
+	// with a 200 on the create and no error line anywhere.
+	//
+	// Now the product, its variants, their inventory rows and its attribute
+	// values are one unit. Either the whole listing exists or none of it
+	// does, and the inventory insert is a hard failure rather than a warning.
+	variants := make([]postgres.NewVariant, 0, len(in.Variants))
 	for _, vi := range in.Variants {
 		v := &postgres.ProductVariant{
 			ProductID:    p.ID,
@@ -449,13 +500,15 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 			CurrencyCode:        "INR",
 			Status:              "active",
 		}
-		if err := s.store.CreateVariant(ctx, v); err != nil {
-			return nil, fmt.Errorf("create variant %s: %w", vi.SKU, err)
-		}
-		// Initialize inventory
-		if err := s.store.UpsertInventory(ctx, v.ID, in.SellerID, vi.StockQty); err != nil {
-			slog.Warn("failed to init inventory", "variant_id", v.ID, "error", err)
-		}
+		variants = append(variants, postgres.NewVariant{Variant: v, StockQty: vi.StockQty})
+	}
+
+	if err := s.store.CreateProductAtomic(ctx, postgres.NewProduct{
+		Product:    p,
+		Variants:   variants,
+		Attributes: attrSets,
+	}); err != nil {
+		return nil, err
 	}
 
 	s.publish(ctx, "commerce.product.created", map[string]any{

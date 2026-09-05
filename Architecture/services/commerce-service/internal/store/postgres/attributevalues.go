@@ -219,16 +219,31 @@ type AttributeValueSet struct {
 // usable for a partial edit — and so are the legacy `definition_id IS NULL`
 // rows, which this method never reads or writes.
 //
-// Nothing on an HTTP route calls this yet. The write endpoint that will
-// (PATCH /products/:id) is the next step; the layer is here, tested, so that
-// step is a handler rather than a handler plus a storage design.
+// PATCH /v1/commerce/products/:productId is the route that calls it, via
+// Service.SetProductAttributeValues; POST /products calls putAttributeValuesTx
+// directly, inside the transaction that creates the product, so a listing
+// cannot exist with only some of its answers.
 func (s *Store) PutProductAttributeValues(ctx context.Context, productID uuid.UUID, sets []AttributeValueSet) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := putAttributeValuesTx(ctx, tx, productID, sets); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
+// putAttributeValuesTx is the body of the write, inside a transaction the
+// caller owns.
+//
+// It exists so the product-create path can write the values in the SAME
+// transaction as the product and its variants. Calling the exported method
+// there would have opened a second transaction, and a create whose attribute
+// write failed would have committed a product with no answers on it — the
+// exact class of half-built listing the atomic create exists to remove.
+func putAttributeValuesTx(ctx context.Context, tx pgx.Tx, productID uuid.UUID, sets []AttributeValueSet) error {
 	for _, set := range sets {
 		// Delete-then-insert WITHIN one definition and one transaction. The
 		// unique index makes the concurrent case a serialisation failure
@@ -274,10 +289,7 @@ func (s *Store) PutProductAttributeValues(ctx context.Context, productID uuid.UU
 		}
 	}
 
-	if err := rebuildAttributesDocTx(ctx, tx, productID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return rebuildAttributesDocTx(ctx, tx, productID)
 }
 
 // rebuildAttributesDocTx recomputes products.attributes_doc from the typed

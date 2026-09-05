@@ -81,6 +81,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/products/:productId", h.GetProduct)
 	v1.GET("/products/:productId/preview", h.GetProductPreview)
 	v1.POST("/products", h.CreateProduct)
+	// The update route, which did not exist. See handler_products.go: the
+	// store method that would have served it took a map whose keys became
+	// column names, so the body is now decoded against an explicit allowlist
+	// and anything outside it is refused by name.
+	v1.PATCH("/products/:productId", h.UpdateProduct)
 	v1.GET("/products/:productId/media", h.ListProductMedia)
 	v1.POST("/products/:productId/media", h.AddProductMedia)
 	v1.GET("/products/:productId/attributes", h.GetProductAttributes)
@@ -369,6 +374,16 @@ type createProductReq struct {
 	MetaTitle           *string            `json:"meta_title"`
 	MetaDescription     *string            `json:"meta_description"`
 	Variants            []createVariantReq `json:"variants" binding:"required,min=1"`
+
+	// Attributes are the category-specific answers, in the same shape the
+	// PATCH route takes: [{"code": "pages", "value": 328}, …].
+	//
+	// Every value is validated against the category's published schema before
+	// anything is written. Completeness is NOT required — a create that
+	// demanded every mandatory field would make drafts impossible, and the
+	// seller would type placeholders into fourteen controls to get past it.
+	// The submit-for-review gate is where "is this finished?" is asked.
+	Attributes []service.AttributeValueInput `json:"attributes"`
 }
 
 // createVariantReq accepts money in PAISE.
@@ -501,9 +516,14 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		MetaTitle:           req.MetaTitle,
 		MetaDescription:     req.MetaDescription,
 		Variants:            variants,
+		Attributes:          req.Attributes,
 	})
 	if err != nil {
-		handleErr(c, err)
+		// The product-write mapper, not the generic one: an unknown category
+		// and a refused attribute value both originate here and both need
+		// their own code, and the attribute refusal has to carry per-field
+		// detail a flat message cannot.
+		writeProductWriteError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
