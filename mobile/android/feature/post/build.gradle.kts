@@ -76,6 +76,9 @@ dependencies {
     implementation(libs.banuba.ve.gallery.sdk)
     implementation(libs.banuba.effect.player.adapter)
     implementation(libs.banuba.ar.cloud)
+    // Banuba Photo Editor (2026-09-05): the same licence, entered from the
+    // photo flow after a pick. Koin-free; it needs only EditorSdk.initialize.
+    implementation(libs.banuba.pe.sdk)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

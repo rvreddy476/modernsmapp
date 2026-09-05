@@ -9,14 +9,25 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Decides, once per process, whether the reel flow gets the Banuba editor.
+ * Decides, once per process, whether the reel flow gets the Banuba editor —
+ * and, on the same answer, whether the photo flows get its Photo Editor.
  *
  * Without a token the answer is [BanubaState.Unlicensed] from construction
- * and [ensure] does nothing. With one, the first [ensure] — the reel flow's
- * first entry — starts the SDK graph, hands over the token and asks the
- * licence server; every later call is a no-op, whatever the outcome, because
- * the SDK is initialised for the life of the process and a failed start is
- * not something a second attempt in the same process would change.
+ * and [ensure] does nothing. With one, the first [ensure] — the first entry
+ * to a flow that wants the SDK — starts the SDK graph, hands over the token
+ * and asks the licence server; every later call is a no-op, whatever the
+ * outcome, because the SDK is initialised for the life of the process and a
+ * failed start is not something a second attempt in the same process would
+ * change.
+ *
+ * ## ONE LICENCE, TWO EDITORS
+ *
+ * The Video Editor and the Photo Editor share the licence server and the
+ * `EditorSdk.initialize` call, so [photoEditorAvailable] is simply
+ * "[state] is [BanubaState.Ready]". Whether the token actually INCLUDES the
+ * Photo Editor is something the licence check does not say: a token without
+ * it opens the editor and exports nothing, which [photoEditOutcomeOf] turns
+ * into a one-line failure after the fact.
  */
 @Singleton
 class BanubaGate @Inject constructor(
@@ -30,6 +41,11 @@ class BanubaGate @Inject constructor(
     )
     val state: StateFlow<BanubaState> = _state.asStateFlow()
 
+    private val _photoEditorAvailable = MutableStateFlow(false)
+
+    /** True exactly while [state] is [BanubaState.Ready]; the photo flows offer their Edit step on it. */
+    val photoEditorAvailable: StateFlow<Boolean> = _photoEditorAvailable.asStateFlow()
+
     /** Starts the SDK on the first call with a token; idempotent otherwise. Call on the main thread. */
     fun ensure() {
         if (token.isBlank() || !started.compareAndSet(false, true)) return
@@ -38,18 +54,23 @@ class BanubaGate @Inject constructor(
             sdk.initialize(token)
         }.getOrElse { failure ->
             Log.w(TAG, "SDK start failed", failure)
-            _state.value = BanubaState.Failed(failure.message ?: failure.javaClass.simpleName)
+            move(BanubaState.Failed(failure.message ?: failure.javaClass.simpleName))
             return
         }
         if (licence == null) {
             Log.w(TAG, "initialize returned null: token rejected (length ${token.length})")
-            _state.value = BanubaState.Failed(TOKEN_REJECTED)
+            move(BanubaState.Failed(TOKEN_REJECTED))
             return
         }
         licence.check { valid ->
             Log.i(TAG, "licence state valid=$valid")
-            _state.value = if (valid) BanubaState.Ready else BanubaState.Invalid
+            move(if (valid) BanubaState.Ready else BanubaState.Invalid)
         }
+    }
+
+    private fun move(next: BanubaState) {
+        _state.value = next
+        _photoEditorAvailable.value = next == BanubaState.Ready
     }
 
     private companion object {

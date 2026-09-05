@@ -123,6 +123,8 @@ bouncycastle              = "1.78.1"
 # exists. Served from nexus.banuba.net (settings.gradle.kts), group-scoped.
 banuba                    = "1.54.1"
 banubaFfmpeg              = "5.3.0"
+# Banuba Photo Editor SDK: same licence server, its own version line.
+banubaPe                  = "1.4.2"
 
 [libraries]
 # ── AndroidX core ──────────────────────────────────────────────────────
@@ -247,6 +249,7 @@ banuba-ve-gallery-sdk             = { module = "com.banuba.sdk:ve-gallery-sdk", 
 banuba-effect-player-adapter      = { module = "com.banuba.sdk:effect-player-adapter", version.ref = "banuba" }
 banuba-ar-cloud                   = { module = "com.banuba.sdk:ar-cloud", version.ref = "banuba" }
 banuba-ffmpeg                      = { module = "com.banuba.sdk:ffmpeg", version.ref = "banubaFfmpeg" }
+banuba-pe-sdk                     = { module = "com.banuba.sdk:pe-sdk", version.ref = "banubaPe" }
 
 [plugins]
 android-application       = { id = "com.android.application", version.ref = "agp" }

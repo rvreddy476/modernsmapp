@@ -50,4 +50,17 @@
     <color name="dodgerBlue">#FFDC2626</color>
     <color name="blue">#FFDC2626</color>
     <color name="primaryDecorView">#FFDC2626</color>
+
+    <!--
+      Photo Editor (pe-sdk 1.4.2). Its PhotoCreationTheme is MediaCreationTheme.Dark,
+      whose ground and containers are the *_dark names above. What is left:
+      the primary action (a white "secondary container" with near-black text)
+      becomes ember with white text, borders take the Momentum border, and the
+      module's own `red` (reset / delete) is the ember. Translucent whites for
+      inactive and disabled states are left alone.
+    -->
+    <color name="bg_container_secondary_color_dark">#FFDC2626</color>
+    <color name="text_secondary_dark">#FFFFFFFF</color>
+    <color name="border_dark">#FF0E2D4A</color>
+    <color name="red">#FFDC2626</color>
 </resources>

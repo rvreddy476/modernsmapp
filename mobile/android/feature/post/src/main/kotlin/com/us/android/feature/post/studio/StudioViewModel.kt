@@ -28,6 +28,7 @@ import com.us.android.core.creator.model.SourceAsset
 import com.us.android.core.creator.model.TextStyle
 import com.us.android.core.database.CreatorLegacyRecoveryEntity
 import com.us.android.core.media.creator.CreatorFonts
+import com.us.android.core.ui.photoeditor.PhotoEditor
 import com.us.android.feature.post.navigation.StudioRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -38,6 +39,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 import java.security.SecureRandom
 import javax.inject.Inject
 
@@ -70,6 +72,7 @@ class StudioViewModel @Inject constructor(
     private val vault: SourceVault,
     private val store: ProjectStore,
     private val recoveryRetrier: LegacyRecoveryRetrier,
+    private val photoEditor: PhotoEditor,
 ) : ViewModel() {
 
     /**
@@ -203,28 +206,9 @@ class StudioViewModel @Inject constructor(
             // budget, and taking N slots then importing is one decision.
             val room = MAX_PAGES - session.current.pages.size
             for (uri in uris.take(room)) {
-                val assetId = "a${newId(ID_CHARS)}"
-                val entry = vault.importSource(uri, assetId) ?: continue
-                val dims = decodeDims(entry.relativePath)
-                val applied = apply(
-                    CreatorCommand.ImportAsset(
-                        SourceAsset(
-                            assetId = assetId,
-                            kind = "image",
-                            vaultPath = entry.relativePath,
-                            sha256 = entry.sha256,
-                            bytes = entry.bytes,
-                            mime = "image/jpeg",
-                            widthPx = dims.first,
-                            heightPx = dims.second,
-                            origin = "photoPicker",
-                        ),
-                    ),
-                )
-                if (applied) {
-                    apply(CreatorCommand.AddPage("p$assetId", "l$assetId", assetId))
-                    imported++
-                }
+                val assetId = importAsset(uri, origin = "photoPicker") ?: continue
+                apply(CreatorCommand.AddPage("p$assetId", "l$assetId", assetId))
+                imported++
             }
             if (imported == 0 && uris.isNotEmpty()) {
                 _state.update { it.copy(notice = "Those photos couldn't be added.") }
@@ -239,6 +223,64 @@ class StudioViewModel @Inject constructor(
             }
         }
     }
+
+    /** Copies [uri] into the vault and imports it as a source asset: the new asset id, or null if unreadable or rejected. */
+    private suspend fun importAsset(uri: Uri, origin: String): String? {
+        val assetId = "a${newId(ID_CHARS)}"
+        val entry = vault.importSource(uri, assetId) ?: return null
+        val dims = decodeDims(entry.relativePath)
+        val applied = apply(
+            CreatorCommand.ImportAsset(
+                SourceAsset(
+                    assetId = assetId,
+                    kind = "image",
+                    vaultPath = entry.relativePath,
+                    sha256 = entry.sha256,
+                    bytes = entry.bytes,
+                    mime = "image/jpeg",
+                    widthPx = dims.first,
+                    heightPx = dims.second,
+                    origin = origin,
+                ),
+            ),
+        )
+        return assetId.takeIf { applied }
+    }
+
+    // ── Advanced photo editor ───────────────────────────────────────────
+
+    /** The `:core:ui` port the screen launches; the studio's Edit pill exists only while it is ready. */
+    val advancedEditor: PhotoEditor get() = photoEditor
+
+    /**
+     * The advanced editor's export replaces the selected page's photo.
+     *
+     * The document has no "swap source" command, so the replacement is four
+     * legal ones — import the export, remove the old page, add the new one,
+     * move it into the old slot — which keeps undo honest and the vault's
+     * hashing and dimension probing on the one import path. The page's crop,
+     * look, text and alt start over: the edit changed the pixels they were
+     * made for.
+     */
+    fun onSelectedPageEdited(path: String) {
+        val pageId = _state.value.selectedPageId ?: return
+        viewModelScope.launch {
+            val index = session.current.pages.indexOfFirst { it.pageId == pageId }
+            val assetId = if (index < 0) null else importAsset(Uri.fromFile(File(path)), origin = "photoEditor")
+            if (assetId == null) {
+                _state.update { it.copy(notice = "The edited photo couldn't be added.") }
+                return@launch
+            }
+            apply(CreatorCommand.RemovePage(pageId))
+            apply(CreatorCommand.AddPage("p$assetId", "l$assetId", assetId))
+            apply(CreatorCommand.MovePage("p$assetId", index))
+            refresh()
+            _state.update { it.copy(selectedPageId = "p$assetId") }
+        }
+    }
+
+    /** The editor came back with nothing usable; the person reads why on the snackbar. */
+    fun onPhotoEditFailed(message: String) = _state.update { it.copy(notice = message) }
 
     fun onSelectPage(pageId: String) = _state.update { it.copy(selectedPageId = pageId) }
 

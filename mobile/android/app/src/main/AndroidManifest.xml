@@ -88,6 +88,15 @@
             android:theme="@style/Theme.Momentum.VideoCreation"
             android:windowSoftInputMode="adjustResize"
             tools:replace="android:theme" />
+        <!--
+          Banuba Photo Editor (2026-09-05): the same licence, entered from the
+          photo flow and the profile pickers after a pick. The SDK declares the
+          activity (portrait, adjustResize) without a theme; this adds Momentum's
+          over its PhotoCreationTheme.
+        -->
+        <activity
+            android:name="com.banuba.sdk.pe.PhotoCreationActivity"
+            android:theme="@style/Theme.Momentum.PhotoCreation" />
 
         <!-- Hilt WorkManager: the default androidx.startup initializer would
              build WorkManager with the STOCK factory before our

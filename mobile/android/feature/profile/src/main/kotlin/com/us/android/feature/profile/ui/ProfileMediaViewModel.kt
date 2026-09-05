@@ -16,6 +16,7 @@ import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.core.media.upload.SUBTYPE_AVATAR
 import com.us.android.core.media.upload.SUBTYPE_COVER
 import com.us.android.core.profile.data.ProfileRepository
+import com.us.android.core.ui.photoeditor.PhotoEditor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -57,6 +58,8 @@ class ProfileMediaViewModel @Inject constructor(
     private val profileRepository: ProfileRepository,
     private val uploader: MediaUploader,
     private val sources: MediaSourceResolver,
+    /** The advanced photo editor PORT, bound by `:feature:post` through app DI; the screen launches it. */
+    val photoEditor: PhotoEditor,
 ) : ViewModel() {
     private val _state = MutableStateFlow(ProfileMediaUiState())
     val state: StateFlow<ProfileMediaUiState> = _state.asStateFlow()
@@ -115,6 +118,9 @@ class ProfileMediaViewModel @Inject constructor(
     }
 
     fun dismissMessage() = _state.update { it.copy(message = null, error = null) }
+
+    /** The advanced editor came back with nothing usable: one line, in the media block, above the pick that follows. */
+    fun onEditFailed(message: String) = _state.update { it.copy(error = message, message = null) }
 
     private suspend fun resolve(mediaId: String?): String? {
         if (mediaId.isNullOrBlank()) return null

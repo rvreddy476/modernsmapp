@@ -31,4 +31,18 @@
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!--
+      Banuba Photo Editor (2026-09-05). Its PhotoCreationTheme is the SDK's
+      MediaCreationTheme.Dark plus a window background; the colour resources
+      that theme names are overridden in banuba_colors.xml alongside the video
+      editor's, so both editors are navy, white and ember. Same window
+      treatment as the video activity.
+    -->
+    <style name="Theme.Momentum.PhotoCreation" parent="PhotoCreationTheme">
+        <item name="android:windowBackground">@color/us_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

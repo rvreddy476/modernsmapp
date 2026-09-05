@@ -1,5 +1,6 @@
 package com.us.android.feature.post.studio
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -74,6 +75,7 @@ import com.us.android.core.creator.model.Crop
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.creator.CreatorFonts
+import com.us.android.core.ui.photoeditor.rememberPhotoEditor
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import java.io.File
@@ -117,6 +119,13 @@ fun StudioScreen(
             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
         )
     }
+    // The advanced (licensed) photo editor over the selected page: null, and
+    // so no Edit pill, unless its licence is Ready.
+    val editPhoto = rememberPhotoEditor(
+        editor = viewModel.advancedEditor,
+        onEdited = viewModel::onSelectedPageEdited,
+        onFailed = viewModel::onPhotoEditFailed,
+    )
 
     LaunchedEffect(state.notice) {
         state.notice?.let {
@@ -139,6 +148,7 @@ fun StudioScreen(
             viewModel = viewModel,
             onClose = onClose,
             onAddPhotos = launchPicker,
+            onEditPhoto = editPhoto,
         )
         StudioViewModel.Step.Share -> ShareStep(state = state, viewModel = viewModel)
     }
@@ -165,6 +175,8 @@ private fun EditStep(
     viewModel: StudioViewModel,
     onClose: () -> Unit,
     onAddPhotos: () -> Unit,
+    /** Opens the advanced editor on an image; null when it is not licensed, and then there is no pill. */
+    onEditPhoto: ((Uri) -> Unit)?,
 ) {
     var tool by remember { mutableStateOf<StudioTool?>(null) }
     // While a look tool is open the preview follows this DRAFT; Done commits it
@@ -186,6 +198,7 @@ private fun EditStep(
                 onRedo = viewModel::onRedo,
                 onReset = viewModel::onReset,
                 onClose = onClose,
+                onEditPhoto = editSelected(onEditPhoto, state.selectedPage),
             )
 
             Box(
@@ -273,6 +286,7 @@ private fun EditTopBar(
     onRedo: () -> Unit,
     onReset: () -> Unit,
     onClose: () -> Unit,
+    onEditPhoto: (() -> Unit)?,
 ) {
     Row(
         modifier = Modifier
@@ -282,6 +296,9 @@ private fun EditTopBar(
     ) {
         IconButton(onClick = onClose) {
             Icon(UsIcons.Close, contentDescription = "Close the studio", tint = Color.White)
+        }
+        if (onEditPhoto != null) {
+            AdvancedEditPill(onClick = onEditPhoto)
         }
         Spacer(Modifier.weight(1f))
         TextButton(onClick = onUndo, enabled = canUndo) {
@@ -293,6 +310,42 @@ private fun EditTopBar(
         TextButton(onClick = onReset, enabled = canUndo) {
             Text("Reset", color = if (canUndo) Color.White else ON_BLACK_DIM)
         }
+    }
+}
+
+/** The pill's action over the selected page — null with no editor or no page, and then no pill. */
+private fun editSelected(editPhoto: ((Uri) -> Unit)?, page: StudioViewModel.PageUi?): (() -> Unit)? =
+    if (editPhoto != null && page != null) {
+        { editPhoto(Uri.fromFile(File(page.sourcePath))) }
+    } else {
+        null
+    }
+
+/**
+ * The advanced editor's entry — a pill on the canvas chrome with the sliders
+ * glyph. It is composed only while the editor is licensed; there is never a
+ * disabled one.
+ */
+@Composable
+private fun AdvancedEditPill(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(UsTheme.radii.full))
+            .background(TOOL_CHIP_BG)
+            .clickable(onClick = onClick)
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs)
+            .semantics { contentDescription = "Edit this photo in the advanced editor" }
+            .testTag("studio-advanced-edit"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        Icon(
+            UsIcons.Sliders,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(PILL_ICON),
+        )
+        Text("Edit", style = MaterialTheme.typography.labelLarge, color = Color.White)
     }
 }
 
@@ -1205,6 +1258,7 @@ private const val TEXT_SIZE_MIN = 24_000f
 private const val TEXT_SIZE_MAX = 120_000f
 
 private val THUMB_SIZE = 56.dp
+private val PILL_ICON = 16.dp
 private val FILTER_THUMB_W = 72.dp
 private val FILTER_THUMB_H = 90.dp
 private val REMOVE_BADGE = 18.dp

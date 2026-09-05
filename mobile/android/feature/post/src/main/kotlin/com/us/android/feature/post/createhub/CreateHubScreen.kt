@@ -51,8 +51,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.ui.photoeditor.rememberPhotoEditor
 import com.us.android.feature.post.composer.ComposerMode
 import com.us.android.feature.post.composer.ComposerScreen
+import com.us.android.feature.post.createhub.banuba.BanubaGateViewModel
 import java.io.File
 
 /**
@@ -212,18 +214,42 @@ internal fun PublishPill(
 // PHOTO — Camera or Gallery, then the Studio
 // ════════════════════════════════════════════════════════════════════════
 
+/**
+ * Camera or gallery, then the Studio. A capture is "take & edit" when the
+ * advanced photo editor is licensed: it opens on the shot, and the export
+ * goes to the studio in the shot's place. Backing out of the editor, or an
+ * editor that returns nothing, still opens the studio with the shot — a
+ * photo just taken is never lost to the editor. The studio's own Edit pill
+ * repeats the licence notice if the editor keeps returning nothing.
+ */
 @Composable
-private fun ImageSourceSurface(onClose: () -> Unit, onOpenStudio: (uris: List<String>) -> Unit) {
+private fun ImageSourceSurface(
+    onClose: () -> Unit,
+    onOpenStudio: (uris: List<String>) -> Unit,
+    banuba: BanubaGateViewModel = hiltViewModel(),
+) {
     val context = LocalContext.current
     var cameraTarget by remember { mutableStateOf<android.net.Uri?>(null) }
+    val openStudioWithCapture = { cameraTarget?.let { onOpenStudio(listOf(it.toString())) } ?: Unit }
 
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_PICK),
     ) { uris -> if (uris.isNotEmpty()) onOpenStudio(uris.map { it.toString() }) }
 
+    val editCapture = rememberPhotoEditor(
+        editor = banuba.photoEditor,
+        onEdited = { path -> onOpenStudio(listOf(android.net.Uri.fromFile(File(path)).toString())) },
+        onFailed = { openStudioWithCapture() },
+        onCancelled = openStudioWithCapture,
+    )
     val takePicture = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture(),
-    ) { saved -> if (saved) cameraTarget?.let { onOpenStudio(listOf(it.toString())) } }
+    ) { saved ->
+        val shot = cameraTarget
+        if (saved && shot != null) {
+            if (editCapture != null) editCapture(shot) else onOpenStudio(listOf(shot.toString()))
+        }
+    }
 
     val openCamera = rememberCameraLaunch {
         val target = captureUri(context, "jpg")

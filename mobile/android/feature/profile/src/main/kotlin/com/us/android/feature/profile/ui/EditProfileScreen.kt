@@ -1,5 +1,6 @@
 package com.us.android.feature.profile.ui
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,12 +19,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -45,6 +51,8 @@ import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.EditableProfile
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.photoeditor.rememberPhotoEditor
+import java.io.File
 import java.time.LocalDate
 
 /**
@@ -63,12 +71,46 @@ fun EditProfileScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    // The advanced photo editor sits between the pick and the upload when it
+    // is licensed. Its export is uploaded in the pick's place; an editor that
+    // returns nothing says why and uploads the pick as it was (the flow
+    // without an editor); backing out of the editor drops the pick.
+    var pending by remember { mutableStateOf<Pair<Uri, ProfileMediaKind>?>(null) }
+    val editPhoto = rememberPhotoEditor(
+        editor = mediaViewModel.photoEditor,
+        onEdited = { path ->
+            pending?.let { (_, kind) ->
+                val authority = "${context.packageName}.fileprovider"
+                val exported = FileProvider.getUriForFile(context, authority, File(path))
+                mediaViewModel.upload(exported.toString(), kind)
+            }
+            pending = null
+        },
+        onFailed = { message ->
+            mediaViewModel.onEditFailed(message)
+            pending?.let { (uri, kind) -> mediaViewModel.upload(uri.toString(), kind) }
+            pending = null
+        },
+        onCancelled = { pending = null },
+    )
+    val onPicked: (Uri?, ProfileMediaKind) -> Unit = { uri, kind ->
+        if (uri != null) {
+            if (editPhoto != null) {
+                pending = uri to kind
+                editPhoto(uri)
+            } else {
+                mediaViewModel.upload(uri.toString(), kind)
+            }
+        }
+    }
     val avatarPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let { mediaViewModel.upload(it.toString(), ProfileMediaKind.Avatar) } }
+    ) { uri -> onPicked(uri, ProfileMediaKind.Avatar) }
     val coverPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let { mediaViewModel.upload(it.toString(), ProfileMediaKind.Cover) } }
+    ) { uri -> onPicked(uri, ProfileMediaKind.Cover) }
 
     LaunchedEffect(Unit) { mediaViewModel.loadOwnerMedia() }
 

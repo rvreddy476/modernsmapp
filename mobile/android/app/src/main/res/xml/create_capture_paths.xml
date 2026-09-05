@@ -6,4 +6,7 @@
 -->
 <paths>
     <cache-path name="create_capture" path="create_capture/" />
+    <!-- Photos exported by the advanced photo editor, copied here before the
+         profile uploader reads them back through this provider. -->
+    <cache-path name="photo_edits" path="photo_edits/" />
 </paths>

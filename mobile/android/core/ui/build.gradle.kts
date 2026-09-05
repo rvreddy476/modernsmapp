@@ -28,6 +28,11 @@ dependencies {
     // AsyncImage only. The ImageLoader itself is configured in :app on the
     // authenticated OkHttp client — this module still owns no networking.
     implementation(libs.coil.compose)
+    // rememberLauncherForActivityResult, for the photo editor PORT's launcher
+    // (photoeditor/). The port is an interface plus a contract; the editor
+    // behind it is bound by a feature through app DI — still no Hilt here.
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

@@ -1,6 +1,7 @@
 package com.us.android.feature.post.createhub.banuba
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -124,5 +125,32 @@ class BanubaGateTest {
         val config = BanubaConfig(licenseToken = "secret-token-value")
 
         assertEquals("BanubaConfig(licensed=true)", config.toString())
+    }
+
+    @Test
+    fun `the photo editor is offered exactly when the licence is Ready`() {
+        val gate = BanubaGate(BanubaConfig(licenseToken = "token"), FakeSdk(licenceValid = true))
+
+        assertFalse(gate.photoEditorAvailable.value)
+        gate.ensure()
+
+        assertTrue(gate.photoEditorAvailable.value)
+    }
+
+    @Test
+    fun `the photo editor is absent without a licence, with an invalid one, and after a failed start`() {
+        val unlicensed = BanubaGate(BanubaConfig(licenseToken = "  "), FakeSdk())
+        val invalid = BanubaGate(BanubaConfig(licenseToken = "token"), FakeSdk(licenceValid = false))
+        val rejected = BanubaGate(BanubaConfig(licenseToken = "token"), FakeSdk(rejectToken = true))
+        val broken = BanubaGate(
+            BanubaConfig(licenseToken = "token"),
+            FakeSdk(startFailure = IllegalStateException("libbanuba.so not found")),
+        )
+        val pending = BanubaGate(BanubaConfig(licenseToken = "token"), FakeSdk(licenceValid = null))
+
+        listOf(unlicensed, invalid, rejected, broken, pending).forEach { gate ->
+            gate.ensure()
+            assertFalse("${gate.state.value} must not offer the photo editor", gate.photoEditorAvailable.value)
+        }
     }
 }
