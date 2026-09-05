@@ -95,6 +95,22 @@ func (s *Store) UpdateImportJobCounts(ctx context.Context, id uuid.UUID, total, 
 	return err
 }
 
+// SetImportJobErrorFile points the job at its error report without touching
+// the row counts.
+//
+// Separate from UpdateImportJobCounts because the execute phase increments
+// its counters row by row (so the seller's poll sees progress) and then needs
+// to attach a report at the end. Re-writing total/valid/imported/error from a
+// second source at that point would clobber the increments with a snapshot,
+// and the seller's final counts would disagree with the ones they watched
+// climb.
+func (s *Store) SetImportJobErrorFile(ctx context.Context, id uuid.UUID, errorFileID *string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE product_import_jobs SET error_file_id = NULLIF($2,'')::uuid WHERE id = $1`,
+		id, derefOrEmpty(errorFileID))
+	return err
+}
+
 func (s *Store) ListImportJobsForSeller(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*ImportJob, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, seller_id, filename, file_media_id, status,
@@ -130,34 +146,90 @@ func derefOrEmpty(s *string) string {
 
 // ─── Helpers used by the execute worker ──────────────────────────
 
-// FindVariantBySKUForSeller returns the variant whose seller owns it.
-// The unique constraint on (sku, seller_id) isn't enforced by the
-// schema directly — we approximate by joining to products and matching
-// the seller_id, then returning the first hit. Used by the bulk-import
-// executor to decide insert-vs-update.
-func (s *Store) FindVariantBySKUForSeller(ctx context.Context, sellerID uuid.UUID, sku string) (*ProductVariant, error) {
+// SKUMatch is the answer to the only question the bulk importer asks about
+// an incoming row: does this SKU already exist, and if so, WHOSE is it.
+//
+// The owner is part of the answer, not a follow-up query, because the two
+// facts have to be established together. "No variant for me" and "a variant
+// for someone else" are different situations with different outcomes, and
+// code that learns the first without the second will treat the second as the
+// first — which is the create that then collides, or worse, does not.
+type SKUMatch struct {
+	// Variant is the CALLER'S OWN variant with this SKU, or nil.
+	Variant *ProductVariant
+	// OwnerSellerID is the seller who holds this SKU. uuid.Nil when the SKU
+	// exists nowhere in the catalogue.
+	OwnerSellerID uuid.UUID
+}
+
+// Mine reports whether the SKU resolves to a variant the caller owns.
+func (m SKUMatch) Mine() bool { return m.Variant != nil }
+
+// TakenByAnother reports whether the SKU exists and belongs to someone else.
+func (m SKUMatch) TakenByAnother() bool { return m.Variant == nil && m.OwnerSellerID != uuid.Nil }
+
+// ResolveSKUForSeller resolves a SKU FOR ONE SELLER, and says who else has
+// it if the answer is nobody.
+//
+// ─── WHY THE SELLER IS IN THE QUERY AND NOT IN THE CALLER ───────────────
+//
+// SKUs are seller-local strings. Two shops selling the same textbook will
+// both derive a code from the same ISBN, two shops using the same inventory
+// software will both emit `SKU-00017`, and neither has done anything wrong.
+// A matcher that resolves a SKU without naming a seller therefore answers a
+// question nobody asked — "which shop in the world used this string first" —
+// and hands that shop's variant to whoever is importing.
+//
+// A global `UNIQUE(sku)` currently hides most of the damage by making the
+// second shop's insert fail. That constraint is being widened to
+// `(offer_id, sku)`, which is correct — a seller-local string should be
+// unique per seller, not per planet — and the day it lands, an unscoped
+// matcher stops failing and starts overwriting. There is no ordering in
+// which the scoping can safely come second.
+//
+// ─── DETERMINISM ────────────────────────────────────────────────────────
+//
+// ORDER BY, not a bare LIMIT 1. Under the widened constraint one seller can
+// legitimately hold the same SKU under two offers, and "whichever row the
+// executor reached first" is an import that updates a different variant on
+// Tuesday than it did on Monday. The caller's own rows sort first, then the
+// oldest — so a seller re-uploading a file updates the listing they have had
+// longest, every time, and never someone else's.
+func (s *Store) ResolveSKUForSeller(ctx context.Context, sellerID uuid.UUID, sku string) (SKUMatch, error) {
+	var m SKUMatch
 	v := &ProductVariant{}
+	var owner uuid.UUID
 	err := s.db.QueryRow(ctx, `
 		SELECT v.id, v.product_id, v.sku, v.barcode, v.option_1_name, v.option_1_value,
 		       v.option_2_name, v.option_2_value, v.option_3_name, v.option_3_value,
 		       v.mrp, v.selling_price, v.cost_price, v.currency_code, v.status,
-		       v.image_media_id, v.weight_grams, v.created_at, v.updated_at
+		       v.image_media_id, v.weight_grams, v.created_at, v.updated_at,
+		       p.seller_id
 		FROM product_variants v
 		JOIN products p ON p.id = v.product_id
-		WHERE p.seller_id = $1 AND v.sku = $2
+		WHERE v.sku = $2
+		ORDER BY (p.seller_id = $1) DESC, v.created_at, v.id
 		LIMIT 1`, sellerID, sku).Scan(
 		&v.ID, &v.ProductID, &v.SKU, &v.Barcode, &v.Option1Name, &v.Option1Value,
 		&v.Option2Name, &v.Option2Value, &v.Option3Name, &v.Option3Value,
 		&v.MRP, &v.SellingPrice, &v.CostPrice, &v.CurrencyCode, &v.Status,
 		&v.ImageMediaID, &v.WeightGrams, &v.CreatedAt, &v.UpdatedAt,
+		&owner,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+			return m, nil
 		}
-		return nil, err
+		return m, err
 	}
-	return v, nil
+	m.OwnerSellerID = owner
+	// The variant is returned ONLY when it is the caller's. Handing back
+	// another seller's variant with an owner field beside it would put the
+	// scoping decision back in the caller, which is where it was.
+	if owner == sellerID {
+		m.Variant = v
+	}
+	return m, nil
 }
 
 // UpdateVariantPricing updates the price + stock fields a bulk import

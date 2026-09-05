@@ -399,6 +399,15 @@ func (s *Store) PatchProduct(ctx context.Context, id uuid.UUID, p ProductPatch, 
 		if tag.RowsAffected() == 0 {
 			return ErrProductNotFound
 		}
+		// The offer's copy of whatever this patch just changed. Run for ANY
+		// column set, not only for Revalidate: `condition` is on the patch's
+		// allowlist and is an offer column too, and a sync predicated on the
+		// revalidation flag would miss it. The sync reads the product row, so
+		// running it after a patch that changed nothing it copies is a
+		// no-op UPDATE, not a wrong one.
+		if err := syncOfferLifecycleTx(ctx, tx, id); err != nil {
+			return err
+		}
 	}
 	if len(attrs) > 0 {
 		if err := putAttributeValuesTx(ctx, tx, id, attrs); err != nil {
@@ -437,7 +446,22 @@ func insertProductTx(ctx context.Context, tx pgx.Tx, p *Product) error {
 		p.CountryOfOrigin, p.WarrantyInfo, p.ReturnPolicyType, p.ReturnPolicyDays,
 		p.HSNCode, p.SearchKeywords, p.MetaTitle, p.MetaDescription, p.SchemaVersion, p.CreatedAt, p.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// ── The offer, in the same statement pair ────────────────
+	//
+	// Migration 027 split the seller's OFFER — status, visibility,
+	// approval_status, published_at, condition — out of the catalogue row.
+	// Nothing reads it yet; everything writes it, starting here.
+	//
+	// It is written HERE rather than at the two create call sites for the
+	// reason the file header gives about the variant columns: a second copy
+	// of a write is how the first one loses a column. There is no statement
+	// other than this one that can put a row in `products`, so there is no
+	// path by which a product comes into existence without its offer.
+	return insertOfferForProductTx(ctx, tx, p)
 }
 
 // upsertInventoryTx opens (or resets) a variant's stock row.

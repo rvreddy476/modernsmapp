@@ -48,6 +48,7 @@ func newCatalogueFixture(t *testing.T) catalogueFixture {
 		               (id,seller_id,title,slug,status,approval_status,return_policy_type)
 		             VALUES ($1,$2,$3,$4,$5,$6,'7_days')`,
 			id, f.sellerID, r.title, "cat-"+id.String()[:8], r.status, r.approval)
+		seedOfferFor(t, id)
 		f.titles[r.title] = id
 	}
 	return f

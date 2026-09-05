@@ -151,6 +151,7 @@ func seedStorefront(t *testing.T) storefrontFixture {
 			float64(mrpMinor)/100, float64(sellMinor)/100, mrpMinor, sellMinor)
 		exec(`INSERT INTO inventory_items (variant_id,seller_id,total_qty,reserved_qty)
 		      VALUES ($1,$2,25,0)`, vid, f.sellerID)
+		seedOfferFor(t, id)
 	}
 	product(f.discounted, f.categoryID, "SF Discounted Widget", 99900, 74900)
 	product(f.fullPrice, f.otherCategory, "SF Full Price Widget", 50000, 50000)
@@ -713,6 +714,7 @@ func TestCommerceAnswersMediaAccessForLiveProductsOnly(t *testing.T) {
 		`UPDATE products SET status='draft', approval_status='draft' WHERE id=$1`, f.fullPrice); err != nil {
 		t.Fatalf("unpublishing: %v", err)
 	}
+	seedOfferFor(t, f.fullPrice)
 
 	ask := func(viewer string, ids ...string) map[string]bool {
 		t.Helper()

@@ -149,6 +149,7 @@ func seedJourney(t *testing.T, stock int, unitMinor int64) journeyFixture {
 		float64(unitMinor)/100.0, unitMinor)
 	exec(`INSERT INTO inventory_items (variant_id,seller_id,total_qty,reserved_qty)
 	      VALUES ($1,$2,$3,0)`, f.variantID, sellerID, stock)
+	seedOfferFor(t, productID)
 	exec(`INSERT INTO customer_addresses (id,user_id,contact_name,phone,
 	         address_line_1,city,state,postal_code)
 	      VALUES ($1,$2,'Buyer','9111111111','5 Main St','Bengaluru','KA','560002')`,

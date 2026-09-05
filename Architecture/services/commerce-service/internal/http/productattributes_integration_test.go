@@ -69,6 +69,7 @@ func newDetailFixture(t *testing.T) *detailFixture {
 	exec(`INSERT INTO products (id,seller_id,category_id,title,slug,status,approval_status)
 	      VALUES ($1,$2,$3,'Detail Product',$4,'active','approved')`,
 		f.product, f.seller, f.category, "detail-product-"+tag)
+	seedOfferFor(t, f.product)
 
 	// Inserted logistics-first and identity-last, with sort orders that
 	// disagree with insertion order inside "Product Details".

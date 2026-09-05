@@ -124,6 +124,7 @@ func seedOwnOrder(t *testing.T, unitMinor, shippingMinor, taxMinor int64) ownOrd
 		unitMinor+12000, unitMinor)
 	exec(`INSERT INTO inventory_items (variant_id,seller_id,total_qty,reserved_qty)
 	      VALUES ($1,$2,40,6)`, f.variantID, f.sellerID)
+	seedOfferFor(t, f.productID)
 
 	total := unitMinor + shippingMinor + taxMinor
 	exec(`INSERT INTO orders (id,customer_user_id,order_number,status,payment_status,

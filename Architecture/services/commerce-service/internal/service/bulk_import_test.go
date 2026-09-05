@@ -1,7 +1,10 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +95,51 @@ func TestParseBulkImportCSV_PartialTierPairRejected(t *testing.T) {
 	_, errs, _ := parseBulkImportCSV(csv)
 	if len(errs) == 0 {
 		t.Error("expected error for partial tier")
+	}
+}
+
+// ─── The execute phase's per-row error report ────────────────────────────
+
+// The seller-crossing refusal must reach the seller as a sentence about the
+// SKU column, in the same CSV the validate phase already writes — not as a
+// bare count and not as a constraint name.
+func TestImportRowFailure_SKUOwnedByAnotherSellerIsReportedAgainstTheSKUColumn(t *testing.T) {
+	row := &BulkImportRow{RowNumber: 7, SKU: "ABC-123"}
+	got := importRowFailure(row, fmt.Errorf("%w (sku %q)", ErrImportSKUOwnedByAnotherSeller, row.SKU))
+
+	if got.RowNumber != 7 {
+		t.Errorf("row number %d, want 7", got.RowNumber)
+	}
+	if got.Field != "sku" {
+		t.Errorf("field %q; the seller has to be sent to the column they can change", got.Field)
+	}
+	if !strings.Contains(got.Message, "another seller") {
+		t.Errorf("message %q does not say why the row was refused", got.Message)
+	}
+}
+
+// Anything else is the row's problem, not a named column's: pointing at one
+// would send the seller to edit a cell that is fine.
+func TestImportRowFailure_UnclassifiedErrorsAreReportedAgainstTheRow(t *testing.T) {
+	got := importRowFailure(&BulkImportRow{RowNumber: 3, SKU: "X"},
+		errors.New("connection reset by peer"))
+	if got.Field != "row" {
+		t.Errorf("field %q, want \"row\"", got.Field)
+	}
+	if got.RowNumber != 3 {
+		t.Errorf("row number %d, want 3", got.RowNumber)
+	}
+}
+
+// The CSV shape is the one the validate phase already produces and the
+// seller's tooling already parses. Execute reuses it rather than inventing a
+// second report; this pins the header and the column order.
+func TestBuildErrorCSV_ShapeIsUnchanged(t *testing.T) {
+	got := string(buildErrorCSV([]BulkImportError{
+		{RowNumber: 2, Field: "sku", Message: "required"},
+	}))
+	want := "row_number,field,message\n2,sku,\"required\"\n"
+	if got != want {
+		t.Errorf("error CSV shape changed\n got: %q\nwant: %q", got, want)
 	}
 }

@@ -75,6 +75,7 @@ func seedSellerSurface(t *testing.T, stock int) sellerSurface {
 			variantID, live, "SKU-"+variantID.String()[:8])
 		exec(`INSERT INTO inventory_items (variant_id,seller_id,total_qty,reserved_qty)
 		      VALUES ($1,$2,$3,0)`, variantID, sellerID, stock)
+		seedOfferFor(t, live)
 
 		if !withDrafts {
 			return
@@ -87,6 +88,7 @@ func seedSellerSurface(t *testing.T, stock int) sellerSurface {
 			exec(`INSERT INTO products (id,seller_id,title,slug,status,approval_status,return_policy_type)
 			      VALUES ($1,$2,$3,$4,$5,$6,'7_days')`,
 				id, sellerID, r.title, "d-"+id.String()[:8], r.status, r.approval)
+			seedOfferFor(t, id)
 		}
 	}
 

@@ -200,6 +200,7 @@ func TestAnUnsellableLineIsMarked(t *testing.T) {
 		f.variantID); err != nil {
 		t.Fatal(err)
 	}
+	seedOfferFor(t, productIDOfVariant(t, f.variantID))
 
 	cart := decodeCart(t, call(t, r, http.MethodGet, "/v1/commerce/cart", f.userID, nil).Body.Bytes())
 	if len(cart.Items) != 1 {

@@ -391,6 +391,7 @@ func TestProductWritePatchRefusesTheStatesThatMustNotChange(t *testing.T) {
 				uuid.MustParse(id), tc.status); err != nil {
 				t.Fatalf("set state: %v", err)
 			}
+			seedOfferFor(t, uuid.MustParse(id))
 			w := call(t, r, http.MethodPatch, "/v1/commerce/products/"+id,
 				f.actor, map[string]any{"description": "an edit"})
 			if w.Code != tc.want {
@@ -428,6 +429,7 @@ func TestProductWriteEditingAnApprovedProductCostsItsApprovalAndSaysSo(t *testin
 			  WHERE id=$1`, uuid.MustParse(id)); err != nil {
 			t.Fatalf("approve: %v", err)
 		}
+		seedOfferFor(t, uuid.MustParse(id))
 	}
 	stateOf := func(id string) (approval, status string, published *string) {
 		t.Helper()

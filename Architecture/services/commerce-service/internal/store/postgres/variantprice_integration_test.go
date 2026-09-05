@@ -46,6 +46,7 @@ func pricedVariant(t *testing.T, mrp, selling float64) uuid.UUID {
 	mustExec(t, `INSERT INTO products (id,seller_id,title,slug,status,approval_status,return_policy_type)
 	             VALUES ($1,$2,'Priced Product',$3,'active','approved','7_days')`,
 		productID, sellerID, "priced-"+productID.String()[:8])
+	seedOfferFor(t, productID)
 
 	v := &ProductVariant{
 		ProductID:    productID,

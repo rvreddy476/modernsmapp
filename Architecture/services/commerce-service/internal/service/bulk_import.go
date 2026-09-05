@@ -11,8 +11,16 @@
 //
 // Idempotency:
 //   - Validate is idempotent (re-parses; overwrites the error report).
-//   - Execute uses INSERT … ON CONFLICT (sku, seller_id) DO UPDATE so
-//     retrying after a partial failure converges to the same final state.
+//   - Execute resolves each row's SKU AGAINST THE IMPORTING SELLER and
+//     updates or creates accordingly, so retrying after a partial failure
+//     converges to the same final state.
+//
+// This comment used to describe an `INSERT … ON CONFLICT (sku, seller_id)
+// DO UPDATE`. There is no such statement and no such constraint — the
+// matching is a SELECT followed by a branch, and `sku` is UNIQUE globally
+// rather than per seller. Left as it was, the sentence reads as a promise
+// that the database is enforcing the seller scoping; it is not, and the
+// scoping is entirely the resolver's job. See upsertImportRow.
 package service
 
 import (
@@ -48,6 +56,16 @@ var (
 	ErrImportJobNotOwner = fmt.Errorf("not the seller for this import job")
 	ErrImportBlobMissing = fmt.Errorf("blob store not configured")
 	ErrImportBadStatus   = fmt.Errorf("import job not in the required state")
+
+	// ErrImportSKUOwnedByAnotherSeller is the per-row refusal for a CSV line
+	// whose SKU is already a variant in a DIFFERENT shop.
+	//
+	// It is a row-level failure and nothing more: the import continues, the
+	// row is counted as an error, and the reason reaches the seller's error
+	// report. See upsertImportRow for why the row cannot be treated as an
+	// update and must not be treated as a create either.
+	ErrImportSKUOwnedByAnotherSeller = fmt.Errorf(
+		"this SKU is already listed by another seller; use a code of your own")
 )
 
 const bulkImportTTL = 30 * time.Minute
@@ -248,17 +266,35 @@ func (s *Service) ExecuteBulkImportJob(ctx context.Context, jobID uuid.UUID) err
 		_ = s.store.UpdateImportJobStatus(ctx, jobID, "failed")
 		return fmt.Errorf("read csv: %w", err)
 	}
-	rows, _, err := parseBulkImportCSV(data)
+	rows, parseErrs, err := parseBulkImportCSV(data)
 	if err != nil {
 		_ = s.store.UpdateImportJobStatus(ctx, jobID, "failed")
 		return err
 	}
+
+	// ── The execute phase's per-row errors, in the shape validation
+	//    already uses ────────────────────────────────────────────────
+	//
+	// Before this, a row that failed HERE produced a number and nothing
+	// else: error_rows went up, no reason was recorded anywhere, and
+	// `GET .../errors.csv` answered 204 because error_file_id was only ever
+	// set by the validate phase. A seller whose import came back
+	// "partially_imported, 12 errors" had no way to learn which twelve rows
+	// or why — and the commonest reason, a SKU another shop already uses, is
+	// one they can act on in thirty seconds if they are told.
+	//
+	// Same struct, same CSV, same object key, same 302 — this is the
+	// existing report reaching a phase it never covered, not a second
+	// reporting channel. Validation's own errors are carried into it so
+	// re-writing the object does not lose them.
+	rowErrs := append([]BulkImportError{}, parseErrs...)
 
 	imported := 0
 	failed := 0
 	for _, row := range rows {
 		if err := s.upsertImportRow(ctx, job.SellerID, row); err != nil {
 			failed++
+			rowErrs = append(rowErrs, importRowFailure(row, err))
 			_ = s.store.IncrImportJobErrors(ctx, jobID, 1)
 			// Continue with the next row — bulk imports must be
 			// resilient to per-row constraint hits.
@@ -266,6 +302,13 @@ func (s *Service) ExecuteBulkImportJob(ctx context.Context, jobID uuid.UUID) err
 		}
 		imported++
 		_ = s.store.IncrImportJobImported(ctx, jobID, 1)
+	}
+
+	if len(rowErrs) > 0 && s.blob != nil {
+		if err := s.blob.Upload(ctx, errorsKey(jobID), buildErrorCSV(rowErrs), "text/csv"); err == nil {
+			id := jobID.String()
+			_ = s.store.SetImportJobErrorFile(ctx, jobID, &id)
+		}
 	}
 
 	final := "completed"
@@ -277,17 +320,63 @@ func (s *Service) ExecuteBulkImportJob(ctx context.Context, jobID uuid.UUID) err
 	return s.store.UpdateImportJobStatus(ctx, jobID, final)
 }
 
+// importRowFailure turns one row's error into the report line the seller
+// downloads.
+//
+// The seller-facing refusals get their own sentence and the field they are
+// about; everything else is reported against the row as a whole, because a
+// storage failure or a constraint nobody anticipated is not the seller's
+// field to fix and pointing at one would send them to edit a cell that is
+// fine.
+func importRowFailure(row *BulkImportRow, err error) BulkImportError {
+	if errors.Is(err, ErrImportSKUOwnedByAnotherSeller) {
+		return BulkImportError{
+			RowNumber: row.RowNumber,
+			Field:     "sku",
+			Message:   ErrImportSKUOwnedByAnotherSeller.Error(),
+		}
+	}
+	return BulkImportError{RowNumber: row.RowNumber, Field: "row", Message: err.Error()}
+}
+
 // upsertImportRow handles one CSV row. Returns nil on success so the
 // caller can advance counters; any error is logged + counted but
 // doesn't propagate to the worker (the row's error is the seller's
 // problem, not a retryable system failure).
+// ─── THE THREE OUTCOMES, AND WHY THE MIDDLE ONE EXISTS ──────────────────
+//
+//	the SKU is MINE          update my listing.
+//	the SKU is FREE          create a new listing for me.
+//	the SKU is SOMEONE       refuse THIS ROW, with a reason, and carry on.
+//	ELSE'S
+//
+// The middle case is the one this function exists for. Before the scoping,
+// it did not exist: the SKU either matched something or it did not, and a
+// match in another seller's shop was indistinguishable from a match in the
+// caller's. Treating it as an update is a catalogue takeover by file upload.
+//
+// Treating it as a CREATE is not available either, and that is the part that
+// is easy to get wrong. `product_variants.sku` is globally UNIQUE today, so
+// the insert would fail — but only after the product row had already been
+// written by a separate statement, leaving the importing seller a titled,
+// empty, variant-less listing in their catalogue for every row that
+// collided, with the raw `duplicate key value violates unique constraint
+// "product_variants_sku_key"` as the only explanation on offer.
+//
+// So the row is refused BEFORE anything is written, with a sentinel the
+// error report can turn into a sentence. And it is refused per row: an
+// import of nine hundred lines, one of which happens to name a code another
+// shop already uses, imports eight hundred and ninety-nine.
 func (s *Service) upsertImportRow(ctx context.Context, sellerID uuid.UUID, row *BulkImportRow) error {
-	existing, err := s.store.FindVariantBySKUForSeller(ctx, sellerID, row.SKU)
+	match, err := s.store.ResolveSKUForSeller(ctx, sellerID, row.SKU)
 	if err != nil {
-		return fmt.Errorf("find variant %s: %w", row.SKU, err)
+		return fmt.Errorf("resolve sku %s: %w", row.SKU, err)
 	}
-	if existing != nil {
-		return s.updateExistingVariant(ctx, existing, row)
+	if match.Mine() {
+		return s.updateExistingVariant(ctx, sellerID, match.Variant, row)
+	}
+	if match.TakenByAnother() {
+		return fmt.Errorf("%w (sku %q)", ErrImportSKUOwnedByAnotherSeller, row.SKU)
 	}
 	return s.createVariantAndProduct(ctx, sellerID, row)
 }
@@ -296,15 +385,28 @@ func (s *Service) upsertImportRow(ctx context.Context, sellerID uuid.UUID, row *
 // a known SKU. The variant row + inventory row + product row each get
 // their own focused UPDATE so the seller's reupload doesn't undo
 // fields they edited via the product editor (description, images).
-func (s *Service) updateExistingVariant(ctx context.Context, v *postgres.ProductVariant, row *BulkImportRow) error {
+//
+// `sellerID` is the IMPORTING seller, and it is passed in rather than read
+// back off the parent product on purpose. The two are equal — the resolver
+// only returns a variant the caller owns — and re-deriving one from the other
+// here would mean this function's stock write depends on a scoping decision
+// made in a different file. It writes the stock against the seller who
+// uploaded the file, and the assertion below says so.
+func (s *Service) updateExistingVariant(ctx context.Context, sellerID uuid.UUID, v *postgres.ProductVariant, row *BulkImportRow) error {
 	prod, err := s.store.GetProductByID(ctx, v.ProductID)
 	if err != nil || prod == nil {
 		return fmt.Errorf("load parent product for variant %s: %w", v.ID, err)
 	}
+	// Belt and braces on the scoping. If this ever fires, the resolver has
+	// handed back a variant the importer does not own and the next three
+	// statements would write one seller's file into another's listing.
+	if prod.SellerID != sellerID {
+		return fmt.Errorf("%w (sku %q)", ErrImportSKUOwnedByAnotherSeller, row.SKU)
+	}
 	if err := s.store.UpdateVariantPricing(ctx, v.ID, row.MRP, row.SellingPrice, row.CostPrice, row.WeightGrams); err != nil {
 		return fmt.Errorf("update variant pricing: %w", err)
 	}
-	if err := s.store.UpsertInventory(ctx, v.ID, prod.SellerID, row.StockQty); err != nil {
+	if err := s.store.UpsertInventory(ctx, v.ID, sellerID, row.StockQty); err != nil {
 		return fmt.Errorf("upsert inventory: %w", err)
 	}
 	if err := s.store.UpdateProductMetadata(ctx, v.ProductID, postgres.ProductMetadataUpdate{
@@ -356,11 +458,7 @@ func (s *Service) createVariantAndProduct(ctx context.Context, sellerID uuid.UUI
 		ReturnPolicyType: "7_days",
 		ReturnPolicyDays: 7,
 	}
-	if err := s.store.CreateProduct(ctx, prod); err != nil {
-		return fmt.Errorf("create product: %w", err)
-	}
 	variant := &postgres.ProductVariant{
-		ProductID:    prod.ID,
 		SKU:          row.SKU,
 		Option1Name:  row.Option1Name,
 		Option1Value: row.Option1Value,
@@ -373,11 +471,32 @@ func (s *Service) createVariantAndProduct(ctx context.Context, sellerID uuid.UUI
 		CurrencyCode: "INR",
 		Status:       "active",
 	}
-	if err := s.store.CreateVariant(ctx, variant); err != nil {
-		return fmt.Errorf("create variant: %w", err)
-	}
-	if err := s.store.UpsertInventory(ctx, variant.ID, sellerID, row.StockQty); err != nil {
-		return fmt.Errorf("upsert inventory: %w", err)
+	// ── One transaction, because a failed row must write NOTHING ─────
+	//
+	// This was three statements: insert the product, insert the variant,
+	// insert the inventory row. The product insert cannot fail (the slug
+	// carries eight hex characters of randomness), and the variant insert
+	// can — on the global UNIQUE(sku) — so every colliding row left behind a
+	// product with a title, no variant, no stock and no way for the seller
+	// to notice, counted in their dashboard's product total and reachable
+	// from nothing. Re-running the import made another one.
+	//
+	// CreateProductAtomic is the write path the seller-facing create uses,
+	// for the same reason and with the same guarantee: either the whole
+	// listing exists or none of it does.
+	if err := s.store.CreateProductAtomic(ctx, postgres.NewProduct{
+		Product:  prod,
+		Variants: []postgres.NewVariant{{Variant: variant, StockQty: row.StockQty}},
+	}); err != nil {
+		// A SKU that was free when upsertImportRow resolved it and taken by
+		// the time the insert ran — two imports racing, or two rows of the
+		// same file naming the same code. Reported as the same refusal the
+		// resolver would have produced, so the seller reads one sentence for
+		// one situation rather than a constraint name for the race.
+		if errors.Is(err, postgres.ErrDuplicateSKU) {
+			return fmt.Errorf("%w (sku %q)", ErrImportSKUOwnedByAnotherSeller, row.SKU)
+		}
+		return fmt.Errorf("create product: %w", err)
 	}
 	return s.applyTierLadderIfPresent(ctx, variant.ID, row.Tiers)
 }

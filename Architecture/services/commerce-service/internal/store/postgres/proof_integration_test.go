@@ -111,7 +111,6 @@ func newFixture(t *testing.T, stock int, unitMinor int64, taxPct string) *fixtur
 	exec(`INSERT INTO products (id,seller_id,title,slug,status,approval_status,return_policy_type,tax_class_id,weight_grams)
 	      VALUES ($1,$2,'Test Product',$3,'active','approved','7_days',$4,500)`,
 		f.productID, f.sellerID, "prod-"+f.productID.String()[:8], taxClassID)
-
 	exec(`INSERT INTO product_variants (id,product_id,sku,mrp,selling_price,mrp_minor,selling_price_minor,weight_grams)
 	      VALUES ($1,$2,$3,$4,$4,$5,$5,500)`,
 		f.variantID, f.productID, "SKU-"+f.variantID.String()[:8],
@@ -119,6 +118,7 @@ func newFixture(t *testing.T, stock int, unitMinor int64, taxPct string) *fixtur
 
 	exec(`INSERT INTO inventory_items (variant_id,seller_id,total_qty,reserved_qty)
 	      VALUES ($1,$2,$3,0)`, f.variantID, f.sellerID, stock)
+	seedOfferFor(t, f.productID)
 
 	exec(`INSERT INTO customer_addresses (id,user_id,contact_name,phone,address_line_1,city,state,postal_code)
 	      VALUES ($1,$2,'Buyer','9111111111','5 Main St','Bengaluru','KA','560002')`,
@@ -974,6 +974,7 @@ func TestProofModerationBypassIsClosed(t *testing.T) {
 			// an add-time-only check would miss.
 			mustExec(t, fmt.Sprintf(`UPDATE products SET %s='%s' WHERE id='%s'`,
 				tc.column, tc.value, f.productID))
+			seedOfferFor(t, f.productID)
 
 			_, err := store.Checkout(ctx, f.params(quoteID, "idem-"+uuid.NewString()))
 			if !errors.Is(err, ErrProductUnavailable) {

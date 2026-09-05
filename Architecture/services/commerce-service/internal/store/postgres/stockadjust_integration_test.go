@@ -44,6 +44,7 @@ func newStockFixture(t *testing.T, total, reserved int) stockFixture {
 	mustExec(t, `INSERT INTO inventory_items (id,variant_id,seller_id,total_qty,reserved_qty)
 	             VALUES (gen_random_uuid(),$1,$2,$3,$4)`,
 		f.variantID, f.sellerID, total, reserved)
+	seedOfferFor(t, productID)
 	return f
 }
 

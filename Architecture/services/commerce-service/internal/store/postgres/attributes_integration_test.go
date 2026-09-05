@@ -268,6 +268,7 @@ func TestAttributeImpactCountsWhatANarrowingEditWouldBreak(t *testing.T) {
 		mustExec(t, `INSERT INTO products (id,seller_id,category_id,title,slug,status,approval_status,return_policy_type)
 		             VALUES ($1,$2,$3,'Impact Product',$4,$5,$6,'7_days')`,
 			id, sellerID, f.leaf, "impact-"+id.String()[:8], status, approval)
+		seedOfferFor(t, id)
 		if value != nil {
 			mustExec(t, `INSERT INTO product_attributes (product_id,name,value) VALUES ($1,$2,$3)`,
 				id, code, *value)

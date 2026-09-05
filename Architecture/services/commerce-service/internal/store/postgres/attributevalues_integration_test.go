@@ -54,6 +54,7 @@ func newValueFixture(t *testing.T) *valueFixture {
 	mustExec(t, `INSERT INTO products (id,seller_id,category_id,title,slug,status,approval_status)
 	             VALUES ($1,$2,$3,'Value Product',$4,'active','approved')`,
 		f.product, f.seller, f.category, "value-product-"+tag)
+	seedOfferFor(t, f.product)
 
 	// One definition per data type, each bound to the category with an
 	// explicit sort order and a group, so the ordering assertions have

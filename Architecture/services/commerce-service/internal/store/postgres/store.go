@@ -676,7 +676,19 @@ func insertVariantTx(ctx context.Context, tx pgx.Tx, v *ProductVariant) error {
 		v.CurrencyCode, v.Status,
 		v.ImageMediaID, v.WeightGrams, v.CreatedAt, v.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// A variant belongs to the seller's OFFER on the item, not to the item.
+	// Migration 027 added the column, nullable, and pointed every existing
+	// variant at its product's backfilled offer; this keeps new ones pointed
+	// the same way. Nothing reads it yet — see internal/store/postgres/
+	// productoffers.go for why the shadow is written before it is read.
+	//
+	// Here for the same reason the offer insert is inside insertProductTx:
+	// this is the only statement in the package that creates a variant.
+	return linkVariantToOfferTx(ctx, tx, v.ID, v.ProductID)
 }
 
 // variantMoneyAndStockSQL is the SELECT-list fragment every variant read

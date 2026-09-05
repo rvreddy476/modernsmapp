@@ -368,6 +368,14 @@ func (s *Store) ApproveProductByAdmin(ctx context.Context, productID, actorID uu
 		productID, now); err != nil {
 		return err
 	}
+	// Migration 027's dual-write: the seller's offer carries its own copy of
+	// approval_status, status and published_at, and an approval that moved
+	// one and not the other is exactly the drift the consistency checker in
+	// productoffers.go exists to catch. In THIS transaction, so there is no
+	// window in which the two disagree.
+	if err := syncOfferLifecycleTx(ctx, tx, productID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO product_moderation_log (id,product_id,action,reason,actor_user_id,created_at)
 		 VALUES (gen_random_uuid(),$1,'approve',$2,$3,$4)`,
@@ -394,6 +402,9 @@ func (s *Store) RequestProductChangesByAdmin(ctx context.Context, productID, act
 		productID, message, now); err != nil {
 		return err
 	}
+	if err := syncOfferLifecycleTx(ctx, tx, productID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO product_moderation_log (id,product_id,action,reason,actor_user_id,created_at)
 		 VALUES (gen_random_uuid(),$1,'request_changes',$2,$3,$4)`,
@@ -415,6 +426,9 @@ func (s *Store) RejectProductByAdmin(ctx context.Context, productID, actorID uui
 	if _, err := tx.Exec(ctx,
 		`UPDATE products SET approval_status='rejected', rejection_reason=$2, updated_at=$3 WHERE id=$1`,
 		productID, reason, now); err != nil {
+		return err
+	}
+	if err := syncOfferLifecycleTx(ctx, tx, productID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
@@ -479,7 +493,17 @@ func (s *Store) SubmitProductForReview(ctx context.Context, productID, sellerID 
 	if status != "approved" {
 		return ErrSellerNotApproved
 	}
-	tag, err := s.db.Exec(ctx,
+	// A transaction, where this used to be a bare Exec: migration 027's
+	// dual-write has to move the offer's approval_status with the product's,
+	// and two independent statements leave a window in which a crash between
+	// them parks the two copies on different sides of the review queue.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE products SET approval_status='submitted', updated_at=NOW() WHERE id=$1 AND seller_id=$2 AND approval_status='draft'`,
 		productID, sellerID)
 	if err != nil {
@@ -488,5 +512,8 @@ func (s *Store) SubmitProductForReview(ctx context.Context, productID, sellerID 
 	if tag.RowsAffected() == 0 {
 		return ErrProductNotDraft
 	}
-	return nil
+	if err := syncOfferLifecycleTx(ctx, tx, productID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
