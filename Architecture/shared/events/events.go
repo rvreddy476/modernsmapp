@@ -513,6 +513,24 @@ type PostCreatedPayload struct {
 	// revision they last applied, so replay and out-of-order delivery
 	// cannot resurrect content. Creation is always revision 1.
 	SearchRev int64 `json:"search_rev,omitempty"`
+
+	// Search result-row projection (page-scoped search, 2026-09-05).
+	// Additive; old producers omit them and the search document simply
+	// lacks a title / thumbnail. Title is the long-video (and optional
+	// reel) title; DurationMs the longest attached video in milliseconds
+	// (0 = unknown or no video); Media the attached assets in carousel
+	// order, so a result card can show the first one's thumbnail.
+	Title      string         `json:"title,omitempty"`
+	DurationMs int            `json:"duration_ms,omitempty"`
+	Media      []PostMediaRef `json:"media,omitempty"`
+}
+
+// PostMediaRef is one attached asset as carried on the post events: enough
+// for a consumer to resolve a thumbnail through media-service without a
+// read-back into post-service.
+type PostMediaRef struct {
+	MediaID string `json:"media_id"`
+	Kind    string `json:"kind"` // image | video | audio
 }
 
 // PostSearchEligibilityChangedPayload is THE single contract for every
@@ -559,6 +577,12 @@ type PostSearchEligibilityChangedPayload struct {
 	Text        string    `json:"text,omitempty"`
 	ContentType string    `json:"content_type,omitempty"`
 	CreatedAt   time.Time `json:"created_at,omitempty"`
+	// Same result-row projection as PostCreatedPayload (the search
+	// document is replaced whole on re-approval, so these must ride
+	// along or an approval would drop the title and thumbnail).
+	Title      string         `json:"title,omitempty"`
+	DurationMs int            `json:"duration_ms,omitempty"`
+	Media      []PostMediaRef `json:"media,omitempty"`
 
 	ChangedAt time.Time `json:"changed_at"`
 }

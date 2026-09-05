@@ -92,6 +92,7 @@ func TestChannelRoutesRegistered(t *testing.T) {
 		"PATCH /v1/channels/me":             false,
 		"GET /v1/channels/handle-available": false,
 		"GET /v1/channels/batch":            false,
+		"GET /v1/channels/search":           false,
 		"GET /v1/channels/:ref":             false,
 	}
 	for _, info := range r.Routes() {

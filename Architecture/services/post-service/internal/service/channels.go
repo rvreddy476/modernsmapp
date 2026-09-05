@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -131,6 +132,7 @@ type channelStore interface {
 	GetChannelsByUserIDs(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]*postgres.Channel, error)
 	CountChannelVideos(ctx context.Context, userID uuid.UUID) (int, error)
 	CountChannelVideosBatch(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]int, error)
+	SearchChannels(ctx context.Context, q string, limit int) ([]postgres.ChannelSearchHit, error)
 }
 
 // ChannelView is the channel JSON: what the owner and the public both see.
@@ -391,6 +393,123 @@ func (s *Service) RequireChannelForVideo(ctx context.Context, authorID uuid.UUID
 		return ErrChannelRequired
 	}
 	return nil
+}
+
+// Channel search (page-scoped search on the Tube app, 2026-09-05):
+// GET /v1/channels/search?q=&limit=.
+const (
+	DefaultChannelSearchLimit = 20
+	MaxChannelSearchLimit     = 50
+)
+
+// ErrEmptyChannelQuery: q is blank after normalization.
+var ErrEmptyChannelQuery = errors.New("q must be at least 1 character")
+
+// NormalizeChannelQuery trims, lowercases and drops a leading '@' (people
+// type handles that way) so the store compares like for like. Returns
+// ErrEmptyChannelQuery when nothing is left.
+func NormalizeChannelQuery(q string) (string, error) {
+	q = strings.ToLower(strings.TrimSpace(q))
+	q = strings.TrimSpace(strings.TrimPrefix(q, "@"))
+	if q == "" {
+		return "", ErrEmptyChannelQuery
+	}
+	return q, nil
+}
+
+// ClampChannelSearchLimit resolves the page size: default 20, at most 50.
+func ClampChannelSearchLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultChannelSearchLimit
+	}
+	if limit > MaxChannelSearchLimit {
+		return MaxChannelSearchLimit
+	}
+	return limit
+}
+
+// ChannelMatches is the matcher the SQL implements: the (lowercase) handle
+// starts with q, or the name contains q case-insensitively. handlePrefix
+// reports the stronger of the two so callers can rank on it.
+func ChannelMatches(q, handle, name string) (matches, handlePrefix bool) {
+	if q == "" {
+		return false, false
+	}
+	handlePrefix = strings.HasPrefix(strings.ToLower(handle), q)
+	nameContains := strings.Contains(strings.ToLower(name), q)
+	return handlePrefix || nameContains, handlePrefix
+}
+
+// SortChannelHits orders a page the way the search page shows it: handle-
+// prefix matches first, then by public video count descending, then by
+// handle for a stable order. The SQL orders the same way; this keeps the
+// contract explicit (and testable) whatever store produced the rows.
+func SortChannelHits(q string, hits []postgres.ChannelSearchHit) {
+	sort.SliceStable(hits, func(i, j int) bool {
+		_, pi := ChannelMatches(q, hits[i].Handle, hits[i].Name)
+		_, pj := ChannelMatches(q, hits[j].Handle, hits[j].Name)
+		if pi != pj {
+			return pi
+		}
+		if hits[i].VideoCount != hits[j].VideoCount {
+			return hits[i].VideoCount > hits[j].VideoCount
+		}
+		return hits[i].Handle < hits[j].Handle
+	})
+}
+
+// SearchChannels answers GET /v1/channels/search: the normalized query
+// against handle prefix / name substring, ranked by SortChannelHits, each
+// row in the same ChannelView JSON as GET /v1/channels/{handle} (video
+// count from the search row, avatars resolved in one media batch).
+func (s *Service) SearchChannels(ctx context.Context, viewerID uuid.UUID, q string, limit int) ([]*ChannelView, error) {
+	if s.channels == nil {
+		return nil, errors.New("channel store not configured")
+	}
+	normalized, err := NormalizeChannelQuery(q)
+	if err != nil {
+		return nil, err
+	}
+	limit = ClampChannelSearchLimit(limit)
+	hits, err := s.channels.SearchChannels(ctx, normalized, limit)
+	if err != nil {
+		return nil, err
+	}
+	SortChannelHits(normalized, hits)
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+
+	var avatarIDs []uuid.UUID
+	for _, h := range hits {
+		if h.AvatarMediaID != nil {
+			avatarIDs = append(avatarIDs, *h.AvatarMediaID)
+		}
+	}
+	avatars := s.resolveAvatarURLs(ctx, viewerID, avatarIDs)
+
+	views := make([]*ChannelView, 0, len(hits))
+	for i := range hits {
+		ch := hits[i].Channel
+		view := &ChannelView{
+			UserID:        ch.UserID,
+			Name:          ch.Name,
+			Handle:        ch.Handle,
+			About:         ch.About,
+			AvatarMediaID: ch.AvatarMediaID,
+			VideoCount:    hits[i].VideoCount,
+			CreatedAt:     ch.CreatedAt,
+			UpdatedAt:     ch.UpdatedAt,
+		}
+		if ch.AvatarMediaID != nil {
+			if u, ok := avatars[*ch.AvatarMediaID]; ok && u != "" {
+				url := u
+				view.AvatarURL = &url
+			}
+		}
+		views = append(views, view)
+	}
+	return views, nil
 }
 
 // ChannelRefsForUsers resolves card-sized channels for a page of authors in

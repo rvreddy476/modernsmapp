@@ -51,20 +51,33 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		visibility  string
 		review      string
 		text        string
+		title       string
 		contentType string
 		createdAt   time.Time
 		deletedAt   *time.Time
 		publishAt   *time.Time
 		rev         int64
+		mediaIDs    []string
+		mediaKinds  []string
+		durationMs  int
 	)
+	// The search document is replaced whole on re-approval, so the
+	// result-row projection (title, attached assets in carousel order, the
+	// longest video's duration — an aggregate, so no order applies) rides
+	// along with the eligibility change.
 	err := tx.QueryRow(ctx, `
 		UPDATE posts
 		SET search_rev = search_rev + 1
 		WHERE id = $1
-		RETURNING author_id, visibility, review_status, text, content_type,
-		          created_at, deleted_at, publish_at, search_rev`, postID).
-		Scan(&authorID, &visibility, &review, &text, &contentType,
-			&createdAt, &deletedAt, &publishAt, &rev)
+		RETURNING author_id, visibility, review_status, text, COALESCE(title, ''), content_type,
+		          created_at, deleted_at, publish_at, search_rev,
+		          COALESCE((SELECT array_agg(pm.media_id::text ORDER BY pm.position) FROM post_media pm WHERE pm.post_id = posts.id), '{}'),
+		          COALESCE((SELECT array_agg(pm.kind ORDER BY pm.position) FROM post_media pm WHERE pm.post_id = posts.id), '{}'),
+		          COALESCE((SELECT MAX(COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0))
+		                    FROM media_assets ma JOIN post_media pm ON pm.media_id = ma.id
+		                    WHERE pm.post_id = posts.id AND pm.kind = 'video'), 0)::int`, postID).
+		Scan(&authorID, &visibility, &review, &text, &title, &contentType,
+			&createdAt, &deletedAt, &publishAt, &rev, &mediaIDs, &mediaKinds, &durationMs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrPostRowMissing
 	}
@@ -93,6 +106,15 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 	// removal events small.
 	if publishAt == nil && events.SearchEligible(visibility, review, deletedAt != nil) {
 		payload.Text = text
+		payload.Title = title
+		payload.DurationMs = durationMs
+		for i, id := range mediaIDs {
+			kind := ""
+			if i < len(mediaKinds) {
+				kind = mediaKinds[i]
+			}
+			payload.Media = append(payload.Media, events.PostMediaRef{MediaID: id, Kind: kind})
+		}
 	}
 
 	if err := InsertOutboxEventTx(ctx, tx, events.PostSearchEligibilityChanged, "post", postID, payload); err != nil {

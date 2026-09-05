@@ -102,6 +102,17 @@ type PostProjection struct {
 	// marker is sticky in the index and makes every later non-removal
 	// write fail regardless of its revision.
 	AuthorErased bool
+	// Reproject lets an eligible write land at the SAME revision as the
+	// stored document (ordinarily a tie is dropped). It exists for the
+	// reconciler (cmd/backfill): when the projection SHAPE changes — new
+	// result-row fields, say — every existing document must be rewritten
+	// from the canonical row, yet the row's revision has not moved.
+	//
+	// It is still fail-closed: a stored removal at the same revision is
+	// left alone (removal wins ties), an erased author's document stays
+	// erased, and a stored revision above the incoming one still wins.
+	// Ignored for removals and AutoRev writes.
+	Reproject bool
 }
 
 // validate enforces the revision domain before anything is sent.
@@ -157,6 +168,10 @@ boolean apply = false;
 if (incoming > stored) {
   apply = true;
 } else if (incoming == stored && params.removed && !storedRemoved) {
+  apply = true;
+} else if (incoming == stored && params.reproject && !params.removed && !params.auto_rev && !storedRemoved) {
+  // Reconciler re-projection of an eligible document at its current
+  // revision (projection shape changed, canonical state did not).
   apply = true;
 }
 
@@ -245,6 +260,7 @@ func (s *Store) ApplyPostProjection(ctx context.Context, p PostProjection) error
 				"auto_rev":         p.AutoRev,
 				"removed":          p.Removed,
 				"author_erased":    p.AuthorErased,
+				"reproject":        p.Reproject && !p.Removed && !p.AutoRev,
 				"max_ordinary_rev": maxOrdinaryRev,
 				"doc":              docMap,
 				"tombstone":        tombstone,

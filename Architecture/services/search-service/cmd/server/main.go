@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/search-service/internal/events"
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
+	"github.com/atpost/search-service/internal/mediaclient"
 	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/purge"
 	"github.com/atpost/search-service/internal/reindex"
@@ -197,6 +198,13 @@ func main() {
 	handler.WithGraphClient(gc)
 	handler.WithPrivacyLookup(privacyLookup)
 	slog.Info("search-service: graph client wired", "url", graphServiceURL)
+
+	// Media-service client — turns the media ids on result rows (first
+	// attached asset, author avatar) into thumbnail / avatar URLs, as the
+	// viewer, one batch per page. Optional; unresolved is a null URL.
+	mediaServiceURL := env("MEDIA_SERVICE_URL", "http://media-service:8087")
+	handler.WithMediaClient(mediaclient.New(mediaServiceURL, internalKey))
+	slog.Info("search-service: media client wired", "url", mediaServiceURL)
 
 	// Postgres analytics + extras stores built in step 4b above; wire them
 	// into the HTTP handler here if present.

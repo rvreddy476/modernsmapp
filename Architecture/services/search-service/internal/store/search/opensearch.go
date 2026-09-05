@@ -81,7 +81,12 @@ func (s *Store) initIndices() {
 				"comment_count":   { "type": "long" },
 				"post_type":       { "type": "keyword" },
 				"app_origin":      { "type": "keyword" },
-				"created_at":      { "type": "date" }
+				"created_at":      { "type": "date" },
+				"content_type":    { "type": "keyword" },
+				"title":           { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } } },
+				"duration_ms":     { "type": "long" },
+				"media_id":        { "type": "keyword" },
+				"media_kind":      { "type": "keyword" }
 			}
 		}
 	}`)
@@ -173,6 +178,32 @@ func (s *Store) putPrivacyMapping(ctx context.Context, index, field string) {
 	defer res.Body.Close()
 	if res.IsError() {
 		slog.Warn("opensearch: put privacy mapping rejected", "index", index, "field", field, "status", res.StatusCode)
+	}
+}
+
+// putResultRowMapping idempotently adds the post result-row fields
+// (content_type, title, duration_ms, media_id, media_kind) to an existing
+// posts index. Additive like the other put-mapping helpers.
+func (s *Store) putResultRowMapping(ctx context.Context, index string) {
+	body := `{"properties":{
+		"content_type": {"type":"keyword"},
+		"title":        {"type":"text","fields":{"keyword":{"type":"keyword","ignore_above":256}}},
+		"duration_ms":  {"type":"long"},
+		"media_id":     {"type":"keyword"},
+		"media_kind":   {"type":"keyword"}
+	}}`
+	req := opensearchapi.IndicesPutMappingRequest{
+		Index: []string{index},
+		Body:  strings.NewReader(body),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		slog.Warn("opensearch: put result-row mapping failed", "index", index, "err", err)
+		return
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		slog.Warn("opensearch: put result-row mapping rejected", "index", index, "status", res.StatusCode)
 	}
 }
 
@@ -293,6 +324,39 @@ type PostDoc struct {
 	AppOrigin       string    `json:"app_origin,omitempty"`
 	EngagementScore float64   `json:"engagement_score"`
 	CreatedAt       time.Time `json:"created_at"`
+
+	// Result-row projection (page-scoped search, 2026-09-05). ContentType
+	// is the canonical posts.content_type (post|flick|long_video|poll…) and
+	// is what ?type=videos / ?type=flicks filter on — it was never indexed
+	// before, which is why those filters returned nothing. Title is the
+	// long-video title (searched alongside text); DurationMs the longest
+	// attached video; MediaID / MediaKind the first attached asset, from
+	// which the thumbnail is resolved at query time through media-service.
+	ContentType string `json:"content_type,omitempty"`
+	Title       string `json:"title,omitempty"`
+	DurationMs  int    `json:"duration_ms,omitempty"`
+	MediaID     string `json:"media_id,omitempty"`
+	MediaKind   string `json:"media_kind,omitempty"`
+}
+
+// PostSearchKind is the page-scoped ?type= filter for post searches.
+//
+//	""/all/posts → every content type (the home / post page)
+//	videos       → long videos (the Tube app); legacy "video" rows included
+//	flicks/reels → reels; legacy "reel" rows included
+//
+// ContentTypesForKind returns the content_type terms to filter on, nil for
+// "everything", and ok=false for an unknown kind.
+func ContentTypesForKind(kind string) (types []string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", "all", "posts":
+		return nil, true
+	case "videos", "video", "long_video":
+		return []string{"long_video", "video"}, true
+	case "flicks", "flick", "reels", "reel":
+		return []string{"flick", "reel"}, true
+	}
+	return nil, false
 }
 
 // HashtagDoc represents one hashtag in the hashtags_v1 index. Keyed
@@ -560,6 +624,35 @@ func (s *Store) SearchUsers(ctx context.Context, query string, limit int) ([]Use
 	return s.execUserSearch(ctx, q)
 }
 
+// GetUsersByIDs loads the users_v1 documents for a set of user ids in one
+// query — the author hydration behind a page of post results. The viewer's
+// block scope and the hidden-account exclusion apply as on every user
+// query; an author outside them is simply absent from the map.
+func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) (map[string]UserDoc, error) {
+	out := make(map[string]UserDoc, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	q := map[string]interface{}{
+		"size": len(ids),
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"filter": []interface{}{
+					map[string]interface{}{"ids": map[string]interface{}{"values": ids}},
+				},
+			},
+		},
+	}
+	docs, err := s.execUserSearch(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range docs {
+		out[d.UserID] = d
+	}
+	return out, nil
+}
+
 func (s *Store) execUserSearch(ctx context.Context, query map[string]interface{}) ([]UserDoc, error) {
 	// M2-P0-4: encodeQuery injects the viewer's two-way block exclusion.
 	buf, err := encodeQuery(ctx, query, "user_id")
@@ -655,8 +748,14 @@ func publicApprovedFilterAny() []map[string]any {
 	}
 }
 func (s *Store) SearchPostsFiltered(ctx context.Context, query string, contentTypes []string, limit int) ([]PostDoc, error) {
+	// A long video is found by its title as much as by its caption, so
+	// the text match spans both (title weighted up), plus the hashtag
+	// terms so "#reel" style queries keep working.
 	mustClauses := []map[string]interface{}{
-		{"match": map[string]interface{}{"text": query}},
+		{"multi_match": map[string]interface{}{
+			"query":  query,
+			"fields": []string{"title^3", "text^2", "hashtags"},
+		}},
 	}
 	filter := publicApprovedFilter()
 	if len(contentTypes) > 0 {
@@ -844,8 +943,9 @@ func (s *Store) UniversalSearch(ctx context.Context, query string, searchType st
 		}
 
 	case "videos":
-		// Long-form video tab on the Posttube search surface.
-		posts, err := s.SearchPostsFiltered(ctx, query, []string{"long_video"}, limit)
+		// Long-form video tab on the Tube search surface.
+		types, _ := ContentTypesForKind("videos")
+		posts, err := s.SearchPostsFiltered(ctx, query, types, limit)
 		if err != nil {
 			return nil, fmt.Errorf("video search failed: %w", err)
 		}
@@ -855,7 +955,8 @@ func (s *Store) UniversalSearch(ctx context.Context, query string, searchType st
 
 	case "flicks":
 		// Short-form vertical tab on the Reels search surface.
-		posts, err := s.SearchPostsFiltered(ctx, query, []string{"flick"}, limit)
+		types, _ := ContentTypesForKind("flicks")
+		posts, err := s.SearchPostsFiltered(ctx, query, types, limit)
 		if err != nil {
 			return nil, fmt.Errorf("flick search failed: %w", err)
 		}
@@ -1879,7 +1980,7 @@ func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[str
 		inner = map[string]any{
 			"multi_match": map[string]any{
 				"query":  q,
-				"fields": []string{"text^3", "hashtags^2", "author_username"},
+				"fields": []string{"title^3", "text^3", "hashtags^2", "author_username"},
 			},
 		}
 		// Always exclude non-public and non-approved posts

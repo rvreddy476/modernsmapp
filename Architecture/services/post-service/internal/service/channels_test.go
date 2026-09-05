@@ -203,8 +203,122 @@ func (f *fakeChannelStore) CountChannelVideosBatch(_ context.Context, ids []uuid
 	return out, nil
 }
 
+// SearchChannels applies the matcher and returns the rows UNORDERED, so the
+// service's sort is what the tests exercise.
+func (f *fakeChannelStore) SearchChannels(_ context.Context, q string, limit int) ([]postgres.ChannelSearchHit, error) {
+	var out []postgres.ChannelSearchHit
+	for _, ch := range f.byHandle {
+		if ok, _ := ChannelMatches(q, ch.Handle, ch.Name); ok {
+			out = append(out, postgres.ChannelSearchHit{Channel: *ch, VideoCount: f.videos[ch.UserID]})
+		}
+	}
+	// Deliberately in map (random) order; over-return so the service's
+	// own limit is exercised too.
+	_ = limit
+	return out, nil
+}
+
 func newChannelTestService(store channelStore) *Service {
 	return &Service{channels: store, httpClient: &http.Client{Timeout: time.Second}}
+}
+
+func TestNormalizeChannelQuery(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"Call", "call", true},
+		{"  @Call.B  ", "call.b", true},
+		{"@", "", false},
+		{"   ", "", false},
+		{"", "", false},
+		{"c", "c", true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeChannelQuery(tc.in)
+		if tc.ok && (err != nil || got != tc.want) {
+			t.Errorf("%q: got %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+		if !tc.ok && !errors.Is(err, ErrEmptyChannelQuery) {
+			t.Errorf("%q: got %q, %v; want ErrEmptyChannelQuery", tc.in, got, err)
+		}
+	}
+	if ClampChannelSearchLimit(0) != DefaultChannelSearchLimit || ClampChannelSearchLimit(-3) != DefaultChannelSearchLimit {
+		t.Fatal("zero/negative limit must fall back to the default")
+	}
+	if ClampChannelSearchLimit(500) != MaxChannelSearchLimit || ClampChannelSearchLimit(7) != 7 {
+		t.Fatal("limit must be clamped to the max and otherwise honoured")
+	}
+}
+
+func TestChannelMatches(t *testing.T) {
+	cases := []struct {
+		q, handle, name       string
+		matches, handlePrefix bool
+	}{
+		{"call", "call.userb", "Call B Studio", true, true},
+		{"call", "userb", "Call B Studio", true, false},        // name substring only
+		{"studio", "call.userb", "Call B Studio", true, false}, // name substring, not a handle prefix
+		{"userb", "call.userb", "Call B Studio", false, false}, // handle substring is NOT a match
+		{"b st", "call.userb", "Call B Studio", true, false},   // spaces inside the name are fine
+		{"zzz", "call.userb", "Call B Studio", false, false},
+		{"", "call.userb", "Call B Studio", false, false},
+	}
+	for _, tc := range cases {
+		m, p := ChannelMatches(tc.q, tc.handle, tc.name)
+		if m != tc.matches || p != tc.handlePrefix {
+			t.Errorf("ChannelMatches(%q, %q, %q) = %v,%v want %v,%v", tc.q, tc.handle, tc.name, m, p, tc.matches, tc.handlePrefix)
+		}
+	}
+}
+
+func TestSearchChannelsOrdersPrefixThenVideoCount(t *testing.T) {
+	store := newFakeChannelStore()
+	mk := func(handle, name string, videos int) uuid.UUID {
+		id := uuid.New()
+		if err := store.CreateChannel(context.Background(), &postgres.Channel{UserID: id, Handle: handle, Name: name}); err != nil {
+			t.Fatal(err)
+		}
+		store.videos[id] = videos
+		return id
+	}
+	mk("callb", "B", 1)                // handle prefix, 1 video
+	mk("calla", "A", 5)                // handle prefix, 5 videos -> first
+	mk("callc", "C", 5)                // handle prefix, 5 videos -> after calla by handle
+	mk("studio", "The Call Room", 100) // name-only match -> after every prefix match
+	mk("zeta", "Unrelated", 9)         // no match
+
+	svc := newChannelTestService(store)
+	views, err := svc.SearchChannels(context.Background(), uuid.Nil, " @CALL ", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, v := range views {
+		got = append(got, v.Handle)
+	}
+	want := []string{"calla", "callc", "callb", "studio"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	if views[0].VideoCount != 5 || views[3].VideoCount != 100 {
+		t.Fatalf("video_count not carried from the search row: %+v", views)
+	}
+
+	// The limit is honoured after ranking.
+	views, err = svc.SearchChannels(context.Background(), uuid.Nil, "call", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 2 || views[0].Handle != "calla" || views[1].Handle != "callc" {
+		t.Fatalf("limited page = %+v", views)
+	}
+
+	// A blank query is refused, never a full table scan.
+	if _, err := svc.SearchChannels(context.Background(), uuid.Nil, " @ ", 10); !errors.Is(err, ErrEmptyChannelQuery) {
+		t.Fatalf("blank query: got %v", err)
+	}
 }
 
 func TestCreateChannelValidatesAndConflicts(t *testing.T) {

@@ -965,6 +965,9 @@ services:
       # account_visibility authority stamped into is_private / author_is_private.
       GRAPH_SERVICE_URL: http://graph-service:8083
       IDENTITY_USER_SERVICE_URL: http://identity-user:8110
+      # Page-scoped search result rows: thumbnails / avatars are resolved
+      # through media-service's batch endpoint as the viewer.
+      MEDIA_SERVICE_URL: http://media-service:8087
     ports:
       - "8089:8089"
     # Wait for OpenSearch to actually serve, not merely to have started —

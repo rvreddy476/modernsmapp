@@ -135,6 +135,13 @@ func (s *Store) initEntityIndices() {
 	s.putPrivacyMapping(ctx, IndexUsers, "is_private")
 	s.putPrivacyMapping(ctx, IndexPosts, "author_is_private")
 
+	// Result-row projection (page-scoped search, 2026-09-05): content_type
+	// (what ?type=videos / flicks filter on), title (searched with text),
+	// duration_ms, and the first attached asset. Additive, idempotent;
+	// documents written before it lack the fields until the backfill
+	// (cmd/backfill -entity posts) rewrites them.
+	s.putResultRowMapping(ctx, IndexPosts)
+
 	// Account control (auth-service deactivate / 30-day scheduled
 	// deletion): is_hidden is UNCONDITIONAL suppression, distinct from
 	// is_private. Same additive, idempotent put-mapping as the privacy

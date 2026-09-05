@@ -104,6 +104,12 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		// check was indexed and publicly findable immediately.
 		ReviewStatus: p.ReviewStatus,
 		SearchRev:    searchRev,
+		// Search result-row projection (page-scoped search, 2026-09-05):
+		// title, duration and the attached assets in carousel order so the
+		// search index can render a card without reading the post back.
+		Title:      p.Title,
+		DurationMs: maxDuration * 1000,
+		Media:      postMediaRefs(p.Media),
 	}
 	// Additive pointer fields: stamped whenever an intent exists —
 	// either a typed policy or explicit legacy fields (P1-1). Events
@@ -121,6 +127,19 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		pc.ChannelID = s.lookupChannelIDForUser(ctx, p.AuthorID)
 	}
 	return pc
+}
+
+// postMediaRefs projects the attached assets onto the event contract, in
+// the order they were attached (Post.Media is loaded by position).
+func postMediaRefs(media []postgres.PostMedia) []events.PostMediaRef {
+	if len(media) == 0 {
+		return nil
+	}
+	out := make([]events.PostMediaRef, 0, len(media))
+	for _, m := range media {
+		out = append(out, events.PostMediaRef{MediaID: m.MediaID.String(), Kind: m.Kind})
+	}
+	return out
 }
 
 // storeMentions persists the merged mention list to post_mentions (the

@@ -22,6 +22,31 @@ var hashtagRegex = regexp.MustCompile(`#(\w+)`)
 
 // extractHashtags parses all #hashtag occurrences from text and returns
 // lowercase deduplicated hashtag strings (without the leading #).
+// postDurationMs prefers the millisecond field and falls back to the
+// legacy whole-second one (older producers send only duration_seconds).
+func postDurationMs(durationMs, durationSeconds int) int {
+	if durationMs > 0 {
+		return durationMs
+	}
+	return durationSeconds * 1000
+}
+
+// firstMediaID / firstMediaKind: the first attached asset in carousel
+// order — the one a result card shows.
+func firstMediaID(media []events.PostMediaRef) string {
+	if len(media) == 0 {
+		return ""
+	}
+	return media[0].MediaID
+}
+
+func firstMediaKind(media []events.PostMediaRef) string {
+	if len(media) == 0 {
+		return ""
+	}
+	return media[0].Kind
+}
+
 func extractHashtags(text string) []string {
 	matches := hashtagRegex.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
@@ -452,6 +477,12 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 				ReviewStatus:    p.ReviewStatus,
 				SearchRev:       rev,
 				CreatedAt:       p.CreatedAt,
+				ContentType:     p.ContentType,
+				PostType:        p.ContentType,
+				Title:           p.Title,
+				DurationMs:      postDurationMs(p.DurationMs, p.DurationSeconds),
+				MediaID:         firstMediaID(p.Media),
+				MediaKind:       firstMediaKind(p.Media),
 			},
 		})
 

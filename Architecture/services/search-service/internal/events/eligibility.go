@@ -97,7 +97,12 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 			ReviewStatus:    p.ReviewStatus,
 			SearchRev:       p.SearchRev,
 			PostType:        p.ContentType,
+			ContentType:     p.ContentType,
 			CreatedAt:       p.CreatedAt,
+			Title:           p.Title,
+			DurationMs:      p.DurationMs,
+			MediaID:         firstMediaID(p.Media),
+			MediaKind:       firstMediaKind(p.Media),
 		},
 	}); err != nil {
 		return fmt.Errorf("eligibility: index %s: %w", p.PostID, err)

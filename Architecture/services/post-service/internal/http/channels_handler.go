@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/atpost/post-service/internal/service"
@@ -21,6 +22,7 @@ import (
 //	PATCH /v1/channels/me                 any subset of name/handle/about/avatar_media_id
 //	GET   /v1/channels/handle-available   ?handle= -> {available, suggestion}
 //	GET   /v1/channels/batch              ?user_ids=a,b -> {user_id: channel ref} (feed hydration)
+//	GET   /v1/channels/search             ?q=&limit= -> {"data":[channel…]} (Tube search page)
 //	GET   /v1/channels/:ref               public channel by handle or user id
 
 const maxChannelBatch = 100
@@ -33,8 +35,41 @@ func (h *Handler) registerChannelRoutes(r *gin.Engine) {
 		channels.PATCH("/me", h.UpdateMyChannel)
 		channels.GET("/handle-available", h.ChannelHandleAvailable)
 		channels.GET("/batch", h.GetChannelsBatch)
+		channels.GET("/search", h.SearchChannels)
 		channels.GET("/:ref", h.GetChannelByRef)
 	}
+}
+
+// SearchChannels handles GET /v1/channels/search?q=&limit=.
+//
+// q: trimmed, lowercased, a leading '@' dropped; at least 1 character
+// (400 INVALID_QUERY otherwise). Matches handle prefix or name substring.
+// limit: default 20, max 50. Rows are the GET /v1/channels/{handle} JSON,
+// handle-prefix matches first, then by video_count desc.
+func (h *Handler) SearchChannels(c *gin.Context) {
+	viewerID, _ := uuid.Parse(c.GetHeader("X-User-Id"))
+	limit := 0
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "limit must be a non-negative integer", nil)
+			return
+		}
+		limit = n
+	}
+	views, err := h.svc.SearchChannels(c.Request.Context(), viewerID, c.Query("q"), limit)
+	if err != nil {
+		if errors.Is(err, service.ErrEmptyChannelQuery) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_QUERY", err.Error(), nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if views == nil {
+		views = []*service.ChannelView{}
+	}
+	api.JSON(c.Writer, http.StatusOK, views, nil)
 }
 
 type createChannelRequest struct {

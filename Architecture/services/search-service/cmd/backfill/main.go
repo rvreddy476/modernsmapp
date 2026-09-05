@@ -193,13 +193,25 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	defer pool.Close()
 
 	args := []any{}
-	q := `SELECT id, author_id, text, visibility,
-	             COALESCE(review_status, ''), COALESCE(search_rev, 1),
-	             COALESCE(content_type, ''), created_at,
-	             (deleted_at IS NOT NULL) AS is_deleted,
-	             (publish_at IS NOT NULL) AS is_scheduled
-	      FROM posts
-	      ORDER BY created_at DESC`
+	// Result-row projection (title, first attached asset, longest video
+	// duration) is read here exactly as post-service puts it on the
+	// PostCreated / eligibility events, so a rebuilt document matches a
+	// live one.
+	q := `SELECT p.id, p.author_id, p.text, p.visibility,
+	             COALESCE(p.review_status, ''), COALESCE(p.search_rev, 1),
+	             COALESCE(p.content_type, ''), p.created_at,
+	             (p.deleted_at IS NOT NULL) AS is_deleted,
+	             (p.publish_at IS NOT NULL) AS is_scheduled,
+	             COALESCE(p.title, ''),
+	             COALESCE((SELECT pm.media_id::text FROM post_media pm
+	                       WHERE pm.post_id = p.id ORDER BY pm.position LIMIT 1), ''),
+	             COALESCE((SELECT pm.kind FROM post_media pm
+	                       WHERE pm.post_id = p.id ORDER BY pm.position LIMIT 1), ''),
+	             COALESCE((SELECT MAX(COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0))
+	                       FROM post_media pm JOIN media_assets ma ON ma.id = pm.media_id
+	                       WHERE pm.post_id = p.id AND pm.kind = 'video'), 0)::int
+	      FROM posts p
+	      ORDER BY p.created_at DESC`
 	if limit > 0 {
 		q += limitClause(limit, 1)
 		args = append(args, limit)
@@ -213,11 +225,14 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	var indexed, removed, skipped int
 	for rows.Next() {
 		var id, authorID, text, visibility, reviewStatus, contentType string
+		var title, mediaID, mediaKind string
+		var durationMs int
 		var searchRev int64
 		var createdAt time.Time
 		var isDeleted, isScheduled bool
 		if err := rows.Scan(&id, &authorID, &text, &visibility,
-			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted, &isScheduled); err != nil {
+			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted, &isScheduled,
+			&title, &mediaID, &mediaKind, &durationMs); err != nil {
 			return indexed, err
 		}
 
@@ -290,9 +305,15 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 		// not exist when the sweep ran — so only the author-level check
 		// plus recheck can. A bare ApplyPostProjection here resurrected a
 		// deleted account's content.
+		//
+		// Reproject: the row's revision has not moved, but the projection
+		// shape may have (result-row fields, 2026-09-05), so an eligible
+		// document is rewritten at its current revision. Removal ties and
+		// erased authors still win — see PostProjection.Reproject.
 		if err := store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
-			PostID: id,
-			Rev:    searchRev,
+			PostID:    id,
+			Rev:       searchRev,
+			Reproject: true,
 			Doc: search.PostDoc{
 				PostID:       id,
 				AuthorID:     authorID,
@@ -301,8 +322,13 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 				ReviewStatus: reviewStatus,
 				SearchRev:    searchRev,
 				PostType:     contentType,
+				ContentType:  contentType,
 				Hashtags:     extractHashtags(text),
 				CreatedAt:    createdAt,
+				Title:        title,
+				DurationMs:   durationMs,
+				MediaID:      mediaID,
+				MediaKind:    mediaKind,
 			},
 		}); err != nil {
 			slog.Warn("backfill posts: index failed", "id", id, "err", err)

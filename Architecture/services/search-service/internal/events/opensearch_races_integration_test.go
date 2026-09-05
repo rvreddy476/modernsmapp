@@ -4,6 +4,7 @@ package events
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -455,5 +456,83 @@ func postProjectionForTest(postID, authorID, marker string, rev int64) search.Po
 			Visibility: "public", ReviewStatus: "approved", SearchRev: rev,
 			CreatedAt: time.Now().UTC(),
 		},
+	}
+}
+
+// ─── Page-scoped search (2026-09-05): reconciler re-projection ──────────────
+
+// The backfill rewrites eligible documents at their CURRENT revision when
+// the projection shape changes. That must land (the plain tie rule would
+// drop it), must never bring back a removal at the same revision, and must
+// still lose to a newer stored revision.
+func TestOpenSearch_ReprojectRewritesEligibleAtSameRevisionOnly(t *testing.T) {
+	store := liveStore(t)
+	ctx := context.Background()
+
+	id := uuid.New().String()
+	author := uuid.New().String()
+	t.Cleanup(func() { _ = store.DeletePost(context.Background(), id) })
+
+	// A unique token: the suite runs against the shared dev index, and a
+	// plain word would match unrelated documents.
+	token := "zqreproject" + strings.ReplaceAll(id[:8], "-", "")
+	base := search.PostDoc{
+		PostID: id, AuthorID: author, Text: token,
+		Visibility: "public", ReviewStatus: "approved", SearchRev: 3,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Doc: base}); err != nil {
+		t.Fatal(err)
+	}
+	// Same revision, no Reproject: dropped (the old rule).
+	withTitle := base
+	withTitle.Title = "Reprojected title"
+	withTitle.ContentType = "long_video"
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Doc: withTitle}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RefreshPosts(ctx)
+	if found, _ := store.SearchPostsFiltered(ctx, token, []string{"long_video"}, 10); len(found) != 0 {
+		t.Fatal("a same-revision write without Reproject was applied")
+	}
+	// Same revision WITH Reproject: applied.
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Reproject: true, Doc: withTitle}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RefreshPosts(ctx)
+	found, err := store.SearchPostsFiltered(ctx, token, []string{"long_video"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Title != "Reprojected title" {
+		t.Fatalf("reproject at the same revision did not land: %+v", found)
+	}
+	rev, _, _ := store.GetPostSearchRev(ctx, id)
+	if rev != 3 {
+		t.Fatalf("reproject moved the revision to %d; it must stay at 3", rev)
+	}
+
+	// A newer stored removal still wins over a reproject at the old revision.
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 4, Removed: true, AuthorID: author}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RefreshPosts(ctx)
+	if found, _ := store.SearchPostsFiltered(ctx, token, nil, 10); len(found) != 0 {
+		t.Fatalf("removal at rev 4 did not land: %+v", found)
+	}
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Reproject: true, Doc: withTitle}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RefreshPosts(ctx)
+	if found, _ := store.SearchPostsFiltered(ctx, token, nil, 10); len(found) != 0 {
+		t.Fatalf("reproject at rev 3 overtook the rev-4 removal: %+v", found)
+	}
+	// And a reproject at the SAME revision as a removal must not revive it.
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 4, Reproject: true, Doc: withTitle}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RefreshPosts(ctx)
+	if found, _ := store.SearchPostsFiltered(ctx, token, nil, 10); len(found) != 0 {
+		t.Fatal("reproject resurrected a removed document")
 	}
 }

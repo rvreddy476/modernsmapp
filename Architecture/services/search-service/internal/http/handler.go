@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/search-service/internal/graphclient"
+	"github.com/atpost/search-service/internal/mediaclient"
 	"github.com/atpost/search-service/internal/privacyclient"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
@@ -29,11 +30,20 @@ type Handler struct {
 	httpClient        *http.Client
 	// privacy stamps is_private during the admin users reindex.
 	privacy privacyclient.Lookup
+	// mediaClient resolves thumbnails / avatars for result rows (nil-safe).
+	mediaClient *mediaclient.Client
 }
 
 // WithPrivacyLookup wires the identity settings lookup the reindex uses.
 func (h *Handler) WithPrivacyLookup(l privacyclient.Lookup) *Handler {
 	h.privacy = l
+	return h
+}
+
+// WithMediaClient wires the media-service client that turns the media ids
+// on result rows into thumbnail / avatar URLs.
+func (h *Handler) WithMediaClient(mc *mediaclient.Client) *Handler {
+	h.mediaClient = mc
 	return h
 }
 
@@ -153,7 +163,7 @@ func (h *Handler) SearchUsers(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": h.userResults(c.Request.Context(), viewerFrom(c), results)}, nil)
 }
 
 func (h *Handler) BulkSyncUsers(c *gin.Context) {
@@ -175,10 +185,22 @@ func (h *Handler) BulkSyncUsers(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"indexed": count}, nil)
 }
 
+// SearchPosts handles GET /v1/search/posts?q=&type=&limit=.
+//
+// Page-scoped (2026-09-05): `type` narrows by content_type —
+// omitted/all/posts = every kind (home page), videos = long videos (Tube),
+// flicks|reels = reels. limit default 20, max 100. Rows are PostResult
+// (author, title, thumbnail_url, duration_ms — see results.go).
 func (h *Handler) SearchPosts(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
+		return
+	}
+	contentTypes, ok := search.ContentTypesForKind(c.Query("type"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST",
+			"Parameter 'type' must be one of: all, posts, videos, flicks", nil)
 		return
 	}
 
@@ -189,14 +211,14 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 		}
 	}
 
-	results, err := h.store.SearchPosts(c.Request.Context(), query, limit)
+	results, err := h.store.SearchPostsFiltered(c.Request.Context(), query, contentTypes, limit)
 	if err != nil {
 		slog.Error("SearchPosts error", "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": h.postResults(c.Request.Context(), viewerFrom(c), results)}, nil)
 }
 
 // UniversalSearch handles GET /v1/search.
@@ -249,7 +271,12 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, results, nil)
+	// Same hydrated rows as /v1/search/users and /v1/search/posts.
+	viewerID := viewerFrom(c)
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"users": h.userResults(c.Request.Context(), viewerID, results.Users),
+		"posts": h.postResults(c.Request.Context(), viewerID, results.Posts),
+	}, nil)
 }
 
 // universalSearchMultiEntity implements the new ranked + grouped shape.
@@ -318,6 +345,10 @@ func (h *Handler) universalSearchMultiEntity(c *gin.Context, query string) {
 		}
 		if r.Items == nil {
 			r.Items = []map[string]any{}
+		}
+		if t == search.EntityPosts {
+			// Same author / thumbnail hydration as /v1/search/posts.
+			r.Items = h.rankedPostItems(c.Request.Context(), viewerID, r.Items)
 		}
 		results[t] = r
 		counts[t] = len(r.Items)
@@ -557,7 +588,7 @@ func (h *Handler) GetSuggested(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": posts}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": h.postResults(c.Request.Context(), viewerFrom(c), posts)}, nil)
 }
 
 // requireExtras returns false and writes a 503 if the extras store is not configured.

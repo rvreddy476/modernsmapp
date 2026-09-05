@@ -250,6 +250,70 @@ func (s *Store) CountChannelVideosBatch(ctx context.Context, userIDs []uuid.UUID
 	return out, rows.Err()
 }
 
+// ChannelSearchHit is one channel search row with its public video count,
+// so the search page does not pay one count query per row.
+type ChannelSearchHit struct {
+	Channel
+	VideoCount int
+}
+
+// channelVideoCountCorrelated is channelVideoCountWhere for one channel row
+// (correlated on channels.user_id) — the same definition of "a video on the
+// channel" as the public count.
+const channelVideoCountCorrelated = `
+	SELECT COUNT(*) FROM posts p
+	WHERE p.author_id = c.user_id
+	AND p.content_type IN ('long_video', 'video')
+	AND p.deleted_at IS NULL
+	AND p.visibility = 'public'
+	AND p.review_status = 'approved'
+	AND p.publish_at IS NULL`
+
+// EscapeLikePattern makes q safe to embed in a LIKE pattern: the wildcard
+// and escape characters become literals (backslash is Postgres' default
+// LIKE escape character).
+func EscapeLikePattern(q string) string {
+	q = strings.ReplaceAll(q, `\`, `\\`)
+	q = strings.ReplaceAll(q, `%`, `\%`)
+	q = strings.ReplaceAll(q, `_`, `\_`)
+	return q
+}
+
+// SearchChannels finds channels whose handle starts with q or whose name
+// contains q (q already trimmed and lowercased; the handle column is
+// lowercase by construction, the name is compared through lower()).
+// Handle-prefix matches come first, then the most-published channels, then
+// handle order for a stable page. limit is applied as given.
+func (s *Store) SearchChannels(ctx context.Context, q string, limit int) ([]ChannelSearchHit, error) {
+	if q == "" || limit <= 0 {
+		return []ChannelSearchHit{}, nil
+	}
+	escaped := EscapeLikePattern(q)
+	rows, err := s.db.Query(ctx, `
+		SELECT c.id, c.user_id, c.name, c.handle, c.description, c.avatar_media_id, c.created_at, c.updated_at,
+		       (`+channelVideoCountCorrelated+`) AS video_count,
+		       (c.handle LIKE $1) AS handle_prefix
+		FROM channels c
+		WHERE c.handle LIKE $1 OR lower(c.name) LIKE $2
+		ORDER BY handle_prefix DESC, video_count DESC, c.handle ASC
+		LIMIT $3`, escaped+"%", "%"+escaped+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ChannelSearchHit, 0, limit)
+	for rows.Next() {
+		var hit ChannelSearchHit
+		var handlePrefix bool
+		if err := rows.Scan(&hit.ID, &hit.UserID, &hit.Name, &hit.Handle, &hit.About, &hit.AvatarMediaID,
+			&hit.CreatedAt, &hit.UpdatedAt, &hit.VideoCount, &handlePrefix); err != nil {
+			return nil, err
+		}
+		out = append(out, hit)
+	}
+	return out, rows.Err()
+}
+
 // ChannelAvatarOwners maps each media id that is some channel's avatar to
 // that channel's owner. Used by the media-access authority: a channel avatar
 // is public to every viewer.
