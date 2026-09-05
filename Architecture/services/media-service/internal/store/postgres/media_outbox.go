@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"time"
@@ -175,3 +176,104 @@ func (s *MediaAssetStore) WithTranscodeEventLock(ctx context.Context, eventID st
 // Compile-time check that the row scanner behavior used above retains nullable
 // actor IDs as pointers. Kept here to make accidental COALESCE fail review.
 var _ pgx.Row
+
+// TranscodeRequestPayload is the wire shape of a MediaTranscodeRequested
+// event as media-service writes it: the shared payload plus the operator
+// rotation override a reprocess may carry. The worker decodes into this
+// same type; an ordinary upload simply has RotateDegrees 0 and the field is
+// omitted from the JSON, so every existing consumer of the event is
+// unaffected.
+type TranscodeRequestPayload struct {
+	sharedevents.MediaTranscodeRequestedPayload
+	// RotateDegrees, when non-zero, asks the worker to stamp this display
+	// rotation (degrees counter-clockwise, a quarter turn) onto the original
+	// before processing it. For a file whose pixels are sideways with no
+	// rotation metadata (Family Outing, 2026-09-05).
+	RotateDegrees int `json:"rotate_degrees,omitempty"`
+}
+
+// ErrTranscodeInFlight means a transcode request or completion for this
+// asset has not been published yet, so a re-run would race it.
+var ErrTranscodeInFlight = errors.New("transcode already in flight")
+
+// RequeueTranscode asks the worker to process an asset again — a new
+// MediaTranscodeRequested with a FRESH event id, so neither the worker's
+// inbox nor post-service's consumer mistakes it for a replay of the first
+// run.
+//
+// The outbox is UNIQUE (media_asset_id, event_type): the first run's
+// request and completion rows are still there, published. They are removed
+// here so the new request can be inserted and, later, so CompleteTranscode's
+// `<id>:completed` row is not silently swallowed by ON CONFLICT DO NOTHING
+// (which would leave post-service never hearing about the corrected
+// dimensions). An UNPUBLISHED row means a run is in flight; that is refused.
+//
+// processing_status is left alone for a ready asset: its variants keep
+// serving while the worker rebuilds them in place. A failed asset moves to
+// 'processing' so the client's status poll shows the retry.
+func (s *MediaAssetStore) RequeueTranscode(ctx context.Context, media *MediaAsset, rotateDegrees int) (string, error) {
+	if media == nil || media.ID == uuid.Nil || media.UploaderID == uuid.Nil {
+		return "", fmt.Errorf("requeue transcode: invalid media identity")
+	}
+	payload, err := json.Marshal(TranscodeRequestPayload{
+		MediaTranscodeRequestedPayload: sharedevents.MediaTranscodeRequestedPayload{
+			MediaAssetID: media.ID.String(),
+			UploaderID:   media.UploaderID.String(),
+			StorageKey:   media.StorageKey,
+			MimeType:     media.MimeType,
+		},
+		RotateDegrees: rotateDegrees,
+	})
+	if err != nil {
+		return "", fmt.Errorf("requeue transcode payload: %w", err)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin requeue transcode: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var pending int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM media_event_outbox
+		 WHERE media_asset_id = $1
+		   AND event_type IN ($2, $3)
+		   AND published_at IS NULL
+	`, media.ID, sharedevents.MediaTranscodeRequested, sharedevents.MediaTranscodeCompleted).Scan(&pending); err != nil {
+		return "", fmt.Errorf("check transcode outbox: %w", err)
+	}
+	if pending > 0 {
+		return "", ErrTranscodeInFlight
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM media_event_outbox
+		 WHERE media_asset_id = $1
+		   AND event_type IN ($2, $3)
+		   AND published_at IS NOT NULL
+	`, media.ID, sharedevents.MediaTranscodeRequested, sharedevents.MediaTranscodeCompleted); err != nil {
+		return "", fmt.Errorf("clear published transcode events: %w", err)
+	}
+
+	eventID := uuid.NewString()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO media_event_outbox
+		       (event_id, media_asset_id, event_type, actor_user_id, payload)
+		VALUES ($1, $2, $3, $4, $5::jsonb)
+	`, eventID, media.ID, sharedevents.MediaTranscodeRequested, media.UploaderID, payload); err != nil {
+		return "", fmt.Errorf("insert transcode re-request outbox: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE media_assets
+		   SET processing_status = CASE WHEN processing_status = 'ready' THEN 'ready' ELSE 'processing' END,
+		       updated_at = NOW()
+		 WHERE id = $1
+	`, media.ID); err != nil {
+		return "", fmt.Errorf("mark media for reprocess: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit requeue transcode: %w", err)
+	}
+	return eventID, nil
+}

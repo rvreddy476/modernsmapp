@@ -129,9 +129,23 @@ type TranscodeOutput struct {
 }
 
 // VideoMeta holds extracted video metadata.
+//
+// Width and Height are the DISPLAY dimensions: the coded frame with the
+// container's rotation applied. A phone held upright records a landscape
+// coded frame (1920x1080) plus a 90-degree display matrix; reporting the coded
+// size called that clip landscape, so is_vertical was false and post-service
+// filed it as a landscape long_video. Everything downstream (thumbnail, MP4
+// renditions, HLS) already autorotates, so the stored size disagreed with the
+// pixels it described (Tube thumbnail sideways, 2026-09-05).
 type VideoMeta struct {
-	Width           int
-	Height          int
+	Width  int
+	Height int
+	// CodedWidth/CodedHeight are the raw stream dimensions before rotation.
+	CodedWidth  int
+	CodedHeight int
+	// Rotation is the display rotation in degrees counter-clockwise,
+	// normalised to 0, 90, 180 or 270 (ffprobe's side-data convention).
+	Rotation        int
 	DurationMs      int     // internal, from ffprobe (milliseconds)
 	DurationSeconds int     // for DB storage (seconds)
 	DurationFloat   float64 // precise duration in seconds
@@ -198,25 +212,24 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 	durStr := strings.TrimSpace(string(durOut))
 	durFloat, _ := strconv.ParseFloat(durStr, 64)
 
-	// Get dimensions
+	// Get dimensions AND the display rotation. The coded frame alone is not
+	// the picture: a phone recording carries a display matrix (ffprobe
+	// side-data "rotation"; older muxers wrote a "rotate" stream tag) that
+	// every player and ffmpeg's own autorotate honour. The stored size must
+	// be the display size or it disagrees with every output we produce.
 	dimArgs := []string{
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height",
-		"-of", "csv=s=x:p=0",
+		"-show_entries", "stream=width,height:stream_side_data=rotation:stream_tags=rotate",
+		"-of", "default=noprint_wrappers=1",
 		inputPath,
 	}
 	dimOut, err := exec.CommandContext(ctx, "ffprobe", dimArgs...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe dimensions: %w", err)
 	}
-	dimStr := strings.TrimSpace(string(dimOut))
-	parts := strings.Split(dimStr, "x")
-	w, _ := strconv.Atoi(parts[0])
-	h := 0
-	if len(parts) > 1 {
-		h, _ = strconv.Atoi(parts[1])
-	}
+	codedW, codedH, rotation := parseProbeDimensions(string(dimOut))
+	w, h := displayDimensions(codedW, codedH, rotation)
 
 	// Get codec and framerate info
 	codecArgs := []string{
@@ -260,6 +273,9 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 	return &VideoMeta{
 		Width:           w,
 		Height:          h,
+		CodedWidth:      codedW,
+		CodedHeight:     codedH,
+		Rotation:        rotation,
 		DurationMs:      int(durFloat * 1000),
 		DurationSeconds: int(durFloat),
 		DurationFloat:   durFloat,

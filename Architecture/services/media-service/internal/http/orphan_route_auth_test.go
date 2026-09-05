@@ -50,9 +50,41 @@ func buildRouter(internalKey string) *gin.Engine {
 				}
 				c.Status(http.StatusOK)
 			})
+			// Reprocess (Tube thumbnail sideways, 2026-09-05): same group,
+			// same key, or an anonymous caller could re-run every transcode.
+			internal.POST("/:mediaId/reprocess", func(c *gin.Context) {
+				c.Status(http.StatusAccepted)
+			})
 		}
 	}
 	return r
+}
+
+func doPost(r *gin.Engine, path, key string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	if key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestReprocess_RequiresInternalKey(t *testing.T) {
+	const path = "/v1/media/internal/11111111-1111-4111-8111-111111111111/reprocess"
+	r := buildRouter(testInternalKey)
+	if w := doPost(r, path, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("missing internal key must be denied, got %d", w.Code)
+	}
+	if w := doPost(r, path, "wrong-key"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong internal key must be denied, got %d", w.Code)
+	}
+	if w := doPost(r, path, testInternalKey); w.Code != http.StatusAccepted {
+		t.Fatalf("correct internal key must reach the handler, got %d", w.Code)
+	}
+	if w := doPost(buildRouter(""), path, testInternalKey); w.Code != http.StatusNotFound {
+		t.Fatalf("with no internal key the route must not exist, got %d", w.Code)
+	}
 }
 
 func doDelete(r *gin.Engine, path, key string) *httptest.ResponseRecorder {

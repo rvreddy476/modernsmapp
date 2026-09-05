@@ -89,6 +89,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			internal.DELETE("/:mediaId", h.DeleteMediaInternal)
 			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
 			internal.GET("/:mediaId/profile-authority", h.GetProfileMediaAuthority)
+			// Re-run the transcode pipeline for a video (Tube thumbnail
+			// sideways, 2026-09-05); optional rotation override in the body.
+			internal.POST("/:mediaId/reprocess", h.ReprocessMedia)
 		}
 	} else {
 		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — the internal orphan-delete route is NOT registered; draft-media reclamation is disabled")

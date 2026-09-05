@@ -225,7 +225,9 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 		return permanentTranscode(fmt.Errorf("transcode request has no event_id"))
 	}
 
-	var payload events.MediaTranscodeRequestedPayload
+	// The store's payload type: the shared request plus the operator
+	// rotation override a reprocess may carry (absent on a normal upload).
+	var payload postgres.TranscodeRequestPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return permanentTranscode(fmt.Errorf("unmarshal payload: %w", err))
 	}
@@ -244,7 +246,7 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 }
 
 func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
-	payload events.MediaTranscodeRequestedPayload, mediaAssetID uuid.UUID,
+	payload postgres.TranscodeRequestPayload, mediaAssetID uuid.UUID,
 	pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
 	if done, err := pgStore.AlreadyApplied(ctx, envelope.EventID); err != nil {
 		return fmt.Errorf("inbox lookup: %w", err)
@@ -426,7 +428,7 @@ func handleUntilDurable(
 	}
 }
 
-func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.MediaTranscodeRequestedPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner, moderationResult *string) error {
+func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgres.TranscodeRequestPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner, moderationResult *string) error {
 	// 1. Download original video from MinIO
 	videoData, err := blobStore.DownloadObject(ctx, payload.StorageKey)
 	if err != nil {
@@ -446,6 +448,33 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	inputPath := tmpDir + "/original"
 	if err := os.WriteFile(inputPath, videoData, 0644); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
+	}
+	videoData = nil // the file is the working copy from here on
+
+	// 2b. Operator rotation override (reprocess only). The pixels are
+	// sideways and the container says nothing about it; stamp the display
+	// rotation onto a stream-copied original and work from that. The tagged
+	// copy REPLACES the original object under the same key, so a player
+	// that opens the original (playback_kind "original") is upright too,
+	// and a later plain re-run reads the rotation from the file itself.
+	if payload.RotateDegrees != 0 {
+		rotatedPath := tmpDir + "/original_rotated.mp4"
+		if err := processing.ApplyDisplayRotation(ctx, inputPath, rotatedPath, payload.RotateDegrees); err != nil {
+			return permanentUnlessCancelled(ctx, fmt.Errorf("apply rotation override: %w", err))
+		}
+		rotated, err := os.ReadFile(rotatedPath)
+		if err != nil {
+			return fmt.Errorf("read rotated original: %w", err)
+		}
+		if err := blobStore.UploadObject(ctx, payload.StorageKey, rotated, payload.MimeType); err != nil {
+			return fmt.Errorf("replace original with rotated copy: %w", err)
+		}
+		if err := pgStore.UpdateMediaFileSize(ctx, mediaAssetID, int64(len(rotated))); err != nil {
+			return fmt.Errorf("update original size: %w", err)
+		}
+		log.Printf("Rotation override %d° applied to original of media %s (%d bytes)",
+			payload.RotateDegrees, payload.MediaAssetID, len(rotated))
+		inputPath = rotatedPath
 	}
 
 	// 3. Create transcoding job records before running FFmpeg
@@ -556,6 +585,25 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	if err := pgStore.InsertVariants(ctx, variants); err != nil {
 		return fmt.Errorf("insert variants: %w", err)
 	}
+	// A re-run measured at the display size may produce fewer renditions
+	// than the first run did; rows for the ones it no longer produces would
+	// keep serving the old files. No-op on a first run.
+	produced := make([]string, 0, len(variants))
+	for _, v := range variants {
+		produced = append(produced, v.Name)
+	}
+	if stale, err := pgStore.DeleteVariantsNotIn(ctx, mediaAssetID, produced); err != nil {
+		return fmt.Errorf("prune stale variants: %w", err)
+	} else {
+		for _, key := range stale {
+			if err := blobStore.DeleteObject(ctx, key); err != nil {
+				log.Printf("Warning: stale variant object %s for %s not deleted: %v", key, payload.MediaAssetID, err)
+			}
+		}
+		if len(stale) > 0 {
+			log.Printf("Pruned %d stale variant(s) for media %s", len(stale), payload.MediaAssetID)
+		}
+	}
 
 	// 7. Generate blurhash from video thumbnail
 	var videoBlurHash string
@@ -626,9 +674,12 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	if err := blobStore.UploadObject(ctx, masterKey, masterData, "application/x-mpegURL"); err != nil {
 		return fmt.Errorf("upload HLS master: %w", err)
 	}
+	hlsPrefix := fmt.Sprintf("%s/hls/", strings.TrimSuffix(payload.StorageKey, "/original"))
+	uploadedHLS := map[string]bool{masterKey: true}
 	for _, f := range variantFiles {
 		rel := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(f, hlsDir), "/"), "\\")
-		key := fmt.Sprintf("%s/hls/%s", strings.TrimSuffix(payload.StorageKey, "/original"), rel)
+		key := hlsPrefix + rel
+		uploadedHLS[key] = true
 		contentType := "video/MP2T"
 		if strings.HasSuffix(f, ".m3u8") {
 			contentType = "application/x-mpegURL"
@@ -639,6 +690,21 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 		}
 		if err := blobStore.UploadObject(ctx, key, fData, contentType); err != nil {
 			return fmt.Errorf("upload HLS file %s: %w", key, err)
+		}
+	}
+	// A re-run with a shorter ladder leaves the old rung's playlist and
+	// segments behind; nothing references them once the new master is up,
+	// so drop them. Listing an empty prefix on a first run costs one call.
+	if existing, err := blobStore.ListObjectKeys(ctx, hlsPrefix); err != nil {
+		log.Printf("Warning: could not list HLS prefix %s for cleanup: %v", hlsPrefix, err)
+	} else {
+		for _, key := range existing {
+			if uploadedHLS[key] {
+				continue
+			}
+			if err := blobStore.DeleteObject(ctx, key); err != nil {
+				log.Printf("Warning: stale HLS object %s not deleted: %v", key, err)
+			}
 		}
 	}
 	if err := pgStore.UpdateHLSMasterKey(ctx, mediaAssetID, masterKey); err != nil {

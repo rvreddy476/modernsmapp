@@ -557,3 +557,44 @@ func (m *MediaAsset) DurationMsValue() int {
 	}
 	return 0
 }
+
+// DeleteVariantsNotIn removes the variant rows of an asset whose name is not
+// in keep and returns their object keys so the caller can drop the objects.
+//
+// A reprocess can legitimately produce FEWER renditions than the first run:
+// once "Family Outing" was measured at its display size (850x478 instead of
+// the coded 478x850) the 480p and 720p rungs no longer applied, and their
+// rows would otherwise have kept pointing at the sideways files.
+func (s *MediaAssetStore) DeleteVariantsNotIn(ctx context.Context, mediaAssetID uuid.UUID, keep []string) ([]string, error) {
+	if keep == nil {
+		keep = []string{}
+	}
+	rows, err := s.db.Query(ctx, `
+		DELETE FROM media_variants
+		 WHERE media_asset_id = $1
+		   AND NOT (variant = ANY($2::text[]))
+		RETURNING object_key
+	`, mediaAssetID, keep)
+	if err != nil {
+		return nil, fmt.Errorf("delete stale variants: %w", err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return keys, fmt.Errorf("scan stale variant: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// UpdateMediaFileSize records the size of the original object after the
+// worker replaced it (rotation override remux).
+func (s *MediaAssetStore) UpdateMediaFileSize(ctx context.Context, id uuid.UUID, sizeBytes int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE media_assets SET file_size_bytes = $1, updated_at = NOW() WHERE id = $2
+	`, sizeBytes, id)
+	return err
+}
