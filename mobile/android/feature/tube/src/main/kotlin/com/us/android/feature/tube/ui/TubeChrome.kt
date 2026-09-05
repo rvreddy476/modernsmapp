@@ -48,6 +48,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsBadgedIcon
+import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.icon.VIDEO_MARK_BODY
 import com.us.android.core.designsystem.icon.VIDEO_MARK_PLAY
@@ -57,11 +58,13 @@ import com.us.android.feature.tube.ui.home.TubeChip
 
 /**
  * A Tube page's frame (Momentum look, 2026-09-05): the wordmark header and
- * the glass search pill on top, the floating bar over the bottom, the page
- * between. The bar FLOATS — the page scrolls under it — so the content is
- * handed the clearance it needs as bottom padding rather than a reserved
- * strip. The shell's bar is already gone: every Tube route is a pushed
- * screen, not a tab root, so this bar is the only one on screen.
+ * the glass search pill on top, Tube's flat bar stuck to the bottom edge,
+ * the page between — the app's own scaffold, the way every other screen
+ * is framed, so the bar is anchored exactly as the shell's is. The content
+ * is handed the bar's measured height as bottom padding, so a list's last
+ * card clears it while the list itself may scroll beneath. The shell's bar
+ * is already gone: every Tube route is a pushed screen, not a tab root, so
+ * this bar is the only one on screen.
  *
  * [selected] is null on a page the bar does not own (a channel page).
  */
@@ -78,19 +81,21 @@ fun TubePage(
     },
     content: @Composable (PaddingValues) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-    ) {
-        topBar()
-        Box(modifier = Modifier.weight(1f)) {
-            content(PaddingValues(bottom = TubeBarClearance))
-            TubeBottomBar(
-                selected = selected,
-                onAction = onBarAction,
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
+    UsScaffold(
+        applyPageGutter = false,
+        // The scaffold's top slot is one box: two rows dropped straight in
+        // would overlap, so they are stacked here.
+        topBar = { Column { topBar() } },
+        bottomBar = { TubeBottomBar(selected = selected, onAction = onBarAction) },
+    ) { inner ->
+        // The header's height is taken here, once; the pages only ever ask
+        // the padding for its bottom, which is the bar.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = inner.calculateTopPadding()),
+        ) {
+            content(PaddingValues(bottom = inner.calculateBottomPadding()))
         }
     }
 }

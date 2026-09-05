@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -36,7 +34,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -45,7 +42,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
@@ -200,117 +196,6 @@ private fun BubbleLabel(text: String) {
         overflow = TextOverflow.Ellipsis,
         textAlign = TextAlign.Center,
     )
-}
-
-// ── Featured carousel ───────────────────────────────────────────────────
-
-/**
- * The featured carousel: the first ranked videos as large rounded cards
- * on a horizontal pager — 86% of the width each, 12dp apart, the next one
- * peeking — with a glass plate along the bottom holding the title, the
- * channel, the length; page dots beneath.
- */
-@Composable
-internal fun FeaturedCarousel(
-    items: List<FeedItem>,
-    thumbFor: (FeedItem) -> VideoThumb,
-    onOpen: (FeedItem) -> Unit,
-    onMore: (FeedItem) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    if (items.isEmpty()) return
-    val pager = rememberPagerState(pageCount = { items.size })
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    val sidePeek = screenWidth * (1f - FEATURED_WIDTH_FRACTION) / 2
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("tube_featured"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-    ) {
-        HorizontalPager(
-            state = pager,
-            contentPadding = PaddingValues(horizontal = sidePeek),
-            pageSpacing = FEATURED_GAP,
-            modifier = Modifier.fillMaxWidth(),
-        ) { page ->
-            val item = items[page]
-            FeaturedCard(
-                item = item,
-                thumb = thumbFor(item),
-                onClick = { onOpen(item) },
-                onMore = { onMore(item) },
-            )
-        }
-        PageDots(count = items.size, selected = pager.currentPage)
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FeaturedCard(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, onMore: () -> Unit) {
-    val shape = RoundedCornerShape(FEATURED_RADIUS)
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(LANDSCAPE)
-            .clip(shape)
-            .background(UsTheme.extended.bgCard)
-            .border(HAIRLINE, UsTheme.extended.glassBorder, shape)
-            .combinedClickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick,
-                onLongClick = onMore,
-            )
-            .semantics {
-                role = Role.Button
-                contentDescription = "Play ${item.displayTitle}"
-            }
-            .testTag("tube_featured:${item.id}"),
-    ) {
-        Still(thumb = thumb)
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(BottomScrim)
-                .background(UsTheme.extended.glassBg)
-                .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.l),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
-                Text(
-                    text = item.displayTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontSize = FEATURED_TITLE_SIZE,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                    maxLines = TITLE_LINES,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                CreatorLine(item = item, durationMs = thumb.durationMs, avatarSize = FEATURED_AVATAR)
-            }
-        }
-    }
-}
-
-@Composable
-private fun PageDots(count: Int, selected: Int) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-        modifier = Modifier.semantics { contentDescription = "Page ${selected + 1} of $count" },
-    ) {
-        repeat(count) { index ->
-            val active = index == selected
-            Box(
-                modifier = Modifier
-                    .size(width = if (active) DOT_ACTIVE_WIDTH else DOT_SIZE, height = DOT_SIZE)
-                    .clip(CircleShape)
-                    .background(if (active) Color.White else UsTheme.extended.textGhost),
-            )
-        }
-    }
 }
 
 // ── Continue watching ───────────────────────────────────────────────────
@@ -517,12 +402,17 @@ private fun ReelCard(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, onM
 
 // ── The mosaic tile ─────────────────────────────────────────────────────
 
+/** How many columns the mosaic has. */
+internal const val GRID_COLUMNS = 2
+
 /**
- * One tile of the two-column mosaic: the still with the title INSIDE it on
- * a bottom ramp, a tiny avatar and the channel's name under the title, the
- * length in a pill top-right, and a small white ⋮ top-left. Landscape
- * videos are 16:9, portrait ones 4:5, so the columns stagger. The tile
- * opens the video; ⋮ and a long-press open the "more" sheet.
+ * One tile of the two-column mosaic the Subscriptions, You and channel
+ * pages keep (home lists full-width [VideoCard]s instead): the still with
+ * the title INSIDE it on a bottom ramp, a tiny avatar and the channel's
+ * name under the title, the length in a pill top-right, and a small white
+ * ⋮ top-left. Landscape videos are 16:9, portrait ones 4:5, so the columns
+ * stagger. The tile opens the video; ⋮ and a long-press open the "more"
+ * sheet.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -593,50 +483,41 @@ internal fun GridCard(
                 maxLines = TITLE_LINES,
                 overflow = TextOverflow.Ellipsis,
             )
-            CreatorLine(item = item, durationMs = 0L, avatarSize = TINY_AVATAR, tiny = true)
+            CreatorLine(item = item)
         }
     }
 }
 
-/** Avatar · channel name (· length) — the credit line a card carries. */
+/** Tiny avatar · channel name — the credit line a tile carries on its ramp. */
 @Composable
-private fun CreatorLine(item: FeedItem, durationMs: Long, avatarSize: Dp, tiny: Boolean = false) {
+private fun CreatorLine(item: FeedItem) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
     ) {
-        SmallAvatar(name = item.creatorName, url = item.channel?.avatarUrl, size = avatarSize)
+        TinyAvatar(name = item.creatorName, url = item.channel?.avatarUrl)
         Text(
             text = item.creatorName,
             style = MaterialTheme.typography.labelSmall,
-            fontSize = if (tiny) TINY_META_SIZE else META_SIZE,
+            fontSize = TINY_META_SIZE,
             color = Color.White.copy(alpha = META_ALPHA),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false),
         )
-        if (durationMs > 0L) {
-            Text(
-                text = "· ${formatDuration(durationMs)}",
-                style = MaterialTheme.typography.labelSmall,
-                fontSize = META_SIZE,
-                color = Color.White.copy(alpha = META_ALPHA),
-                maxLines = 1,
-            )
-        }
     }
 }
 
 /**
- * A card's credit avatar at a size the design system's avatars do not
+ * A tile's credit avatar at a size the design system's avatars do not
  * come in: the photo when the channel has one, the initial on glass
  * otherwise. Decorative — the name is right beside it.
  */
 @Composable
-private fun SmallAvatar(name: String, url: String?, size: Dp) {
+private fun TinyAvatar(name: String, url: String?) {
     Box(
         modifier = Modifier
-            .size(size)
+            .size(TINY_AVATAR)
             .clip(CircleShape)
             .background(UsTheme.extended.glassBg)
             .border(HAIRLINE, UsTheme.extended.glassBorder, CircleShape),
@@ -646,7 +527,7 @@ private fun SmallAvatar(name: String, url: String?, size: Dp) {
             Text(
                 text = name.trim().take(1).uppercase(),
                 style = MaterialTheme.typography.labelSmall,
-                fontSize = if (size < FEATURED_AVATAR) TINY_INITIAL_SIZE else META_SIZE,
+                fontSize = TINY_INITIAL_SIZE,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
             )
@@ -697,7 +578,6 @@ private val BottomScrim: Brush = Brush.verticalGradient(
     listOf(Color.Transparent, Color.Black.copy(alpha = 0.72f)),
 )
 
-private const val FEATURED_WIDTH_FRACTION = 0.86f
 private const val PORTRAIT = 9f / 16f
 private const val PORTRAIT_TILE = 4f / 5f
 private const val TITLE_LINES = 2
@@ -712,11 +592,6 @@ private val BUBBLE_SIZE = 56.dp
 private val BUBBLE_WIDTH = 64.dp
 private val BUBBLE_LABEL_SIZE = 11.sp
 private val CREATE_GLYPH = 20.dp
-private val FEATURED_GAP = 12.dp
-private val FEATURED_RADIUS = 22.dp
-private val FEATURED_TITLE_SIZE = 16.sp
-private val DOT_SIZE = 6.dp
-private val DOT_ACTIVE_WIDTH = 16.dp
 private val CONTINUE_WIDTH = 200.dp
 private val CONTINUE_RING = 60.dp
 
@@ -734,7 +609,5 @@ private val REEL_SCRIM_HEIGHT = 88.dp
 private val TILE_SCRIM_HEIGHT = 96.dp
 private val TILE_TITLE_SIZE = 13.sp
 private val TINY_AVATAR = 16.dp
-private val FEATURED_AVATAR = 24.dp
 private val TINY_INITIAL_SIZE = 9.sp
-private val META_SIZE = 12.sp
 private val TINY_META_SIZE = 11.sp

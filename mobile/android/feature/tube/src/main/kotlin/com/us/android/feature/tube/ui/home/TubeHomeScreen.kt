@@ -1,5 +1,7 @@
 package com.us.android.feature.tube.ui.home
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -7,9 +9,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridScope
-import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -45,18 +47,18 @@ import com.us.android.feature.tube.ui.TubeMoreHost
 import com.us.android.feature.tube.ui.TubePage
 import com.us.android.feature.tube.ui.TubeTab
 import com.us.android.feature.tube.ui.TubeViewer
-import com.us.android.feature.tube.ui.bleed
 import com.us.android.feature.tube.ui.rememberTubeMoreState
 
 /**
- * Tube home (Momentum layout, 2026-09-05 — a look that is not YouTube):
- * the wordmark and the search pill on top, then one staggered grid —
- * the channels strip, the featured carousel, "Continue watching", the
- * chip rail, and the two-column mosaic of ranked videos with the Reels
- * panel cut in after four tiles. Pull down to refresh; the next page loads
- * as the grid nears its end. The floating bar rides over the bottom.
+ * Tube home (founder, 2026-09-05 — "like YouTube"): the mark and the
+ * search pill on top, then one column — the channels strip, the chip rail
+ * (which sticks under the search pill once the strip has scrolled away),
+ * the first two ranked videos as full-width cards, "Continue watching",
+ * the "Reels" panel, then the rest of the ranked videos full width. Pull
+ * down to refresh; the next page loads as the list nears its end. Tube's
+ * flat bar sits under it all.
  *
- * A tile opens the watch screen; the list the viewer was looking at goes
+ * A card opens the watch screen; the list the viewer was looking at goes
  * with them ([TubeHomeViewModel.onOpen]) so "Up next" is the rows below.
  * A reel leaves its id in `ReelsEntry` and opens the app's Reels tab. A
  * channel bubble opens the channel's page inside Tube.
@@ -144,7 +146,7 @@ fun TubeHomeScreen(
     }
 }
 
-/** Everything a row on the page can do, grouped by what it acts on, so the grid functions stay short. */
+/** Everything a row on the page can do, grouped by what it acts on, so the list functions stay short. */
 internal class TubeHomeActions(
     val videos: TubeVideoActions,
     val reels: TubeReelActions,
@@ -180,9 +182,9 @@ internal data class StripState(
 )
 
 /**
- * The loading / error / empty states or the grid. The strip and the
+ * The loading / error / empty states or the list. The strip and the
  * shelves are always there — the viewer can change chips while a chip
- * fails — and the states sit under the rail as full-span rows.
+ * fails — and the states sit under the rail as rows of their own.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -206,41 +208,53 @@ private fun TubeBody(
         onRefresh = actions.refresh,
         modifier = Modifier.fillMaxSize(),
     ) {
-        LazyVerticalStaggeredGrid(
-            columns = StaggeredGridCells.Fixed(GRID_COLUMNS),
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("tube_list"),
-            contentPadding = PaddingValues(
-                start = UsTheme.spacing.pageHorizontal,
-                end = UsTheme.spacing.pageHorizontal,
-                bottom = bottomPadding.calculateBottomPadding() + UsTheme.spacing.xxl,
-            ),
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-            verticalItemSpacing = UsTheme.spacing.l,
+            contentPadding = PaddingValues(bottom = bottomPadding.calculateBottomPadding() + UsTheme.spacing.xxl),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
         ) {
-            items(
-                count = sections.size,
-                key = { sections[it].key },
-                span = { index ->
-                    if (sections[index].fullSpan) StaggeredGridItemSpan.FullLine else StaggeredGridItemSpan.SingleLane
-                },
-            ) { index ->
-                TubeSectionRow(
-                    section = sections[index],
-                    items = items,
-                    shelves = shelves,
-                    strip = strip,
-                    actions = actions,
-                    rail = rail,
-                )
-            }
+            sections(sections, items, shelves, strip, actions, rail)
             pageState(items)
         }
     }
 }
 
-/** One section as a row of the grid. A [TubeSection.Video] reads its row through Paging. */
+/**
+ * The sections as rows. The chip rail is the one sticky row: it scrolls
+ * up with the strip and then stays under the search pill, on the page's
+ * ground so the cards pass beneath it (founder: chips "at the top only,
+ * filter like YouTube").
+ */
+@OptIn(ExperimentalFoundationApi::class)
+private fun LazyListScope.sections(
+    sections: List<TubeSection>,
+    items: LazyPagingItems<FeedItem>,
+    shelves: TubeShelves,
+    strip: StripState,
+    actions: TubeHomeActions,
+    rail: @Composable () -> Unit,
+) {
+    sections.forEach { section ->
+        when (section) {
+            TubeSection.Chips -> stickyHeader(key = section.key) { _ ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background),
+                ) {
+                    rail()
+                }
+            }
+            else -> item(key = section.key) {
+                TubeSectionRow(section = section, items = items, shelves = shelves, strip = strip, actions = actions)
+            }
+        }
+    }
+}
+
+/** One section as a row of the list. A [TubeSection.Video] reads its row through Paging. */
 @Composable
 private fun TubeSectionRow(
     section: TubeSection,
@@ -248,7 +262,6 @@ private fun TubeSectionRow(
     shelves: TubeShelves,
     strip: StripState,
     actions: TubeHomeActions,
-    rail: @Composable () -> Unit,
 ) {
     when (section) {
         TubeSection.Channels -> ChannelsStrip(
@@ -258,60 +271,49 @@ private fun TubeSectionRow(
             onOpenChannel = actions.channels.open,
             onOpenYou = actions.channels.openYou,
             onCreateChannel = actions.channels.create,
-            modifier = Modifier.bleed(UsTheme.spacing.pageHorizontal),
-        )
-        is TubeSection.Featured -> FeaturedCarousel(
-            items = (0 until section.count).mapNotNull { items[it] },
-            thumbFor = actions.videos.thumbFor,
-            onOpen = actions.videos.open,
-            onMore = actions.videos.more,
-            modifier = Modifier.bleed(UsTheme.spacing.pageHorizontal),
         )
         TubeSection.ContinueWatching -> ContinueRow(
             rows = shelves.continueWatching,
             thumbFor = actions.videos.thumbFor,
             onOpen = actions.videos.resume,
-            modifier = Modifier.bleed(UsTheme.spacing.pageHorizontal),
         )
-        TubeSection.Chips -> Box(modifier = Modifier.bleed(UsTheme.spacing.pageHorizontal)) { rail() }
         TubeSection.Reels -> ReelsPanel(
             reels = shelves.reels,
             thumbFor = actions.videos.thumbFor,
             onOpen = actions.reels.open,
             onMore = actions.reels.more,
-            modifier = Modifier.bleed(UsTheme.spacing.pageHorizontal),
         )
         is TubeSection.Video -> items[section.index]?.let { item ->
-            GridCard(
+            VideoCard(
                 item = item,
                 thumb = actions.videos.thumbFor(item),
                 onClick = { actions.videos.open(item) },
                 onMore = { actions.videos.more(item) },
             )
         }
+        // The rail is placed by [sections] as the sticky row; nothing else lands here.
+        TubeSection.Chips -> Unit
     }
 }
 
 /**
- * The page's own state as full-span rows under the rail: the skeleton on
- * the first load, the error with Retry, the empty message, then the next
- * page's loader or its failure — never a silent end.
+ * The page's own state as rows under the rail: the skeleton on the first
+ * load, the error with Retry, the empty message, then the next page's
+ * loader or its failure — never a silent end.
  */
-internal fun LazyStaggeredGridScope.pageState(items: LazyPagingItems<FeedItem>) {
+private fun LazyListScope.pageState(items: LazyPagingItems<FeedItem>) {
     val refresh = items.loadState.refresh
     val empty = items.itemCount == 0
     when {
-        refresh is LoadState.Loading && empty -> item(key = "state:loading", span = StaggeredGridItemSpan.FullLine) {
-            TubeGridSkeleton(modifier = Modifier.bleed(UsTheme.spacing.pageHorizontal))
-        }
-        refresh is LoadState.Error && empty -> item(key = "state:error", span = StaggeredGridItemSpan.FullLine) {
+        refresh is LoadState.Loading && empty -> item(key = "state:loading") { TubeListSkeleton() }
+        refresh is LoadState.Error && empty -> item(key = "state:error") {
             UsErrorState(
                 message = "We couldn't load videos.",
                 onRetry = items::retry,
                 modifier = Modifier.padding(vertical = UsTheme.spacing.xxxxl),
             )
         }
-        refresh is LoadState.NotLoading && empty -> item(key = "state:empty", span = StaggeredGridItemSpan.FullLine) {
+        refresh is LoadState.NotLoading && empty -> item(key = "state:empty") {
             UsEmptyState(
                 title = "No videos yet",
                 detail = "Long videos will show up here once someone posts one.",
@@ -324,16 +326,26 @@ internal fun LazyStaggeredGridScope.pageState(items: LazyPagingItems<FeedItem>) 
     }
 }
 
-/** The next page's loader, or its failure with a retry. */
-internal fun LazyStaggeredGridScope.appendFooter(items: LazyPagingItems<FeedItem>) {
-    when (val append = items.loadState.append) {
-        is LoadState.Loading -> item(key = "append:loading", span = StaggeredGridItemSpan.FullLine) {
-            UsLoadingState(
-                label = "Loading more videos",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(UsTheme.spacing.xxl),
+/** The next page's loader, or its failure with a retry — the list's version. */
+private fun LazyListScope.appendFooter(items: LazyPagingItems<FeedItem>) {
+    when (items.loadState.append) {
+        is LoadState.Loading -> item(key = "append:loading") { AppendLoading() }
+        is LoadState.Error -> item(key = "append:error") {
+            // The list has no gutter of its own; the mosaic pages' grids do.
+            AppendError(
+                onRetry = items::retry,
+                modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
             )
+        }
+        is LoadState.NotLoading -> Unit
+    }
+}
+
+/** The next page's loader, or its failure with a retry — for the mosaic pages, spanning both columns. */
+internal fun LazyStaggeredGridScope.appendFooter(items: LazyPagingItems<FeedItem>) {
+    when (items.loadState.append) {
+        is LoadState.Loading -> item(key = "append:loading", span = StaggeredGridItemSpan.FullLine) {
+            AppendLoading()
         }
         is LoadState.Error -> item(key = "append:error", span = StaggeredGridItemSpan.FullLine) {
             AppendError(onRetry = items::retry)
@@ -343,9 +355,19 @@ internal fun LazyStaggeredGridScope.appendFooter(items: LazyPagingItems<FeedItem
 }
 
 @Composable
-private fun AppendError(onRetry: () -> Unit) {
-    Column(
+private fun AppendLoading() {
+    UsLoadingState(
+        label = "Loading more videos",
         modifier = Modifier
+            .fillMaxWidth()
+            .padding(UsTheme.spacing.xxl),
+    )
+}
+
+@Composable
+private fun AppendError(onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
             .fillMaxWidth()
             .padding(vertical = UsTheme.spacing.l),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -360,5 +382,3 @@ private fun AppendError(onRetry: () -> Unit) {
         UsSecondaryButton(text = "Try again", onClick = onRetry, modifier = Modifier.fillMaxWidth())
     }
 }
-
-internal const val GRID_COLUMNS = 2

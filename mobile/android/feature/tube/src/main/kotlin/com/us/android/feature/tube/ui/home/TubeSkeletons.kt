@@ -22,33 +22,40 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.tube.ui.shimmer
 
 /**
- * The page before its first page: a strip of circles, one large card, then
- * two columns of tile-shaped blocks, all shimmering — the list's layout, so
- * the real cards land where the eye already is. One announcement.
+ * Home before its first page: full-width card-shaped blocks — the 16:9
+ * frame, then a circle beside two lines — shimmering in the list's own
+ * layout, so the real cards land where the eye already is. One announcement.
  */
 @Composable
-internal fun TubeHomeSkeleton(modifier: Modifier = Modifier) {
+internal fun TubeListSkeleton(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.pageHorizontal)
             .semantics { contentDescription = "Loading videos" }
-            .testTag("tube_skeleton"),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+            .testTag("tube_list_skeleton"),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m),
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
-        ) {
-            repeat(SKELETON_BUBBLES) { Box(modifier = Modifier.size(BUBBLE).shimmer(CircleShape)) }
+        repeat(SKELETON_CARDS) {
+            Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(LANDSCAPE)
+                        .shimmer(RoundedCornerShape(UsTheme.radii.large)),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+                    Box(modifier = Modifier.size(CARD_AVATAR).shimmer(CircleShape))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                    ) {
+                        SkeletonLine(fraction = 0.9f)
+                        SkeletonLine(fraction = 0.5f)
+                    }
+                }
+            }
         }
-        Box(
-            modifier = Modifier
-                .padding(horizontal = HERO_GUTTER)
-                .fillMaxWidth()
-                .aspectRatio(LANDSCAPE)
-                .shimmer(RoundedCornerShape(HERO_RADIUS)),
-        )
-        TubeGridSkeleton()
     }
 }
 
@@ -116,12 +123,10 @@ private fun SkeletonLine(fraction: Float) {
     )
 }
 
-private const val SKELETON_BUBBLES = 5
+private const val SKELETON_CARDS = 2
 private const val SKELETON_ROWS = 2
 private const val SKELETON_SHELF_CARDS = 3
 private const val PORTRAIT_TILE = 4f / 5f
-private val BUBBLE = 56.dp
-private val HERO_GUTTER = 26.dp
-private val HERO_RADIUS = 22.dp
+private val CARD_AVATAR = 36.dp
 private val SHELF_CARD_WIDTH = 200.dp
 private val LINE_HEIGHT = 12.dp

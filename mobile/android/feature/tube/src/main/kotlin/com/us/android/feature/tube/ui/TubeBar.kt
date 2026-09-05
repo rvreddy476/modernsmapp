@@ -1,39 +1,12 @@
 package com.us.android.feature.tube.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.us.android.core.designsystem.component.UsNavItem
+import com.us.android.core.designsystem.component.UsNavigationBar
 import com.us.android.core.designsystem.icon.UsIcons
-import com.us.android.core.designsystem.theme.UsTheme
 
 /**
  * Tube's three pages — the ones its bar switches between without leaving
@@ -95,13 +68,14 @@ fun TubeTab.barIndex(): Int = when (this) {
 }
 
 /**
- * Tube's bottom bar (Momentum look, 2026-09-05): NOT the shell's flat bar
- * but a floating glass pill — 64dp tall, 16dp above the navigation inset,
- * a hairline border — with Home, Reels, Explore, You, and the shell's own
- * "+" in the middle: the outlined rounded square the founder asked to keep
- * ("it was looking awesome"; the raised ember disc was dropped 2026-09-05).
- * The selected item is white; the rest are muted. No ripples: a slot dips
- * on press like everything else in Tube.
+ * Tube's bottom bar: the app's own flat Momentum bar — [UsNavigationBar],
+ * the composable the shell draws its bar with — carrying Tube's slots, so
+ * the two are the same height, wear the same top hairline, the same
+ * outlined "+" tile in the middle, the same glyph and label sizes, and
+ * cannot drift apart. It sits flush on the bottom edge under every Tube
+ * page, with no lift and no side margins (founder, 2026-09-05: "keep the
+ * previous bottom, it was looking good; keep it the same everywhere,
+ * stick it to the bottom" — this replaced a floating glass pill).
  *
  * [selected] is null on a page the bar does not own (a channel page), and
  * then nothing is lit.
@@ -112,118 +86,14 @@ fun TubeBottomBar(
     onAction: (TubeBarAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val lit = selected?.barIndex() ?: -1
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(start = BAR_SIDE, end = BAR_SIDE, bottom = BAR_LIFT)
-            .testTag("tube_bar"),
-        contentAlignment = Alignment.TopCenter,
-    ) {
-        val shape = RoundedCornerShape(UsTheme.radii.full)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(BAR_HEIGHT)
-                .clip(shape)
-                .background(UsTheme.extended.bgCardSolid.copy(alpha = PILL_GROUND_ALPHA))
-                .background(UsTheme.extended.glassBg)
-                .border(HAIRLINE, UsTheme.extended.glassBorder, shape)
-                .padding(horizontal = UsTheme.spacing.s),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val split = TubeBarItem.entries.size / 2
-            TubeBarItem.entries.forEachIndexed { index, item ->
-                if (index == split) PlusSlot(onClick = { onAction(TubeBarAction.CreateVideo) })
-                BarSlot(
-                    item = item,
-                    selected = index == lit,
-                    onClick = { onAction(item.action()) },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-    }
+    UsNavigationBar(
+        items = TubeBarItem.entries.map { UsNavItem(it.label, it.icon, it.contentDescription) },
+        selectedIndex = selected?.barIndex() ?: NOTHING_LIT,
+        onSelect = { index -> onAction(TubeBarItem.entries[index].action()) },
+        centerAction = { onAction(TubeBarAction.CreateVideo) },
+        modifier = modifier.testTag("tube_bar"),
+    )
 }
 
-@Composable
-private fun BarSlot(item: TubeBarItem, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val tint = if (selected) UsTheme.extended.textPrimary else UsTheme.extended.textMuted
-    Column(
-        modifier = modifier
-            .pressScale(onClick)
-            .padding(vertical = UsTheme.spacing.m)
-            .semantics {
-                contentDescription = item.contentDescription
-                role = Role.Tab
-                this.selected = selected
-            }
-            .testTag("tube_bar:${item.name.lowercase()}"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-    ) {
-        Icon(imageVector = item.icon, contentDescription = null, tint = tint, modifier = Modifier.size(SLOT_GLYPH))
-        Text(
-            text = item.label,
-            style = MaterialTheme.typography.labelSmall,
-            fontSize = SLOT_LABEL_SIZE,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = tint,
-            maxLines = 1,
-        )
-    }
-}
-
-/**
- * The "+" slot: the shell bar's create tile — a 40dp outlined rounded square
- * with a muted plus, no fill, no glow — centred in a slot as wide as the
- * others. Same drawing as the shell's so the two bars read as one family.
- */
-@Composable
-private fun PlusSlot(onClick: () -> Unit) {
-    val muted = UsTheme.extended.textMuted
-    val shape = RoundedCornerShape(PLUS_RADIUS)
-    Box(modifier = Modifier.width(PLUS_SLOT), contentAlignment = Alignment.Center) {
-        PlusTile(onClick = onClick, muted = muted, shape = shape)
-    }
-}
-
-@Composable
-private fun PlusTile(onClick: () -> Unit, muted: Color, shape: RoundedCornerShape) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(PLUS_SIZE)
-            .border(PLUS_OUTLINE, muted, shape)
-            .pressScale(onClick)
-            .semantics {
-                contentDescription = "Post a video"
-                role = Role.Button
-            }
-            .testTag("tube_bar:create"),
-    ) {
-        Icon(
-            imageVector = UsIcons.Create,
-            contentDescription = null,
-            tint = muted,
-            modifier = Modifier.size(PLUS_GLYPH),
-        )
-    }
-}
-
-/** How much of the screen's bottom the floating bar takes: its own height and its lift. */
-val TubeBarClearance: Dp get() = BAR_HEIGHT + BAR_LIFT
-
-private const val PILL_GROUND_ALPHA = 0.88f
-private val BAR_HEIGHT = 64.dp
-private val BAR_LIFT = 16.dp
-private val BAR_SIDE = 20.dp
-private val HAIRLINE = 1.dp
-private val PLUS_SIZE = 40.dp
-private val PLUS_SLOT = 64.dp
-private val PLUS_RADIUS = 14.dp
-private val PLUS_OUTLINE = 1.5.dp
-private val PLUS_GLYPH = 22.dp
-private val SLOT_GLYPH = 22.dp
-private val SLOT_LABEL_SIZE = 10.sp
+/** An index no slot has, so the bar lights none of them. */
+private const val NOTHING_LIT = -1
