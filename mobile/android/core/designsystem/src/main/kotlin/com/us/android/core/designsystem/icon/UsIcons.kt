@@ -168,15 +168,14 @@ object UsIcons {
 
     /** Solid play triangle. */
     /**
-     * Momentum's own video mark (founder, 2026-09-05: "an icon that represents
-     * a video + play button"; the product's name comes later): a rounded
-     * 16:9 frame drawn as an outline, with a solid play triangle inside it.
+     * Momentum's own video mark (founder, 2026-09-05: a video camera and a
+     * play button "both together", an original glyph, not a play-in-a-frame
+     * like YouTube's; the product's name comes later): a camcorder body
+     * with its lens flap on the right, drawn as an outline, and a solid play
+     * triangle inside the body. [VIDEO_MARK_BODY] and [VIDEO_MARK_PLAY] are
+     * shared with the header, which paints the triangle in a gradient.
      */
-    val VideoPlay: ImageVector = strokedWithFill(
-        "video-play",
-        stroke = "M5 5h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z",
-        fill = "M10 8.5L16 12L10 15.5Z",
-    )
+    val VideoPlay: ImageVector = strokedWithFill("video-play", stroke = VIDEO_MARK_BODY, fill = VIDEO_MARK_PLAY)
 
     val Play: ImageVector = lucideFilled(
         "Play",
@@ -908,6 +907,14 @@ private fun lucideFilled(name: String, vararg pathData: String): ImageVector =
             addPath(pathData = addPathNodes(d), fill = SolidColor(Color.Black))
         }
     }.build()
+
+/** The video mark's outline: a rounded camcorder body and the lens flap to its right. */
+const val VIDEO_MARK_BODY =
+    "M4.5 6h8.5a2.5 2.5 0 0 1 2.5 2.5v7a2.5 2.5 0 0 1-2.5 2.5H4.5A2.5 2.5 0 0 1 2 15.5v-7A2.5 2.5 0 0 1 4.5 6z " +
+        "M15.5 10.2l5.3-2.9a.5.5 0 0 1 .7.4v8.6a.5.5 0 0 1-.7.4l-5.3-2.9"
+
+/** The video mark's play triangle, inside the body. */
+const val VIDEO_MARK_PLAY = "M7 9L12 12L7 15Z"
 
 /** Lucide `heart`, shared by [UsIcons.HeartOutline] and [UsIcons.HeartFilled]. */
 private const val HEART_PATH = "M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 " +
