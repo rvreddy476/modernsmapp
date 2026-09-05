@@ -2,7 +2,6 @@ package com.us.android.feature.commerce.address
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +17,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,6 +32,7 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.pressScale
 
 /** Renders an address as a single readable block. */
 fun Address.summary(): String = listOfNotNull(
@@ -157,17 +159,16 @@ private fun AddressCard(address: Address, selected: Boolean, onClick: () -> Unit
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(UsTheme.radii.medium))
+            // Selected is WHITE, here and on every other picker in the shop.
+            // The accent belongs to "Deliver here", the action this choice
+            // leads to.
             .border(
-                width = if (selected) 2.dp else 1.dp,
-                color = if (selected) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    UsTheme.extended.borderSubtle
-                },
+                width = if (selected) SELECTED_BORDER else UNSELECTED_BORDER,
+                color = if (selected) Color.White else UsTheme.extended.borderSubtle,
                 shape = RoundedCornerShape(UsTheme.radii.medium),
             )
             .background(UsTheme.extended.bgCard)
-            .clickable(onClick = onClick)
+            .pressScale(onClick = onClick, role = Role.RadioButton)
             .padding(UsTheme.spacing.l),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
     ) {
@@ -283,3 +284,6 @@ fun AddAddressScreen(
         }
     }
 }
+
+private val SELECTED_BORDER = 2.dp
+private val UNSELECTED_BORDER = 1.dp

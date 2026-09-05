@@ -1,7 +1,6 @@
 package com.us.android.feature.commerce.seller
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,6 +34,7 @@ import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.pressScale
 
 /**
  * The seller hub.
@@ -200,7 +200,7 @@ private fun SellerProductRow(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(UsTheme.radii.medium))
                 .background(UsTheme.extended.bgCard)
-                .clickable(onClick = onClick)
+                .pressScale(onClick = onClick)
                 .padding(UsTheme.spacing.s),
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
             verticalAlignment = Alignment.CenterVertically,

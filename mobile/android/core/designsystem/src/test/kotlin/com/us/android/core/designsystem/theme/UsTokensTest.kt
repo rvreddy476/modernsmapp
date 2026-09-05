@@ -87,6 +87,21 @@ class UsTokensTest {
         assertThat(create.article.glow).isEqualTo(UsColorTokens.CreateArticleDeep)
     }
 
+    /**
+     * Danger is a token, not an M3 slot, and it does not invert: a feature
+     * asking for "the destructive colour" gets the same red in both themes
+     * instead of reaching into `colorScheme.error`.
+     */
+    @Test
+    fun `danger is the status red in both themes`() {
+        assertThat(UsColorTokens.StatusError.hex()).isEqualTo("ffff4757")
+        assertThat(DarkExtendedColors.statusDanger).isEqualTo(UsColorTokens.StatusError)
+        assertThat(LightExtendedColors.statusDanger).isEqualTo(DarkExtendedColors.statusDanger)
+        // Never the accent: ember is for primary actions only.
+        assertThat(DarkExtendedColors.statusDanger).isNotEqualTo(DarkExtendedColors.accentSolid)
+        assertThat(DarkExtendedColors.statusDanger).isNotEqualTo(DarkExtendedColors.accentDeep)
+    }
+
     /** Chat keeps its green on purpose — the brief carves it out of the accent. */
     @Test
     fun `chat accent stays green in both themes`() {

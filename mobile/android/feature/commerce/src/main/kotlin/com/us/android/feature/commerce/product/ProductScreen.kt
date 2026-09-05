@@ -2,7 +2,6 @@ package com.us.android.feature.commerce.product
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +17,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -33,6 +36,7 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
 import com.us.android.feature.commerce.ui.PriceRow
+import com.us.android.feature.commerce.ui.pressScale
 
 /**
  * Product detail.
@@ -211,20 +215,19 @@ private fun VariantPicker(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(UsTheme.radii.medium))
+                    // Selected is WHITE. The accent is the app's primary
+                    // action, not its selection mark, and an ember ring here
+                    // competes with the Add to cart button below it.
                     .border(
-                        width = if (isSelected) 2.dp else 1.dp,
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            UsTheme.extended.borderSubtle
-                        },
+                        width = if (isSelected) SELECTED_BORDER else UNSELECTED_BORDER,
+                        color = if (isSelected) Color.White else UsTheme.extended.borderSubtle,
                         shape = RoundedCornerShape(UsTheme.radii.medium),
                     )
                     .background(UsTheme.extended.bgCard)
                     // A sold-out variant stays SELECTABLE so the buyer can
                     // see its price and confirm it is the one that is gone.
                     // Only the add button is disabled.
-                    .clickable { onSelect(variant) }
+                    .pressScale(onClick = { onSelect(variant) }, role = Role.RadioButton)
                     .padding(UsTheme.spacing.l),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
@@ -274,18 +277,38 @@ private fun QuantityStepper(quantity: Int, max: Int, onChange: (Int) -> Unit) {
             style = MaterialTheme.typography.bodyMedium,
             color = UsTheme.extended.textPrimary,
         )
-        StepperButton(label = "−", enabled = quantity > 1) { onChange(quantity - 1) }
+        StepperButton(
+            label = "−",
+            description = "One fewer",
+            enabled = quantity > 1,
+        ) { onChange(quantity - 1) }
         Text(
             text = quantity.toString(),
             style = MaterialTheme.typography.titleMedium,
             color = UsTheme.extended.textPrimary,
         )
-        StepperButton(label = "+", enabled = quantity < max) { onChange(quantity + 1) }
+        StepperButton(
+            label = "+",
+            description = "One more",
+            enabled = quantity < max,
+        ) { onChange(quantity + 1) }
     }
 }
 
+/**
+ * The − / + chip.
+ *
+ * [description] exists because the labels are typographic signs: a screen
+ * reader announces "+" as "plus" at best and says nothing at worst, so the
+ * button states what it does instead.
+ */
 @Composable
-private fun StepperButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun StepperButton(
+    label: String,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
     Text(
         text = label,
         style = MaterialTheme.typography.titleMedium,
@@ -293,12 +316,15 @@ private fun StepperButton(label: String, enabled: Boolean, onClick: () -> Unit) 
         modifier = Modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
             .background(UsTheme.extended.bgCard)
-            .clickable(enabled = enabled, onClick = onClick)
+            .pressScale(onClick = onClick, enabled = enabled)
+            .semantics { contentDescription = description }
             .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.s),
     )
 }
 
 private const val LOW_STOCK_THRESHOLD = 5
+private val SELECTED_BORDER = 2.dp
+private val UNSELECTED_BORDER = 1.dp
 
 @Preview(showBackground = true)
 @Composable

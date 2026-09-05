@@ -483,6 +483,45 @@ object UsIcons {
         "M16 10a4 4 0 0 1-8 0",
     )
 
+    /**
+     * Lucide `shopping-cart` — the shop's cart, wherever it is opened from.
+     *
+     * Distinct from [ShoppingBag], which stands for the Shop mini-app as a
+     * whole on the Explore launcher. A bag doing double duty as "your cart"
+     * is the kind of collision that makes a header ambiguous.
+     *
+     * The two wheels are Lucide's circles written as arc pairs, because this
+     * set is built from path data alone.
+     */
+    val ShoppingCart: ImageVector = lucideStroked(
+        "ShoppingCart",
+        "M8,21 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0",
+        "M19,21 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0",
+        "M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12",
+    )
+
+    /** Lucide `package` — an order: something boxed and on its way. */
+    val Package: ImageVector = lucideStroked(
+        "Package",
+        "m7.5 4.27 9 5.15",
+        "M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0" +
+            "l7-4A2 2 0 0 0 21 16Z",
+        "m3.3 7 8.7 5 8.7-5",
+        "M12 22V12",
+    )
+
+    /** Lucide `store` — the seller's own shop, as opposed to the buyer's cart. */
+    val Store: ImageVector = lucideStroked(
+        "Store",
+        "m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7",
+        "M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8",
+        "M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4",
+        "M2 7h20",
+        "M22 7v3a2 2 0 0 1-2 2a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12" +
+            "a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0" +
+            "A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12a2 2 0 0 1-2-2V7",
+    )
+
     /** Lucide `heart-handshake` — the Match launcher tile. */
     val HeartHandshake: ImageVector = lucideStroked(
         "HeartHandshake",

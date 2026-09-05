@@ -1,24 +1,29 @@
 package com.us.android.feature.commerce.orders
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -26,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.commerce.model.Order
 import com.us.android.core.commerce.model.OrderStatus
 import com.us.android.core.commerce.model.PaymentStatus
+import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
@@ -37,6 +43,7 @@ import com.us.android.feature.commerce.address.summary
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
 import com.us.android.feature.commerce.ui.PriceBreakdownCard
+import com.us.android.feature.commerce.ui.pressScale
 
 /**
  * Customer-facing status copy.
@@ -141,7 +148,7 @@ private fun OrderRow(order: Order, onClick: () -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(UsTheme.radii.medium))
             .background(UsTheme.extended.bgCard)
-            .clickable(onClick = onClick)
+            .pressScale(onClick = onClick)
             .padding(UsTheme.spacing.l),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
     ) {
@@ -212,7 +219,7 @@ fun OrderDetailScreen(
 
             is OrderDetailUiState.Content -> {
                 if (s.confirmingCancel) {
-                    CancelDialog(
+                    CancelOrderSheet(
                         onConfirm = { viewModel.cancel("Changed my mind") },
                         onDismiss = viewModel::dismissCancel,
                     )
@@ -296,7 +303,7 @@ private fun OrderDetailBody(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onOpenProduct(line.productId) },
+                    .pressScale(onClick = { onOpenProduct(line.productId) }),
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 CommerceImage(
@@ -371,18 +378,86 @@ private fun OrderDetailBody(
     }
 }
 
+/**
+ * Confirming a cancellation.
+ *
+ * A Momentum sheet, not Material's AlertDialog: every other confirmation in
+ * the app — the screen-time nudge, the post menu's block and delete — comes
+ * up from the bottom on the card surface, and a boxed dialog with two text
+ * buttons in the middle of the screen is visibly from another product. It
+ * also dismisses the way the rest of the app does, on scrim tap and Back.
+ *
+ * Both ways out are real buttons. A pair of look-alike text links is how
+ * someone taps "Cancel order" meaning "cancel this dialog".
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CancelDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
+private fun CancelOrderSheet(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text("Cancel this order?") },
-        text = {
+        sheetState = sheetState,
+        containerColor = UsTheme.extended.bgCardSolid,
+        contentColor = UsTheme.extended.textPrimary,
+        shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
+        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .padding(bottom = UsTheme.spacing.pageHorizontal)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
+            SheetHandle()
             Text(
-                "If you've already paid, the refund starts automatically and can " +
-                    "take a few days to reach your account.",
+                text = "Cancel this order?",
+                style = MaterialTheme.typography.titleLarge,
+                color = UsTheme.extended.textPrimary,
             )
-        },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Cancel order") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Keep it") } },
-    )
+            Text(
+                text = "If you've already paid, the refund starts automatically and can " +
+                    "take a few days to reach your account.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textMuted,
+            )
+            UsButton(
+                text = "Cancel order",
+                onClick = onConfirm,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            UsSecondaryButton(
+                text = "Keep it",
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
 }
+
+/** 32×4, muted at 35% — the same handle every Momentum sheet wears. */
+@Composable
+private fun SheetHandle() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = HANDLE_TOP),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = HANDLE_WIDTH, height = HANDLE_HEIGHT)
+                .clip(CircleShape)
+                .background(UsTheme.extended.textMuted.copy(alpha = HANDLE_ALPHA)),
+        )
+    }
+}
+
+private const val SCRIM_ALPHA = 0.55f
+private const val HANDLE_ALPHA = 0.35f
+private val SHEET_RADIUS = 28.dp
+private val HANDLE_WIDTH = 32.dp
+private val HANDLE_HEIGHT = 4.dp
+private val HANDLE_TOP = 8.dp

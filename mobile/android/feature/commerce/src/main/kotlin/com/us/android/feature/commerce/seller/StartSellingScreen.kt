@@ -143,7 +143,7 @@ fun StartSellingScreen(
                 Text(
                     text = error,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = UsTheme.extended.statusDanger,
                 )
             }
 

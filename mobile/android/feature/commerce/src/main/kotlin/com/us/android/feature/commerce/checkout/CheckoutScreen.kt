@@ -2,17 +2,14 @@ package com.us.android.feature.commerce.checkout
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,19 +19,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.CommerceProgressLine
 import com.us.android.feature.commerce.ui.PriceBreakdownCard
+import com.us.android.feature.commerce.ui.pressScale
 
 /**
  * Checkout, payment handoff, and confirmation.
@@ -227,7 +229,8 @@ private fun ReadyBody(
     SectionTitle("Deliver to")
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = state.addressSummary.ifBlank { "Selected address" },
@@ -235,12 +238,10 @@ private fun ReadyBody(
             color = UsTheme.extended.textPrimary,
             modifier = Modifier.weight(1f),
         )
-        Text(
-            text = "Change",
-            style = MaterialTheme.typography.labelLarge,
-            color = UsTheme.extended.textSecondary,
-            modifier = Modifier.clickable(onClick = onChangeAddress),
-        )
+        // The app's inline row action is a pill, not a text link — the same
+        // control the notification rows use beside a name. Outlined, because
+        // the ember belongs to "Place order".
+        UsPillButton(text = "Change", onClick = onChangeAddress, filled = false)
     }
 
     SectionTitle("Payment method")
@@ -444,17 +445,15 @@ private fun MethodRow(method: PaymentMethod, selected: Boolean, onClick: () -> U
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(UsTheme.radii.medium))
+            // Selected is WHITE. On the one screen where the ember means
+            // "pay", a chosen payment method must not wear it too.
             .border(
-                width = if (selected) 2.dp else 1.dp,
-                color = if (selected) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    UsTheme.extended.borderSubtle
-                },
+                width = if (selected) SELECTED_BORDER else UNSELECTED_BORDER,
+                color = if (selected) Color.White else UsTheme.extended.borderSubtle,
                 shape = RoundedCornerShape(UsTheme.radii.medium),
             )
             .background(UsTheme.extended.bgCard)
-            .clickable(onClick = onClick)
+            .pressScale(onClick = onClick, role = Role.RadioButton)
             .padding(UsTheme.spacing.l),
     ) {
         Text(
@@ -475,22 +474,30 @@ private fun SectionTitle(text: String) {
     )
 }
 
+/**
+ * What we are waiting on, over the shop's ember line.
+ *
+ * The line rather than a spinner: this is the money screen, and the same
+ * indicator the rest of commerce uses is one fewer thing that looks borrowed
+ * from a different app at the moment a customer is deciding to trust it.
+ */
 @Composable
 private fun CenteredProgress(label: String) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = UsTheme.spacing.xl),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
-        CircularProgressIndicator(modifier = Modifier.size(20.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
             color = UsTheme.extended.textPrimary,
         )
+        CommerceProgressLine(contentDescription = label)
     }
 }
 
 private const val SLOW_CONFIRMATION_SECONDS = 20
+private val SELECTED_BORDER = 2.dp
+private val UNSELECTED_BORDER = 1.dp

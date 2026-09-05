@@ -1,6 +1,5 @@
 package com.us.android.feature.commerce.catalog
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,18 +8,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -28,15 +32,19 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.ProductSummary
+import com.us.android.core.designsystem.component.UsBadgedIcon
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
+import com.us.android.feature.commerce.ui.CommerceProgressLine
 import com.us.android.feature.commerce.ui.PriceRow
+import com.us.android.feature.commerce.ui.pressScale
 
 /**
  * The catalogue.
@@ -58,6 +66,13 @@ fun CatalogScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
+    val cartCount by viewModel.cartCount.collectAsStateWithLifecycle()
+
+    // Re-read on every arrival, not only the first: the badge is wrong the
+    // moment something is added on the product screen and the customer comes
+    // back here. The navigation host disposes this composition while the
+    // buyer is elsewhere, so returning re-runs the effect.
+    LaunchedEffect(Unit) { viewModel.refreshCartCount() }
 
     UsScaffold(
         modifier = modifier,
@@ -68,9 +83,22 @@ fun CatalogScreen(
             UsTopBar(
                 title = "Shop",
                 actions = {
-                    TopBarAction(text = "Orders", onClick = onOpenOrders)
-                    TopBarAction(text = "Sell", onClick = onOpenSeller)
-                    TopBarAction(text = "Cart", onClick = onOpenCart)
+                    TopBarGlyph(
+                        icon = UsIcons.Package,
+                        description = "Your orders",
+                        onClick = onOpenOrders,
+                    )
+                    TopBarGlyph(
+                        icon = UsIcons.Store,
+                        description = "My shop",
+                        onClick = onOpenSeller,
+                    )
+                    TopBarGlyph(
+                        icon = UsIcons.ShoppingCart,
+                        description = cartDescription(cartCount),
+                        onClick = onOpenCart,
+                        count = cartCount,
+                    )
                 },
             )
         },
@@ -132,7 +160,7 @@ private fun CatalogGrid(
     if (shouldLoadMore) onLoadMore()
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
+        columns = GridCells.Fixed(GRID_COLUMNS),
         state = gridState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -145,27 +173,35 @@ private fun CatalogGrid(
         items(state.items, key = { it.id }) { product ->
             ProductCard(product = product, onClick = { onOpenProduct(product.id) })
         }
-    }
 
-    if (state.appending) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(UsTheme.spacing.m),
-            contentAlignment = Alignment.Center,
-        ) {
-            CircularProgressIndicator(modifier = Modifier.size(20.dp))
+        // Both the append indicator and its failure line live INSIDE the
+        // grid, spanning the full row. They used to be siblings after a
+        // grid that fills the screen, which put them permanently below the
+        // fold: a customer whose next page failed was shown nothing at all.
+        if (state.appending) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = UsTheme.spacing.l),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CommerceProgressLine(contentDescription = "Loading more products")
+                }
+            }
         }
-    }
-    state.appendError?.let { error ->
-        Text(
-            text = error,
-            style = MaterialTheme.typography.bodySmall,
-            color = UsTheme.extended.textSecondary,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(UsTheme.spacing.m),
-        )
+        state.appendError?.let { error ->
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textSecondary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(UsTheme.spacing.m),
+                )
+            }
+        }
     }
 }
 
@@ -174,7 +210,7 @@ private fun ProductCard(product: ProductSummary, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = product.inStock || true, onClick = onClick),
+            .pressScale(onClick),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
     ) {
         CommerceImage(
@@ -208,6 +244,7 @@ private fun ProductCard(product: ProductSummary, onClick: () -> Unit) {
 }
 
 private const val PREFETCH_DISTANCE = 4
+private const val GRID_COLUMNS = 2
 
 @Preview(showBackground = true)
 @Composable
@@ -231,15 +268,48 @@ private fun ProductCardPreview() {
     }
 }
 
-/** One text action on the catalogue's bar, in the design system's label style. */
+/**
+ * One glyph on the catalogue's bar — the app's header gesture: a square
+ * target, a Lucide stroke, no ripple.
+ *
+ * [count] draws the header badge, the same white disc the notification bell
+ * wears. The number goes in the button's own description rather than being
+ * announced as a detached digit, so the badge itself stays decorative.
+ */
 @Composable
-private fun TopBarAction(text: String, onClick: () -> Unit) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = UsTheme.extended.textPrimary,
+private fun TopBarGlyph(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    count: Int = 0,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(horizontal = UsTheme.spacing.s),
-    )
+            .size(GLYPH_TARGET)
+            .pressScale(onClick)
+            .semantics { contentDescription = description },
+    ) {
+        if (count > 0) {
+            UsBadgedIcon(icon = icon, count = count, tint = UsTheme.extended.textPrimary)
+        } else {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = UsTheme.extended.textPrimary,
+                modifier = Modifier.size(GLYPH_SIZE),
+            )
+        }
+    }
 }
+
+private fun cartDescription(count: Int): String = when {
+    count <= 0 -> "Cart, empty"
+    count == 1 -> "Cart, 1 item"
+    else -> "Cart, $count items"
+}
+
+private val GLYPH_TARGET = 44.dp
+
+/** 24dp, the same as [UsBadgedIcon] draws — so the cart does not resize when its badge appears. */
+private val GLYPH_SIZE = 24.dp

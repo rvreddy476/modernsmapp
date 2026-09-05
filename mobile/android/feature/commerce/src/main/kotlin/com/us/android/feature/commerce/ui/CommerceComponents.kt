@@ -8,9 +8,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.PriceBreakdown
@@ -163,9 +164,15 @@ fun PriceBreakdownCard(
             // rendering as "₹0.00", which reads like a missing value.
             overrideText = "Free".takeIf { breakdown.shipping == Paise.ZERO },
         )
-        HorizontalDivider(
-            modifier = Modifier.padding(vertical = UsTheme.spacing.xs),
-            color = UsTheme.extended.borderSubtle,
+        // The app's hairline: a 1dp rule in the subtle border token, the same
+        // line the sheets and settings rows draw. Material's HorizontalDivider
+        // brings its own inset and thickness rules with it.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = UsTheme.spacing.xs)
+                .height(HAIRLINE)
+                .background(UsTheme.extended.borderSubtle),
         )
         AmountLine("Total", breakdown.total, emphasise = true)
         if (breakdown.tax > Paise.ZERO) {
@@ -249,3 +256,5 @@ private fun PriceBreakdownPreview() {
         )
     }
 }
+
+private val HAIRLINE = 1.dp

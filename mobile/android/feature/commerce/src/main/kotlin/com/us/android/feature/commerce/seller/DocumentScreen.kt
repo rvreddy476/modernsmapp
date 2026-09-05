@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,6 +24,7 @@ import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.CommerceProgressLine
 
 /**
  * Sending an identity document for review.
@@ -99,7 +99,7 @@ fun DocumentScreen(
                 Text(
                     text = error,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = UsTheme.extended.statusDanger,
                 )
             }
 
@@ -145,15 +145,16 @@ private fun UploadProgress(state: DocumentUploadState) {
             style = MaterialTheme.typography.bodyMedium,
             color = UsTheme.extended.textPrimary,
         )
+        // The ember line, determinate while there are bytes to count and
+        // sweeping while there are not — one indicator for all four stages
+        // rather than a Material bar that changes shape halfway through.
         val progress = state.progress
-        if (progress != null && progress.second > 0) {
-            LinearProgressIndicator(
-                progress = { progress.first.toFloat() / progress.second.toFloat() },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        } else {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
+        CommerceProgressLine(
+            progress = progress
+                ?.takeIf { it.second > 0 }
+                ?.let { (sent, total) -> sent.toFloat() / total.toFloat() },
+            contentDescription = label,
+        )
     }
 }
 

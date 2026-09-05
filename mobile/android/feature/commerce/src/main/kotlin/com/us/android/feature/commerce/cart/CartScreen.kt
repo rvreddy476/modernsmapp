@@ -1,7 +1,6 @@
 package com.us.android.feature.commerce.cart
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +17,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -33,6 +34,7 @@ import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.pressScale
 
 /**
  * The cart.
@@ -180,8 +182,8 @@ private fun CartRow(
             url = line.imageUrl,
             contentDescription = line.title,
             modifier = Modifier
-                .size(72.dp)
-                .clickable(onClick = onOpen),
+                .size(THUMBNAIL)
+                .pressScale(onClick = onOpen),
         )
         Column(
             modifier = Modifier.weight(1f),
@@ -193,7 +195,7 @@ private fun CartRow(
                 color = UsTheme.extended.textPrimary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.clickable(onClick = onOpen),
+                modifier = Modifier.pressScale(onClick = onOpen),
             )
 
             Row(
@@ -222,7 +224,7 @@ private fun CartRow(
                 Text(
                     text = "Only ${line.availableQty} left",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = UsTheme.extended.statusDanger,
                 )
             }
 
@@ -230,7 +232,9 @@ private fun CartRow(
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                QtyChip("−", enabled = !busy) { onQuantityChange(line.quantity - 1) }
+                QtyChip("−", description = "One fewer", enabled = !busy) {
+                    onQuantityChange(line.quantity - 1)
+                }
                 Text(
                     text = line.quantity.toString(),
                     style = MaterialTheme.typography.bodyMedium,
@@ -238,16 +242,20 @@ private fun CartRow(
                 )
                 QtyChip(
                     "+",
+                    description = "One more",
                     enabled = !busy &&
                         (line.availableQty == null || line.quantity < line.availableQty!!),
                 ) { onQuantityChange(line.quantity + 1) }
 
+                // Destructive, so it wears the danger token rather than the
+                // muted text ramp — and never the accent, which belongs to
+                // the way FORWARD out of this screen.
                 Text(
                     text = "Remove",
                     style = MaterialTheme.typography.labelMedium,
-                    color = UsTheme.extended.textSecondary,
+                    color = if (busy) UsTheme.extended.textDim else UsTheme.extended.statusDanger,
                     modifier = Modifier
-                        .clickable(enabled = !busy, onClick = onRemove)
+                        .pressScale(onClick = onRemove, enabled = !busy)
                         .padding(start = UsTheme.spacing.s),
                 )
             }
@@ -261,8 +269,14 @@ private fun CartRow(
     }
 }
 
+/** The − / + chip. [description] carries what a typographic sign cannot say. */
 @Composable
-private fun QtyChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun QtyChip(
+    label: String,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
     Text(
         text = label,
         style = MaterialTheme.typography.titleMedium,
@@ -270,7 +284,8 @@ private fun QtyChip(label: String, enabled: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(UsTheme.radii.full))
             .background(UsTheme.extended.bgCard)
-            .clickable(enabled = enabled, onClick = onClick)
+            .pressScale(onClick = onClick, enabled = enabled)
+            .semantics { contentDescription = description }
             .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.xs),
     )
 }
@@ -327,8 +342,10 @@ private fun CartFooter(
             style = MaterialTheme.typography.labelLarge,
             color = UsTheme.extended.textSecondary,
             modifier = Modifier
-                .clickable(onClick = onContinueShopping)
+                .pressScale(onClick = onContinueShopping)
                 .padding(vertical = UsTheme.spacing.xs),
         )
     }
 }
+
+private val THUMBNAIL = 72.dp

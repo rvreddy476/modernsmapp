@@ -51,6 +51,11 @@ class CatalogViewModel @Inject constructor(
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
+    private val _cartCount = MutableStateFlow(0)
+
+    /** Units in the cart, for the header badge. Zero draws no badge. */
+    val cartCount: StateFlow<Int> = _cartCount.asStateFlow()
+
     init {
         load()
         viewModelScope.launch {
@@ -70,6 +75,23 @@ class CatalogViewModel @Inject constructor(
     }
 
     fun retry() = load()
+
+    /**
+     * Re-reads the cart for the header badge.
+     *
+     * Read-only and deliberately silent: a badge is not worth an error
+     * screen, and a failure keeps the last known number rather than claiming
+     * the cart is empty. Nothing about browsing depends on it, so it never
+     * touches [state].
+     */
+    fun refreshCartCount() {
+        viewModelScope.launch {
+            val result = repo.cart()
+            if (result is CommerceResult.Success) {
+                _cartCount.value = result.value.items.sumOf { it.quantity }
+            }
+        }
+    }
 
     private fun load() {
         _state.value = CatalogUiState.Loading

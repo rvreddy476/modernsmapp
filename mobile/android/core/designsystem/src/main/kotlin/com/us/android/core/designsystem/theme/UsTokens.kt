@@ -48,6 +48,17 @@ data class UsExtendedColors(
     val liveRed: Color,
     val statusWarning: Color,
     val statusSuccess: Color,
+    /**
+     * Destructive and blocking copy: "Remove", "Cancel order", a form's
+     * failure line, a stock warning that stops a sale.
+     *
+     * Its own token rather than `MaterialTheme.colorScheme.error`, because a
+     * feature reaching into an M3 slot for a brand colour is how the palette
+     * drifts — and because ember is reserved for PRIMARY actions, so a
+     * destructive one must not borrow it. Shared across themes, like the
+     * other status colours: danger does not invert.
+     */
+    val statusDanger: Color,
     val postbookGradient: Brush,
     val postgramGradient: Brush,
     val posttubeGradient: Brush,
@@ -227,6 +238,7 @@ internal val DarkExtendedColors = UsExtendedColors(
     liveRed = UsColorTokens.LiveRed,
     statusWarning = UsColorTokens.StatusWarning,
     statusSuccess = UsColorTokens.StatusSuccess,
+    statusDanger = UsColorTokens.StatusError,
     postbookGradient = Brush.horizontalGradient(
         listOf(UsColorTokens.PostbookPrimary, UsColorTokens.PostbookSecondary),
     ),

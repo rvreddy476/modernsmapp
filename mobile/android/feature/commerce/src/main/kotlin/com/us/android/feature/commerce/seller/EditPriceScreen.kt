@@ -2,17 +2,14 @@ package com.us.android.feature.commerce.seller
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -24,6 +21,7 @@ import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.UsSettingsSwitchRow
 import com.us.android.feature.commerce.ui.CommerceNotice
 
 /**
@@ -128,33 +126,21 @@ private fun EditPriceForm(
         // Applied immediately, not batched with the price. A seller pausing
         // something has usually just run out of it, and making them press Save
         // first is how stock gets sold that does not exist.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text(
-                    text = "On sale",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = UsTheme.extended.textPrimary,
-                )
-                Text(
-                    text = if (state.paused) {
-                        "Paused — buyers cannot add this to a cart"
-                    } else {
-                        "Buyers can order this"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = UsTheme.extended.textSecondary,
-                )
-            }
-            Switch(
-                checked = !state.paused,
-                onCheckedChange = { onPaused(!it) },
-                enabled = !state.saving,
-            )
-        }
+        //
+        // The app's settings switch row, not a bare Material Switch: the whole
+        // row is the target and the switch wears the app's colours, the same
+        // as every other on/off in the product.
+        UsSettingsSwitchRow(
+            title = "On sale",
+            description = if (state.paused) {
+                "Paused — buyers cannot add this to a cart"
+            } else {
+                "Buyers can order this"
+            },
+            checked = !state.paused,
+            onCheckedChange = { onSale -> onPaused(!onSale) },
+            enabled = !state.saving,
+        )
 
         if (state.saved) {
             CommerceNotice(text = "Saved.")
@@ -164,7 +150,7 @@ private fun EditPriceForm(
             Text(
                 text = error,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+                color = UsTheme.extended.statusDanger,
             )
         }
 
