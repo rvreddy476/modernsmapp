@@ -40,6 +40,15 @@ credentials-file: C:/Users/RVReddy/.cloudflared/d3774243-f647-4e35-991d-bd43db41
 
 ingress:
   # The API gateway. Everything the app calls except media bytes.
+  # The PSP webhook is the one payments path reachable from the edge, and it
+  # goes straight to payments-service: the gateway refuses /v1/payments by
+  # design (Commerce P0 LB-1), because its internal-key stamp would hand any
+  # signed-in user payment authority. Razorpay authenticates itself with a
+  # signature over the body, so no gateway identity is wanted here.
+  - hostname: api-dev.cleestudio.com
+    path: ^/v1/payments/webhook$
+    service: http://localhost:8102
+
   - hostname: api-dev.cleestudio.com
     service: http://localhost:8080
 
