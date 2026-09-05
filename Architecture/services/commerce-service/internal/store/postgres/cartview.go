@@ -93,7 +93,14 @@ type CartViewLine struct {
 func (s *Store) CartViewFor(ctx context.Context, cartID uuid.UUID) (*CartView, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT ci.variant_id, ci.product_id, p.title, v.sku,
-		       COALESCE(v.image_media_id, p.primary_image_media_id),
+		       -- Variant image, then the product's legacy single image, then
+		       -- the gallery cover. The third arm is what makes a cart line
+		       -- render for a product whose seller used the gallery editor
+		       -- and therefore never wrote primary_image_media_id.
+		       COALESCE(v.image_media_id, p.primary_image_media_id,
+		                (SELECT pm.media_id FROM product_media pm
+		                  WHERE pm.product_id = p.id AND pm.media_type = 'image'
+		                  ORDER BY pm.sort_order ASC, pm.created_at ASC LIMIT 1)),
 		       ci.quantity,
 		       COALESCE(NULLIF(ci.price_snapshot_minor, 0), ROUND(ci.price_snapshot * 100))::bigint,
 		       COALESCE(NULLIF(v.selling_price_minor, 0), ROUND(v.selling_price * 100))::bigint,

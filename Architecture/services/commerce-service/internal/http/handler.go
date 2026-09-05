@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/atpost/commerce-service/internal/media"
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -52,6 +53,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	h.RegisterOnboardingRoutes(r)
 
 	v1 := r.Group("/v1/commerce")
+
+	// Record WHO the request is for, so the media resolver can tell
+	// media-service. Without it every batch reached media-service as the
+	// anonymous all-zeroes viewer, its delivery gate refused every protected
+	// asset, and the whole catalogue rendered as grey boxes — see
+	// internal/media/viewer.go.
+	//
+	// It authorises nothing. Every commerce permission check still reads
+	// X-User-Id at its own handler, exactly as before; this only decides
+	// which images media-service is willing to hand back.
+	v1.Use(recordMediaViewer)
 
 	// ── Affiliate redirect (public; viewer click target) ─────
 	// Lands the viewer on the canonical product page with the
@@ -177,9 +189,25 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Phase F2.3 — bulk SKU upload ──────────────────────────
 	h.RegisterBulkImportRoutes(v1)
+
+	// ── The shop front: /home, gallery writes, favourites, banners ──
+	h.RegisterStorefrontRoutes(r, v1)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
+
+// recordMediaViewer puts the caller's id on the request context for the media
+// resolver. An unparseable or absent header records the anonymous viewer,
+// which is a real audience for a product photograph and must NOT be an error
+// here — refusing would 401 the public catalogue.
+func recordMediaViewer(c *gin.Context) {
+	viewer, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		viewer = uuid.Nil
+	}
+	c.Request = c.Request.WithContext(media.WithViewer(c.Request.Context(), viewer))
+	c.Next()
+}
 
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	raw := c.GetHeader("X-User-Id")
@@ -217,8 +245,16 @@ func handleErr(c *gin.Context, err error) {
 
 // ─── Catalog handlers ────────────────────────────────────────────
 
+// ListCategories GET /v1/commerce/categories — the strip above the grid.
+//
+// Each row now carries `image_url`/`thumbnail_url` (resolved from the
+// category's own artwork in one media batch) and `product_count` (live
+// products behind it). Without the count, the strip cannot grey out a
+// category that would open onto nothing, which is what made
+// `?category_id=` look broken — the filter worked, and every seeded
+// category was empty.
 func (h *Handler) ListCategories(c *gin.Context) {
-	cats, err := h.svc.ListCategories(c.Request.Context())
+	cats, err := h.svc.ListCategoryCards(c.Request.Context())
 	if err != nil {
 		handleErr(c, err)
 		return
@@ -228,7 +264,7 @@ func (h *Handler) ListCategories(c *gin.Context) {
 		// type gets a decode failure rather than "no categories", which is
 		// how an unseeded table read as a broken endpoint. Migration 023
 		// seeds the taxonomy; this makes the empty case honest regardless.
-		cats = []*postgres.ProductCategory{}
+		cats = []*postgres.CategoryCard{}
 	}
 	api.JSON(c.Writer, http.StatusOK, cats, nil)
 }
@@ -243,7 +279,21 @@ func (h *Handler) GetProduct(c *gin.Context) {
 		handleErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"product": p, "variants": variants}, nil)
+	// The heart state, and the gallery, on the one screen that needs both.
+	//
+	// `media` is in the detail body rather than behind a second request to
+	// GET …/media because the detail page draws the carousel immediately: a
+	// separate call means the hero image arrives after the price, and the
+	// layout jumps. The dedicated route stays for the seller's editor.
+	h.svc.MarkFavourites(c.Request.Context(), optionalUserID(c), []*postgres.Product{p})
+	gallery, err := h.svc.ProductMedia(c.Request.Context(), id)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"product": p, "variants": variants, "media": gallery,
+	}, nil)
 }
 
 type createProductReq struct {
@@ -416,14 +466,21 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 
 // ─── Product Media + Attributes (Phase 3.1) ──────────────────
 
-type addProductMediaReq struct {
-	MediaID   uuid.UUID `json:"media_id" binding:"required"`
-	MediaType string    `json:"media_type"`
-	SortOrder int       `json:"sort_order"`
-}
-
-// AddProductMedia POST /v1/commerce/products/:productId/media — seller
-// only. Attaches an already-uploaded media asset to the product gallery.
+// AddProductMedia POST /v1/commerce/products/:productId/media — seller only,
+// must own the product AND own every asset.
+//
+// Two body shapes, and the difference is deliberate:
+//
+//	{"media_ids":["…","…"]}   SETS the gallery to exactly this, in this
+//	                          order. The first is the cover. Max 8.
+//	{"media_id":"…"}          the original single-append, retained for the
+//	                          existing caller.
+//
+// `media_ids` is a replace and not an append because the client hands up the
+// gallery it wants: an additive endpoint means a seller who removed a
+// photograph in the editor and pressed save is still showing it. Sending both
+// is refused rather than resolved — guessing which one the caller meant is
+// how a "save" silently discards seven images.
 func (h *Handler) AddProductMedia(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -433,35 +490,68 @@ func (h *Handler) AddProductMedia(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var req addProductMediaReq
+	var req setProductMediaReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	out, err := h.svc.AddProductMedia(c.Request.Context(), productID, userID, req.MediaID, req.MediaType, req.SortOrder)
-	if err != nil {
-		if errors.Is(err, service.ErrNotOrderOwner) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
+	switch {
+	case len(req.MediaIDs) > 0 && req.MediaID != nil:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"send media_ids (which sets the whole gallery) or media_id (which appends one), not both", nil)
+		return
+
+	case len(req.MediaIDs) > 0:
+		out, err := h.svc.SetProductMedia(c.Request.Context(), productID, userID, req.MediaIDs)
+		if err != nil {
+			writeStorefrontError(c, err)
 			return
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_MEDIA_FAILED", err.Error(), nil)
-		return
+		api.JSON(c.Writer, http.StatusOK, gin.H{"items": out}, nil)
+
+	case req.MediaID != nil:
+		if _, err := h.svc.AddProductMedia(c.Request.Context(), productID, userID,
+			*req.MediaID, req.MediaType, req.SortOrder); err != nil {
+			if errors.Is(err, service.ErrNotOrderOwner) {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
+				return
+			}
+			writeStorefrontError(c, err)
+			return
+		}
+		// The RESOLVED gallery, not the raw rows: the caller that appended an
+		// image wants to draw it, and bare media UUIDs are what made the
+		// original version of this route unusable from a phone.
+		out, err := h.svc.ProductMedia(c.Request.Context(), productID)
+		if err != nil {
+			handleErr(c, err)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{"items": out}, nil)
+
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"media_ids (or media_id) is required", nil)
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"media": out}, nil)
 }
 
 // ListProductMedia GET /v1/commerce/products/:productId/media — public.
+//
+// Returns RESOLVED URLs, in one media batch. It used to return the raw
+// `product_media` rows — a media UUID, a sort order and a timestamp — which
+// no client could draw anything from, so the route existed and no screen
+// called it.
 func (h *Handler) ListProductMedia(c *gin.Context) {
 	productID, ok := parseUUID(c, "productId")
 	if !ok {
 		return
 	}
-	out, err := h.svc.ListProductMedia(c.Request.Context(), productID)
+	out, err := h.svc.ProductMedia(c.Request.Context(), productID)
 	if err != nil {
 		handleErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"media": out}, nil)
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": out}, nil)
 }
 
 type setProductAttrsReq struct {
@@ -1073,11 +1163,20 @@ func (h *Handler) ListProducts(c *gin.Context) {
 		limit = 20
 	}
 
+	// Both spellings. The store has always filtered on category and the
+	// handler has always read `?category=`, but every client, the category
+	// strip and the documented contract say `?category_id=` — so the filter
+	// worked and nothing that used it ever reached the code, which read as
+	// "there is nothing behind the categories".
 	var categoryID *uuid.UUID
-	if cat := c.Query("category"); cat != "" {
+	cat := c.Query("category_id")
+	if cat == "" {
+		cat = c.Query("category")
+	}
+	if cat != "" {
 		id, err := uuid.Parse(cat)
 		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", "category must be a UUID", nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", "category_id must be a UUID", nil)
 			return
 		}
 		categoryID = &id
@@ -1113,6 +1212,7 @@ func (h *Handler) ListProducts(c *gin.Context) {
 		if products == nil {
 			products = []*postgres.Product{}
 		}
+		h.svc.MarkFavourites(c.Request.Context(), optionalUserID(c), products)
 		api.JSON(c.Writer, http.StatusOK, gin.H{
 			"items":  products,
 			"total":  total,
@@ -1137,6 +1237,8 @@ func (h *Handler) ListProducts(c *gin.Context) {
 		handleErr(c, err)
 		return
 	}
+	// One favourites query for the page, after the products are known.
+	h.svc.MarkFavourites(c.Request.Context(), optionalUserID(c), result.Items)
 	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"items":       result.Items,
 		"next_cursor": result.NextCursor,

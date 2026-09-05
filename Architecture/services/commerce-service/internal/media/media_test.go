@@ -291,11 +291,20 @@ func batchStub(t *testing.T, byID map[uuid.UUID]map[string]any, calls *int, stat
 	return s
 }
 
+// The rendition names below are media-service's REAL ones — `thumb_150`,
+// `small_480`, `medium_1080` (internal/processing/image.go) — and that is the
+// whole point of this test.
+//
+// It used to stub "thumbnail", "medium" and "small", names media-service has
+// never produced, and it passed: URL() fell through every preference to
+// `original` and Thumbnail() fell back to URL(). So a green test sat on top
+// of a product grid where every tile downloaded the full-resolution camera
+// upload. A fake that invents its upstream's vocabulary cannot fail.
 func TestAMediaIdResolvesToADisplayURL(t *testing.T) {
 	id := uuid.New()
 	c := New(batchStub(t, map[uuid.UUID]map[string]any{
 		id: {"variants": map[string]string{
-			"thumbnail": "https://cdn/t.jpg", "medium": "https://cdn/m.jpg", "original": "https://cdn/o.jpg",
+			"thumb_150": "https://cdn/t.jpg", "medium_1080": "https://cdn/m.jpg", "original": "https://cdn/o.jpg",
 		}},
 	}, nil, http.StatusOK).URL, "k")
 
@@ -305,10 +314,10 @@ func TestAMediaIdResolvesToADisplayURL(t *testing.T) {
 		t.Fatal("the id did not resolve; every product screen shows a placeholder")
 	}
 	if r.URL() != "https://cdn/m.jpg" {
-		t.Fatalf("URL() = %q, want the medium variant", r.URL())
+		t.Fatalf("URL() = %q, want the medium_1080 variant", r.URL())
 	}
 	if r.Thumbnail() != "https://cdn/t.jpg" {
-		t.Fatalf("Thumbnail() = %q, want the thumbnail variant", r.Thumbnail())
+		t.Fatalf("Thumbnail() = %q, want the thumb_150 variant", r.Thumbnail())
 	}
 }
 
@@ -317,7 +326,7 @@ func TestAMediaIdResolvesToADisplayURL(t *testing.T) {
 func TestTheOriginalIsTheLastResortNotTheFirstChoice(t *testing.T) {
 	id := uuid.New()
 	c := New(batchStub(t, map[uuid.UUID]map[string]any{
-		id: {"variants": map[string]string{"original": "https://cdn/huge.jpg", "small": "https://cdn/s.jpg"}},
+		id: {"variants": map[string]string{"original": "https://cdn/huge.jpg", "small_480": "https://cdn/s.jpg"}},
 	}, nil, http.StatusOK).URL, "k")
 
 	r := c.ResolveURLs(context.Background(), []uuid.UUID{id})[id]
@@ -458,5 +467,45 @@ func TestNilIdsAreNotAskedFor(t *testing.T) {
 	c.ResolveURLs(context.Background(), []uuid.UUID{uuid.Nil, uuid.Nil})
 	if calls != 0 {
 		t.Fatalf("%d calls for nothing but nil ids", calls)
+	}
+}
+
+// WHO IS LOOKING reaches media-service.
+//
+// The defect: ResolveURLs sent the internal service key and nothing else, so
+// every batch arrived as the anonymous all-zeroes viewer and media-service's
+// delivery gate refused every protected asset. The catalogue rendered as grey
+// boxes and no layer reported an error — a denial is a valid answer.
+func TestTheViewerIsForwardedToMediaService(t *testing.T) {
+	var gotViewer string
+	seen := make(chan struct{}, 1)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotViewer = r.Header.Get("X-User-Id")
+		select {
+		case seen <- struct{}{}:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer s.Close()
+
+	c := New(s.URL, "k")
+	viewer := uuid.New()
+	c.ResolveURLs(WithViewer(context.Background(), viewer), []uuid.UUID{uuid.New()})
+	<-seen
+	if gotViewer != viewer.String() {
+		t.Fatalf("media-service saw viewer %q, want %q — without it the gate refuses "+
+			"every protected asset and the catalogue is grey boxes", gotViewer, viewer)
+	}
+
+	// Anonymous sends NO header at all, rather than the zero UUID: a product
+	// page is public, and media-service's own anonymous handling is what
+	// decides, not a viewer id that looks real and matches nobody.
+	gotViewer = "not-set"
+	c.ResolveURLs(context.Background(), []uuid.UUID{uuid.New()})
+	<-seen
+	if gotViewer != "" {
+		t.Fatalf("an anonymous resolve sent X-User-Id=%q", gotViewer)
 	}
 }

@@ -194,6 +194,33 @@ type Product struct {
 	ImageURL         string     `db:"-" json:"image_url,omitempty"`
 	ThumbnailURL     string     `db:"-" json:"thumbnail_url,omitempty"`
 	ImageBlurhash    *string    `db:"-" json:"image_blurhash,omitempty"`
+
+	// CoverMediaID is the first image in the product's own gallery
+	// (`product_media`), read by the shared summary projection.
+	//
+	// It exists because `primary_image_media_id` is the column the ORIGINAL
+	// single-image create path wrote and the gallery editor never touches:
+	// a seller who attached eight photographs left that column NULL, so
+	// hydration found no id and every one of those products rendered as a
+	// grey box. Hydration prefers the primary column and falls back to this,
+	// so both eras of product show an image.
+	//
+	// Not serialised: it is an input to hydration, and a client that received
+	// a bare media UUID could do nothing with it anyway.
+	CoverMediaID *uuid.UUID `db:"-" json:"-"`
+
+	// CategoryName travels with CategoryID so the category strip can label a
+	// filter chip without a second round trip per product.
+	CategoryName *string `db:"-" json:"category_name,omitempty"`
+
+	// IsFavourite is this product's heart state FOR THE CALLING USER.
+	//
+	// A pointer, and omitted when nil, because "false" and "nobody asked" are
+	// different answers: an anonymous browse has no favourites, and sending
+	// `is_favourite: false` there would make the client draw an empty heart
+	// as though the shopper had deliberately not liked it.
+	IsFavourite *bool `db:"-" json:"is_favourite,omitempty"`
+
 	SourceImageURL *string `db:"source_image_url" json:"source_image_url,omitempty"`
 	// RetailerName is `sellers.store_name` — the shop the listing belongs to.
 	//
@@ -271,12 +298,51 @@ type Product struct {
 // value under both names breaks nobody, and doing it here — rather than by
 // adding a second struct field that four separate scan sites would have to
 // remember to fill — means the two can never disagree.
+//
+// It also emits `discount_pct`, which is DERIVED rather than stored — see
+// DiscountPct. Deriving it here rather than at each of the five scan sites is
+// what stops the badge and the price disagreeing on one surface and not
+// another; the alternative is a struct field that four separate queries have
+// to remember to fill.
 func (p Product) MarshalJSON() ([]byte, error) {
 	type alias Product // sheds this method, so this is not infinite recursion
 	return json.Marshal(struct {
 		alias
-		SellerName *string `json:"seller_name,omitempty"`
-	}{alias(p), p.RetailerName})
+		SellerName  *string `json:"seller_name,omitempty"`
+		DiscountPct *int    `json:"discount_pct,omitempty"`
+	}{alias(p), p.RetailerName, DiscountPct(p.MinPriceMinor, p.MRPMinor)})
+}
+
+// DiscountPct is whole percent off MRP, or nil when there is no discount.
+//
+// The client must not compute this. It has the two numbers, but "percent off"
+// is a money statement and every client that does its own arithmetic does it
+// slightly differently — one truncates, one rounds, one divides by the wrong
+// side — and the badge on the grid then disagrees with the badge on the
+// detail page for the same product.
+//
+//   - nil when either number is missing, when MRP is zero (nothing to be a
+//     percentage OF), or when the selling price is not below MRP. "0% off" is
+//     not a deal and a client that draws a badge for it is lying.
+//   - Rounded to nearest, so ₹1,000 → ₹749 is 25%, not 25.1% and not 25.
+//
+// money-exempt: this reads integer paise and produces a percentage, not an
+// amount. Nothing charges from the result.
+func DiscountPct(priceMinor, mrpMinor *int64) *int {
+	if priceMinor == nil || mrpMinor == nil {
+		return nil
+	}
+	price, mrp := *priceMinor, *mrpMinor
+	if mrp <= 0 || price <= 0 || price >= mrp {
+		return nil
+	}
+	// Integer arithmetic with a +half numerator: no float, so no surprise at
+	// the boundary where 24.5% must become 25.
+	pct := int((2*(mrp-price)*100 + mrp) / (2 * mrp))
+	if pct <= 0 {
+		return nil
+	}
+	return &pct
 }
 
 // ProductMedia is one image / video / size-chart / infographic in a
@@ -493,6 +559,20 @@ type OrderItem struct {
 	DiscountAmountMinor int64 `db:"discount_amount_minor" json:"discount_minor,omitempty"`
 	TaxAmountMinor      int64 `db:"tax_amount_minor" json:"tax_minor,omitempty"`
 	FinalPriceMinor     int64 `db:"final_price_minor" json:"final_price_minor,omitempty"`
+
+	// The line's picture. An order screen without one is a list of titles
+	// and prices, and "which of these three black t-shirts is being
+	// returned" is a question the buyer cannot answer from that.
+	//
+	// Resolved from the product's current cover, not snapshotted: an order
+	// line already snapshots title and money because those are the terms of
+	// the sale, but the photograph is not a term — showing the seller's
+	// current, better image of the same product is the right answer, and
+	// storing a media id per line would leave orders pointing at assets the
+	// seller has since deleted.
+	ImageMediaID *uuid.UUID `db:"-" json:"image_media_id,omitempty"`
+	ImageURL     string     `db:"-" json:"image_url,omitempty"`
+	ThumbnailURL string     `db:"-" json:"thumbnail_url,omitempty"`
 }
 
 // LineTotalMinor is the line's payable amount in paise, falling back to the

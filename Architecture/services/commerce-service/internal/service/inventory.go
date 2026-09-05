@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atpost/commerce-service/internal/media"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -109,22 +110,83 @@ func (s *Service) hydrateProductImages(ctx context.Context, products []*postgres
 	}
 	ids := make([]uuid.UUID, 0, len(products))
 	for _, p := range products {
-		if p != nil && p.PrimaryImageMediaID != nil {
-			ids = append(ids, *p.PrimaryImageMediaID)
+		if id := productMediaID(p); id != nil {
+			ids = append(ids, *id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	applyResolvedImages(products, s.media.ResolveURLs(ctx, ids))
+}
+
+// productMediaID is the ONE rule for which asset represents a product.
+//
+// `primary_image_media_id` first, the gallery cover second. Both arms are
+// necessary and the order matters:
+//
+//   - `primary_image_media_id` is the column the original single-image create
+//     path writes, and a seller who set it meant it;
+//   - `cover_media_id` is the first row of `product_media`, which is what the
+//     gallery editor writes. Before the fallback existed, a product with
+//     eight photographs attached through the gallery still had a NULL primary
+//     column, hydration found no id, and the product rendered as a grey box
+//     with a full gallery sitting behind it.
+//
+// One function rather than the condition inlined at each call site, because
+// the two hydration paths (product lists and the home page) would otherwise
+// have to be kept in step by hand.
+func productMediaID(p *postgres.Product) *uuid.UUID {
+	if p == nil {
+		return nil
+	}
+	if p.PrimaryImageMediaID != nil {
+		return p.PrimaryImageMediaID
+	}
+	return p.CoverMediaID
+}
+
+// applyResolvedImages writes the resolved URLs back onto the products.
+func applyResolvedImages(products []*postgres.Product, resolved map[uuid.UUID]media.Resolved) {
+	for _, p := range products {
+		id := productMediaID(p)
+		if id == nil {
+			continue
+		}
+		if r, ok := resolved[*id]; ok {
+			p.ImageURL = r.URL()
+			p.ThumbnailURL = r.Thumbnail()
+			p.ImageBlurhash = r.Blurhash
+		}
+	}
+}
+
+// hydrateOrderItemImages resolves an order's line pictures in ONE batch.
+//
+// An order screen without pictures is a list of titles and prices, and
+// "which of these three black t-shirts am I returning" is a question the
+// buyer cannot answer from that.
+func (s *Service) hydrateOrderItemImages(ctx context.Context, items []*postgres.OrderItem) {
+	if s.media == nil || len(items) == 0 {
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(items))
+	for _, it := range items {
+		if it != nil && it.ImageMediaID != nil {
+			ids = append(ids, *it.ImageMediaID)
 		}
 	}
 	if len(ids) == 0 {
 		return
 	}
 	resolved := s.media.ResolveURLs(ctx, ids)
-	for _, p := range products {
-		if p == nil || p.PrimaryImageMediaID == nil {
+	for _, it := range items {
+		if it == nil || it.ImageMediaID == nil {
 			continue
 		}
-		if r, ok := resolved[*p.PrimaryImageMediaID]; ok {
-			p.ImageURL = r.URL()
-			p.ThumbnailURL = r.Thumbnail()
-			p.ImageBlurhash = r.Blurhash
+		if r, ok := resolved[*it.ImageMediaID]; ok {
+			it.ImageURL = r.URL()
+			it.ThumbnailURL = r.Thumbnail()
 		}
 	}
 }

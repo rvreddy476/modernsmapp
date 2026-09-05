@@ -177,6 +177,12 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at
 		  ,(SELECT value FROM product_attributes WHERE product_id=products.id AND name='source_image_url' ORDER BY sort_order LIMIT 1)
 		  ,(SELECT store_name FROM sellers WHERE id=products.seller_id)
+		  ,(SELECT name FROM product_categories WHERE id=products.category_id)
+		  -- The gallery cover, so a detail page whose seller used the gallery
+		  -- (and therefore left primary_image_media_id NULL) still hydrates
+		  -- to a real image instead of a placeholder.
+		  ,(SELECT media_id FROM product_media WHERE product_id=products.id AND media_type='image'
+		     ORDER BY sort_order ASC, created_at ASC LIMIT 1)
 		FROM products WHERE id=$1`, id).Scan(
 		&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.TaxClassID,
 		&p.Title, &p.ShortTitle, &p.Slug, &p.Description, &p.ShortDescription,
@@ -189,6 +195,7 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		&p.MetaTitle, &p.MetaDescription, &p.AvgRating, &p.ReviewCount,
 		&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
 		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt, &p.SourceImageURL, &p.RetailerName,
+		&p.CategoryName, &p.CoverMediaID,
 	)
 	// A product id that does not exist is a 404, not an outage. pgx's raw
 	// "no rows in result set" travelled all the way to the edge, where the
@@ -304,44 +311,37 @@ func (s *Store) GetProductAttributes(ctx context.Context, productID uuid.UUID) (
 // (`status='active' AND approval_status='approved'`), so a product
 // cannot be visible on a storefront while being invisible in search.
 func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, status string, publicOnly bool, limit, offset int) ([]*Product, int, error) {
-	where := "WHERE seller_id=$1"
+	where := "WHERE p.seller_id=$1"
 	args := []any{sellerID}
 	if publicOnly {
-		where += " AND status = 'active' AND approval_status = 'approved'"
+		where += " AND " + productSummaryLive
 	}
 	if status != "" {
-		where += fmt.Sprintf(" AND status=$%d", len(args)+1)
+		where += fmt.Sprintf(" AND p.status=$%d", len(args)+1)
 		args = append(args, status)
 	}
 	var total int
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products "+where, args...).Scan(&total)
+	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products p "+where, args...).Scan(&total)
 
 	args = append(args, limit, offset)
-	// primary_image_media_id is selected, and that is not cosmetic.
+	// The shared summary projection, same as the two browse surfaces.
 	//
-	// It was absent from this list while the two browse queries below both
-	// select it, so a storefront or seller-dashboard row came back with a nil
-	// image id no matter what the row held. Hydrating image URLs on the way
-	// out cannot help a field the query never returned — the product would
-	// still render as a placeholder, and the cause would look like a
-	// media-service problem rather than a missing column.
-	rows, err := s.db.Query(ctx, `SELECT id,seller_id,category_id,title,slug,status,approval_status,
-		avg_rating,review_count,order_count,view_count,created_at,updated_at,
-		primary_image_media_id FROM products `+
-		where+fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	// This was a THIRD, shorter column list that selected neither price nor
+	// stock nor the gallery cover, so the seller's own catalogue screen and
+	// the public storefront both drew rows with no image and no money on
+	// them — while the identical product looked complete in the browse grid.
+	// The projection now comes from one place (storefront.go), which is what
+	// stops a surface being left behind again.
+	rows, err := s.db.Query(ctx, `
+		SELECT `+productSummaryColumns+`
+		`+productSummaryFrom+`
+		`+where+fmt.Sprintf(" ORDER BY p.created_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-	var products []*Product
-	for rows.Next() {
-		var p Product
-		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
-			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
-			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt, &p.PrimaryImageMediaID); err != nil {
-			return nil, 0, err
-		}
-		products = append(products, &p)
+	products, err := collectProductSummaries(rows)
+	if err != nil {
+		return nil, 0, err
 	}
 	return products, total, nil
 }
@@ -468,40 +468,12 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 	}
 
 	args = append(args, limit+1) // +1 to peek whether there is a next page
+	// The projection is the shared one (storefront.go). It was two hand-copied
+	// column lists — this one and ListProducts's — until the gallery cover and
+	// the category name had to appear on both and only one of them learned.
 	query := `
-		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
-		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
-		       p.primary_image_media_id,
-		       (SELECT value FROM product_attributes WHERE product_id=p.id AND name='source_image_url' ORDER BY sort_order LIMIT 1),
-		       sl.store_name,
-		       v.id  AS default_variant_id,
-		       v.min_selling_price,
-		       v.min_mrp,
-		       v.min_price_minor,
-		       v.mrp_minor,
-		       COALESCE(s.total_stock, 0) AS total_stock,
-		       (COALESCE(s.total_stock, 0) > 0) AS in_stock
-		FROM products p
-		JOIN sellers sl ON sl.id = p.seller_id
-		LEFT JOIN LATERAL (
-			-- Paise alongside the rupee floats, from the same row, using the
-			-- same NULLIF fallback pricing uses: a legacy variant whose minor
-			-- column is still the DEFAULT 0 falls back to its float rather
-			-- than advertising a free product.
-			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp,
-			       COALESCE(NULLIF(selling_price_minor, 0), ROUND(selling_price*100))::bigint AS min_price_minor,
-			       COALESCE(NULLIF(mrp_minor, 0), ROUND(mrp*100))::bigint AS mrp_minor
-			FROM product_variants
-			WHERE product_id = p.id AND status = 'active'
-			ORDER BY selling_price ASC
-			LIMIT 1
-		) v ON true
-		LEFT JOIN LATERAL (
-			SELECT SUM(GREATEST(i.total_qty - i.reserved_qty, 0))::int AS total_stock
-			FROM product_variants pv
-			JOIN inventory_items i ON i.variant_id = pv.id
-			WHERE pv.product_id = p.id AND pv.status = 'active'
-		) s ON true
+		SELECT ` + productSummaryColumns + `
+		` + productSummaryFrom + `
 		` + where + priceFilter + fmt.Sprintf(`
 		ORDER BY p.created_at DESC, p.id DESC
 		LIMIT $%d`, idx)
@@ -509,21 +481,8 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 	if err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
-	var products []*Product
-	for rows.Next() {
-		var p Product
-		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
-			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
-			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
-			&p.PrimaryImageMediaID, &p.SourceImageURL, &p.RetailerName,
-			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP,
-			&p.MinPriceMinor, &p.MRPMinor, &p.TotalStock, &p.InStock); err != nil {
-			return nil, "", err
-		}
-		products = append(products, &p)
-	}
-	if err := rows.Err(); err != nil {
+	products, err := collectProductSummaries(rows)
+	if err != nil {
 		return nil, "", err
 	}
 	// Use the +1 peek to derive nextCursor.
@@ -569,51 +528,26 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 	// catalog grid renders without N+1 detail fetches. LATERAL picks
 	// the cheapest active variant as the card's "from price"; mobile
 	// uses default_variant_id to add to cart in one click.
+	//
+	// This used to be a SECOND, shorter copy of the projection, and the
+	// difference was not cosmetic: it never selected the paise columns, so
+	// every product returned through the legacy offset path had no
+	// `min_price_minor` — and therefore no `discount_pct`, since that is
+	// derived from the pair. Both paths now read the shared list.
 	rows, err := s.db.Query(ctx, `
-		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
-		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
-		       p.primary_image_media_id,
-		       (SELECT value FROM product_attributes WHERE product_id=p.id AND name='source_image_url' ORDER BY sort_order LIMIT 1),
-		       sl.store_name,
-		       v.id  AS default_variant_id,
-		       v.min_selling_price,
-		       v.min_mrp,
-		       COALESCE(s.total_stock, 0) AS total_stock
-		FROM products p
-		JOIN sellers sl ON sl.id = p.seller_id
-		LEFT JOIN LATERAL (
-			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
-			FROM product_variants
-			WHERE product_id = p.id AND status = 'active'
-			ORDER BY selling_price ASC
-			LIMIT 1
-		) v ON true
-		LEFT JOIN LATERAL (
-			SELECT SUM(GREATEST(i.total_qty - i.reserved_qty, 0))::int AS total_stock
-			FROM product_variants pv
-			JOIN inventory_items i ON i.variant_id = pv.id
-			WHERE pv.product_id = p.id AND pv.status = 'active'
-		) s ON true
+		SELECT `+productSummaryColumns+`
+		`+productSummaryFrom+`
 		`+where+fmt.Sprintf(`
 		ORDER BY p.created_at DESC
 		LIMIT $%d OFFSET $%d`, idx, idx+1), args...)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-	var products []*Product
-	for rows.Next() {
-		var p Product
-		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
-			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
-			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
-			&p.PrimaryImageMediaID, &p.SourceImageURL, &p.RetailerName,
-			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
-			return nil, 0, err
-		}
-		products = append(products, &p)
+	products, err := collectProductSummaries(rows)
+	if err != nil {
+		return nil, 0, err
 	}
-	return products, total, rows.Err()
+	return products, total, nil
 }
 
 func (s *Store) UpdateProduct(ctx context.Context, id uuid.UUID, updates map[string]any) error {
@@ -1454,7 +1388,8 @@ func (s *Store) GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*OrderI
 		variant_details,sku,quantity,unit_mrp,unit_price,discount_amount,tax_amount,final_price,
 		status,shipment_id,tracking_number,return_eligible_until,delivered_at,created_at,
 		COALESCE(unit_mrp_minor,0),COALESCE(unit_price_minor,0),
-		COALESCE(discount_amount_minor,0),COALESCE(tax_amount_minor,0),COALESCE(final_price_minor,0)
+		COALESCE(discount_amount_minor,0),COALESCE(tax_amount_minor,0),COALESCE(final_price_minor,0),`+
+		orderItemCoverSQL+`
 		FROM order_items WHERE order_id=$1 ORDER BY created_at`, orderID)
 	if err != nil {
 		return nil, err
@@ -1469,7 +1404,7 @@ func (s *Store) GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*OrderI
 			&item.Status, &item.ShipmentID, &item.TrackingNumber, &item.ReturnEligibleUntil,
 			&item.DeliveredAt, &item.CreatedAt,
 			&item.UnitMRPMinor, &item.UnitPriceMinor, &item.DiscountAmountMinor,
-			&item.TaxAmountMinor, &item.FinalPriceMinor); err != nil {
+			&item.TaxAmountMinor, &item.FinalPriceMinor, &item.ImageMediaID); err != nil {
 			return nil, err
 		}
 		items = append(items, &item)

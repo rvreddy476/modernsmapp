@@ -111,7 +111,7 @@ func (s *Store) GetOrderItemsByOrderIDs(ctx context.Context, orderIDs []uuid.UUI
 		       return_eligible_until,delivered_at,created_at,
 		       COALESCE(unit_mrp_minor,0),COALESCE(unit_price_minor,0),
 		       COALESCE(discount_amount_minor,0),COALESCE(tax_amount_minor,0),
-		       COALESCE(final_price_minor,0)
+		       COALESCE(final_price_minor,0),`+orderItemCoverSQL+`
 		FROM order_items
 		WHERE order_id = ANY($1)
 		ORDER BY order_id, created_at ASC`, orderIDs)
@@ -128,7 +128,7 @@ func (s *Store) GetOrderItemsByOrderIDs(ctx context.Context, orderIDs []uuid.UUI
 			&it.Status, &it.ShipmentID, &it.TrackingNumber, &it.ReturnEligibleUntil,
 			&it.DeliveredAt, &it.CreatedAt,
 			&it.UnitMRPMinor, &it.UnitPriceMinor, &it.DiscountAmountMinor,
-			&it.TaxAmountMinor, &it.FinalPriceMinor); err != nil {
+			&it.TaxAmountMinor, &it.FinalPriceMinor, &it.ImageMediaID); err != nil {
 			return nil, err
 		}
 		itCopy := it

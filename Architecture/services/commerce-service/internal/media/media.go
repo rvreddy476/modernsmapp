@@ -257,14 +257,34 @@ type Resolved struct {
 	Height   *int              `json:"height,omitempty"`
 }
 
-// URL picks the best available variant for display, largest first, falling
-// back to the original.
+// The rendition names are media-service's, and they are NOT generic sizes.
 //
-// The order matters: `original` last, because on a product grid it is the
-// full-resolution upload and serving it to a list of twenty is how a phone on
-// a train downloads forty megabytes to draw thumbnails.
+// This asked for "large", "medium", "small" and "thumbnail". media-service
+// produces `thumb_150`, `small_480` and `medium_1080` for an image
+// (internal/processing/image.go) and `thumb_150` / `thumb_300` for a video
+// poster, plus `original` for everything. So NONE of the four names ever
+// matched: `URL()` fell through to `original` — the full-resolution upload —
+// and `Thumbnail()`, whose fallback is `URL()`, returned the same thing.
+//
+// The result was a product grid where every tile downloads a multi-megabyte
+// camera original, which on a phone reads as "the shop is broken" long before
+// it reads as "the images are large". The names below are copied from
+// media-service's own spec list; search-service's mediaclient carries the
+// same list for the same reason.
+var (
+	// displayRenditions: what a product detail hero or a banner should draw,
+	// best first. `original` is LAST and is a fallback, not a choice.
+	displayRenditions = []string{"medium_1080", "small_480", "thumb_480", "thumb_300", "thumb_150", "original"}
+	// thumbRenditions: what a grid tile, a cart line or an order line should
+	// draw. Small first — these are rendered at ~100-200px and twenty of them
+	// share one screen.
+	thumbRenditions = []string{"thumb_150", "thumb_300", "small_480", "thumb_480", "medium_1080"}
+)
+
+// URL picks the best available variant for display, falling back to the
+// original.
 func (r Resolved) URL() string {
-	for _, k := range []string{"large", "medium", "small", "thumbnail", "original"} {
+	for _, k := range displayRenditions {
 		if u := r.Variants[k]; u != "" {
 			return u
 		}
@@ -277,9 +297,9 @@ func (r Resolved) URL() string {
 	return ""
 }
 
-// Thumbnail is the small variant, for grids and cart lines.
+// Thumbnail is the small variant, for grids, cart lines and order lines.
 func (r Resolved) Thumbnail() string {
-	for _, k := range []string{"thumbnail", "small", "medium"} {
+	for _, k := range thumbRenditions {
 		if u := r.Variants[k]; u != "" {
 			return u
 		}
@@ -345,6 +365,12 @@ func (c *Client) resolveChunk(ctx context.Context, ids []uuid.UUID, into map[uui
 	req.Header.Set("Content-Type", "application/json")
 	if c.internalKey != "" {
 		req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	}
+	// WHO IS LOOKING. media-service's delivery gate reads this header and
+	// refuses every protected asset without it — see viewer.go for the full
+	// account of the grey-box catalogue this omission produced.
+	if viewer := ViewerFrom(ctx); viewer != uuid.Nil {
+		req.Header.Set("X-User-Id", viewer.String())
 	}
 
 	resp, err := c.http.Do(req)

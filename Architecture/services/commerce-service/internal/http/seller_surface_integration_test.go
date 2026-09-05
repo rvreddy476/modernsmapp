@@ -524,9 +524,16 @@ func TestAProductListCarriesRenderableImageURLs(t *testing.T) {
 	batch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+			// media-service's REAL rendition names — see
+			// internal/processing/image.go there. This stub used to say
+			// "thumbnail" and "medium", names media-service has never
+			// produced, and it passed anyway: the resolver's preference list
+			// used the same invented names, so a fake and a bug agreed with
+			// each other while every real product tile served the
+			// full-resolution `original`.
 			mediaID.String(): map[string]any{"variants": map[string]string{
-				"thumbnail": "https://cdn.example/t.jpg",
-				"medium":    "https://cdn.example/m.jpg",
+				"thumb_150":   "https://cdn.example/t.jpg",
+				"medium_1080": "https://cdn.example/m.jpg",
 			}},
 		}})
 	}))

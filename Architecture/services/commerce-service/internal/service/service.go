@@ -769,6 +769,7 @@ func (s *Service) GetOrderWithItems(ctx context.Context, orderID, userID uuid.UU
 	if err != nil {
 		return nil, nil, err
 	}
+	s.hydrateOrderItemImages(ctx, items)
 	return order, items, nil
 }
 
@@ -856,6 +857,17 @@ func (s *Service) ListSellerFulfillment(ctx context.Context, sellerID uuid.UUID,
 	itemsByOrder, err := s.store.GetOrderItemsByOrderIDs(ctx, orderIDs)
 	if err != nil {
 		return nil, fmt.Errorf("batch order items: %w", err)
+	}
+	// ONE media batch for the whole page, flattened across every order —
+	// hydrating per order would turn a 20-order page back into 20 sequential
+	// calls to media-service, which is the N+1 this batching block exists to
+	// remove.
+	{
+		flat := make([]*postgres.OrderItem, 0, len(orderIDs)*2)
+		for _, id := range orderIDs {
+			flat = append(flat, itemsByOrder[id]...)
+		}
+		s.hydrateOrderItemImages(ctx, flat)
 	}
 	shipmentsByOrder, err := s.store.GetShipmentsByOrderAndSeller(ctx, orderIDs, sellerID)
 	if err != nil {
@@ -1036,6 +1048,11 @@ type OrderDetailItem struct {
 	LineTotalMinor money.Paise `json:"line_total_minor"`
 	Status         string      `json:"status"`
 	TrackingNumber *string     `json:"tracking_number,omitempty"`
+	// The line's picture, resolved through media-service in one batch for
+	// the whole order. Empty when the product has no image or media-service
+	// could not answer — the client draws a placeholder.
+	ImageURL     string `json:"image_url,omitempty"`
+	ThumbnailURL string `json:"thumbnail_url,omitempty"`
 }
 
 // GetOrderDetail assembles the buyer's order screen: totals in paise, the
@@ -1060,6 +1077,8 @@ func (s *Service) GetOrderDetail(ctx context.Context, orderID, userID uuid.UUID)
 	if err != nil {
 		return nil, err
 	}
+	// One media batch for the whole order, before the lines are projected.
+	s.hydrateOrderItemImages(ctx, items)
 	lines := make([]OrderDetailItem, 0, len(items))
 	for _, it := range items {
 		lines = append(lines, OrderDetailItem{
@@ -1076,6 +1095,8 @@ func (s *Service) GetOrderDetail(ctx context.Context, orderID, userID uuid.UUID)
 			LineTotalMinor: money.Paise(it.LineTotalMinor()),
 			Status:         it.Status,
 			TrackingNumber: it.TrackingNumber,
+			ImageURL:       it.ImageURL,
+			ThumbnailURL:   it.ThumbnailURL,
 		})
 	}
 
