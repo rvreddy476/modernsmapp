@@ -441,6 +441,14 @@ type CreatePostInput struct {
 	// TaggedUserIDs is already parsed; NormalizeTaggedUsers decides what
 	// is stored.
 	TaggedUserIDs []uuid.UUID
+	// PublishAt schedules the post (schedule.go): nil publishes now; a
+	// time in [now+5m, now+30d] stores it author-only until the worker
+	// publishes it. Validated by ValidatePublishAt before anything is written.
+	PublishAt *time.Time
+	// Hashtags and Mentions are the studio's separate fields
+	// (explicit_tags.go), merged with what the caption parser extracts.
+	Hashtags []string
+	Mentions []string
 	// Distribution is the raw policy document from the client (P0-1).
 	// nil = no policy = legacy behavior. Validated by ParseDistributionPolicy.
 	Distribution json.RawMessage
@@ -729,6 +737,10 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if err := ValidatePostContent(input.Text, len(input.MediaIDs)); err != nil {
 		return nil, err
 	}
+	// Scheduling window, before anything is written (schedule.go).
+	if err := ValidatePublishAt(input.PublishAt, time.Now()); err != nil {
+		return nil, err
+	}
 
 	// DURABLE IDEMPOTENCY — fast path (C-LB-3.3).
 	//
@@ -854,10 +866,22 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if len(hashtags) > 20 {
 		hashtags = hashtags[:20]
 	}
+	// Merge the studio's explicit `hashtags` field (explicit_tags.go):
+	// validated here so a bad tag fails the request before any write.
+	explicitTags, err := NormalizeExplicitHashtags(input.Hashtags)
+	if err != nil {
+		return nil, err
+	}
+	hashtags = mergeTags(hashtags, explicitTags, maxMergedHashtags)
 	hashtags = s.filterBlockedHashtags(ctx, hashtags)
 
-	// Extract @mentions from text
+	// Extract @mentions from text and merge the explicit `mentions` field.
 	mentions := extractMentions(input.Text)
+	explicitMentions, err := NormalizeExplicitMentions(input.Mentions)
+	if err != nil {
+		return nil, err
+	}
+	mentions = mergeTags(mentions, explicitMentions, maxMergedMentions)
 
 	// Default reel metadata values
 	lang := input.Language
@@ -934,6 +958,8 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		HideShare:         input.HideShare,
 		AllowDownload:     input.AllowDownload,
 		TaggedUserIDs:     taggedUsers,
+		MentionUsernames:  mentions,
+		PublishAt:         input.PublishAt,
 		CreatedAt:         time.Now(),
 	}
 
@@ -1139,43 +1165,19 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Build the PostCreated event BEFORE the insert so the outbox row
 	// commits in the same transaction as the post (Codex P0-1: event and
 	// row are atomic; closes the old commit→outbox dual-write window).
+	//
+	// A SCHEDULED post (publish_at set) emits nothing here: no PostCreated,
+	// so no feed fan-out, no search index, no follower or subscriber
+	// notification. The schedule worker emits the identical event — built by
+	// the same buildPostCreatedPayload — when it publishes (schedule.go).
+	scheduled := p.PublishAt != nil
+	p.IsScheduled = scheduled
 	createEventType := ""
 	var createPayload interface{}
-	if s.producer != nil {
-		resolved := ResolveDistribution(effectivePolicy)
-		pc := events.PostCreatedPayload{
-			PostID:          p.ID.String(),
-			AuthorID:        p.AuthorID.String(),
-			Text:            p.Text,
-			Visibility:      p.Visibility,
-			ContentType:     p.ContentType,
-			DurationSeconds: maxDuration,
-			CreatedAt:       p.CreatedAt,
-			DistributionRev: p.DistributionRev,
-			// Module 2 M2-P0-1: carry the CANONICAL persisted moderation
-			// state so search can refuse to index held content. Without
-			// this, a post gated at 'pending' by the video/voice safety
-			// check was indexed and publicly findable immediately.
-			ReviewStatus: p.ReviewStatus,
-			// Creation is always revision 1; later transitions increment.
-			SearchRev: 1,
-		}
-		// Additive pointer fields: stamped whenever an intent exists —
-		// either a typed policy or explicit legacy fields (P1-1). Events
-		// for clients that expressed no opinion stay byte-compatible.
-		if effectivePolicy != nil {
-			mf, ns := resolved.MainFeed, resolved.NotifySubscribers
-			pc.MainFeed = &mf
-			pc.NotifySubscribers = &ns
-		}
-		// Subscriber fan-out key (P0-3): best-effort canonical channel
-		// lookup for video uploads. Empty on failure — the notification
-		// consumer treats a missing channel as "no subscriber fan-out".
-		if isVideoContentType(p.ContentType) {
-			pc.ChannelID = s.lookupChannelIDForUser(ctx, p.AuthorID)
-		}
+	if s.producer != nil && !scheduled {
 		createEventType = events.PostCreated
-		createPayload = pc
+		// Creation is always revision 1; later transitions increment.
+		createPayload = s.buildPostCreatedPayload(ctx, p, effectivePolicy, maxDuration, 1)
 	}
 
 	// The post, its outbox event and the durable idempotency claim commit
@@ -1222,10 +1224,10 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		s.enqueueForReview(p, spamResult.Score)
 	}
 
-	// Persist @mentions to post_mentions table
-	if len(mentions) > 0 {
-		DetectAndStoreMentions(ctx, p.ID, p.ContentType, p.Text, s.pgStore)
-	}
+	// Persist the merged @mentions (caption + explicit field) to
+	// post_mentions. Scheduled posts too: the rows are a join, not a
+	// notification — user.mentioned is only emitted at publish time.
+	s.storeMentions(ctx, p.ID, p.ContentType, mentions)
 
 	// Create video_metadata for video content types.
 	//
@@ -1269,108 +1271,18 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		}
 	}
 
-	// Resolve @mentions and emit user.mentioned events (fire and forget)
-	if s.producer != nil && len(mentions) > 0 {
-		postID := p.ID
-		authorID := p.AuthorID
-		for _, uname := range mentions {
-			go func(username string) {
-				ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				userID, err := s.lookupUserByUsername(ctx2, username)
-				if err != nil || userID == "" {
-					return
-				}
-				mentionedID, err := uuid.Parse(userID)
-				if err != nil || mentionedID == authorID {
-					return // skip self-mentions
-				}
-				if err := s.producer.PublishUserMentioned(ctx2, mentionedID, authorID, postID.String()); err != nil {
-					log.Printf("Warning: failed to publish UserMentioned event for @%s: %v", username, err)
-				}
-			}(uname)
-		}
-	}
-
 	// Invalidate author content counts cache
 	s.rdb.Del(ctx, fmt.Sprintf("post:author-counts:%s", input.AuthorID))
 
-	// PostCreated now rides the same transaction as the post row (see
-	// CreatePostWithEvent above) — the outbox worker publishes it to
-	// Kafka on its next 5s tick with retry until success.
-
-	// Fire-and-forget: ephemeral Redis pub/sub for live signaling.
-	// Not durable — clients tolerate missing one notification and
-	// catch up on next REST fetch; SSE replay covers the gap. The
-	// durable Kafka event goes through the outbox above.
-	go func() {
-		bgCtx := context.Background()
-
-		// Bump trending hashtag scores for today's bucket. The reader is
-		// search-service `GetTrending` and post-service `GetTrendingHashtagsFeed`,
-		// both of which read from `trending:hashtags:{YYYY-MM-DD}` (UTC).
-		if len(p.Hashtags) > 0 {
-			today := time.Now().UTC().Format("2006-01-02")
-			key := "trending:hashtags:" + today
-			pipe := s.rdb.Pipeline()
-			for _, tag := range p.Hashtags {
-				pipe.ZIncrBy(bgCtx, key, 1, tag)
-			}
-			// 48h TTL keeps the previous day's set alive briefly so reads
-			// that race past midnight don't return empty.
-			pipe.Expire(bgCtx, key, 48*time.Hour)
-			if _, err := pipe.Exec(bgCtx); err != nil {
-				log.Printf("Warning: failed to update trending:hashtags: %v", err)
-			}
-
-			// Counter-sharding rollout: per-tag +1 into the aggregate
-			// `hashtags.use_count` counter (kind: "hashtag_use_count").
-			// The flush worker (cmd/server) materializes shard sums back
-			// into the PG row every 10s. This replaces what would have
-			// been a per-event `UPDATE hashtags SET use_count = use_count + 1`
-			// hot-row contention pattern at trending-tag scale. The PG
-			// fallback (Redis-less dev loops) is the UPSERT inside
-			// adjustHashtagUseCount.
-			for _, tag := range p.Hashtags {
-				cleaned := strings.ToLower(strings.TrimPrefix(tag, "#"))
-				if cleaned == "" {
-					continue
-				}
-				if err := s.adjustHashtagUseCount(bgCtx, cleaned); err != nil {
-					log.Printf("Warning: failed to bump hashtags.use_count for %s: %v", cleaned, err)
-				}
-			}
-		}
-
-		snippet := p.Text
-		if len(snippet) > 120 {
-			snippet = snippet[:120]
-		}
-		feedSignal, _ := json.Marshal(map[string]interface{}{
-			"type": "new_post",
-			"payload": map[string]interface{}{
-				"post_id":      p.ID.String(),
-				"author_id":    p.AuthorID.String(),
-				"content_type": p.ContentType,
-				"snippet":      snippet,
-				"created_at":   p.CreatedAt,
-			},
-		})
-		s.rdb.Publish(bgCtx, "feed:new_post", feedSignal)
-
-		// Per-hashtag real-time push. Same shape as feed:new_post so
-		// the SSE handler in internal/http/hashtag_stream.go can
-		// forward straight through. One channel per tag — clients
-		// subscribed to a specific tag only see posts that actually
-		// carry it, no client-side filtering needed.
-		for _, tag := range p.Hashtags {
-			cleaned := strings.ToLower(strings.TrimPrefix(tag, "#"))
-			if cleaned == "" {
-				continue
-			}
-			s.rdb.Publish(bgCtx, "hashtag:"+cleaned+":new_post", feedSignal)
-		}
-	}()
+	// PostCreated rides the same transaction as the post row (see
+	// CreatePostWithEventIdempotent above) — the outbox worker publishes it
+	// to Kafka on its next 5s tick with retry until success. Everything
+	// else a public post does at birth — user.mentioned, trending and
+	// hashtag counters, the live pub/sub — is announcePublishedPost, and a
+	// scheduled post does none of it until the worker publishes it.
+	if !scheduled {
+		s.announcePublishedPost(p, mentions)
+	}
 
 	// The create response is the first render of the post the composer
 	// navigates to. It carries the per-media pipeline state and
@@ -1491,7 +1403,7 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	if err := s.attachMediaState(ctx, []*postgres.Post{p}); err != nil {
 		return nil, err
 	}
-	if hiddenWhileProcessing(p, viewerID) {
+	if hiddenFromViewer(p, viewerID) {
 		return nil, nil
 	}
 
@@ -1806,7 +1718,7 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		// the author's alone. Feed fanout wrote the follower timeline rows
 		// at create time; this is where they stay hidden until the media
 		// lands (feed-service mirrors it at its hydration tail).
-		if hiddenWhileProcessing(&post, viewerID) {
+		if hiddenFromViewer(&post, viewerID) {
 			continue
 		}
 

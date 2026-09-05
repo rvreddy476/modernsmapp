@@ -54,6 +54,7 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		contentType string
 		createdAt   time.Time
 		deletedAt   *time.Time
+		publishAt   *time.Time
 		rev         int64
 	)
 	err := tx.QueryRow(ctx, `
@@ -61,9 +62,9 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		SET search_rev = search_rev + 1
 		WHERE id = $1
 		RETURNING author_id, visibility, review_status, text, content_type,
-		          created_at, deleted_at, search_rev`, postID).
+		          created_at, deleted_at, publish_at, search_rev`, postID).
 		Scan(&authorID, &visibility, &review, &text, &contentType,
-			&createdAt, &deletedAt, &rev)
+			&createdAt, &deletedAt, &publishAt, &rev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrPostRowMissing
 	}
@@ -77,15 +78,20 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		Visibility:   visibility,
 		ReviewStatus: review,
 		Deleted:      deletedAt != nil,
-		SearchRev:    rev,
-		ContentType:  contentType,
-		CreatedAt:    createdAt,
-		ChangedAt:    time.Now().UTC(),
+		// A scheduled post (publish_at set, migration 042) is not public yet
+		// whatever its visibility and review say; the consumer treats the
+		// flag as ineligible. Its PostCreated arrives at publish time with a
+		// higher revision.
+		Scheduled:   publishAt != nil,
+		SearchRev:   rev,
+		ContentType: contentType,
+		CreatedAt:   createdAt,
+		ChangedAt:   time.Now().UTC(),
 	}
 	// Only carry the body when the post is actually eligible. There is no
 	// reason to put non-public or unapproved text on the bus, and it keeps
 	// removal events small.
-	if events.SearchEligible(visibility, review, deletedAt != nil) {
+	if publishAt == nil && events.SearchEligible(visibility, review, deletedAt != nil) {
 		payload.Text = text
 	}
 
@@ -135,6 +141,7 @@ type EligibilityRow struct {
 	Visibility  string
 	Review      string
 	Deleted     bool
+	Scheduled   bool
 	SearchRev   int64
 	Text        string
 	ContentType string
@@ -143,7 +150,7 @@ type EligibilityRow struct {
 
 // Eligible reports whether this row belongs in the public search index.
 func (r EligibilityRow) Eligible() bool {
-	return events.SearchEligible(r.Visibility, r.Review, r.Deleted)
+	return !r.Scheduled && events.SearchEligible(r.Visibility, r.Review, r.Deleted)
 }
 
 // ScanEligibility pages the canonical posts table for reconciliation
@@ -156,7 +163,7 @@ func (s *Store) ScanEligibility(ctx context.Context, afterID uuid.UUID, limit in
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, author_id, visibility, review_status,
-		       (deleted_at IS NOT NULL), search_rev, text, content_type, created_at
+		       (deleted_at IS NOT NULL), (publish_at IS NOT NULL), search_rev, text, content_type, created_at
 		FROM posts
 		WHERE id > $1
 		ORDER BY id ASC
@@ -170,7 +177,7 @@ func (s *Store) ScanEligibility(ctx context.Context, afterID uuid.UUID, limit in
 	for rows.Next() {
 		var r EligibilityRow
 		if err := rows.Scan(&r.PostID, &r.AuthorID, &r.Visibility, &r.Review,
-			&r.Deleted, &r.SearchRev, &r.Text, &r.ContentType, &r.CreatedAt); err != nil {
+			&r.Deleted, &r.Scheduled, &r.SearchRev, &r.Text, &r.ContentType, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

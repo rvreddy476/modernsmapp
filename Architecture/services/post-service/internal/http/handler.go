@@ -80,6 +80,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/:postId", h.DeletePost)
 		v1.POST("/:postId/restore", h.RestorePost)
 		v1.GET("/me/deleted", h.ListMyDeletedPosts)
+		// Scheduled publish (2026-09-05, schedule.go): the author's list and
+		// reschedule / publish-now. DELETE above soft-deletes a scheduled post.
+		v1.GET("/me/scheduled", h.ListMyScheduledPosts)
+		v1.PATCH("/:postId/schedule", h.UpdateSchedule)
 		v1.PUT("/:postId/pin", h.TogglePin)
 
 		// Legacy reaction routes (kept for backward compat)
@@ -358,6 +362,15 @@ type CreatePostRequest struct {
 	// bounded in parseTaggedUserIDs, deduped and author-stripped in the
 	// service.
 	TaggedUserIDs []string `json:"tagged_user_ids"`
+	// PublishAt schedules the post (RFC3339, 5 min – 30 days out). Absent or
+	// empty publishes now. Scheduled posts are author-only until the
+	// worker publishes them (internal/postschedule).
+	PublishAt *string `json:"publish_at"`
+	// Hashtags and Mentions are the reel studio's separate fields
+	// (2026-09-05), merged with what the caption parser extracts. Bounds and
+	// alphabet are enforced by the service (explicit_tags.go).
+	Hashtags []string `json:"hashtags"`
+	Mentions []string `json:"mentions"`
 	// Distribution is the typed, versioned scalar policy (Module 1 P0-1):
 	// {"version":1,"main_feed":bool,"notify_subscribers":bool,
 	//  "create_reel_preview":bool}. Omitted = legacy behavior. Unknown
@@ -596,6 +609,12 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		return
 	}
 
+	publishAt, err := parsePublishAt(req.PublishAt)
+	if err != nil {
+		writeScheduleError(c, err)
+		return
+	}
+
 	// The fingerprint is taken over the WHOLE accepted request (C-P0-5).
 	// Computed before anything is written: a request whose canonical form
 	// cannot be produced cannot be safely bound to an idempotency key, and
@@ -648,6 +667,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		AllowDownload:     resolveAllowDownload(req.AllowDownload),
 		TaggedUserIDs:     taggedUserIDs,
 		Distribution:      req.Distribution,
+		PublishAt:         publishAt,
+		Hashtags:          req.Hashtags,
+		Mentions:          req.Mentions,
 		// P1-1: forward the explicit legacy intent so an old client's
 		// `publish_to_feed:false` is honored instead of silently
 		// overridden by the canonical default.
@@ -676,6 +698,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	p, err := h.svc.CreatePost(c.Request.Context(), input)
 	if err != nil {
 		if writeCreateGuardError(c, err) {
+			return
+		}
+		if writeScheduleError(c, err) {
 			return
 		}
 		if writeDistributionError(c, err) {

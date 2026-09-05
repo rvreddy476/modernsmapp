@@ -13,46 +13,53 @@ import (
 )
 
 type Post struct {
-	ID                uuid.UUID       `json:"id"`
-	AuthorID          uuid.UUID       `json:"author_id"`
-	Text              string          `json:"text"`
-	Visibility        string          `json:"visibility"`
-	ContentType       string          `json:"content_type"`
-	IsPinned          bool            `json:"is_pinned"`
-	Feeling           *string         `json:"feeling,omitempty"`
-	Activity          *string         `json:"activity,omitempty"`
-	ActivityDetail    *string         `json:"activity_detail,omitempty"`
-	RichText          json.RawMessage `json:"rich_text,omitempty"`
-	NoComments        bool            `json:"no_comments"`
-	NoLikes           bool            `json:"no_likes"`
-	Hashtags          []string        `json:"hashtags,omitempty"`
-	Mentions          []uuid.UUID     `json:"mentions,omitempty"`
-	LocationName      *string         `json:"location_name,omitempty"`
-	LocationLat       *float64        `json:"location_lat,omitempty"`
-	LocationLng       *float64        `json:"location_lng,omitempty"`
-	PostType          string          `json:"post_type"`
-	AppOrigin         string          `json:"app_origin"`
-	ShareToPostbook   bool            `json:"share_to_postbook"`
-	ReviewStatus      string          `json:"review_status"` // "approved", "flagged", "rejected"
-	Title             string          `json:"title,omitempty"`
-	Tags              []string        `json:"tags,omitempty"`
-	Category          string          `json:"category,omitempty"`
-	Language          string          `json:"language,omitempty"`
-	SEOTitle          string          `json:"seo_title,omitempty"`
-	PaidPromotion     bool            `json:"paid_promotion"`
-	AlteredContent    bool            `json:"altered_content"`
-	IsMadeForKids     bool            `json:"is_made_for_kids"`
-	License           string          `json:"license,omitempty"`
-	AllowEmbedding    bool            `json:"allow_embedding"`
-	PublishToFeed     bool            `json:"publish_to_feed"`
-	RemixSetting      string          `json:"remix_setting,omitempty"`
-	CommentModeration string          `json:"comment_moderation,omitempty"`
-	CommentAccess     string          `json:"comment_access,omitempty"`
-	RecordingDate     *time.Time      `json:"recording_date,omitempty"`
-	RecordingLocation string          `json:"recording_location,omitempty"`
-	CoverMediaID      *uuid.UUID      `json:"cover_media_id,omitempty"`
-	OriginalAudioVol  float32         `json:"original_audio_volume"`
-	OverlayAudioVol   float32         `json:"overlay_audio_volume"`
+	ID             uuid.UUID       `json:"id"`
+	AuthorID       uuid.UUID       `json:"author_id"`
+	Text           string          `json:"text"`
+	Visibility     string          `json:"visibility"`
+	ContentType    string          `json:"content_type"`
+	IsPinned       bool            `json:"is_pinned"`
+	Feeling        *string         `json:"feeling,omitempty"`
+	Activity       *string         `json:"activity,omitempty"`
+	ActivityDetail *string         `json:"activity_detail,omitempty"`
+	RichText       json.RawMessage `json:"rich_text,omitempty"`
+	NoComments     bool            `json:"no_comments"`
+	NoLikes        bool            `json:"no_likes"`
+	Hashtags       []string        `json:"hashtags,omitempty"`
+	// Mentions is the legacy UUID[] column (never populated by any create
+	// path). The wire field `mentions` is MentionUsernames below, which is
+	// what the client sends and what post_mentions stores.
+	Mentions []uuid.UUID `json:"mention_user_ids,omitempty"`
+	// MentionUsernames is every @mention on the post — the explicit
+	// `mentions` form field merged with what the caption parser found
+	// (2026-09-05), leading @ stripped, deduped.
+	MentionUsernames  []string   `json:"mentions,omitempty"`
+	LocationName      *string    `json:"location_name,omitempty"`
+	LocationLat       *float64   `json:"location_lat,omitempty"`
+	LocationLng       *float64   `json:"location_lng,omitempty"`
+	PostType          string     `json:"post_type"`
+	AppOrigin         string     `json:"app_origin"`
+	ShareToPostbook   bool       `json:"share_to_postbook"`
+	ReviewStatus      string     `json:"review_status"` // "approved", "flagged", "rejected"
+	Title             string     `json:"title,omitempty"`
+	Tags              []string   `json:"tags,omitempty"`
+	Category          string     `json:"category,omitempty"`
+	Language          string     `json:"language,omitempty"`
+	SEOTitle          string     `json:"seo_title,omitempty"`
+	PaidPromotion     bool       `json:"paid_promotion"`
+	AlteredContent    bool       `json:"altered_content"`
+	IsMadeForKids     bool       `json:"is_made_for_kids"`
+	License           string     `json:"license,omitempty"`
+	AllowEmbedding    bool       `json:"allow_embedding"`
+	PublishToFeed     bool       `json:"publish_to_feed"`
+	RemixSetting      string     `json:"remix_setting,omitempty"`
+	CommentModeration string     `json:"comment_moderation,omitempty"`
+	CommentAccess     string     `json:"comment_access,omitempty"`
+	RecordingDate     *time.Time `json:"recording_date,omitempty"`
+	RecordingLocation string     `json:"recording_location,omitempty"`
+	CoverMediaID      *uuid.UUID `json:"cover_media_id,omitempty"`
+	OriginalAudioVol  float32    `json:"original_audio_volume"`
+	OverlayAudioVol   float32    `json:"overlay_audio_volume"`
 	// Per-reel controls (2026-09-04). Never omitempty: a renderer must be
 	// able to tell "downloads allowed" from "field missing", and the two
 	// remaining switches — comments and remix — are NoComments and
@@ -90,10 +97,18 @@ type Post struct {
 	// only ever non-nil on the author's own recently-deleted listing.
 	// PurgeAt is when the purge worker will hard-delete it — computed by
 	// the service from DeletedAt + the purge window, never stored.
-	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
-	PurgeAt   *time.Time  `json:"purge_at,omitempty"`
-	Media     []PostMedia `json:"media,omitempty"`
-	Poll      *PollData   `json:"poll,omitempty"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	PurgeAt   *time.Time `json:"purge_at,omitempty"`
+	// PublishAt is set while the post is SCHEDULED (migration 042): stored,
+	// author-only, in no feed/search/hashtag surface, no PostCreated emitted.
+	// The schedule worker clears it at publish time and stamps PublishedAt.
+	// IsScheduled is derived from it at scan time and never omitempty, so a
+	// client cannot confuse "live" with "unknown".
+	PublishAt   *time.Time  `json:"publish_at,omitempty"`
+	PublishedAt *time.Time  `json:"published_at,omitempty"`
+	IsScheduled bool        `json:"is_scheduled"`
+	Media       []PostMedia `json:"media,omitempty"`
+	Poll        *PollData   `json:"poll,omitempty"`
 
 	// IsProcessing is true until EVERY attached asset is processing_status
 	// "ready" AND moderation_status "passed" (2026-09-04: a reel is
@@ -218,7 +233,8 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	tier_required_id,
 	distribution, distribution_rev,
 	thread_root_id, thread_reply_to_id, thread_seq,
-	created_at, updated_at, review_status, deleted_at`
+	created_at, updated_at, review_status, deleted_at,
+	publish_at, published_at, mention_usernames`
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
@@ -226,7 +242,14 @@ func scanPost(row pgx.Row) (*Post, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.deriveScheduled()
 	return &p, nil
+}
+
+// deriveScheduled sets the wire-only IsScheduled flag from publish_at. Every
+// scan path calls it so the flag can never disagree with the column.
+func (p *Post) deriveScheduled() {
+	p.IsScheduled = p.PublishAt != nil
 }
 
 // postScanDestinations is the single source of truth for postCols scan order.
@@ -250,6 +273,7 @@ func postScanDestinations(p *Post) []any {
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
 		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus, &p.DeletedAt,
+		&p.PublishAt, &p.PublishedAt, &p.MentionUsernames,
 	}
 }
 
@@ -260,6 +284,7 @@ func scanPostRows(rows pgx.Rows) ([]Post, error) {
 		if err := rows.Scan(postScanDestinations(&p)...); err != nil {
 			return nil, err
 		}
+		p.deriveScheduled()
 		posts = append(posts, p)
 	}
 	return posts, rows.Err()
@@ -606,6 +631,9 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 	if p.TaggedUserIDs == nil {
 		p.TaggedUserIDs = []uuid.UUID{}
 	}
+	if p.MentionUsernames == nil {
+		p.MentionUsernames = []string{}
+	}
 	_, err := tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
 			feeling, activity, activity_detail, rich_text,
@@ -622,7 +650,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			distribution, distribution_rev,
 			thread_root_id, thread_reply_to_id, thread_seq,
 			hide_share, allow_download, tagged_user_ids, content_type_explicit,
-			created_at, updated_at)
+			created_at, updated_at,
+			publish_at, mention_usernames)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
 			$21, $22, $23, $24, $25,
@@ -635,7 +664,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			$41, $42,
 			$43, $44, $45,
 			$46, $47, $48, $49,
-			$50, $50)
+			$50, $50,
+			$51, $52)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -651,7 +681,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		p.Distribution, p.DistributionRev,
 		p.ThreadRootID, p.ThreadReplyToID, p.ThreadSeq,
 		p.HideShare, p.AllowDownload, p.TaggedUserIDs, p.ContentTypeExplicit,
-		p.CreatedAt)
+		p.CreatedAt,
+		p.PublishAt, p.MentionUsernames)
 	if err != nil {
 		return err
 	}
@@ -765,7 +796,7 @@ func (s *Store) GetThreadPosts(ctx context.Context, rootID uuid.UUID) ([]Post, e
 	rows, err := s.db.Query(ctx, `
 		SELECT `+postCols+`
 		FROM posts
-		WHERE thread_root_id = $1 AND deleted_at IS NULL AND review_status = 'approved'
+		WHERE thread_root_id = $1 AND deleted_at IS NULL AND review_status = 'approved' AND publish_at IS NULL
 		ORDER BY thread_seq ASC
 	`, rootID)
 	if err != nil {
@@ -846,7 +877,7 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 
 	query := `SELECT ` + postCols + `
 		FROM posts
-		WHERE author_id = $1 AND deleted_at IS NULL`
+		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL`
 
 	if !includeNonApproved {
 		query += ` AND review_status = 'approved'`
@@ -912,7 +943,7 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, co
 	query := `SELECT ` + postCols + `
 		FROM posts
 		WHERE visibility = 'public' AND deleted_at IS NULL
-			AND review_status = 'approved'`
+			AND review_status = 'approved' AND publish_at IS NULL`
 
 	argIdx := 2
 	if excludeAuthor != nil {

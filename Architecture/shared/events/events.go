@@ -544,6 +544,11 @@ type PostSearchEligibilityChangedPayload struct {
 	ReviewStatus string `json:"review_status"`
 	// Deleted short-circuits to removal regardless of the other fields.
 	Deleted bool `json:"deleted,omitempty"`
+	// Scheduled marks a post whose publish_at is still in the future
+	// (post-service migration 042). Not public yet whatever visibility and
+	// review say: consumers treat it exactly like ineligible. The post's
+	// PostCreated arrives at publish time with a higher revision.
+	Scheduled bool `json:"scheduled,omitempty"`
 	// SearchRev is the monotonic revision. Required; a zero value is
 	// treated as unusable and the consumer fails closed (removal).
 	SearchRev int64 `json:"search_rev"`

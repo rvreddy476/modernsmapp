@@ -99,6 +99,19 @@ type HydratedPost struct {
 	// missing.
 	IsProcessing bool `json:"is_processing"`
 
+	// Scheduled publish (2026-09-05): post-service sets publish_at and
+	// is_scheduled while a post is stored but not yet public. A scheduled
+	// post never enters a timeline (no PostCreated until it publishes), but
+	// the batch endpoint can still be asked for one by id, so the same
+	// author-only rule as is_processing is re-applied at the hydration
+	// tail and such rows are never cached. Never omitempty, like
+	// is_processing.
+	PublishAt   *string `json:"publish_at,omitempty"`
+	IsScheduled bool    `json:"is_scheduled"`
+	// Mentions is the merged @mention username list post-service exposes
+	// next to hashtags (explicit form field + caption-parsed).
+	Mentions json.RawMessage `json:"mentions,omitempty"`
+
 	// Repost metadata — populated when this entry is a repost in someone's timeline
 	IsRepost        bool       `json:"is_repost,omitempty"`
 	RepostedBy      *uuid.UUID `json:"reposted_by,omitempty"`
@@ -716,7 +729,7 @@ func (s *Service) storeHydratedCache(viewerID uuid.UUID, fresh map[string]Hydrat
 			// author receives one, and the author's next scroll must see
 			// is_processing flip the moment transcoding lands, not five
 			// minutes later.
-			if hp.IsProcessing {
+			if hp.IsProcessing || hp.IsScheduled {
 				continue
 			}
 			data, err := json.Marshal(hp)

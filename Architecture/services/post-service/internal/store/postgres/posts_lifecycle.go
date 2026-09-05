@@ -50,11 +50,12 @@ func (s *Store) RestorePost(ctx context.Context, postID, authorID uuid.UUID, win
 		contentType string
 		visibility  string
 		createdAt   time.Time
+		publishAt   *time.Time
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT deleted_at, content_type, visibility, created_at
+		SELECT deleted_at, content_type, visibility, created_at, publish_at
 		FROM posts WHERE id = $1 AND author_id = $2
-		FOR UPDATE`, postID, authorID).Scan(&deletedAt, &contentType, &visibility, &createdAt)
+		FOR UPDATE`, postID, authorID).Scan(&deletedAt, &contentType, &visibility, &createdAt, &publishAt)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && deletedAt == nil) {
 		return 0, ErrPostNotDeleted
 	}
@@ -77,11 +78,16 @@ func (s *Store) RestorePost(ctx context.Context, postID, authorID uuid.UUID, win
 	if err != nil {
 		return 0, fmt.Errorf("restore: emit search eligibility: %w", err)
 	}
-	if err := InsertOutboxEventTx(ctx, tx, events.PostRestored, "post", postID, events.PostRestoredPayload{
-		PostID: postID.String(), AuthorID: authorID.String(), ContentType: contentType,
-		Visibility: visibility, CreatedAt: createdAt, RestoredAt: time.Now().UTC(), SearchRev: rev,
-	}); err != nil {
-		return 0, fmt.Errorf("restore: emit PostRestored: %w", err)
+	// A scheduled post (publish_at set) was never fanned out, so there is
+	// nothing for feed-service to restore; PostRestored would make it fan
+	// the post out early. The schedule worker publishes it when due.
+	if publishAt == nil {
+		if err := InsertOutboxEventTx(ctx, tx, events.PostRestored, "post", postID, events.PostRestoredPayload{
+			PostID: postID.String(), AuthorID: authorID.String(), ContentType: contentType,
+			Visibility: visibility, CreatedAt: createdAt, RestoredAt: time.Now().UTC(), SearchRev: rev,
+		}); err != nil {
+			return 0, fmt.Errorf("restore: emit PostRestored: %w", err)
+		}
 	}
 
 	// Crosspost embeds cascaded by the same delete share its deleted_at.

@@ -196,7 +196,8 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	q := `SELECT id, author_id, text, visibility,
 	             COALESCE(review_status, ''), COALESCE(search_rev, 1),
 	             COALESCE(content_type, ''), created_at,
-	             (deleted_at IS NOT NULL) AS is_deleted
+	             (deleted_at IS NOT NULL) AS is_deleted,
+	             (publish_at IS NOT NULL) AS is_scheduled
 	      FROM posts
 	      ORDER BY created_at DESC`
 	if limit > 0 {
@@ -214,15 +215,16 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 		var id, authorID, text, visibility, reviewStatus, contentType string
 		var searchRev int64
 		var createdAt time.Time
-		var isDeleted bool
+		var isDeleted, isScheduled bool
 		if err := rows.Scan(&id, &authorID, &text, &visibility,
-			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted); err != nil {
+			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted, &isScheduled); err != nil {
 			return indexed, err
 		}
 
 		// The one eligibility rule, shared with the consumer so the
 		// rebuild can never be more permissive than the live path.
-		if !events.SearchEligible(visibility, reviewStatus, isDeleted) {
+		// A scheduled post (publish_at set) is not public yet either.
+		if isScheduled || !events.SearchEligible(visibility, reviewStatus, isDeleted) {
 			if dry {
 				skipped++
 				continue

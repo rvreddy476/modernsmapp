@@ -216,7 +216,8 @@ const channelVideoCountWhere = `
 	AND content_type IN ('long_video', 'video')
 	AND deleted_at IS NULL
 	AND visibility = 'public'
-	AND review_status = 'approved'`
+	AND review_status = 'approved'
+	AND publish_at IS NULL`
 
 // CountChannelVideos returns the public long-video count for one owner.
 func (s *Store) CountChannelVideos(ctx context.Context, userID uuid.UUID) (int, error) {

@@ -19,7 +19,7 @@ func (s *Store) GetUploadsByContentTypes(ctx context.Context, authorID uuid.UUID
 	args := []interface{}{authorID, contentTypes, limit + 1}
 	query := `SELECT ` + postCols + `
 		FROM posts
-		WHERE author_id = $1 AND content_type = ANY($2) AND deleted_at IS NULL`
+		WHERE author_id = $1 AND content_type = ANY($2) AND deleted_at IS NULL AND publish_at IS NULL`
 
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
@@ -192,7 +192,7 @@ func (s *Store) CountUploadsByContentTypes(ctx context.Context, authorID uuid.UU
 			COALESCE(SUM(CASE WHEN content_type IN ('flick', 'reel') THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN content_type IN ('post', 'image') THEN 1 ELSE 0 END), 0)
 		FROM posts
-		WHERE author_id = $1 AND deleted_at IS NULL
+		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL
 	`, authorID).Scan(&videos, &flicks, &posts)
 	return
 }

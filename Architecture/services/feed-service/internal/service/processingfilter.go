@@ -22,12 +22,14 @@ import "github.com/google/uuid"
 // marking it and the post reaches everyone with no further action.
 
 // applyProcessingFilter drops every hydrated post that is still processing
-// unless the viewer is its author. Reposts are judged by the original
-// author: a repost of a processing post is that post, re-shared.
+// — or still SCHEDULED (publish_at set, 2026-09-05; same author-only rule,
+// same reason: the fact travels on the post) — unless the viewer is its
+// author. Reposts are judged by the original author: a repost of a
+// processing post is that post, re-shared.
 func applyProcessingFilter(viewerID uuid.UUID, posts []HydratedPost) []HydratedPost {
 	out := posts[:0]
 	for _, p := range posts {
-		if p.IsProcessing && p.AuthorID != viewerID {
+		if (p.IsProcessing || p.IsScheduled) && p.AuthorID != viewerID {
 			continue
 		}
 		out = append(out, p)

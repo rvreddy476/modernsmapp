@@ -32,7 +32,10 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 		return nil // malformed; nothing addressable
 	}
 
-	eligible := events.SearchEligible(p.Visibility, p.ReviewStatus, p.Deleted)
+	// A scheduled post (post-service publish_at set) is not public yet
+	// whatever visibility and review say; its PostCreated arrives at
+	// publish time with a higher revision.
+	eligible := !p.Scheduled && events.SearchEligible(p.Visibility, p.ReviewStatus, p.Deleted)
 
 	// A zero/absent revision cannot be ordered. Fail closed: remove, and
 	// let OpenSearch stamp storedRev+1 so the removal raises the barrier

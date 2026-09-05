@@ -131,7 +131,8 @@ func (s *Service) attachMediaStateToDetails(ctx context.Context, details []PostD
 	}
 	out := details[:0]
 	for _, d := range details {
-		if hiddenWhileProcessing(d.Post, viewerID) {
+		// Both author-only gates: still processing, still scheduled.
+		if hiddenFromViewer(d.Post, viewerID) {
 			continue
 		}
 		out = append(out, d)

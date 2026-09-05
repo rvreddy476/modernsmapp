@@ -238,7 +238,7 @@ func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, lim
 	selectList := strings.Join(cols, ", ")
 
 	args := []interface{}{limit + 1}
-	conds := []string{"p.deleted_at IS NULL", "p.visibility = 'public'"}
+	conds := []string{"p.deleted_at IS NULL", "p.visibility = 'public'", "p.publish_at IS NULL"}
 
 	if len(contentTypes) > 0 {
 		args = append(args, contentTypes)
@@ -316,7 +316,7 @@ func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, lim
 
 	query := `SELECT ` + postCols + `
 		FROM posts p
-		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public'`
+		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public' AND p.publish_at IS NULL`
 
 	if len(contentTypes) > 0 {
 		args = append(args, contentTypes)
@@ -378,7 +378,7 @@ func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit 
 	query := `SELECT ` + selectList + `, ` + hashtagTopScoreExpr + ` AS top_score
 		FROM posts p
 		LEFT JOIN post_engagement_counts c ON c.post_id = p.id
-		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public'`
+		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public' AND p.publish_at IS NULL`
 
 	if len(contentTypes) > 0 {
 		args = append(args, contentTypes)
@@ -560,24 +560,13 @@ func scanPostRowsWithScore(rows pgx.Rows) ([]Post, []float64, error) {
 	for rows.Next() {
 		var p Post
 		var topScore float64
-		if err := rows.Scan(
-			&p.ID, &p.AuthorID, &p.Text, &p.Visibility, &p.ContentType, &p.IsPinned,
-			&p.Feeling, &p.Activity, &p.ActivityDetail, &p.RichText,
-			&p.NoComments, &p.NoLikes,
-			&p.Hashtags, &p.Mentions, &p.LocationName, &p.LocationLat, &p.LocationLng,
-			&p.PostType, &p.AppOrigin, &p.ShareToPostbook,
-			&p.Title, &p.Tags, &p.Category, &p.Language, &p.SEOTitle,
-			&p.PaidPromotion, &p.AlteredContent, &p.IsMadeForKids,
-			&p.License, &p.AllowEmbedding, &p.PublishToFeed, &p.RemixSetting,
-			&p.CommentModeration, &p.CommentAccess,
-			&p.RecordingDate, &p.RecordingLocation,
-			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
-			&p.TierRequiredID,
-			&p.CreatedAt, &p.UpdatedAt,
-			&topScore,
-		); err != nil {
+		// postCols + top_score: the shared destination list keeps this scan in
+		// lockstep with the projection (it had drifted behind it).
+		dests := append(postScanDestinations(&p), &topScore)
+		if err := rows.Scan(dests...); err != nil {
 			return nil, nil, err
 		}
+		p.deriveScheduled()
 		posts = append(posts, p)
 		scores = append(scores, topScore)
 	}

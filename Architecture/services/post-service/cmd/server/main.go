@@ -14,6 +14,7 @@ import (
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/http"
 	"github.com/atpost/post-service/internal/postpurge"
+	"github.com/atpost/post-service/internal/postschedule"
 	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
@@ -445,8 +446,16 @@ func main() {
 	postSvc.SetPurgeAfter(purgeCfg.After)
 	go postpurge.NewWorker(pgStore, postSvc, purgeCfg, slog.Default()).Start(consumerCtx)
 
-	slog.Info("reconciler, outbox, purge, and cleanup workers started",
-		"post_purge_after", purgeCfg.After, "post_purge_interval", purgeCfg.Interval)
+	// Scheduled publish worker (2026-09-05): publishes posts whose
+	// publish_at has passed — row flip and PostCreated in one transaction,
+	// idempotent under concurrent replicas. POST_SCHEDULE_INTERVAL is the
+	// tick (default 30s). See internal/postschedule.
+	scheduleCfg := postschedule.ConfigFromEnv()
+	go postschedule.NewWorker(pgStore, postSvc, scheduleCfg, slog.Default()).Start(consumerCtx)
+
+	slog.Info("reconciler, outbox, purge, schedule, and cleanup workers started",
+		"post_purge_after", purgeCfg.After, "post_purge_interval", purgeCfg.Interval,
+		"post_schedule_interval", scheduleCfg.Interval)
 
 	// 12. HTTP Server
 	// Shared SSE fan-out hub: one Redis SUB per channel, in-memory
