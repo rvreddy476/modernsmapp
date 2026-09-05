@@ -45,9 +45,13 @@ type subscriberRow struct {
 
 // notificationMsg is produced to the channel notifications topic for push/websocket delivery.
 type notificationMsg struct {
+	EventType   string `json:"event_type"`
 	RecipientID string `json:"recipient_id"`
 	ChannelID   string `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
 	UpdateID    string `json:"update_id"`
+	UpdateType  string `json:"update_type"`
+	AuthorID    string `json:"author_id"`
 	Title       string `json:"title"`
 	Body        string `json:"body"`
 	ImageURL    string `json:"image_url"`
@@ -159,6 +163,10 @@ func (w *FanoutWorker) handleUpdatePublished(ctx context.Context, event UpdatePu
 		var feedMessages []kafka.Message
 
 		for _, sub := range subscribers {
+			// The author never needs telling about their own update.
+			if sub.UserID.String() == p.AuthorID {
+				continue
+			}
 			totalSubscribers++
 
 			sendNotification := false
@@ -184,17 +192,17 @@ func (w *FanoutWorker) handleUpdatePublished(ctx context.Context, event UpdatePu
 			if sendNotification {
 				totalNotifications++
 
-				// Insert in-app notification
-				if err := w.insertNotification(ctx, sub.UserID, p); err != nil {
-					w.logger.Warn("fanout: failed to insert notification",
-						"recipient_id", sub.UserID, "update_id", p.UpdateID, "error", err)
-				}
-
-				// Produce to push/websocket topic
+				// The inbox row is written by notification-service from the
+				// message below (it owns the inbox store; the old direct
+				// INSERT targeted a table that does not exist in this DB).
 				notifPayload := notificationMsg{
+					EventType:   "channel.update.published",
 					RecipientID: sub.UserID.String(),
 					ChannelID:   p.ChannelID,
+					ChannelName: p.ChannelName,
 					UpdateID:    p.UpdateID,
+					UpdateType:  p.UpdateType,
+					AuthorID:    p.AuthorID,
 					Title:       notifTitle(p),
 					Body:        p.BodyPreview,
 					ImageURL:    p.ImageURL,
@@ -279,31 +287,6 @@ func (w *FanoutWorker) fetchSubscriberBatch(ctx context.Context, channelID strin
 		subs = append(subs, s)
 	}
 	return subs, rows.Err()
-}
-
-// insertNotification writes an in-app notification row for the subscriber.
-func (w *FanoutWorker) insertNotification(ctx context.Context, recipientID uuid.UUID, p UpdatePublishedPayload) error {
-	data, _ := json.Marshal(map[string]string{
-		"channel_id":   p.ChannelID,
-		"update_id":    p.UpdateID,
-		"update_type":  p.UpdateType,
-		"channel_name": p.ChannelName,
-		"deep_link":    p.DeepLink,
-		"image_url":    p.ImageURL,
-	})
-
-	query := `INSERT INTO notifications (id, recipient_id, type, title, body, data, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())`
-
-	_, err := w.db.Exec(ctx, query,
-		uuid.New(),
-		recipientID,
-		"channel_update",
-		notifTitle(p),
-		p.BodyPreview,
-		data,
-	)
-	return err
 }
 
 // notifTitle returns a human-readable notification title.

@@ -124,6 +124,7 @@ func main() {
 	svc.SetIdentityAuthority(cfg.IdentityUserURL)
 	svc.SetGraphService(cfg.GraphServiceURL)
 	svc.SetMediaService(cfg.MediaServiceURL)
+	svc.SetInviteLinkBaseURL(cfg.InviteLinkBaseURL)
 	// Scoped-room entitlement issuance (production chat pass §5.3). Shared
 	// with ws-gateway; empty disables issuance and the personal channel
 	// remains the only delivery path.

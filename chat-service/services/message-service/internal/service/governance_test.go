@@ -31,6 +31,8 @@ type governanceFake struct {
 	// direct-pair sever fixture (SeverDirectConversationOnBlock)
 	directConvID  uuid.UUID
 	requestStatus map[uuid.UUID]string
+	// invite links, keyed by code (chat-app pass)
+	inviteLinks map[string]*postgres.GroupInviteLink
 }
 
 func intentKey(convID, userID uuid.UUID) string { return convID.String() + "|" + userID.String() }
@@ -313,7 +315,7 @@ func (f *governanceFake) TransferOwnership(ctx context.Context, convID, from, to
 	f.roles[convID][to] = "owner"
 	return nil
 }
-func (f *governanceFake) UpdateGroupInfo(context.Context, uuid.UUID, *string, *uuid.UUID) error {
+func (f *governanceFake) UpdateGroupInfo(context.Context, uuid.UUID, *string, *uuid.UUID, *string) error {
 	return nil
 }
 func (f *governanceFake) CreateGroupInvitation(ctx context.Context, convID, inviter, invitee uuid.UUID) (*postgres.GroupInvitation, bool, error) {

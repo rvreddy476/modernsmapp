@@ -23,6 +23,7 @@ type Config struct {
 	IdentityUserURL      string
 	GraphServiceURL      string
 	MediaServiceURL      string
+	InviteLinkBaseURL    string
 	InternalServiceKey   string
 	TrustedProxies       []string
 	OutboxPollInterval   time.Duration
@@ -37,21 +38,24 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		HTTPPort:             getEnv("HTTP_PORT", "8092"),
-		PostgresDSN:          getEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/chat_db?sslmode=disable"),
-		ScyllaHosts:          splitAndClean(getEnv("SCYLLA_HOSTS", "localhost")),
-		ScyllaKeyspace:       getEnv("SCYLLA_KEYSPACE", "chatservice"),
-		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),
-		KafkaBrokers:         splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
-		KafkaTopic:           getEnv("KAFKA_TOPIC", "chat.events.v1"),
-		JWTSecret:            getEnv("JWT_SECRET", ""),
-		JWTKID:               getEnv("JWT_KID", "v1"),
-		JWTSecretPrevious:    getEnv("JWT_SECRET_PREVIOUS", ""),
-		JWTKIDPrevious:       getEnv("JWT_KID_PREVIOUS", ""),
-		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
-		IdentityUserURL:      getEnv("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110"),
-		GraphServiceURL:      getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
-		MediaServiceURL:      getEnv("MEDIA_SERVICE_URL", "http://media-service:8087"),
+		HTTPPort:          getEnv("HTTP_PORT", "8092"),
+		PostgresDSN:       getEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/chat_db?sslmode=disable"),
+		ScyllaHosts:       splitAndClean(getEnv("SCYLLA_HOSTS", "localhost")),
+		ScyllaKeyspace:    getEnv("SCYLLA_KEYSPACE", "chatservice"),
+		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
+		KafkaBrokers:      splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
+		KafkaTopic:        getEnv("KAFKA_TOPIC", "chat.events.v1"),
+		JWTSecret:         getEnv("JWT_SECRET", ""),
+		JWTKID:            getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious: getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:    getEnv("JWT_KID_PREVIOUS", ""),
+		UserServiceURL:    getEnv("USER_SERVICE_URL", "http://user-service:8082"),
+		IdentityUserURL:   getEnv("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110"),
+		GraphServiceURL:   getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
+		MediaServiceURL:   getEnv("MEDIA_SERVICE_URL", "http://media-service:8087"),
+		// Chat-app pass: public base for group invite links; the 10-char code
+		// is appended. Android registers this host for the join deep link.
+		InviteLinkBaseURL:    getEnv("INVITE_LINK_BASE_URL", "https://atpost.app/chat/join/"),
 		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),
 		TrustedProxies:       splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:   getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),

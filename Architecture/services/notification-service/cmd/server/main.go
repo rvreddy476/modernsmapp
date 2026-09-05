@@ -293,6 +293,19 @@ func main() {
 	go chatConsumer.Start(ctx)
 	slog.Info("kafka chat consumer started", "topic", chatTopic)
 
+	// Community (broadcast channel) updates: channel-service's fan-out
+	// worker emits one message per subscriber; this is the only consumer.
+	channelTopic := env("KAFKA_CHANNEL_NOTIFICATIONS_TOPIC", events.ChannelNotificationsTopic)
+	channelConsumer := events.NewChannelConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		env("KAFKA_CHANNEL_GROUP_ID", "notification-service-channels"),
+		channelTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go channelConsumer.Start(ctx)
+	slog.Info("kafka channel consumer started", "topic", channelTopic)
+
 	// QA events live on a dedicated topic by default. Reuse the main consumer
 	// type — its processMessage routes Q&A events through handleQAEvent.
 	qaTopic := env("KAFKA_QA_TOPIC", "qa-events")

@@ -153,7 +153,12 @@ type ConversationResponse struct {
 	// durable read cursor with the denormalized last-message timestamp;
 	// preview text rides along so the inbox renders without a per-row
 	// message fetch.
-	AvatarMediaID      *uuid.UUID `json:"avatar_media_id,omitempty"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
+	// AvatarURL is the group avatar resolved for the VIEWER through
+	// media-service delivery (chat-app pass); empty when unset or denied.
+	AvatarURL string `json:"avatar_url,omitempty"`
+	// Description is the group "about" text (<= 300 runes).
+	Description        string     `json:"description,omitempty"`
 	LastMessageAt      *time.Time `json:"last_message_at,omitempty"`
 	LastMessagePreview string     `json:"last_message_preview,omitempty"`
 	LastMessageSender  *uuid.UUID `json:"last_message_sender,omitempty"`
@@ -220,6 +225,7 @@ type Service struct {
 	identityUserURL    string
 	graphServiceURL    string
 	mediaServiceURL    string
+	inviteLinkBaseURL  string
 	internalServiceKey string
 	entitlementSecret  string
 	httpClient         *http.Client
@@ -364,6 +370,12 @@ func (s *Service) SetGraphService(graphServiceURL string) {
 
 func (s *Service) SetMediaService(mediaServiceURL string) {
 	s.mediaServiceURL = strings.TrimRight(mediaServiceURL, "/")
+}
+
+// SetInviteLinkBaseURL sets the public prefix group invite codes are appended
+// to (chat-app pass). Empty disables the url field.
+func (s *Service) SetInviteLinkBaseURL(base string) {
+	s.inviteLinkBaseURL = base
 }
 
 // checkRateLimit enforces a per-user chat rate limit (spec §10.4). It returns
@@ -591,7 +603,7 @@ func (s *Service) GetConversation(ctx context.Context, userID, conversationID uu
 	if !ok {
 		return nil, errors.New("not a conversation member")
 	}
-	return s.getConversationResponse(ctx, conversationID)
+	return s.getConversationResponseFor(ctx, userID, conversationID)
 }
 
 func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit int, cursor *ConversationCursor) ([]ConversationResponse, *ConversationCursor, error) {
@@ -650,6 +662,7 @@ func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit
 			CreatedAt:          c.CreatedAt,
 			UpdatedAt:          c.UpdatedAt,
 			AvatarMediaID:      c.AvatarMediaID,
+			Description:        c.Description,
 			LastMessageAt:      c.LastMessageAt,
 			LastMessagePreview: c.LastMessagePreview,
 			LastMessageSender:  c.LastMessageSender,
@@ -658,6 +671,7 @@ func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit
 			IsMuted:            settings[c.ID].IsMuted,
 		})
 	}
+	s.resolveGroupAvatarURLs(ctx, userID, out)
 
 	var next *ConversationCursor
 	if len(convs) == limit {
@@ -1524,10 +1538,23 @@ func (s *Service) getConversationResponse(ctx context.Context, convID uuid.UUID)
 		CreatedAt:          conv.CreatedAt,
 		UpdatedAt:          conv.UpdatedAt,
 		AvatarMediaID:      conv.AvatarMediaID,
+		Description:        conv.Description,
 		LastMessageAt:      conv.LastMessageAt,
 		LastMessagePreview: conv.LastMessagePreview,
 		LastMessageSender:  conv.LastMessageSender,
 	}, nil
+}
+
+// getConversationResponseFor is getConversationResponse plus the viewer-
+// scoped group avatar URL (chat-app pass).
+func (s *Service) getConversationResponseFor(ctx context.Context, viewerID, convID uuid.UUID) (*ConversationResponse, error) {
+	resp, err := s.getConversationResponse(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	page := []ConversationResponse{*resp}
+	s.resolveGroupAvatarURLs(ctx, viewerID, page)
+	return &page[0], nil
 }
 
 // enrichMembers batch-fetches user profiles and merges them with member data.

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	channelevents "github.com/atpost/channel-service/internal/events"
 	"github.com/atpost/channel-service/internal/store"
@@ -174,11 +176,14 @@ func (s *Service) SetProducer(p *channelevents.Producer) {
 // --- Channel CRUD ---
 
 type CreateChannelParams struct {
-	Handle                string     `json:"handle"`
-	Name                  string     `json:"name"`
-	Description           string     `json:"description"`
-	AvatarMediaID         *uuid.UUID `json:"avatar_media_id"`
-	BannerMediaID         *uuid.UUID `json:"banner_media_id"`
+	Handle        string     `json:"handle"`
+	Name          string     `json:"name"`
+	Description   string     `json:"description"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id"`
+	BannerMediaID *uuid.UUID `json:"banner_media_id"`
+	// Visibility (public|private) is the community wire field; it wins over
+	// ChannelType when both are sent.
+	Visibility            string     `json:"visibility"`
 	ChannelType           string     `json:"channel_type"`
 	Category              string     `json:"category"`
 	Language              string     `json:"language"`
@@ -190,32 +195,47 @@ type CreateChannelParams struct {
 }
 
 func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params CreateChannelParams) (*store.BroadcastChannel, error) {
-	// Validate required fields
-	if params.Name == "" {
-		return nil, fmt.Errorf("invalid: name is required")
+	// Chat-app pass: name <= 60, about <= 300, handle ^[a-z0-9_]{3,30}$
+	// (unique), visibility public|private.
+	name, err := validateCommunityName(params.Name)
+	if err != nil {
+		return nil, err
 	}
-	if params.Handle == "" {
-		return nil, fmt.Errorf("invalid: handle is required")
+	about, err := validateCommunityAbout(params.Description)
+	if err != nil {
+		return nil, err
 	}
-	if len(params.Handle) < 3 || len(params.Handle) > 30 {
-		return nil, fmt.Errorf("invalid: handle must be between 3 and 30 characters")
+	handle, err := normalizeHandle(params.Handle)
+	if err != nil {
+		return nil, err
 	}
+	params.Name, params.Description, params.Handle = name, about, handle
 
-	// Validate channel type
+	// Validate channel type; visibility wins when given.
 	ct := params.ChannelType
 	if ct == "" {
 		ct = "public"
+	}
+	if v, err := channelTypeForVisibility(params.Visibility); err != nil {
+		return nil, err
+	} else if v != "" {
+		ct = v
 	}
 	if !validChannelTypes[ct] {
 		return nil, fmt.Errorf("invalid: channel_type is not valid")
 	}
 
+	// Communities are broadcast-only: members cannot reply. Comments are
+	// DISABLED unless the creator opts in explicitly.
 	cm := params.CommentMode
 	if cm == "" {
-		cm = "enabled"
+		cm = "disabled"
 	}
 	if !validCommentModes[cm] {
 		return nil, fmt.Errorf("invalid: comment_mode is not valid")
+	}
+	if existing, err := s.store.GetChannelByHandle(ctx, handle); err == nil && existing != nil {
+		return nil, fmt.Errorf("already taken: handle @%s is in use", handle)
 	}
 
 	rm := params.ReactionMode
@@ -265,6 +285,9 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 	}
 
 	if err := s.store.CreateChannel(ctx, ch); err != nil {
+		if strings.Contains(err.Error(), "broadcast_channels_handle_key") || strings.Contains(err.Error(), "duplicate key") {
+			return nil, fmt.Errorf("already taken: handle @%s is in use", handle)
+		}
 		return nil, fmt.Errorf("failed to create channel: %w", err)
 	}
 
@@ -291,7 +314,46 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 
 type ChannelWithMembership struct {
 	*store.BroadcastChannel
+	// ViewerRole: owner | admin | subscriber | banned | "" (not joined).
 	ViewerRole string `json:"viewer_role,omitempty"`
+	// Community wire fields (chat-app pass).
+	Visibility  string `json:"visibility"`
+	MemberCount int64  `json:"member_count"`
+	ViewerMuted bool   `json:"viewer_muted"`
+	// CanPost is true for the owner/admins; members never post.
+	CanPost bool `json:"can_post"`
+}
+
+// withMembership decorates a channel row for the viewer: role (owner wins
+// over the member row), mute state and the community wire fields.
+func (s *Service) withMembership(ctx context.Context, ch *store.BroadcastChannel, viewerID *uuid.UUID) ChannelWithMembership {
+	out := ChannelWithMembership{
+		BroadcastChannel: ch,
+		Visibility:       VisibilityOf(ch.ChannelType),
+		MemberCount:      ch.SubscriberCount,
+	}
+	// subscriber_count is materialised from the sharded Redis counter on a
+	// 10s flush; the community wire field is the live roster so a join is
+	// reflected in the very next read.
+	if live, err := s.store.CountSubscribers(ctx, ch.ID); err == nil {
+		out.MemberCount = live
+	}
+	if viewerID == nil {
+		return out
+	}
+	member, err := s.store.GetMember(ctx, ch.ID, *viewerID)
+	if err != nil {
+		slog.Warn("failed to get member state", "error", err)
+	}
+	switch {
+	case ch.OwnerID == *viewerID:
+		out.ViewerRole = "owner"
+	case member != nil:
+		out.ViewerRole = member.Role
+	}
+	out.ViewerMuted = memberIsMuted(member)
+	out.CanPost = out.ViewerRole == "owner" || out.ViewerRole == "admin"
+	return out
 }
 
 // channelMetaCacheTTL bounds how stale a cached channel record may be.
@@ -351,31 +413,17 @@ func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID 
 		}
 	}
 
-	result := &ChannelWithMembership{BroadcastChannel: ch}
-
-	if viewerID != nil {
-		// Check owner_id first as authoritative source
-		if ch.OwnerID == *viewerID {
-			result.ViewerRole = "admin"
-		} else {
-			member, err := s.store.GetMember(ctx, channelID, *viewerID)
-			if err != nil {
-				slog.Warn("failed to get member state", "error", err)
-			}
-			if member != nil {
-				result.ViewerRole = member.Role
-			}
-		}
-	}
-
-	return result, nil
+	result := s.withMembership(ctx, ch, viewerID)
+	return &result, nil
 }
 
 type UpdateChannelParams struct {
-	Name                   *string    `json:"name"`
-	Description            *string    `json:"description"`
-	AvatarMediaID          *uuid.UUID `json:"avatar_media_id"`
-	BannerMediaID          *uuid.UUID `json:"banner_media_id"`
+	Name          *string    `json:"name"`
+	Description   *string    `json:"description"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id"`
+	BannerMediaID *uuid.UUID `json:"banner_media_id"`
+	// Visibility (public|private) wins over ChannelType when both are sent.
+	Visibility             *string    `json:"visibility"`
 	ChannelType            *string    `json:"channel_type"`
 	Category               *string    `json:"category"`
 	Language               *string    `json:"language"`
@@ -406,10 +454,18 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 
 	// Apply updates
 	if params.Name != nil {
-		ch.Name = *params.Name
+		name, err := validateCommunityName(*params.Name)
+		if err != nil {
+			return nil, err
+		}
+		ch.Name = name
 	}
 	if params.Description != nil {
-		ch.Description = *params.Description
+		about, err := validateCommunityAbout(*params.Description)
+		if err != nil {
+			return nil, err
+		}
+		ch.Description = about
 	}
 	if params.AvatarMediaID != nil {
 		ch.AvatarMediaID = params.AvatarMediaID
@@ -422,6 +478,15 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 			return nil, fmt.Errorf("invalid: channel_type is not valid")
 		}
 		ch.ChannelType = *params.ChannelType
+	}
+	if params.Visibility != nil {
+		v, err := channelTypeForVisibility(*params.Visibility)
+		if err != nil {
+			return nil, err
+		}
+		if v != "" {
+			ch.ChannelType = v
+		}
 	}
 	if params.Category != nil {
 		ch.Category = *params.Category
@@ -609,15 +674,35 @@ type CreateUpdateParams struct {
 	MediaIDs    []uuid.UUID     `json:"media_ids"`
 	Metadata    json.RawMessage `json:"metadata"`
 	ScheduledAt *time.Time      `json:"scheduled_at"`
+	// Event (optional) makes this an event update; stored under
+	// metadata.event and echoed back as `event` on every read.
+	Event *EventInfo `json:"event"`
 }
 
+// CreateUpdate — owner/admin only (community rule: members never post).
 func (s *Service) CreateUpdate(ctx context.Context, channelID, authorID uuid.UUID, params CreateUpdateParams) (*store.ChannelUpdate, error) {
-	member, err := s.store.GetMember(ctx, channelID, authorID)
+	ch, err := s.requireAdmin(ctx, channelID, authorID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
+		return nil, err
 	}
-	if member == nil || !isAtLeast(member.Role, "editor") {
-		return nil, fmt.Errorf("forbidden: only editors and above can create updates")
+	if utf8.RuneCountInString(params.Body) > updateBodyMaxRunes {
+		return nil, fmt.Errorf("invalid: body must be at most %d characters", updateBodyMaxRunes)
+	}
+	if params.Event != nil {
+		if err := validateEvent(params.Event); err != nil {
+			return nil, err
+		}
+		merged, err := mergeEventMetadata(params.Metadata, params.Event)
+		if err != nil {
+			return nil, err
+		}
+		params.Metadata = merged
+		if params.UpdateType == "" {
+			params.UpdateType = "event"
+		}
+	}
+	if strings.TrimSpace(params.Body) == "" && len(params.MediaIDs) == 0 && params.Event == nil && (params.Title == nil || strings.TrimSpace(*params.Title) == "") {
+		return nil, fmt.Errorf("invalid: an update needs text, media or an event")
 	}
 
 	ut := params.UpdateType
@@ -664,44 +749,49 @@ func (s *Service) CreateUpdate(ctx context.Context, channelID, authorID uuid.UUI
 		slog.Warn("failed to increment update count", "error", err)
 	}
 
-	if status == "published" && s.producer != nil {
-		if err := s.producer.PublishChannelUpdatePublished(ctx, channelID, u.ID, authorID); err != nil {
-			slog.Warn("failed to publish channel.update.published event", "error", err)
+	if status == "published" {
+		if s.producer != nil {
+			if err := s.producer.PublishChannelUpdatePublished(ctx, channelID, u.ID, authorID); err != nil {
+				slog.Warn("failed to publish channel.update.published event", "error", err)
+			}
 		}
+		// Subscribers are notified through the fan-out worker.
+		s.emitFanout(ctx, ch, u)
 	}
 
 	return u, nil
 }
 
-func (s *Service) ListUpdates(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID, limit, offset int) ([]store.ChannelUpdate, error) {
+// ListUpdates returns published updates, newest first, decorated for the
+// viewer (event, reaction tallies, the viewer's own reaction). Returns
+// limit+1 rows' worth of knowledge via hasMore so the handler can page.
+func (s *Service) ListUpdates(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID, limit, offset int) ([]UpdateView, bool, error) {
 	// Audit CCh2: previously returned every published update regardless
 	// of channel type — private/paid channel posts were readable by any
 	// caller. Run the read-side viewer gate before the listing.
 	if err := s.authorizeViewer(ctx, channelID, viewerID); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-
-	statusFilter := "published"
-
-	// Admins+ can see all statuses
-	if viewerID != nil {
-		member, err := s.store.GetMember(ctx, channelID, *viewerID)
-		if err == nil && member != nil && isAtLeast(member.Role, "admin") {
-			// For admins, still default to published but they could request others
-			_ = member
-		}
+	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil {
+		return nil, false, err
 	}
-
-	return s.store.ListUpdates(ctx, channelID, statusFilter, limit, offset)
+	updates, err := s.store.ListUpdates(ctx, channelID, "published", limit+1, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(updates) > limit
+	if hasMore {
+		updates = updates[:limit]
+	}
+	views := s.decorateUpdates(ctx, viewerID, s.viewerCanPost(ctx, ch, viewerID), updates)
+	return views, hasMore, nil
 }
 
+// EditUpdate — owner/admin only.
 func (s *Service) EditUpdate(ctx context.Context, channelID, updateID, actorID uuid.UUID, params CreateUpdateParams) (*store.ChannelUpdate, error) {
-	member, err := s.store.GetMember(ctx, channelID, actorID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "editor") {
-		return nil, fmt.Errorf("forbidden: only editors and above can edit updates")
+	if _, err := s.requireAdmin(ctx, channelID, actorID); err != nil {
+		return nil, err
 	}
 
 	u, err := s.store.GetUpdate(ctx, updateID)
@@ -710,6 +800,23 @@ func (s *Service) EditUpdate(ctx context.Context, channelID, updateID, actorID u
 	}
 	if u.ChannelID != channelID {
 		return nil, fmt.Errorf("update not found")
+	}
+	if utf8.RuneCountInString(params.Body) > updateBodyMaxRunes {
+		return nil, fmt.Errorf("invalid: body must be at most %d characters", updateBodyMaxRunes)
+	}
+	if params.Event != nil {
+		if err := validateEvent(params.Event); err != nil {
+			return nil, err
+		}
+		base := u.Metadata
+		if params.Metadata != nil {
+			base = params.Metadata
+		}
+		merged, err := mergeEventMetadata(base, params.Event)
+		if err != nil {
+			return nil, err
+		}
+		params.Metadata = merged
 	}
 
 	if params.UpdateType != "" {
@@ -787,45 +894,37 @@ func (s *Service) GetMyChannels(ctx context.Context, userID uuid.UUID, limit, of
 	}
 
 	seen := make(map[uuid.UUID]bool)
-	var result []ChannelWithMembership
+	result := []ChannelWithMembership{}
 	for i := range owned {
 		seen[owned[i].ID] = true
-		result = append(result, ChannelWithMembership{BroadcastChannel: &owned[i], ViewerRole: "admin"})
+		result = append(result, s.withMembership(ctx, &owned[i], &userID))
 	}
 	for i := range subscribed {
 		if seen[subscribed[i].ID] {
 			continue
 		}
-		role := s.store.GetMemberRole(ctx, subscribed[i].ID, userID)
-		if role == "" {
-			role = "subscriber"
-		}
-		result = append(result, ChannelWithMembership{BroadcastChannel: &subscribed[i], ViewerRole: role})
+		result = append(result, s.withMembership(ctx, &subscribed[i], &userID))
 	}
 	return result, nil
 }
 
-// DiscoverChannels returns discoverable channels with viewer_role for the given user.
-func (s *Service) DiscoverChannels(ctx context.Context, viewerID *uuid.UUID, limit, offset int) ([]ChannelWithMembership, error) {
-	channels, err := s.store.DiscoverChannels(ctx, limit, offset)
+// DiscoverChannels returns public communities ordered by member count then
+// recency, optionally filtered by q (name/handle substring), decorated with
+// the viewer's role. hasMore tells the handler whether to emit a cursor.
+func (s *Service) DiscoverChannels(ctx context.Context, viewerID *uuid.UUID, q string, limit, offset int) ([]ChannelWithMembership, bool, error) {
+	channels, err := s.store.DiscoverChannelsFiltered(ctx, q, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	hasMore := len(channels) > limit
+	if hasMore {
+		channels = channels[:limit]
 	}
 	result := make([]ChannelWithMembership, len(channels))
 	for i := range channels {
-		result[i] = ChannelWithMembership{BroadcastChannel: &channels[i]}
-		if viewerID != nil {
-			if channels[i].OwnerID == *viewerID {
-				result[i].ViewerRole = "admin"
-			} else {
-				role := s.store.GetMemberRole(ctx, channels[i].ID, *viewerID)
-				if role != "" {
-					result[i].ViewerRole = role
-				}
-			}
-		}
+		result[i] = s.withMembership(ctx, &channels[i], viewerID)
 	}
-	return result, nil
+	return result, hasMore, nil
 }
 
 // --- Engagement ---
@@ -989,6 +1088,18 @@ func (s *Service) AddComment(ctx context.Context, channelID, updateID, userID uu
 	}
 	if body == "" {
 		return nil, fmt.Errorf("invalid: comment body is required")
+	}
+	// Community rule: members cannot reply. comment_mode=disabled (the
+	// default for new channels) refuses every comment, admins included.
+	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	if ch.CommentMode == "disabled" {
+		return nil, fmt.Errorf("forbidden: comments are disabled on this channel")
+	}
+	if ch.CommentMode == "subscribers_only" && s.store.GetMemberRole(ctx, channelID, userID) == "" {
+		return nil, fmt.Errorf("forbidden: only subscribers can comment on this channel")
 	}
 	comment, err := s.store.AddComment(ctx, updateID, userID, body, parentID)
 	if err != nil {

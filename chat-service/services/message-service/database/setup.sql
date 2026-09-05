@@ -27,7 +27,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_dating_match
 CREATE TABLE IF NOT EXISTS chat.conversation_members (
     conversation_id UUID NOT NULL REFERENCES chat.conversations(id),
     user_id UUID NOT NULL,
-    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- left_at is set when a member is severed from a conversation (e.g. by a
     -- block — messaging/privacy spec §16.1). A non-NULL left_at means the
@@ -422,3 +422,24 @@ CREATE INDEX IF NOT EXISTS idx_preview_repair_due
 ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS reply_to_id UUID;
 ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS reply_to_preview TEXT NOT NULL DEFAULT '';
 ALTER TABLE chat.message_delivery_intents ADD COLUMN IF NOT EXISTS reply_to_sender_id UUID;
+
+-- ===== 006: chat-app pass (groups hardening, 2026-09-05) =====
+-- The CREATE TABLE above now admits 'owner' directly; the 005 DO block keeps
+-- older databases (created with the two-role CHECK) converging. Group
+-- description (<= 300 runes, enforced in the service) and shareable invite
+-- links. See migrations/006_group_roles_invite_links_description.sql.
+ALTER TABLE chat.conversations
+    ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS chat.group_invite_links (
+    code            TEXT PRIMARY KEY,
+    conversation_id UUID NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+    created_by      UUID NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ,
+    max_uses        INT,
+    uses            INT NOT NULL DEFAULT 0,
+    revoked_at      TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_group_invite_links_live
+    ON chat.group_invite_links(conversation_id) WHERE revoked_at IS NULL;

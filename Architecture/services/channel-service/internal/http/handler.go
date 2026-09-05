@@ -1,7 +1,9 @@
 package http
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -47,11 +49,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:channelId/subscribe", h.Subscribe)
 		v1.DELETE("/:channelId/subscribe", h.Unsubscribe)
 		v1.PUT("/:channelId/subscribe/mute", h.MuteChannel)
+		v1.DELETE("/:channelId/subscribe/mute", h.UnmuteChannel)
 		v1.GET("/:channelId/subscribers", h.ListSubscribers)
 		v1.POST("/:channelId/updates", h.CreateUpdate)
 		v1.GET("/:channelId/updates", h.ListUpdates)
+		v1.GET("/:channelId/updates/:updateId", h.GetUpdate)
 		v1.PUT("/:channelId/updates/:updateId", h.EditUpdate)
 		v1.DELETE("/:channelId/updates/:updateId", h.DeleteUpdate)
+
+		// Communities (chat-app pass 2026-09-05): admins, one-emoji
+		// reactions, reports.
+		v1.GET("/:channelId/admins", h.ListAdmins)
+		v1.POST("/:channelId/admins", h.AddAdmin)
+		v1.DELETE("/:channelId/admins/:userId", h.RemoveAdmin)
+		v1.PUT("/:channelId/updates/:updateId/reaction", h.ReactToUpdate)
+		v1.DELETE("/:channelId/updates/:updateId/reaction", h.UnreactToUpdate)
+		v1.GET("/:channelId/updates/:updateId/reactions", h.GetReactions)
+		v1.POST("/:channelId/report", h.ReportChannel)
+		v1.POST("/:channelId/updates/:updateId/report", h.ReportUpdate)
 
 		// Engagement
 		v1.POST("/:channelId/updates/:updateId/spark", h.SparkUpdate)
@@ -77,11 +92,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 // --- Request structs ---
 
 type CreateChannelRequest struct {
-	Handle                 string     `json:"handle" binding:"required"`
-	Name                   string     `json:"name" binding:"required"`
-	Description            string     `json:"description"`
-	AvatarMediaID          *uuid.UUID `json:"avatar_media_id"`
-	BannerMediaID          *uuid.UUID `json:"banner_media_id"`
+	Handle        string     `json:"handle" binding:"required"`
+	Name          string     `json:"name" binding:"required"`
+	Description   string     `json:"description"`
+	AvatarMediaID *uuid.UUID `json:"avatar_media_id"`
+	BannerMediaID *uuid.UUID `json:"banner_media_id"`
+	// Visibility public|private (community wire field; default public).
+	Visibility             string     `json:"visibility"`
 	ChannelType            string     `json:"channel_type"`
 	Category               string     `json:"category"`
 	Language               string     `json:"language"`
@@ -97,6 +114,7 @@ type UpdateChannelRequest struct {
 	Description            *string    `json:"description"`
 	AvatarMediaID          *uuid.UUID `json:"avatar_media_id"`
 	BannerMediaID          *uuid.UUID `json:"banner_media_id"`
+	Visibility             *string    `json:"visibility"`
 	ChannelType            *string    `json:"channel_type"`
 	Category               *string    `json:"category"`
 	Language               *string    `json:"language"`
@@ -117,6 +135,8 @@ type CreateUpdateRequest struct {
 	MediaIDs    []uuid.UUID     `json:"media_ids"`
 	Metadata    json.RawMessage `json:"metadata"`
 	ScheduledAt *time.Time      `json:"scheduled_at"`
+	// Event: {title, starts_at, ends_at?, location?} — optional.
+	Event *service.EventInfo `json:"event"`
 }
 
 type MuteRequest struct {
@@ -147,12 +167,28 @@ func parsePagination(c *gin.Context) (int, int) {
 }
 
 func handleServiceError(c *gin.Context, err error) {
+	// Typed auth outcomes first (their messages are "channel auth: <reason>"
+	// and previously fell through to 500).
+	var authErr *service.AuthError
+	if errors.As(err, &authErr) {
+		switch authErr.Reason {
+		case "not_found":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "channel not found", nil)
+		case "banned":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "BANNED", "you are banned from this channel", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_SUBSCRIBER", "join this channel first", nil)
+		}
+		return
+	}
 	msg := err.Error()
 	switch {
 	case contains(msg, "forbidden"), contains(msg, "only admins"), contains(msg, "only the channel"), contains(msg, "only editors"):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", msg, nil)
 	case contains(msg, "not found"):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", msg, nil)
+	case contains(msg, "already taken"), contains(msg, "duplicate key"):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "HANDLE_TAKEN", msg, nil)
 	case contains(msg, "not a member"):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", msg, nil)
 	case contains(msg, "rate_limited"):
@@ -199,6 +235,7 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		Description:            req.Description,
 		AvatarMediaID:          req.AvatarMediaID,
 		BannerMediaID:          req.BannerMediaID,
+		Visibility:             req.Visibility,
 		ChannelType:            req.ChannelType,
 		Category:               req.Category,
 		Language:               req.Language,
@@ -262,6 +299,7 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 		Description:            req.Description,
 		AvatarMediaID:          req.AvatarMediaID,
 		BannerMediaID:          req.BannerMediaID,
+		Visibility:             req.Visibility,
 		ChannelType:            req.ChannelType,
 		Category:               req.Category,
 		Language:               req.Language,
@@ -356,13 +394,17 @@ func (h *Handler) MuteChannel(c *gin.Context) {
 		return
 	}
 
+	// Body optional: {} or absent mutes indefinitely; {"muted_until": ts}
+	// mutes until then. DELETE on the same path unmutes.
 	var req MuteRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+			return
+		}
 	}
 
-	if err := h.svc.MuteChannel(c.Request.Context(), channelID, actorID, req.MutedUntil); err != nil {
+	if err := h.svc.Mute(c.Request.Context(), channelID, actorID, req.MutedUntil); err != nil {
 		handleServiceError(c, err)
 		return
 	}
@@ -417,6 +459,7 @@ func (h *Handler) CreateUpdate(c *gin.Context) {
 		MediaIDs:    req.MediaIDs,
 		Metadata:    req.Metadata,
 		ScheduledAt: req.ScheduledAt,
+		Event:       req.Event,
 	}
 
 	update, err := h.svc.CreateUpdate(c.Request.Context(), channelID, actorID, params)
@@ -441,13 +484,39 @@ func (h *Handler) ListUpdates(c *gin.Context) {
 	}
 
 	limit, offset := parsePagination(c)
-	updates, err := h.svc.ListUpdates(c.Request.Context(), channelID, viewerID, limit, offset)
+	if cur := c.Query("cursor"); cur != "" {
+		offset = decodeOffsetCursor(cur)
+	}
+	updates, hasMore, err := h.svc.ListUpdates(c.Request.Context(), channelID, viewerID, limit, offset)
 	if err != nil {
 		handleServiceError(c, err)
 		return
 	}
+	if updates == nil {
+		updates = []service.UpdateView{}
+	}
+	var meta *api.Meta
+	if hasMore {
+		meta = &api.Meta{NextCursor: encodeOffsetCursor(offset + limit)}
+	}
+	api.JSON(c.Writer, http.StatusOK, updates, meta)
+}
 
-	api.JSON(c.Writer, http.StatusOK, updates, nil)
+// Offset cursors: opaque to clients, base64("o:<offset>").
+func encodeOffsetCursor(offset int) string {
+	return base64.RawURLEncoding.EncodeToString([]byte("o:" + strconv.Itoa(offset)))
+}
+
+func decodeOffsetCursor(cur string) int {
+	raw, err := base64.RawURLEncoding.DecodeString(cur)
+	if err != nil || len(raw) < 3 || string(raw[:2]) != "o:" {
+		return 0
+	}
+	n, err := strconv.Atoi(string(raw[2:]))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (h *Handler) EditUpdate(c *gin.Context) {
@@ -481,6 +550,7 @@ func (h *Handler) EditUpdate(c *gin.Context) {
 		MediaIDs:    req.MediaIDs,
 		Metadata:    req.Metadata,
 		ScheduledAt: req.ScheduledAt,
+		Event:       req.Event,
 	}
 
 	update, err := h.svc.EditUpdate(c.Request.Context(), channelID, updateID, actorID, params)
@@ -536,19 +606,28 @@ func (h *Handler) GetMyChannels(c *gin.Context) {
 
 func (h *Handler) DiscoverChannels(c *gin.Context) {
 	limit, offset := parsePagination(c)
+	if cur := c.Query("cursor"); cur != "" {
+		offset = decodeOffsetCursor(cur)
+	}
 
 	var viewerID *uuid.UUID
 	if uid, err := uuid.Parse(c.GetHeader("X-User-Id")); err == nil {
 		viewerID = &uid
 	}
 
-	channels, err := h.svc.DiscoverChannels(c.Request.Context(), viewerID, limit, offset)
+	channels, hasMore, err := h.svc.DiscoverChannels(c.Request.Context(), viewerID, c.Query("q"), limit, offset)
 	if err != nil {
 		handleServiceError(c, err)
 		return
 	}
-
-	api.JSON(c.Writer, http.StatusOK, channels, nil)
+	if channels == nil {
+		channels = []service.ChannelWithMembership{}
+	}
+	var meta *api.Meta
+	if hasMore {
+		meta = &api.Meta{NextCursor: encodeOffsetCursor(offset + limit)}
+	}
+	api.JSON(c.Writer, http.StatusOK, channels, meta)
 }
 
 func (h *Handler) Health(c *gin.Context) {

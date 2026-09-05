@@ -145,3 +145,69 @@ CREATE TABLE IF NOT EXISTS event_rsvps (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (update_id, user_id)
 );
+
+-- ===== Chat-app pass (2026-09-05): communities = broadcast channels =====
+-- Emoji reactions on updates: ONE per (update, user); changing the emoji
+-- replaces it. channel_updates.reaction_count is kept as COUNT(*) of rows.
+CREATE TABLE IF NOT EXISTS update_reactions (
+    update_id  UUID NOT NULL REFERENCES channel_updates(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL,
+    emoji      TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (update_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ur_update_emoji ON update_reactions(update_id, emoji);
+
+-- Reports on a channel or one of its updates (trust & safety intake).
+CREATE TABLE IF NOT EXISTS channel_reports (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel_id  UUID NOT NULL REFERENCES broadcast_channels(id) ON DELETE CASCADE,
+    update_id   UUID REFERENCES channel_updates(id) ON DELETE CASCADE,
+    reporter_id UUID NOT NULL,
+    reason      TEXT NOT NULL,
+    details     TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','reviewed','dismissed')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_cr_channel ON channel_reports(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cr_reporter ON channel_reports(reporter_id, created_at DESC);
+
+-- Discover text filter.
+CREATE INDEX IF NOT EXISTS idx_bc_name_lower ON broadcast_channels(lower(name)) WHERE status = 'active';
+
+-- Self-heal (2026-09-05): in the shared app database, channel_members had
+-- already been created by an older service with FOREIGN KEY (channel_id)
+-- REFERENCES channels(id) — CREATE TABLE IF NOT EXISTS above never ran, so
+-- every member insert (the owner row at create, subscribe, add-admin) failed
+-- with SQLSTATE 23503 and no channel could ever have a member. Re-point the
+-- key at broadcast_channels and make sure the role CHECK admits our roles.
+DO $$
+DECLARE c RECORD;
+BEGIN
+    FOR c IN SELECT conname FROM pg_constraint
+             WHERE conrelid = 'channel_members'::regclass AND contype = 'f'
+               AND confrelid <> 'broadcast_channels'::regclass LOOP
+        EXECUTE format('ALTER TABLE channel_members DROP CONSTRAINT %I', c.conname);
+    END LOOP;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid = 'channel_members'::regclass AND contype = 'f'
+                     AND confrelid = 'broadcast_channels'::regclass) THEN
+        ALTER TABLE channel_members
+            ADD CONSTRAINT channel_members_channel_id_fkey
+            FOREIGN KEY (channel_id) REFERENCES broadcast_channels(id) ON DELETE CASCADE;
+    END IF;
+    FOR c IN SELECT conname FROM pg_constraint
+             WHERE conrelid = 'channel_members'::regclass AND contype = 'c'
+               AND pg_get_constraintdef(oid) LIKE '%role%'
+               AND pg_get_constraintdef(oid) NOT LIKE '%subscriber%' LOOP
+        EXECUTE format('ALTER TABLE channel_members DROP CONSTRAINT %I', c.conname);
+    END LOOP;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid = 'channel_members'::regclass AND contype = 'c'
+                     AND pg_get_constraintdef(oid) LIKE '%subscriber%') THEN
+        ALTER TABLE channel_members
+            ADD CONSTRAINT channel_members_role_check
+            CHECK (role IN ('owner','admin','editor','moderator','subscriber','banned'));
+    END IF;
+    ALTER TABLE channel_members ALTER COLUMN role SET DEFAULT 'subscriber';
+END $$;

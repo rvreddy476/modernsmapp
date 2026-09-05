@@ -77,7 +77,12 @@ func NewGraphBlockLookup(baseURL, internalKey string) *GraphBlockLookup {
 }
 
 func (g *GraphBlockLookup) BlockedSet(ctx context.Context, viewerID uuid.UUID) (map[uuid.UUID]struct{}, error) {
-	url := fmt.Sprintf("%s/v1/graph/blocked-and-muted?user_id=%s", g.baseURL, viewerID)
+	// The INTERNAL route: keyed by X-Internal-Service-Key and viewer-
+	// unbound (it takes user_id as a parameter). The public
+	// /v1/graph/blocked-and-muted route reads the viewer from X-User-Id,
+	// which a service-to-service call does not carry, so it answered 401
+	// and — fail-closed — every suggestion surface was empty.
+	url := fmt.Sprintf("%s/v1/internal/graph/blocked-and-muted?user_id=%s", g.baseURL, viewerID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

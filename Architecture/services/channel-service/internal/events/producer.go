@@ -15,8 +15,15 @@ import (
 
 type Producer struct {
 	writer *kafka.Writer
-	rdb    *redis.Client
+	// fanoutWriter has no default topic: it carries the rich
+	// UpdatePublishedEvent to FanoutTopic (the worker that notifies
+	// subscribers) — a different contract from the channel-events envelope.
+	fanoutWriter *kafka.Writer
+	rdb          *redis.Client
 }
+
+// FanoutTopic is consumed by workers.FanoutWorker.
+const FanoutTopic = "atpost.channel.updates"
 
 func NewProducer(brokers []string, topic string, rdb *redis.Client) *Producer {
 	return NewProducerWithDialer(brokers, topic, rdb, nil)
@@ -29,7 +36,70 @@ func NewProducerWithDialer(brokers []string, topic string, rdb *redis.Client, di
 		Balancer: &kafka.LeastBytes{},
 		Dialer:   dialer,
 	})
-	return &Producer{writer: w, rdb: rdb}
+	fw := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  brokers,
+		Balancer: &kafka.LeastBytes{},
+		Dialer:   dialer,
+	})
+	return &Producer{writer: w, fanoutWriter: fw, rdb: rdb}
+}
+
+// FanoutUpdatePayload mirrors workers.UpdatePublishedPayload (kept local so
+// events does not import workers).
+type FanoutUpdatePayload struct {
+	UpdateID    string `json:"update_id"`
+	ChannelID   string `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+	AuthorID    string `json:"author_id"`
+	UpdateType  string `json:"update_type"`
+	Title       string `json:"title"`
+	BodyPreview string `json:"body_preview"`
+	DeepLink    string `json:"deep_link"`
+	PublishedAt string `json:"published_at"`
+}
+
+// PublishFanoutUpdate emits the subscriber fan-out event for an update that
+// was published immediately (chat-app pass). Synchronous: the caller has
+// already committed the row, and a lost event means nobody is told.
+func (p *Producer) PublishFanoutUpdate(ctx context.Context, channelID uuid.UUID, channelName string, updateID, authorID uuid.UUID, updateType string, title *string, body string) error {
+	if p == nil || p.fanoutWriter == nil {
+		return nil
+	}
+	t := ""
+	if title != nil {
+		t = *title
+	}
+	preview := body
+	if len(preview) > 200 {
+		preview = preview[:200]
+	}
+	event := map[string]any{
+		"event_type": EventChannelUpdatePublished,
+		"event_id":   uuid.New().String(),
+		"timestamp":  time.Now().UTC(),
+		"payload": FanoutUpdatePayload{
+			UpdateID:    updateID.String(),
+			ChannelID:   channelID.String(),
+			ChannelName: channelName,
+			AuthorID:    authorID.String(),
+			UpdateType:  updateType,
+			Title:       t,
+			BodyPreview: preview,
+			DeepLink:    fmt.Sprintf("/channels/%s/updates/%s", channelID, updateID),
+			PublishedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+	b, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return p.fanoutWriter.WriteMessages(writeCtx, kafka.Message{
+		Topic: FanoutTopic,
+		Key:   []byte(channelID.String()),
+		Value: b,
+	})
 }
 
 func (p *Producer) PublishChannelCreated(ctx context.Context, channelID, ownerID uuid.UUID, name, channelType string) error {
@@ -265,6 +335,9 @@ func (p *Producer) publishRealtime(ctx context.Context, updateID, updateType str
 }
 
 func (p *Producer) Close() error {
+	if p.fanoutWriter != nil {
+		_ = p.fanoutWriter.Close()
+	}
 	return p.writer.Close()
 }
 

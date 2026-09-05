@@ -1364,6 +1364,12 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       SCYLLA_HOSTS: scylla
+      # Block safety is fail-closed: without the graph authority EVERY
+      # suggestion surface returns an empty list (that is what the dev stack
+      # did until 2026-09-05). The lookup uses graph's internal route, so the
+      # internal key must ride along.
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8100:8100"
     depends_on:

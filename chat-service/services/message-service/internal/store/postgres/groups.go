@@ -485,15 +485,17 @@ func (s *ConversationStore) TransferOwnership(ctx context.Context, conversationI
 	return tx.Commit(ctx)
 }
 
-// UpdateGroupInfo writes title and/or avatar. Nil leaves a field untouched.
-func (s *ConversationStore) UpdateGroupInfo(ctx context.Context, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID) error {
+// UpdateGroupInfo writes title, avatar and/or description. Nil leaves a field
+// untouched; an empty description clears it.
+func (s *ConversationStore) UpdateGroupInfo(ctx context.Context, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID, description *string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE chat.conversations
 		SET title = COALESCE($2, title),
 		    avatar_media_id = COALESCE($3, avatar_media_id),
+		    description = COALESCE($4, description),
 		    updated_at = NOW()
 		WHERE id = $1
-	`, conversationID, title, avatarMediaID)
+	`, conversationID, title, avatarMediaID, description)
 	return err
 }
 

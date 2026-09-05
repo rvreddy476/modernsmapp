@@ -37,6 +37,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Relationship-separation spec §2.4 — entityType-explicit routes:
 		v1.GET("/people", h.GetPeopleSuggestions) // users only,  entityType=user
 		v1.GET("/hubs", h.GetHubSuggestions)      // pages only, entityType=page
+		// Chat-app pass (2026-09-05): communities (broadcast channels) the
+		// viewer has not joined, entityType=community.
+		v1.GET("/communities", h.GetCommunitySuggestions)
 		// Legacy mixed route — kept for backward compatibility with older
 		// clients. Returns the same data as /people when type=friend, and
 		// the same as /hubs when type=follow. New code should target the
@@ -125,6 +128,25 @@ func (h *Handler) GetHubSuggestions(c *gin.Context) {
 		"surface":      c.DefaultQuery("surface", "home"),
 		"generated_at": "",
 	}})
+}
+
+// GetCommunitySuggestions returns public communities the viewer has not
+// joined (chat-app pass). GET /v1/suggestions/communities?limit=
+func (h *Handler) GetCommunitySuggestions(c *gin.Context) {
+	viewerID, ok := parseUserID(c)
+	if !ok {
+		return
+	}
+	limit := 20
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 50 {
+		limit = l
+	}
+	resp, err := h.svc.GetCommunitySuggestions(c.Request.Context(), viewerID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get community suggestions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": resp})
 }
 
 // paginationFromQuery extracts limit / cursor / surface from a request.

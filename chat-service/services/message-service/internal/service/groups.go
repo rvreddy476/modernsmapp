@@ -63,7 +63,7 @@ type groupStore interface {
 	DeleteRevocationIntent(ctx context.Context, conversationID, userID uuid.UUID, armedGen int64) error
 	SetMemberRole(ctx context.Context, conversationID, userID uuid.UUID, role string) (bool, error)
 	TransferOwnership(ctx context.Context, conversationID, fromUserID, toUserID uuid.UUID) error
-	UpdateGroupInfo(ctx context.Context, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID) error
+	UpdateGroupInfo(ctx context.Context, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID, description *string) error
 	CreateGroupInvitation(ctx context.Context, conversationID, inviterID, inviteeID uuid.UUID) (*postgres.GroupInvitation, bool, error)
 	GetGroupInvitation(ctx context.Context, invitationID uuid.UUID) (*postgres.GroupInvitation, error)
 	ListPendingInvitationsForUser(ctx context.Context, userID uuid.UUID, limit int) ([]postgres.GroupInvitation, error)
@@ -581,8 +581,14 @@ func (s *Service) SetMemberRoleGoverned(ctx context.Context, actorID, conversati
 	return nil
 }
 
-// UpdateGroupInfoGoverned edits title/avatar. Owner or admin.
-func (s *Service) UpdateGroupInfoGoverned(ctx context.Context, actorID, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID) error {
+// groupDescriptionMaxRunes bounds the group "about" text (chat-app pass).
+const groupDescriptionMaxRunes = 300
+
+// UpdateGroupInfoGoverned edits title/avatar/description. Owner or admin.
+// A non-nil avatar is proven (owned, ready, approved) and registered with
+// the delivery authority so every member can render it; a non-nil
+// description replaces the current one ("" clears it).
+func (s *Service) UpdateGroupInfoGoverned(ctx context.Context, actorID, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID, description *string) error {
 	if _, _, err := s.requireGroupRole(ctx, conversationID, actorID, "owner", "admin"); err != nil {
 		return err
 	}
@@ -596,7 +602,19 @@ func (s *Service) UpdateGroupInfoGoverned(ctx context.Context, actorID, conversa
 		}
 		title = &trimmed
 	}
-	if err := s.groupStore().UpdateGroupInfo(ctx, conversationID, title, avatarMediaID); err != nil {
+	if description != nil {
+		trimmed := strings.TrimSpace(*description)
+		if utf8.RuneCountInString(trimmed) > groupDescriptionMaxRunes {
+			return fmt.Errorf("group description exceeds %d characters", groupDescriptionMaxRunes)
+		}
+		description = &trimmed
+	}
+	if avatarMediaID != nil {
+		if err := s.registerGroupAvatar(ctx, conversationID, actorID, *avatarMediaID); err != nil {
+			return err
+		}
+	}
+	if err := s.groupStore().UpdateGroupInfo(ctx, conversationID, title, avatarMediaID, description); err != nil {
 		return err
 	}
 	payload := sharedEvents.GroupInfoUpdatedPayload{

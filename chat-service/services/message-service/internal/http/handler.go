@@ -68,8 +68,14 @@ type ChatService interface {
 	LeaveConversation(ctx context.Context, userID, conversationID uuid.UUID) error
 	TransferOwnershipGoverned(ctx context.Context, actorID, conversationID, newOwnerID uuid.UUID) error
 	SetMemberRoleGoverned(ctx context.Context, actorID, conversationID, targetID uuid.UUID, role string) error
-	UpdateGroupInfoGoverned(ctx context.Context, actorID, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID) error
+	UpdateGroupInfoGoverned(ctx context.Context, actorID, conversationID uuid.UUID, title *string, avatarMediaID *uuid.UUID, description *string) error
 	ListMyInvitations(ctx context.Context, userID uuid.UUID) ([]store.GroupInvitation, error)
+	// Invite links (chat-app pass 2026-09-05)
+	CreateInviteLink(ctx context.Context, actorID, conversationID uuid.UUID, ttl time.Duration, maxUses *int) (*service.InviteLinkResponse, error)
+	GetInviteLink(ctx context.Context, actorID, conversationID uuid.UUID) (*service.InviteLinkResponse, error)
+	RevokeInviteLink(ctx context.Context, actorID, conversationID uuid.UUID) error
+	PreviewInvite(ctx context.Context, viewerID uuid.UUID, code string) (*service.InvitePreview, error)
+	JoinByInvite(ctx context.Context, userID uuid.UUID, code string) (*service.ConversationResponse, error)
 	AcceptGroupInvitation(ctx context.Context, userID, invitationID uuid.UUID) error
 	DeclineGroupInvitation(ctx context.Context, userID, invitationID uuid.UUID) error
 
@@ -189,6 +195,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/invitations", h.ListGroupInvitations)
 		v1.POST("/invitations/:invitationId/accept", h.AcceptGroupInvitation)
 		v1.POST("/invitations/:invitationId/decline", h.DeclineGroupInvitation)
+
+		// Group invite links (chat-app pass 2026-09-05)
+		v1.POST("/conversations/:id/invite-link", h.CreateInviteLink)
+		v1.GET("/conversations/:id/invite-link", h.GetInviteLink)
+		v1.DELETE("/conversations/:id/invite-link", h.RevokeInviteLink)
+		v1.GET("/invites/:code", h.PreviewInvite)
+		v1.POST("/invites/:code/join", h.JoinByInvite)
 
 		// Realtime room entitlement (scoped-rooms foundation)
 		v1.POST("/conversations/:id/subscription", h.IssueSubscription)
@@ -562,6 +575,9 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 type UpdateConversationRequest struct {
 	Title         *string `json:"title" binding:"omitempty,min=1,max=100"`
 	AvatarMediaID *string `json:"avatar_media_id" binding:"omitempty,uuid"`
+	// Description is the group "about" text; "" clears it. Max 300 runes
+	// (enforced in the service so multi-byte text counts characters).
+	Description *string `json:"description" binding:"omitempty,max=1200"`
 }
 
 func (h *Handler) UpdateConversation(c *gin.Context) {
@@ -579,7 +595,7 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
 		return
 	}
-	if req.Title == nil && req.AvatarMediaID == nil {
+	if req.Title == nil && req.AvatarMediaID == nil && req.Description == nil {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Nothing to update", nil, nil)
 		return
 	}
@@ -593,13 +609,23 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 		avatarID = &parsed
 	}
 
-	if err := h.svc.UpdateGroupInfoGoverned(c.Request.Context(), userID, convID, req.Title, avatarID); err != nil {
+	if err := h.svc.UpdateGroupInfoGoverned(c.Request.Context(), userID, convID, req.Title, avatarID, req.Description); err != nil {
 		h.log.Warn("failed to update conversation", "err", err, "request_id", RequestIDFromContext(c))
+		if writeGroupError(c, err) {
+			return
+		}
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+	// Chat-app pass: return the updated conversation (description, avatar
+	// URL resolved for the caller) instead of a bare status.
+	conv, err := h.svc.GetConversation(c.Request.Context(), userID, convID)
+	if err != nil {
+		api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, conv, nil)
 }
 
 // --- Messages ---

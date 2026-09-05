@@ -19,6 +19,8 @@ type Conversation struct {
 	IsRequest bool       `json:"is_request"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+	// Description is the group "about" text (chat-app pass; <= 300 runes).
+	Description string `json:"description,omitempty"`
 
 	// Production chat pass: group avatar + inbox last-message metadata.
 	AvatarMediaID      *uuid.UUID `json:"avatar_media_id,omitempty"`
@@ -460,10 +462,10 @@ func (s *ConversationStore) GetConversation(ctx context.Context, conversationID 
 	var c Conversation
 	err := s.db.QueryRow(ctx, `
 		SELECT id, type, title, created_by, is_request, created_at, updated_at,
-		       avatar_media_id, last_message_at, last_message_preview, last_message_sender
+		       avatar_media_id, last_message_at, last_message_preview, last_message_sender, description
 		FROM chat.conversations WHERE id = $1
 	`, conversationID).Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt,
-		&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender)
+		&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender, &c.Description)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -545,7 +547,7 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	var rows pgx.Rows
 	var err error
 	const listColumns = `c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at,
-		c.avatar_media_id, c.last_message_at, c.last_message_preview, c.last_message_sender`
+		c.avatar_media_id, c.last_message_at, c.last_message_preview, c.last_message_sender, c.description`
 	if cursorUpdatedAt != nil && cursorID != nil {
 		rows, err = s.db.Query(ctx, `
 			SELECT `+listColumns+`
@@ -574,7 +576,7 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	for rows.Next() {
 		var c Conversation
 		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt,
-			&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender); err != nil {
+			&c.AvatarMediaID, &c.LastMessageAt, &c.LastMessagePreview, &c.LastMessageSender, &c.Description); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
