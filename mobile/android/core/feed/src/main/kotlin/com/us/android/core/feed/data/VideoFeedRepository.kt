@@ -140,9 +140,12 @@ class VideoFeedRepository @Inject constructor(
         }
 
     /**
-     * The unfinished videos, each with its post. Rows whose post cannot be
-     * read back (deleted, hidden, a 404) are dropped, and the shelf is
-     * empty — not failed — when the endpoint is unavailable.
+     * The unfinished videos, each with its post. A row that carries its post
+     * is hydrated with the others as one batch — the author, the video's
+     * delivery (its `thumb_150` still) and the chosen cover, each id once;
+     * a row that does not is read back by id. Rows whose post is gone
+     * (deleted, hidden, a 404) are dropped, and the shelf is empty — not
+     * failed — when the endpoint is unavailable.
      */
     suspend fun continueWatching(limit: Int): List<ContinueWatching> {
         val rows = when (val result = apiCall(errorMapper) { api.continueWatching(limit) }) {
@@ -151,12 +154,16 @@ class VideoFeedRepository @Inject constructor(
         }
         if (rows.isEmpty()) return emptyList()
         return coroutineScope {
-            rows.map { row ->
-                async {
-                    (feeds.post(row.postId) as? AppResult.Success)?.data
-                        ?.let { ContinueWatching(it, row.positionMs, row.durationMs) }
-                }
-            }.awaitAll().filterNotNull()
+            // Keyed by the row's own post id, in the row's order: hydrate keeps order and count.
+            val live = rows.filter { row -> row.post?.deletedAt?.isBlank() == true }
+            val batch = async {
+                live.map { it.postId }.zip(hydrator.hydrate(live.mapNotNull { it.post?.toDomain() })).toMap()
+            }
+            val fetched = rows.filter { it.post == null }.map { row ->
+                async { row.postId to (feeds.post(row.postId) as? AppResult.Success)?.data }
+            }
+            val posts = batch.await() + fetched.awaitAll().toMap()
+            rows.mapNotNull { row -> posts[row.postId]?.let { ContinueWatching(it, row.positionMs, row.durationMs) } }
         }
     }
 

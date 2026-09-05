@@ -368,10 +368,12 @@ internal fun ContinueCard(
                 .background(UsTheme.extended.bgCard),
         ) {
             Still(thumb = thumb)
+            // Over the still's bottom-left corner when there is a still; in
+            // the middle of the raised card when nothing could be resolved.
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(UsTheme.spacing.m),
+                    .align(if (thumb.url != null) Alignment.BottomStart else Alignment.Center)
+                    .padding(CONTINUE_RING_INSET),
             ) {
                 TubeRing(progress = row.fraction, modifier = Modifier.size(CONTINUE_RING)) {
                     Column(
@@ -717,6 +719,9 @@ private val DOT_SIZE = 6.dp
 private val DOT_ACTIVE_WIDTH = 16.dp
 private val CONTINUE_WIDTH = 200.dp
 private val CONTINUE_RING = 60.dp
+
+/** The ring's distance from the still's corner (design: 12dp). */
+private val CONTINUE_RING_INSET = 12.dp
 private val RING_TIME_SIZE = 12.sp
 private val RING_LEFT_SIZE = 9.sp
 private val SMALL_TITLE_SIZE = 13.sp

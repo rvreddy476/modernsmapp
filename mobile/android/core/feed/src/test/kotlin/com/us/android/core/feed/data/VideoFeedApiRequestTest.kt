@@ -69,10 +69,13 @@ class VideoFeedApiRequestTest {
     }
 
     @Test
-    fun `continue watching decodes progress rows keyed by post id`() {
+    fun `continue watching decodes progress rows keyed by post id, with the embedded post`() {
         enqueue(
             """{"data":[{"user_id":"u1","post_id":"p1","position_ms":42000,"duration_ms":120000,""" +
-                """"percent_watched":35,"completed":false,"updated_at":"2026-09-05T10:00:00Z"}]}""",
+                """"percent_watched":35,"completed":false,"updated_at":"2026-09-05T10:00:00Z",""" +
+                """"post":{"id":"p1","author_id":"u2","title":"Family Outing","content_type":"long_video",""" +
+                """"media":[{"media_id":"m1","kind":"video","position":0,"processing_status":"ready",""" +
+                """"duration_ms":120000,"hls_url":"/v1/media/m1/hls/master.m3u8"}]}}]}""",
         )
 
         val rows = runBlocking { api.continueWatching(limit = 10) }
@@ -83,6 +86,21 @@ class VideoFeedApiRequestTest {
         assertThat(row.positionMs).isEqualTo(42_000L)
         assertThat(row.durationMs).isEqualTo(120_000L)
         assertThat(row.completed).isFalse()
+        val post = row.post!!
+        assertThat(post.title).isEqualTo("Family Outing")
+        // PostDetail media: a playlist and a length, no variants — the hydrator fetches the still.
+        val video = post.media.single()
+        assertThat(video.hlsUrl).isEqualTo("/v1/media/m1/hls/master.m3u8")
+        assertThat(video.variants).isEmpty()
+    }
+
+    @Test
+    fun `a continue watching row without an embedded post still decodes`() {
+        enqueue("""{"data":[{"post_id":"p1","position_ms":1,"duration_ms":2,"completed":false}]}""")
+
+        val row = runBlocking { api.continueWatching(limit = 10) }.data!!.single()
+
+        assertThat(row.post).isNull()
     }
 
     @Test

@@ -37,7 +37,9 @@ interface VideoFeedApi {
     /**
      * The viewer's unfinished videos, most recently watched first —
      * post-service `GetContinueWatching`. Rows are watch-progress records
-     * keyed by post id, NOT posts: the post behind each is fetched by id.
+     * keyed by post id, each carrying its bare `PostDetail` as `post` since
+     * 2026-09-05; a row from a server that predates the embed has none, and
+     * its post is fetched by id.
      */
     @GET("v1/videos/continue-watching")
     suspend fun continueWatching(@Query("limit") limit: Int): ApiEnvelope<List<ContinueWatchingDto>>
@@ -67,7 +69,7 @@ interface VideoFeedApi {
     suspend fun categories(): ApiEnvelope<List<FeedCategoryDto>>
 }
 
-/** One continue-watching row: where the viewer left `post_id`. */
+/** One continue-watching row: where the viewer left `post_id`, and the post itself when the server embeds it. */
 @Serializable
 data class ContinueWatchingDto(
     @SerialName("post_id") val postId: String = "",
@@ -75,6 +77,8 @@ data class ContinueWatchingDto(
     @SerialName("duration_ms") val durationMs: Long = 0L,
     val completed: Boolean = false,
     @SerialName("updated_at") val updatedAt: String = "",
+    /** The bare `PostDetail` behind the row — hydrated client-side like any post-service row. Null before the embed. */
+    val post: FeedItemDto? = null,
 )
 
 @Serializable

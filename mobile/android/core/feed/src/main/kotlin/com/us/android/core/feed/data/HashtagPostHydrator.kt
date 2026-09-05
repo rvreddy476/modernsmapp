@@ -61,6 +61,7 @@ fun interface FeedItemHydrator {
 class HashtagPostHydrator @Inject constructor(
     private val profiles: ProfileRepository,
     private val media: MediaApi,
+    private val cache: MediaDeliveryCache,
 ) : FeedItemHydrator {
 
     override suspend fun hydrate(items: List<FeedItem>): List<FeedItem> = coroutineScope {
@@ -91,9 +92,10 @@ class HashtagPostHydrator @Inject constructor(
     private suspend fun loadAuthor(id: String): Profile? =
         (profiles.getProfile(id) as? AppResult.Success)?.data
 
+    /** The cached delivery while its URLs are fresh; else the endpoint's answer, cached when it can be drawn. */
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun loadDelivery(id: String): MediaDeliveryDto? = try {
-        media.getDelivery(id).data
+    private suspend fun loadDelivery(id: String): MediaDeliveryDto? = cache.get(id) ?: try {
+        media.getDelivery(id).data?.also { cache.put(id, it) }
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
@@ -114,9 +116,21 @@ fun FeedItem.coverIdToResolve(): String? =
         id.isNotBlank() && media.none { it.mediaId == id } && coverMedia?.mediaId != id
     }
 
-/** A bare reference from post-service: no delivery of any kind yet. */
+/**
+ * A reference with nothing a card can draw: no variant (no `thumb_150`, no
+ * cover rung) and no wash.
+ *
+ * Post-service's `PostDetail` overlays `hls_url`, `processing_status` and
+ * `duration_ms` on its media but never `variants` or `blurhash` — a video
+ * from `GET /v1/posts/{id}`, by-author, bookmarks or continue-watching can
+ * PLAY without a second call but cannot show a still. Treating a present
+ * `hls_url` as "delivered" was the continue-watching blank-card bug
+ * (2026-09-05): the shelf's rows were the only Tube rows that never got
+ * their delivery. Feed-service rows always carry variants, so they are
+ * still never re-fetched.
+ */
 private val FeedMedia.needsDelivery: Boolean
-    get() = variants.isEmpty() && hlsUrl == null && playbackUrl == null && blurhash.isBlank()
+    get() = variants.isEmpty() && blurhash.isBlank()
 
 /** A bare `author_id` row: post-service sends no author object, so the name is blank. */
 private val FeedAuthor.needsLookup: Boolean
@@ -150,12 +164,14 @@ private fun FeedMedia.withDelivery(delivery: MediaDeliveryDto) = copy(
     height = delivery.height,
     blurhash = delivery.blurhash,
     variants = delivery.variants,
-    hlsUrl = delivery.hlsUrl,
+    // A post-service row may already name its playlist; a delivery that
+    // does not (the transcode's state read a moment earlier) must not erase it.
+    hlsUrl = delivery.hlsUrl ?: hlsUrl,
     expiresAt = delivery.expiresAt,
-    processingStatus = delivery.processingStatus,
-    moderationStatus = delivery.moderationStatus,
-    playbackUrl = delivery.playbackUrl,
-    playbackKind = delivery.playbackKind,
+    processingStatus = delivery.processingStatus.ifBlank { processingStatus },
+    moderationStatus = delivery.moderationStatus.ifBlank { moderationStatus },
+    playbackUrl = delivery.playbackUrl ?: playbackUrl,
+    playbackKind = delivery.playbackKind.ifBlank { playbackKind },
     // The delivery's measurement wins; the bare reference's stays when it has none.
     durationMs = delivery.durationMs.takeIf { it > 0L } ?: durationMs,
 )

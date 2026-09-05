@@ -123,6 +123,20 @@ class VideoThumbTest {
     }
 
     @Test
+    fun `a video with only an HLS path has no still until the hydrator fetches its delivery`() {
+        val hlsOnly = FeedMedia(
+            mediaId = "vid",
+            kind = "video",
+            hlsUrl = "/v1/media/vid/hls/master.m3u8",
+            durationMs = 9_000L,
+        )
+        val thumb = resolver.videoThumb(item(listOf(hlsOnly), coverId = null))
+
+        assertThat(thumb.url).isNull()
+        assertThat(thumb.durationMs).isEqualTo(9_000L)
+    }
+
+    @Test
     fun `no media at all is no still and no length`() {
         val thumb = resolver.videoThumb(item(emptyList(), coverId = null))
 
