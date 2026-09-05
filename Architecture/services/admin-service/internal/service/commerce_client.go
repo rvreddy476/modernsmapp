@@ -112,3 +112,35 @@ func (c *CommerceClient) RejectProduct(ctx context.Context, productID, actorID, 
 		adminActionPayload{Reason: reason})
 	return status, err
 }
+
+// RawProxy forwards one admin request to a commerce-service internal endpoint
+// verbatim — method, path, query and body — and returns the upstream status and
+// bytes untouched.
+//
+// The attribute-authoring surface is fourteen routes and will grow as the
+// catalogue does. Hand-written wrappers for each would mean a second place to
+// edit for every backend change, and the value they add is nil: nothing here
+// reshapes a request or a response, it only attaches the internal key that a
+// browser cannot hold. The caller is responsible for deciding which paths may
+// come through — see allowedCataloguePrefixes.
+func (c *CommerceClient) RawProxy(ctx context.Context, method, path, rawQuery string, body io.Reader) ([]byte, int, error) {
+	url := c.baseURL + path
+	if rawQuery != "" {
+		url += "?" + rawQuery
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	return data, resp.StatusCode, err
+}

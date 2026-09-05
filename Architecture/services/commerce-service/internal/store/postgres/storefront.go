@@ -39,9 +39,10 @@ const productSummaryColumns = `
 	p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
 	p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
 	p.primary_image_media_id,
-	(SELECT value FROM product_attributes
-	  WHERE product_id = p.id AND name = 'source_image_url'
-	  ORDER BY sort_order LIMIT 1)                              AS source_image_url,
+	-- Migration 026 gave this a real column. It used to be a correlated
+	-- subquery digging a CDN URL out of product_attributes — one extra scan
+	-- per tile on every grid this projection draws.
+	p.source_image_url,
 	sl.store_name,
 	pc.name                                                     AS category_name,
 	-- The gallery's cover: the first image in the product's own media, used

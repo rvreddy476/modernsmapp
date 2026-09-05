@@ -530,12 +530,29 @@ func ValidateAttributeDefinition(d *postgres.AttributeDefinition) error {
 	if d.MaxValues != nil && *d.MaxValues < 1 {
 		return invalidAttr("max_values", "must be at least 1")
 	}
-	if d.Regex != nil && *d.Regex != "" {
-		if _, err := regexp.Compile(*d.Regex); err != nil {
-			return invalidAttr("regex", "does not compile: "+err.Error())
-		}
+	if _, err := compileAttributeRegex(d.Regex); err != nil {
+		return invalidAttr("regex", "does not compile: "+err.Error())
 	}
 	return nil
+}
+
+// compileAttributeRegex compiles a definition's `regex`, treating nil and ""
+// alike as "no pattern".
+//
+// Shared by both halves of attribute validation, and it has to be: the
+// DEFINITION side compiles the pattern to prove it is a pattern at all
+// (Postgres stores `[unclosed` quite happily, and every product validated
+// against it would then fail on a server error rather than a message), and the
+// VALUE side compiles the same pattern to match a value with. Two call sites
+// with two `regexp.Compile` calls is two chances for them to disagree about
+// what an empty pattern means — and the disagreement that matters is the one
+// where the value side treats "" as a pattern that matches nothing, silently
+// rejecting every value of a field whose regex was cleared.
+func compileAttributeRegex(pattern *string) (*regexp.Regexp, error) {
+	if pattern == nil || *pattern == "" {
+		return nil, nil
+	}
+	return regexp.Compile(*pattern)
 }
 
 // validateEnumCodesUnique checks the option codes of one definition.

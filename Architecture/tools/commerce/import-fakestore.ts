@@ -67,6 +67,13 @@ for (const product of products) {
      SELECT id,'source_product_id',${literal(String(product.id))},1 FROM products WHERE slug=${literal(productSlug)};`,
     `INSERT INTO product_attributes (product_id,name,value,sort_order)
      SELECT id,'source_name','Fake Store API',2 FROM products WHERE slug=${literal(productSlug)};`,
+    // Dual-write. Migration 026 gave the fallback image a real column and moved
+    // the storefront, browse and detail readers onto it; the EAV row above is
+    // kept as well so a pod still running the pre-026 image — which reads the
+    // row, not the column — does not draw a grey box for everything this
+    // importer touches. A later gated migration drops the row and this becomes
+    // the only write.
+    `UPDATE products SET source_image_url=${literal(product.image)},updated_at=NOW() WHERE slug=${literal(productSlug)};`,
   )
 }
 

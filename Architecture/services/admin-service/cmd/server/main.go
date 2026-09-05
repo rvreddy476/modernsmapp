@@ -105,6 +105,7 @@ func main() {
 	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
 	handler.RegisterCommerceRoutes(r, commerceClient)
+	handler.RegisterCatalogueRoutes(r, commerceClient)
 
 	// 8. Graceful shutdown
 	if err := server.Run(r, server.Config{

@@ -29,7 +29,9 @@ func (s *Store) GetProductsByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid
 		  country_of_origin,warranty_info,return_policy_type,return_policy_days,hsn_code,search_keywords,
 		  meta_title,meta_description,
 		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at,
-		  (SELECT value FROM product_attributes WHERE product_id=products.id AND name='source_image_url' ORDER BY sort_order LIMIT 1),
+		  -- A real column since migration 026, not a per-row dig through
+		  -- product_attributes.
+		  source_image_url,
 		  (SELECT store_name FROM sellers WHERE id=products.seller_id)
 		FROM products WHERE id = ANY($1)`, ids)
 	if err != nil {

@@ -304,6 +304,7 @@ func TestAttributeImpactCountsWhatANarrowingEditWouldBreak(t *testing.T) {
 }
 
 func TestPublishBumpsTheSchemaVersionAndClearsTheDraftFlag(t *testing.T) {
+	lockSchemaState(t)
 	ctx := context.Background()
 	store := New(testPool)
 

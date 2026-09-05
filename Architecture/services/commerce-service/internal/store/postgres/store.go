@@ -175,7 +175,9 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		  country_of_origin,warranty_info,return_policy_type,return_policy_days,hsn_code,search_keywords,
 		  meta_title,meta_description,
 		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at
-		  ,(SELECT value FROM product_attributes WHERE product_id=products.id AND name='source_image_url' ORDER BY sort_order LIMIT 1)
+		  -- A real column since migration 026, not a per-row dig through
+		  -- product_attributes.
+		  ,source_image_url
 		  ,(SELECT store_name FROM sellers WHERE id=products.seller_id)
 		  ,(SELECT name FROM product_categories WHERE id=products.category_id)
 		  -- The gallery cover, so a detail page whose seller used the gallery
@@ -255,13 +257,25 @@ func (s *Store) RemoveProductMedia(ctx context.Context, productMediaID uuid.UUID
 // SetProductAttributes replaces the product's attribute list in one
 // atomic UPDATE. The schema allows free-form name/value/unit triples for
 // the structured spec block.
+//
+// This is the LEGACY, untyped write — free text on both sides, no definition,
+// no validation. It still exists because it is what the current
+// `PUT /products/:id/attributes` route and every client of it use. Typed
+// values go through Store.PutProductAttributeValues instead.
+//
+// It only ever touches the legacy rows: the DELETE is scoped to
+// `definition_id IS NULL`, so a seller saving their free-text spec block can
+// no longer wipe the product's typed attributes as collateral. Before that
+// scope existed this method deleted every row for the product.
 func (s *Store) SetProductAttributes(ctx context.Context, productID uuid.UUID, attrs []ProductAttribute) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM product_attributes WHERE product_id=$1`, productID); err != nil {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM product_attributes WHERE product_id=$1 AND definition_id IS NULL`,
+		productID); err != nil {
 		return err
 	}
 	for i, a := range attrs {
@@ -272,6 +286,31 @@ func (s *Store) SetProductAttributes(ctx context.Context, productID uuid.UUID, a
 		); err != nil {
 			return err
 		}
+	}
+	// ── The source_image_url dual-write ──────────────────────
+	//
+	// Migration 026 moved the fallback image URL to products.source_image_url
+	// and moved the three readers onto it. This method is the writer on the
+	// other side of that move, and it must keep the column agreeing with the
+	// rows it just wrote — INCLUDING clearing it when the new set has no such
+	// row, because that is what the old readers did when the DELETE above
+	// took the row away.
+	//
+	// Both places are written, not just the column, for the length of the
+	// rolling deploy: a pod on the previous image still reads the EAV row and
+	// would show a blank image if this stopped maintaining it. The EAV row is
+	// also the rollback path. A later gated migration deletes the old rows and
+	// this projection becomes a plain column write.
+	if _, err := tx.Exec(ctx, `
+		UPDATE products p
+		   SET source_image_url = (
+		       SELECT pa.value FROM product_attributes pa
+		        WHERE pa.product_id = p.id
+		          AND pa.name = 'source_image_url'
+		          AND pa.definition_id IS NULL
+		        ORDER BY pa.sort_order, pa.id LIMIT 1)
+		 WHERE p.id = $1`, productID); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

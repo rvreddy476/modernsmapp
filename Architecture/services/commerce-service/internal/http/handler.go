@@ -319,8 +319,25 @@ func (h *Handler) GetProduct(c *gin.Context) {
 		handleErr(c, err)
 		return
 	}
+	// The specifications block, which this endpoint has never returned.
+	//
+	// Detail was product + variants + media, so every category-specific fact a
+	// seller entered — author, page count, weight — was stored and then
+	// visible nowhere. A client wanting it had to call
+	// GET …/attributes separately, which returns the untyped legacy rows and
+	// no labels, so it could not draw a spec table from them either.
+	//
+	// Read from the typed rows, in group order, with codes beside labels. On
+	// a product that has no typed values this is an empty list, which is the
+	// same shape as before rather than a new failure mode.
+	attributes, err := h.svc.ProductAttributeValues(c.Request.Context(), id)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"product": p, "variants": variants, "media": gallery,
+		"attributes": attributes,
 	}, nil)
 }
 

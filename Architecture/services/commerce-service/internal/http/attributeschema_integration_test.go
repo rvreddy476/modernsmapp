@@ -458,6 +458,7 @@ func TestMakingAFieldRequiredNeedsTheImpactAcknowledged(t *testing.T) {
 }
 
 func TestPublishBumpsTheSchemaVersionOnTheNextResponse(t *testing.T) {
+	lockSchemaState(t)
 	r := liveEngine(t)
 	textbooks := categoryIDBySlug(t, "books-textbooks")
 
