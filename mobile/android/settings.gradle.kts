@@ -113,3 +113,16 @@ include(":feature:tube")
 // — Home, Reels, the video app, Explore. Its own feature so none of those
 // carries a screen the others also need.
 include(":feature:search")
+// ── Commerce modules (P0 launch loop) ──────────────────────────────────
+//
+// :core:commerce owns the DTOs, the repository, the domain models and the
+// Paise money type; :feature:commerce owns the screens. The split is the one
+// every other vertical here uses, and it is what lets the money contract be
+// enforced in a single place: Paise is a value class over Long, so a Double
+// amount is a compile error rather than a review comment.
+//
+// There is deliberately no :feature:* → :feature:* edge from commerce. Its
+// entry points are routes on UsNavHost, wired in :app. The rule is enforced
+// by the `checkFeatureGraph` task, not by convention.
+include(":core:commerce")
+include(":feature:commerce")

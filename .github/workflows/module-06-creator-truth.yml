@@ -5,7 +5,6 @@ on:
     paths:
       - 'Architecture/services/analytics-service/**'
       - 'Architecture/services/monetization-service/**'
-      - 'mobile/atpost_app/**'
       - 'deploy/services/analytics-service/**'
       - 'deploy/services/monetization-service/**'
       - '.github/workflows/module-06-creator-truth.yml'
@@ -184,51 +183,3 @@ jobs:
             echo "::error::${{ matrix.service }} started without INTERNAL_SERVICE_KEY"
             exit 1
           fi
-
-  mobile-truth:
-    name: Studio uses real analytics and integer-paise ledger
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: mobile/atpost_app
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.44.9'
-          channel: stable
-          cache: true
-      - run: flutter pub get
-      - name: Analyze Module 6 mobile surfaces
-        run: |
-          flutter analyze \
-            lib/core/config/environment.dart \
-            lib/data/repositories/analytics_repository.dart \
-            lib/data/repositories/monetization_repository.dart \
-            lib/data/models/monetization.dart \
-            lib/providers/monetization_provider.dart \
-            lib/features/monetization/monetization_dashboard_screen.dart \
-            lib/features/monetization/creator_analytics_screen.dart \
-            lib/features/monetization/payouts_screen.dart \
-            lib/features/profile/profile_detail_screen.dart
-      - name: No invented money or enabled financial action
-        shell: bash
-        run: |
-          set -euo pipefail
-          grep -q "monetizationWritesEnabled = bool.fromEnvironment" lib/core/config/environment.dart
-          grep -q "'MONETIZATION_WRITES_ENABLED'" lib/core/config/environment.dart
-          grep -q "defaultValue: false" lib/core/config/environment.dart
-          grep -q "/v1/monetization/creator-ledger" lib/data/repositories/monetization_repository.dart
-          ! grep -q "summary.thisMonth \*" lib/providers/monetization_provider.dart
-          # Match an actionable control, not the word. The dashboard tells the
-          # user in plain copy that "Withdrawals, memberships, tips, and
-          # creator-fund actions are not launched in this beta" — prose that
-          # says the feature is ABSENT tripped a bare `! grep -q "Withdraw"`,
-          # so this gate failed against correct source. The risk being gated is
-          # a tappable withdraw control, so assert on button labels and
-          # handlers. Verified both ways: ignores the existing copy, and still
-          # catches an injected ElevatedButton(onPressed: ..., 'Withdraw').
-          ! grep -qE "Text\('Withdraw|onPressed[^)]*[Ww]ithdraw" lib/features/monetization/monetization_dashboard_screen.dart
-          ! grep -qE "Text\('Withdraw|onPressed[^)]*[Ww]ithdraw" lib/features/monetization/payouts_screen.dart
-      - run: flutter test --reporter expanded

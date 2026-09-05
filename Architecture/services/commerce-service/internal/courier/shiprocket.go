@@ -274,14 +274,28 @@ func (c *ShiprocketCourier) ParseWebhook(_ context.Context, payload []byte) ([]T
 	return updates, nil
 }
 
-// CheckServiceability — Phase 1.3 placeholder. Shiprocket exposes
-// /courier/serviceability/ with the pickup_postcode + delivery_postcode +
-// weight + cod (0/1) query params; wiring it is straightforward but
-// touches the auth-token cache and a non-trivial response shape. Until
-// that lands the adapter returns the same permissive default as the stub
-// so checkout flows still work in environments configured with
-// COURIER_PROVIDER=shiprocket but no serviceability cache.
-func (c *ShiprocketCourier) CheckServiceability(_ context.Context, req ServiceabilityRequest) (*ServiceabilityResult, error) {
+// CheckServiceability queries Shiprocket's rate card and returns a real
+// delivery price.
+//
+// B8 — what this replaces. The previous body was a "Phase 1.3 placeholder"
+// that returned `Serviceable: true` and never set ShippingChargeMinor. It was
+// not dormant: `COURIER_PROVIDER=shiprocket` is set in values-prod.yaml, and
+// PrepareQuote persists `ShippingChargeMinor` straight into the quote that
+// checkout consumes. Every production order would therefore have been created
+// with ₹0 delivery, and the platform would have paid the real carrier charge
+// on all of them. The handover listed this under "unverified dependencies";
+// it is not unverified, it is a guaranteed loss on the first order.
+//
+// The two failure directions are deliberately NOT symmetric:
+//
+//   - not serviceable → a normal, non-error result the caller renders as
+//     "we cannot deliver there";
+//   - serviceable but unpriceable → an ERROR. A rate we could not obtain must
+//     never become a zero we charge nothing for. PrepareQuote already refuses
+//     to invent a rate when no courier is configured (D7/M-10); this closes
+//     the same hole one layer down, where a configured courier answers
+//     without a price.
+func (c *ShiprocketCourier) CheckServiceability(ctx context.Context, req ServiceabilityRequest) (*ServiceabilityResult, error) {
 	if !validIndianPincode(req.PickupPincode) || !validIndianPincode(req.DropPincode) {
 		return &ServiceabilityResult{
 			Serviceable: false,
@@ -289,11 +303,148 @@ func (c *ShiprocketCourier) CheckServiceability(_ context.Context, req Serviceab
 			Reason:      "invalid pincode",
 		}, nil
 	}
-	return &ServiceabilityResult{
-		Serviceable:   true,
-		CODSupported:  true,
-		EstimatedDays: 4,
-		EstimatedETA:  time.Now().AddDate(0, 0, 4),
-		Courier:       "shiprocket",
-	}, nil
+
+	tok, err := c.authToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("shiprocket serviceability: %w", err)
+	}
+
+	// Shiprocket bills by weight in kilograms and wants at least a token
+	// weight; a zero would be rejected by the rate card.
+	weight := req.WeightKg
+	if weight <= 0 {
+		weight = 0.5
+	}
+	cod := "0"
+	if strings.EqualFold(req.PaymentMethod, "cod") {
+		cod = "1"
+	}
+
+	url := fmt.Sprintf("%s/courier/serviceability/?pickup_postcode=%s&delivery_postcode=%s&weight=%.2f&cod=%s",
+		c.base, req.PickupPincode, req.DropPincode, weight, cod)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("shiprocket serviceability: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+tok)
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("shiprocket serviceability: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	// 404 is Shiprocket's "no courier serves this lane" answer, which is a
+	// legitimate not-serviceable rather than a fault.
+	if resp.StatusCode == http.StatusNotFound {
+		return &ServiceabilityResult{
+			Serviceable: false,
+			Courier:     "shiprocket",
+			Reason:      "no courier serves this route",
+		}, nil
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("shiprocket serviceability %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var out struct {
+		Status int `json:"status"`
+		Data   struct {
+			AvailableCourierCompanies []struct {
+				CourierName      string  `json:"courier_name"`
+				CourierCompanyID int     `json:"courier_company_id"`
+				Rate             float64 `json:"rate"`
+				FreightCharge    float64 `json:"freight_charge"`
+				CODCharges       float64 `json:"cod_charges"`
+				EstimatedDeliveryDays string `json:"etd"`
+				EstimatedDays    string  `json:"estimated_delivery_days"`
+				IsCODAvailable   int     `json:"cod"`
+			} `json:"available_courier_companies"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("shiprocket serviceability: decode: %w", err)
+	}
+	if len(out.Data.AvailableCourierCompanies) == 0 {
+		return &ServiceabilityResult{
+			Serviceable: false,
+			Courier:     "shiprocket",
+			Reason:      "no courier serves this route",
+		}, nil
+	}
+
+	// Cheapest priced option wins. An entry with a zero or negative rate is
+	// skipped rather than selected: it is the "free shipping" that this
+	// whole change exists to stop.
+	best := -1
+	for i, cc := range out.Data.AvailableCourierCompanies {
+		rate := cc.Rate
+		if rate <= 0 {
+			rate = cc.FreightCharge
+		}
+		if rate <= 0 {
+			continue
+		}
+		if best < 0 {
+			best = i
+			continue
+		}
+		prev := out.Data.AvailableCourierCompanies[best].Rate
+		if prev <= 0 {
+			prev = out.Data.AvailableCourierCompanies[best].FreightCharge
+		}
+		if rate < prev {
+			best = i
+		}
+	}
+	if best < 0 {
+		// Serviceable, but every option came back without a usable price.
+		// Refusing is the point: the alternative is charging the customer
+		// nothing and absorbing the carrier bill.
+		return nil, fmt.Errorf(
+			"shiprocket returned %d courier options for %s→%s but none carried a usable rate; "+
+				"refusing to quote a zero delivery charge",
+			len(out.Data.AvailableCourierCompanies), req.PickupPincode, req.DropPincode)
+	}
+
+	chosen := out.Data.AvailableCourierCompanies[best]
+	rate := chosen.Rate
+	if rate <= 0 {
+		rate = chosen.FreightCharge
+	}
+	// Rupees-major float from the provider → paise-minor int64, once, at the
+	// boundary. Rounded rather than truncated so a 49.99 rate bills 4999.
+	chargeMinor := int64(rate*100 + 0.5)
+
+	days := parseShiprocketDays(chosen.EstimatedDays)
+	result := &ServiceabilityResult{
+		Serviceable:         true,
+		CODSupported:        chosen.IsCODAvailable == 1,
+		EstimatedDays:       days,
+		Courier:             "shiprocket",
+		ShippingChargeMinor: chargeMinor,
+	}
+	if days > 0 {
+		result.EstimatedETA = time.Now().AddDate(0, 0, days)
+	}
+	return result, nil
+}
+
+// parseShiprocketDays reads the estimated-days field, which Shiprocket sends
+// as a string and occasionally leaves blank. Zero means "unknown", which the
+// caller renders as no ETA rather than as same-day.
+func parseShiprocketDays(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }

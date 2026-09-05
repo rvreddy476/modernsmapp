@@ -21,7 +21,7 @@ func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string, mi
 		return fmt.Errorf("apply payments schema: %w", err)
 	}
 	if migrations != nil {
-		if err := migrationrunner.Run(ctx, db, "payments-service", migrations, "migrations"); err != nil {
+		if err := migrationrunner.RunExclusive(ctx, db, "payments-service", migrations, "migrations"); err != nil {
 			return fmt.Errorf("apply payments migrations: %w", err)
 		}
 	}

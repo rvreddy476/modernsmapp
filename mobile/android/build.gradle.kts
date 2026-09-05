@@ -176,7 +176,10 @@ tasks.register("moduleGraphCheck") {
     // 32 = 30 + :core:feed (the feed data seam split out of :feature:feed) +
     //      :feature:tube (long video), 2026-09-05.
     // 33 = 32 + :feature:search (page-scoped search), 2026-09-05.
-    val expectedModuleCount = 33
+    // 35 = 33 + :core:commerce and :feature:commerce (Commerce P0, LB-A1/A2).
+    //      Rule 3 already forbids a :feature → :feature edge, so the commerce
+    //      feature is covered by it without a new rule.
+    val expectedModuleCount = 35
 
     doLast {
         val allViolations = buildList {

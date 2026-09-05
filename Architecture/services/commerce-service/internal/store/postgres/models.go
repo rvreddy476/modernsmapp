@@ -156,32 +156,47 @@ type Product struct {
 	ApprovalStatus      string     `db:"approval_status" json:"approval_status,omitempty"`
 	RejectionReason     *string    `db:"rejection_reason" json:"rejection_reason,omitempty"`
 	PrimaryImageMediaID *uuid.UUID `db:"primary_image_media_id" json:"primary_image_media_id,omitempty"`
-	SourceImageURL      *string    `db:"source_image_url" json:"source_image_url,omitempty"`
-	RetailerName        *string    `db:"retailer_name" json:"retailer_name,omitempty"`
-	WeightGrams         *int       `db:"weight_grams" json:"weight_grams,omitempty"`
-	LengthCm            *float64   `db:"length_cm" json:"length_cm,omitempty"`
-	WidthCm             *float64   `db:"width_cm" json:"width_cm,omitempty"`
-	HeightCm            *float64   `db:"height_cm" json:"height_cm,omitempty"`
-	CountryOfOrigin     *string    `db:"country_of_origin" json:"country_of_origin,omitempty"`
-	BrandName           *string    `db:"brand_name" json:"brand_name,omitempty"`
-	ManufacturerName    *string    `db:"manufacturer_name" json:"manufacturer_name,omitempty"`
-	WarrantyInfo        *string    `db:"warranty_info" json:"warranty_info,omitempty"`
-	ReturnPolicyType    string     `db:"return_policy_type" json:"return_policy_type,omitempty"`
-	ReturnPolicyDays    int        `db:"return_policy_days" json:"return_policy_days,omitempty"`
-	HSNCode             *string    `db:"hsn_code" json:"hsn_code,omitempty"`
-	VideoMediaID        *uuid.UUID `db:"video_media_id" json:"video_media_id,omitempty"`
-	SearchKeywords      []string   `db:"search_keywords" json:"search_keywords,omitempty"`
-	MetaTitle           *string    `db:"meta_title" json:"meta_title,omitempty"`
-	MetaDescription     *string    `db:"meta_description" json:"meta_description,omitempty"`
-	AvgRating           float64    `db:"avg_rating" json:"avg_rating,omitempty"`
-	ReviewCount         int        `db:"review_count" json:"review_count,omitempty"`
-	OrderCount          int        `db:"order_count" json:"order_count,omitempty"`
-	ViewCount           int64      `db:"view_count" json:"view_count,omitempty"`
-	WishlistCount       int        `db:"wishlist_count" json:"wishlist_count,omitempty"`
-	IsFeatured          bool       `db:"is_featured" json:"is_featured,omitempty"`
-	CreatedAt           time.Time  `db:"created_at" json:"created_at,omitempty"`
-	UpdatedAt           time.Time  `db:"updated_at" json:"updated_at,omitempty"`
-	PublishedAt         *time.Time `db:"published_at" json:"published_at,omitempty"`
+	// ImageURL and ThumbnailURL are hydrated from media-service on read.
+	//
+	// Without them commerce hands a client a bare media UUID and nothing
+	// else, so no product screen can draw an image: the Android
+	// `core:commerce` module has no dependency on `core:media`, which holds
+	// the resolver, and adding one would pull the whole ExoPlayer stack into
+	// a module that needs a URL. Resolving here fixes it once for every
+	// client, iOS included.
+	//
+	// Empty when media-service is unreachable: the read path fails SOFT and
+	// the client shows a placeholder. A catalogue that will not load because
+	// the image service is down is worse than a catalogue of grey boxes.
+	ImageURL         string     `db:"-" json:"image_url,omitempty"`
+	ThumbnailURL     string     `db:"-" json:"thumbnail_url,omitempty"`
+	ImageBlurhash    *string    `db:"-" json:"image_blurhash,omitempty"`
+	SourceImageURL   *string    `db:"source_image_url" json:"source_image_url,omitempty"`
+	RetailerName     *string    `db:"retailer_name" json:"retailer_name,omitempty"`
+	WeightGrams      *int       `db:"weight_grams" json:"weight_grams,omitempty"`
+	LengthCm         *float64   `db:"length_cm" json:"length_cm,omitempty"`
+	WidthCm          *float64   `db:"width_cm" json:"width_cm,omitempty"`
+	HeightCm         *float64   `db:"height_cm" json:"height_cm,omitempty"`
+	CountryOfOrigin  *string    `db:"country_of_origin" json:"country_of_origin,omitempty"`
+	BrandName        *string    `db:"brand_name" json:"brand_name,omitempty"`
+	ManufacturerName *string    `db:"manufacturer_name" json:"manufacturer_name,omitempty"`
+	WarrantyInfo     *string    `db:"warranty_info" json:"warranty_info,omitempty"`
+	ReturnPolicyType string     `db:"return_policy_type" json:"return_policy_type,omitempty"`
+	ReturnPolicyDays int        `db:"return_policy_days" json:"return_policy_days,omitempty"`
+	HSNCode          *string    `db:"hsn_code" json:"hsn_code,omitempty"`
+	VideoMediaID     *uuid.UUID `db:"video_media_id" json:"video_media_id,omitempty"`
+	SearchKeywords   []string   `db:"search_keywords" json:"search_keywords,omitempty"`
+	MetaTitle        *string    `db:"meta_title" json:"meta_title,omitempty"`
+	MetaDescription  *string    `db:"meta_description" json:"meta_description,omitempty"`
+	AvgRating        float64    `db:"avg_rating" json:"avg_rating,omitempty"`
+	ReviewCount      int        `db:"review_count" json:"review_count,omitempty"`
+	OrderCount       int        `db:"order_count" json:"order_count,omitempty"`
+	ViewCount        int64      `db:"view_count" json:"view_count,omitempty"`
+	WishlistCount    int        `db:"wishlist_count" json:"wishlist_count,omitempty"`
+	IsFeatured       bool       `db:"is_featured" json:"is_featured,omitempty"`
+	CreatedAt        time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt        time.Time  `db:"updated_at" json:"updated_at,omitempty"`
+	PublishedAt      *time.Time `db:"published_at" json:"published_at,omitempty"`
 
 	// Phase F1 — list-view enrichment. Populated by ListProducts via
 	// LATERAL subqueries against product_variants so mobile/web can
@@ -189,9 +204,33 @@ type Product struct {
 	// fetch. Nil on the detail endpoint (use the wrapped variants
 	// array there instead).
 	DefaultVariantID *uuid.UUID `json:"default_variant_id,omitempty"`
-	MinSellingPrice  *float64   `json:"min_selling_price,omitempty"`
-	MinMRP           *float64   `json:"min_mrp,omitempty"`
-	TotalStock       *int       `json:"total_stock,omitempty"`
+
+	// The catalogue's money, in PAISE.
+	//
+	// These are what a client renders. The float fields below are the
+	// original shape and are kept for the existing web caller, but no new
+	// client should read them: `min_selling_price` is a rupee float, and the
+	// Android client — correctly written against the integer-paise rule the
+	// rest of this service follows — expects `min_price_minor`. The two names
+	// never matched, so every product in the app's catalogue rendered as ₹0.
+	//
+	// The float pair also slipped past the CI money gate, which greps for
+	// float fields whose NAMES look like money: "MinSellingPrice" does not
+	// match `(amount|price|total|...)`. Naming the paise fields `_minor` is
+	// what keeps them legible to both the client and the gate.
+	MinPriceMinor *int64 `json:"min_price_minor,omitempty"`
+	MRPMinor      *int64 `json:"mrp_minor,omitempty"`
+
+	// InStock is the derived boolean the grid actually needs. TotalStock is
+	// retained for callers that show a count.
+	InStock *bool `json:"in_stock,omitempty"`
+
+	// Deprecated: rupee floats, kept for the existing web client.
+	// money-exempt: legacy list-view fields, superseded by the _minor pair
+	// above; no pricing path reads them.
+	MinSellingPrice *float64 `json:"min_selling_price,omitempty"`
+	MinMRP          *float64 `json:"min_mrp,omitempty"`
+	TotalStock      *int     `json:"total_stock,omitempty"`
 }
 
 // ProductMedia is one image / video / size-chart / infographic in a
@@ -219,25 +258,34 @@ type ProductAttribute struct {
 // ─── Product Variant ─────────────────────────────────────────
 
 type ProductVariant struct {
-	ID           uuid.UUID  `db:"id" json:"id,omitempty"`
-	ProductID    uuid.UUID  `db:"product_id" json:"product_id,omitempty"`
-	SKU          string     `db:"sku" json:"sku,omitempty"`
-	Barcode      *string    `db:"barcode" json:"barcode,omitempty"`
-	Option1Name  *string    `db:"option_1_name" json:"option_1_name,omitempty"`
-	Option1Value *string    `db:"option_1_value" json:"option_1_value,omitempty"`
-	Option2Name  *string    `db:"option_2_name" json:"option_2_name,omitempty"`
-	Option2Value *string    `db:"option_2_value" json:"option_2_value,omitempty"`
-	Option3Name  *string    `db:"option_3_name" json:"option_3_name,omitempty"`
-	Option3Value *string    `db:"option_3_value" json:"option_3_value,omitempty"`
-	MRP          float64    `db:"mrp" json:"mrp,omitempty"`
-	SellingPrice float64    `db:"selling_price" json:"selling_price,omitempty"`
-	CostPrice    *float64   `db:"cost_price" json:"cost_price,omitempty"`
-	CurrencyCode string     `db:"currency_code" json:"currency_code,omitempty"`
-	Status       string     `db:"status" json:"status,omitempty"`
-	ImageMediaID *uuid.UUID `db:"image_media_id" json:"image_media_id,omitempty"`
-	WeightGrams  *int       `db:"weight_grams" json:"weight_grams,omitempty"`
-	CreatedAt    time.Time  `db:"created_at" json:"created_at,omitempty"`
-	UpdatedAt    time.Time  `db:"updated_at" json:"updated_at,omitempty"`
+	ID           uuid.UUID `db:"id" json:"id,omitempty"`
+	ProductID    uuid.UUID `db:"product_id" json:"product_id,omitempty"`
+	SKU          string    `db:"sku" json:"sku,omitempty"`
+	Barcode      *string   `db:"barcode" json:"barcode,omitempty"`
+	Option1Name  *string   `db:"option_1_name" json:"option_1_name,omitempty"`
+	Option1Value *string   `db:"option_1_value" json:"option_1_value,omitempty"`
+	Option2Name  *string   `db:"option_2_name" json:"option_2_name,omitempty"`
+	Option2Value *string   `db:"option_2_value" json:"option_2_value,omitempty"`
+	Option3Name  *string   `db:"option_3_name" json:"option_3_name,omitempty"`
+	Option3Value *string   `db:"option_3_value" json:"option_3_value,omitempty"`
+	MRP          float64   `db:"mrp" json:"mrp,omitempty"`
+	SellingPrice float64   `db:"selling_price" json:"selling_price,omitempty"`
+	// The authoritative money, when the caller has it.
+	//
+	// Non-nil means paise came from the client and the rupee columns above
+	// are a mirror written for the analytics readers that still scan them.
+	// Nil means a legacy caller supplied only rupees, and the store converts
+	// once at the boundary.
+	MRPMinorIn          *int64     `db:"-" json:"-"`
+	SellingPriceMinorIn *int64     `db:"-" json:"-"`
+	CostPriceMinorIn    *int64     `db:"-" json:"-"`
+	CostPrice           *float64   `db:"cost_price" json:"cost_price,omitempty"`
+	CurrencyCode        string     `db:"currency_code" json:"currency_code,omitempty"`
+	Status              string     `db:"status" json:"status,omitempty"`
+	ImageMediaID        *uuid.UUID `db:"image_media_id" json:"image_media_id,omitempty"`
+	WeightGrams         *int       `db:"weight_grams" json:"weight_grams,omitempty"`
+	CreatedAt           time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt           time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 // ─── Inventory ───────────────────────────────────────────────
@@ -284,7 +332,7 @@ type Order struct {
 	ID                      uuid.UUID  `db:"id" json:"id,omitempty"`
 	CustomerUserID          uuid.UUID  `db:"customer_user_id" json:"customer_user_id,omitempty"`
 	OrderNumber             string     `db:"order_number" json:"order_number,omitempty"`
-	Subtotal                float64    `db:"subtotal" json:"subtotal,omitempty"`
+	Subtotal                float64    `db:"subtotal" json:"subtotal,omitempty"` // money-exempt: read model mirroring the deprecated orders.subtotal NUMERIC for analytics readers
 	DiscountAmount          float64    `db:"discount_amount" json:"discount_amount,omitempty"`
 	ShippingCharges         float64    `db:"shipping_charges" json:"shipping_charges,omitempty"`
 	TaxAmount               float64    `db:"tax_amount" json:"tax_amount,omitempty"`

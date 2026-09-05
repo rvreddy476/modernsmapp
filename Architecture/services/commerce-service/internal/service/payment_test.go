@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/atpost/commerce-service/internal/money"
 	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -17,9 +18,10 @@ import (
 // a mutex, so the concurrency tests below exercise the real convergence
 // contract (exactly one Applied=true).
 type fakeOrderStore struct {
-	mu     sync.Mutex
-	orders map[uuid.UUID]*postgres.Order
-	items  map[uuid.UUID][]*postgres.OrderItem
+	mu      sync.Mutex
+	orders  map[uuid.UUID]*postgres.Order
+	items   map[uuid.UUID][]*postgres.OrderItem
+	intents map[uuid.UUID]uuid.UUID
 
 	deducted  int
 	released  int
@@ -28,7 +30,11 @@ type fakeOrderStore struct {
 }
 
 func newFakeStore() *fakeOrderStore {
-	return &fakeOrderStore{orders: map[uuid.UUID]*postgres.Order{}, items: map[uuid.UUID][]*postgres.OrderItem{}}
+	return &fakeOrderStore{
+		orders:  map[uuid.UUID]*postgres.Order{},
+		items:   map[uuid.UUID][]*postgres.OrderItem{},
+		intents: map[uuid.UUID]uuid.UUID{},
+	}
 }
 
 func (f *fakeOrderStore) add(o *postgres.Order) *postgres.Order {
@@ -38,6 +44,11 @@ func (f *fakeOrderStore) add(o *postgres.Order) *postgres.Order {
 	f.orders[o.ID] = o
 	f.items[o.ID] = []*postgres.OrderItem{{ID: uuid.New(), OrderID: o.ID, VariantID: uuid.New(), Quantity: 2}}
 	return o
+}
+
+// bind records the intent checkout opened for the order.
+func (f *fakeOrderStore) bind(orderID, intentID uuid.UUID) {
+	f.intents[orderID] = intentID
 }
 
 func (f *fakeOrderStore) GetOrderByID(_ context.Context, id uuid.UUID) (*postgres.Order, error) {
@@ -52,6 +63,11 @@ func (f *fakeOrderStore) GetOrderByID(_ context.Context, id uuid.UUID) (*postgre
 }
 func (f *fakeOrderStore) GetOrderItems(_ context.Context, id uuid.UUID) ([]*postgres.OrderItem, error) {
 	return f.items[id], nil
+}
+func (f *fakeOrderStore) OrderPaymentIntentID(_ context.Context, id uuid.UUID) (uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.intents[id], nil
 }
 func (f *fakeOrderStore) MarkOrderPaid(_ context.Context, id uuid.UUID, paymentID, gateway string, _ *uuid.UUID, _ string) (postgres.PaidTransition, error) {
 	f.mu.Lock()
@@ -100,22 +116,28 @@ func (f *fakeOrderStore) EnqueueJobPool(_ context.Context, kind string, _ []byte
 	return nil
 }
 
-// fakePayments scripts payments-service's verify answer.
+// fakePayments scripts payments-service's advisory verify answer.
 type fakePayments struct {
-	result *payments.VerifyResult
-	err    error
-	calls  int
+	verdict *payments.CallbackVerdict
+	err     error
+	calls   int
+	// lastIntent records which intent the service asked payments about.
+	lastIntent uuid.UUID
 }
 
-func (p *fakePayments) VerifyIntent(_ context.Context, _ uuid.UUID, _, _, _ string, _ int64) (*payments.VerifyResult, error) {
+func (p *fakePayments) VerifyCallback(_ context.Context, intentID uuid.UUID, _, _, _ string, _ money.Paise) (*payments.CallbackVerdict, error) {
 	p.calls++
-	return p.result, p.err
+	p.lastIntent = intentID
+	return p.verdict, p.err
 }
-func (p *fakePayments) FindOrderIntent(context.Context, uuid.UUID, uuid.UUID) (*payments.PaymentIntent, error) {
-	return nil, nil
+func (p *fakePayments) CreateIntent(context.Context, payments.CreateIntentInput) (*payments.Intent, error) {
+	return nil, errors.New("not scripted")
 }
-func (p *fakePayments) InitiateRefund(context.Context, uuid.UUID, uuid.UUID, int64, string) (*payments.PaymentIntent, error) {
-	return nil, nil
+func (p *fakePayments) GetIntent(context.Context, uuid.UUID) (*payments.Intent, error) {
+	return nil, errors.New("not scripted")
+}
+func (p *fakePayments) Refund(context.Context, uuid.UUID, money.Paise, string, string) (*payments.RefundAccepted, error) {
+	return nil, errors.New("not scripted")
 }
 
 func newPaymentSvc(st *fakeOrderStore, pay paymentsClient) *Service {
@@ -157,40 +179,69 @@ func TestCheckoutInitialState_IsPayable(t *testing.T) {
 func TestConfirmPayment(t *testing.T) {
 	customer, stranger := uuid.New(), uuid.New()
 	intentID := uuid.New()
-	verified := func(orderID uuid.UUID) *payments.VerifyResult {
-		return &payments.VerifyResult{Verified: true, IntentID: intentID, Status: "succeeded", AmountMinor: 90000, ReferenceType: "order", ReferenceID: orderID, PayerID: customer}
+	verified := func(orderID uuid.UUID) *payments.CallbackVerdict {
+		return &payments.CallbackVerdict{Verified: true, Advisory: true, Status: "pending", AmountMinor: 90000,
+			ReferenceType: "order", ReferenceID: orderID, PayerID: customer}
 	}
 	input := ConfirmPaymentInput{PaymentIntentID: intentID, RazorpayOrderID: "order_1", RazorpayPaymentID: "pay_1", RazorpaySignature: "sig", AmountMinor: 90000}
-
-	t.Run("happy path: checkout → paid → confirmed with side effects once", func(t *testing.T) {
+	setup := func(pay *fakePayments) (*fakeOrderStore, *postgres.Order, *Service) {
 		st := newFakeStore()
 		o := st.add(prepaidOrder(customer))
-		pay := &fakePayments{result: verified(o.ID)}
-		svc := newPaymentSvc(st, pay)
+		st.bind(o.ID, intentID)
+		return st, o, newPaymentSvc(st, pay)
+	}
+
+	t.Run("real gateway: a genuine callback is advisory — verified against the bound intent, nothing marked paid", func(t *testing.T) {
+		pay := &fakePayments{}
+		st, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
 
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); err != nil {
 			t.Fatalf("confirm: %v", err)
 		}
+		if pay.calls != 1 || pay.lastIntent != intentID {
+			t.Fatalf("verify calls=%d intent=%s, want 1 call on the bound intent %s", pay.calls, pay.lastIntent, intentID)
+		}
 		got, _ := st.GetOrderByID(context.Background(), o.ID)
-		if got.Status != "confirmed" || got.PaymentStatus != "paid" || got.PaymentID == nil || *got.PaymentID != "pay_1" {
-			t.Fatalf("order after confirm = %s/%s pid=%v", got.Status, got.PaymentStatus, got.PaymentID)
+		if got.Status != "payment_pending" || got.PaymentStatus != "pending" || st.paidCalls != 0 {
+			t.Fatalf("callback marked the order %s/%s (paidCalls=%d); only the provider webhook may", got.Status, got.PaymentStatus, st.paidCalls)
 		}
-		if st.deducted != 1 || len(st.enqueued) != 1 || st.enqueued[0] != "fulfill_paid_order" {
-			t.Fatalf("side effects: deducted=%d enqueued=%v", st.deducted, st.enqueued)
+		if st.deducted != 0 || len(st.enqueued) != 0 {
+			t.Fatalf("side effects ran off a client callback: deducted=%d enqueued=%v", st.deducted, st.enqueued)
 		}
-		// Second confirm is an idempotent no-op: no verify, no side effects.
-		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); err != nil {
-			t.Fatalf("second confirm: %v", err)
+	})
+
+	t.Run("client naming a different intent is refused before payments is asked", func(t *testing.T) {
+		pay := &fakePayments{}
+		_, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
+		other := input
+		other.PaymentIntentID = uuid.New()
+		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, other); !errors.Is(err, ErrPaymentVerifyFailed) {
+			t.Fatalf("err = %v, want ErrPaymentVerifyFailed", err)
 		}
-		if pay.calls != 1 || st.deducted != 1 || len(st.enqueued) != 1 {
-			t.Fatalf("second confirm re-ran work: verify=%d deducted=%d enqueued=%v", pay.calls, st.deducted, st.enqueued)
+		if pay.calls != 0 {
+			t.Fatal("payments was asked about an intent the order does not own")
+		}
+	})
+
+	t.Run("order with no bound intent cannot be confirmed", func(t *testing.T) {
+		st := newFakeStore()
+		o := st.add(prepaidOrder(customer))
+		pay := &fakePayments{verdict: verified(o.ID)}
+		svc := newPaymentSvc(st, pay)
+		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); !errors.Is(err, ErrPaymentVerifyFailed) {
+			t.Fatalf("err = %v, want ErrPaymentVerifyFailed", err)
+		}
+		if pay.calls != 0 {
+			t.Fatal("payments was asked with no intent to ask about")
 		}
 	})
 
 	t.Run("wrong owner", func(t *testing.T) {
-		st := newFakeStore()
-		o := st.add(prepaidOrder(customer))
-		svc := newPaymentSvc(st, &fakePayments{result: verified(o.ID)})
+		pay := &fakePayments{}
+		st, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
 		if err := svc.ConfirmPayment(context.Background(), o.ID, stranger, input); !errors.Is(err, ErrNotOrderOwner) {
 			t.Fatalf("err = %v, want ErrNotOrderOwner", err)
 		}
@@ -204,6 +255,7 @@ func TestConfirmPayment(t *testing.T) {
 		o := prepaidOrder(customer)
 		o.Status, o.PaymentStatus = "confirmed", "paid"
 		st.add(o)
+		st.bind(o.ID, intentID)
 		pay := &fakePayments{err: errors.New("must not be called")}
 		svc := newPaymentSvc(st, pay)
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); err != nil {
@@ -219,7 +271,8 @@ func TestConfirmPayment(t *testing.T) {
 		o := prepaidOrder(customer)
 		o.Status = "cancelled"
 		st.add(o)
-		svc := newPaymentSvc(st, &fakePayments{result: verified(o.ID)})
+		st.bind(o.ID, intentID)
+		svc := newPaymentSvc(st, &fakePayments{verdict: verified(o.ID)})
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); !errors.Is(err, ErrOrderNotPaymentPending) {
 			t.Fatalf("err = %v, want ErrOrderNotPaymentPending", err)
 		}
@@ -232,10 +285,8 @@ func TestConfirmPayment(t *testing.T) {
 		}
 	})
 
-	t.Run("verify failure never marks paid", func(t *testing.T) {
-		st := newFakeStore()
-		o := st.add(prepaidOrder(customer))
-		svc := newPaymentSvc(st, &fakePayments{err: errors.New("signature mismatch")})
+	t.Run("verify failure is reported and never marks paid", func(t *testing.T) {
+		st, o, svc := setup(&fakePayments{err: errors.New("signature mismatch")})
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); !errors.Is(err, ErrPaymentVerifyFailed) {
 			t.Fatalf("err = %v, want ErrPaymentVerifyFailed", err)
 		}
@@ -245,47 +296,44 @@ func TestConfirmPayment(t *testing.T) {
 	})
 
 	t.Run("verified intent for a different order is refused", func(t *testing.T) {
-		st := newFakeStore()
-		o := st.add(prepaidOrder(customer))
-		svc := newPaymentSvc(st, &fakePayments{result: verified(uuid.New())})
+		_, o, svc := setup(&fakePayments{verdict: verified(uuid.New())})
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); !errors.Is(err, ErrPaymentVerifyFailed) {
 			t.Fatalf("err = %v, want ErrPaymentVerifyFailed", err)
 		}
 	})
 
 	t.Run("verified intent paid by another user is refused", func(t *testing.T) {
-		st := newFakeStore()
-		o := st.add(prepaidOrder(customer))
-		res := verified(o.ID)
-		res.PayerID = stranger
-		svc := newPaymentSvc(st, &fakePayments{result: res})
+		pay := &fakePayments{}
+		_, o, svc := setup(pay)
+		v := verified(o.ID)
+		v.PayerID = stranger
+		pay.verdict = v
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); !errors.Is(err, ErrPaymentVerifyFailed) {
 			t.Fatalf("err = %v, want ErrPaymentVerifyFailed", err)
 		}
 	})
 
 	t.Run("amount mismatch (client) and (intent)", func(t *testing.T) {
-		st := newFakeStore()
-		o := st.add(prepaidOrder(customer))
-		svc := newPaymentSvc(st, &fakePayments{result: verified(o.ID)})
+		pay := &fakePayments{}
+		_, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
 		bad := input
 		bad.AmountMinor = 1
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, bad); !errors.Is(err, ErrPaymentAmountMismatch) {
 			t.Fatalf("client amount: err = %v", err)
 		}
-		res := verified(o.ID)
-		res.AmountMinor = 1
-		svc = newPaymentSvc(st, &fakePayments{result: res})
+		v := verified(o.ID)
+		v.AmountMinor = 1
+		pay.verdict = v
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); !errors.Is(err, ErrPaymentAmountMismatch) {
 			t.Fatalf("intent amount: err = %v", err)
 		}
 	})
 
-	t.Run("stub gateway refused unless allowed, verified when allowed", func(t *testing.T) {
-		st := newFakeStore()
-		o := st.add(prepaidOrder(customer))
-		pay := &fakePayments{result: verified(o.ID)}
-		svc := newPaymentSvc(st, pay)
+	t.Run("stub gateway: refused unless allowed; when allowed it verifies AND settles through the guarded transition", func(t *testing.T) {
+		pay := &fakePayments{}
+		st, o, svc := setup(pay)
+		pay.verdict = verified(o.ID)
 		stub := input
 		stub.Gateway = "stub"
 		t.Setenv("PAYMENTS_ALLOW_STUB", "")
@@ -299,31 +347,44 @@ func TestConfirmPayment(t *testing.T) {
 		if pay.calls != 1 {
 			t.Fatalf("stub path must still verify the intent with payments-service, calls=%d", pay.calls)
 		}
-		if got, _ := st.GetOrderByID(context.Background(), o.ID); got.PaymentGateway == nil || *got.PaymentGateway != "stub" {
-			t.Fatalf("gateway not recorded: %v", got.PaymentGateway)
+		got, _ := st.GetOrderByID(context.Background(), o.ID)
+		if got.Status != "confirmed" || got.PaymentStatus != "paid" || got.PaymentGateway == nil || *got.PaymentGateway != "stub" {
+			t.Fatalf("order after stub confirm = %s/%s gateway=%v", got.Status, got.PaymentStatus, got.PaymentGateway)
+		}
+		if st.deducted != 1 || len(st.enqueued) != 1 || st.enqueued[0] != "fulfill_paid_order" {
+			t.Fatalf("side effects: deducted=%d enqueued=%v", st.deducted, st.enqueued)
+		}
+		// Second confirm is an idempotent no-op: no verify, no side effects.
+		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, stub); err != nil {
+			t.Fatalf("second confirm: %v", err)
+		}
+		if pay.calls != 1 || st.deducted != 1 || len(st.enqueued) != 1 {
+			t.Fatalf("second confirm re-ran work: verify=%d deducted=%d enqueued=%v", pay.calls, st.deducted, st.enqueued)
 		}
 	})
 
 	t.Run("payments client missing", func(t *testing.T) {
-		st := newFakeStore()
-		o := st.add(prepaidOrder(customer))
-		svc := newPaymentSvc(st, nil)
+		_, o, svc := setup(nil)
+		svc.payments = nil
 		if err := svc.ConfirmPayment(context.Background(), o.ID, customer, input); !errors.Is(err, ErrPaymentsClientMissing) {
 			t.Fatalf("err = %v, want ErrPaymentsClientMissing", err)
 		}
 	})
 }
 
-// TestConcurrentWebhookAndConfirm: the payments consumer (webhook) and the
-// customer's confirm race on one order. Both must return nil and the
-// side effects must run exactly once.
+// TestConcurrentWebhookAndConfirm: the payments consumer (webhook,
+// redelivered) and the stub-gateway confirm race on one order. Every caller
+// must return nil and the side effects must run exactly once.
 func TestConcurrentWebhookAndConfirm(t *testing.T) {
 	customer := uuid.New()
 	for round := 0; round < 25; round++ {
 		st := newFakeStore()
 		o := st.add(prepaidOrder(customer))
-		svc := newPaymentSvc(st, &fakePayments{result: &payments.VerifyResult{Verified: true, ReferenceID: o.ID, PayerID: customer, AmountMinor: 90000}})
-		in := ConfirmPaymentInput{PaymentIntentID: uuid.New(), RazorpayOrderID: "o", RazorpayPaymentID: "pay_confirm", RazorpaySignature: "s"}
+		intentID := uuid.New()
+		st.bind(o.ID, intentID)
+		svc := newPaymentSvc(st, &fakePayments{verdict: &payments.CallbackVerdict{Verified: true, ReferenceID: o.ID, PayerID: customer, AmountMinor: 90000}})
+		svc.WithAllowStubGateway(true)
+		in := ConfirmPaymentInput{PaymentIntentID: intentID, RazorpayOrderID: "o", RazorpayPaymentID: "pay_confirm", RazorpaySignature: "s", Gateway: "stub"}
 
 		var wg sync.WaitGroup
 		errs := make([]error, 4)

@@ -333,7 +333,28 @@ func (s *Store) ListProductQueue(ctx context.Context, limit, offset int) ([]*Pro
 	return products, total, rows.Err()
 }
 
-// ApproveProductByAdmin sets approval_status=live and logs.
+// ApproveProductByAdmin approves a product for sale and logs the decision.
+//
+// ─── WHY 'approved' AND NOT 'live' ──────────────────────────────────────
+//
+// This wrote approval_status='live'. Both gates that decide whether a
+// product may be sold require 'approved' — ProductSaleEligibility for
+// add-to-cart, and the authoritative check inside the checkout transaction.
+// Neither has ever accepted 'live'.
+//
+// So every product approved through the moderation queue was unsellable:
+// the admin saw a successful approval, the product appeared in the public
+// catalogue, and add-to-cart answered "no longer available". The moderation
+// queue approved products into a state the sale path refuses.
+//
+// 'approved' is the correct value because the two columns answer different
+// questions: `status='active'` (set below, with published_at) is what makes
+// the listing public, and `approval_status` records the REVIEW outcome. A
+// third vocabulary for "published" in the approval column duplicated `status`
+// and disagreed with the gates.
+//
+// The CHECK constraint permits both spellings, which is why this drifted in
+// silence; migration 022 narrows it and converts the existing rows.
 func (s *Store) ApproveProductByAdmin(ctx context.Context, productID, actorID uuid.UUID, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -343,7 +364,7 @@ func (s *Store) ApproveProductByAdmin(ctx context.Context, productID, actorID uu
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE products SET approval_status='live', status='active', published_at=$2, updated_at=$2 WHERE id=$1`,
+		`UPDATE products SET approval_status='approved', status='active', published_at=$2, updated_at=$2 WHERE id=$1`,
 		productID, now); err != nil {
 		return err
 	}
@@ -422,7 +443,10 @@ func (s *Store) GetDashboardStats(ctx context.Context, sellerID uuid.UUID) (*Das
 	stats := &DashboardStats{}
 
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1`, sellerID).Scan(&stats.TotalProducts)
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1 AND approval_status='live'`, sellerID).Scan(&stats.LiveProducts)
+	// 'approved' is the sale-eligible value (see ApproveProductByAdmin). This
+	// counted 'live', so after the vocabulary fix it would have reported zero
+	// live products to every seller whose catalogue was in fact on sale.
+	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1 AND approval_status='approved'`, sellerID).Scan(&stats.LiveProducts)
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1 AND approval_status='draft'`, sellerID).Scan(&stats.DraftProducts)
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1 AND approval_status IN ('submitted','under_review')`, sellerID).Scan(&stats.PendingProducts)
 	_ = s.db.QueryRow(ctx, `

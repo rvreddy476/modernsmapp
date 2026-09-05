@@ -30,19 +30,106 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/commerce-service
   data:
+    # ── Infrastructure (M-10: previously absent entirely) ─────────
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+
+    # ── Platform identity ─────────────────────────────────────────
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
 
+    # ── Service-to-service identity (A2) ──────────────────────────
+    # Commerce's PRIVATE Ed25519 key. Only commerce holds it; payments holds
+    # the matching public key and can verify but never mint. This replaces
+    # the cluster-wide internal-service key on the payment path, which the
+    # gateway injected into every proxied request — the reason any
+    # authenticated end user arrived at payments with full service authority.
+    - { secretKey: COMMERCE_SERVICE_TOKEN_KEY, remoteRef: commerce_service_token_key }
+    - { secretKey: COMMERCE_SERVICE_TOKEN_KID, remoteRef: commerce_service_token_kid }
+
+    # ── Address PII (LB-24) ───────────────────────────────────────
+    # The KMS key id is the key-ENCRYPTING key; no data key is ever stored
+    # here. COMMERCE_PII_LOOKUP_SALT keys the deterministic lookup hash that
+    # lets "do I already have this address?" be answered without decrypting.
+    - { secretKey: COMMERCE_KMS_KEY_ID, remoteRef: commerce_kms_key_id }
+    - { secretKey: COMMERCE_PII_LOOKUP_SALT, remoteRef: commerce_pii_lookup_salt }
+
+    # ── Courier (D7 / M-10) ───────────────────────────────────────
+    # Production must not fall back to the stub adapter: it returns a fake
+    # AWB and a made-up rate, which is the "fake dependency in production"
+    # pattern the review called out.
+    - { secretKey: SHIPROCKET_EMAIL, remoteRef: shiprocket_email }
+    - { secretKey: SHIPROCKET_PASSWORD, remoteRef: shiprocket_password }
+    - { secretKey: SHIPROCKET_WEBHOOK_TOKEN, remoteRef: shiprocket_webhook_token }
+    - { secretKey: SHIPROCKET_WEBHOOK_HMAC, remoteRef: shiprocket_webhook_hmac }
+
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 
+  # Media ownership verification.
+  #
+  # commerce-service stores a media id on twelve columns, every one of them
+  # supplied in a request body: a product's primary image, a seller's logo and
+  # banner, and every row of seller_documents — where a seller's PAN, Aadhaar
+  # and cancelled cheque live. Nothing verified those ids belonged to the
+  # account submitting them, so a seller could attach another person's
+  # identity document to their own KYC and be approved on it.
+  #
+  # NOT optional in a deployed environment: cmd/server exits at boot if it is
+  # absent, and verification fails CLOSED when media-service is unreachable.
+  # Removing this line stops the service starting.
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+
+  # D7 — one courier, configured. `stub` refuses to load when ENV=prod.
+  COURIER_PROVIDER: shiprocket
+
+  # A7 — migrations run as a one-shot Job (see the pre-sync hook below), not
+  # on pod boot. Replicas must not race the job or each other.
+  COMMERCE_SKIP_BOOT_MIGRATIONS: 'true'
+
+  # A5 / C3-LB-3 — prepaid only, and exactly two methods.
+  #
+  # DOCUMENTATION, not authority. Architecture/shared/paymentmethod is
+  # canonical, no production code reads this variable, and the fence is
+  # enforced in the handler, the service, the store and by the gated CHECK.
+  # It is here so the deployed manifest cannot say something different from
+  # what the service enforces — it used to advertise
+  # 'upi,card,net_banking,wallet', which the server has refused since B6.
+  # A stale claim like that becomes a bug the moment somebody makes it
+  # authoritative. A manifest contract test asserts it matches the Go list.
+  COMMERCE_PAYMENT_METHODS: 'upi,card'
+
+  # B4/B5 — which half of the two-deploy address-PII cutover this image runs.
+  #
+  #   dual        write ciphertext AND plaintext, read either. Safe against a
+  #               database whose backfill has not finished, and safe to roll
+  #               back from. The backfill runs in this state.
+  #   ciphertext  write and read ciphertext ONLY. Deploy only once the
+  #               backfill reports every table complete with zero failures.
+  #
+  # The gated plaintext scrub (database/gated/1000_*) refuses until this is
+  # 'ciphertext' everywhere AND an operator has recorded the drain.
+  COMMERCE_PII_CUTOVER: 'dual'
+
 ingress:
   enabled: false
+
+# A7 — the migration job. Runs before the rollout, holds the advisory lock,
+# and applies migrations/ only. The gated set (database/gated/999_*) VALIDATEs
+# constraints and tightens columns to NOT NULL; it is run by hand once the
+# fleet is drained and the money comparison has been clean for a business day.
+migrationJob:
+  enabled: true
+  hook: pre-sync
+  command: ['/app/commerce-migrate']
+  # No `-gated` flag. Adding it here would validate constraints against a
+  # fleet that still contains old writers, and the migration would fail.
 
 pdb:
   enabled: true

@@ -63,6 +63,14 @@ dependencies {
     implementation(projects.feature.post)
     implementation(projects.feature.profile)
     implementation(projects.feature.settings)
+    // The commerce buyer journey: catalogue, product, cart, address, checkout,
+    // payment handoff and orders.
+    implementation(projects.feature.commerce)
+    // The payment handoff lives in :app, so it needs the commerce data layer
+    // (to open the intent) and the PSP SDK. Neither is visible to
+    // :feature:commerce — a feature module must not know the provider.
+    implementation(projects.core.commerce)
+    implementation(libs.razorpay.checkout)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.coil.compose)

@@ -26,6 +26,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/atpost/api-gateway/pkg/edgeheaders"
+	"github.com/atpost/api-gateway/pkg/routepolicy"
 	"github.com/atpost/api-gateway/pkg/tokenpolicy"
 )
 
@@ -196,8 +197,34 @@ func main() {
 		// surface — it had nowhere to migrate to and is dropped with
 		// orders-service; if a bookings product reappears it should be
 		// its own service.
-		// Payments service (v2.1)
-		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://payments-service:8102")},
+		// Payments service — ROUTE REMOVED, Commerce P0 LB-1.
+		//
+		// This entry used to read:
+		//     {"/v1/payments", env("PAYMENTS_SERVICE_URL", …)}
+		//
+		// injectInternalKeyMiddleware stamps X-Internal-Service-Key onto
+		// every proxied request, and that header was payments-service's only
+		// authentication. Proxying this prefix therefore handed every
+		// authenticated end user full payment authority, and the exploit
+		// needed no PSP contact at all: create an intent for 1 paise against
+		// your own ₹10,000 order, PATCH it to `succeeded`, and commerce
+		// marked the order paid.
+		//
+		// Moving it under /internal/ would NOT have fixed it —
+		// requireAdminForInternalPaths gates on an admin/moderator scope in a
+		// USER token, which narrows who can steal money rather than stopping
+		// it being stealable from a browser. So payments is not reachable
+		// from the edge at all now.
+		//
+		// Clients call commerce instead. Commerce authors the payable amount
+		// from the order it owns and calls payments in-cluster with an
+		// audience-scoped service token (shared/servicetoken):
+		//     POST /v1/commerce/orders/:orderId/payment/intent
+		//     GET  /v1/commerce/orders/:orderId/payment/status
+		//
+		// The PSP webhook arrives on its own ingress, authenticated by
+		// signature. pkg/routepolicy enforces this absence at boot so the
+		// route cannot be reintroduced quietly.
 		// Live / Memories services
 		{"/v1/live", env("LIVE_SERVICE_URL", "http://live-service:8103")},
 		// Live-v2 (LiveKit browser-native broadcast) — separate prefix to
@@ -221,6 +248,19 @@ func main() {
 		{"/v1/rider", env("RIDER_SERVICE_URL", "http://rider-service:8116")},
 		// Commerce service (full e-commerce rebuild)
 		{"/v1/commerce", env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")},
+	}
+
+	// LB-1: refuse to start if a service-authority upstream is in the table.
+	// A code review that notices someone re-adding `{"/v1/payments", …}` has
+	// already failed once here, so the check is executable instead.
+	{
+		guard := make([]routepolicy.Route, 0, len(routeDefs))
+		for _, rd := range routeDefs {
+			guard = append(guard, routepolicy.Route{Prefix: rd.prefix, Target: rd.target})
+		}
+		if err := routepolicy.GuardRouteTable(guard); err != nil {
+			log.Fatalf("%v", err)
+		}
 	}
 
 	var routes []route
@@ -268,6 +308,17 @@ func main() {
 			return
 		}
 		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
+			return
+		}
+
+		// LB-1 backstop. The route table is the control; this catches a path
+		// that reaches a payments upstream some other way — a future
+		// catch-all, a rewrite, a default target. 404 rather than 403: an
+		// edge client should not be able to confirm the service exists.
+		if routepolicy.IsForbidden(r.URL.Path) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))
 			return
 		}
 

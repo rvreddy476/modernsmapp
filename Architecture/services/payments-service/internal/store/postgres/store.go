@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,16 +50,24 @@ type PaymentIntent struct {
 	// service / external HTTP callers can read the int64 form directly.
 	// Reads scan both columns; writes carry both for the one-release
 	// dual-write window.
-	AmountMinorRaw      int64     `json:"amount_minor"`
-	Currency            string    `json:"currency"`
-	Method              string    `json:"method"`
-	Status              string    `json:"status"`
-	ProviderRef         string    `json:"provider_ref,omitempty"`
-	UPIIntentURL        string    `json:"upi_intent_url,omitempty"`
-	IdempotencyKey      string    `json:"idempotency_key"`
-	RefundedAmountMinor int64     `json:"refunded_amount_minor"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	AmountMinorRaw      int64  `json:"amount_minor"`
+	Currency            string `json:"currency"`
+	Method              string `json:"method"`
+	Status              string `json:"status"`
+	ProviderRef         string `json:"provider_ref,omitempty"`
+	UPIIntentURL        string `json:"upi_intent_url,omitempty"`
+	IdempotencyKey      string `json:"idempotency_key"`
+	RefundedAmountMinor int64  `json:"refunded_amount_minor"`
+	// OwnerDomain is the service identity that created this intent.
+	//
+	// B4: it is written by the INSERT in CreateIntent, in the same statement
+	// as the intent itself. It used to be a separate best-effort UPDATE
+	// issued after the 201 had already been decided, so a transient failure
+	// produced a live intent with an EMPTY owner — and every ownership check
+	// treated empty as "anyone may act on this".
+	OwnerDomain string    `json:"owner_domain,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // AmountMinor returns the intent amount in paise-minor int64.
@@ -112,26 +121,110 @@ func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*CreateInte
 	// AmountMinorRaw in via rupeesToPaise before we get here. Both
 	// columns land in the same row so analytics readers that still scan
 	// `amount` keep working through the deprecation window.
+	// B4: owner_domain is written HERE, in the same statement as the intent.
+	// B6: `inserted` is derived from xmax rather than from the row's age.
+	// The old discriminator was `time.Since(created_at) > time.Second`,
+	// which reported a genuine retry arriving inside one second as a NEW
+	// intent — so a duplicate submission ran the whole post-create path
+	// (hold creation, `payment.initiated`) a second time against the same
+	// row. With ON CONFLICT DO UPDATE, a freshly inserted row has xmax = 0
+	// and a conflicting row does not; that is exact, not a timing guess.
+	// N4: the REQUESTED tuple, captured before the Scan overwrites `in`
+	// with whatever the database actually holds under this key.
+	want := struct {
+		owner, refType, currency, method string
+		refID, payer, payee              uuid.UUID
+		amountMinor                      int64
+	}{
+		owner: in.OwnerDomain, refType: in.ReferenceType, currency: in.Currency,
+		method: in.Method, refID: in.ReferenceID, payer: in.PayerID,
+		payee: in.PayeeID, amountMinor: in.AmountMinorRaw,
+	}
+
+	var inserted bool
 	err = tx.QueryRow(ctx,
 		`INSERT INTO payments.payment_intents
-		    (payer_id, payee_id, reference_type, reference_id, amount, amount_minor, currency, method, status, provider_ref, idempotency_key, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11)
+		    (payer_id, payee_id, reference_type, reference_id, amount, amount_minor, currency, method, status, provider_ref, idempotency_key, owner_domain, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, NULLIF($11,''), $12)
 		 ON CONFLICT (idempotency_key)
 		 DO UPDATE SET updated_at = payments.payment_intents.updated_at
 		 RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
-		           currency, method, status, idempotency_key, COALESCE(provider_ref,''), created_at, updated_at`,
+		           currency, method, status, idempotency_key, COALESCE(provider_ref,''),
+		           COALESCE(owner_domain,''), created_at, updated_at, (xmax = 0)`,
 		in.PayerID, in.PayeeID, in.ReferenceType, in.ReferenceID,
-		in.Amount, in.AmountMinorRaw, in.Currency, in.Method, in.ProviderRef, in.IdempotencyKey, "{}",
+		in.Amount, in.AmountMinorRaw, in.Currency, in.Method, in.ProviderRef, in.IdempotencyKey, in.OwnerDomain, "{}",
 	).Scan(&in.ID, &in.PayerID, &in.PayeeID, &in.ReferenceType, &in.ReferenceID,
 		&in.Amount, &in.AmountMinorRaw, &in.Currency, &in.Method, &in.Status, &in.IdempotencyKey,
-		&in.ProviderRef, &in.CreatedAt, &in.UpdatedAt)
+		&in.ProviderRef, &in.OwnerDomain, &in.CreatedAt, &in.UpdatedAt, &inserted)
 	if err != nil {
 		return nil, err
 	}
 
+	// ── N4. The idempotency key is fingerprinted ──────────────────────
+	//
+	// `idempotency_key` is a GLOBAL unique index across every domain that
+	// shares payments-service. The conflict path returned the existing row
+	// and compared nothing, so reusing a key — by collision, by a client
+	// that derives keys badly, or deliberately — did two things:
+	//
+	//   1. disclosed another domain's intent to the caller, since the row
+	//      comes back in full and B4's ownership checks guard the /intents
+	//      routes rather than this constructor;
+	//   2. fed the NEW request's amount into provider order creation for the
+	//      OLD row, because InitiatePayment attaches a provider order using
+	//      the amount it was called with when the existing row has no
+	//      provider reference yet.
+	//
+	// A key that names a different request is not a retry. Commerce already
+	// takes this position on its own checkout key (ErrIdempotencyConflict,
+	// M-7); this is the same rule at the payments boundary, and it is
+	// enforced before the caller can reach the PSP.
+	if !inserted {
+		switch {
+		// MRC-3 — the owner comparison is EXACT and fails closed on either
+		// blank side.
+		//
+		// It used to read `want.owner != "" && in.OwnerDomain != "" && ...`,
+		// so a conflict against a row with an empty `owner_domain` was
+		// accepted: a caller with a valid identity inherited an intent whose
+		// authority owner is unknown, and could then drive it. That is the
+		// exact ownerless state B4 refuses everywhere else — ownsIntent and
+		// CreateRefundCommand both reject an empty stored owner — so
+		// accepting it here was the one door left open on the same wall.
+		//
+		// `owner_domain` is still a nullable column and migration 007's
+		// backfill covers ordinary rows but cannot guarantee every one, so
+		// the blank case is reachable rather than theoretical.
+		case want.owner == "":
+			return nil, fmt.Errorf("%w: caller has no verified service identity",
+				ErrIdempotencyFingerprint)
+		case in.OwnerDomain == "":
+			return nil, fmt.Errorf("%w: key belongs to an intent with no owner domain; "+
+				"its authority cannot be established", ErrIdempotencyFingerprint)
+		case want.owner != in.OwnerDomain:
+			return nil, fmt.Errorf("%w: key belongs to domain %q, caller is %q",
+				ErrIdempotencyFingerprint, in.OwnerDomain, want.owner)
+		case want.refType != in.ReferenceType || want.refID != in.ReferenceID:
+			return nil, fmt.Errorf("%w: key names %s/%s, request is %s/%s",
+				ErrIdempotencyFingerprint, in.ReferenceType, in.ReferenceID, want.refType, want.refID)
+		case want.payer != in.PayerID || want.payee != in.PayeeID:
+			return nil, fmt.Errorf("%w: key belongs to a different payer/payee pair",
+				ErrIdempotencyFingerprint)
+		case want.amountMinor != in.AmountMinorRaw:
+			return nil, fmt.Errorf("%w: key was created for %d minor, request is %d minor",
+				ErrIdempotencyFingerprint, in.AmountMinorRaw, want.amountMinor)
+		case !strings.EqualFold(want.currency, in.Currency):
+			return nil, fmt.Errorf("%w: key was created in %s, request is in %s",
+				ErrIdempotencyFingerprint, in.Currency, want.currency)
+		case want.method != in.Method:
+			return nil, fmt.Errorf("%w: key was created for method %q, request is %q",
+				ErrIdempotencyFingerprint, in.Method, want.method)
+		}
+	}
+
 	result := &CreateIntentResult{
 		Intent:      &in,
-		WasExisting: time.Since(in.CreatedAt) > time.Second,
+		WasExisting: !inserted,
 	}
 
 	// Only write audit entry for genuinely new intents

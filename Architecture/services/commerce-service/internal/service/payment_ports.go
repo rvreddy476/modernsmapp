@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 
+	"github.com/atpost/commerce-service/internal/money"
 	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -17,6 +18,9 @@ import (
 type orderPaymentStore interface {
 	GetOrderByID(ctx context.Context, id uuid.UUID) (*postgres.Order, error)
 	GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*postgres.OrderItem, error)
+	// OrderPaymentIntentID is the intent commerce bound to the order at
+	// checkout — the only intent a client callback may be checked against.
+	OrderPaymentIntentID(ctx context.Context, orderID uuid.UUID) (uuid.UUID, error)
 	MarkOrderPaid(ctx context.Context, orderID uuid.UUID, paymentID, gateway string, actorID *uuid.UUID, actorType string) (postgres.PaidTransition, error)
 	TransitionPaymentStatus(ctx context.Context, orderID uuid.UUID, to, paymentID, gateway string) (bool, error)
 	DeductStock(ctx context.Context, variantID uuid.UUID, qty int, orderID uuid.UUID) error
@@ -25,10 +29,13 @@ type orderPaymentStore interface {
 }
 
 // paymentsClient is the slice of *payments.Client commerce-service calls.
+// The P0 client: commerce authors the intent, polls it, checks a client
+// callback ADVISORILY, and files durable refund commands.
 type paymentsClient interface {
-	VerifyIntent(ctx context.Context, intentID uuid.UUID, rzpOrderID, rzpPaymentID, rzpSignature string, amountMinor int64) (*payments.VerifyResult, error)
-	FindOrderIntent(ctx context.Context, orderID, actorID uuid.UUID) (*payments.PaymentIntent, error)
-	InitiateRefund(ctx context.Context, intentID, actorID uuid.UUID, amountMinor int64, reason string) (*payments.PaymentIntent, error)
+	CreateIntent(ctx context.Context, in payments.CreateIntentInput) (*payments.Intent, error)
+	GetIntent(ctx context.Context, id uuid.UUID) (*payments.Intent, error)
+	VerifyCallback(ctx context.Context, intentID uuid.UUID, orderID, paymentID, signature string, expected money.Paise) (*payments.CallbackVerdict, error)
+	Refund(ctx context.Context, intentID uuid.UUID, amount money.Paise, reason, idempotencyKey string) (*payments.RefundAccepted, error)
 }
 
 // WithAllowStubGateway lets ConfirmPayment accept gateway="stub". Wired
