@@ -85,8 +85,9 @@ fun TubePage(
 }
 
 /**
- * Tube's header: the wordmark — a small ember play badge and "Tube" in
- * Outfit — on the left; the bell with its unread count and the viewer's
+ * Tube's header: the video mark — Momentum's video-and-play glyph on an
+ * ember tile, no name yet (founder, 2026-09-05: "remove the name, we think
+ * of a better one later") — on the left; the bell with its unread count and the viewer's
  * own avatar (which opens You) on the right. No back arrow: Tube is a
  * mini-app with its own bar, and the system Back is the way out.
  */
@@ -135,13 +136,19 @@ fun TubeHeader(
     }
 }
 
-/** The ember play tile and the name — one heading for a screen reader. */
+/**
+ * The video mark, alone: a 32dp ember tile with the white video-and-play
+ * glyph. It is the page's heading for a screen reader, which hears
+ * "Videos" until the product has its name.
+ */
 @Composable
 internal fun TubeWordmark(modifier: Modifier = Modifier) {
     Row(
-        modifier = modifier.semantics(mergeDescendants = true) { heading() },
+        modifier = modifier.semantics(mergeDescendants = true) {
+            heading()
+            contentDescription = "Videos"
+        },
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
         Box(
             contentAlignment = Alignment.Center,
@@ -150,19 +157,12 @@ internal fun TubeWordmark(modifier: Modifier = Modifier) {
                 .background(UsTheme.extended.ctaGradient, RoundedCornerShape(BADGE_RADIUS)),
         ) {
             Icon(
-                imageVector = UsIcons.Play,
+                imageVector = UsIcons.VideoPlay,
                 contentDescription = null,
                 tint = Color.White,
                 modifier = Modifier.size(BADGE_GLYPH),
             )
         }
-        Text(
-            text = "Tube",
-            style = MaterialTheme.typography.titleLarge,
-            fontSize = WORDMARK_SIZE,
-            fontWeight = FontWeight.Bold,
-            color = UsTheme.extended.textPrimary,
-        )
     }
 }
 
@@ -286,10 +286,9 @@ private fun TubeChipPill(chip: TubeChip, active: Boolean, onClick: () -> Unit) {
 }
 
 private val HEADER_HEIGHT = 56.dp
-private val BADGE_SIZE = 22.dp
-private val BADGE_RADIUS = 6.dp
-private val BADGE_GLYPH = 12.dp
-private val WORDMARK_SIZE = 22.sp
+private val BADGE_SIZE = 34.dp
+private val BADGE_RADIUS = 10.dp
+private val BADGE_GLYPH = 22.dp
 private val GLYPH_TARGET = 40.dp
 private val SEARCH_HEIGHT = 44.dp
 private val SEARCH_GLYPH = 18.dp

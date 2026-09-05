@@ -167,6 +167,17 @@ object UsIcons {
     }
 
     /** Solid play triangle. */
+    /**
+     * Momentum's own video mark (founder, 2026-09-05: "an icon that represents
+     * a video + play button"; the product's name comes later): a rounded
+     * 16:9 frame drawn as an outline, with a solid play triangle inside it.
+     */
+    val VideoPlay: ImageVector = strokedWithFill(
+        "video-play",
+        stroke = "M5 5h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z",
+        fill = "M10 8.5L16 12L10 15.5Z",
+    )
+
     val Play: ImageVector = lucideFilled(
         "Play",
         "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z",
@@ -858,6 +869,30 @@ private fun filledEvenOdd(name: String, vararg pathData: String): ImageVector =
         pathData.forEach { d ->
             addPath(pathData = addPathNodes(d), fill = SolidColor(Color.Black), pathFillType = PathFillType.EvenOdd)
         }
+    }.build()
+
+/**
+ * A glyph with one outlined path and one solid path — the video mark's
+ * frame and its play triangle — both at Lucide's weight so it sits beside
+ * the rest of the set.
+ */
+private fun strokedWithFill(name: String, stroke: String, fill: String): ImageVector =
+    ImageVector.Builder(
+        name = name,
+        defaultWidth = ICON_SIZE.dp,
+        defaultHeight = ICON_SIZE.dp,
+        viewportWidth = ICON_SIZE,
+        viewportHeight = ICON_SIZE,
+    ).apply {
+        addPath(
+            pathData = addPathNodes(stroke),
+            fill = null,
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = LUCIDE_STROKE_WEIGHT,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        )
+        addPath(pathData = addPathNodes(fill), fill = SolidColor(Color.Black))
     }.build()
 
 /** The filled twin of [lucideStroked] — same source paths, solid fill. */
