@@ -185,6 +185,9 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 
 		var weight float64
 		var packageValue float64
+		// The parcel takes the largest side each product declares: a carton
+		// holding several items is at least as big as the biggest one in it.
+		var lengthCm, breadthCm, heightCm float64
 		var courierItems []courier.Item
 		for _, it := range sellerItems {
 			product, _ := s.store.GetProductByID(ctx, it.ProductID)
@@ -197,6 +200,9 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 				if product.HSNCode != nil {
 					hsn = *product.HSNCode
 				}
+				lengthCm = maxDimension(lengthCm, product.LengthCm)
+				breadthCm = maxDimension(breadthCm, product.WidthCm)
+				heightCm = maxDimension(heightCm, product.HeightCm)
 			}
 			weight += perUnitKg * float64(it.Quantity)
 			packageValue += it.FinalPrice
@@ -222,6 +228,9 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 			PickupAddress: pickup,
 			DropAddress:   dropAddr,
 			Weight:        weight,
+			LengthCm:      lengthCm,
+			BreadthCm:     breadthCm,
+			HeightCm:      heightCm,
 			PackageValue:  packageValue,
 			PaymentMethod: pm,
 			CODAmount:     shipmentCOD,
@@ -806,4 +815,16 @@ func (s *Service) SaveSellerAddress(ctx context.Context, actorUserID uuid.UUID, 
 		LookupHash:     sealed.LookupHash,
 		WritePlaintext: s.piiCutover.WritesPlaintext(),
 	})
+}
+
+// maxDimension keeps the larger of a running side and a product's declared
+// one, ignoring a product that declares nothing.
+func maxDimension(running float64, declared *float64) float64 {
+	if declared == nil || *declared <= 0 {
+		return running
+	}
+	if *declared > running {
+		return *declared
+	}
+	return running
 }

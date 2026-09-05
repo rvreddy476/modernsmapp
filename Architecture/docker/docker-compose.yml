@@ -1446,6 +1446,9 @@ services:
       SHIPROCKET_PASSWORD: ${SHIPROCKET_PASSWORD:-}
       SHIPROCKET_WEBHOOK_TOKEN: ${SHIPROCKET_WEBHOOK_TOKEN:-}
       SHIPROCKET_WEBHOOK_HMAC: ${SHIPROCKET_WEBHOOK_HMAC:-}
+      # The nickname of the pickup address registered in the Shiprocket
+      # account. A booking is refused when it names no address of theirs.
+      SHIPROCKET_PICKUP_LOCATION: ${SHIPROCKET_PICKUP_LOCATION:-Primary}
     ports:
       - "8109:8109"
     depends_on:

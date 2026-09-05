@@ -22,24 +22,26 @@ import (
 // ShiprocketCourier implements Provider over Shiprocket's REST API.
 // Docs: https://apidocs.shiprocket.in/
 type ShiprocketCourier struct {
-	email        string
-	password     string
-	webhookToken string // shared-secret token Shiprocket sends as 'X-Api-Key'
-	webhookHMAC  string // optional HMAC-SHA256 secret if using signed webhooks
-	token        string
-	tokenAt      time.Time
-	mu           sync.Mutex
-	base         string
-	http         *http.Client
+	email          string
+	password       string
+	webhookToken   string // shared-secret token Shiprocket sends as 'X-Api-Key'
+	pickupLocation string // the nickname of a pickup address registered in the Shiprocket account
+	webhookHMAC    string // optional HMAC-SHA256 secret if using signed webhooks
+	token          string
+	tokenAt        time.Time
+	mu             sync.Mutex
+	base           string
+	http           *http.Client
 }
 
 func NewShiprocket(email, password string) *ShiprocketCourier {
 	// Phase F3.2 — otelhttp wraps the courier's transport so Shiprocket
 	// call latency lands in Jaeger as a child of the shipment span.
 	return &ShiprocketCourier{
-		email:    email,
-		password: password,
-		base:     "https://apiv2.shiprocket.in/v1/external",
+		email:          email,
+		password:       password,
+		pickupLocation: DefaultPickupLocation,
+		base:           "https://apiv2.shiprocket.in/v1/external",
 		http: &http.Client{
 			Timeout:   20 * time.Second,
 			Transport: otelhttp.NewTransport(http.DefaultTransport),
@@ -124,32 +126,37 @@ func (c *ShiprocketCourier) CreateShipment(ctx context.Context, req ShipmentRequ
 	items := make([]map[string]any, 0, len(req.Items))
 	for _, it := range req.Items {
 		items = append(items, map[string]any{
-			"name":         it.Name,
-			"sku":          it.SKU,
-			"units":        it.Quantity,
+			"name":          it.Name,
+			"sku":           it.SKU,
+			"units":         it.Quantity,
 			"selling_price": it.Price,
-			"hsn":          it.HSN,
+			"hsn":           it.HSN,
 		})
 	}
 	payload := map[string]any{
-		"order_id":                  req.OrderNumber,
-		"order_date":                time.Now().Format("2006-01-02 15:04"),
-		"pickup_location":           "Primary",
-		"billing_customer_name":     req.DropAddress.Name,
-		"billing_last_name":         "",
-		"billing_address":           req.DropAddress.Line1,
-		"billing_address_2":         req.DropAddress.Line2,
-		"billing_city":              req.DropAddress.City,
-		"billing_pincode":           req.DropAddress.Postal,
-		"billing_state":             req.DropAddress.State,
-		"billing_country":           req.DropAddress.Country,
-		"billing_email":             req.DropAddress.Email,
-		"billing_phone":             req.DropAddress.Phone,
-		"shipping_is_billing":       true,
-		"order_items":               items,
-		"payment_method":            paymentMode(req.PaymentMethod),
-		"sub_total":                 req.PackageValue,
-		"weight":                    req.Weight,
+		"order_id":              req.OrderNumber,
+		"order_date":            time.Now().Format("2006-01-02 15:04"),
+		"pickup_location":       c.pickupLocation,
+		"billing_customer_name": req.DropAddress.Name,
+		"billing_last_name":     "",
+		"billing_address":       req.DropAddress.Line1,
+		"billing_address_2":     req.DropAddress.Line2,
+		"billing_city":          req.DropAddress.City,
+		"billing_pincode":       req.DropAddress.Postal,
+		"billing_state":         req.DropAddress.State,
+		"billing_country":       req.DropAddress.Country,
+		"billing_email":         req.DropAddress.Email,
+		"billing_phone":         req.DropAddress.Phone,
+		"shipping_is_billing":   true,
+		"order_items":           items,
+		"payment_method":        paymentMode(req.PaymentMethod),
+		"sub_total":             req.PackageValue,
+		"weight":                req.Weight,
+		// Shiprocket validates these four together: an order with a weight
+		// and no dimensions is rejected 422 before it reaches a courier.
+		"length":  dimensionOrDefault(req.LengthCm),
+		"breadth": dimensionOrDefault(req.BreadthCm),
+		"height":  dimensionOrDefault(req.HeightCm),
 	}
 	if req.PaymentMethod == "cod" {
 		payload["cod_charges"] = req.CODAmount
@@ -175,6 +182,14 @@ func (c *ShiprocketCourier) CreateShipment(ctx context.Context, req ShipmentRequ
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
+	}
+	// Shiprocket answers 200 with an empty body when it rejects the order
+	// for a reason it does not treat as an HTTP error — an unregistered
+	// pickup_location above all. Without this the caller books a shipment
+	// that exists nowhere but our database.
+	if out.OrderID == 0 {
+		return nil, fmt.Errorf("shiprocket create: no order id in response (pickup_location %q registered?): %s",
+			c.pickupLocation, string(raw))
 	}
 	return &ShipmentResponse{
 		CourierOrderID: fmt.Sprintf("%d", out.OrderID),
@@ -218,10 +233,10 @@ func (c *ShiprocketCourier) CancelShipment(ctx context.Context, awb string) erro
 // Ref: https://apidocs.shiprocket.in/#a8e1ed62-34d8-4b6a-8eea-6c9a7dec3b38
 func (c *ShiprocketCourier) ParseWebhook(_ context.Context, payload []byte) ([]TrackingUpdate, error) {
 	var wh struct {
-		AWB                  string `json:"awb"`
-		CurrentStatus        string `json:"current_status"`
-		CurrentStatusBody    string `json:"current_status_body"`
-		ShipmentStatus       string `json:"shipment_status"`
+		AWB                     string `json:"awb"`
+		CurrentStatus           string `json:"current_status"`
+		CurrentStatusBody       string `json:"current_status_body"`
+		ShipmentStatus          string `json:"shipment_status"`
 		ShipmentTrackActivities []struct {
 			Activity string `json:"activity"`
 			Location string `json:"location"`
@@ -352,14 +367,14 @@ func (c *ShiprocketCourier) CheckServiceability(ctx context.Context, req Service
 		Status int `json:"status"`
 		Data   struct {
 			AvailableCourierCompanies []struct {
-				CourierName      string  `json:"courier_name"`
-				CourierCompanyID int     `json:"courier_company_id"`
-				Rate             float64 `json:"rate"`
-				FreightCharge    float64 `json:"freight_charge"`
-				CODCharges       float64 `json:"cod_charges"`
-				EstimatedDeliveryDays string `json:"etd"`
-				EstimatedDays    string  `json:"estimated_delivery_days"`
-				IsCODAvailable   int     `json:"cod"`
+				CourierName           string  `json:"courier_name"`
+				CourierCompanyID      int     `json:"courier_company_id"`
+				Rate                  float64 `json:"rate"`
+				FreightCharge         float64 `json:"freight_charge"`
+				CODCharges            float64 `json:"cod_charges"`
+				EstimatedDeliveryDays string  `json:"etd"`
+				EstimatedDays         string  `json:"estimated_delivery_days"`
+				IsCODAvailable        int     `json:"cod"`
 			} `json:"available_courier_companies"`
 		} `json:"data"`
 	}
@@ -447,4 +462,33 @@ func parseShiprocketDays(s string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+// dimensionOrDefault substitutes a small-parcel side for a dimension a
+// seller has not declared. Ten centimetres is Shiprocket's own minimum
+// billable side, so it never inflates a volumetric weight beyond what the
+// courier would charge anyway.
+func dimensionOrDefault(cm float64) float64 {
+	if cm > 0 {
+		return cm
+	}
+	return defaultParcelSideCm
+}
+
+// defaultParcelSideCm is the side used when a product carries no dimensions.
+const defaultParcelSideCm = 10.0
+
+// DefaultPickupLocation is the nickname Shiprocket gives a seller's first
+// registered pickup address. An account whose address is named anything
+// else must say so through SHIPROCKET_PICKUP_LOCATION, or every booking is
+// refused.
+const DefaultPickupLocation = "Primary"
+
+// WithPickupLocation names the registered pickup address to ship from.
+// Empty keeps the default.
+func (c *ShiprocketCourier) WithPickupLocation(name string) *ShiprocketCourier {
+	if name != "" {
+		c.pickupLocation = name
+	}
+	return c
 }

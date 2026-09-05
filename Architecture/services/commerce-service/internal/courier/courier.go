@@ -15,15 +15,21 @@ import (
 
 // ShipmentRequest carries the inputs needed to book a shipment.
 type ShipmentRequest struct {
-	OrderID        string
-	OrderNumber    string
-	PickupAddress  Address
-	DropAddress    Address
-	Weight         float64 // kg
-	PackageValue   float64 // INR
-	PaymentMethod  string  // "prepaid" | "cod"
-	CODAmount      float64 // 0 for prepaid
-	Items          []Item
+	OrderID       string
+	OrderNumber   string
+	PickupAddress Address
+	DropAddress   Address
+	Weight        float64 // kg
+	// Parcel dimensions in centimetres. Shiprocket refuses an order that
+	// carries none, so the caller substitutes a small-parcel default when
+	// the product does not declare its own.
+	LengthCm      float64
+	BreadthCm     float64
+	HeightCm      float64
+	PackageValue  float64 // INR
+	PaymentMethod string  // "prepaid" | "cod"
+	CODAmount     float64 // 0 for prepaid
+	Items         []Item
 }
 
 type Item struct {
@@ -35,15 +41,15 @@ type Item struct {
 }
 
 type Address struct {
-	Name     string
-	Phone    string
-	Email    string
-	Line1    string
-	Line2    string
-	City     string
-	State    string
-	Postal   string
-	Country  string
+	Name    string
+	Phone   string
+	Email   string
+	Line1   string
+	Line2   string
+	City    string
+	State   string
+	Postal  string
+	Country string
 }
 
 // ShipmentResponse is the result of a booking.
@@ -118,7 +124,8 @@ type Provider interface {
 func New() Provider {
 	switch os.Getenv("COURIER_PROVIDER") {
 	case "shiprocket":
-		sr := NewShiprocket(os.Getenv("SHIPROCKET_EMAIL"), os.Getenv("SHIPROCKET_PASSWORD"))
+		sr := NewShiprocket(os.Getenv("SHIPROCKET_EMAIL"), os.Getenv("SHIPROCKET_PASSWORD")).
+			WithPickupLocation(os.Getenv("SHIPROCKET_PICKUP_LOCATION"))
 		sr.WithWebhookSecrets(os.Getenv("SHIPROCKET_WEBHOOK_TOKEN"), os.Getenv("SHIPROCKET_WEBHOOK_HMAC"))
 		return sr
 	default:
@@ -165,7 +172,7 @@ func (StubCourier) CheckServiceability(_ context.Context, req ServiceabilityRequ
 		}, nil
 	}
 	return &ServiceabilityResult{
-		Serviceable:   true,
+		Serviceable: true,
 		// A5: prepaid-only launch. Even the stub must not offer COD, or a
 		// dev environment would exercise a path production refuses.
 		CODSupported:  false,
