@@ -3,6 +3,7 @@ package com.us.android.di
 import com.us.android.BuildConfig
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.telemetry.TelemetryConfig
+import com.us.android.feature.post.createhub.banuba.BanubaConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -47,5 +48,16 @@ object AppModule {
         clientVersion = BuildConfig.VERSION_NAME,
         environment = BuildConfig.ENVIRONMENT,
         isDebug = BuildConfig.DEBUG,
+    )
+
+    /**
+     * Banuba Video Editor licence (2026-09-05). Blank when the build had no
+     * `.secrets/banuba.token`, and the reel flow then stays on the Media3
+     * studio. The value is never logged; the gate only tests for blank.
+     */
+    @Provides
+    @Singleton
+    fun provideBanubaConfig(): BanubaConfig = BanubaConfig(
+        licenseToken = BuildConfig.BANUBA_LICENSE_TOKEN,
     )
 }

@@ -16,6 +16,18 @@ android {
         // Blocker B1, resolved 2026-08-16.
         applicationId = "com.us.android"
     }
+
+    // Banuba Video Editor SDK (2026-09-05). Two of its AARs (camera-sdk and
+    // ve-sdk) ship the same libbanuba-ve-yuv.so, and its loader expects the
+    // libraries extracted on disk rather than mapped from the APK — both are
+    // the vendor's documented requirements, mirrored by extractNativeLibs in
+    // the manifest.
+    packaging {
+        jniLibs {
+            pickFirsts += "**/libbanuba-ve-yuv.so"
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {

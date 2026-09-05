@@ -3,6 +3,9 @@ plugins {
     id("us.android.compose")
     id("us.android.hilt")
     alias(libs.plugins.kotlin.serialization)
+    // Banuba SDK models are @Parcelize classes; the SDK requires the plugin
+    // in every module that touches them.
+    alias(libs.plugins.kotlin.parcelize)
 }
 
 android {
@@ -51,6 +54,27 @@ dependencies {
     // version — one Media3 in the app, never two.
     implementation(libs.media3.transformer)
     implementation(libs.media3.effect)
+
+    // Banuba Video Editor SDK (2026-09-05): the licensed reel camera and
+    // editor, entered lazily from the reel flow (BanubaGate) and never in
+    // Application.onCreate. The Media3 studio above stays as the fallback
+    // when there is no licence. ffmpeg is the SDK's own build; gallery is
+    // the SDK's picker inside its camera; effect-player-adapter is Face AR
+    // masks. Deliberately absent: ve-audio-browser-sdk and ar-cloud (paid,
+    // unneeded).
+    implementation(libs.banuba.ffmpeg)
+    implementation(libs.banuba.core.sdk)
+    implementation(libs.banuba.core.ui.sdk)
+    implementation(libs.banuba.camera.sdk)
+    implementation(libs.banuba.camera.ui.sdk)
+    implementation(libs.banuba.ve.sdk)
+    implementation(libs.banuba.ve.ui.sdk)
+    implementation(libs.banuba.ve.flow.sdk)
+    implementation(libs.banuba.ve.effects.sdk)
+    implementation(libs.banuba.ve.export.sdk)
+    implementation(libs.banuba.ve.playback.sdk)
+    implementation(libs.banuba.ve.gallery.sdk)
+    implementation(libs.banuba.effect.player.adapter)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

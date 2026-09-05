@@ -4,6 +4,7 @@ import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.telemetry.TelemetryConfig
+import com.us.android.feature.post.createhub.banuba.BanubaConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -58,6 +59,11 @@ object ComposerTestGraph {
         environment = "test",
         serviceVersion = "test",
     )
+
+    /** No licence: the reel surface's Banuba gate is Unlicensed and never starts the SDK. */
+    @Provides
+    @Singleton
+    fun provideBanubaConfig(): BanubaConfig = BanubaConfig(licenseToken = "")
 
     /**
      * Nobody is signed in, so the comments composer has no viewer to draw.

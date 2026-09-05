@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Momentum colours for the Banuba Video Editor (2026-09-05).
+
+  The SDK paints from named colour resources (read out of the 1.54.1 AARs:
+  core-ui-sdk, camera-ui-sdk, ve-ui-sdk, ve-gallery-sdk); an app resource of
+  the same name replaces the library's at merge, which is the vendor's own
+  theming route. Values are the Momentum tokens (UsColorTokens): ground
+  #041122, surface #0B1B2E, raised #071D33, hover/border #0E2D4A, white text,
+  ember accent #DC2626. Only the SDK's neutral chrome and its record/select
+  accents are mapped; per-effect timeline colours are left alone.
+-->
+<resources>
+    <!-- Ground: the editor, trimmer and gallery canvases. -->
+    <color name="backgroundDark">#FF041122</color>
+    <color name="backgroundGlobalPrimary">#FF041122</color>
+    <color name="bg_editor_v2">#FF041122</color>
+    <color name="bg_primary_dark">#FF041122</color>
+    <color name="primaryBrandDark">#FF041122</color>
+
+    <!-- Surfaces: sheets, panels, pickers, the music/volume dialogs. -->
+    <color name="surfaceDark">#FF0B1B2E</color>
+    <color name="bg_container_color_dark">#FF0B1B2E</color>
+    <color name="shark">#FF0B1B2E</color>
+    <color name="volume_dialog_background">#FF0B1B2E</color>
+    <color name="stickers_background_color">#FF0B1B2E</color>
+    <color name="carbon">#FF0B1B2E</color>
+    <color name="tuna">#FF0B1B2E</color>
+    <color name="mineShaft">#FF0B1B2E</color>
+    <color name="auto_cut_track_not_selected">#FF0B1B2E</color>
+
+    <!-- Raised surfaces: alerts, the text tool's colour strip, list items. -->
+    <color name="neutralDark">#FF071D33</color>
+    <color name="quartz">#FF071D33</color>
+    <color name="blackOlive">#FF071D33</color>
+    <color name="shaft">#FF071D33</color>
+    <color name="bg_container_high_color_dark">#FF0E2D4A</color>
+
+    <!-- Text stays white; "primary brand light" is the SDK's text-on-dark. -->
+    <color name="neutralLight">#FFFFFFFF</color>
+    <color name="primaryBrandLight">#FFFFFFFF</color>
+
+    <!-- Ember accent: the record button, progress, active states, selection. -->
+    <color name="progress_red">#FFDC2626</color>
+    <color name="venetianRed">#FFDC2626</color>
+    <color name="warning">#FFDC2626</color>
+    <color name="activeRed">#FFDC2626</color>
+    <color name="torch_red">#FFDC2626</color>
+    <color name="torch_red40">#66DC2626</color>
+    <color name="dodgerBlue">#FFDC2626</color>
+    <color name="blue">#FFDC2626</color>
+    <color name="primaryDecorView">#FFDC2626</color>
+</resources>

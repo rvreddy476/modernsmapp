@@ -118,6 +118,12 @@ livekit                   = "2.12.0"
 # memory-hard KDF, and the directive requires a reviewed one, not home-made.
 bouncycastle              = "1.78.1"
 
+# Banuba Video Editor SDK (2026-09-05): the licensed reel camera + editor. One
+# version for every module; ffmpeg is versioned separately by Banuba. No BOM
+# exists. Served from nexus.banuba.net (settings.gradle.kts), group-scoped.
+banuba                    = "1.54.1"
+banubaFfmpeg              = "5.3.0"
+
 [libraries]
 # ── AndroidX core ──────────────────────────────────────────────────────
 androidx-core-ktx                  = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -226,6 +232,21 @@ androidx-biometric                 = { module = "androidx.biometric:biometric", 
 stream-webrtc-android              = { module = "io.getstream:stream-webrtc-android", version.ref = "streamWebrtc" }
 livekit-android                    = { module = "io.livekit:livekit-android", version.ref = "livekit" }
 
+# ── Banuba Video Editor SDK (all at the one `banuba` version) ────────────
+banuba-core-sdk                   = { module = "com.banuba.sdk:core-sdk", version.ref = "banuba" }
+banuba-core-ui-sdk                = { module = "com.banuba.sdk:core-ui-sdk", version.ref = "banuba" }
+banuba-camera-sdk                 = { module = "com.banuba.sdk:camera-sdk", version.ref = "banuba" }
+banuba-camera-ui-sdk              = { module = "com.banuba.sdk:camera-ui-sdk", version.ref = "banuba" }
+banuba-ve-sdk                     = { module = "com.banuba.sdk:ve-sdk", version.ref = "banuba" }
+banuba-ve-ui-sdk                  = { module = "com.banuba.sdk:ve-ui-sdk", version.ref = "banuba" }
+banuba-ve-flow-sdk                = { module = "com.banuba.sdk:ve-flow-sdk", version.ref = "banuba" }
+banuba-ve-effects-sdk             = { module = "com.banuba.sdk:ve-effects-sdk", version.ref = "banuba" }
+banuba-ve-export-sdk              = { module = "com.banuba.sdk:ve-export-sdk", version.ref = "banuba" }
+banuba-ve-playback-sdk            = { module = "com.banuba.sdk:ve-playback-sdk", version.ref = "banuba" }
+banuba-ve-gallery-sdk             = { module = "com.banuba.sdk:ve-gallery-sdk", version.ref = "banuba" }
+banuba-effect-player-adapter      = { module = "com.banuba.sdk:effect-player-adapter", version.ref = "banuba" }
+banuba-ffmpeg                      = { module = "com.banuba.sdk:ffmpeg", version.ref = "banubaFfmpeg" }
+
 [plugins]
 android-application       = { id = "com.android.application", version.ref = "agp" }
 android-library           = { id = "com.android.library", version.ref = "agp" }
@@ -233,6 +254,8 @@ kotlin-android            = { id = "org.jetbrains.kotlin.android", version.ref =
 kotlin-jvm                = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization      = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kotlin-compose            = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+# Banuba SDK models are @Parcelize; the plugin is required by every consumer.
+kotlin-parcelize          = { id = "org.jetbrains.kotlin.plugin.parcelize", version.ref = "kotlin" }
 ksp                       = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt                      = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 detekt                    = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }

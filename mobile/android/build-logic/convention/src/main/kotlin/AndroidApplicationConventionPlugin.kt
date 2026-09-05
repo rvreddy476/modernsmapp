@@ -1,5 +1,6 @@
 import com.android.build.api.dsl.ApplicationExtension
 import com.us.android.convention.AndroidSdk
+import com.us.android.convention.banubaLicenseToken
 import com.us.android.convention.configureFlavors
 import com.us.android.convention.devApiUrl
 import com.us.android.convention.devHost
@@ -19,6 +20,13 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         extensions.configure<ApplicationExtension> {
             configureKotlinAndroid(this)
             configureFlavors(devHost(), devApiUrl(), devWsUrl())
+
+            // Banuba Video Editor licence. Read from the repo-root secrets file
+            // (gitignored) at configuration time; absent or empty means the app
+            // builds without a licence and the reel flow uses the Media3 studio.
+            // The token is never printed: it goes straight into BuildConfig,
+            // which AppModule alone reads.
+            defaultConfig.buildConfigField("String", "BANUBA_LICENSE_TOKEN", banubaLicenseToken())
 
             defaultConfig.targetSdk = AndroidSdk.TARGET
             defaultConfig.versionCode = 1

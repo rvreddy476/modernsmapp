@@ -33,6 +33,12 @@ dependencyResolutionManagement {
         maven("https://jitpack.io") {
             content { includeGroup("com.github.davidliu") }
         }
+        // Banuba Video Editor SDK, scoped to its own group. Anonymous, no
+        // credentials: the licence lives in the token, not in the repository.
+        maven("https://nexus.banuba.net/repository/maven-releases") {
+            name = "nexus"
+            content { includeGroup("com.banuba.sdk") }
+        }
     }
 }
 

@@ -74,6 +74,10 @@ import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.usSwitchColors
 import com.us.android.feature.post.createhub.ReelPublishViewModel.Phase
+import com.us.android.feature.post.createhub.banuba.BanubaExportOutcome
+import com.us.android.feature.post.createhub.banuba.BanubaGateViewModel
+import com.us.android.feature.post.createhub.banuba.BanubaState
+import com.us.android.feature.post.createhub.banuba.rememberBanubaEditor
 import com.us.android.feature.post.createhub.studio.ReelStudioScreen
 import com.us.android.feature.post.createhub.studio.ReelStudioViewModel
 import com.us.android.feature.post.createhub.studio.StudioActions
@@ -103,6 +107,13 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
  * field of their own, mentions are the people picked, and beside Post
  * sits Schedule.
  *
+ * With a valid Banuba licence ([BanubaState.Ready]) the reel's edit step is
+ * the SDK instead: Record opens its camera, a gallery pick opens its trimmer,
+ * and its export lands in the same file the studio would have written, so
+ * the details step is identical either way. Any other state — no token,
+ * licence invalid, SDK failed, or still initialising when the pick happens
+ * — is the Media3 studio exactly as before.
+ *
  * Post hands the publish to WorkManager and LEAVES onto the viewer's own
  * profile, whose grid shows the posting video first with its ring; several
  * may be pending at once. There is no published callback here because
@@ -115,13 +126,15 @@ internal fun ReelSurface(
     onOpenOwnProfile: () -> Unit,
     viewModel: ReelPublishViewModel = hiltViewModel(),
     studio: ReelStudioViewModel = hiltViewModel(),
+    banuba: BanubaGateViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val studioState by studio.state.collectAsStateWithLifecycle()
     val long = state.kind == VideoKind.LONG
 
-    // A reel goes through the studio first; a long video is picked as is.
-    val sources = rememberVideoSources(onSource = if (long) viewModel::onVideoPicked else studio::setSource)
+    // A reel goes through an editor first; a long video is picked as is.
+    val editing = rememberReelEditing(long = long, viewModel = viewModel, studio = studio, banuba = banuba)
+    val sources = rememberVideoSources(onSource = editing.onSource)
 
     // The studio rendered: the details step takes the file, and the studio forgets it.
     studioState.exportedPath?.let { path ->
@@ -145,8 +158,15 @@ internal fun ReelSurface(
             actions = studioActions(studio),
             onClose = studio::clear,
             onNext = { studio.startExport(viewModel.exportTargetPath()) },
+            notice = editing.studioNotice,
         )
-        state.videoUri == null -> VideoSourceStep(long = long, sources = sources, onClose = onClose)
+        state.videoUri == null -> VideoSourceStep(
+            long = long,
+            sources = sources,
+            onRecord = editing.record ?: sources.openCamera,
+            notice = editing.sourceNotice,
+            onClose = onClose,
+        )
         else -> ReelForm(
             state = state,
             viewModel = viewModel,
@@ -201,15 +221,85 @@ private fun rememberVideoSources(onSource: (String) -> Unit): VideoSources {
     }
 }
 
-/** The in-app gallery over videos: one tap picks; Camera and Browse lead to the other two sources. */
+/**
+ * Which editor a reel goes through: the advanced (Banuba) editor when its
+ * gate is Ready — its camera for Record, its trimmer for a pick — otherwise
+ * the Media3 studio; a long video skips both. Owns the SDK's lazy start and
+ * the one-line notices the source step and the studio show.
+ */
+private class ReelEditing(
+    /** Where a picked or captured video goes. */
+    val onSource: (String) -> Unit,
+    /** The advanced camera when licensed; null means the system camera. */
+    val record: (() -> Unit)?,
+    /** After a failed advanced export: why the person is back at the source step. */
+    val sourceNotice: String?,
+    /** On the studio, when a licence was expected and is not usable. */
+    val studioNotice: String?,
+)
+
 @Composable
-private fun VideoSourceStep(long: Boolean, sources: VideoSources, onClose: () -> Unit) {
+private fun rememberReelEditing(
+    long: Boolean,
+    viewModel: ReelPublishViewModel,
+    studio: ReelStudioViewModel,
+    banuba: BanubaGateViewModel,
+): ReelEditing {
+    val banubaState by banuba.state.collectAsStateWithLifecycle()
+    // The advanced editor starts on the reel flow's first entry, never earlier.
+    LaunchedEffect(long) { if (!long) banuba.ensure() }
+    var sourceNotice by remember { mutableStateOf<String?>(null) }
+    val editor = rememberBanubaEditor(prepare = { banuba.exportTo(viewModel.exportTargetPath()) }) { outcome ->
+        when (outcome) {
+            is BanubaExportOutcome.Exported -> viewModel.onReelExported(outcome.path)
+            is BanubaExportOutcome.Failed -> sourceNotice = outcome.message
+            BanubaExportOutcome.Cancelled -> Unit
+        }
+    }
+    val advanced = !long && banubaState == BanubaState.Ready
+    return ReelEditing(
+        onSource = when {
+            long -> viewModel::onVideoPicked
+            advanced -> editor.edit
+            else -> studio::setSource
+        },
+        record = editor.record.takeIf { advanced },
+        sourceNotice = sourceNotice,
+        studioNotice = advancedEditorNotice(banubaState),
+    )
+}
+
+/**
+ * The muted line on the studio when a licence was expected and is not usable.
+ * Nothing when there is no token: a build without one is a configuration,
+ * not a failure the person can act on.
+ */
+private fun advancedEditorNotice(state: BanubaState): String? = when (state) {
+    BanubaState.Invalid, is BanubaState.Failed -> "Advanced editor unavailable"
+    BanubaState.Unlicensed, BanubaState.Initialising, BanubaState.Ready -> null
+}
+
+/**
+ * The in-app gallery over videos: one tap picks; Record and Browse lead to
+ * the other two sources. [onRecord] is the system camera, or the advanced
+ * editor's own camera when it is licensed. [notice] replaces the subtitle
+ * after a failed advanced export, so the person knows why they are back here.
+ */
+@Composable
+private fun VideoSourceStep(
+    long: Boolean,
+    sources: VideoSources,
+    onRecord: () -> Unit,
+    notice: String?,
+    onClose: () -> Unit,
+) {
+    val hint = if (long) "Pick a video — it posts to Tube." else "Pick or record — the editor opens next."
     MediaGallerySurface(
         kind = GalleryKind.Videos,
         title = if (long) "New video" else "New reel",
-        subtitle = if (long) "Pick a video — it posts to Tube." else "Pick a video — the studio opens next.",
+        subtitle = notice ?: hint,
         onClose = onClose,
-        onCamera = sources.openCamera,
+        onCamera = onRecord,
         onPicked = { uris -> uris.firstOrNull()?.let { sources.onPicked(it.toString()) } },
         onSystemPicker = sources.openSystemPicker,
     )

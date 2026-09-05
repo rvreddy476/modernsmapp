@@ -261,3 +261,24 @@ internal fun ApplicationExtension.configureFlavors(
         }
     }
 }
+
+/**
+ * The Banuba Video Editor licence token as a Java string literal for
+ * `buildConfigField`, or `""` when the secrets file is absent or empty.
+ *
+ * The file lives at the REPO root (`.secrets/banuba.token`, gitignored), three
+ * levels above the application module. `providers.fileContents` makes it a
+ * tracked configuration input, so the configuration cache is invalidated when
+ * the token changes and stays valid otherwise. The value is escaped for a Java
+ * literal and NEVER logged.
+ */
+internal fun Project.banubaLicenseToken(): String {
+    val token = providers
+        .fileContents(layout.projectDirectory.file("../../../.secrets/banuba.token"))
+        .asText
+        .map { it.trim() }
+        .orElse("")
+        .get()
+    val escaped = token.replace("\\", "\\\\").replace("\"", "\\\"")
+    return "\"$escaped\""
+}

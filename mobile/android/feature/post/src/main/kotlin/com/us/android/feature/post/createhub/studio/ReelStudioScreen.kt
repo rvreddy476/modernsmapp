@@ -92,6 +92,8 @@ internal fun ReelStudioScreen(
     actions: StudioActions,
     onClose: () -> Unit,
     onNext: () -> Unit,
+    /** One muted line under the bar — the advanced editor was expected and is not usable. */
+    notice: String? = null,
 ) {
     Column(
         modifier = Modifier
@@ -107,6 +109,14 @@ internal fun ReelStudioScreen(
                 onClick = onNext,
                 enabled = state.canExport,
                 modifier = Modifier.testTag("studio-next"),
+            )
+        }
+        notice?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
             )
         }
         val edit = state.edit

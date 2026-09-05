@@ -15,4 +15,20 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
+
+    <!--
+      Banuba Video Editor (2026-09-05). The SDK's VideoCreationTheme is a map
+      of ~300 widget styles over a handful of colour resources; those
+      resources are overridden by name in banuba_colors.xml (navy ground and
+      surfaces, white text, the ember accent), and its Roboto font resources
+      are overridden in res/font. What is left for the theme itself is the
+      window: navy behind every screen so no frame flashes grey between the
+      SDK's fragments, and transparent bars like Theme.Us.
+    -->
+    <style name="Theme.Momentum.VideoCreation" parent="VideoCreationTheme">
+        <item name="android:windowBackground">@color/us_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

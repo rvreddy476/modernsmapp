@@ -36,7 +36,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Us.Splash"
-        android:enableOnBackInvokedCallback="true">
+        android:enableOnBackInvokedCallback="true"
+        android:extractNativeLibs="true">
 
         <activity
             android:name=".MainActivity"
@@ -74,6 +75,20 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+        <!--
+          Banuba Video Editor (2026-09-05): the licensed reel camera + editor,
+          started for a result from the reel flow. Portrait, its own theme
+          (Momentum colours over the SDK's VideoCreationTheme), and
+          adjustResize so the text tool's keyboard never covers the input.
+          tools:replace wins over the theme the SDK's own manifest declares.
+        -->
+        <activity
+            android:name="com.banuba.sdk.ve.flow.VideoCreationActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Momentum.VideoCreation"
+            android:windowSoftInputMode="adjustResize"
+            tools:replace="android:theme" />
+
         <!-- Hilt WorkManager: the default androidx.startup initializer would
              build WorkManager with the STOCK factory before our
              Configuration.Provider is ever consulted, and every @HiltWorker
