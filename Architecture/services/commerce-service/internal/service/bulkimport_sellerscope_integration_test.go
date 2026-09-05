@@ -49,6 +49,7 @@ var svcTestPool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
 	dsn := os.Getenv("COMMERCE_TEST_DSN")
+	refuseTheLiveDatabase(dsn)
 	if dsn == "" {
 		fmt.Println("COMMERCE_TEST_DSN not set; skipping the service integration proofs")
 		os.Exit(0)
