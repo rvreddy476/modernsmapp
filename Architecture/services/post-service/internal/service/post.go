@@ -9,6 +9,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -29,7 +30,10 @@ import (
 
 var (
 	hashtagRegex = regexp.MustCompile(`#([\p{L}\p{M}\p{N}_]{2,50})`)
-	mentionRegex = regexp.MustCompile(`@(\w{1,30})`)
+	// mentionRegex is the caption parser. Same alphabet as dbMentionRegex and
+	// explicitMentionPattern: handles like `call.usera` are real usernames, so
+	// `.` is allowed; a trailing `.` (sentence end) is trimmed in extractMentions.
+	mentionRegex = regexp.MustCompile(`@([A-Za-z0-9_.]{1,30})`)
 	// dbMentionRegex is the persistence-side mention pattern — 3+
 	// chars and `.` allowed (handles handles like `john.doe`).
 	// Compiled once at startup; previously this re-compiled on every
@@ -541,7 +545,10 @@ func extractMentions(text string) []string {
 	seen := make(map[string]bool)
 	var usernames []string
 	for _, match := range matches {
-		username := match[1]
+		username := strings.TrimRight(match[1], ".")
+		if username == "" {
+			continue
+		}
 		if !seen[username] {
 			seen[username] = true
 			usernames = append(usernames, username)
@@ -3177,26 +3184,53 @@ func (s *Service) GetTrendingHashtags24h(ctx context.Context, limit int) ([]post
 	return s.pgStore.GetTrendingHashtags24h(ctx, limit)
 }
 
-// lookupUserByUsername resolves a username to a user ID via user-service.
+// lookupUserByUsername resolves a username to a user ID via the app
+// user-service (`GET /v1/users/by-username/{username}`), the same service the
+// api-gateway routes `/v1/users` to. app.users.username is the authority for
+// handles; identity-profile is a different store and 404s for app handles.
+//
+// The internal key is sent so the call keeps working if the route is ever
+// gated. The reply is the standard envelope `{"data":{"id":"<uuid>",...}}`.
+// Returns ("", nil) when the URL is unset or the user does not exist, so
+// callers skip the mention without treating it as an error.
 func (s *Service) lookupUserByUsername(ctx context.Context, username string) (string, error) {
 	if s.userServiceURL == "" {
 		return "", nil
 	}
-	url := fmt.Sprintf("%s/v1/users/by-username/%s", s.userServiceURL, username)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	reqURL := fmt.Sprintf("%s/v1/users/by-username/%s",
+		strings.TrimRight(s.userServiceURL, "/"), url.PathEscape(username))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := s.httpClient.Do(req)
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+	client := s.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	var result struct {
-		UserID string `json:"user_id"`
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return "", nil
+	default:
+		return "", fmt.Errorf("user-service by-username returned %d", resp.StatusCode)
 	}
-	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
-	return result.UserID, nil
+	var result struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode user-service by-username: %w", err)
+	}
+	return result.Data.ID, nil
 }
 
 // lookupChannelIDForUser resolves the author's canonical broadcast channel

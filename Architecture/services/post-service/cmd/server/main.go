@@ -149,6 +149,10 @@ func main() {
 	// Comment-author hydration (same identity-profile batch contract the
 	// feed uses for post authors).
 	postSvc.SetProfileServiceURL(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"))
+	// The APP user-service (app.users), not identity-user: it owns usernames
+	// (@mention resolution) and the internal channels/by-owner contract.
+	// Never wired before 2026-09-05, so mentions silently resolved to nobody.
+	postSvc.SetUserServiceURL(env("APP_USER_SERVICE_URL", "http://user-service:8082"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
 	// Tube channel avatars resolve through media-service's delivery gate.
 	postSvc.SetMediaServiceURL(env("MEDIA_SERVICE_URL", "http://media-service:8087"))

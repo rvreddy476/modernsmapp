@@ -668,7 +668,11 @@ services:
       POST_PURGE_AFTER: ${POST_PURGE_AFTER:-72h}
       POST_PURGE_INTERVAL: ${POST_PURGE_INTERVAL:-30s}
       MEDIA_SERVICE_URL: http://media-service:8087
-      USER_SERVICE_URL: http://identity-user:8110
+      # The APP user-service (app.users) — it owns usernames, so @mention
+      # resolution asks it, and it serves /internal/channels/by-owner. Was
+      # USER_SERVICE_URL=identity-user, which post-service never read and
+      # which 401/404s on by-username anyway (fixed 2026-09-05).
+      APP_USER_SERVICE_URL: http://user-service:8082
       REVIEWER_SERVICE_URL: http://reviewer-service:8120
       # Local media uses the non-production stub scanner and has no human
       # reviewer deployment. Production AWS manifests may opt into review-all;
