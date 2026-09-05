@@ -23,10 +23,10 @@ import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.feature.commerce.ui.MSellerPageBar
 import com.us.android.feature.commerce.ui.describe
 import com.us.android.feature.commerce.ui.isRetryable
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -138,7 +138,7 @@ fun SubmitShopScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    UsScaffold(topBar = { UsTopBar(title = "Submit for review", onBack = onBack) }) { padding ->
+    UsScaffold(topBar = { MSellerPageBar(title = "Submit for review", onBack = onBack) }) { padding ->
         when (val s = state) {
             is SubmitShopUiState.Loading -> UsLoadingState(
                 modifier = Modifier.padding(padding),

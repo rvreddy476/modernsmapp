@@ -16,6 +16,10 @@ dependencies {
     implementation(projects.core.ui)
     implementation(projects.core.commerce)
     implementation(projects.core.auth)
+    // MStore's profile menu shows the person, not an anonymous avatar: their
+    // name and picture come from the same own-profile read the Me tab uses,
+    // so the two cannot disagree about who is signed in.
+    implementation(projects.core.profile)
     // Product and order imagery. LB-A3: reuse the media loader rather than
     // introducing a second image stack in this feature.
     implementation(projects.core.media)

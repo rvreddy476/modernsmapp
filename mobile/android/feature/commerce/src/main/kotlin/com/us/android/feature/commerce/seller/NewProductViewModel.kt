@@ -47,7 +47,7 @@ data class NewProductForm(
      * Whether the struck-through price is a lie.
      *
      * An MRP at or below the selling price shows the buyer a "discount" that
-     * is zero or negative. The server does not police this — [PriceRow] simply
+     * is zero or negative. The server does not police this — [PriceLine] simply
      * stops striking through — but a seller who typed them the wrong way round
      * wants to know before the listing is live.
      */

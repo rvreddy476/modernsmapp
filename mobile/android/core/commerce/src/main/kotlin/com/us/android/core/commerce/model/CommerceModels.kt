@@ -68,6 +68,116 @@ data class ProductSummary(
     val avgRating: Float,
     val reviewCount: Int,
     val inStock: Boolean,
+    /**
+     * The saving as whole percent, or null when there is none to show.
+     *
+     * Server-first: the repository takes `discount_pct` when the server sends
+     * one and falls back to [discountPercent] only when it does not, so the
+     * client and the server can never print two different numbers for a
+     * server that has an opinion.
+     */
+    val discountPct: Int? = null,
+    /** Whether the caller has saved this product. Server-owned. */
+    val favourite: Boolean = false,
+)
+
+/**
+ * The saving between a struck-through price and what is charged, as whole
+ * percent — floored, so a 24.9% saving is never advertised as 25.
+ *
+ * Null when there is nothing honest to show: an MRP at or below the price is
+ * not a discount, and a zero MRP is a missing value rather than a 100% one.
+ *
+ * This is the ONE piece of price arithmetic the client performs, and it
+ * exists only as a fallback for a server that does not publish `discount_pct`
+ * yet. Everything else about money is read, never derived.
+ */
+fun discountPercent(price: Paise, mrp: Paise): Int? {
+    if (mrp <= price || !mrp.isPositive) return null
+    val saved = mrp.value - price.value
+    val percent = (saved * PERCENT) / mrp.value
+    return percent.toInt().takeIf { it > 0 }
+}
+
+private const val PERCENT = 100L
+
+/** One node of the shop's taxonomy. */
+data class Category(
+    val id: String,
+    val name: String,
+    val slug: String,
+    val parentId: String?,
+    val imageUrl: String?,
+    val featured: Boolean,
+) {
+    /** A top-level category — the strip and the "Shop by category" grid show these. */
+    val isTopLevel: Boolean get() = parentId == null
+}
+
+/**
+ * Where a landing-page banner goes.
+ *
+ * A closed type, because a banner whose target this build cannot open must
+ * render as a picture rather than as a control that does nothing — see
+ * [HomeBanner.tappable].
+ */
+sealed interface BannerTarget {
+    data class OfCategory(val categoryId: String) : BannerTarget
+    data class OfProduct(val productId: String) : BannerTarget
+    data class OfSearch(val query: String) : BannerTarget
+    data object None : BannerTarget
+
+    companion object {
+        fun from(type: String?, id: String?): BannerTarget {
+            val target = id?.takeIf { it.isNotBlank() } ?: return None
+            return when (type) {
+                "category" -> OfCategory(target)
+                "product" -> OfProduct(target)
+                "search" -> OfSearch(target)
+                else -> None
+            }
+        }
+    }
+}
+
+data class HomeBanner(
+    val id: String,
+    val title: String,
+    val subtitle: String?,
+    val imageUrl: String?,
+    val target: BannerTarget,
+) {
+    val tappable: Boolean get() = target != BannerTarget.None
+}
+
+/** One named shelf on the landing page: "Deals of the day" and its products. */
+data class HomeSection(
+    val key: String,
+    val title: String,
+    val products: List<ProductSummary>,
+)
+
+/**
+ * The landing page as the server describes it.
+ *
+ * [EMPTY] is what a 404 becomes. Every section on the page hides itself when
+ * it has nothing, so an absent `/home` degrades to the category strip plus
+ * the paged grid rather than to a shop full of empty shelves.
+ */
+data class StoreHome(
+    val banners: List<HomeBanner>,
+    val sections: List<HomeSection>,
+) {
+    companion object {
+        val EMPTY = StoreHome(emptyList(), emptyList())
+    }
+}
+
+/** One image on a product, in the seller's chosen order. */
+data class ProductImage(
+    val mediaId: String,
+    val url: String?,
+    val sortOrder: Int,
 )
 
 /** One page of catalogue results. */

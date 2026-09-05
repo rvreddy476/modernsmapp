@@ -17,9 +17,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MSellerPageBar
 
 /**
  * Where the seller is paid.
@@ -41,7 +41,7 @@ fun PayoutScreen(
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
 
-    UsScaffold(topBar = { UsTopBar(title = "Get paid", onBack = onBack) }) { padding ->
+    UsScaffold(topBar = { MSellerPageBar(title = "Get paid", onBack = onBack) }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)

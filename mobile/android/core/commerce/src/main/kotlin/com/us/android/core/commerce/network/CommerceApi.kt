@@ -43,12 +43,77 @@ interface CommerceApi {
         @Query("category_id") categoryId: String? = null,
         @Query("cursor") cursor: String? = null,
         @Query("limit") limit: Int = 20,
+        @Query("sort") sort: String? = null,
     ): Response<ApiEnvelope<ProductListDto>>
 
     @GET("v1/commerce/products/{productId}")
     suspend fun getProduct(
         @Path("productId") productId: String,
     ): Response<ApiEnvelope<ProductDetailDto>>
+
+    /**
+     * The taxonomy, as a bare array in `data`.
+     *
+     * Not `{items: []}` — the handler writes the slice itself, and it writes
+     * `[]` rather than `null` for an unseeded table, so the client's
+     * "no categories" and "broken endpoint" stay distinguishable.
+     */
+    @GET("v1/commerce/categories")
+    suspend fun categories(): Response<ApiEnvelope<List<CategoryDto>>>
+
+    /**
+     * The storefront's landing page: banners plus named product shelves.
+     *
+     * Additive and optional. A build that meets a server without it gets a
+     * 404, and MStore falls back to categories plus the paged grid rather
+     * than showing an empty shop — which is why the repository maps a bare
+     * 404 to [com.us.android.core.commerce.repository.CommerceError.NotAvailable]
+     * instead of a failure the screen would have to render.
+     */
+    @GET("v1/commerce/home")
+    suspend fun home(): Response<ApiEnvelope<HomeDto>>
+
+    /** The buyer's saved products. Server-owned: there is no local list. */
+    @GET("v1/commerce/favourites")
+    suspend fun favourites(): Response<ApiEnvelope<ProductListDto>>
+
+    @POST("v1/commerce/favourites/{productId}")
+    suspend fun addFavourite(
+        @Path("productId") productId: String,
+    ): Response<ApiEnvelope<Unit>>
+
+    @DELETE("v1/commerce/favourites/{productId}")
+    suspend fun removeFavourite(
+        @Path("productId") productId: String,
+    ): Response<ApiEnvelope<Unit>>
+
+    /** A product's gallery, in the seller's chosen order. Public. */
+    @GET("v1/commerce/products/{productId}/media")
+    suspend fun productMedia(
+        @Path("productId") productId: String,
+    ): Response<ApiEnvelope<ProductMediaListDto>>
+
+    /**
+     * Attaches a whole gallery in one call, cover first.
+     *
+     * The order of [AttachProductMediaRequest.mediaIds] IS the gallery order,
+     * so a reorder is one request rather than n. A server that predates the
+     * batch shape answers 400/404 and the repository replays the list through
+     * [attachOneProductMedia] — the older per-asset endpoint — so a seller's
+     * images land either way.
+     */
+    @POST("v1/commerce/products/{productId}/media")
+    suspend fun attachProductMedia(
+        @Path("productId") productId: String,
+        @Body body: AttachProductMediaRequest,
+    ): Response<ApiEnvelope<ProductMediaListDto>>
+
+    /** The per-asset attach. See [attachProductMedia] for why both exist. */
+    @POST("v1/commerce/products/{productId}/media")
+    suspend fun attachOneProductMedia(
+        @Path("productId") productId: String,
+        @Body body: AttachOneProductMediaRequest,
+    ): Response<ApiEnvelope<ProductMediaListDto>>
 
     // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Cart ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 
@@ -296,6 +361,87 @@ data class ProductSummaryDto(
     @SerialName("avg_rating") val avgRating: Float = 0f,
     @SerialName("review_count") val reviewCount: Int = 0,
     @SerialName("in_stock") val inStock: Boolean = true,
+    /**
+     * The saving, as whole percent, computed by the server.
+     *
+     * Absent on a server that does not publish it yet; the domain then
+     * derives it from mrp and price with
+     * [com.us.android.core.commerce.model.discountPercent], which is the ONE
+     * place the client is allowed to do that arithmetic.
+     */
+    @SerialName("discount_pct") val discountPct: Int? = null,
+    /** Whether the CALLER has saved this product. Absent for an anonymous read. */
+    @SerialName("is_favourite") val isFavourite: Boolean = false,
+)
+
+/**
+ * One node of the shop's taxonomy.
+ *
+ * `image_url` is optional because the seeded taxonomy predates category
+ * artwork; the strip draws a Lucide glyph when there is none rather than a
+ * broken frame.
+ */
+@Serializable
+data class CategoryDto(
+    val id: String,
+    val name: String = "",
+    val slug: String = "",
+    @SerialName("parent_id") val parentId: String? = null,
+    @SerialName("image_url") val imageUrl: String? = null,
+    @SerialName("display_order") val displayOrder: Int = 0,
+    @SerialName("is_featured") val isFeatured: Boolean = false,
+)
+
+/** The landing page: the banner rail, then the named shelves. */
+@Serializable
+data class HomeDto(
+    val banners: List<HomeBannerDto> = emptyList(),
+    val sections: List<HomeSectionDto> = emptyList(),
+)
+
+@Serializable
+data class HomeBannerDto(
+    val id: String,
+    val title: String = "",
+    val subtitle: String? = null,
+    @SerialName("image_url") val imageUrl: String? = null,
+    /** "category", "product", "search" — anything else is not tappable. */
+    @SerialName("target_type") val targetType: String? = null,
+    @SerialName("target_id") val targetId: String? = null,
+)
+
+@Serializable
+data class HomeSectionDto(
+    /** Stable machine key: "deals", "best_sellers", "new_arrivals", ... */
+    val key: String,
+    val title: String = "",
+    val products: List<ProductSummaryDto> = emptyList(),
+)
+
+@Serializable
+data class ProductMediaListDto(val media: List<ProductMediaDto> = emptyList())
+
+@Serializable
+data class ProductMediaDto(
+    val id: String = "",
+    @SerialName("media_id") val mediaId: String = "",
+    @SerialName("media_type") val mediaType: String = "image",
+    @SerialName("sort_order") val sortOrder: Int = 0,
+    @SerialName("image_url") val imageUrl: String? = null,
+    @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
+)
+
+/** The gallery, in order. Index 0 is the cover. */
+@Serializable
+data class AttachProductMediaRequest(
+    @SerialName("media_ids") val mediaIds: List<String>,
+)
+
+@Serializable
+data class AttachOneProductMediaRequest(
+    @SerialName("media_id") val mediaId: String,
+    @SerialName("media_type") val mediaType: String = "image",
+    @SerialName("sort_order") val sortOrder: Int = 0,
 )
 
 @Serializable

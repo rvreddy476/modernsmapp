@@ -22,11 +22,11 @@ import com.us.android.core.designsystem.component.UsChoiceRow
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MSellerPageBar
 
 /**
  * Stock for one variant.
@@ -47,7 +47,7 @@ fun StockScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    UsScaffold(topBar = { UsTopBar(title = title.ifBlank { "Stock" }, onBack = onBack) }) { padding ->
+    UsScaffold(topBar = { MSellerPageBar(title = title.ifBlank { "Stock" }, onBack = onBack) }) { padding ->
         when (val s = state) {
             is StockUiState.Loading -> UsLoadingState(
                 modifier = Modifier.padding(padding),

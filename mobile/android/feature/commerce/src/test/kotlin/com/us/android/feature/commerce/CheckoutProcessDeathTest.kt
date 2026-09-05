@@ -9,7 +9,6 @@ import com.us.android.core.commerce.network.CancelOrderRequest
 import com.us.android.core.commerce.network.CartDto
 import com.us.android.core.commerce.network.CheckoutRequest
 import com.us.android.core.commerce.network.CheckoutResultDto
-import com.us.android.core.commerce.network.CommerceApi
 import com.us.android.core.commerce.network.CreateProductRequest
 import com.us.android.core.commerce.network.OrderDto
 import com.us.android.core.commerce.network.OrderListDto
@@ -84,7 +83,7 @@ class CheckoutProcessDeathTest {
 
     // ─── A server that can lose a response and change its mind ───────
 
-    private class RecoveryApi : CommerceApi {
+    private class RecoveryApi : FakeCommerceApi() {
         var quoteBody = QuoteDto(
             quoteId = "quote-1",
             subtotalMinor = Paise(200000),
@@ -174,6 +173,7 @@ class CheckoutProcessDeathTest {
             categoryId: String?,
             cursor: String?,
             limit: Int,
+            sort: String?,
         ): Response<ApiEnvelope<ProductListDto>> = notUsed()
 
         override suspend fun getProduct(productId: String): Response<ApiEnvelope<ProductDetailDto>> = notUsed()

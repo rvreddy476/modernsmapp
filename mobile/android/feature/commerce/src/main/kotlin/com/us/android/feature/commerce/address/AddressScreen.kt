@@ -27,11 +27,11 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.pressScale
 
 /** Renders an address as a single readable block. */
@@ -49,25 +49,38 @@ fun Address.oneLine(): String =
     listOfNotNull(line1, city, postalCode).joinToString(", ")
 
 /**
- * Choose a delivery address.
+ * The address book, in two modes.
  *
- * Selecting an address is what unlocks the delivery quote, so the continue
- * button carries the chosen id forward rather than the screen holding it.
+ * Inside checkout ([onContinue] non-null) it is a PICKER: choosing an address
+ * is what unlocks the delivery quote, so the continue button carries the
+ * chosen id forward rather than the screen holding it. Opened from MStore's
+ * profile menu ([onContinue] null) it is the address book itself — the same
+ * list and the same "Add another", without a "Deliver here" that would have
+ * nowhere to go.
+ *
+ * One screen rather than two, because the second copy is where the list, the
+ * empty state and the add flow drift apart.
  */
 @Composable
 @Suppress("LongMethod")
 fun AddressScreen(
     onBack: () -> Unit,
-    onContinue: (addressId: String, summary: String) -> Unit,
+    onContinue: ((addressId: String, summary: String) -> Unit)?,
     onAddAddress: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: AddressViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val picking = onContinue != null
 
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Delivery address", onBack = onBack) },
+        topBar = {
+            MStorePageBar(
+                title = if (picking) "Delivery address" else "Your addresses",
+                onBack = onBack,
+            )
+        },
         applyPageGutter = false,
     ) { padding ->
         when (val s = state) {
@@ -132,21 +145,25 @@ fun AddressScreen(
                         )
                     }
                 }
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(UsTheme.extended.bgCard)
-                        .padding(UsTheme.spacing.pageHorizontal),
-                ) {
-                    UsButton(
-                        text = "Deliver here",
-                        onClick = {
-                            val chosen = s.addresses.firstOrNull { it.id == s.selectedId }
-                            if (chosen != null) onContinue(chosen.id, chosen.oneLine())
-                        },
-                        enabled = s.selectedId != null,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                // No "Deliver here" outside checkout: a primary control that
+                // leads nowhere is worse than its absence.
+                if (onContinue != null) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(UsTheme.extended.bgCard)
+                            .padding(UsTheme.spacing.pageHorizontal),
+                    ) {
+                        UsButton(
+                            text = "Deliver here",
+                            onClick = {
+                                val chosen = s.addresses.firstOrNull { it.id == s.selectedId }
+                                if (chosen != null) onContinue(chosen.id, chosen.oneLine())
+                            },
+                            enabled = s.selectedId != null,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }
@@ -198,7 +215,7 @@ fun AddAddressScreen(
 
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Add address", onBack = onBack) },
+        topBar = { MStorePageBar(title = "Add address", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         Column(

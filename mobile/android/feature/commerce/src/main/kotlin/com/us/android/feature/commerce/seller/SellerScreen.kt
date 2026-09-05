@@ -27,13 +27,13 @@ import com.us.android.core.commerce.model.SellerProfile
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MSellerPageBar
 import com.us.android.feature.commerce.ui.pressScale
 
 /**
@@ -55,7 +55,7 @@ fun SellerScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     UsScaffold(
-        topBar = { UsTopBar(title = "My shop", onBack = onBack) },
+        topBar = { MSellerPageBar(title = "My shop", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         when (val s = state) {
@@ -182,6 +182,7 @@ private fun SellerContent(
                     // under review or rejected has nothing to submit.
                     onSubmit = { actions.submitProduct(product.id) }
                         .takeIf { product.approvalStatus == "draft" },
+                    onEditImages = { actions.openImages(product.id, product.title) },
                 )
             }
         }
@@ -193,6 +194,7 @@ private fun SellerProductRow(
     product: SellerProduct,
     onClick: () -> Unit,
     onSubmit: (() -> Unit)?,
+    onEditImages: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
         Row(
@@ -236,6 +238,14 @@ private fun SellerProductRow(
                 )
             }
         }
+
+        // Always offered, and the wording says which case it is: a listing
+        // with no picture is the one a seller most needs pushing towards.
+        UsSecondaryButton(
+            text = if (product.imageUrl.isNullOrBlank()) "Add photos" else "Edit photos",
+            onClick = onEditImages,
+            modifier = Modifier.fillMaxWidth(),
+        )
 
         // Only where it applies. A product already under review, approved or
         // rejected has nothing to submit, and a button that does nothing is

@@ -5,13 +5,25 @@ import com.us.android.core.profile.data.AppModule
 /**
  * The mini-apps the Explore launcher can show, in the order the founder set
  * (2026-09-05): the four every user has first — Chat, Friends, Alerts, Live
- * — then the five modules the picker offers, Shop → Match → Ask → Feast →
- * Tube.
+ * — then the module tiles, MStore → MSeller → Match → Ask → Feast → Tube.
  *
  * [module] is null for the always-on four: they are not module choices and
- * no setting hides them. The other five are tied to their [AppModule], and
- * the two facts about a module — whether the user switched it on, whether
- * this build has a screen for it — decide the tile in [launcherTiles].
+ * no setting hides them. The rest are tied to their [AppModule], and the two
+ * facts about a module — whether the user switched it on, whether this build
+ * has a screen for it — decide the tile in [launcherTiles].
+ *
+ * ## Two commerce tiles, not one
+ *
+ * Commerce ships as TWO mini-apps (founder, 2026-09-05): MStore is the buyer
+ * app, MSeller the seller app. Both hang off [AppModule.COMMERCE], because
+ * they are one product decision — a person who has switched commerce on gets
+ * both — but they are separate apps with separate graphs, and one tile that
+ * led to a buyer catalogue with a seller hub hidden behind its header is
+ * exactly the thing the founder asked to be split.
+ *
+ * A module with two tiles is why [launcherTiles] keys "Soon" off the module
+ * rather than off the tile: neither of these can be live while the other is
+ * not.
  *
  * `:app` owns this rather than a feature module because a launcher tile
  * opens a destination in whichever feature owns it, and only `:app` may
@@ -22,7 +34,12 @@ enum class LauncherApp(val label: String, val module: AppModule?) {
     FRIENDS("Friends", null),
     ALERTS("Alerts", null),
     LIVE("Live", null),
-    SHOP("Shop", AppModule.COMMERCE),
+
+    /** The buyer app. */
+    MSTORE("MStore", AppModule.COMMERCE),
+
+    /** The seller app. One person can be both; this is a switch, not an account. */
+    MSELLER("MSeller", AppModule.COMMERCE),
     MATCH("Match", AppModule.DATING),
     ASK("Ask", AppModule.QA),
     FEAST("Feast", AppModule.FOOD),
@@ -49,5 +66,5 @@ data class LauncherTile(val app: LauncherApp, val soon: Boolean)
 fun launcherTiles(): List<LauncherTile> =
     LauncherApp.entries.map { app -> LauncherTile(app, soon = app.module?.hasScreen == false) }
 
-/** What a "Soon" tile says when tapped: "Shop is coming soon". */
+/** What a "Soon" tile says when tapped: "Match is coming soon". */
 fun comingSoonMessage(app: LauncherApp): String = "${app.label} is coming soon"

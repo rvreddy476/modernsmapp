@@ -17,12 +17,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.UsSettingsSwitchRow
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MSellerPageBar
 
 /**
  * Changing what a listing costs.
@@ -47,7 +47,7 @@ fun EditPriceScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     UsScaffold(
-        topBar = { UsTopBar(title = title.ifBlank { "Price" }, onBack = onBack) },
+        topBar = { MSellerPageBar(title = title.ifBlank { "Price" }, onBack = onBack) },
     ) { padding ->
         when (val s = state) {
             is EditPriceUiState.Loading -> UsLoadingState(
@@ -133,7 +133,7 @@ private fun EditPriceForm(
         UsSettingsSwitchRow(
             title = "On sale",
             description = if (state.paused) {
-                "Paused — buyers cannot add this to a cart"
+                "Paused — buyers cannot add this to a bag"
             } else {
                 "Buyers can order this"
             },

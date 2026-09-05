@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.commerce.model.Order
+import com.us.android.core.commerce.model.OrderStatus
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.feature.commerce.ui.describe
@@ -24,10 +25,51 @@ sealed interface OrdersUiState {
     data class Failed(val message: String, val retryable: Boolean) : OrdersUiState
 }
 
+/**
+ * Which orders a list shows.
+ *
+ * MStore's profile menu has both "My orders" and "Purchase history", and they
+ * are not the same question: the first is everything, including the parcel on
+ * its way; the second is what has already happened, which is what someone
+ * looking for a past purchase actually wants to scroll.
+ */
+enum class OrderScope(val wire: String, val title: String) {
+    ALL("all", "Your orders"),
+    PAST("past", "Purchase history"),
+    ;
+
+    companion object {
+        fun from(raw: String?): OrderScope =
+            entries.firstOrNull { it.wire == raw } ?: ALL
+    }
+}
+
+/**
+ * Whether an order belongs in [OrderScope.PAST].
+ *
+ * Terminal states only. An order still moving is not history, and a payment
+ * that has not settled is emphatically not — putting either in "purchase
+ * history" tells the buyer something finished when it has not.
+ *
+ * Pure, so the boundary is a table test rather than an eyeball.
+ */
+fun isPast(order: Order): Boolean = when (order.status) {
+    OrderStatus.DELIVERED,
+    OrderStatus.CANCELLED,
+    OrderStatus.REFUNDED,
+    -> true
+
+    else -> false
+}
+
 @HiltViewModel
 class OrdersViewModel @Inject constructor(
     private val repo: CommerceRepository,
+    savedState: SavedStateHandle,
 ) : ViewModel() {
+
+    /** ALL unless the route asked for history. */
+    val scope: OrderScope = OrderScope.from(savedState["scope"])
 
     private val _state = MutableStateFlow<OrdersUiState>(OrdersUiState.Loading)
     val state: StateFlow<OrdersUiState> = _state.asStateFlow()
@@ -51,9 +93,18 @@ class OrdersViewModel @Inject constructor(
                     _state.value =
                         OrdersUiState.Failed(r.error.describe(), r.error.isRetryable())
 
-                is CommerceResult.Success ->
+                is CommerceResult.Success -> {
+                    // The scope is applied here rather than asked of the
+                    // server: `GET /orders` has no status filter, and inventing
+                    // a query parameter the server ignores would silently
+                    // return everything under a title that promised less.
+                    val orders = when (scope) {
+                        OrderScope.ALL -> r.value
+                        OrderScope.PAST -> r.value.filter(::isPast)
+                    }
                     _state.value =
-                        if (r.value.isEmpty()) OrdersUiState.Empty else OrdersUiState.Content(r.value)
+                        if (orders.isEmpty()) OrdersUiState.Empty else OrdersUiState.Content(orders)
+                }
             }
         }
     }

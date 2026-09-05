@@ -579,16 +579,16 @@ class CheckoutViewModel @Inject constructor(
         }
 
         CommerceError.ProductUnavailable ->
-            CheckoutUiState.Failed("An item in your cart is no longer available.", retryable = false)
+            CheckoutUiState.Failed("An item in your bag is no longer available.", retryable = false)
 
         CommerceError.MultipleSellers ->
-            CheckoutUiState.Failed("Your cart has items from more than one seller.", retryable = false)
+            CheckoutUiState.Failed("Your bag has items from more than one seller.", retryable = false)
 
         CommerceError.CouponUnavailable ->
             CheckoutUiState.Failed("That coupon is no longer available.", retryable = true)
 
         CommerceError.CartEmpty ->
-            CheckoutUiState.Failed("Your cart is empty.", retryable = false)
+            CheckoutUiState.Failed("Your bag is empty.", retryable = false)
 
         CommerceError.CodNotSupported ->
             CheckoutUiState.Failed("Cash on delivery isn't available yet.", retryable = false)
@@ -601,6 +601,12 @@ class CheckoutViewModel @Inject constructor(
 
         CommerceError.TryAgain ->
             CheckoutUiState.Failed("Please try again.", retryable = true)
+
+        // A checkout route that 404s is not a surface that may hide itself:
+        // this app is talking to a server that cannot take the order, and
+        // saying so beats a spinner that never resolves.
+        CommerceError.NotAvailable ->
+            CheckoutUiState.Failed("Checkout is unavailable right now.", retryable = false)
 
         is CommerceError.Network ->
             CheckoutUiState.Failed("Check your connection and try again.", retryable = true)

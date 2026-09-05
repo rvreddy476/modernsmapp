@@ -29,7 +29,7 @@ sealed interface ProductUiState {
         val selectedVariant: Variant?,
         val quantity: Int = 1,
         val adding: Boolean = false,
-        /** Set after a successful add, so the screen can offer "Go to cart". */
+        /** Set after a successful add, so the screen can offer "Go to bag". */
         val addedToCart: Boolean = false,
         val message: String? = null,
     ) : ProductUiState {

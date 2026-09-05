@@ -19,11 +19,11 @@ import com.us.android.core.designsystem.component.UsChoice
 import com.us.android.core.designsystem.component.UsChoiceRow
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MSellerPageBar
 
 /**
  * Listing a product.
@@ -52,10 +52,25 @@ fun NewProductScreen(
     onBack: () -> Unit,
     onCreated: (productId: String) -> Unit,
     viewModel: NewProductViewModel = hiltViewModel(),
+    images: ProductImagesViewModel = hiltViewModel(),
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
+    val gallery by images.state.collectAsStateWithLifecycle()
 
-    UsScaffold(topBar = { UsTopBar(title = "New product", onBack = onBack) }) { padding ->
+    // The gallery can only be attached once the listing has an id, so the
+    // create happens first and the images follow it. A seller who added no
+    // photos is not held up by an attach with nothing to send.
+    val submit: () -> Unit = {
+        viewModel.submit { productId ->
+            if (readyMediaIds(gallery.images).isEmpty()) {
+                onCreated(productId)
+            } else {
+                images.attach(productId) { onCreated(productId) }
+            }
+        }
+    }
+
+    UsScaffold(topBar = { MSellerPageBar(title = "New product", onBack = onBack) }) { padding ->
         when {
             form.loadingRates -> UsLoadingState(
                 modifier = Modifier.padding(padding),
@@ -73,11 +88,13 @@ fun NewProductScreen(
 
             else -> NewProductForm(
                 form = form,
+                gallery = gallery,
+                images = images,
                 modifier = Modifier
                     .padding(padding)
                     .verticalScroll(rememberScrollState()),
                 onChange = viewModel::update,
-                onSubmit = { viewModel.submit(onCreated) },
+                onSubmit = submit,
             )
         }
     }
@@ -86,6 +103,8 @@ fun NewProductScreen(
 @Composable
 private fun NewProductForm(
     form: NewProductForm,
+    gallery: ProductImagesState,
+    images: ProductImagesViewModel,
     modifier: Modifier = Modifier,
     onChange: ((NewProductForm) -> NewProductForm) -> Unit,
     onSubmit: () -> Unit,
@@ -94,6 +113,16 @@ private fun NewProductForm(
         modifier = modifier.padding(vertical = UsTheme.spacing.m),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
+        // Photos first: it is the part of a listing a seller most wants to
+        // get right, and a product with no picture is one buyers scroll past.
+        ProductImagesSection(
+            state = gallery,
+            onPicked = images::onPicked,
+            onRemove = images::remove,
+            onMove = images::move,
+            onMakeCover = images::makeCover,
+        )
+
         UsTextField(
             value = form.title,
             onValueChange = { v -> onChange { it.copy(title = v) } },
@@ -154,8 +183,11 @@ private fun NewProductForm(
         UsButton(
             text = "List this product",
             onClick = onSubmit,
-            enabled = form.isComplete && !form.saving,
-            loading = form.saving,
+            // Held while a photo is still uploading: listing now would create
+            // the product without exactly the images the seller is watching
+            // finish, and there would be nothing to tell them so.
+            enabled = form.isComplete && !form.saving && !gallery.uploading && !gallery.attaching,
+            loading = form.saving || gallery.attaching,
             modifier = Modifier.fillMaxWidth(),
         )
     }

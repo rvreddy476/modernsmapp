@@ -21,7 +21,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
@@ -97,39 +96,14 @@ fun CommerceImage(
     }
 }
 
-/**
- * Selling price with the MRP struck through when there is a genuine saving.
- *
- * No discount percentage. It would be the only figure on screen the client
- * derived rather than received, and a rounding difference from the server's
- * own number is precisely the disagreement that turns into a support ticket.
- */
-@Composable
-fun PriceRow(
-    price: Paise,
-    mrp: Paise,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = price.formatWithSymbol(),
-            style = MaterialTheme.typography.titleSmall,
-            color = UsTheme.extended.textPrimary,
-        )
-        if (mrp > price) {
-            Text(
-                text = mrp.formatWithSymbol(),
-                style = MaterialTheme.typography.bodySmall,
-                color = UsTheme.extended.textSecondary,
-                textDecoration = TextDecoration.LineThrough,
-            )
-        }
-    }
-}
+// The price line lives in ProductCard.kt as PriceLine, not here.
+//
+// It used to be two components: this one, which deliberately showed no
+// discount percentage because the client would have been deriving it, and a
+// second on the cards that did. The founder asked for the percentage on the
+// cards (2026-09-05), and the server now publishes `discount_pct` — so there
+// is one component again, showing what the server states, and the detail page
+// and the grid cannot print different savings for the same product.
 
 /**
  * The order total, exactly as the server computed it.

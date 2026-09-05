@@ -21,10 +21,10 @@ import com.us.android.core.designsystem.component.UsChoice
 import com.us.android.core.designsystem.component.UsChoiceRow
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.commerce.ui.CommerceNotice
 import com.us.android.feature.commerce.ui.CommerceProgressLine
+import com.us.android.feature.commerce.ui.MSellerPageBar
 
 /**
  * Sending an identity document for review.
@@ -58,7 +58,7 @@ fun DocumentScreen(
         ActivityResultContracts.GetContent(),
     ) { uri -> uri?.let { viewModel.upload(it.toString(), onAttached) } }
 
-    UsScaffold(topBar = { UsTopBar(title = "Identity document", onBack = onBack) }) { padding ->
+    UsScaffold(topBar = { MSellerPageBar(title = "Identity document", onBack = onBack) }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)

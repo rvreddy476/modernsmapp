@@ -26,16 +26,17 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.commerce.model.Variant
+import com.us.android.core.commerce.model.discountPercent
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
-import com.us.android.feature.commerce.ui.PriceRow
+import com.us.android.feature.commerce.ui.MStorePageBar
+import com.us.android.feature.commerce.ui.PriceLine
 import com.us.android.feature.commerce.ui.pressScale
 
 /**
@@ -48,7 +49,7 @@ import com.us.android.feature.commerce.ui.pressScale
 @Composable
 fun ProductScreen(
     onBack: () -> Unit,
-    onOpenCart: () -> Unit,
+    onOpenBag: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ProductViewModel = hiltViewModel(),
 ) {
@@ -56,7 +57,7 @@ fun ProductScreen(
 
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Product", onBack = onBack) },
+        topBar = { MStorePageBar(title = "Product", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         when (val s = state) {
@@ -77,7 +78,7 @@ fun ProductScreen(
                 onSelectVariant = viewModel::selectVariant,
                 onQuantityChange = viewModel::setQuantity,
                 onAddToCart = viewModel::addToCart,
-                onOpenCart = onOpenCart,
+                onOpenBag = onOpenBag,
             )
         }
     }
@@ -91,7 +92,7 @@ private fun ProductContent(
     onSelectVariant: (Variant) -> Unit,
     onQuantityChange: (Int) -> Unit,
     onAddToCart: () -> Unit,
-    onOpenCart: () -> Unit,
+    onOpenBag: () -> Unit,
 ) {
     val product = state.product
     Column(
@@ -125,7 +126,14 @@ private fun ProductContent(
         )
 
         state.selectedVariant?.let { variant ->
-            PriceRow(price = variant.sellingPrice, mrp = variant.mrp)
+            // The same price line the cards draw, so the figure and the
+            // saving a buyer saw in the grid are the ones they see here —
+            // a second price component is where the two drift apart.
+            PriceLine(
+                price = variant.sellingPrice,
+                mrp = variant.mrp,
+                discountPct = discountPercent(variant.sellingPrice, variant.mrp),
+            )
         }
 
         if (product.reviewCount > 0) {
@@ -175,8 +183,8 @@ private fun ProductContent(
 
         if (state.addedToCart) {
             UsSecondaryButton(
-                text = "Go to cart",
-                onClick = onOpenCart,
+                text = "Go to bag",
+                onClick = onOpenBag,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -185,7 +193,7 @@ private fun ProductContent(
             text = when {
                 state.selectedVariant == null -> "Select an option"
                 state.selectedVariant?.inStock == false -> "Out of stock"
-                else -> "Add to cart"
+                else -> "Add to bag"
             },
             onClick = onAddToCart,
             enabled = state.canAddToCart,
@@ -217,7 +225,7 @@ private fun VariantPicker(
                     .clip(RoundedCornerShape(UsTheme.radii.medium))
                     // Selected is WHITE. The accent is the app's primary
                     // action, not its selection mark, and an ember ring here
-                    // competes with the Add to cart button below it.
+                    // competes with the Add to bag button below it.
                     .border(
                         width = if (isSelected) SELECTED_BORDER else UNSELECTED_BORDER,
                         color = if (isSelected) Color.White else UsTheme.extended.borderSubtle,

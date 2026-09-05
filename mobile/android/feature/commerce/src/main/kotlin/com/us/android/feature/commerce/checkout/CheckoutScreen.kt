@@ -30,11 +30,11 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceNotice
 import com.us.android.feature.commerce.ui.CommerceProgressLine
+import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.PriceBreakdownCard
 import com.us.android.feature.commerce.ui.pressScale
 
@@ -64,7 +64,7 @@ fun CheckoutScreen(
     onBack: () -> Unit,
     onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit,
-    onEditCart: () -> Unit,
+    onEditBag: () -> Unit,
     onChangeAddress: () -> Unit,
     onViewOrder: (orderId: String) -> Unit,
     modifier: Modifier = Modifier,
@@ -73,7 +73,7 @@ fun CheckoutScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(addressId) {
-        // C3-LB-2: no subtotal is passed in. The server prices the cart and
+        // C3-LB-2: no subtotal is passed in. The server prices the bag and
         // the screen renders exactly what it returns.
         viewModel.prepare(addressId, addressSummary)
     }
@@ -114,7 +114,7 @@ fun CheckoutScreen(
 
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Checkout", onBack = onBack) },
+        topBar = { MStorePageBar(title = "Checkout", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         Column(
@@ -137,19 +137,19 @@ fun CheckoutScreen(
                 is CheckoutUiState.PriceChanged -> PriceChangedBody(
                     state = s,
                     onAccept = viewModel::acknowledgePriceChange,
-                    onEditCart = onEditCart,
+                    onEditBag = onEditBag,
                 )
 
-                is CheckoutUiState.OutOfStock -> OutOfStockBody(state = s, onEditCart = onEditCart)
+                is CheckoutUiState.OutOfStock -> OutOfStockBody(state = s, onEditBag = onEditBag)
 
                 CheckoutUiState.QuoteStale -> BlockingBody(
                     title = "Let's recalculate delivery",
-                    detail = "Your cart or address changed after we worked out delivery. " +
+                    detail = "Your bag or address changed after we worked out delivery. " +
                         "We'll do it again so you're charged the right amount.",
                     primaryLabel = "Recalculate",
                     onPrimary = viewModel::requoteAfterStaleQuote,
-                    secondaryLabel = "Edit cart",
-                    onSecondary = onEditCart,
+                    secondaryLabel = "Edit bag",
+                    onSecondary = onEditBag,
                 )
 
                 is CheckoutUiState.NotServiceable -> BlockingBody(
@@ -191,8 +191,8 @@ fun CheckoutScreen(
                     detail = "We held your items while you paid, but the hold ran out and " +
                         "they've gone back on sale. If any money was taken, it's " +
                         "refunded automatically. Please start a new order.",
-                    primaryLabel = "Back to cart",
-                    onPrimary = onEditCart,
+                    primaryLabel = "Back to bag",
+                    onPrimary = onEditBag,
                     secondaryLabel = "View order",
                     onSecondary = { onViewOrder(s.orderId) },
                 )
@@ -211,8 +211,8 @@ fun CheckoutScreen(
                 is CheckoutUiState.Failed -> BlockingBody(
                     title = "That didn't work",
                     detail = s.message,
-                    primaryLabel = if (s.retryable) "Try again" else "Back to cart",
-                    onPrimary = if (s.retryable) viewModel::placeOrder else onEditCart,
+                    primaryLabel = if (s.retryable) "Try again" else "Back to bag",
+                    onPrimary = if (s.retryable) viewModel::placeOrder else onEditBag,
                 )
             }
         }
@@ -285,7 +285,7 @@ private fun ReadyBody(
 private fun PriceChangedBody(
     state: CheckoutUiState.PriceChanged,
     onAccept: () -> Unit,
-    onEditCart: () -> Unit,
+    onEditBag: () -> Unit,
 ) {
     SectionTitle("The price changed")
     Text(
@@ -344,8 +344,8 @@ private fun PriceChangedBody(
         modifier = Modifier.fillMaxWidth(),
     )
     UsSecondaryButton(
-        text = "Back to cart",
-        onClick = onEditCart,
+        text = "Back to bag",
+        onClick = onEditBag,
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = UsTheme.spacing.xxl),
@@ -353,7 +353,7 @@ private fun PriceChangedBody(
 }
 
 @Composable
-private fun OutOfStockBody(state: CheckoutUiState.OutOfStock, onEditCart: () -> Unit) {
+private fun OutOfStockBody(state: CheckoutUiState.OutOfStock, onEditBag: () -> Unit) {
     SectionTitle("Some items ran out")
     state.lines.forEach { line ->
         CommerceNotice(
@@ -365,8 +365,8 @@ private fun OutOfStockBody(state: CheckoutUiState.OutOfStock, onEditCart: () -> 
         )
     }
     UsButton(
-        text = "Update cart",
-        onClick = onEditCart,
+        text = "Update bag",
+        onClick = onEditBag,
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = UsTheme.spacing.xxl),

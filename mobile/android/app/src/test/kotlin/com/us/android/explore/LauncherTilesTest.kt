@@ -13,18 +13,35 @@ import org.junit.Test
 class LauncherTilesTest {
 
     @Test
-    fun `all nine tiles, in the founder's order`() {
+    fun `all ten tiles, in the founder's order`() {
         assertThat(launcherTiles().map { it.app }).containsExactly(
             LauncherApp.CHAT,
             LauncherApp.FRIENDS,
             LauncherApp.ALERTS,
             LauncherApp.LIVE,
-            LauncherApp.SHOP,
+            LauncherApp.MSTORE,
+            LauncherApp.MSELLER,
             LauncherApp.MATCH,
             LauncherApp.ASK,
             LauncherApp.FEAST,
             LauncherApp.TUBE,
         ).inOrder()
+    }
+
+    /**
+     * Commerce ships as TWO mini-apps (founder, 2026-09-05), not one tile with
+     * the seller hub hidden behind a buyer header. Both are live: neither says
+     * "Soon", and each has its own name.
+     */
+    @Test
+    fun `commerce is two live tiles, MStore and MSeller`() {
+        val commerce = launcherTiles().filter { it.app.module == AppModule.COMMERCE }
+
+        assertThat(commerce.map { it.app })
+            .containsExactly(LauncherApp.MSTORE, LauncherApp.MSELLER).inOrder()
+        assertThat(commerce.map { it.app.label }).containsExactly("MStore", "MSeller").inOrder()
+        assertThat(commerce.map { it.soon }).containsExactly(false, false)
+        assertThat(AppModule.COMMERCE.hasScreen).isTrue()
     }
 
     @Test
@@ -65,6 +82,7 @@ class LauncherTilesTest {
 
     @Test
     fun `the soon message names the app`() {
-        assertThat(comingSoonMessage(LauncherApp.SHOP)).isEqualTo("Shop is coming soon")
+        assertThat(comingSoonMessage(LauncherApp.MATCH)).isEqualTo("Match is coming soon")
+        assertThat(comingSoonMessage(LauncherApp.MSTORE)).isEqualTo("MStore is coming soon")
     }
 }

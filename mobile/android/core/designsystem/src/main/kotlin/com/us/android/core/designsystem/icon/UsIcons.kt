@@ -500,6 +500,19 @@ object UsIcons {
         "M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12",
     )
 
+    /**
+     * Lucide `credit-card` — how the buyer paid.
+     *
+     * The Payments row in MStore's profile menu, and nothing else: the app
+     * never asks for card details, so this glyph stands for a record of
+     * payments, never for an input.
+     */
+    val CreditCard: ImageVector = lucideStroked(
+        "CreditCard",
+        "M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z",
+        "M2 10h20",
+    )
+
     /** Lucide `package` — an order: something boxed and on its way. */
     val Package: ImageVector = lucideStroked(
         "Package",

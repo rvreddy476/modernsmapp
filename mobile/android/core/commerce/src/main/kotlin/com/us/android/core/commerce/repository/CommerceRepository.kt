@@ -1,9 +1,13 @@
 package com.us.android.core.commerce.repository
 
 import com.us.android.core.commerce.model.Address
+import com.us.android.core.commerce.model.BannerTarget
 import com.us.android.core.commerce.model.Cart
 import com.us.android.core.commerce.model.CartLine
+import com.us.android.core.commerce.model.Category
 import com.us.android.core.commerce.model.DeliveryQuote
+import com.us.android.core.commerce.model.HomeBanner
+import com.us.android.core.commerce.model.HomeSection
 import com.us.android.core.commerce.model.NewProduct
 import com.us.android.core.commerce.model.Order
 import com.us.android.core.commerce.model.OrderLine
@@ -14,6 +18,7 @@ import com.us.android.core.commerce.model.PaymentStatus
 import com.us.android.core.commerce.model.PayoutAccount
 import com.us.android.core.commerce.model.PriceBreakdown
 import com.us.android.core.commerce.model.Product
+import com.us.android.core.commerce.model.ProductImage
 import com.us.android.core.commerce.model.ProductPage
 import com.us.android.core.commerce.model.ProductSummary
 import com.us.android.core.commerce.model.SellerAddress
@@ -26,12 +31,16 @@ import com.us.android.core.commerce.model.SellerStatus
 import com.us.android.core.commerce.model.SellerVariant
 import com.us.android.core.commerce.model.StockLevel
 import com.us.android.core.commerce.model.StockReason
+import com.us.android.core.commerce.model.StoreHome
 import com.us.android.core.commerce.model.TaxClass
 import com.us.android.core.commerce.model.Variant
 import com.us.android.core.commerce.model.VariantOption
+import com.us.android.core.commerce.model.discountPercent
 import com.us.android.core.commerce.network.AddToCartRequest
 import com.us.android.core.commerce.network.AddressDto
 import com.us.android.core.commerce.network.AdjustStockRequest
+import com.us.android.core.commerce.network.AttachOneProductMediaRequest
+import com.us.android.core.commerce.network.AttachProductMediaRequest
 import com.us.android.core.commerce.network.CancelOrderRequest
 import com.us.android.core.commerce.network.CartDto
 import com.us.android.core.commerce.network.CheckoutRequest
@@ -41,6 +50,9 @@ import com.us.android.core.commerce.network.CreateVariantRequest
 import com.us.android.core.commerce.network.DocumentInput
 import com.us.android.core.commerce.network.OrderDto
 import com.us.android.core.commerce.network.PayoutRequest
+import com.us.android.core.commerce.network.ProductMediaDto
+import com.us.android.core.commerce.network.ProductMediaListDto
+import com.us.android.core.commerce.network.ProductSummaryDto
 import com.us.android.core.commerce.network.QuoteRequest
 import com.us.android.core.commerce.network.SaveDocumentsRequest
 import com.us.android.core.commerce.network.SellerAddressRequest
@@ -102,28 +114,128 @@ class CommerceRepository @Inject constructor(
         categoryId: String? = null,
         cursor: String? = null,
         limit: Int = PAGE_SIZE,
+        sort: String? = null,
     ): CommerceResult<ProductPage> =
-        call { api.listProducts(query?.takeIf { it.isNotBlank() }, categoryId, cursor, limit) }
-            .map { dto ->
-                ProductPage(
-                    items = dto.items.map { p ->
-                        ProductSummary(
-                            id = p.id,
-                            title = p.title,
-                            brandName = p.brandName,
-                            primaryImageMediaId = p.primaryImageMediaId,
-                            imageUrl = p.imageUrl,
-                            thumbnailUrl = p.thumbnailUrl,
-                            fromPrice = p.minPriceMinor,
-                            mrp = p.mrpMinor,
-                            avgRating = p.avgRating,
-                            reviewCount = p.reviewCount,
-                            inStock = p.inStock,
-                        )
-                    },
-                    nextCursor = dto.nextCursor?.takeIf { it.isNotBlank() },
+        call {
+            api.listProducts(
+                query = query?.takeIf { it.isNotBlank() },
+                categoryId = categoryId?.takeIf { it.isNotBlank() },
+                cursor = cursor,
+                limit = limit,
+                sort = sort?.takeIf { it.isNotBlank() },
+            )
+        }.map { dto ->
+            ProductPage(
+                items = dto.items.map(::toSummary),
+                nextCursor = dto.nextCursor?.takeIf { it.isNotBlank() },
+            )
+        }
+
+    /**
+     * The taxonomy.
+     *
+     * Only the active nodes reach the app: an inactive category still has
+     * products behind it and putting it on the strip is an invitation into a
+     * list the server will not fill.
+     */
+    suspend fun categories(): CommerceResult<List<Category>> =
+        call { api.categories() }.map { list ->
+            list.map { c ->
+                Category(
+                    id = c.id,
+                    name = c.name,
+                    slug = c.slug,
+                    parentId = c.parentId,
+                    imageUrl = c.imageUrl,
+                    featured = c.isFeatured,
                 )
             }
+        }
+
+    /**
+     * The landing page.
+     *
+     * A 404 is [CommerceError.NotAvailable], which MStore reads as
+     * [StoreHome.EMPTY] rather than as a failure: the shop still works from
+     * the taxonomy and the paged grid, and the shelves simply are not there.
+     */
+    suspend fun storeHome(): CommerceResult<StoreHome> =
+        call { api.home() }.map { dto ->
+            StoreHome(
+                banners = dto.banners.map { b ->
+                    HomeBanner(
+                        id = b.id,
+                        title = b.title,
+                        subtitle = b.subtitle?.takeIf { it.isNotBlank() },
+                        imageUrl = b.imageUrl?.takeIf { it.isNotBlank() },
+                        target = BannerTarget.from(b.targetType, b.targetId),
+                    )
+                },
+                sections = dto.sections.map { s ->
+                    HomeSection(
+                        key = s.key,
+                        title = s.title,
+                        products = s.products.map(::toSummary),
+                    )
+                },
+            )
+        }
+
+    // ─── Favourites ──────────────────────────────────────────────────
+    //
+    // Server-owned, like the cart. There is no local set: a heart that is on
+    // in this process and off in the next one is worse than no heart at all,
+    // and the same person's phone and web session must agree.
+
+    suspend fun favourites(): CommerceResult<List<ProductSummary>> =
+        call { api.favourites() }.map { dto -> dto.items.map(::toSummary) }
+
+    suspend fun addFavourite(productId: String): CommerceResult<Unit> =
+        call { api.addFavourite(productId) }.map { }
+
+    suspend fun removeFavourite(productId: String): CommerceResult<Unit> =
+        call { api.removeFavourite(productId) }.map { }
+
+    // ─── Product images ──────────────────────────────────────────────
+
+    suspend fun productImages(productId: String): CommerceResult<List<ProductImage>> =
+        call { api.productMedia(productId) }.map { dto -> dto.media.map(::toImage) }
+
+    /**
+     * Replaces a product's gallery, cover first.
+     *
+     * The order of [mediaIds] is the gallery order. Tries the batch shape
+     * first and, if this server predates it, replays the same list one asset
+     * at a time with an explicit `sort_order` — so the seller's ordering
+     * survives either server, and the caller never has to know which it met.
+     */
+    suspend fun attachProductImages(
+        productId: String,
+        mediaIds: List<String>,
+    ): CommerceResult<List<ProductImage>> {
+        if (mediaIds.isEmpty()) return CommerceResult.Success(emptyList())
+
+        val batch = call { api.attachProductMedia(productId, AttachProductMediaRequest(mediaIds)) }
+        if (batch is CommerceResult.Success) {
+            return CommerceResult.Success(batch.value.media.map(::toImage))
+        }
+        if (!(batch as CommerceResult.Failure).error.isUnknownShape()) return batch
+
+        var last: CommerceResult<ProductMediaListDto>? = null
+        mediaIds.forEachIndexed { index, mediaId ->
+            last = call {
+                api.attachOneProductMedia(
+                    productId,
+                    AttachOneProductMediaRequest(mediaId = mediaId, sortOrder = index),
+                )
+            }
+            if (last is CommerceResult.Failure) return last as CommerceResult.Failure
+        }
+        return when (val result = last) {
+            is CommerceResult.Success -> CommerceResult.Success(result.value.media.map(::toImage))
+            else -> batch
+        }
+    }
 
     suspend fun product(productId: String): CommerceResult<Product> =
         call { api.getProduct(productId) }.map { dto ->
@@ -610,6 +722,37 @@ class CommerceRepository @Inject constructor(
                 ),
             )
         }.map { }
+
+    /**
+     * A catalogue row.
+     *
+     * `discount_pct` is taken from the server when it sends one, so the two
+     * can never print different numbers; [discountPercent] fills in only for
+     * a server that does not publish it yet.
+     */
+    private fun toSummary(p: ProductSummaryDto) = ProductSummary(
+        id = p.id,
+        title = p.title,
+        brandName = p.brandName,
+        primaryImageMediaId = p.primaryImageMediaId,
+        imageUrl = p.imageUrl,
+        thumbnailUrl = p.thumbnailUrl,
+        fromPrice = p.minPriceMinor,
+        mrp = p.mrpMinor,
+        avgRating = p.avgRating,
+        reviewCount = p.reviewCount,
+        inStock = p.inStock,
+        discountPct = p.discountPct?.takeIf { it > 0 }
+            ?: discountPercent(p.minPriceMinor, p.mrpMinor),
+        favourite = p.isFavourite,
+    )
+
+    private fun toImage(dto: ProductMediaDto) = ProductImage(
+        mediaId = dto.mediaId,
+        url = dto.thumbnailUrl ?: dto.imageUrl,
+        sortOrder = dto.sortOrder,
+    )
+
     private fun toStock(dto: StockDto) = StockLevel(
         variantId = dto.variantId,
         total = dto.totalQty,
@@ -650,7 +793,15 @@ class CommerceRepository @Inject constructor(
                     // states built on it, were unreachable.
                     val raw = response.errorBody()?.string()
                     val err = parseError(raw)
-                    CommerceResult.Failure(mapError(err?.first, err?.second, raw))
+                    // A 404 with no code in the body is a route this server
+                    // does not have, not a fault. Said as its own error so an
+                    // additive surface can hide rather than shout — see
+                    // CommerceError.NotAvailable.
+                    if (err?.first.isNullOrBlank() && response.code() == HTTP_NOT_FOUND) {
+                        CommerceResult.Failure(CommerceError.NotAvailable)
+                    } else {
+                        CommerceResult.Failure(mapError(err?.first, err?.second, raw))
+                    }
                 }
             }
         } catch (t: Throwable) {
@@ -806,6 +957,23 @@ class CommerceRepository @Inject constructor(
 
 /** Default catalogue page size. Matches the server's own default. */
 const val PAGE_SIZE = 20
+
+/** A route this server does not have. See CommerceError.NotAvailable. */
+private const val HTTP_NOT_FOUND = 404
+
+/**
+ * Whether a failure says "this server did not understand that request body",
+ * which is the one condition the gallery attach retries in the older shape.
+ *
+ * Deliberately narrow. A network failure or a permission refusal must NOT
+ * cause a second, differently-shaped attempt — replaying a write because the
+ * connection dropped is how one action becomes two.
+ */
+private fun CommerceError.isUnknownShape(): Boolean =
+    this is CommerceError.NotAvailable ||
+        (this is CommerceError.Unexpected && code in UNKNOWN_SHAPE_CODES)
+
+private val UNKNOWN_SHAPE_CODES = setOf("INVALID_BODY", "ADD_MEDIA_FAILED")
 
 /** The result of a successful checkout. */
 data class CheckoutOutcome(

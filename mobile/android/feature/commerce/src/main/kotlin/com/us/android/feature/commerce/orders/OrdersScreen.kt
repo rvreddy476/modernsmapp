@@ -34,7 +34,6 @@ import com.us.android.core.commerce.model.PaymentStatus
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -42,6 +41,7 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.address.summary
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.PriceBreakdownCard
 import com.us.android.feature.commerce.ui.pressScale
 
@@ -81,6 +81,18 @@ fun PaymentStatus.label(): String = when (this) {
     PaymentStatus.UNKNOWN -> "Updating"
 }
 
+/**
+ * What an empty order list says.
+ *
+ * Deliberately different per scope: someone with a parcel in transit HAS
+ * orders and just has no history, and telling them "no orders yet" on the
+ * purchase-history page would be plainly wrong.
+ */
+internal fun emptyOrdersDetail(scope: OrderScope): String = when (scope) {
+    OrderScope.ALL -> "Orders you place will appear here."
+    OrderScope.PAST -> "Orders that have been delivered, cancelled or refunded will appear here."
+}
+
 @Composable
 fun OrdersScreen(
     onBack: () -> Unit,
@@ -93,7 +105,7 @@ fun OrdersScreen(
 
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Your orders", onBack = onBack) },
+        topBar = { MStorePageBar(title = viewModel.scope.title, onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         when (val s = state) {
@@ -109,8 +121,11 @@ fun OrdersScreen(
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 UsEmptyState(
-                    title = "No orders yet",
-                    detail = "Orders you place will appear here.",
+                    title = when (viewModel.scope) {
+                        OrderScope.ALL -> "No orders yet"
+                        OrderScope.PAST -> "Nothing here yet"
+                    },
+                    detail = emptyOrdersDetail(viewModel.scope),
                 )
                 UsSecondaryButton(
                     text = "Start shopping",
@@ -202,7 +217,7 @@ fun OrderDetailScreen(
 
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Order", onBack = onBack) },
+        topBar = { MStorePageBar(title = "Order", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         when (val s = state) {

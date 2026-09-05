@@ -29,14 +29,14 @@ fun CommerceError.describe(): String = when (this) {
         if (lines.size == 1) {
             "${lines.first().title} is out of stock."
         } else {
-            "${lines.size} items in your cart are out of stock."
+            "${lines.size} items in your bag are out of stock."
         }
 
     is CommerceError.PriceChanged ->
         "The price changed while you were shopping. Please review the new total."
 
     CommerceError.QuoteStale ->
-        "Your cart or address changed after we calculated delivery. We'll work it out again."
+        "Your bag or address changed after we calculated delivery. We'll work it out again."
 
     CommerceError.QuoteExpired ->
         "The delivery estimate expired. We'll calculate it again."
@@ -49,16 +49,16 @@ fun CommerceError.describe(): String = when (this) {
         "Something changed since you started. We'll begin a fresh attempt so nothing is ordered twice."
 
     CommerceError.ProductUnavailable ->
-        "An item in your cart is no longer available."
+        "An item in your bag is no longer available."
 
     CommerceError.MultipleSellers ->
-        "Your cart has items from more than one seller. Please order from one seller at a time."
+        "Your bag has items from more than one seller. Please order from one seller at a time."
 
     CommerceError.CouponUnavailable ->
         "That coupon can't be used on this order."
 
     CommerceError.CartEmpty ->
-        "Your cart is empty."
+        "Your bag is empty."
 
     CommerceError.CodNotSupported ->
         "Cash on delivery isn't available. Please pay by UPI or card."
@@ -71,6 +71,12 @@ fun CommerceError.describe(): String = when (this) {
 
     CommerceError.TryAgain ->
         "That didn't go through. Please try again."
+
+    // Only reached when a surface chose to RENDER this rather than hide
+    // itself, which is the whole point of the case existing — the sections
+    // that can degrade never get this far.
+    CommerceError.NotAvailable ->
+        "That isn't available in this version yet."
 
     is CommerceError.Network ->
         "We couldn't reach the network. Check your connection and try again."

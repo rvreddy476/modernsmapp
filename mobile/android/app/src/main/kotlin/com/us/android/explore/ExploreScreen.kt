@@ -358,14 +358,22 @@ private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
 
 // ── Per-app presentation ────────────────────────────────────────────────
 
-/** Lucide: message-circle, users, bell, radio, shopping-bag, heart-handshake, circle-help, utensils, tv. */
+/**
+ * Lucide: message-circle, users, bell, radio, shopping-bag, store,
+ * heart-handshake, circle-help, utensils, tv.
+ *
+ * MStore wears the BAG and MSeller the STOREFRONT (founder, 2026-09-05), so
+ * the two commerce tiles are told apart at a glance by what they are for —
+ * one is what you carry, the other is what you keep.
+ */
 private val LauncherApp.icon: ImageVector
     get() = when (this) {
         LauncherApp.CHAT -> UsIcons.Comment
         LauncherApp.FRIENDS -> UsIcons.Friends
         LauncherApp.ALERTS -> UsIcons.Notifications
         LauncherApp.LIVE -> UsIcons.Radio
-        LauncherApp.SHOP -> UsIcons.ShoppingBag
+        LauncherApp.MSTORE -> UsIcons.ShoppingBag
+        LauncherApp.MSELLER -> UsIcons.Store
         LauncherApp.MATCH -> UsIcons.HeartHandshake
         LauncherApp.ASK -> UsIcons.CircleHelp
         LauncherApp.FEAST -> UsIcons.Utensils

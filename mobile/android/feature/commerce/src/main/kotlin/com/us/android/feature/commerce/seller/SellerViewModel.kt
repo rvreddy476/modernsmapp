@@ -314,6 +314,14 @@ class SubmitProductViewModel @Inject constructor(
  */
 data class SellerHubActions(
     val openStock: (variantId: String, title: String) -> Unit,
+    /**
+     * A listing's photos.
+     *
+     * The thing MSeller had no way to do: a product could be created, priced
+     * and stocked and never given a picture, so every listing reached buyers
+     * as a grey box.
+     */
+    val openImages: (productId: String, title: String) -> Unit,
     val openPickupAddress: () -> Unit,
     val listProduct: () -> Unit,
     val submitShop: () -> Unit,

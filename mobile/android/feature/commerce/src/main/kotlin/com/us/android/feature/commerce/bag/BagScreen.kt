@@ -1,4 +1,4 @@
-package com.us.android.feature.commerce.cart
+package com.us.android.feature.commerce.bag
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -27,13 +27,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.commerce.model.CartLine
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MStorePageBar
 import com.us.android.feature.commerce.ui.pressScale
 
 /**
@@ -46,45 +46,45 @@ import com.us.android.feature.commerce.ui.pressScale
  * screen is not something to resolve silently, however small the delta.
  */
 @Composable
-fun CartScreen(
+fun BagScreen(
     onBack: () -> Unit,
     onOpenProduct: (productId: String) -> Unit,
     onCheckout: () -> Unit,
     onContinueShopping: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: CartViewModel = hiltViewModel(),
+    viewModel: BagViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Cart", onBack = onBack) },
+        topBar = { MStorePageBar(title = "Bag", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         when (val s = state) {
-            CartUiState.Loading -> UsLoadingState(
+            BagUiState.Loading -> UsLoadingState(
                 modifier = Modifier.padding(padding),
-                label = "Loading cart",
+                label = "Loading bag",
             )
 
-            CartUiState.Empty -> Column(
+            BagUiState.Empty -> Column(
                 modifier = Modifier
                     .padding(padding)
                     .fillMaxWidth(),
             ) {
                 UsEmptyState(
-                    title = "Your cart is empty",
+                    title = "Your bag is empty",
                     detail = "Items you add will appear here.",
                 )
             }
 
-            is CartUiState.Failed -> UsErrorState(
+            is BagUiState.Failed -> UsErrorState(
                 message = s.message,
                 modifier = Modifier.padding(padding),
                 onRetry = viewModel::refresh.takeIf { s.retryable },
             )
 
-            is CartUiState.Content -> CartContent(
+            is BagUiState.Content -> CartContent(
                 state = s,
                 modifier = Modifier.padding(padding),
                 onOpenProduct = onOpenProduct,
@@ -99,7 +99,7 @@ fun CartScreen(
 
 @Composable
 private fun CartContent(
-    state: CartUiState.Content,
+    state: BagUiState.Content,
     modifier: Modifier,
     onOpenProduct: (String) -> Unit,
     onQuantityChange: (String, Int) -> Unit,
@@ -116,7 +116,7 @@ private fun CartContent(
             ),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
-            state.cart.sellerName?.takeIf { it.isNotBlank() }?.let { seller ->
+            state.bag.sellerName?.takeIf { it.isNotBlank() }?.let { seller ->
                 item {
                     Text(
                         text = "Sold by $seller",
@@ -145,8 +145,8 @@ private fun CartContent(
                 item { CommerceNotice(text = message) }
             }
 
-            items(state.cart.items, key = { it.variantId }) { line ->
-                CartRow(
+            items(state.bag.items, key = { it.variantId }) { line ->
+                BagRow(
                     line = line,
                     busy = line.variantId in state.busyVariantIds,
                     onOpen = { onOpenProduct(line.productId) },
@@ -156,7 +156,7 @@ private fun CartContent(
             }
         }
 
-        CartFooter(
+        BagFooter(
             state = state,
             onCheckout = onCheckout,
             onContinueShopping = onContinueShopping,
@@ -166,7 +166,7 @@ private fun CartContent(
 
 @Composable
 @Suppress("LongMethod")
-private fun CartRow(
+private fun BagRow(
     line: CartLine,
     busy: Boolean,
     onOpen: () -> Unit,
@@ -293,14 +293,14 @@ private fun QtyChip(
 /**
  * Subtotal and the checkout button.
  *
- * The subtotal shown here is the server's cart subtotal. Delivery and GST are
+ * The subtotal shown here is the server's bag subtotal. Delivery and GST are
  * deliberately absent: they are not known until the address is chosen and the
  * server prices the order, and showing a placeholder total that later changes
  * is exactly the surprise the price-change guard exists to prevent.
  */
 @Composable
-private fun CartFooter(
-    state: CartUiState.Content,
+private fun BagFooter(
+    state: BagUiState.Content,
     onCheckout: () -> Unit,
     onContinueShopping: () -> Unit,
 ) {
@@ -321,7 +321,7 @@ private fun CartFooter(
                 color = UsTheme.extended.textSecondary,
             )
             Text(
-                text = state.cart.subtotal.formatWithSymbol(),
+                text = state.bag.subtotal.formatWithSymbol(),
                 style = MaterialTheme.typography.titleMedium,
                 color = UsTheme.extended.textPrimary,
             )

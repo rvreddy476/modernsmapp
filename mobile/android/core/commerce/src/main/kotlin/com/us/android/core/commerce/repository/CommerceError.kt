@@ -82,6 +82,18 @@ sealed interface CommerceError {
     /** Transient contention. Safe to retry as-is. */
     data object TryAgain : CommerceError
 
+    /**
+     * The server does not have this endpoint: a 404 carrying no error code.
+     *
+     * Its own case rather than [Unexpected] because it is not a fault. The
+     * app ships ahead of the services it talks to, and a surface built on an
+     * additive endpoint — MStore's `/home`, favourites — must be able to tell
+     * "this server is older than this build" from "something went wrong" and
+     * hide itself instead of showing the customer an error for a section
+     * they never asked for.
+     */
+    data object NotAvailable : CommerceError
+
     data class Network(val cause: Throwable?) : CommerceError
 
     /** Anything unmapped. Renders as a generic failure. */

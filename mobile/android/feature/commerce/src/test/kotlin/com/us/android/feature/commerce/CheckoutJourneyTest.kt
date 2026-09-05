@@ -94,7 +94,7 @@ class CheckoutJourneyTest {
      * The quote body is the thing that matters: a REAL server states all five
      * figures, and the old client ignored them because they did not exist.
      */
-    private class FakeApi : CommerceApi {
+    private class FakeApi : FakeCommerceApi() {
         var quoteBody = QuoteDto(
             quoteId = "quote-1",
             subtotalMinor = Paise(200000),
@@ -149,6 +149,7 @@ class CheckoutJourneyTest {
             categoryId: String?,
             cursor: String?,
             limit: Int,
+            sort: String?,
         ): Response<ApiEnvelope<ProductListDto>> = notUsed()
         override suspend fun getProduct(productId: String): Response<ApiEnvelope<ProductDetailDto>> = notUsed()
         override suspend fun getCart(): Response<ApiEnvelope<CartDto>> = notUsed()
@@ -541,7 +542,7 @@ class CheckoutJourneyTest {
 @OptIn(ExperimentalCoroutinesApi::class)
 class ServerErrorCodeTest {
 
-    private class ErrorApi(private val status: Int, private val body: String) : CommerceApi {
+    private class ErrorApi(private val status: Int, private val body: String) : FakeCommerceApi() {
         override suspend fun quote(body: QuoteRequest): Response<ApiEnvelope<QuoteDto>> =
             Response.error(status, this.body.toResponseBody("application/json".toMediaType()))
 
@@ -556,6 +557,7 @@ class ServerErrorCodeTest {
             categoryId: String?,
             cursor: String?,
             limit: Int,
+            sort: String?,
         ): Response<ApiEnvelope<ProductListDto>> = notUsed()
         override suspend fun getProduct(productId: String): Response<ApiEnvelope<ProductDetailDto>> = notUsed()
         override suspend fun getCart(): Response<ApiEnvelope<CartDto>> = notUsed()

@@ -21,9 +21,9 @@ import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
-import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.commerce.ui.CommerceNotice
+import com.us.android.feature.commerce.ui.MSellerPageBar
 import com.us.android.feature.commerce.ui.describe
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -100,7 +100,7 @@ fun StartSellingScreen(
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
 
-    UsScaffold(topBar = { UsTopBar(title = "Start selling", onBack = onBack) }) { padding ->
+    UsScaffold(topBar = { MSellerPageBar(title = "Start selling", onBack = onBack) }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)

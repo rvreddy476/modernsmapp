@@ -91,8 +91,10 @@ import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.chat.navigation.navigateToInvitations
 import com.us.android.feature.chat.navigation.navigateToJoinByLink
 import com.us.android.feature.chat.ui.home.ChatHomeDestinations
-import com.us.android.feature.commerce.navigation.commerceScreens
-import com.us.android.feature.commerce.navigation.navigateToCommerce
+import com.us.android.feature.commerce.navigation.mSellerScreens
+import com.us.android.feature.commerce.navigation.mStoreScreens
+import com.us.android.feature.commerce.navigation.navigateToMSeller
+import com.us.android.feature.commerce.navigation.navigateToMStore
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
@@ -600,11 +602,19 @@ private fun NavGraphBuilder.tabDestinations(
     // client session to the PSP SDK, and publishes the outcome onto
     // PaymentHandoff. The checkout screen collects that and polls — because a
     // sheet closing is evidence, never proof.
-    commerceScreens(
+    // Two graphs, not one (founder, 2026-09-05): MStore is the buyer app and
+    // MSeller the seller app, each with its own back stack, so Back inside one
+    // never surfaces halfway up the other. `:app` resolves the two edges
+    // neither graph may know: Settings, which lives in `:feature:profile`, and
+    // the switch from MStore's profile menu into MSeller.
+    mStoreScreens(
         navController = navController,
         onOpenPaymentSheet = onOpenPaymentSheet,
         onAbandonPaymentSheet = onAbandonPaymentSheet,
+        onOpenSettings = { navController.navigateToSettings() },
+        onOpenSeller = { navController.navigateToMSeller() },
     )
+    mSellerScreens(navController = navController)
 
     // The classic composer route stays registered for any older entry point;
     // the hub's Text tab embeds the same screen.
@@ -862,9 +872,11 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.ALERTS -> navController.navigateToNotifications()
                     LauncherApp.LIVE -> navController.navigateToLiveHub()
                     LauncherApp.TUBE -> navController.navigateToTube()
-                    // Shop opens the catalogue; Orders and the seller hub
-                    // hang off its top bar, so one tile is the whole way in.
-                    LauncherApp.SHOP -> navController.navigateToCommerce()
+                    // Two commerce tiles, two graphs: MStore is the buyer app
+                    // and MSeller the seller app. Neither hides behind the
+                    // other's header any more, and one person can open both.
+                    LauncherApp.MSTORE -> navController.navigateToMStore()
+                    LauncherApp.MSELLER -> navController.navigateToMSeller()
                     LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST -> Unit
                 }
             },
