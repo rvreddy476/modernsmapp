@@ -1325,6 +1325,13 @@ services:
     environment:
       <<: *kafka_client_env
       HTTP_PORT: "8102"
+      # Which services may call /v1/payments/internal, and with which
+      # public key and operations (Commerce P0 A2). Values in .env.
+      SERVICE_CALLERS: ${SERVICE_CALLERS:-}
+      SERVICE_CALLER_COMMERCE_SERVICE_KID: ${SERVICE_CALLER_COMMERCE_SERVICE_KID:-c1}
+      SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY: ${SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY:-}
+      SERVICE_CALLER_COMMERCE_SERVICE_OPS: ${SERVICE_CALLER_COMMERCE_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
+      SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: ${SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES:-order}
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
       # Razorpay credentials — omit to use StubGateway in dev.
@@ -1410,6 +1417,15 @@ services:
       # was declared here against identity-auth.
       AUTH_SERVICE_URL: http://identity-auth:8081
       PAYMENTS_SERVICE_URL: http://payments-service:8102
+      # Commerce speaks to payments with its own signed identity, not the
+      # shared internal key (Commerce P0 A2). Key material lives in .env.
+      COMMERCE_SERVICE_TOKEN_KEY: ${COMMERCE_SERVICE_TOKEN_KEY:-}
+      COMMERCE_SERVICE_TOKEN_KID: ${COMMERCE_SERVICE_TOKEN_KID:-c1}
+      # Address PII: KMS in prod/staging, static dev keys locally.
+      ENV: ${ENV:-dev}
+      COMMERCE_PII_LOOKUP_SALT: ${COMMERCE_PII_LOOKUP_SALT:-}
+      COMMERCE_PII_DEV_KEY_PROFILE: ${COMMERCE_PII_DEV_KEY_PROFILE:-}
+      COMMERCE_PII_DEV_KEY_SNAPSHOT: ${COMMERCE_PII_DEV_KEY_SNAPSHOT:-}
       MONETIZATION_SERVICE_URL: http://monetization-service:8099
       # Stub gateway opt-in for POST /orders/:id/payment/confirm with
       # gateway=stub. Mirrors payments-service's flag; prod leaves both unset.
