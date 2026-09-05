@@ -2,7 +2,7 @@ package com.us.android.navigation
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.profile.data.AppModule
-import com.us.android.feature.chat.navigation.ChatInboxRoute
+import com.us.android.feature.chat.navigation.ChatHomeRoute
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.ReelsRoute
@@ -31,7 +31,7 @@ class TopLevelDestinationTest {
     @Test
     fun `the root routes are the feature objects`() {
         assertThat(TopLevelDestination.HOME.rootRoute).isEqualTo(FeedRoute)
-        assertThat(TopLevelDestination.MESSAGES.rootRoute).isEqualTo(ChatInboxRoute)
+        assertThat(TopLevelDestination.MESSAGES.rootRoute).isEqualTo(ChatHomeRoute)
         assertThat(TopLevelDestination.REELS.rootRoute).isEqualTo(ReelsRoute)
         assertThat(TopLevelDestination.FRIENDS.rootRoute).isEqualTo(FriendsFeedRoute)
         assertThat(TopLevelDestination.EXPLORE.rootRoute).isEqualTo(ExploreRoute)

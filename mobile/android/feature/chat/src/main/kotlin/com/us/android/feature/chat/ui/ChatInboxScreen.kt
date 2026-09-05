@@ -335,7 +335,7 @@ private fun SegmentTab(
 }
 
 @Composable
-private fun OfflineBanner(onRetry: () -> Unit) {
+internal fun OfflineBanner(onRetry: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -468,7 +468,7 @@ private fun SearchPill(query: String, onQueryChange: (String) -> Unit) {
 
 /** ONLINE NOW (98:36): green-ringed avatars of people online right now. */
 @Composable
-private fun OnlineNowRail(
+internal fun OnlineNowRail(
     online: List<Conversation>,
     viewerId: String,
     onOpen: (String, String, Boolean) -> Unit,
@@ -575,7 +575,7 @@ private fun InvitesTab(
 }
 
 @Composable
-private fun InvitationRow(
+internal fun InvitationRow(
     busy: Boolean,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
@@ -619,7 +619,7 @@ private fun InvitationRow(
 
 @Composable
 @Suppress("LongMethod")
-private fun ConversationRow(
+internal fun ConversationRow(
     conversation: Conversation,
     title: String,
     viewerId: String,

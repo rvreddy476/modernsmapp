@@ -47,6 +47,10 @@ dependencies {
     // Member-picker name resolution for group creation.
     implementation(projects.core.profile)
     implementation(projects.core.model)
+    // Suggestions (2026-09-05): the Follow button writes through the same
+    // FollowGraph the feed and reels use, so an edge made here is already
+    // applied when the same person scrolls past on Home.
+    implementation(projects.core.feed)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)

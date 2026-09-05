@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         offerPushDestination(intent)
+        pushDestinations.offerLink(intent?.data)
 
         setContent {
             UsTheme {
@@ -69,6 +70,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         offerPushDestination(intent)
+        // An App Link (atpost.app/chat/join/…) arriving on the live activity.
+        pushDestinations.offerLink(intent.data)
     }
 
     /**

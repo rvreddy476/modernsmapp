@@ -172,6 +172,15 @@ class ChatStore @Inject constructor(
     /** True after a socket drop until the next successful [syncInbox]. */
     val reconnectPending: StateFlow<Boolean> = _reconnectPending.asStateFlow()
 
+    private val _groupAvatarUrls = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Conversation id → the SIGNED group avatar URL from the latest sync.
+     * In memory only: the URL lives five minutes, so a cached copy would be
+     * a broken image after the next cold start. Re-synced on every refresh.
+     */
+    val groupAvatarUrls: StateFlow<Map<String, String>> = _groupAvatarUrls.asStateFlow()
+
     // ── Inbox ───────────────────────────────────────────────────────────
     //
     // DOMAIN types out, entities in: the Room schema stays private to the
@@ -205,6 +214,9 @@ class ChatStore @Inject constructor(
                 dao.upsertConversations(conversations.data.map { it.toEntity(isRequestList = false, now) })
             }
             ok = written != null
+            _groupAvatarUrls.value = conversations.data
+                .mapNotNull { row -> row.avatarUrl?.takeIf { it.isNotBlank() }?.let { row.id to it } }
+                .toMap()
         }
         if (requests is com.us.android.core.common.result.AppResult.Success) {
             guardedWrite(generation) {
@@ -523,7 +535,7 @@ class ChatStore @Inject constructor(
             isRequest = isRequestList || isRequest,
             membersJson = json.encodeToString(
                 ListSerializer(CachedMember.serializer()),
-                members.map { CachedMember(it.userId, it.role, it.displayName) },
+                members.map { CachedMember(it.userId, it.role, it.displayName, it.avatarMediaId) },
             ),
             updatedAt = updatedAt,
             avatarMediaId = avatarMediaId,
@@ -543,7 +555,7 @@ class ChatStore @Inject constructor(
         isRequest = isRequest,
         members = runCatching {
             json.decodeFromString(ListSerializer(CachedMember.serializer()), membersJson)
-                .map { ConversationMember(it.userId, it.role, it.displayName) }
+                .map { ConversationMember(it.userId, it.role, it.displayName, it.avatarMediaId) }
         }.getOrDefault(emptyList()),
         updatedAt = updatedAt,
         avatarMediaId = avatarMediaId,
@@ -593,6 +605,7 @@ internal data class CachedMember(
     val userId: String,
     val role: String,
     val displayName: String,
+    val avatarMediaId: String? = null,
 )
 
 /**

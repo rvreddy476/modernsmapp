@@ -4,7 +4,6 @@
 
 package com.us.android.feature.chat.navigation
 
-import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
@@ -15,9 +14,27 @@ import com.us.android.feature.chat.ui.ChatRequestScreen
 import com.us.android.feature.chat.ui.ChatThreadScreen
 import com.us.android.feature.chat.ui.GroupCreateScreen
 import com.us.android.feature.chat.ui.GroupInfoScreen
+import com.us.android.feature.chat.ui.InvitationsScreen
+import com.us.android.feature.chat.ui.RequestsListScreen
+import com.us.android.feature.chat.ui.community.CommunityAdminsScreen
+import com.us.android.feature.chat.ui.community.CommunityCreateScreen
+import com.us.android.feature.chat.ui.community.CommunityPageDestinations
+import com.us.android.feature.chat.ui.community.CommunityPageScreen
+import com.us.android.feature.chat.ui.community.CommunityPostScreen
+import com.us.android.feature.chat.ui.group.GroupAddMembersScreen
+import com.us.android.feature.chat.ui.group.JoinByLinkScreen
+import com.us.android.feature.chat.ui.home.ChatHomeDestinations
+import com.us.android.feature.chat.ui.home.ChatHomeScreen
 import kotlinx.serialization.Serializable
 
-/** The list of conversations. Pushed from the feed's Messages control. */
+/**
+ * The one chat screen — Chats | Groups | Communities | Suggestions — the
+ * Messages top-level root since 2026-09-05.
+ */
+@Serializable
+data object ChatHomeRoute
+
+/** The list of conversations. The 2026-08 inbox, still registered for older entry points. */
 @Serializable
 data object ChatInboxRoute
 
@@ -46,6 +63,14 @@ data class ChatRequestRoute(
     val title: String,
 )
 
+/** The pending message requests, listed. */
+@Serializable
+data object ChatRequestsListRoute
+
+/** The pending group invitations, listed with Accept / Decline. */
+@Serializable
+data object InvitationsRoute
+
 /** The new-group flow. */
 @Serializable
 data object GroupCreateRoute
@@ -53,6 +78,49 @@ data object GroupCreateRoute
 /** Group info + administration for one group conversation. */
 @Serializable
 data class GroupInfoRoute(val conversationId: String)
+
+/** The multi-select people picker that adds members to a group. */
+@Serializable
+data class GroupAddMembersRoute(val conversationId: String)
+
+/**
+ * Join a group by invite link. [code] is the link's code when the app was
+ * opened by `https://atpost.app/chat/join/{code}`; blank for the in-app
+ * "Join with link", which asks for the link.
+ */
+@Serializable
+data class JoinByLinkRoute(val code: String = "")
+
+/** Create a community. */
+@Serializable
+data object CommunityCreateRoute
+
+/** Edit a community (owner/admin). */
+@Serializable
+data class CommunityEditRoute(val communityId: String)
+
+/** A community's page: header and updates. */
+@Serializable
+data class CommunityPageRoute(val communityId: String)
+
+/** The owner's admin roster. */
+@Serializable
+data class CommunityAdminsRoute(val communityId: String)
+
+/** The admin composer for one community. */
+@Serializable
+data class CommunityPostRoute(val communityId: String)
+
+/** Registers the one chat screen as the Messages root. */
+fun NavGraphBuilder.chatHomeScreen(destinations: ChatHomeDestinations) {
+    composable<ChatHomeRoute> {
+        // EVERY chat surface sits behind the local lock gate (CH-LB-6): while
+        // locked, the screen composable never composes, so no message text
+        // reaches the UI tree, semantics, or the task-switcher snapshot of
+        // the gate itself.
+        ChatLockGate { ChatHomeScreen(destinations = destinations) }
+    }
+}
 
 /**
  * Registers the inbox.
@@ -71,10 +139,6 @@ fun NavGraphBuilder.chatInboxScreen(
     onOpenCallHistory: () -> Unit = {},
 ) {
     composable<ChatInboxRoute> {
-        // EVERY chat surface sits behind the local lock gate (CH-LB-6): while
-        // locked, the screen composable never composes, so no message text
-        // reaches the UI tree, semantics, or the task-switcher snapshot of
-        // the gate itself.
         ChatLockGate {
             ChatInboxScreen(
                 onBack = onBack,
@@ -129,6 +193,19 @@ fun NavGraphBuilder.chatRequestScreen(
     }
 }
 
+/** Registers the requests list and the invitations list. */
+fun NavGraphBuilder.chatListScreens(
+    onBack: () -> Unit,
+    onOpenRequest: (conversationId: String, title: String) -> Unit,
+) {
+    composable<ChatRequestsListRoute> {
+        ChatLockGate { RequestsListScreen(onOpenRequest = onOpenRequest, onBack = onBack) }
+    }
+    composable<InvitationsRoute> {
+        ChatLockGate { InvitationsScreen(onBack = onBack) }
+    }
+}
+
 /** Registers the new-group flow. */
 fun NavGraphBuilder.groupCreateScreen(
     onBack: () -> Unit,
@@ -141,15 +218,68 @@ fun NavGraphBuilder.groupCreateScreen(
     }
 }
 
-/** Registers group info. */
-fun NavGraphBuilder.groupInfoScreen(
+/** Registers group info, the add-members picker and join-by-link. */
+fun NavGraphBuilder.groupScreens(
     onBack: () -> Unit,
     onLeft: () -> Unit,
+    onAddMembers: (conversationId: String) -> Unit,
+    onJoined: (conversationId: String, title: String) -> Unit,
 ) {
     composable<GroupInfoRoute> {
         ChatLockGate {
-            GroupInfoScreen(onLeft = onLeft, onBack = onBack)
+            GroupInfoScreen(onLeft = onLeft, onBack = onBack, onAddMembers = onAddMembers)
         }
+    }
+    composable<GroupAddMembersRoute> {
+        ChatLockGate { GroupAddMembersScreen(onDone = onBack, onBack = onBack) }
+    }
+    composable<JoinByLinkRoute> {
+        ChatLockGate { JoinByLinkScreen(onJoined = onJoined, onBack = onBack) }
+    }
+}
+
+/** Where the community screens can send the user. */
+data class CommunityDestinations(
+    val onBack: () -> Unit,
+    /** A created or edited community lands on its page, replacing the form. */
+    val onSaved: (communityId: String) -> Unit,
+    val onEdit: (communityId: String) -> Unit,
+    val onAdmins: (communityId: String) -> Unit,
+    val onPost: (communityId: String) -> Unit,
+    /** The page closed itself — the viewer left or deleted the community. */
+    val onClosed: () -> Unit,
+)
+
+/** Registers create/edit, the page, the admins roster and the composer. */
+fun NavGraphBuilder.communityScreens(destinations: CommunityDestinations) {
+    composable<CommunityCreateRoute> {
+        ChatLockGate {
+            CommunityCreateScreen(onSaved = { destinations.onSaved(it.id) }, onBack = destinations.onBack)
+        }
+    }
+    composable<CommunityEditRoute> {
+        ChatLockGate {
+            CommunityCreateScreen(onSaved = { destinations.onSaved(it.id) }, onBack = destinations.onBack)
+        }
+    }
+    composable<CommunityPageRoute> {
+        ChatLockGate {
+            CommunityPageScreen(
+                destinations = CommunityPageDestinations(
+                    onBack = destinations.onBack,
+                    onEdit = destinations.onEdit,
+                    onAdmins = destinations.onAdmins,
+                    onPost = destinations.onPost,
+                    onClosed = destinations.onClosed,
+                ),
+            )
+        }
+    }
+    composable<CommunityAdminsRoute> {
+        ChatLockGate { CommunityAdminsScreen(onBack = destinations.onBack) }
+    }
+    composable<CommunityPostRoute> {
+        ChatLockGate { CommunityPostScreen(onPosted = destinations.onBack, onBack = destinations.onBack) }
     }
 }
 
@@ -162,27 +292,3 @@ fun NavGraphBuilder.chatLockSettingsScreen(onBack: () -> Unit) {
         ChatLockSettingsScreen(onBack = onBack)
     }
 }
-
-/** Type-safe navigation to chat lock settings. */
-fun NavController.navigateToChatLockSettings() = navigate(ChatLockSettingsRoute)
-
-/** Type-safe navigation to the inbox. */
-fun NavController.navigateToChatInbox() = navigate(ChatInboxRoute)
-
-/** Type-safe navigation to one conversation. */
-fun NavController.navigateToChatThread(
-    conversationId: String,
-    title: String,
-    isGroup: Boolean = false,
-) = navigate(ChatThreadRoute(conversationId, title, isGroup))
-
-/** Type-safe navigation to a request decision. */
-fun NavController.navigateToChatRequest(conversationId: String, title: String) =
-    navigate(ChatRequestRoute(conversationId, title))
-
-/** Type-safe navigation to the new-group flow. */
-fun NavController.navigateToGroupCreate() = navigate(GroupCreateRoute)
-
-/** Type-safe navigation to group info. */
-fun NavController.navigateToGroupInfo(conversationId: String) =
-    navigate(GroupInfoRoute(conversationId))

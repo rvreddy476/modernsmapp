@@ -58,21 +58,38 @@ import com.us.android.feature.call.navigation.callScreen
 import com.us.android.feature.call.navigation.navigateToCallHistory
 import com.us.android.feature.call.navigation.navigateToCallSurface
 import com.us.android.feature.call.navigation.navigateToOutgoingCall
+import com.us.android.feature.chat.navigation.ChatHomeRoute
 import com.us.android.feature.chat.navigation.ChatRequestRoute
 import com.us.android.feature.chat.navigation.ChatThreadRoute
+import com.us.android.feature.chat.navigation.CommunityDestinations
+import com.us.android.feature.chat.navigation.CommunityPageRoute
 import com.us.android.feature.chat.navigation.GroupCreateRoute
+import com.us.android.feature.chat.navigation.JoinByLinkRoute
+import com.us.android.feature.chat.navigation.chatHomeScreen
 import com.us.android.feature.chat.navigation.chatInboxScreen
+import com.us.android.feature.chat.navigation.chatListScreens
 import com.us.android.feature.chat.navigation.chatLockSettingsScreen
 import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
+import com.us.android.feature.chat.navigation.communityScreens
 import com.us.android.feature.chat.navigation.groupCreateScreen
-import com.us.android.feature.chat.navigation.groupInfoScreen
-import com.us.android.feature.chat.navigation.navigateToChatInbox
+import com.us.android.feature.chat.navigation.groupScreens
+import com.us.android.feature.chat.navigation.navigateToChatHome
 import com.us.android.feature.chat.navigation.navigateToChatLockSettings
 import com.us.android.feature.chat.navigation.navigateToChatRequest
+import com.us.android.feature.chat.navigation.navigateToChatRequestsList
 import com.us.android.feature.chat.navigation.navigateToChatThread
+import com.us.android.feature.chat.navigation.navigateToCommunity
+import com.us.android.feature.chat.navigation.navigateToCommunityAdmins
+import com.us.android.feature.chat.navigation.navigateToCommunityCreate
+import com.us.android.feature.chat.navigation.navigateToCommunityEdit
+import com.us.android.feature.chat.navigation.navigateToCommunityPost
+import com.us.android.feature.chat.navigation.navigateToGroupAddMembers
 import com.us.android.feature.chat.navigation.navigateToGroupCreate
 import com.us.android.feature.chat.navigation.navigateToGroupInfo
+import com.us.android.feature.chat.navigation.navigateToInvitations
+import com.us.android.feature.chat.navigation.navigateToJoinByLink
+import com.us.android.feature.chat.ui.home.ChatHomeDestinations
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
@@ -412,6 +429,9 @@ private fun NavHostController.openPushDestination(destination: com.us.android.pu
             navigateToChatThread(destination.entityId, title = "")
         }
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
+        // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
+        // destination so it waits through the login like a notification tap.
+        CHAT_JOIN_LINK -> if (destination.entityId.isNotBlank()) navigateToJoinByLink(destination.entityId)
         // Call pushes: the ring tap attaches to the live call state; a
         // missed-call tap opens the history.
         "incoming_call", "incoming_video_call" -> navigateToCallSurface()
@@ -611,6 +631,25 @@ private fun NavGraphBuilder.tabDestinations(
     // "inside Messages") but no longer a bar item: it opens from the header's
     // message glyph and the bar hides under it, so it carries a back arrow
     // the way Notifications does. Back pops to the tab it was opened from.
+    // The one chat screen (founder, 2026-09-05): Chats | Groups |
+    // Communities | Suggestions under a search pill. The MESSAGES root.
+    chatHomeScreen(
+        ChatHomeDestinations(
+            onBack = { navController.popBackStack() },
+            onOpenThread = { conversationId, title, isGroup ->
+                navController.navigateToChatThread(conversationId, title, isGroup)
+            },
+            onOpenRequests = { navController.navigateToChatRequestsList() },
+            onOpenInvitations = { navController.navigateToInvitations() },
+            onCreateGroup = { navController.navigateToGroupCreate() },
+            onCreateCommunity = { navController.navigateToCommunityCreate() },
+            onOpenCommunity = { communityId -> navController.navigateToCommunity(communityId) },
+            onJoinWithLink = { navController.navigateToJoinByLink() },
+            onOpenLockSettings = { navController.navigateToChatLockSettings() },
+            onOpenCallHistory = { navController.navigateToCallHistory() },
+        ),
+    )
+    // The 2026-08 inbox stays registered for any older entry point.
     chatInboxScreen(
         onBack = { navController.popBackStack() },
         onOpenThread = { conversationId, title, isGroup ->
@@ -622,6 +661,28 @@ private fun NavGraphBuilder.tabDestinations(
         onCreateGroup = { navController.navigateToGroupCreate() },
         onOpenLockSettings = { navController.navigateToChatLockSettings() },
         onOpenCallHistory = { navController.navigateToCallHistory() },
+    )
+    chatListScreens(
+        onBack = { navController.popBackStack() },
+        onOpenRequest = { conversationId, title ->
+            navController.navigateToChatRequest(conversationId, title)
+        },
+    )
+    // Communities: a created or edited one lands on its page in place of
+    // the form; a page that closed itself (left, deleted) returns to Messages.
+    communityScreens(
+        CommunityDestinations(
+            onBack = { navController.popBackStack() },
+            onSaved = { communityId ->
+                navController.navigate(CommunityPageRoute(communityId)) {
+                    popUpTo<ChatHomeRoute> { inclusive = false }
+                }
+            },
+            onEdit = { communityId -> navController.navigateToCommunityEdit(communityId) },
+            onAdmins = { communityId -> navController.navigateToCommunityAdmins(communityId) },
+            onPost = { communityId -> navController.navigateToCommunityPost(communityId) },
+            onClosed = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
+        ),
     )
     chatLockSettingsScreen(onBack = { navController.popBackStack() })
     chatThreadScreen(
@@ -654,10 +715,17 @@ private fun NavGraphBuilder.tabDestinations(
             }
         },
     )
-    groupInfoScreen(
+    groupScreens(
         onBack = { navController.popBackStack() },
         // Leaving a group closes its info AND its thread.
         onLeft = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
+        onAddMembers = { conversationId -> navController.navigateToGroupAddMembers(conversationId) },
+        // A join by link opens the group over Messages, the way a created group does.
+        onJoined = { conversationId, title ->
+            navController.navigate(ChatThreadRoute(conversationId, title, isGroup = true)) {
+                popUpTo<JoinByLinkRoute> { inclusive = true }
+            }
+        },
     )
     composable<GalleryRoute> {
         // Registered, not linked: the search placeholder that opened it is gone
@@ -757,7 +825,7 @@ private fun NavGraphBuilder.exploreDestinations(
             onSearch = { query -> navController.navigateToSearch(SearchOrigin.EXPLORE, query) },
             onOpenApp = { app ->
                 when (app) {
-                    LauncherApp.CHAT -> navController.navigateToChatInbox()
+                    LauncherApp.CHAT -> navController.navigateToChatHome()
                     LauncherApp.FRIENDS -> navController.navigate(FriendsFeedRoute)
                     LauncherApp.ALERTS -> navController.navigateToNotifications()
                     LauncherApp.LIVE -> navController.navigateToLiveHub()
@@ -918,3 +986,6 @@ private fun NavHostController.openProfilePost(postId: String, contentType: Strin
 }
 
 private const val LONG_VIDEO_CONTENT_TYPE = "long_video"
+
+/** The push-destination type MainActivity mints for an `atpost.app/chat/join/{code}` link. */
+private const val CHAT_JOIN_LINK = com.us.android.push.PushDestinations.TYPE_CHAT_JOIN

@@ -192,9 +192,10 @@ class ChatRepository @Inject constructor(
         conversationId: String,
         title: String? = null,
         avatarMediaId: String? = null,
+        description: String? = null,
     ): AppResult<Unit> =
         apiCall(errorMapper) {
-            api.updateGroupInfo(conversationId, UpdateGroupInfoRequest(title, avatarMediaId))
+            api.updateGroupInfo(conversationId, UpdateGroupInfoRequest(title, avatarMediaId, description))
         }.mapValue { }
 
     suspend fun invitations(): AppResult<List<GroupInvitation>> =
@@ -312,6 +313,9 @@ data class Conversation(
     val hasUnread: Boolean = false,
     val isPinned: Boolean = false,
     val isMuted: Boolean = false,
+    /** Groups pass: the description and the signed, short-lived avatar URL. */
+    val description: String = "",
+    val avatarUrl: String? = null,
 ) {
     /**
      * What to show as the thread's name.
@@ -331,6 +335,7 @@ data class ConversationMember(
     val userId: String,
     val role: String,
     val displayName: String,
+    val avatarMediaId: String? = null,
 )
 
 /**
@@ -386,22 +391,6 @@ data class ReactionToggle(val added: Boolean, val emoji: String, val messageId: 
 data class ConversationSettings(val isMuted: Boolean, val isPinned: Boolean)
 
 data class Presence(val activeCount: Int, val isBigGroup: Boolean)
-
-private fun ConversationDto.toDomain() = Conversation(
-    id = id,
-    type = type,
-    title = title,
-    isRequest = isRequest,
-    members = members.map { ConversationMember(it.userId, it.role, it.displayName) },
-    updatedAt = updatedAt,
-    avatarMediaId = avatarMediaId,
-    lastMessageAt = lastMessageAt,
-    lastMessagePreview = lastMessagePreview,
-    lastMessageSender = lastMessageSender,
-    hasUnread = hasUnread,
-    isPinned = isPinned,
-    isMuted = isMuted,
-)
 
 private fun MessageDto.toDomain() = Message(
     id = msgId,

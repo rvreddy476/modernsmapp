@@ -8,7 +8,7 @@ import androidx.navigation.navOptions
 import com.us.android.core.designsystem.component.UsNavItem
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.profile.data.AppModule
-import com.us.android.feature.chat.navigation.ChatInboxRoute
+import com.us.android.feature.chat.navigation.ChatHomeRoute
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.ReelsRoute
@@ -26,7 +26,7 @@ import kotlin.reflect.KClass
  * entries from the user's module choices in ITS order, and an ordinal-indexed
  * lookup would break the moment one tab is left out.
  *
- * Two entries are roots but never bar items: [MESSAGES] (the inbox, opened
+ * Two entries are roots but never bar items: [MESSAGES] (the one chat screen, opened
  * from Home's header and the Explore launcher) and [FRIENDS] (the friends
  * feed, opened from the launcher since 2026-09-05, when Explore took its
  * place in the bar). They stay here so [forDestination] recognises them as
@@ -47,7 +47,7 @@ enum class TopLevelDestination(
     REELS(ReelsRoute::class, UsNavItem("Reels", UsIcons.Reels), AppModule.REELS),
     FRIENDS(FriendsFeedRoute::class, UsNavItem("Friends", UsIcons.Friends), null),
     ME(OwnProfileRoute::class, UsNavItem("Me", UsIcons.Profile, contentDescription = "My profile"), null),
-    MESSAGES(ChatInboxRoute::class, UsNavItem("Messages", UsIcons.Comment), AppModule.CHAT),
+    MESSAGES(ChatHomeRoute::class, UsNavItem("Messages", UsIcons.Comment), AppModule.CHAT),
     EXPLORE(ExploreRoute::class, UsNavItem("Explore", UsIcons.Explore), null),
     ;
 
@@ -82,7 +82,7 @@ val TopLevelDestination.rootRoute: Any
         TopLevelDestination.REELS -> ReelsRoute
         TopLevelDestination.FRIENDS -> FriendsFeedRoute
         TopLevelDestination.ME -> OwnProfileRoute
-        TopLevelDestination.MESSAGES -> ChatInboxRoute
+        TopLevelDestination.MESSAGES -> ChatHomeRoute
         TopLevelDestination.EXPLORE -> ExploreRoute
     }
 

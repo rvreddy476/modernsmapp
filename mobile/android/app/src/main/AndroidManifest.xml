@@ -51,9 +51,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!--
-              App Links (profile / post / reel / chat / share tokens) arrive in
+              App Links (profile / post / reel / share tokens) arrive in
               Phase 9 together with assetlinks.json. Finding F4.
+
+              The group invite link (2026-09-05) is the first one wired:
+              https://atpost.app/chat/join/{code} opens the join preview.
+              autoVerify asks the system to check assetlinks.json; until that
+              file is published the link still opens via the chooser.
             -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="atpost.app" />
+                <data android:pathPrefix="/chat/join/" />
+            </intent-filter>
         </activity>
 
 

@@ -261,6 +261,8 @@ data class AddOutcomeDto(
 data class UpdateGroupInfoRequest(
     val title: String? = null,
     @SerialName("avatar_media_id") val avatarMediaId: String? = null,
+    /** Group description, 300 characters at most (2026-09-05). */
+    val description: String? = null,
 )
 
 @Serializable
@@ -418,6 +420,10 @@ data class ConversationDto(
     /** The VIEWER's settings flags, joined server-side (one page query). */
     @SerialName("is_pinned") val isPinned: Boolean = false,
     @SerialName("is_muted") val isMuted: Boolean = false,
+    // Groups pass (2026-09-05): the description and the SIGNED avatar URL
+    // (5-minute TTL — re-read rather than cached).
+    val description: String = "",
+    @SerialName("avatar_url") val avatarUrl: String? = null,
 )
 
 /**
@@ -433,6 +439,7 @@ data class ConversationMemberDto(
     val role: String = "",
     @SerialName("joined_at") val joinedAt: String = "",
     @SerialName("display_name") val displayName: String = "",
+    @SerialName("avatar_media_id") val avatarMediaId: String? = null,
 )
 
 @Serializable
