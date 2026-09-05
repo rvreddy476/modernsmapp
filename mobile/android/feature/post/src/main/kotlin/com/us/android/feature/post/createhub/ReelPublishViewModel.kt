@@ -25,23 +25,27 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.Instant
 import java.util.UUID
 import javax.inject.Inject
 
 /**
- * The Create hub's Reel AND Video surface: pick a video, describe it, choose
+ * The Create hub's Reel AND Video details step: describe the video, choose
  * a cover, set who sees it and what viewers may do with it, post it — as a
  * `flick` (a reel) or a `long_video` (Tube), by [ReelUiState.kind].
  *
- * ## THE FORM (founder, 2026-09-04; Video added 2026-09-05)
+ * ## THE FORM (founder, 2026-09-04; Video 2026-09-05; the studio 2026-09-05)
  *
- * TikTok-shaped. A reel has no title: the description is the only text, and
- * the server extracts hashtags from it, so the client sends text and nothing
- * derived from it. A LONG video adds a required title (100 characters) above
- * the description, a 16:9 cover in place of the 9:16 one, and no remix
- * switch. Tag people, a typed place name, Audience, Category, and the
- * switches sent EXPLICITLY on every post — an omitted `allow_download` is
- * "unspecified", not "true".
+ * TikTok-shaped. A reel has no title: the caption is the only text — and
+ * since the studio, the caption is JUST the caption: hashtags are chips in
+ * a field of their own ([Hashtags]) and mentions are the people picked, so
+ * the server gets `hashtags` and `mentions` as arrays, never parsed out of
+ * prose. A LONG video adds a required title (100 characters) above the
+ * description, a 16:9 cover in place of the 9:16 one, and no remix switch.
+ * Tag people, a typed place name, Audience, Category, and the switches sent
+ * EXPLICITLY on every post — an omitted `allow_download` is "unspecified",
+ * not "true".
  *
  * ## THE COVER (founder, 2026-09-05: an exact frame)
  *
@@ -50,7 +54,9 @@ import javax.inject.Inject
  * the handle's exact instant — throttled to one in flight, the newest
  * request winning — and Confirm makes that frame the cover. "Upload" takes
  * a gallery image through [ReelCoverImageLoader] instead. Either way the
- * cover is a [CoverFrame] with a bitmap the encoder turns into the JPEG.
+ * cover is a [CoverFrame] with a bitmap the encoder turns into the JPEG. A
+ * reel's frames come from the studio's EXPORT, so the cover is a frame of
+ * what will actually be posted.
  *
  * ## THE GATE
  *
@@ -60,23 +66,21 @@ import javax.inject.Inject
  * selection, the cover and every field and only changes what the post will
  * be. A file over 500 MB is refused for either kind.
  *
- * ## CHANNEL BEFORE VIDEO (founder, 2026-09-05)
+ * ## SCHEDULE
  *
- * A long video posts under a channel. The form asks [ChannelRepository]
- * once and exposes the answer as [ReelUiState.channel]; the surface opens
- * the "Create your channel" sheet when there is none. The server is the
- * authority — a post without one is refused with `CHANNEL_REQUIRED`, which
- * the pending tile answers with the same sheet — so the gate here is a
- * courtesy, never a lock.
+ * Beside Post sits Schedule: a date and time five minutes to thirty days
+ * ahead ([ScheduleWindow]), carried as `publish_at`. The server holds the
+ * post and answers `is_scheduled`; the own profile shows it with a clock
+ * until then.
  *
  * ## POST HANDS OFF AND LEAVES
  *
- * Tapping Post no longer uploads here. A phone video took the dev server
- * seventeen minutes to transcode (2026-09-04) and the founder watched a
- * spinner the whole time, so the form now writes the chosen cover to disk,
- * hands a [PendingReelPublish] to the [ReelPublishLauncher] — WorkManager
- * from there, see [ReelPublishWorker] — and reports [Phase.Enqueued] so the
- * surface can close. The pending tile shows the rest.
+ * Tapping Post no longer uploads here. The form writes the chosen cover to
+ * disk, hands a [PendingReelPublish] to the [ReelPublishLauncher] —
+ * WorkManager from there, see [ReelPublishWorker] — and reports
+ * [Phase.Enqueued] so the surface can close onto the own profile, whose
+ * grid shows the tile. Several may be pending at once (2026-09-05): the
+ * queue uploads them in order.
  */
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
@@ -121,11 +125,18 @@ class ReelPublishViewModel @Inject constructor(
         /** Reel or long video — what the form is making. Switchable by the gate. */
         val kind: VideoKind = VideoKind.REEL,
         val videoUri: String? = null,
+        /** The studio's exported file, when the video came through it: uploaded as is, never copied. */
+        val exportedPath: String? = null,
         /** What the probe found; null until it answers, and for an unreadable file. */
         val probe: VideoProbe? = null,
         /** The long video's title; ignored for a reel. */
         val title: String = "",
         val caption: String = "",
+        /** The hashtag chips, without `#`. */
+        val hashtags: List<String> = emptyList(),
+        /** What is being typed into the hashtag field, before it becomes a chip. */
+        val hashtagInput: String = "",
+        val hashtagSuggestions: List<String> = emptyList(),
         /** The filmstrip's thumbnails. */
         val frames: List<CoverFrame> = emptyList(),
         val framesLoading: Boolean = false,
@@ -141,11 +152,14 @@ class ReelPublishViewModel @Inject constructor(
         val hideShare: Boolean = false,
         val allowDownload: Boolean = true,
         val allowRemix: Boolean = true,
+        /** The people mentioned — chips of `@username`, sent as both ids and usernames. */
         val taggedUsers: List<TaggedUser> = emptyList(),
         val peopleQuery: String = "",
         val peopleResults: List<TaggedUser> = emptyList(),
         val peopleSearching: Boolean = false,
         val locationName: String = "",
+        /** When the post goes live, or null to post now. */
+        val publishAt: Instant? = null,
         val phase: Phase = Phase.Editing,
         /** The viewer's channel, asked for a long video; unknown for a reel. */
         val channel: ChannelState = ChannelState.Unknown,
@@ -169,6 +183,9 @@ class ReelPublishViewModel @Inject constructor(
         val canTagMore: Boolean
             get() = taggedUsers.size < MAX_TAGGED_PEOPLE
 
+        val canAddHashtags: Boolean
+            get() = hashtags.size < Hashtags.MAX_HASHTAGS
+
         /** The video's length in microseconds: the probe's, else inferred from the strip's spacing. */
         val durationUs: Long
             get() = probe?.durationMs?.takeIf { it > 0L }?.times(MICROS_PER_MILLI)
@@ -187,10 +204,14 @@ class ReelPublishViewModel @Inject constructor(
 
     private var creationKey: String = UUID.randomUUID().toString()
 
+    /** Where the studio's export lands for this post: the worker uploads it from there without a copy. */
+    fun exportTargetPath(): String = files.exportTarget(creationKey)
+
     private var framesJob: Job? = null
     private var probeJob: Job? = null
     private var coverJob: Job? = null
     private var peopleJob: Job? = null
+    private var hashtagJob: Job? = null
 
     /** The handle's newest instant; the seek loop takes the latest and drops the rest. */
     private val scrubs = MutableSharedFlow<Long>(extraBufferCapacity = 1)
@@ -217,12 +238,44 @@ class ReelPublishViewModel @Inject constructor(
 
     // ── Video and cover ─────────────────────────────────────────────────
 
-    fun onVideoPicked(uri: String) {
-        // A different video is a different post: new key, new frames, new probe, new cover.
+    /** A video picked as is (a long video, or a reel before the studio existed). */
+    fun onVideoPicked(uri: String) = startWith(uri, exportedPath = null, newKey = true)
+
+    /**
+     * The studio's export for the CURRENT key (it wrote to
+     * [ReelPublishFiles.exportTarget] under it): the frames, the probe and
+     * the cover come from this file, and the worker uploads it without a copy.
+     */
+    fun onReelExported(path: String) = startWith(File(path).toURI().toString(), exportedPath = path, newKey = false)
+
+    /** "Change video": back to the source step, forgetting the video and its cover but keeping the fields. */
+    fun clearVideo() {
+        framesJob?.cancel()
+        probeJob?.cancel()
+        coverJob?.cancel()
         creationKey = UUID.randomUUID().toString()
         _state.update {
             it.copy(
+                videoUri = null,
+                exportedPath = null,
+                probe = null,
+                frames = emptyList(),
+                framesLoading = false,
+                cover = null,
+                coverSource = CoverSource.Frame,
+                picker = null,
+                phase = Phase.Editing,
+            )
+        }
+    }
+
+    private fun startWith(uri: String, exportedPath: String?, newKey: Boolean) {
+        // A different video is a different post: new key, new frames, new probe, new cover.
+        if (newKey) creationKey = UUID.randomUUID().toString()
+        _state.update {
+            it.copy(
                 videoUri = uri,
+                exportedPath = exportedPath,
                 probe = null,
                 frames = emptyList(),
                 framesLoading = true,
@@ -365,12 +418,57 @@ class ReelPublishViewModel @Inject constructor(
 
     fun onLocationChanged(name: String) = _state.update { it.copy(locationName = name) }
 
-    // ── Tag people ──────────────────────────────────────────────────────
+    /** Null posts now; an instant inside [ScheduleWindow] schedules. The picker checks the window. */
+    fun onScheduleChanged(publishAt: Instant?) = _state.update { it.copy(publishAt = publishAt) }
+
+    // ── Hashtags ────────────────────────────────────────────────────────
+
+    /**
+     * Typing into the hashtag field: a space or comma after a tag turns it
+     * into a chip at once ([Hashtags.shouldCommit]); otherwise the text
+     * stays and, from two characters, asks the server for suggestions.
+     */
+    fun onHashtagInputChanged(value: String) {
+        if (Hashtags.shouldCommit(value)) {
+            commitHashtags(value)
+            return
+        }
+        _state.update { it.copy(hashtagInput = value) }
+        hashtagJob?.cancel()
+        val query = value.trim().removePrefix("#")
+        if (query.length < MIN_HASHTAG_QUERY) {
+            _state.update { it.copy(hashtagSuggestions = emptyList()) }
+            return
+        }
+        hashtagJob = viewModelScope.launch {
+            delay(PEOPLE_DEBOUNCE_MILLIS)
+            val found = lookups.suggestHashtags(query)
+            _state.update { current ->
+                val taken = current.hashtags.map { it.lowercase() }.toSet()
+                current.copy(hashtagSuggestions = found.filter { it.lowercase() !in taken })
+            }
+        }
+    }
+
+    /** Whatever is in the field becomes chips (Done, or leaving the field). */
+    fun commitHashtags(typed: String = _state.value.hashtagInput) {
+        hashtagJob?.cancel()
+        _state.update {
+            it.copy(hashtags = Hashtags.add(it.hashtags, typed), hashtagInput = "", hashtagSuggestions = emptyList())
+        }
+    }
+
+    /** A suggestion tapped becomes a chip and clears the field. */
+    fun onHashtagSuggestionPicked(tag: String) = commitHashtags(tag)
+
+    fun removeHashtag(tag: String) = _state.update { it.copy(hashtags = it.hashtags - tag) }
+
+    // ── Mention people ──────────────────────────────────────────────────
 
     fun onPeopleQueryChanged(query: String) {
         _state.update { it.copy(peopleQuery = query) }
         peopleJob?.cancel()
-        val trimmed = query.trim()
+        val trimmed = Hashtags.username(query)
         if (trimmed.length < MIN_PEOPLE_QUERY) {
             _state.update { it.copy(peopleResults = emptyList(), peopleSearching = false) }
             return
@@ -400,10 +498,6 @@ class ReelPublishViewModel @Inject constructor(
     fun onPost() {
         val current = _state.value
         if (!current.canPost) return
-        if (launcher.isBusy) {
-            fail("Your last video is still posting. Try again when it's done.")
-            return
-        }
         _state.update { it.copy(phase = Phase.Preparing) }
         viewModelScope.launch {
             val coverPath = current.cover?.let { frame ->
@@ -429,7 +523,11 @@ class ReelPublishViewModel @Inject constructor(
         /** The Create route's argument, read to open the form as a reel or a video. */
         const val SURFACE_ARG = "surface"
 
+        /** What the studio's export is: H.264 in MP4. */
+        const val EXPORT_MIME_TYPE = "video/mp4"
+
         private const val MIN_PEOPLE_QUERY = 2
+        private const val MIN_HASHTAG_QUERY = 2
         private const val PEOPLE_DEBOUNCE_MILLIS = 300L
         private const val SCRUB_SETTLE_MILLIS = 40L
         private const val MICROS_PER_MILLI = 1_000L
@@ -440,10 +538,16 @@ class ReelPublishViewModel @Inject constructor(
         fun videoKindForSurface(routeKey: String?): VideoKind =
             if (routeKey == CreateSurface.Video.routeKey) VideoKind.LONG else VideoKind.REEL
 
-        /** The form, whole, as the record the worker publishes from. */
+        /**
+         * The form, whole, as the record the worker publishes from. Any
+         * text still in the hashtag field counts — a tag typed without a
+         * trailing space is still a tag the user meant.
+         */
         fun buildPending(current: ReelUiState, creationKey: String, coverPath: String?) = PendingReelPublish(
             creationKey = creationKey,
             videoUri = current.videoUri.orEmpty(),
+            videoPath = current.exportedPath,
+            videoMimeType = current.exportedPath?.let { EXPORT_MIME_TYPE },
             coverPath = coverPath,
             kind = current.kind,
             title = current.title,
@@ -455,7 +559,10 @@ class ReelPublishViewModel @Inject constructor(
             allowDownload = current.allowDownload,
             allowRemix = current.allowRemix,
             taggedUserIds = current.taggedUsers.map { it.id },
+            mentions = current.taggedUsers.map { it.username }.filter { it.isNotBlank() },
             locationName = current.locationName,
+            hashtags = Hashtags.add(current.hashtags, current.hashtagInput),
+            publishAt = current.publishAt?.let(ScheduleWindow::wire),
         )
     }
 }

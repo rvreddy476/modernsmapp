@@ -38,4 +38,18 @@ class PublishRingTest {
         assertThat(ReelPublishState.Processing.ringLabel()).isEqualTo("Processing")
         assertThat(ReelPublishState.Failed("x", retryable = false).ringLabel()).isEqualTo("Couldn't post")
     }
+
+    /** The number inside the ring (founder, 2026-09-05): "42 %" while bytes go up, nothing otherwise. */
+    @Test
+    fun `the percent inside the ring exists only while uploading`() {
+        assertThat(ReelPublishState.Uploading(0.42f).ringPercentLabel()).isEqualTo("42 %")
+        assertThat(ReelPublishState.Uploading(0.999f).ringPercentLabel()).isEqualTo("99 %")
+        assertThat(ReelPublishState.Uploading(1.5f).ringPercentLabel()).isEqualTo("100 %")
+        assertThat(ReelPublishState.Uploading(-1f).ringPercentLabel()).isEqualTo("0 %")
+        assertThat(ReelPublishState.Preparing.ringPercentLabel()).isNull()
+        assertThat(ReelPublishState.Processing.ringPercentLabel()).isNull()
+        assertThat(ReelPublishState.Posting.ringPercentLabel()).isNull()
+        assertThat(ReelPublishState.Published("p1").ringPercentLabel()).isNull()
+        assertThat(ReelPublishState.Failed("x", retryable = true).ringPercentLabel()).isNull()
+    }
 }

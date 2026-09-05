@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,11 +29,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -42,6 +40,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
@@ -63,9 +62,11 @@ import com.us.android.feature.tube.ui.pressScale
 
 /**
  * The channels strip: circular avatars with the 2dp ember ring — the
- * viewer's own channel first (or a dashed "Create" ring when they have
- * none), then the creators they follow, newest video first. A tap opens
- * the channel's page inside Tube.
+ * viewer's own channel first, when they have one, then the creators they
+ * follow, newest video first. A tap opens the channel's page inside Tube.
+ * No "Create" bubble (founder, 2026-09-05): a viewer without a channel
+ * simply has no bubble, and the strip is not drawn at all until there is
+ * a followed channel to put in it.
  */
 @Composable
 internal fun ChannelsStrip(
@@ -74,7 +75,6 @@ internal fun ChannelsStrip(
     channels: List<TubeChannelBubble>,
     onOpenChannel: (userId: String) -> Unit,
     onOpenYou: () -> Unit,
-    onCreateChannel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyRow(
@@ -84,9 +84,9 @@ internal fun ChannelsStrip(
         contentPadding = PaddingValues(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
     ) {
-        item(key = "you") {
-            when (own) {
-                is ChannelState.Present -> ChannelBubble(
+        if (own is ChannelState.Present) {
+            item(key = "you") {
+                ChannelBubble(
                     name = "You",
                     avatarName = own.channel.name,
                     seed = own.channel.userId,
@@ -95,7 +95,6 @@ internal fun ChannelsStrip(
                     onClick = onOpenYou,
                     modifier = Modifier.testTag("tube_channel:you"),
                 )
-                else -> CreateBubble(onClick = onCreateChannel)
             }
         }
         items(channels.size, key = { channels[it].userId }) { index ->
@@ -136,52 +135,6 @@ private fun ChannelBubble(
     ) {
         UsAvatar(name = avatarName, seed = seed, size = UsAvatarSize.Chat, imageUrl = avatarUrl, hasRing = true)
         BubbleLabel(name)
-    }
-}
-
-/** The viewer's slot when they have no channel yet: a dashed ring around a plus, "Create". */
-@Composable
-private fun CreateBubble(onClick: () -> Unit) {
-    val dash = UsTheme.extended.textMuted
-    Column(
-        modifier = Modifier
-            .width(BUBBLE_WIDTH)
-            .pressScale(onClick)
-            .semantics {
-                role = Role.Button
-                contentDescription = "Create your channel"
-            }
-            .testTag("tube_channel:create"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-    ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(BUBBLE_SIZE)
-                .drawBehind {
-                    val width = RING_WIDTH.toPx()
-                    drawCircle(
-                        color = dash,
-                        radius = size.minDimension / 2 - width / 2,
-                        style = Stroke(
-                            width = width,
-                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(DASH_ON.toPx(), DASH_OFF.toPx())),
-                        ),
-                    )
-                }
-                .padding(RING_WIDTH + RING_GAP)
-                .clip(CircleShape)
-                .background(UsTheme.extended.glassBg),
-        ) {
-            Icon(
-                imageVector = UsIcons.Create,
-                contentDescription = null,
-                tint = UsTheme.extended.textPrimary,
-                modifier = Modifier.size(CREATE_GLYPH),
-            )
-        }
-        BubbleLabel("Create")
     }
 }
 
@@ -303,7 +256,9 @@ internal fun ContinueCard(
 
 /**
  * The "Reels" panel: a glass panel with the film-reel glyph and the word,
- * then a row of 9:16 cards with the title on a bottom ramp. A card opens
+ * then a row of 9:16 cards with the title on a bottom ramp — TWO to a
+ * screen width (founder, 2026-09-05), each half the panel's inner width
+ * less the gap, rounded 18dp; the row still scrolls sideways. A card opens
  * the app's Reels at that clip; a long-press opens its "more" sheet.
  */
 @Composable
@@ -345,24 +300,36 @@ internal fun ReelsPanel(
                 color = UsTheme.extended.textPrimary,
             )
         }
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl),
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-        ) {
-            items(reels.size, key = { reels[it].id }) { index ->
-                val reel = reels[index]
-                ReelCard(item = reel, thumb = thumbFor(reel), onClick = { onOpen(reel) }, onMore = { onMore(reel) })
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val cardWidth = reelCardWidth(panelWidth = maxWidth, inset = UsTheme.spacing.xl, gap = UsTheme.spacing.m)
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = UsTheme.spacing.xl),
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            ) {
+                items(reels.size, key = { reels[it].id }) { index ->
+                    val reel = reels[index]
+                    ReelCard(
+                        item = reel,
+                        thumb = thumbFor(reel),
+                        width = cardWidth,
+                        onClick = { onOpen(reel) },
+                        onMore = { onMore(reel) },
+                    )
+                }
             }
         }
     }
 }
 
+/** Two cards across the panel's inner width: `(width − 2·inset − gap) / 2`. Pure, so the split is a test. */
+internal fun reelCardWidth(panelWidth: Dp, inset: Dp, gap: Dp): Dp = (panelWidth - inset * 2 - gap) / 2
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ReelCard(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, onMore: () -> Unit) {
+private fun ReelCard(item: FeedItem, thumb: VideoThumb, width: Dp, onClick: () -> Unit, onMore: () -> Unit) {
     Box(
         modifier = Modifier
-            .width(REEL_WIDTH)
+            .width(width)
             .aspectRatio(PORTRAIT)
             .clip(RoundedCornerShape(REEL_RADIUS))
             .background(UsTheme.extended.bgCard)
@@ -584,14 +551,8 @@ private const val TITLE_LINES = 2
 private const val META_ALPHA = 0.82f
 private const val RING_PLATE_ALPHA = 0.45f
 private val HAIRLINE = 1.dp
-private val RING_WIDTH = 2.dp
-private val RING_GAP = 2.dp
-private val DASH_ON = 6.dp
-private val DASH_OFF = 4.dp
-private val BUBBLE_SIZE = 56.dp
 private val BUBBLE_WIDTH = 64.dp
 private val BUBBLE_LABEL_SIZE = 11.sp
-private val CREATE_GLYPH = 20.dp
 private val CONTINUE_WIDTH = 200.dp
 private val CONTINUE_RING = 60.dp
 
@@ -603,7 +564,6 @@ private val SMALL_TITLE_SIZE = 13.sp
 private val PANEL_RADIUS = 20.dp
 private val PANEL_GLYPH = 22.dp
 private val SECTION_TITLE_SIZE = 18.sp
-private val REEL_WIDTH = 120.dp
 private val REEL_RADIUS = 18.dp
 private val REEL_SCRIM_HEIGHT = 88.dp
 private val TILE_SCRIM_HEIGHT = 96.dp

@@ -14,6 +14,7 @@ import com.us.android.feature.post.data.dto.DistributionRequest
 import com.us.android.feature.post.data.dto.POST_TYPE_VIDEO
 import com.us.android.feature.post.data.dto.REMIX_ALLOW
 import com.us.android.feature.post.data.dto.REMIX_DISALLOW
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
@@ -53,6 +54,12 @@ import kotlin.math.min
  * A cover that fails to upload FAILS THE POST with a retryable message —
  * posting without the cover the user chose would be publishing something
  * other than what they approved.
+ *
+ * ## DISCARD MID-FLIGHT
+ *
+ * [run] takes [isDiscarded]; the upload's progress callback checks it and
+ * aborts the PUT, and no checkpoint or failure is written for a record the
+ * user has thrown away — the store would otherwise grow it back.
  */
 @Singleton
 class ReelPublishPipeline @Inject constructor(
@@ -68,11 +75,17 @@ class ReelPublishPipeline @Inject constructor(
 
         /** The fallback poll is still waiting and this run's budget is spent. */
         data object Continue : Outcome
+
+        /** The user discarded the publish while it ran; nothing was persisted. */
+        data object Discarded : Outcome
         data class Failed(val message: String, val retryable: Boolean, val needsChannel: Boolean = false) : Outcome
     }
 
     /** Thrown internally to unwind to [run] with the failure already persisted. */
     private class Stop(val outcome: Outcome) : RuntimeException()
+
+    /** One run's collaborators: the record's key and the discard check. */
+    private class Run(val key: String, val isDiscarded: () -> Boolean)
 
     /**
      * Run from wherever [initial] had got to. [now] and [runBudgetMillis] are
@@ -82,14 +95,16 @@ class ReelPublishPipeline @Inject constructor(
         initial: PendingReelPublish,
         now: () -> Long = System::currentTimeMillis,
         runBudgetMillis: Long = RUN_BUDGET_MILLIS,
+        isDiscarded: () -> Boolean = { false },
     ): Outcome {
         val runUntil = now() + runBudgetMillis
+        val run = Run(initial.creationKey, isDiscarded)
         var pending = initial.copy(failure = null)
         return try {
-            pending = stashVideo(pending)
-            pending = uploadVideo(pending)
-            pending = uploadCover(pending)
-            createFlick(pending, now, runUntil)
+            pending = stashVideo(run, pending)
+            pending = uploadVideo(run, pending)
+            pending = uploadCover(run, pending)
+            createFlick(run, pending, now, runUntil)
         } catch (stop: Stop) {
             stop.outcome
         }
@@ -97,46 +112,67 @@ class ReelPublishPipeline @Inject constructor(
 
     // ── Steps ───────────────────────────────────────────────────────────
 
-    private suspend fun stashVideo(pending: PendingReelPublish): PendingReelPublish {
+    private suspend fun stashVideo(run: Run, pending: PendingReelPublish): PendingReelPublish {
         if (pending.videoPath != null) return pending
-        tracker.update(ReelPublishState.Preparing)
+        report(run, ReelPublishState.Preparing)
         val stashed = files.stashVideo(pending.videoUri, pending.creationKey)
-            ?: fail(pending, "That video can't be read. Pick it again.", retryable = false)
-        return checkpoint(pending.copy(videoPath = stashed.path, videoMimeType = stashed.mimeType))
+            ?: fail(run, pending, "That video can't be read. Pick it again.", retryable = false)
+        return checkpoint(run, pending.copy(videoPath = stashed.path, videoMimeType = stashed.mimeType))
     }
 
-    private suspend fun uploadVideo(pending: PendingReelPublish): PendingReelPublish {
+    private suspend fun uploadVideo(run: Run, pending: PendingReelPublish): PendingReelPublish {
         if (pending.confirmedVideoId != null) return pending
         val picked = files.openVideo(pending.videoPath.orEmpty(), pending.videoMimeType.orEmpty())
-            ?: fail(pending, "That video can't be read. Pick it again.", retryable = false)
-        tracker.update(ReelPublishState.Uploading(0f))
+            ?: fail(run, pending, "That video can't be read. Pick it again.", retryable = false)
+        report(run, ReelPublishState.Uploading(0f))
         var lastPercent = -1
-        val outcome = uploads.uploadVideo(picked) { fraction ->
-            // One state per percent: the PUT reports every buffer, and a
-            // StateFlow update per 8 KB of a 300 MB video is churn for nothing.
-            val percent = (fraction * PERCENT).toInt()
-            if (percent != lastPercent) {
-                lastPercent = percent
-                tracker.update(ReelPublishState.Uploading(fraction))
+        val outcome = uploadOrDiscard(run) {
+            uploads.uploadVideo(picked) { fraction ->
+                // A discarded publish stops the bytes here: the PUT fails, the
+                // step reports, and nothing of it is written back.
+                if (run.isDiscarded()) throw IOException("Publish discarded")
+                // One state per percent: the PUT reports every buffer, and a
+                // StateFlow update per 8 KB of a 300 MB video is churn for nothing.
+                val percent = (fraction * PERCENT).toInt()
+                if (percent != lastPercent) {
+                    lastPercent = percent
+                    tracker.update(run.key, ReelPublishState.Uploading(fraction))
+                }
             }
         }
         return when (outcome) {
             is ReelMediaUploads.Outcome.Ready -> checkpoint(
+                run,
                 pending.copy(confirmedVideoId = outcome.mediaId, processingSinceMillis = null),
             )
-            is ReelMediaUploads.Outcome.Failed -> fail(pending, outcome.message, outcome.retryable)
+            is ReelMediaUploads.Outcome.Failed -> fail(run, pending, outcome.message, outcome.retryable)
         }
     }
 
-    private suspend fun uploadCover(pending: PendingReelPublish): PendingReelPublish {
+    /**
+     * The upload's own transport catches the discard's exception and answers
+     * a failure; a transport that lets it through is answered here the
+     * same way, so a discard never escapes as a crash.
+     */
+    private suspend fun uploadOrDiscard(
+        run: Run,
+        upload: suspend () -> ReelMediaUploads.Outcome,
+    ): ReelMediaUploads.Outcome = try {
+        upload()
+    } catch (e: IOException) {
+        if (run.isDiscarded()) throw Stop(Outcome.Discarded)
+        ReelMediaUploads.Outcome.Failed(e.message ?: "The upload didn't finish. Try again.", retryable = true)
+    }
+
+    private suspend fun uploadCover(run: Run, pending: PendingReelPublish): PendingReelPublish {
         val path = pending.coverPath ?: return pending
         if (pending.readyCoverId != null) return pending
-        tracker.update(ReelPublishState.Posting)
+        report(run, ReelPublishState.Posting)
         val bytes = files.readBytes(path)
-            ?: fail(pending, "That cover frame couldn't be prepared. Pick another.", retryable = false)
+            ?: fail(run, pending, "That cover frame couldn't be prepared. Pick another.", retryable = false)
         return when (val outcome = uploads.uploadCover(bytes)) {
-            is ReelMediaUploads.Outcome.Ready -> checkpoint(pending.copy(readyCoverId = outcome.mediaId))
-            is ReelMediaUploads.Outcome.Failed -> fail(pending, outcome.message, outcome.retryable)
+            is ReelMediaUploads.Outcome.Ready -> checkpoint(run, pending.copy(readyCoverId = outcome.mediaId))
+            is ReelMediaUploads.Outcome.Failed -> fail(run, pending, outcome.message, outcome.retryable)
         }
     }
 
@@ -144,37 +180,43 @@ class ReelPublishPipeline @Inject constructor(
      * The create, straight away. On `MEDIA_NOT_READY` — the pre-instant
      * server — wait for the transcode the old way and create once more.
      */
-    private suspend fun createFlick(pending: PendingReelPublish, now: () -> Long, runUntil: Long): Outcome {
-        tracker.update(ReelPublishState.Posting)
-        val videoId = pending.confirmedVideoId ?: fail(pending, "The upload didn't finish. Try again.", true)
+    private suspend fun createFlick(
+        run: Run,
+        pending: PendingReelPublish,
+        now: () -> Long,
+        runUntil: Long,
+    ): Outcome {
+        report(run, ReelPublishState.Posting)
+        val videoId = pending.confirmedVideoId ?: fail(run, pending, "The upload didn't finish. Try again.", true)
         val request = buildRequest(pending, videoId, pending.readyCoverId)
         return when (val result = repository.createPost(pending.creationKey, request)) {
             is AppResult.Success -> Outcome.Published(result.data)
             is AppResult.Failure -> if (result.error.isNotReady()) {
-                val ready = awaitVideo(pending, videoId, now, runUntil)
-                createReadyFlick(ready, request)
+                val ready = awaitVideo(run, pending, videoId, now, runUntil)
+                createReadyFlick(run, ready, request)
             } else {
-                refused(pending, result.error)
+                refused(run, pending, result.error)
             }
         }
     }
 
-    private suspend fun createReadyFlick(pending: PendingReelPublish, request: CreatePostRequest): Outcome =
+    private suspend fun createReadyFlick(run: Run, pending: PendingReelPublish, request: CreatePostRequest): Outcome =
         when (val result = repository.createPost(pending.creationKey, request)) {
             is AppResult.Success -> Outcome.Published(result.data)
-            is AppResult.Failure -> refused(pending, result.error)
+            is AppResult.Failure -> refused(run, pending, result.error)
         }
 
     /**
      * The create was refused. `CHANNEL_REQUIRED` (channel before video,
      * 2026-09-05) is not terminal even though it is a 403: the pending tile
-     * opens the create-channel sheet and retries once there is one.
+     * opens the create-channel sheet and retries once there is one. A 400
+     * is shown in the server's own words — a rejected `publish_at` says why.
      */
-    private suspend fun refused(pending: PendingReelPublish, error: AppError): Nothing =
+    private suspend fun refused(run: Run, pending: PendingReelPublish, error: AppError): Nothing =
         if (ChannelRepository.requiresChannel(error)) {
-            fail(pending, CHANNEL_REQUIRED_MESSAGE, retryable = true, needsChannel = true)
+            fail(run, pending, CHANNEL_REQUIRED_MESSAGE, retryable = true, needsChannel = true)
         } else {
-            fail(pending, repository.message(error), retryable = !repository.isTerminal(error))
+            fail(run, pending, repository.message(error), retryable = !repository.isTerminal(error))
         }
 
     /**
@@ -182,15 +224,16 @@ class ReelPublishPipeline @Inject constructor(
      * so a continuation or a restart keeps the same clock.
      */
     private suspend fun awaitVideo(
+        run: Run,
         pending: PendingReelPublish,
         mediaId: String,
         now: () -> Long,
         runUntil: Long,
     ): PendingReelPublish {
-        tracker.update(ReelPublishState.Processing)
+        report(run, ReelPublishState.Processing)
         val since = pending.processingSinceMillis ?: now()
         val current = if (pending.processingSinceMillis == null) {
-            checkpoint(pending.copy(processingSinceMillis = since))
+            checkpoint(run, pending.copy(processingSinceMillis = since))
         } else {
             pending
         }
@@ -199,28 +242,36 @@ class ReelPublishPipeline @Inject constructor(
             ReelMediaUploads.Readiness.Ready -> current
             ReelMediaUploads.Readiness.Pending ->
                 if (now() >= windowEnds) {
-                    fail(current, "Processing is taking too long. Try again in a minute.", retryable = true)
+                    fail(run, current, "Processing is taking too long. Try again in a minute.", retryable = true)
                 } else {
                     throw Stop(Outcome.Continue)
                 }
-            is ReelMediaUploads.Readiness.Failed -> fail(current, readiness.message, readiness.retryable)
+            is ReelMediaUploads.Readiness.Failed -> fail(run, current, readiness.message, readiness.retryable)
         }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────
 
-    private suspend fun checkpoint(pending: PendingReelPublish): PendingReelPublish {
+    private fun report(run: Run, state: ReelPublishState) {
+        if (run.isDiscarded()) throw Stop(Outcome.Discarded)
+        tracker.update(run.key, state)
+    }
+
+    private suspend fun checkpoint(run: Run, pending: PendingReelPublish): PendingReelPublish {
+        if (run.isDiscarded()) throw Stop(Outcome.Discarded)
         store.save(pending)
         return pending
     }
 
     /** Persist the failure so a restart shows it, then unwind. */
     private suspend fun fail(
+        run: Run,
         pending: PendingReelPublish,
         message: String,
         retryable: Boolean,
         needsChannel: Boolean = false,
     ): Nothing {
+        if (run.isDiscarded()) throw Stop(Outcome.Discarded)
         store.save(pending.copy(failure = PendingReelFailure(message, retryable, needsChannel)))
         throw Stop(Outcome.Failed(message, retryable, needsChannel))
     }
@@ -252,6 +303,10 @@ class ReelPublishPipeline @Inject constructor(
          * video is a `long_video` with the title the form required and NO
          * `remix_setting` at all — the server has no remix for long form, and
          * sending one would record a control nothing enforces.
+         *
+         * The hashtag and mention chips (2026-09-05) go as their own arrays,
+         * never folded into the text; `publish_at` is sent only when the user
+         * scheduled the post.
          */
         fun buildRequest(pending: PendingReelPublish, videoId: String, coverId: String?) = CreatePostRequest(
             text = pending.caption.trim(),
@@ -279,6 +334,9 @@ class ReelPublishPipeline @Inject constructor(
             coverMediaId = coverId,
             taggedUserIds = pending.taggedUserIds.takeIf { it.isNotEmpty() },
             locationName = pending.locationName.trim().ifBlank { null },
+            hashtags = pending.hashtags.takeIf { it.isNotEmpty() },
+            mentions = pending.mentions.takeIf { it.isNotEmpty() },
+            publishAt = pending.publishAt?.takeIf { it.isNotBlank() },
         )
 
         private const val DEFAULT_LANGUAGE = "en"

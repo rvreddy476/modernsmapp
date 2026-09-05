@@ -247,6 +247,10 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     ),
     reason = reason,
     reasonText = reasonText,
+    hashtags = hashtags.filter { it.isNotBlank() },
+    mentions = mentions.filter { it.isNotBlank() },
+    publishAt = publishAt?.takeIf { it.isNotBlank() },
+    isScheduled = isScheduled,
     channel = channel?.takeIf { it.handle.isNotBlank() || it.name.isNotBlank() }?.let {
         FeedChannel(
             userId = it.userId.ifBlank { authorId },

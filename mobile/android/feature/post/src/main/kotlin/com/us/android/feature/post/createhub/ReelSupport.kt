@@ -10,6 +10,7 @@ import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
+import com.us.android.feature.post.data.HashtagSearchApi
 import com.us.android.feature.post.data.PeopleSearchApi
 import com.us.android.feature.post.data.PostCategoriesApi
 import dagger.Binds
@@ -103,12 +104,15 @@ fun interface ReelCoverEncoder {
     fun encode(frame: CoverFrame): ByteArray?
 }
 
-/** The two server lookups the form makes: categories and people search. */
+/** The server lookups the form makes: categories, people search, hashtag suggestions. */
 interface ReelLookups {
     /** Null when the endpoint is unavailable, so the form keeps its fallback. */
     suspend fun categories(): List<ReelCategory>?
 
     suspend fun searchPeople(query: String): List<TaggedUser>
+
+    /** Tags already used on posts that start with [query], most used first; empty when the call fails. */
+    suspend fun suggestHashtags(query: String): List<String>
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -312,6 +316,7 @@ class JpegReelCoverEncoder @Inject constructor() : ReelCoverEncoder {
 class ApiReelLookups @Inject constructor(
     private val posts: PostCategoriesApi,
     private val people: PeopleSearchApi,
+    private val hashtags: HashtagSearchApi,
     private val errorMapper: ErrorMapper,
 ) : ReelLookups {
 
@@ -342,8 +347,16 @@ class ApiReelLookups @Inject constructor(
             is AppResult.Failure -> emptyList()
         }
 
+    override suspend fun suggestHashtags(query: String): List<String> =
+        when (val result = apiCall(errorMapper) { hashtags.search(query, HASHTAG_PAGE) }) {
+            is AppResult.Success ->
+                result.data.hashtags.map { it.displayName.ifBlank { it.normalizedName } }.filter { it.isNotBlank() }
+            is AppResult.Failure -> emptyList()
+        }
+
     private companion object {
         const val PEOPLE_PAGE = 20
+        const val HASHTAG_PAGE = 10
     }
 }
 

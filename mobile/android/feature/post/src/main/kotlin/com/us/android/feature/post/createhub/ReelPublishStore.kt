@@ -10,8 +10,11 @@ import com.us.android.core.media.upload.UploadSource
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileInputStream
@@ -42,7 +45,11 @@ data class PendingReelPublish(
     val creationKey: String,
     /** The picked content URI. May not survive process death — see [videoPath]. */
     val videoUri: String,
-    /** The app-private copy of the video, once made. This is what gets uploaded. */
+    /**
+     * The app-private copy of the video, once made. This is what gets
+     * uploaded. The studio's export (2026-09-05) writes here directly, so a
+     * reel that went through it is never copied a second time.
+     */
     val videoPath: String? = null,
     val videoMimeType: String? = null,
     /** The chosen cover frame as a JPEG file, or null when no frame could be extracted. */
@@ -60,6 +67,12 @@ data class PendingReelPublish(
     val allowRemix: Boolean = true,
     val taggedUserIds: List<String> = emptyList(),
     val locationName: String = "",
+    /** The hashtag chips, without `#`, at most thirty (2026-09-05). */
+    val hashtags: List<String> = emptyList(),
+    /** The mentioned people's usernames, without `@` (2026-09-05). */
+    val mentions: List<String> = emptyList(),
+    /** RFC 3339 instant the post goes live, or null to post now (2026-09-05). */
+    val publishAt: String? = null,
     /**
      * Bytes landed and `confirm` succeeded. This is the id the post is
      * created with — instant reels need nothing more than confirmed.
@@ -88,11 +101,20 @@ data class PendingReelFailure(
 // Ports
 // ════════════════════════════════════════════════════════════════════════
 
-/** The one durable record. Null when nothing is pending. */
+/**
+ * The durable queue (2026-09-05: "the user can start another reel while
+ * one uploads"). Records keep the order they were saved in; a save of a
+ * known key updates it in place.
+ */
 interface ReelPublishStore {
-    suspend fun load(): PendingReelPublish?
+    /** Every pending record, oldest first. Empty when nothing is pending. */
+    suspend fun loadAll(): List<PendingReelPublish>
+
+    suspend fun load(creationKey: String): PendingReelPublish? = loadAll().firstOrNull { it.creationKey == creationKey }
+
     suspend fun save(pending: PendingReelPublish)
-    suspend fun clear()
+
+    suspend fun remove(creationKey: String)
 }
 
 /** An app-private copy of the picked video. */
@@ -107,6 +129,12 @@ data class StashedVideo(val path: String, val mimeType: String)
 interface ReelPublishFiles {
     /** Copy the picked video into app storage. Null when it cannot be read. */
     suspend fun stashVideo(uri: String, creationKey: String): StashedVideo?
+
+    /**
+     * Where the studio's export lands for [creationKey] — the same place a
+     * stash would, so the worker uploads it without a copy.
+     */
+    fun exportTarget(creationKey: String): String
 
     /** Write the chosen cover's JPEG bytes. Returns the path, or null on failure. */
     suspend fun writeCover(bytes: ByteArray, creationKey: String): String?
@@ -123,7 +151,11 @@ interface ReelPublishFiles {
 // Android implementations
 // ════════════════════════════════════════════════════════════════════════
 
-/** `filesDir/reel_publish/pending.json`, written whole on every checkpoint. */
+/**
+ * `filesDir/reel_publish/queue.json`, written whole on every checkpoint.
+ * Reads and writes are serialized: two workers checkpointing at once must
+ * not lose each other's record.
+ */
 @Singleton
 class FileReelPublishStore @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -131,38 +163,56 @@ class FileReelPublishStore @Inject constructor(
     @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
 ) : ReelPublishStore {
 
+    private val lock = Mutex()
+    private val serializer = ListSerializer(PendingReelPublish.serializer())
+
     private val file: File
         get() = File(File(context.filesDir, DIR), FILE)
 
-    override suspend fun load(): PendingReelPublish? = withContext(io) {
-        val target = file
-        if (!target.exists()) return@withContext null
-        // A record this build no longer decodes is not a publish it can
-        // finish; treating it as "nothing pending" is the honest fallback.
-        runCatching { json.decodeFromString(PendingReelPublish.serializer(), target.readText()) }.getOrNull()
-    }
+    override suspend fun loadAll(): List<PendingReelPublish> = withContext(io) { lock.withLock { read() } }
 
     override suspend fun save(pending: PendingReelPublish) = withContext(io) {
+        lock.withLock {
+            val current = read()
+            val index = current.indexOfFirst { it.creationKey == pending.creationKey }
+            val next = if (index < 0) current + pending else current.toMutableList().also { it[index] = pending }
+            write(next)
+        }
+    }
+
+    override suspend fun remove(creationKey: String) = withContext(io) {
+        lock.withLock {
+            val next = read().filterNot { it.creationKey == creationKey }
+            if (next.isEmpty()) file.delete() else write(next)
+            Unit
+        }
+    }
+
+    private fun read(): List<PendingReelPublish> {
+        val target = file
+        if (!target.exists()) return emptyList()
+        // A file this build no longer decodes is not a queue it can finish;
+        // treating it as "nothing pending" is the honest fallback.
+        return runCatching { json.decodeFromString(serializer, target.readText()) }.getOrDefault(emptyList())
+    }
+
+    private fun write(records: List<PendingReelPublish>) {
         val target = file
         target.parentFile?.mkdirs()
         // Write beside, then rename: a crash mid-write must not leave a
-        // half-record that the next launch reads as "nothing pending".
+        // half-file that the next launch reads as "nothing pending".
         val temp = File(target.parentFile, "$FILE.tmp")
-        temp.writeText(json.encodeToString(PendingReelPublish.serializer(), pending))
+        val text = json.encodeToString(serializer, records)
+        temp.writeText(text)
         if (!temp.renameTo(target)) {
-            target.writeText(json.encodeToString(PendingReelPublish.serializer(), pending))
+            target.writeText(text)
             temp.delete()
         }
     }
 
-    override suspend fun clear() = withContext(io) {
-        file.delete()
-        Unit
-    }
-
     private companion object {
         const val DIR = "reel_publish"
-        const val FILE = "pending.json"
+        const val FILE = "queue.json"
     }
 }
 
@@ -197,6 +247,8 @@ class AndroidReelPublishFiles @Inject constructor(
         }
         StashedVideo(path = target.absolutePath, mimeType = picked.mimeType)
     }
+
+    override fun exportTarget(creationKey: String): String = File(dir, "$creationKey.video").absolutePath
 
     override suspend fun writeCover(bytes: ByteArray, creationKey: String): String? = withContext(io) {
         val target = File(dir, "$creationKey.jpg")

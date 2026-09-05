@@ -159,6 +159,25 @@ data class CreatePostRequest(
 
     /** A typed place name. No coordinates: this pass has no maps SDK. */
     @SerialName("location_name") val locationName: String? = null,
+
+    // ── The studio's details step (2026-09-05) ─────────────────────────
+    //
+    // Nullable with a null default, like the reel fields above: a request
+    // that sets none of them is byte-identical to the request before they
+    // existed.
+
+    /** The hashtag chips, without `#`, at most thirty. Never mixed into [text]. */
+    val hashtags: List<String>? = null,
+
+    /** The mentioned people's usernames, without `@`, at most twenty. */
+    val mentions: List<String>? = null,
+
+    /**
+     * RFC 3339 instant the post goes live — five minutes to thirty days
+     * ahead. The server answers `is_scheduled` and holds the post until
+     * then; a value it refuses comes back as a 400 in its own words.
+     */
+    @SerialName("publish_at") val publishAt: String? = null,
 )
 
 /**

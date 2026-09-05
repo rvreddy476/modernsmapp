@@ -67,6 +67,18 @@ interface VideoFeedApi {
     /** The category taxonomy — `{"data":[{"id":"comedy","label":"Comedy"},…]}`. */
     @GET("v1/posts/categories")
     suspend fun categories(): ApiEnvelope<List<FeedCategoryDto>>
+
+    /**
+     * The viewer's posts that are scheduled and not yet live (2026-09-05),
+     * soonest first — post-service `GET /v1/posts/me/scheduled`. Bare
+     * `PostDetail` rows with `publish_at` and `is_scheduled`, hydrated like
+     * any other bare row. Only the author can read them.
+     */
+    @GET("v1/posts/me/scheduled")
+    suspend fun scheduled(
+        @Query("limit") limit: Int,
+        @Query("cursor") cursor: String? = null,
+    ): ApiEnvelope<List<FeedItemDto>>
 }
 
 /** One continue-watching row: where the viewer left `post_id`, and the post itself when the server embeds it. */

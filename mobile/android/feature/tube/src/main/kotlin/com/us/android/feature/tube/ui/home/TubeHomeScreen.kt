@@ -19,9 +19,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -35,7 +32,6 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.feed.data.VideoThumb
-import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.model.FeedItem
 import com.us.android.core.ui.UsEmptyState
@@ -76,7 +72,6 @@ fun TubeHomeScreen(
     val ownChannel by viewModel.ownChannel.collectAsStateWithLifecycle()
     val viewer by viewModel.viewer.collectAsStateWithLifecycle()
     val moreState = rememberTubeMoreState()
-    var createChannel by rememberSaveable { mutableStateOf(false) }
 
     val actions = TubeHomeActions(
         videos = TubeVideoActions(
@@ -101,7 +96,6 @@ fun TubeHomeScreen(
         channels = TubeChannelActions(
             open = destinations.onOpenChannel,
             openYou = { destinations.onOpenTab(TubeTab.YOU) },
-            create = { createChannel = true },
         ),
         refresh = {
             items.refresh()
@@ -134,16 +128,6 @@ fun TubeHomeScreen(
             )
         }
     }
-
-    if (createChannel) {
-        CreateChannelSheet(
-            onCreated = {
-                createChannel = false
-                destinations.onOpenTab(TubeTab.YOU)
-            },
-            onDismiss = { createChannel = false },
-        )
-    }
 }
 
 /** Everything a row on the page can do, grouped by what it acts on, so the list functions stay short. */
@@ -168,11 +152,10 @@ internal class TubeReelActions(
     val more: (FeedItem) -> Unit,
 )
 
-/** A bubble on the strip: a channel, the viewer's own, or the invitation to make one. */
+/** A bubble on the strip: a channel, or the viewer's own. */
 internal class TubeChannelActions(
     val open: (userId: String) -> Unit,
     val openYou: () -> Unit,
-    val create: () -> Unit,
 )
 
 /** What the channels strip needs beyond the bubbles: the viewer's own channel and face. */
@@ -199,7 +182,9 @@ private fun TubeBody(
     val refresh = items.loadState.refresh
     val sections = tubeSections(
         videoCount = items.itemCount,
-        hasChannels = true,
+        // Only followed channels make a strip (founder, 2026-09-05: "we don't
+        // have many users") — no strip at all until there is one to show.
+        hasChannels = shelves.channels.isNotEmpty(),
         hasContinueWatching = shelves.continueWatching.isNotEmpty(),
         hasReels = shelves.reels.isNotEmpty(),
     )
@@ -270,7 +255,6 @@ private fun TubeSectionRow(
             channels = shelves.channels,
             onOpenChannel = actions.channels.open,
             onOpenYou = actions.channels.openYou,
-            onCreateChannel = actions.channels.create,
         )
         TubeSection.ContinueWatching -> ContinueRow(
             rows = shelves.continueWatching,

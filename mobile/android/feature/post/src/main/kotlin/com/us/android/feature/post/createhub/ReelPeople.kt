@@ -121,7 +121,7 @@ private fun PeopleHeader(count: Int, onDone: () -> Unit) {
         }
         Spacer(Modifier.width(UsTheme.spacing.s))
         Text(
-            text = "Tag people",
+            text = "Mention people",
             style = MaterialTheme.typography.titleMedium.copy(fontSize = TITLE_SIZE),
             color = UsTheme.extended.textPrimary,
             modifier = Modifier.weight(1f),
@@ -270,7 +270,8 @@ internal fun TaggedChips(users: List<TaggedUser>, onRemove: (String) -> Unit, mo
             ) {
                 UsAvatar(name = user.name, size = UsAvatarSize.Small, seed = user.id)
                 Text(
-                    text = user.name,
+                    // The chip says what goes on the wire: the handle, when the person has one.
+                    text = user.username.takeIf { it.isNotBlank() }?.let { "@$it" } ?: user.name,
                     style = MaterialTheme.typography.labelLarge,
                     color = UsTheme.extended.textPrimary,
                     maxLines = 1,

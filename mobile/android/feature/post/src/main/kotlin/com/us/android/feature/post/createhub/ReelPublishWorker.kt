@@ -25,6 +25,7 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -40,20 +41,28 @@ import javax.inject.Singleton
  * key makes a repeated create idempotent server-side. The worker adds
  * scheduling, not semantics.
  *
+ * ## ONE QUEUE, IN ORDER (2026-09-05)
+ *
+ * Every publish is appended to ONE unique chain ([QUEUE_NAME]), so uploads
+ * run one at a time in the order they were started — a second reel begun
+ * while the first uploads waits its turn rather than halving its bandwidth.
+ * A chain cancels every dependent the moment one link FAILS, which is why
+ * this worker never returns failure: a publish that stops is recorded in
+ * the store and the tracker, the run returns success, and the next reel in
+ * the queue goes ahead. The pending tile offers Retry, which appends a
+ * fresh run for the same record.
+ *
  * ## WHY IT CHAINS ITSELF
  *
  * Only on the fallback path: a server that still refuses a confirmed video
  * is polled, a run is stopped at ten minutes and a transcode can take
  * thirty, so a run whose budget ends mid-poll returns success and APPENDS
- * another run under the same unique name. The record's
- * `processingSinceMillis` keeps the 30-minute window honest across those runs.
- *
- * A failure is terminal for the chain — the pending reel item offers Retry,
- * which enqueues a fresh chain over the same record — rather than
- * WorkManager's silent backoff, so "Couldn't post" is shown the moment it is
- * known and the user decides.
+ * another run to the queue. The record's `processingSinceMillis` keeps the
+ * 30-minute window honest across those runs.
  */
 @HiltWorker
+// The worker's collaborators, injected; a wrapper would add indirection, not clarity.
+@Suppress("LongParameterList")
 class ReelPublishWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted params: WorkerParameters,
@@ -61,73 +70,95 @@ class ReelPublishWorker @AssistedInject constructor(
     private val store: ReelPublishStore,
     private val files: ReelPublishFiles,
     private val tracker: ReelPublishTracker,
+    private val discards: ReelPublishDiscards,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val key = inputData.getString(KEY_CREATION_KEY) ?: return Result.failure()
-        // A record for a different key means this work is stale — the user
-        // discarded that publish and started another. Nothing to do.
-        val pending = store.load()?.takeIf { it.creationKey == key } ?: return Result.failure()
+        val key = inputData.getString(KEY_CREATION_KEY) ?: return Result.success()
+        // No record means the user discarded this publish while it queued.
+        // Nothing to do — and never a failure, which would cancel the rest
+        // of the queue behind it.
+        val pending = store.load(key) ?: return Result.success()
+        val retry = inputData.getBoolean(KEY_RETRY, false)
+        if (pending.failure != null && !retry) return Result.success()
 
-        return when (val outcome = pipeline.run(pending)) {
+        return when (val outcome = pipeline.run(pending, isDiscarded = { discards.isDiscarded(key) })) {
             is ReelPublishPipeline.Outcome.Published -> {
                 // The record as the pipeline left it, not as this run loaded
                 // it: the stashed copy's path was written by a checkpoint
                 // and would be missed (and leak) if read from `pending`.
-                val final = store.load() ?: pending
-                store.clear()
+                val final = store.load(key) ?: pending
+                store.remove(key)
                 files.delete(listOf(final.videoPath, final.coverPath))
-                tracker.update(ReelPublishState.Published(outcome.postId))
+                tracker.update(key, ReelPublishState.Published(outcome.postId, publishAt = final.publishAt))
                 Result.success(workDataOf(KEY_POST_ID to outcome.postId))
             }
             ReelPublishPipeline.Outcome.Continue -> {
-                enqueue(applicationContext, key, ExistingWorkPolicy.APPEND_OR_REPLACE)
+                enqueue(applicationContext, key)
                 Result.success()
             }
+            ReelPublishPipeline.Outcome.Discarded -> Result.success()
             is ReelPublishPipeline.Outcome.Failed -> {
-                tracker.update(ReelPublishState.Failed(outcome.message, outcome.retryable, outcome.needsChannel))
-                Result.failure(workDataOf(KEY_FAILURE_REASON to outcome.message))
+                tracker.update(key, ReelPublishState.Failed(outcome.message, outcome.retryable, outcome.needsChannel))
+                Result.success(workDataOf(KEY_FAILURE_REASON to outcome.message))
             }
         }
     }
 
     companion object {
         const val KEY_CREATION_KEY = "creationKey"
+        const val KEY_RETRY = "retry"
         const val KEY_POST_ID = "postId"
         const val KEY_FAILURE_REASON = "reason"
 
-        fun uniqueName(creationKey: String) = "reel-publish-$creationKey"
+        /** The one chain every publish joins the end of. */
+        const val QUEUE_NAME = "reel-publish-queue"
 
         /**
-         * KEEP for a fresh publish: a second tap while one is queued must not
-         * restart it. APPEND for a continuation: run after the current one.
+         * Append a run for [creationKey] to the queue. APPEND_OR_REPLACE:
+         * after the current chain when one is still running, at once when
+         * the last one finished (the queue never fails, so "replace" is
+         * only ever the finished-chain case).
          */
-        fun enqueue(context: Context, creationKey: String, policy: ExistingWorkPolicy) {
+        fun enqueue(context: Context, creationKey: String, retry: Boolean = false) {
             val request = OneTimeWorkRequestBuilder<ReelPublishWorker>()
-                .setInputData(workDataOf(KEY_CREATION_KEY to creationKey))
+                .setInputData(workDataOf(KEY_CREATION_KEY to creationKey, KEY_RETRY to retry))
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(uniqueName(creationKey), policy, request)
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork(QUEUE_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
         }
     }
 }
 
 /** What the reel form hands over on Post. */
 interface ReelPublishLauncher {
-    /** True while a publish is in flight — the form refuses a second one. */
-    val isBusy: Boolean
-
     suspend fun enqueue(pending: PendingReelPublish)
 }
 
 /**
- * Owns the ONE pending publish: enqueues it, restores it after a restart,
- * and answers the pending reel item's Retry and Discard.
+ * The keys the user discarded while their publish was queued or running —
+ * the running pipeline checks here and stops.
+ */
+@Singleton
+class ReelPublishDiscards @Inject constructor() {
+    private val keys: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+
+    fun discard(creationKey: String) {
+        keys += creationKey
+    }
+
+    fun isDiscarded(creationKey: String): Boolean = creationKey in keys
+}
+
+/**
+ * Owns the pending queue: enqueues records, restores them after a restart,
+ * and answers the pending tiles' Retry and Discard.
  *
- * Created the first time something injects it — the Reels tab's ViewModel,
- * or the reel form — which is early enough: the worker itself only needs the
- * tracker, so a WorkManager restart reports progress whether or not this
- * object exists yet.
+ * Created the first time something injects it — a grid's ViewModel, the
+ * Reels tab's, or the reel form — which is early enough: the worker itself
+ * only needs the tracker, so a WorkManager restart reports progress whether
+ * or not this object exists yet.
  */
 @Singleton
 class ReelPublishController @Inject constructor(
@@ -135,77 +166,72 @@ class ReelPublishController @Inject constructor(
     private val store: ReelPublishStore,
     private val files: ReelPublishFiles,
     private val tracker: ReelPublishTracker,
+    private val discards: ReelPublishDiscards,
     @ApplicationScope private val scope: CoroutineScope,
 ) : ReelPublishLauncher, ReelPublishActions {
-
-    override val isBusy: Boolean
-        get() = tracker.isActive
 
     init {
         scope.launch { restore() }
     }
 
     override suspend fun enqueue(pending: PendingReelPublish) {
-        // A new reel replaces a finished (failed or dismissed) one: its
-        // cached copy and cover would otherwise sit in cacheDir for good.
-        store.load()?.takeIf { it.creationKey != pending.creationKey }?.let { previous ->
-            files.delete(listOf(previous.videoPath, previous.coverPath))
-        }
         store.save(pending)
-        // The preview first, then the state: the Reels tab draws the pending
-        // item the moment the state turns active, and wants the cover then.
+        // The preview first, then the state: the grid draws the pending
+        // tile the moment the state turns active, and wants the cover then.
         tracker.setPreview(pending.preview())
-        tracker.update(ReelPublishState.Preparing)
-        ReelPublishWorker.enqueue(context, pending.creationKey, ExistingWorkPolicy.KEEP)
+        tracker.update(pending.creationKey, ReelPublishState.Preparing)
+        ReelPublishWorker.enqueue(context, pending.creationKey)
     }
 
-    override fun retry() {
+    override fun retry(creationKey: String) {
         scope.launch {
-            val pending = store.load() ?: return@launch
+            val pending = store.load(creationKey) ?: return@launch
             // A fresh readiness window: the retry is a new decision by the
             // user, not the tail of the one that timed out.
             store.save(pending.copy(failure = null, processingSinceMillis = null))
             tracker.setPreview(pending.preview())
-            tracker.update(ReelPublishState.Preparing)
-            ReelPublishWorker.enqueue(context, pending.creationKey, ExistingWorkPolicy.KEEP)
+            tracker.update(creationKey, ReelPublishState.Preparing)
+            ReelPublishWorker.enqueue(context, creationKey, retry = true)
         }
     }
 
-    override fun discard() {
+    override fun discard(creationKey: String) {
+        discards.discard(creationKey)
         scope.launch {
-            val pending = store.load()
-            if (pending != null) {
-                WorkManager.getInstance(context).cancelUniqueWork(ReelPublishWorker.uniqueName(pending.creationKey))
-                files.delete(listOf(pending.videoPath, pending.coverPath))
-            }
-            store.clear()
-            tracker.reset()
+            val pending = store.load(creationKey)
+            store.remove(creationKey)
+            if (pending != null) files.delete(listOf(pending.videoPath, pending.coverPath))
+            tracker.reset(creationKey)
         }
     }
 
-    override fun dismiss() = tracker.dismiss()
+    override fun dismiss(creationKey: String) = tracker.dismiss(creationKey)
 
     /**
      * After a process restart: a failed record shows its failure; a record
      * still in flight either has WorkManager work running (which reports
-     * itself) or lost it, in which case it is enqueued again.
+     * itself) or lost it, in which case it is appended again, in order.
      */
     private suspend fun restore() {
-        val pending = store.load() ?: return
-        if (tracker.preview.value == null) tracker.setPreview(pending.preview())
-        val failure = pending.failure
-        if (failure != null) {
-            tracker.restoreIfIdle(ReelPublishState.Failed(failure.message, failure.retryable, failure.needsChannel))
-            return
-        }
-        val name = ReelPublishWorker.uniqueName(pending.creationKey)
-        val infos = WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(name).first()
+        val records = store.loadAll()
+        if (records.isEmpty()) return
+        val infos = WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(ReelPublishWorker.QUEUE_NAME).first()
         val alive = infos.any { !it.state.isFinished }
-        if (!alive) {
-            ReelPublishWorker.enqueue(context, pending.creationKey, ExistingWorkPolicy.KEEP)
+        records.forEach { pending ->
+            if (tracker.previewOf(pending.creationKey) == null) tracker.setPreview(pending.preview())
+            val failure = pending.failure
+            if (failure != null) {
+                tracker.restoreIfIdle(
+                    pending.creationKey,
+                    ReelPublishState.Failed(failure.message, failure.retryable, failure.needsChannel),
+                )
+            } else {
+                if (!alive) ReelPublishWorker.enqueue(context, pending.creationKey)
+                val resumed =
+                    if (pending.confirmedVideoId != null) ReelPublishState.Posting else ReelPublishState.Preparing
+                tracker.restoreIfIdle(pending.creationKey, resumed)
+            }
         }
-        val resumed = if (pending.confirmedVideoId != null) ReelPublishState.Posting else ReelPublishState.Preparing
-        tracker.restoreIfIdle(resumed)
     }
 
     private fun PendingReelPublish.preview() = ReelPublishPreview(
@@ -214,6 +240,7 @@ class ReelPublishController @Inject constructor(
         caption = caption,
         kind = kind,
         title = title,
+        publishAt = publishAt,
     )
 }
 

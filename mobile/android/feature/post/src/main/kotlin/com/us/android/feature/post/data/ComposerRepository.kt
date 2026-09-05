@@ -57,6 +57,10 @@ open class ComposerRepository @Inject constructor(
 
         is AppError.Server -> error.code in TerminalServerCodes
 
+        // A 400 under a code this client does not model — the server refusing
+        // a `publish_at`, say — is still the bytes being wrong (2026-09-05).
+        is AppError.Unknown -> error.statusCode == HTTP_BAD_REQUEST
+
         // Transport, auth refresh, rate limits and 5xx: all worth another go.
         else -> false
     }
@@ -69,6 +73,8 @@ open class ComposerRepository @Inject constructor(
         is AppError.InvalidRequest -> error.message
         is AppError.Forbidden -> "That post couldn't be published."
         is AppError.Server -> serverMessage(error.code)
+        // The server's own sentence for a refusal this client cannot name.
+        is AppError.Unknown -> error.message?.takeIf { it.isNotBlank() } ?: GENERIC_FAILURE
         else -> GENERIC_FAILURE
     }
 
@@ -85,6 +91,7 @@ open class ComposerRepository @Inject constructor(
 
     private companion object {
         const val GENERIC_FAILURE = "We couldn't publish that. Try again."
+        const val HTTP_BAD_REQUEST = 400
 
         /**
          * Server codes that are the client's fault and will not change.

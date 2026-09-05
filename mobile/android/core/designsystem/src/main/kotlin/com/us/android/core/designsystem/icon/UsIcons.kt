@@ -745,6 +745,48 @@ object UsIcons {
         "M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0",
     )
 
+    // ── The Reel studio and its details step (2026-09-05) ────────────────
+
+    /** Lucide `crop` — the studio's Frame tool. */
+    val Crop: ImageVector = lucideStroked(
+        "Crop",
+        "M6 2v14a2 2 0 0 0 2 2h14",
+        "M18 22V8a2 2 0 0 0-2-2H2",
+    )
+
+    /** Lucide `scissors` — the studio's Trim tool. */
+    val Scissors: ImageVector = lucideStroked(
+        "Scissors",
+        "M9 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+        "M8.12 8.12 12 12",
+        "M20 4 8.12 15.88",
+        "M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+        "M14.8 14.8 20 20",
+    )
+
+    /** Lucide `hash` — the HASHTAGS field. */
+    val Hash: ImageVector = lucideStroked(
+        "Hash",
+        "M4 9h16",
+        "M4 15h16",
+        "M10 3 8 21",
+        "M16 3l-2 18",
+    )
+
+    /** Lucide `at-sign` — the MENTIONS field. */
+    val AtSign: ImageVector = lucideStroked(
+        "AtSign",
+        "M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
+        "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8",
+    )
+
+    /** Lucide `clock` — a scheduled post: the Schedule button and the tile's badge. */
+    val Clock: ImageVector = lucideStroked(
+        "Clock",
+        "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
+        "M12 6v6l4 2",
+    )
+
     val Lock: ImageVector = stroked("Lock") {
         moveTo(6.5f, 10.5f)
         horizontalLineTo(17.5f)

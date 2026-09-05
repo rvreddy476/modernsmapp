@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.util.UnstableApi
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
@@ -72,6 +74,9 @@ import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.usSwitchColors
 import com.us.android.feature.post.createhub.ReelPublishViewModel.Phase
+import com.us.android.feature.post.createhub.studio.ReelStudioScreen
+import com.us.android.feature.post.createhub.studio.ReelStudioViewModel
+import com.us.android.feature.post.createhub.studio.StudioActions
 import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
 import com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
@@ -92,60 +97,66 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
  * which kind from the route; a reel over five minutes can switch to a
  * video in place ([GateNotice]).
  *
- * Post hands the publish to WorkManager and LEAVES — a reel closes back to
- * where the user was and the Reels tab's pending item shows the upload; a
- * long video opens the viewer's own profile, whose grid shows the posting
- * video first with its ring. There is no published callback here because
+ * A REEL goes through the studio first (2026-09-05): pick, edit — frame,
+ * trim, speed, look, text — export, and only then this form, over the
+ * exported file. Its caption is just the caption: hashtags are chips in a
+ * field of their own, mentions are the people picked, and beside Post
+ * sits Schedule.
+ *
+ * Post hands the publish to WorkManager and LEAVES onto the viewer's own
+ * profile, whose grid shows the posting video first with its ring; several
+ * may be pending at once. There is no published callback here because
  * nothing is published while this surface exists.
  */
+@OptIn(UnstableApi::class)
 @Composable
 internal fun ReelSurface(
     onClose: () -> Unit,
     onOpenOwnProfile: () -> Unit,
     viewModel: ReelPublishViewModel = hiltViewModel(),
+    studio: ReelStudioViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    var cameraTarget by remember { mutableStateOf<android.net.Uri?>(null) }
-
-    val pickVideo = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let { viewModel.onVideoPicked(it.toString()) } }
-
-    val captureVideo = rememberLauncherForActivityResult(
-        ActivityResultContracts.CaptureVideo(),
-    ) { saved -> if (saved) cameraTarget?.let { viewModel.onVideoPicked(it.toString()) } }
-
-    val openCamera = rememberCameraLaunch {
-        val target = captureUri(context, "mp4")
-        cameraTarget = target
-        captureVideo.launch(target)
-    }
-    val openSystemPicker = {
-        pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-    }
+    val studioState by studio.state.collectAsStateWithLifecycle()
     val long = state.kind == VideoKind.LONG
 
+    // A reel goes through the studio first; a long video is picked as is.
+    val sources = rememberVideoSources(onSource = if (long) viewModel::onVideoPicked else studio::setSource)
+
+    // The studio rendered: the details step takes the file, and the studio forgets it.
+    studioState.exportedPath?.let { path ->
+        LaunchedEffect(path) {
+            viewModel.onReelExported(path)
+            studio.consumeExported()
+        }
+    }
+
     if (state.phase is Phase.Enqueued) {
-        // Handed to the worker: leave, once. A reel lands the user back where
-        // they were and the Reels tab's pending item takes over; a long video
-        // opens the viewer's own profile, whose pending tile takes over there.
-        LaunchedEffect(Unit) { if (long) onOpenOwnProfile() else onClose() }
+        // Handed to the worker: leave, once, onto the viewer's own profile,
+        // whose grid shows the pending tile with its ring (founder, 2026-09-05).
+        LaunchedEffect(Unit) { onOpenOwnProfile() }
     }
 
     val gate = if (long) channelGate(state.channel) else ChannelGate.Proceed
     when {
         gate is ChannelGate.Blocked -> UsErrorState(message = gate.message, onRetry = viewModel::retryChannel)
-        state.videoUri == null -> MediaGallerySurface(
-            kind = GalleryKind.Videos,
-            title = if (long) "New video" else "New reel",
-            subtitle = if (long) "Pick a video — it posts to Tube." else "Pick a video — it posts to Reels.",
-            onClose = onClose,
-            onCamera = openCamera,
-            onPicked = { uris -> uris.firstOrNull()?.let { viewModel.onVideoPicked(it.toString()) } },
-            onSystemPicker = openSystemPicker,
+        state.videoUri == null && !long && studioState.sourceUri != null -> ReelStudioScreen(
+            state = studioState,
+            actions = studioActions(studio),
+            onClose = studio::clear,
+            onNext = { studio.startExport(viewModel.exportTargetPath()) },
         )
-        else -> ReelForm(state = state, viewModel = viewModel, onClose = onClose, onChangeVideo = openSystemPicker)
+        state.videoUri == null -> VideoSourceStep(long = long, sources = sources, onClose = onClose)
+        else -> ReelForm(
+            state = state,
+            viewModel = viewModel,
+            onClose = onClose,
+            onChangeVideo = {
+                viewModel.clearVideo()
+                studio.clear()
+                if (long) sources.openSystemPicker()
+            },
+        )
     }
 
     // Channel before video (founder, 2026-09-05): the sheet comes first, over
@@ -156,7 +167,74 @@ internal fun ReelSurface(
     }
 }
 
-private enum class ReelSheet { None, Audience, Category, Location, People }
+/** The three ways a video comes in: the in-app gallery's pick, the camera, the system picker. */
+private class VideoSources(
+    val onPicked: (String) -> Unit,
+    val openCamera: () -> Unit,
+    val openSystemPicker: () -> Unit,
+)
+
+@Composable
+private fun rememberVideoSources(onSource: (String) -> Unit): VideoSources {
+    val context = LocalContext.current
+    val latest by rememberUpdatedState(onSource)
+    var cameraTarget by remember { mutableStateOf<android.net.Uri?>(null) }
+    val pickVideo = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let { latest(it.toString()) } }
+    val captureVideo = rememberLauncherForActivityResult(
+        ActivityResultContracts.CaptureVideo(),
+    ) { saved -> if (saved) cameraTarget?.let { latest(it.toString()) } }
+    val openCamera = rememberCameraLaunch {
+        val target = captureUri(context, "mp4")
+        cameraTarget = target
+        captureVideo.launch(target)
+    }
+    return remember(openCamera) {
+        VideoSources(
+            onPicked = { uri -> latest(uri) },
+            openCamera = openCamera,
+            openSystemPicker = {
+                pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+            },
+        )
+    }
+}
+
+/** The in-app gallery over videos: one tap picks; Camera and Browse lead to the other two sources. */
+@Composable
+private fun VideoSourceStep(long: Boolean, sources: VideoSources, onClose: () -> Unit) {
+    MediaGallerySurface(
+        kind = GalleryKind.Videos,
+        title = if (long) "New video" else "New reel",
+        subtitle = if (long) "Pick a video — it posts to Tube." else "Pick a video — the studio opens next.",
+        onClose = onClose,
+        onCamera = sources.openCamera,
+        onPicked = { uris -> uris.firstOrNull()?.let { sources.onPicked(it.toString()) } },
+        onSystemPicker = sources.openSystemPicker,
+    )
+}
+
+/** The studio's verbs, bound to its ViewModel. */
+private fun studioActions(studio: ReelStudioViewModel) = StudioActions(
+    selectTool = studio::selectTool,
+    togglePlaying = studio::togglePlaying,
+    setPlaying = studio::setPlaying,
+    setMode = studio::setMode,
+    pan = studio::pan,
+    setTrimStart = studio::setTrimStart,
+    setTrimEnd = studio::setTrimEnd,
+    setSpeed = studio::setSpeed,
+    setLook = studio::setLook,
+    setText = studio::setText,
+    setTextStyle = studio::setTextStyle,
+    moveText = studio::moveText,
+    removeText = studio::removeText,
+    cancelExport = studio::cancelExport,
+    dismissExportError = studio::dismissExportError,
+)
+
+private enum class ReelSheet { None, Audience, Category, Location, People, Schedule }
 
 @Suppress("LongMethod") // One surface, one composable: the form IS the list of its parts.
 @Composable
@@ -177,16 +255,7 @@ private fun ReelForm(
                 .fillMaxSize()
                 .imePadding(),
         ) {
-            CreateTopBar(title = if (long) "New video" else "New reel", onClose = onClose) {
-                PublishPill(
-                    text = if (state.phase is Phase.Failure) "Try again" else "Post",
-                    enabled = state.canPost,
-                    busy = state.isBusy,
-                    onClick = viewModel::onPost,
-                    description = postDescription(state, noun),
-                    testTag = "reel-post",
-                )
-            }
+            CreateTopBar(title = if (long) "New video" else "New reel", onClose = onClose)
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -216,6 +285,19 @@ private fun ReelForm(
                 )
                 GateNotice(gate = state.gate, enabled = editable, onSwitchToLong = viewModel::switchToLong)
                 Spacer(Modifier.height(UsTheme.spacing.xxl))
+                HashtagsField(
+                    hashtags = state.hashtags,
+                    input = state.hashtagInput,
+                    suggestions = state.hashtagSuggestions,
+                    enabled = editable,
+                    actions = HashtagActions(
+                        onInputChanged = viewModel::onHashtagInputChanged,
+                        onCommit = { viewModel.commitHashtags() },
+                        onRemove = viewModel::removeHashtag,
+                        onPickSuggestion = viewModel::onHashtagSuggestionPicked,
+                    ),
+                )
+                Spacer(Modifier.height(UsTheme.spacing.xxl))
                 DetailsCard(
                     state = state,
                     enabled = editable,
@@ -228,8 +310,17 @@ private fun ReelForm(
                 Spacer(Modifier.height(UsTheme.spacing.xxl))
                 SwitchesCard(state = state, viewModel = viewModel, enabled = editable)
                 PhaseStatus(phase = state.phase)
-                Spacer(Modifier.height(UsTheme.spacing.xxxxl))
+                Spacer(Modifier.height(UsTheme.spacing.xxl))
             }
+            PostActions(
+                publishAt = state.publishAt,
+                canPost = state.canPost,
+                busy = state.isBusy,
+                retrying = state.phase is Phase.Failure,
+                onSchedule = { sheet = ReelSheet.Schedule },
+                onPost = viewModel::onPost,
+                description = postDescription(state, noun),
+            )
         }
         if (sheet == ReelSheet.People) {
             TagPeopleScreen(
@@ -305,6 +396,18 @@ private fun ReelPickerSheets(
             },
             onDismiss = onClose,
         )
+        ReelSheet.Schedule -> ScheduleSheet(
+            initial = state.publishAt,
+            onSchedule = {
+                viewModel.onScheduleChanged(it)
+                onClose()
+            },
+            onClear = {
+                viewModel.onScheduleChanged(null)
+                onClose()
+            },
+            onDismiss = onClose,
+        )
         ReelSheet.None, ReelSheet.People -> Unit
     }
 }
@@ -345,7 +448,7 @@ private fun CoverAndDescription(
                 value = caption,
                 onValueChange = onCaptionChanged,
                 enabled = enabled,
-                placeholder = "Describe your reel… #hashtags @mentions",
+                placeholder = "Describe your reel…",
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -365,7 +468,7 @@ private fun CoverAndDescription(
                 value = caption,
                 onValueChange = onCaptionChanged,
                 enabled = enabled,
-                placeholder = "Describe your video… #hashtags @mentions",
+                placeholder = "Describe your video…",
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(LONG_DESCRIPTION_HEIGHT),
@@ -517,9 +620,9 @@ private fun DetailsCard(
 ) {
     GlassCard {
         DetailRow(
-            icon = UsIcons.UserPlus,
-            title = "Tag people",
-            value = state.taggedUsers.size.takeIf { it > 0 }?.let { "$it tagged" }.orEmpty(),
+            icon = UsIcons.AtSign,
+            title = "Mention people",
+            value = state.taggedUsers.size.takeIf { it > 0 }?.let { "$it mentioned" }.orEmpty(),
             enabled = enabled,
             onClick = onTagPeople,
             testTag = "reel-tag-people-row",

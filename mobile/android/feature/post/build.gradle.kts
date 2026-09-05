@@ -46,6 +46,11 @@ dependencies {
     implementation(libs.work.runtime)
     implementation(libs.hilt.work)
     ksp(libs.hilt.work.compiler)
+    // The Reel studio (2026-09-05): a 9:16 preview with live effects through
+    // ExoPlayer, and the export through Transformer. Both at the player's
+    // version — one Media3 in the app, never two.
+    implementation(libs.media3.transformer)
+    implementation(libs.media3.effect)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

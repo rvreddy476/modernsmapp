@@ -84,6 +84,17 @@ data class FeedItem(
      * the cover must not become a second page of a video post.
      */
     val coverMedia: FeedMedia? = null,
+    /** The hashtag chips the author added (2026-09-05), without `#`. */
+    val hashtags: List<String> = emptyList(),
+    /** The usernames the author mentioned (2026-09-05), without `@`. */
+    val mentions: List<String> = emptyList(),
+    /**
+     * When a scheduled post goes live — RFC 3339 — and whether it is still
+     * waiting (2026-09-05). Only the author ever sees a scheduled post; the
+     * own profile draws it with a clock until then.
+     */
+    val publishAt: String? = null,
+    val isScheduled: Boolean = false,
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay

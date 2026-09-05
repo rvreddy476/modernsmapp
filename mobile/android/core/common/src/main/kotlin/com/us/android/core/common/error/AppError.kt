@@ -77,5 +77,12 @@ sealed interface AppError {
         val code: String?,
         val statusCode: Int?,
         override val requestId: String? = null,
+        /**
+         * The server's own sentence, when the envelope carried one. A 400
+         * with a code this client does not model — a rejected `publish_at`,
+         * say — is still worth showing in the server's words rather than as
+         * a generic failure (2026-09-05).
+         */
+        val message: String? = null,
     ) : AppError
 }

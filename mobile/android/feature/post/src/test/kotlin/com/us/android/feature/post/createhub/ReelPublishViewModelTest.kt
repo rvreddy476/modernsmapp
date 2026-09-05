@@ -46,7 +46,6 @@ class ReelPublishViewModelTest {
     // ── Fakes ───────────────────────────────────────────────────────────
 
     private class FakeLauncher : ReelPublishLauncher {
-        override var isBusy: Boolean = false
         val enqueued = mutableListOf<PendingReelPublish>()
         override suspend fun enqueue(pending: PendingReelPublish) {
             enqueued += pending
@@ -57,6 +56,7 @@ class ReelPublishViewModelTest {
         val covers = mutableListOf<ByteArray>()
         var refuseCover = false
         override suspend fun stashVideo(uri: String, creationKey: String): StashedVideo? = null
+        override fun exportTarget(creationKey: String): String = "/cache/$creationKey.video"
         override suspend fun writeCover(bytes: ByteArray, creationKey: String): String? {
             if (refuseCover) return null
             covers += bytes
@@ -73,12 +73,18 @@ class ReelPublishViewModelTest {
     private class FakeLookups(
         var categories: List<ReelCategory>? = null,
         var people: List<TaggedUser> = emptyList(),
+        var hashtags: List<String> = emptyList(),
     ) : ReelLookups {
         val queries = mutableListOf<String>()
+        val hashtagQueries = mutableListOf<String>()
         override suspend fun categories(): List<ReelCategory>? = categories
         override suspend fun searchPeople(query: String): List<TaggedUser> {
             queries += query
             return people
+        }
+        override suspend fun suggestHashtags(query: String): List<String> {
+            hashtagQueries += query
+            return hashtags
         }
     }
 
@@ -450,18 +456,22 @@ class ReelPublishViewModelTest {
 
     // ── Guards ──────────────────────────────────────────────────────────
 
+    /** The queue takes several (2026-09-05): a second reel is handed over even while the first uploads. */
     @Test
-    fun `a post while another reel is still posting is refused`() = runTest {
-        val launcher = FakeLauncher().apply { isBusy = true }
+    fun `a second post while another reel is still posting is queued, not refused`() = runTest {
+        val launcher = FakeLauncher()
         val vm = viewModel(launcher = launcher)
 
-        vm.pickAndPost()
+        vm.pickAndPost("first")
+        advanceUntilIdle()
+        vm.onVideoPicked("content://video/2")
+        vm.onCaptionChanged("second")
+        vm.onPost()
         advanceUntilIdle()
 
-        assertThat(launcher.enqueued).isEmpty()
-        val phase = vm.state.value.phase
-        assertThat(phase).isInstanceOf(ReelPublishViewModel.Phase.Failure::class.java)
-        assertThat((phase as ReelPublishViewModel.Phase.Failure).message).contains("still posting")
+        assertThat(launcher.enqueued.map { it.caption }).containsExactly("first", "second").inOrder()
+        assertThat(launcher.enqueued.map { it.creationKey }.distinct()).hasSize(2)
+        assertThat(vm.state.value.phase).isEqualTo(ReelPublishViewModel.Phase.Enqueued)
     }
 
     @Test
@@ -605,5 +615,126 @@ class ReelPublishViewModelTest {
         const val TEN_SECONDS_US = 10_000_000L
         const val NOT_FOUND = 404
         const val SETTLE_MILLIS = 100L
+    }
+
+    // ── The details step's fields (2026-09-05) ─────────────────────────
+
+    @Test
+    fun `typing a space or comma after a tag makes a chip, and the chips go on the record`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+
+        vm.onHashtagInputChanged("#longboard ")
+        vm.onHashtagInputChanged("sunday, ")
+        vm.onHashtagInputChanged("Longboard ") // a duplicate, ignoring case
+        vm.onHashtagInputChanged("skate") // left in the field, no separator yet
+
+        assertThat(vm.state.value.hashtags).containsExactly("longboard", "sunday").inOrder()
+        assertThat(vm.state.value.hashtagInput).isEqualTo("skate")
+
+        vm.pickAndPost("caption only")
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.caption).isEqualTo("caption only")
+        assertThat(pending.hashtags).containsExactly("longboard", "sunday", "skate").inOrder()
+    }
+
+    @Test
+    fun `hashtag suggestions arrive from two characters and a tapped one becomes a chip`() = runTest {
+        val lookups = FakeLookups(hashtags = listOf("longboard", "longride"))
+        val vm = viewModel(lookups = lookups)
+
+        vm.onHashtagInputChanged("l")
+        advanceUntilIdle()
+        assertThat(lookups.hashtagQueries).isEmpty()
+
+        vm.onHashtagInputChanged("#lo")
+        advanceUntilIdle()
+        assertThat(lookups.hashtagQueries).containsExactly("lo")
+        assertThat(vm.state.value.hashtagSuggestions).containsExactly("longboard", "longride").inOrder()
+
+        vm.onHashtagSuggestionPicked("longboard")
+        assertThat(vm.state.value.hashtags).containsExactly("longboard")
+        assertThat(vm.state.value.hashtagInput).isEmpty()
+        assertThat(vm.state.value.hashtagSuggestions).isEmpty()
+
+        vm.removeHashtag("longboard")
+        assertThat(vm.state.value.hashtags).isEmpty()
+    }
+
+    @Test
+    fun `mentioned people go on the record as ids and as usernames`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+
+        vm.onTagUser(TaggedUser("u-1", "Maya", "maya"))
+        vm.onTagUser(TaggedUser("u-3", "Zed", "")) // no handle: an id only
+        vm.pickAndPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.taggedUserIds).containsExactly("u-1", "u-3").inOrder()
+        assertThat(pending.mentions).containsExactly("maya")
+    }
+
+    @Test
+    fun `a schedule is carried as RFC 3339 and cleared back to post now`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+        val at = java.time.Instant.parse("2026-09-06T13:00:00Z")
+
+        vm.onScheduleChanged(at)
+        assertThat(vm.state.value.publishAt).isEqualTo(at)
+        vm.pickAndPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.last().publishAt).isEqualTo("2026-09-06T13:00:00Z")
+
+        vm.onScheduleChanged(null)
+        vm.onVideoPicked("content://video/2")
+        vm.onPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.last().publishAt).isNull()
+    }
+
+    // ── The studio's hand-off (2026-09-05) ─────────────────────────────
+
+    /** The export lands under the form's key and is uploaded from there: no stash, no copy. */
+    @Test
+    fun `an exported reel keeps its key and hands the file path over as the video to upload`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+        val target = vm.exportTargetPath()
+
+        vm.onReelExported(target)
+        advanceUntilIdle()
+        assertThat(vm.state.value.frames).hasSize(Filmstrip.FRAME_COUNT)
+        assertThat(vm.state.value.cover).isNotNull()
+        vm.onPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(target).endsWith("${pending.creationKey}.video")
+        assertThat(pending.videoPath).isEqualTo(target)
+        assertThat(pending.videoMimeType).isEqualTo("video/mp4")
+        assertThat(pending.videoUri).endsWith(".video")
+    }
+
+    @Test
+    fun `change video forgets the video and its cover and keeps the fields`() = runTest {
+        val vm = viewModel()
+        vm.onVideoPicked("content://video/1")
+        vm.onCaptionChanged("kept")
+        vm.onHashtagInputChanged("kept ")
+        advanceUntilIdle()
+
+        vm.clearVideo()
+
+        assertThat(vm.state.value.videoUri).isNull()
+        assertThat(vm.state.value.cover).isNull()
+        assertThat(vm.state.value.frames).isEmpty()
+        assertThat(vm.state.value.canPost).isFalse()
+        assertThat(vm.state.value.caption).isEqualTo("kept")
+        assertThat(vm.state.value.hashtags).containsExactly("kept")
     }
 }

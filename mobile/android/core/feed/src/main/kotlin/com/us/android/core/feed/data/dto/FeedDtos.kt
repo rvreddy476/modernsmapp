@@ -77,6 +77,12 @@ data class FeedItemDto(
      * — so a feed that still carries a deleted post never renders it.
      */
     @SerialName("deleted_at") val deletedAt: String = "",
+    /** The author's hashtag chips and mentions (2026-09-05); `omitempty` on older rows. */
+    val hashtags: List<String> = emptyList(),
+    val mentions: List<String> = emptyList(),
+    /** A scheduled post's instant and flag (2026-09-05); absent on a post that went out at once. */
+    @SerialName("publish_at") val publishAt: String? = null,
+    @SerialName("is_scheduled") val isScheduled: Boolean = false,
 )
 
 /**

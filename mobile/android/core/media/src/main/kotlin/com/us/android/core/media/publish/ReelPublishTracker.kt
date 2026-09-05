@@ -3,20 +3,20 @@ package com.us.android.core.media.publish
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Where a background reel publish has got to — the ONE state the Reels tab's
- * pending item renders and the publish worker writes.
+ * Where a background reel publish has got to — the state a pending tile
+ * renders and the publish worker writes.
  *
  * Product-neutral on purpose: this module knows how to upload and play
  * media, not what a reel's form contains. The pending publish itself (the
  * video, the caption, the switches) lives with the worker in `:feature:post`;
- * only its progress crosses into a module that `:feature:feed` may also see,
- * because features must not depend on each other.
+ * only its progress crosses into a module that `:feature:feed` and
+ * `:feature:profile` may also see, because features must not depend on each
+ * other.
  */
 sealed interface ReelPublishState {
     /** Nothing is posting and nothing is waiting to be seen. */
@@ -38,8 +38,11 @@ sealed interface ReelPublishState {
     /** The cover is going up and the post is being created. */
     data object Posting : ReelPublishState
 
-    /** Done. The Reels tab swaps the pending item for the real reel. */
-    data class Published(val postId: String) : ReelPublishState
+    /**
+     * Done. The pending tile swaps for the real post — or, when the post was
+     * given a [publishAt] in the future, for a scheduled tile that waits for it.
+     */
+    data class Published(val postId: String, val publishAt: String? = null) : ReelPublishState
 
     /**
      * Stopped. [retryable] decides whether the pending item offers "Retry";
@@ -53,7 +56,7 @@ sealed interface ReelPublishState {
         val needsChannel: Boolean = false,
     ) : ReelPublishState
 
-    /** Work is in flight — a second publish must wait for it. */
+    /** Work is in flight. */
     val isActive: Boolean
         get() = this is Preparing || this is Uploading || this is Processing || this is Posting
 
@@ -77,11 +80,12 @@ enum class VideoKind {
 }
 
 /**
- * What the Reels tab (or Tube) shows for a video that is still posting: the
- * cover frame the user chose (a local JPEG path, or null when no frame could
- * be extracted), the caption, and — for a long video — its title, so the
+ * What a pending tile shows for a video that is still posting: the cover
+ * frame the user chose (a local JPEG path, or null when no frame could be
+ * extracted), the caption, and — for a long video — its title, so the
  * pending item looks like the post it is about to become. [kind] decides
- * which surface draws it.
+ * which surface draws it; [publishAt] (RFC 3339) is set when the post was
+ * scheduled rather than posted now.
  */
 data class ReelPublishPreview(
     val creationKey: String,
@@ -89,52 +93,72 @@ data class ReelPublishPreview(
     val caption: String,
     val kind: VideoKind = VideoKind.REEL,
     val title: String = "",
+    val publishAt: String? = null,
 )
 
 /**
- * The publish worker's side of the pending item — what "Retry" and "Discard" do.
- *
- * Declared here so `:feature:feed` can call it; IMPLEMENTED in `:feature:post`,
- * which owns the worker and the persisted publish, and bound by Hilt at the
- * app level. The same port-and-adapter shape the render exporter uses.
+ * One entry of the publish queue: its preview (null until whoever enqueued
+ * or restored the record has set it — a worker restarted by WorkManager
+ * reports state before the controller has read the file) and its state.
  */
-interface ReelPublishActions {
-    /** Re-enqueue the failed publish, keeping every media id it already has. */
-    fun retry()
-
-    /** Forget the failed publish and delete its cached files. */
-    fun discard()
-
-    /** Let go of a finished publish. A publish still in flight is left alone. */
-    fun dismiss()
+data class ReelPublishItem(
+    val creationKey: String,
+    val preview: ReelPublishPreview?,
+    val state: ReelPublishState,
+) {
+    /** Only an item with a cover to draw and something happening is a tile. */
+    val isDrawable: Boolean
+        get() = preview != null && state !is ReelPublishState.Idle
 }
 
 /**
- * The single process-wide reel publish status.
+ * The publish worker's side of the pending tile — what "Retry" and "Discard" do.
  *
- * One at a time by design: the pending publish is persisted as one record,
- * and the Reels tab has one slot above the feed for it. The worker writes
- * here as it goes; the reels tab reads it; a process restart starts it at
- * [Idle] until the worker (restarted by WorkManager) or the persisted record
- * puts the real state back — see [restoreIfIdle].
+ * Declared here so `:feature:feed` and `:feature:profile` can call it;
+ * IMPLEMENTED in `:feature:post`, which owns the worker and the persisted
+ * queue, and bound by Hilt at the app level. The same port-and-adapter shape
+ * the render exporter uses.
+ */
+interface ReelPublishActions {
+    /** Re-enqueue the failed publish, keeping every media id it already has. */
+    fun retry(creationKey: String)
+
+    /** Forget the publish — queued, running or failed — and delete its cached files. */
+    fun discard(creationKey: String)
+
+    /** Let go of a finished publish. A publish still in flight is left alone. */
+    fun dismiss(creationKey: String)
+}
+
+/**
+ * The process-wide publish queue's status: one entry per creation key, in
+ * the order they were enqueued (founder, 2026-09-05: "the user can start
+ * another reel while one uploads"). The worker writes here as it goes; the
+ * profile grid and the Reels tab read it; a process restart starts it empty
+ * until the workers (restarted by WorkManager) or the persisted records put
+ * the real states back — see [restoreIfIdle].
  */
 @Singleton
 class ReelPublishTracker @Inject constructor() {
 
-    private val _state = MutableStateFlow<ReelPublishState>(ReelPublishState.Idle)
-    val state: StateFlow<ReelPublishState> = _state.asStateFlow()
+    private val _items = MutableStateFlow<List<ReelPublishItem>>(emptyList())
 
-    private val _preview = MutableStateFlow<ReelPublishPreview?>(null)
+    /** Every tracked publish, oldest first. */
+    val items: StateFlow<List<ReelPublishItem>> = _items.asStateFlow()
 
-    /** What the pending item looks like; null when nothing is pending. */
-    val preview: StateFlow<ReelPublishPreview?> = _preview.asStateFlow()
-
+    /** True while any publish is in flight. */
     val isActive: Boolean
-        get() = _state.value.isActive
+        get() = _items.value.any { it.state.isActive }
+
+    fun stateOf(creationKey: String): ReelPublishState =
+        _items.value.firstOrNull { it.creationKey == creationKey }?.state ?: ReelPublishState.Idle
+
+    fun previewOf(creationKey: String): ReelPublishPreview? =
+        _items.value.firstOrNull { it.creationKey == creationKey }?.preview
 
     /** Set by whoever enqueues or restores a publish, before its first state. */
-    fun setPreview(preview: ReelPublishPreview?) {
-        _preview.value = preview
+    fun setPreview(preview: ReelPublishPreview) = _items.update { list ->
+        list.upsert(preview.creationKey) { it.copy(preview = preview) }
     }
 
     /**
@@ -142,25 +166,47 @@ class ReelPublishTracker @Inject constructor() {
      * backwards within one upload — a bar that jumps from 42% to 40% because
      * two progress callbacks raced reads as a bug, not as honesty.
      */
-    fun update(next: ReelPublishState) = _state.update { current -> reconcile(current, next) }
+    fun update(creationKey: String, next: ReelPublishState) = _items.update { list ->
+        list.upsert(creationKey) { it.copy(state = reconcile(it.state, next)) }
+    }
 
     /**
      * Put a persisted state back after a process restart, but only if the
      * worker has not already reported something newer. Returns whether it won.
      */
-    fun restoreIfIdle(state: ReelPublishState): Boolean =
-        _state.compareAndSet(ReelPublishState.Idle, state)
+    fun restoreIfIdle(creationKey: String, state: ReelPublishState): Boolean {
+        var won = false
+        _items.update { list ->
+            list.upsert(creationKey) { item ->
+                if (item.state is ReelPublishState.Idle) {
+                    won = true
+                    item.copy(state = state)
+                } else {
+                    item
+                }
+            }
+        }
+        return won
+    }
 
     /** Let go of a finished publish. Ignored while work is still in flight. */
-    fun dismiss() {
-        val cleared = _state.getAndUpdate { if (it.isTerminal) ReelPublishState.Idle else it }.isTerminal
-        if (cleared) _preview.value = null
+    fun dismiss(creationKey: String) = _items.update { list ->
+        list.filterNot { it.creationKey == creationKey && it.state.isTerminal }
     }
 
     /** Back to nothing, whatever was there — the publish was discarded. */
-    fun reset() {
-        _state.value = ReelPublishState.Idle
-        _preview.value = null
+    fun reset(creationKey: String) = _items.update { list -> list.filterNot { it.creationKey == creationKey } }
+
+    private fun List<ReelPublishItem>.upsert(
+        creationKey: String,
+        change: (ReelPublishItem) -> ReelPublishItem,
+    ): List<ReelPublishItem> {
+        val index = indexOfFirst { it.creationKey == creationKey }
+        return if (index < 0) {
+            this + change(ReelPublishItem(creationKey, preview = null, state = ReelPublishState.Idle))
+        } else {
+            toMutableList().also { it[index] = change(it[index]) }
+        }
     }
 
     private fun reconcile(current: ReelPublishState, next: ReelPublishState): ReelPublishState {

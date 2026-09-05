@@ -28,7 +28,7 @@ fun ReelPublishState.ring(): PublishRing = when (this) {
 
 /** The words under the ring, for a screen reader and the tile's caption. */
 fun ReelPublishState.ringLabel(): String = when (this) {
-    is ReelPublishState.Uploading -> "Uploading ${(fraction.coerceIn(0f, 1f) * PERCENT).toInt()}%"
+    is ReelPublishState.Uploading -> "Uploading ${percent()}%"
     ReelPublishState.Preparing -> "Preparing"
     ReelPublishState.Processing -> "Processing"
     ReelPublishState.Posting -> "Posting"
@@ -36,5 +36,15 @@ fun ReelPublishState.ringLabel(): String = when (this) {
     is ReelPublishState.Failed -> "Couldn't post"
     ReelPublishState.Idle -> ""
 }
+
+/**
+ * The number INSIDE the ring while bytes go up — "42 %" (founder,
+ * 2026-09-05) — and nothing at all otherwise: a spinning ring with a
+ * number in it would be claiming a measurement it does not have.
+ */
+fun ReelPublishState.ringPercentLabel(): String? =
+    (this as? ReelPublishState.Uploading)?.let { "${it.percent()} %" }
+
+private fun ReelPublishState.Uploading.percent(): Int = (fraction.coerceIn(0f, 1f) * PERCENT).toInt()
 
 private const val PERCENT = 100

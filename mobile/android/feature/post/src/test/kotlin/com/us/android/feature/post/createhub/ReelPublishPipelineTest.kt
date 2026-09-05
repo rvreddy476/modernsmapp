@@ -137,14 +137,20 @@ class ReelPublishPipelineTest {
         override suspend fun createPost(idempotencyKey: String, body: CreatePostRequest): Nothing = error("not used")
     }
 
+    /** The queue in memory: records in save order, a known key updated in place. */
     private class InMemoryStore : ReelPublishStore {
-        var record: PendingReelPublish? = null
-        override suspend fun load(): PendingReelPublish? = record
+        val records = mutableListOf<PendingReelPublish>()
+
+        /** The one record most of these tests save under "key-1". */
+        val record: PendingReelPublish? get() = records.firstOrNull()
+
+        override suspend fun loadAll(): List<PendingReelPublish> = records.toList()
         override suspend fun save(pending: PendingReelPublish) {
-            record = pending
+            val index = records.indexOfFirst { it.creationKey == pending.creationKey }
+            if (index < 0) records += pending else records[index] = pending
         }
-        override suspend fun clear() {
-            record = null
+        override suspend fun remove(creationKey: String) {
+            records.removeAll { it.creationKey == creationKey }
         }
     }
 
@@ -156,6 +162,8 @@ class ReelPublishPipelineTest {
             stashed += uri
             return StashedVideo(path = "/cache/$creationKey.video", mimeType = "video/mp4")
         }
+
+        override fun exportTarget(creationKey: String): String = "/cache/$creationKey.video"
 
         override suspend fun writeCover(bytes: ByteArray, creationKey: String): String = "/cache/$creationKey.jpg"
 
@@ -484,7 +492,9 @@ class ReelPublishPipelineTest {
         val repository = RecordingRepository(json).apply { queued += notReady }
         val h = harness(api = api, repository = repository)
         val seen = mutableListOf<ReelPublishState>()
-        val watching = launch(Dispatchers.Unconfined) { h.tracker.state.collect { seen += it } }
+        val watching = launch(Dispatchers.Unconfined) {
+            h.tracker.items.collect { seen += it.firstOrNull()?.state ?: ReelPublishState.Idle }
+        }
 
         val outcome = run(h, pending(withCover = false))
 
@@ -527,7 +537,7 @@ class ReelPublishPipelineTest {
             assertThat(h.store.record?.confirmedVideoId).isEqualTo("video-1")
             assertThat(h.store.record?.processingSinceMillis).isNotNull()
             assertThat(h.store.record?.failure).isNull()
-            assertThat(h.tracker.state.value).isEqualTo(ReelPublishState.Processing)
+            assertThat(h.tracker.stateOf("key-1")).isEqualTo(ReelPublishState.Processing)
             assertThat(repository.requests).hasSize(1)
         }
 
@@ -558,7 +568,7 @@ class ReelPublishPipelineTest {
             ReelPublishPipeline.Outcome.Failed("That video can't be read. Pick it again.", retryable = false),
         )
         assertThat(h.api.inits).isEmpty()
-        assertThat(h.tracker.state.value).isEqualTo(ReelPublishState.Preparing)
+        assertThat(h.tracker.stateOf("key-1")).isEqualTo(ReelPublishState.Preparing)
     }
 
     @Test
@@ -566,7 +576,7 @@ class ReelPublishPipelineTest {
         val h = harness()
         val seen = mutableListOf<ReelPublishState>()
         val watching = launch(Dispatchers.Unconfined) {
-            h.tracker.state.collect { seen += it }
+            h.tracker.items.collect { seen += it.firstOrNull()?.state ?: ReelPublishState.Idle }
         }
 
         run(h, pending())
@@ -585,5 +595,107 @@ class ReelPublishPipelineTest {
         assertThat(fractions).isNotEmpty()
         assertThat(fractions).isInOrder()
         assertThat(fractions.last()).isAtMost(1f)
+    }
+
+    // ── The details step's fields (2026-09-05) ─────────────────────────
+
+    @Test
+    fun `hashtags, mentions and a schedule go on the wire as their own fields`() = runTest {
+        val h = harness()
+
+        run(
+            h,
+            pending("no tags in here").copy(
+                hashtags = listOf("longboard", "Sunday"),
+                mentions = listOf("maya"),
+                taggedUserIds = listOf("u-1"),
+                publishAt = "2026-09-06T13:00:00Z",
+            ),
+        )
+
+        val request = h.repository.requests.single()
+        assertThat(request.text).isEqualTo("no tags in here")
+        assertThat(request.hashtags).containsExactly("longboard", "Sunday").inOrder()
+        assertThat(request.mentions).containsExactly("maya")
+        assertThat(request.taggedUserIds).containsExactly("u-1")
+        assertThat(request.publishAt).isEqualTo("2026-09-06T13:00:00Z")
+    }
+
+    /** Absent fields stay absent: a post with none of them is byte-identical to before they existed. */
+    @Test
+    fun `empty chips and no schedule are omitted rather than sent empty`() {
+        val request = ReelPublishPipeline.buildRequest(pending("hi"), "v", null)
+
+        assertThat(request.hashtags).isNull()
+        assertThat(request.mentions).isNull()
+        assertThat(request.publishAt).isNull()
+        assertThat(json.encodeToString(CreatePostRequest.serializer(), request)).doesNotContain("publish_at")
+    }
+
+    /** A 400 the client cannot name — the server refusing a `publish_at` — is shown in the server's words. */
+    @Test
+    fun `a refused schedule fails with the server's own message and no retry`() = runTest {
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(
+                AppError.Unknown(
+                    code = "INVALID_PUBLISH_AT",
+                    statusCode = 400,
+                    message = "publish_at must be at least 5 minutes ahead",
+                ),
+            )
+        }
+        val h = harness(repository = repository)
+
+        val outcome = run(h, pending(withCover = false).copy(publishAt = "2026-09-05T00:00:00Z"))
+
+        assertThat(outcome).isEqualTo(
+            ReelPublishPipeline.Outcome.Failed("publish_at must be at least 5 minutes ahead", retryable = false),
+        )
+        assertThat(h.store.record?.failure?.message).isEqualTo("publish_at must be at least 5 minutes ahead")
+    }
+
+    // ── The queue (2026-09-05) ──────────────────────────────────────────
+
+    /** A publish discarded while it uploads stops, persists nothing, and leaves the store to the discard. */
+    @Test
+    fun `a discard mid-upload stops the run without writing the record back`() = runTest {
+        val h = harness()
+        h.store.save(pending())
+        var discarded = false
+        val api = h.api
+
+        val outcome = h.pipeline.run(
+            pending(),
+            now = { testScheduler.currentTime },
+            isDiscarded = {
+                // The first progress tick discards; everything after must stop.
+                if (api.inits.isNotEmpty()) discarded = true
+                discarded
+            },
+        )
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Discarded)
+        assertThat(h.repository.requests).isEmpty()
+        assertThat(h.store.record?.confirmedVideoId).isNull()
+        assertThat(h.store.record?.failure).isNull()
+    }
+
+    /** Two records saved in order come back in that order — the worker runs them first to last. */
+    @Test
+    fun `the store keeps two pending publishes in the order they were saved`() = runTest {
+        val h = harness()
+
+        h.store.save(pending("first"))
+        h.store.save(pending("second").copy(creationKey = "key-2"))
+        h.store.save(pending("first, updated"))
+
+        assertThat(h.store.loadAll().map { it.creationKey }).containsExactly("key-1", "key-2").inOrder()
+        assertThat(h.store.load("key-1")?.caption).isEqualTo("first, updated")
+
+        run(h, h.store.load("key-1")!!)
+        run(h, h.store.load("key-2")!!)
+
+        assertThat(h.repository.keys).containsExactly("key-1", "key-2").inOrder()
+        assertThat(h.tracker.items.value.map { it.creationKey }).containsExactly("key-1", "key-2").inOrder()
     }
 }

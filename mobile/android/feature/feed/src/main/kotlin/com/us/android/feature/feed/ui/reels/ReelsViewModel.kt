@@ -200,15 +200,20 @@ class ReelsViewModel @Inject constructor(
      * video posting (Tube, 2026-09-05) is not a reel and never sits here —
      * Tube home draws that one.
      */
-    val head: StateFlow<ReelsHead?> = combine(tracker.state, tracker.preview, _live) { state, preview, live ->
+    val head: StateFlow<ReelsHead?> = combine(tracker.items, _live) { items, live ->
+        // Several reels may be pending (2026-09-05); this slot shows the
+        // OLDEST still in flight — the one uploading now — and the own
+        // profile's grid shows them all.
+        val pending = items.firstOrNull { it.isDrawable && it.preview?.kind == VideoKind.REEL }
+        val preview = pending?.preview
         when {
             live != null -> ReelsHead.Live(live)
-            preview == null || preview.kind != VideoKind.REEL || state is ReelPublishState.Idle -> null
+            pending == null || preview == null -> null
             else -> ReelsHead.Pending(
                 creationKey = preview.creationKey,
                 coverPath = preview.coverPath,
                 caption = preview.caption,
-                failure = (state as? ReelPublishState.Failed)?.let { PendingFailure(it.message, it.retryable) },
+                failure = (pending.state as? ReelPublishState.Failed)?.let { PendingFailure(it.message, it.retryable) },
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), null)
@@ -219,21 +224,20 @@ class ReelsViewModel @Inject constructor(
         // real thing without a refresh. A long video's post is Tube's to
         // fetch; this slot leaves it alone.
         viewModelScope.launch {
-            tracker.state.collect { state ->
-                if (state is ReelPublishState.Published && tracker.preview.value?.kind == VideoKind.REEL) {
-                    becomeLive(state.postId)
-                }
+            tracker.items.collect { items ->
+                items.firstOrNull { it.state is ReelPublishState.Published && it.preview?.kind == VideoKind.REEL }
+                    ?.let { becomeLive(it.creationKey, (it.state as ReelPublishState.Published).postId) }
             }
         }
     }
 
-    private suspend fun becomeLive(postId: String) {
+    private suspend fun becomeLive(creationKey: String, postId: String) {
         if (_live.value?.id == postId) return
         repeat(LIVE_FETCH_ATTEMPTS) { attempt ->
             when (val result = repository.post(postId)) {
                 is AppResult.Success -> {
                     _live.value = result.data
-                    publishActions.dismiss()
+                    publishActions.dismiss(creationKey)
                     return
                 }
                 is AppResult.Failure -> if (attempt < LIVE_FETCH_ATTEMPTS - 1) delay(LIVE_FETCH_RETRY_MILLIS)
@@ -242,12 +246,14 @@ class ReelsViewModel @Inject constructor(
         // The post exists even if this client could not read it back yet; the
         // next refresh of the ranked feed carries it. Holding a loader over a
         // finished publish would be lying about where the work is.
-        publishActions.dismiss()
+        publishActions.dismiss(creationKey)
     }
 
-    fun retryPublish() = publishActions.retry()
+    fun retryPublish() = pendingKey()?.let(publishActions::retry)
 
-    fun discardPublish() = publishActions.discard()
+    fun discardPublish() = pendingKey()?.let(publishActions::discard)
+
+    private fun pendingKey(): String? = (head.value as? ReelsHead.Pending)?.creationKey
 
     // ── The entry from a feed ───────────────────────────────────────────
 

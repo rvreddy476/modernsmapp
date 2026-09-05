@@ -129,6 +129,18 @@ class VideoFeedRepository @Inject constructor(
         }
 
     /**
+     * The viewer's scheduled posts (2026-09-05), soonest first, hydrated;
+     * empty — not failed — when the endpoint is unavailable or the server
+     * predates it, so a grid without a scheduled tile is never an error.
+     */
+    suspend fun scheduledPosts(limit: Int): List<FeedItem> =
+        when (val result = apiCall(errorMapper) { api.scheduled(limit) }) {
+            is AppResult.Success ->
+                hydrator.hydrate(result.data.filter { it.deletedAt.isBlank() }.map { it.toDomain() })
+            is AppResult.Failure -> emptyList()
+        }
+
+    /**
      * The first page of one author's long videos, as a list — a channel's
      * strip bubble and the You header count read it without a pager.
      */

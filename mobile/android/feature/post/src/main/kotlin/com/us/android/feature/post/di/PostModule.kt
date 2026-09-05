@@ -1,5 +1,6 @@
 package com.us.android.feature.post.di
 
+import com.us.android.feature.post.data.HashtagSearchApi
 import com.us.android.feature.post.data.PeopleSearchApi
 import com.us.android.feature.post.data.PostApi
 import com.us.android.feature.post.data.PostCategoriesApi
@@ -36,4 +37,10 @@ object PostModule {
     @Singleton
     fun providePeopleSearchApi(retrofit: Retrofit): PeopleSearchApi =
         retrofit.create(PeopleSearchApi::class.java)
+
+    /** The details step's hashtag suggestions — post-service through the gateway. */
+    @Provides
+    @Singleton
+    fun provideHashtagSearchApi(retrofit: Retrofit): HashtagSearchApi =
+        retrofit.create(HashtagSearchApi::class.java)
 }

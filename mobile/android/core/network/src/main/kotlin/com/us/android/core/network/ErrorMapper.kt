@@ -82,6 +82,7 @@ class ErrorMapper @Inject constructor(
                 code = code,
                 statusCode = e.code(),
                 requestId = requestId,
+                message = message.takeIf { it.isNotBlank() },
             )
         }
     }

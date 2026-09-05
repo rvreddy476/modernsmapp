@@ -147,16 +147,16 @@ class ReelsViewModelTest {
 
     private class RecordingActions : ReelPublishActions {
         val calls = mutableListOf<String>()
-        override fun retry() {
-            calls += "retry"
+        override fun retry(creationKey: String) {
+            calls += "retry:$creationKey"
         }
 
-        override fun discard() {
-            calls += "discard"
+        override fun discard(creationKey: String) {
+            calls += "discard:$creationKey"
         }
 
-        override fun dismiss() {
-            calls += "dismiss"
+        override fun dismiss(creationKey: String) {
+            calls += "dismiss:$creationKey"
         }
     }
 
@@ -662,7 +662,7 @@ class ReelsViewModelTest {
             ReelPublishState.Processing,
             ReelPublishState.Posting,
         ).forEach { state ->
-            h.tracker.update(state)
+            h.tracker.update("key-1", state)
             advanceUntilIdle()
             assertThat(vm.head.value).isEqualTo(
                 ReelsHead.Pending(creationKey = "key-1", coverPath = "/cache/key-1.jpg", caption = "sunday"),
@@ -676,9 +676,9 @@ class ReelsViewModelTest {
         val vm = viewModel(h)
         backgroundScope.launch { vm.head.collect {} }
         h.tracker.setPreview(preview)
-        h.tracker.update(ReelPublishState.Uploading(0.4f))
+        h.tracker.update("key-1", ReelPublishState.Uploading(0.4f))
 
-        h.tracker.update(ReelPublishState.Failed("Couldn't reach the server.", retryable = true))
+        h.tracker.update("key-1", ReelPublishState.Failed("Couldn't reach the server.", retryable = true))
         advanceUntilIdle()
 
         val head = vm.head.value as ReelsHead.Pending
@@ -687,7 +687,7 @@ class ReelsViewModelTest {
 
         vm.retryPublish()
         vm.discardPublish()
-        assertThat(h.actions.calls).containsExactly("retry", "discard").inOrder()
+        assertThat(h.actions.calls).containsExactly("retry:key-1", "discard:key-1").inOrder()
     }
 
     /**
@@ -701,7 +701,7 @@ class ReelsViewModelTest {
         val vm = viewModel(h)
         backgroundScope.launch { vm.head.collect {} }
 
-        h.tracker.update(ReelPublishState.Uploading(0.4f))
+        h.tracker.update("key-1", ReelPublishState.Uploading(0.4f))
         advanceUntilIdle()
 
         assertThat(vm.head.value).isNull()
@@ -730,16 +730,16 @@ class ReelsViewModelTest {
         val vm = viewModel(h)
         backgroundScope.launch { vm.head.collect {} }
         h.tracker.setPreview(preview)
-        h.tracker.update(ReelPublishState.Posting)
+        h.tracker.update("key-1", ReelPublishState.Posting)
 
-        h.tracker.update(ReelPublishState.Published("post-9"))
+        h.tracker.update("key-1", ReelPublishState.Published("post-9"))
         advanceUntilIdle()
 
         assertThat(h.api.postRequests).containsExactly("post-9")
         val head = vm.head.value as ReelsHead.Live
         assertThat(head.item.id).isEqualTo("post-9")
         assertThat(vm.playback(head.item)?.kind).isEqualTo(PlaybackKind.Progressive)
-        assertThat(h.actions.calls).containsExactly("dismiss")
+        assertThat(h.actions.calls).containsExactly("dismiss:key-1")
     }
 
     /** The post exists even when it cannot be read back yet; the loader must not outlive the publish. */
@@ -750,11 +750,11 @@ class ReelsViewModelTest {
         backgroundScope.launch { vm.head.collect {} }
         h.tracker.setPreview(preview)
 
-        h.tracker.update(ReelPublishState.Published("post-9"))
+        h.tracker.update("key-1", ReelPublishState.Published("post-9"))
         advanceUntilIdle()
 
         assertThat(h.api.postRequests).containsExactly("post-9", "post-9", "post-9")
-        assertThat(h.actions.calls).containsExactly("dismiss")
+        assertThat(h.actions.calls).containsExactly("dismiss:key-1")
     }
 
     // ── The rail ────────────────────────────────────────────────────────

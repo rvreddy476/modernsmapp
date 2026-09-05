@@ -41,7 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -49,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -75,6 +75,7 @@ import com.us.android.core.media.publish.PublishRing
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ring
 import com.us.android.core.media.publish.ringLabel
+import com.us.android.core.media.publish.ringPercentLabel
 import com.us.android.core.model.FeedItem
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -84,11 +85,13 @@ import java.io.File
 /**
  * The profile's media grid (2026-09-05): three glass tabs — Posts, Reels,
  * Videos — over three columns of tiles, read through Paging. On the
- * viewer's own profile the video they are posting sits FIRST on the Videos
- * tab, its chosen cover under an ember ring: a sweep while the bytes go up,
- * a spin while the server works, the real tile once it is published; a
- * failure shows the tile dimmed, and a tap opens Retry / Discard (or
- * "Create channel", when that is what the server asked for).
+ * viewer's own profile the videos they are posting sit FIRST on their
+ * tab, each under an ember ring with the percent inside it while the
+ * bytes go up and a spin while the server works, a clock when it is
+ * scheduled; then the posts the server is holding for a later time, each
+ * with "Scheduled · 6 Sep 18:30"; then the real tiles. A failure shows
+ * the tile dimmed, and a tap opens Retry / Discard (or "Create channel",
+ * when that is what the server asked for).
  *
  * Drawn as rows inside the profile's scrolling column rather than as a lazy
  * grid of its own: a lazy grid cannot live inside a vertical scroll, and
@@ -103,14 +106,19 @@ internal fun ProfileMediaGrid(
 ) {
     val tab by viewModel.tab.collectAsStateWithLifecycle()
     val pending by viewModel.pending.collectAsStateWithLifecycle()
-    val reloads by viewModel.reloadVideos.collectAsStateWithLifecycle()
+    val scheduled by viewModel.scheduled.collectAsStateWithLifecycle()
+    val reloads by viewModel.reloads.collectAsStateWithLifecycle()
     val posts = viewModel.posts.collectAsLazyPagingItems()
     val reels = viewModel.reels.collectAsLazyPagingItems()
     val longVideos = viewModel.longVideos.collectAsLazyPagingItems()
-    var failureSheet by rememberSaveable { mutableStateOf(false) }
-    var createChannel by rememberSaveable { mutableStateOf(false) }
+    var failureKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var createChannelKey by rememberSaveable { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(reloads) { if (reloads > 0) longVideos.refresh() }
+    LaunchedEffect(reloads) {
+        if ((reloads[ProfileGridTab.POSTS] ?: 0) > 0) posts.refresh()
+        if ((reloads[ProfileGridTab.REELS] ?: 0) > 0) reels.refresh()
+        if ((reloads[ProfileGridTab.VIDEOS] ?: 0) > 0) longVideos.refresh()
+    }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
         GridTabs(selected = tab, onSelect = viewModel::select)
@@ -119,45 +127,53 @@ internal fun ProfileMediaGrid(
             ProfileGridTab.REELS -> reels
             ProfileGridTab.VIDEOS -> longVideos
         }
-        val head = pending.takeIf { tab == ProfileGridTab.VIDEOS }
+        val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
+            scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
         GridRows(
             tab = tab,
             items = items,
-            head = head,
+            heads = heads,
             thumbFor = viewModel::thumb,
             onOpen = { item -> onOpenPost?.invoke(item.id, item.feedContentType) },
-            onPendingTap = { if (head?.failure != null) failureSheet = true },
+            onPendingTap = { tile -> if (tile.failure != null) failureKey = tile.creationKey },
         )
     }
 
-    val failure = pending?.failure
-    if (failureSheet && failure != null) {
+    val failing = pending.firstOrNull { it.creationKey == failureKey }
+    val failure = failing?.failure
+    if (failing != null && failure != null) {
         PublishFailureSheet(
             failure = failure,
             onRetry = {
-                failureSheet = false
-                viewModel.retryPublish()
+                failureKey = null
+                viewModel.retryPublish(failing.creationKey)
             },
             onDiscard = {
-                failureSheet = false
-                viewModel.discardPublish()
+                failureKey = null
+                viewModel.discardPublish(failing.creationKey)
             },
             onCreateChannel = {
-                failureSheet = false
-                createChannel = true
+                failureKey = null
+                createChannelKey = failing.creationKey
             },
-            onDismiss = { failureSheet = false },
+            onDismiss = { failureKey = null },
         )
     }
-    if (createChannel) {
+    createChannelKey?.let { key ->
         CreateChannelSheet(
             onCreated = {
-                createChannel = false
-                viewModel.retryPublish()
+                createChannelKey = null
+                viewModel.retryPublish(key)
             },
-            onDismiss = { createChannel = false },
+            onDismiss = { createChannelKey = null },
         )
     }
+}
+
+/** A tile ahead of the paged rows: a video still posting, or a post held for later. */
+private sealed interface GridHead {
+    data class Pending(val tile: PendingVideoTile) : GridHead
+    data class Scheduled(val tile: ScheduledTile) : GridHead
 }
 
 /** Three glass pills; the selected one is white with navy text — the app's selection rule. */
@@ -204,7 +220,7 @@ private fun GridTabs(selected: ProfileGridTab, onSelect: (ProfileGridTab) -> Uni
 }
 
 /**
- * The tiles in rows of three: the pending tile first when there is one,
+ * The tiles in rows of three: the head tiles first when there are any,
  * then the page's rows, then the list's own state — a loader, an error
  * with Retry, or the empty message.
  */
@@ -212,12 +228,12 @@ private fun GridTabs(selected: ProfileGridTab, onSelect: (ProfileGridTab) -> Uni
 private fun GridRows(
     tab: ProfileGridTab,
     items: LazyPagingItems<FeedItem>,
-    head: PendingVideoTile?,
+    heads: List<GridHead>,
     thumbFor: (FeedItem) -> VideoThumb,
     onOpen: (FeedItem) -> Unit,
-    onPendingTap: () -> Unit,
+    onPendingTap: (PendingVideoTile) -> Unit,
 ) {
-    val slots = (if (head != null) 1 else 0) + items.itemCount
+    val slots = heads.size + items.itemCount
     Column(verticalArrangement = Arrangement.spacedBy(GRID_GAP)) {
         for (rowStart in 0 until slots step GRID_COLUMNS) {
             Row(horizontalArrangement = Arrangement.spacedBy(GRID_GAP)) {
@@ -227,9 +243,21 @@ private fun GridRows(
                         .aspectRatio(tileAspect(tab))
                     when {
                         slot >= slots -> Spacer(cell)
-                        head != null && slot == 0 -> PendingTile(tile = head, onClick = onPendingTap, modifier = cell)
+                        slot < heads.size -> when (val head = heads[slot]) {
+                            is GridHead.Pending -> PendingTile(
+                                tile = head.tile,
+                                onClick = { onPendingTap(head.tile) },
+                                modifier = cell,
+                            )
+                            is GridHead.Scheduled -> ScheduledTileView(
+                                tile = head.tile,
+                                thumb = thumbFor(head.tile.item),
+                                onClick = { onOpen(head.tile.item) },
+                                modifier = cell,
+                            )
+                        }
                         else -> PagedTile(
-                            item = items[if (head != null) slot - 1 else slot],
+                            item = items[slot - heads.size],
                             thumbFor = thumbFor,
                             onOpen = onOpen,
                             modifier = cell,
@@ -238,7 +266,7 @@ private fun GridRows(
                 }
             }
         }
-        GridState(tab = tab, items = items, hasHead = head != null)
+        GridState(tab = tab, items = items, hasHead = heads.isNotEmpty())
     }
 }
 
@@ -325,24 +353,7 @@ private fun MediaTile(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, mo
             }
             .testTag("profile_tile:${item.id}"),
     ) {
-        val url = thumb.url ?: item.media.firstOrNull()?.variants?.values?.firstOrNull()
-        if (url != null) {
-            AsyncImage(
-                model = url,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else if (item.text.isNotBlank()) {
-            Text(
-                text = item.text,
-                style = MaterialTheme.typography.labelSmall,
-                color = UsTheme.extended.textSecondary,
-                maxLines = TEXT_TILE_LINES,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(UsTheme.spacing.m),
-            )
-        }
+        TileStill(item = item, thumb = thumb)
         if (item.feedContentType == ProfileGridTab.REELS.contentType ||
             item.feedContentType == ProfileGridTab.VIDEOS.contentType
         ) {
@@ -359,7 +370,106 @@ private fun MediaTile(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, mo
     }
 }
 
-/** The posting video: its cover, dimmed, with the ring in the middle; the reason under a stopped one. */
+/** The still behind a tile: the cover or the first media, else the text. */
+@Composable
+private fun TileStill(item: FeedItem, thumb: VideoThumb) {
+    val url = thumb.url ?: item.media.firstOrNull()?.variants?.values?.firstOrNull()
+    if (url != null) {
+        AsyncImage(
+            model = url,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+    } else if (item.text.isNotBlank()) {
+        Text(
+            text = item.text,
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.textSecondary,
+            maxLines = TEXT_TILE_LINES,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(UsTheme.spacing.m),
+        )
+    }
+}
+
+/**
+ * A post the server is holding (2026-09-05): its still, a clock badge, and
+ * "Scheduled · 6 Sep 18:30" on a scrim along the bottom. It stays until the
+ * server publishes it, when the grid's refresh carries the real tile.
+ */
+@Composable
+private fun ScheduledTileView(
+    tile: ScheduledTile,
+    thumb: VideoThumb,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(UsTheme.radii.small)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(UsTheme.extended.bgCard)
+            .border(HAIRLINE, UsTheme.extended.glassBorder, shape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics {
+                role = Role.Button
+                contentDescription = "${tile.label}. ${tile.item.title.ifBlank { tile.item.text }}"
+            }
+            .testTag("profile_scheduled:${tile.item.id}"),
+    ) {
+        TileStill(item = tile.item, thumb = thumb)
+        ClockBadge(modifier = Modifier.align(Alignment.TopStart))
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = SCRIM_ALPHA))))
+                .padding(horizontal = UsTheme.spacing.s, vertical = UsTheme.spacing.s),
+        ) {
+            Text(
+                text = tile.label,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = SCHEDULE_LABEL_SIZE,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** A small clock on a dark plate — the mark of a scheduled post. */
+@Composable
+private fun ClockBadge(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .padding(UsTheme.spacing.s)
+            .size(BADGE_SIZE)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = PLATE_ALPHA))
+            .testTag("profile_clock"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = UsIcons.Clock,
+            contentDescription = "Scheduled",
+            tint = Color.White,
+            modifier = Modifier.size(BADGE_GLYPH),
+        )
+    }
+}
+
+/**
+ * The posting video: its cover, dimmed, with the ring in the middle and
+ * the percent inside it while the bytes go up; a clock when it is
+ * scheduled; the reason under a stopped one.
+ */
 @Composable
 private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(UsTheme.radii.small)
@@ -379,11 +489,11 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
                 contentDescription = if (failed) {
                     "Couldn't post ${tile.title}. Tap for options"
                 } else {
-                    tile.state.ringLabel()
+                    listOfNotNull(tile.state.ringLabel(), tile.scheduleLabel).joinToString(". ")
                 }
                 if (failed) role = Role.Button
             }
-            .testTag("profile_pending"),
+            .testTag("profile_pending:${tile.creationKey}"),
         contentAlignment = Alignment.Center,
     ) {
         tile.coverPath?.let { path ->
@@ -399,6 +509,7 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = if (failed) FAILED_DIM else PENDING_DIM)),
         )
+        if (tile.publishAt != null) ClockBadge(modifier = Modifier.align(Alignment.TopStart))
         if (failed) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
@@ -416,7 +527,11 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
                 )
             }
         } else {
-            PublishRingView(ring = tile.state.ring(), modifier = Modifier.size(RING_SIZE))
+            PublishRingView(
+                ring = tile.state.ring(),
+                label = tile.state.ringPercentLabel(),
+                modifier = Modifier.size(RING_SIZE),
+            )
         }
     }
 }
@@ -424,10 +539,11 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
 /**
  * The ember ring: an arc from 12 o'clock for the uploaded fraction, or a
  * short arc that turns while nothing measurable is happening — the Reels
- * avatar ring's drawing, on a dark plate so it reads over any cover.
+ * avatar ring's drawing, on a dark plate so it reads over any cover. The
+ * [label] ("42 %") sits inside the ring while there is one.
  */
 @Composable
-internal fun PublishRingView(ring: PublishRing, modifier: Modifier = Modifier) {
+internal fun PublishRingView(ring: PublishRing, label: String?, modifier: Modifier = Modifier) {
     val played = UsTheme.extended.ctaGradient
     val track = Color.White.copy(alpha = TRACK_ALPHA)
     val spin = rememberInfiniteTransition(label = "publishSpin")
@@ -447,10 +563,22 @@ internal fun PublishRingView(ring: PublishRing, modifier: Modifier = Modifier) {
         modifier = modifier
             .clip(CircleShape)
             .background(Color.Black.copy(alpha = PLATE_ALPHA))
-            .rotate(rotation)
-            .drawBehind { drawRing(track, played, sweep) }
+            .drawBehind { rotate(rotation) { drawRing(track, played, sweep) } }
             .testTag("profile_pending_ring"),
-    )
+        contentAlignment = Alignment.Center,
+    ) {
+        if (label != null) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = RING_LABEL_SIZE,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                maxLines = 1,
+                modifier = Modifier.testTag("profile_pending_percent"),
+            )
+        }
+    }
 }
 
 private fun DrawScope.drawRing(track: Color, played: Brush, sweep: Float) {
@@ -567,8 +695,12 @@ private val STATE_HEIGHT = 180.dp
 private val APPEND_HEIGHT = 64.dp
 private val KIND_GLYPH = 16.dp
 private val FAILED_GLYPH = 22.dp
-private val RING_SIZE = 44.dp
+private val RING_SIZE = 48.dp
 private val RING_STROKE = 3.dp
 private val RING_INSET = 4.dp
+private val RING_LABEL_SIZE = 10.sp
+private val BADGE_SIZE = 20.dp
+private val BADGE_GLYPH = 12.dp
+private val SCHEDULE_LABEL_SIZE = 9.sp
 private val SHEET_RADIUS = 28.dp
 private val SHEET_TITLE_SIZE = 20.sp
