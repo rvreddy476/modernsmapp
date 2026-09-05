@@ -21,7 +21,7 @@ enum class AppModule(
 ) {
     FEED("feed", "Home feed", hasScreen = true),
     REELS("reels", "Reels", hasScreen = true),
-    COMMERCE("commerce", "Commerce", hasScreen = false),
+    COMMERCE("commerce", "Commerce", hasScreen = true),
     CHAT("chat", "Chat", hasScreen = true),
     DATING("dating", "Dating", hasScreen = false),
     FOOD("food", "Food", hasScreen = false),

@@ -4,6 +4,8 @@ package http
 import (
 	"encoding/csv"
 	"errors"
+	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -80,14 +82,31 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.DELETE("/cart/items/:variantId", h.RemoveFromCart)
 
 	// ── Orders ───────────────────────────────────────────────
-	v1.POST("/checkout/quote", h.CheckoutQuote)
+	//
+	// B5 — three registrations REMOVED here. They are listed in
+	// FencedRoutes (handler_p0.go) with the money defect each one carried,
+	// and FenceMiddleware answers 404 for them ahead of routing, so this
+	// deletion is enforced rather than merely performed:
+	//
+	//	POST /checkout/quote                  — legacy float pricing, AND a
+	//	                                        duplicate of the P0
+	//	                                        registration, which panics
+	//	                                        gin at startup (B10)
+	//	POST /orders/checkout                 — order created before its
+	//	                                        reservations, failures logged
+	//	                                        and swallowed: a payable order
+	//	                                        holding only some of its stock
+	//	POST /orders/:orderId/payment/confirm — a client asserting a payment
+	//	                                        fact, the authority LB-3
+	//	                                        removed from payments-service
+	//
+	// The replacements are POST /v1/commerce/checkout/quote (P0),
+	// POST /v1/commerce/v2/orders/checkout, and the provider webhook.
 	v1.GET("/serviceability", h.CheckServiceability)
-	v1.POST("/orders/checkout", h.Checkout)
 	v1.GET("/orders", h.ListOrders)
 	v1.GET("/orders/:orderId", h.GetOrder)
 	v1.GET("/orders/:orderId/items", h.GetOrderItems)
 	v1.POST("/orders/:orderId/cancel", h.CancelOrder)
-	v1.POST("/orders/:orderId/payment/confirm", h.ConfirmPayment)
 
 	// ── Returns ──────────────────────────────────────────────
 	v1.POST("/orders/:orderId/returns", h.CreateReturn)
@@ -150,8 +169,19 @@ func parseUUID(c *gin.Context, param string) (uuid.UUID, bool) {
 	return id, true
 }
 
+// handleErr is the legacy error path, kept because dozens of handlers call it.
+//
+// It used to answer 500 unconditionally, with `err.Error()` echoed into the
+// response body. Both halves were wrong. Every typed refusal in the service —
+// a media id belonging to someone else, a fenced surface, a retryable
+// transport failure — arrived at the client as an internal error, and the raw
+// message carried identifiers and SQL text out to whoever asked.
+//
+// It now delegates to writeCommerceError, which has the typed mapping and does
+// not echo unexpected messages. The default arm is still 500, so a handler
+// raising a genuinely unrecognised error behaves as before.
 func handleErr(c *gin.Context, err error) {
-	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	writeCommerceError(c, err)
 }
 
 // ─── Catalog handlers ────────────────────────────────────────────
@@ -208,18 +238,54 @@ type createProductReq struct {
 	Variants            []createVariantReq `json:"variants" binding:"required,min=1"`
 }
 
+// createVariantReq accepts money in PAISE.
+//
+// The float fields are the legacy shape and are still read, because this route
+// predates the minor-unit migration and an older client must not start
+// failing. But they are the FALLBACK now, not the contract: `*_minor` wins
+// whenever it is present.
+//
+// This is the seller's money-entry point — the one place a human types a price
+// that every subsequent sale is charged at. Taking it as a float means
+// `1299.99` arrives as 1299.9899999999998 and the stored paise depend on which
+// way `math.Round` happens to fall. One paise on one listing is nothing; the
+// same reasoning applied at checkout is what the whole minor-unit migration
+// exists to remove, and leaving it in place at the point of ENTRY makes every
+// downstream figure exact about a number that was already wrong.
 type createVariantReq struct {
-	SKU          string   `json:"sku" binding:"required"`
-	Option1Name  *string  `json:"option_1_name"`
-	Option1Value *string  `json:"option_1_value"`
-	Option2Name  *string  `json:"option_2_name"`
-	Option2Value *string  `json:"option_2_value"`
-	Option3Name  *string  `json:"option_3_name"`
-	Option3Value *string  `json:"option_3_value"`
-	MRP          float64  `json:"mrp" binding:"required"`
-	SellingPrice float64  `json:"selling_price" binding:"required"`
-	CostPrice    *float64 `json:"cost_price"`
-	StockQty     int      `json:"stock_qty"`
+	SKU          string  `json:"sku" binding:"required"`
+	Option1Name  *string `json:"option_1_name"`
+	Option1Value *string `json:"option_1_value"`
+	Option2Name  *string `json:"option_2_name"`
+	Option2Value *string `json:"option_2_value"`
+	Option3Name  *string `json:"option_3_name"`
+	Option3Value *string `json:"option_3_value"`
+
+	MRPMinor          *int64 `json:"mrp_minor"`
+	SellingPriceMinor *int64 `json:"selling_price_minor"`
+	CostPriceMinor    *int64 `json:"cost_price_minor"`
+
+	// money-exempt: the legacy rupee shape, read only when the corresponding
+	// *_minor field is absent. Retained so a client written before the minor
+	// migration keeps working; every new client sends paise.
+	MRP float64 `json:"mrp"`
+	// money-exempt: legacy rupee shape, superseded by selling_price_minor.
+	SellingPrice float64 `json:"selling_price"`
+	// money-exempt: legacy rupee shape, superseded by cost_price_minor.
+	CostPrice *float64 `json:"cost_price"`
+
+	StockQty int `json:"stock_qty"`
+}
+
+// minorOrRupees resolves one money field, preferring paise.
+//
+// A rupee float is converted with the same rounding the store uses, so a
+// legacy client and a modern one that send the same price get the same paise.
+func minorOrRupees(minor *int64, rupees float64) int64 {
+	if minor != nil {
+		return *minor
+	}
+	return int64(math.Round(rupees * 100))
 }
 
 func (h *Handler) CreateProduct(c *gin.Context) {
@@ -233,31 +299,49 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		return
 	}
 
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
+		return
+	}
+
+	// A GST class, or nothing is created.
+	//
+	// `tax_class_id` was optional, and a product without one is not merely
+	// untaxed — it is UNSELLABLE. Checkout resolves the rate under a row lock
+	// and refuses with PRODUCT_TAX_UNCONFIGURED when there is none, so the
+	// listing went live, appeared in search, sat in a buyer's cart and failed
+	// at the last step with an error the seller never saw.
+	//
+	// Refused rather than defaulted: 18% on a 5% item overcharges every buyer,
+	// and 0% on an 18% item leaves the seller owing GST they never collected.
+	// The rate is a fact about the goods that only the seller knows.
+	if req.TaxClassID == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"TAX_CLASS_REQUIRED",
+			"a GST rate is required; GET /v1/commerce/tax-classes lists the options", nil)
 		return
 	}
 
 	variants := make([]service.CreateVariantInput, len(req.Variants))
 	for i, v := range req.Variants {
 		variants[i] = service.CreateVariantInput{
-			SKU:          v.SKU,
-			Option1Name:  v.Option1Name,
-			Option1Value: v.Option1Value,
-			Option2Name:  v.Option2Name,
-			Option2Value: v.Option2Value,
-			Option3Name:  v.Option3Name,
-			Option3Value: v.Option3Value,
-			MRP:          v.MRP,
-			SellingPrice: v.SellingPrice,
-			CostPrice:    v.CostPrice,
-			StockQty:     v.StockQty,
+			SKU:               v.SKU,
+			Option1Name:       v.Option1Name,
+			Option1Value:      v.Option1Value,
+			Option2Name:       v.Option2Name,
+			Option2Value:      v.Option2Value,
+			Option3Name:       v.Option3Name,
+			Option3Value:      v.Option3Value,
+			MRPMinor:          minorOrRupees(v.MRPMinor, v.MRP),
+			SellingPriceMinor: minorOrRupees(v.SellingPriceMinor, v.SellingPrice),
+			CostPriceMinor:    costMinor(v),
+			StockQty:          v.StockQty,
 		}
 	}
 
 	p, err := h.svc.CreateProduct(c.Request.Context(), service.CreateProductInput{
 		SellerID:            seller.ID,
+		ActorUserID:         userID,
 		CategoryID:          req.CategoryID,
 		BrandID:             req.BrandID,
 		TaxClassID:          req.TaxClassID,
@@ -548,9 +632,8 @@ func (h *Handler) SetPriceTiers(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	var req priceTierReq
@@ -706,14 +789,31 @@ func (h *Handler) OnboardSeller(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusCreated, seller, nil)
 }
 
+// GetMySellerProfile GET /v1/commerce/sellers/me
+//
+// 404 rather than 403 here, unlike every other seller route: this endpoint's
+// whole question is "am I a seller", and a client asks it precisely because it
+// does not know. "Not found" is the answer; "forbidden" would read as "your
+// account is suspended" to an ordinary buyer who has never sold anything.
+//
+// The distinction that matters is the other one. This used to answer 404 for
+// ANY error, so a database incident told every seller their account did not
+// exist — and produced no log line while doing it.
 func (h *Handler) GetMySellerProfile(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
 	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
+	switch {
+	case errors.Is(err, postgres.ErrNoSellerRow):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "seller not found", nil)
+		return
+	case err != nil:
+		slog.Error("commerce: could not read the caller's seller profile",
+			"user_id", userID, "error", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError,
+			"INTERNAL_ERROR", "could not read your seller account", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, seller, nil)
@@ -724,8 +824,8 @@ func (h *Handler) GetMySellerProfile(c *gin.Context) {
 // collected on their behalf. Optional `payout_batch_id` lets the row
 // be associated with the payout batch that actually carried the funds.
 //
-//   POST /v1/commerce/internal/cod-remittances/:remittanceId/settle
-//     body: { "payout_batch_id": "<uuid?>" }
+//	POST /v1/commerce/internal/cod-remittances/:remittanceId/settle
+//	  body: { "payout_batch_id": "<uuid?>" }
 func (h *Handler) AdminSettleCODRemittance(c *gin.Context) {
 	remittanceID, err := uuid.Parse(c.Param("remittanceId"))
 	if err != nil {
@@ -753,15 +853,14 @@ func (h *Handler) AdminSettleCODRemittance(c *gin.Context) {
 // is one COD shipment whose cash has either been collected by the courier
 // (status=pending) or transferred to the seller (status=settled).
 //
-//   GET /v1/commerce/seller/cod-remittances?status=pending&limit=20&offset=0
+//	GET /v1/commerce/seller/cod-remittances?status=pending&limit=20&offset=0
 func (h *Handler) ListMyCODRemittances(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	status := c.Query("status")
@@ -790,9 +889,8 @@ func (h *Handler) ListMySellerOrders(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -814,9 +912,8 @@ func (h *Handler) ListSellerFulfillment(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	stage := c.DefaultQuery("stage", "all")
@@ -843,9 +940,8 @@ func (h *Handler) GetSellerOrderDetail(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	card, err := h.svc.GetSellerOrderDetail(c.Request.Context(), seller.ID, orderID)
@@ -881,17 +977,18 @@ func (h *Handler) ListSellerProducts(c *gin.Context) {
 }
 
 // ListProducts is the customer-facing global product browse endpoint.
-//   GET /v1/commerce/products
-//     ?category={uuid}     optional
-//     &q={text}            optional title search
-//     &min_price={num}     optional inclusive lower bound
-//     &max_price={num}     optional inclusive upper bound
-//     &min_rating={1..5}   optional
-//     &seller={uuid}       optional storefront filter
-//     &in_stock=true       optional, restrict to variants with stock
-//     &limit={1..100}      default 20
-//     &cursor={opaque}     keyset cursor (preferred); omit on first page
-//     &offset={int}        legacy offset; ignored when cursor is set
+//
+//	GET /v1/commerce/products
+//	  ?category={uuid}     optional
+//	  &q={text}            optional title search
+//	  &min_price={num}     optional inclusive lower bound
+//	  &max_price={num}     optional inclusive upper bound
+//	  &min_rating={1..5}   optional
+//	  &seller={uuid}       optional storefront filter
+//	  &in_stock=true       optional, restrict to variants with stock
+//	  &limit={1..100}      default 20
+//	  &cursor={opaque}     keyset cursor (preferred); omit on first page
+//	  &offset={int}        legacy offset; ignored when cursor is set
 //
 // Cursor-paged response: { items: [...], next_cursor: "..." }.
 // next_cursor is empty when there are no more pages. Cursor pagination
@@ -984,12 +1081,12 @@ func (h *Handler) GetCart(c *gin.Context) {
 	if !ok {
 		return
 	}
-	summary, err := h.svc.GetCart(c.Request.Context(), userID)
+	view, err := h.svc.CartView(c.Request.Context(), userID)
 	if err != nil {
 		handleErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, summary, nil)
+	api.JSON(c.Writer, http.StatusOK, view, nil)
 }
 
 type addToCartReq struct {
@@ -1011,7 +1108,11 @@ func (h *Handler) AddToCart(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_TO_CART_FAILED", err.Error(), nil)
 		return
 	}
-	c.Status(http.StatusNoContent)
+	// The cart, not 204. The client asks for a cart back from this route and
+	// an empty body left it with nothing to render, so the badge and the cart
+	// screen disagreed with the server until something else refetched. It is
+	// also one round trip instead of add-then-reload.
+	writeCart(c, h)
 }
 
 func (h *Handler) RemoveFromCart(c *gin.Context) {
@@ -1027,7 +1128,7 @@ func (h *Handler) RemoveFromCart(c *gin.Context) {
 		handleErr(c, err)
 		return
 	}
-	c.Status(http.StatusNoContent)
+	writeCart(c, h)
 }
 
 // updateCartItemReq is the body for PATCH /cart/items/by-variant/:variantId
@@ -1062,12 +1163,12 @@ func (h *Handler) UpdateCartItem(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_CART_FAILED", err.Error(), nil)
 		return
 	}
-	summary, err := h.svc.GetCart(c.Request.Context(), userID)
+	view, err := h.svc.CartView(c.Request.Context(), userID)
 	if err != nil {
 		handleErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, summary, nil)
+	api.JSON(c.Writer, http.StatusOK, view, nil)
 }
 
 // ─── Order handlers ──────────────────────────────────────────────
@@ -1249,7 +1350,21 @@ func (h *Handler) ListOrders(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "LIST_ORDERS_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, res.Items, &api.Meta{NextCursor: res.NextCursor})
+	// `data` is an OBJECT holding the page, not a bare array.
+	//
+	// It was `data: [...]` with the cursor in `meta`. Android's OrderDto is
+	// declared as ApiEnvelope<OrderListDto> — `data.items` plus
+	// `data.next_cursor` — so an array where an object was expected does not
+	// deserialise at all, and the buyer's order list could never render. The
+	// envelope contract test asserts only that `data` EXISTS, which an array
+	// satisfies, so nothing caught it.
+	//
+	// The cursor is repeated in `meta` so any caller already reading it there
+	// keeps working.
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"items":       res.Items,
+		"next_cursor": res.NextCursor,
+	}, &api.Meta{NextCursor: res.NextCursor})
 }
 
 func (h *Handler) GetOrder(c *gin.Context) {
@@ -1520,7 +1635,7 @@ func (h *Handler) GetReturn(c *gin.Context) {
 // ApproveReturn is called by the seller (or admin) to approve a customer's
 // return request. Books the reverse-pickup label and initiates the refund.
 //
-//   POST /v1/commerce/returns/:returnId/approve
+//	POST /v1/commerce/returns/:returnId/approve
 func (h *Handler) ApproveReturn(c *gin.Context) {
 	actorID, ok := getUserID(c)
 	if !ok {
@@ -1548,7 +1663,7 @@ type rejectReturnReq struct {
 
 // RejectReturn closes a return with the seller's stated reason.
 //
-//   POST /v1/commerce/returns/:returnId/reject
+//	POST /v1/commerce/returns/:returnId/reject
 func (h *Handler) RejectReturn(c *gin.Context) {
 	actorID, ok := getUserID(c)
 	if !ok {
@@ -1583,9 +1698,8 @@ func (h *Handler) ListSellerEarnings(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -1606,9 +1720,8 @@ func (h *Handler) ExportSellerEarningsCSV(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	earnings, err := h.svc.ListSellerEarnings(c.Request.Context(), seller.ID, 500, 0)
@@ -1652,9 +1765,8 @@ func (h *Handler) ListSellerReturnsInbox(c *gin.Context) {
 	if !ok {
 		return
 	}
-	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	seller, sellerOK := h.sellerForCaller(c, userID)
+	if !sellerOK {
 		return
 	}
 	status := c.Query("status")
@@ -1711,8 +1823,25 @@ func (h *Handler) ListAddresses(c *gin.Context) {
 }
 
 type addAddressReq struct {
-	AddressType  string  `json:"address_type"`
-	FullName     string  `json:"full_name" binding:"required"`
+	AddressType string `json:"address_type"`
+
+	// The contact's name, under either wire name.
+	//
+	// The column is `contact_name`, the read path returns `contact_name`, and
+	// the Android client sends `contact_name`. Only this request struct said
+	// `full_name`, and it was `binding:"required"` — so every address the app
+	// tried to save was rejected with a 400 before it reached the service. A
+	// new buyer could not add a delivery address, and therefore could not
+	// check out at all.
+	//
+	// Both are accepted rather than renaming outright: an existing web caller
+	// may still send `full_name`, and breaking it to fix the app would just
+	// move the outage. `contactName()` resolves the pair, and neither field
+	// carries `binding:"required"` because "required" on one of two aliases
+	// rejects the request that supplies the other.
+	ContactName string `json:"contact_name"`
+	FullName    string `json:"full_name"`
+
 	Phone        string  `json:"phone" binding:"required"`
 	AddressLine1 string  `json:"address_line_1" binding:"required"`
 	AddressLine2 *string `json:"address_line_2"`
@@ -1724,6 +1853,17 @@ type addAddressReq struct {
 	IsDefault    bool    `json:"is_default"`
 }
 
+// contactName resolves the two accepted wire names.
+//
+// A blank result is refused by the caller: the name is what a courier reads
+// off the label, and an address without one cannot be delivered.
+func (r addAddressReq) contactName() string {
+	if n := strings.TrimSpace(r.ContactName); n != "" {
+		return n
+	}
+	return strings.TrimSpace(r.FullName)
+}
+
 func (h *Handler) AddAddress(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -1732,6 +1872,12 @@ func (h *Handler) AddAddress(c *gin.Context) {
 	var req addAddressReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	name := req.contactName()
+	if name == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"contact_name is required", nil)
 		return
 	}
 	country := req.Country
@@ -1745,7 +1891,7 @@ func (h *Handler) AddAddress(c *gin.Context) {
 	addr := &postgres.CustomerAddress{
 		UserID:       userID,
 		AddressType:  addressType,
-		ContactName:  req.FullName,
+		ContactName:  name,
 		Phone:        req.Phone,
 		AddressLine1: req.AddressLine1,
 		AddressLine2: req.AddressLine2,
@@ -1786,7 +1932,7 @@ func (h *Handler) UpdateAddress(c *gin.Context) {
 		addressType = "home"
 	}
 	addr := &postgres.CustomerAddress{
-		AddressType: addressType, ContactName: req.FullName, Phone: req.Phone,
+		AddressType: addressType, ContactName: req.contactName(), Phone: req.Phone,
 		AddressLine1: req.AddressLine1, AddressLine2: req.AddressLine2,
 		Landmark: req.Landmark, City: req.City, State: req.State,
 		PostalCode: req.PostalCode, Country: country, IsDefault: req.IsDefault,
@@ -1860,4 +2006,40 @@ func (h *Handler) PayoutPreview(c *gin.Context) {
 		"tds":          tds,
 		"net_payout":   net,
 	}, nil)
+}
+
+// writeCart answers with the caller's cart in the shape the client reads.
+//
+// Every cart mutation returns the resulting cart rather than 204. The client's
+// API declares all four cart routes as returning a cart, and two of them
+// answered with an empty body — so after an add or a remove the app held no
+// authoritative state and the badge disagreed with the server until something
+// else happened to refetch.
+func writeCart(c *gin.Context, h *Handler) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	view, err := h.svc.CartView(c.Request.Context(), userID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, view, nil)
+}
+
+// costMinor resolves the optional cost price, preferring paise.
+//
+// Cost price stays optional: it is the seller's own margin bookkeeping and no
+// buyer-facing figure depends on it. Absent means absent, not zero — a
+// recorded cost of ₹0.00 would read as "this cost me nothing".
+func costMinor(v createVariantReq) *int64 {
+	if v.CostPriceMinor != nil {
+		return v.CostPriceMinor
+	}
+	if v.CostPrice == nil {
+		return nil
+	}
+	minor := int64(math.Round(*v.CostPrice * 100))
+	return &minor
 }

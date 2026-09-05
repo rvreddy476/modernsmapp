@@ -2,9 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/atpost/commerce-service/internal/kyc"
+	"github.com/atpost/commerce-service/internal/media"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
@@ -74,14 +78,36 @@ func (s *Service) SaveBasicInfo(ctx context.Context, userID uuid.UUID, in postgr
 
 // SaveStorefront saves step 4 fields.
 func (s *Service) SaveStorefront(ctx context.Context, userID uuid.UUID, in postgres.OnboardingStorefrontInput) error {
+	// A storefront logo and banner are what a buyer uses to tell one seller
+	// from another. Unverified, a seller could adopt a competitor's brand
+	// imagery by id.
+	if err := s.verifyMedia(ctx, userID, media.KindImage, in.LogoMediaID, in.BannerMediaID); err != nil {
+		return err
+	}
 	return s.store.SaveOnboardingStorefront(ctx, userID, in)
 }
 
 // SaveDocuments saves step 5 KYC documents.
+//
+// This is the one that matters most. `seller_documents` holds PAN, Aadhaar and
+// the cancelled cheque — the evidence a human reviewer looks at before
+// approving a seller to take money. Nothing verified that the media id in each
+// row belonged to the person submitting it, so a seller could point their KYC
+// at somebody else's uploaded identity document and be approved on it. That
+// makes the review meaningless, and it is how one person's identity documents
+// end up attached to another person's payout account.
 func (s *Service) SaveDocuments(ctx context.Context, userID uuid.UUID, docs []postgres.SellerDocument) error {
 	sel, err := s.store.GetSellerByUserID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("seller not found: %w", err)
+	}
+	// Every document, before any of them is stored. A partial write here
+	// would leave a KYC set that is half verified and half not, and the
+	// reviewer cannot tell which half.
+	for i := range docs {
+		if err := s.verifyMedia(ctx, userID, media.KindAny, &docs[i].MediaID); err != nil {
+			return err
+		}
 	}
 	return s.store.SaveOnboardingCompliance(ctx, sel.ID, docs)
 }
@@ -104,8 +130,42 @@ func (s *Service) SavePayout(ctx context.Context, userID uuid.UUID, in postgres.
 	return s.store.SaveOnboardingPayout(ctx, sel.ID, in)
 }
 
+// SellerReadiness reports what a shop still needs before it can be reviewed.
+//
+// Exposed so the app can show the remaining checklist rather than letting a
+// seller press Submit and be told no.
+func (s *Service) SellerReadiness(ctx context.Context, userID uuid.UUID) (*postgres.SellerReadiness, error) {
+	sel, err := s.store.GetSellerByUserID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, postgres.ErrNoSellerRow) {
+			return nil, ErrNoSellerProfile
+		}
+		return nil, err
+	}
+	return s.store.SellerReadinessFor(ctx, sel.ID)
+}
+
 // SubmitApplication submits the seller application for review.
+//
+// It refuses an incomplete application. Before this check, any draft could be
+// submitted: a shop with no PAN, no bank account and no pickup address landed
+// in a human reviewer's queue as an empty application, the seller was told
+// "submitted" and waited, and a reviewer who approved anyway put live a shop
+// that could take money with no settlement path.
+//
+// The refusal names everything still missing rather than the first thing, so
+// the app can render the whole remaining checklist. A reviewer queue is not a
+// security boundary, and one missing item at a time turns a five-minute task
+// into five round trips.
 func (s *Service) SubmitApplication(ctx context.Context, userID uuid.UUID) error {
+	ready, err := s.SellerReadiness(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !ready.Complete() {
+		return fmt.Errorf("%w: %s", ErrApplicationIncomplete,
+			strings.Join(ready.Missing(), ", "))
+	}
 	if err := s.store.SubmitSellerApplication(ctx, userID); err != nil {
 		return err
 	}
@@ -213,8 +273,30 @@ func (s *Service) AdminVerifySellerKYC(ctx context.Context, sellerID uuid.UUID) 
 	if err != nil {
 		return nil, fmt.Errorf("kyc verify: %w", err)
 	}
+	// B12 — a FORMAT check is not a verification.
+	//
+	// This wrote `verification_status = 'verified'` whenever the adapter's
+	// AllValid was true. In production the configured adapter is
+	// kyc.StubValidator, which does regex checks: a well-formed but entirely
+	// fictitious PAN, GSTIN and bank account produce AllValid, the seller row
+	// reads `verified`, and an admin approving from that queue is looking at
+	// a field that says identity was confirmed when nothing was confirmed.
+	// The seller then becomes payout-eligible. That is a fraud path, not a
+	// display bug.
+	//
+	// A verdict may only write `verified` if it came from an adapter that
+	// actually verifies. The stub's own report already tags every check with
+	// Source="stub" precisely so this distinction is available — it simply
+	// was not consulted. `format_ok` is a real, distinct state: the paperwork
+	// parses, and identity is still unproven.
 	status := "pending"
-	if rep.AllValid {
+	switch {
+	case rep.AllValid && s.kyc.Name() == "stub":
+		status = "format_ok"
+		slog.Warn("commerce: seller KYC passed FORMAT checks only; identity is not verified",
+			"seller_id", sellerID, "adapter", "stub",
+			"detail", "wire a vendor adapter (Karza/Signzy/Hyperverge) before treating this seller as verified")
+	case rep.AllValid:
 		status = "verified"
 	}
 	if err := s.store.SetSellerKYCVerificationStatus(ctx, sellerID, status); err != nil {
@@ -226,6 +308,9 @@ func (s *Service) AdminVerifySellerKYC(ctx context.Context, sellerID uuid.UUID) 
 	}
 	s.publish(ctx, "commerce.seller.kyc_verified", map[string]any{
 		"seller_id": sellerID, "adapter": s.kyc.Name(), "all_valid": rep.AllValid,
+		// B12: consumers must be able to tell a format pass from a real
+		// verification without knowing which adapter was configured.
+		"status": status,
 	})
 	return rep, nil
 }

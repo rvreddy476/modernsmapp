@@ -1,0 +1,969 @@
+name: Integration (Commerce P0)
+
+# The Commerce P0 launch gate.
+#
+# Every job here proves something that, if it regressed, would cost money.
+# The suite is modelled on integration-postgres.yml (the Module 1 LB-1 gate),
+# which established the standard this follows: run against a REAL database,
+# assert the interleaving actually happened, and prove the migration fails
+# loudly rather than silently no-opping.
+#
+# The review's §6 addition, and the reason the negative-control job exists:
+# "Each concurrency/failure proof needs an executed negative control that
+# makes the proof fail for the intended reason, not merely a green happy-path
+# count." A proof that would still pass with the defect reintroduced is not a
+# proof.
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/services/commerce-service/**'
+      - 'Architecture/services/payments-service/**'
+      - 'Architecture/services/api-gateway/**'
+      - 'Architecture/shared/servicetoken/**'
+      - 'Architecture/shared/outbox/**'
+      - 'Architecture/shared/store/migrationrunner/**'
+      - '.github/workflows/integration-commerce.yml'
+  push:
+    branches: [main]
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # 1. Money is never a float. (LB-19, acceptance criterion 2)
+  # ─────────────────────────────────────────────────────────────────
+  money-type-gate:
+    name: No floating-point money
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject float money in commerce and payments
+        run: |
+          set -euo pipefail
+          # The commerce money path is internal/money (Paise) and the minor
+          # columns. A float64 on a money-named identifier is the defect the
+          # migration exists to remove, and it must not creep back.
+          #
+          # Scoped to identifiers that mean money, so a weight in kilograms
+          # or a latitude is unaffected.
+          PATTERN='(amount|price|total|subtotal|discount|tax|shipping|refund|mrp|fee|charge)[A-Za-z_]*\s+float(32|64)'
+          FOUND=0
+          for dir in Architecture/services/commerce-service Architecture/services/payments-service; do
+            # B5 — the `| grep -v 'legacy'` exemption is REMOVED.
+            #
+            # It existed so the float64 pricing path behind the v1
+            # /orders/checkout route would not fail this gate. That route was
+            # client-reachable, so the marker was not "acceptable debt behind
+            # a flag" — it was a hole in a money gate, sitting directly over
+            # live money code, and the review named it as such. The route is
+            # now unregistered and fenced (internal/http/handler_p0.go
+            # FencedRoutes), so the exemption has nothing left to protect.
+            #
+            # `Deprecated` is still skipped: it marks the dual-write mirror of
+            # the `amount` NUMERIC column that analytics readers still scan,
+            # which is a read-compat shim rather than an arithmetic path.
+            # Exemptions are per-LINE and stated in the source, as
+            # `// money-exempt: <reason>`. A file-path or line-number
+            # allowlist was the alternative and is worse: the first is too
+            # coarse (a new float money path in an exempted file passes
+            # silently) and the second breaks on the next edit. The marker
+            # travels with the code, forces the author to write down why, and
+            # is greppable for audit.
+            if grep -rEn --include='*.go' "$PATTERN" "$dir" \
+                 | grep -v '_test.go' \
+                 | grep -v 'Deprecated' \
+                 | grep -v 'money-exempt:' ; then
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 1 ]; then
+            echo "::error::floating-point money found. Money is integer paise (internal/money.Paise / *_minor BIGINT)."
+            exit 1
+          fi
+          echo "no floating-point money on a money-named identifier"
+
+      # B5: the allowlist is only honest if every file on it is genuinely
+      # unreachable. Each entry names the fence that makes it so; this step
+      # asserts those fences still exist, so removing one turns the
+      # corresponding allowlist entry back into a CI failure rather than
+      # leaving a stale exemption over code that has become reachable again.
+      - name: Money-gate exemptions are still fenced
+        run: |
+          set -euo pipefail
+          H=Architecture/services/commerce-service/internal/http/handler_p0.go
+          BAD=0
+          # Every `money-exempt:` marker justifies itself by naming a fence.
+          # If the fence goes, the exemption must be re-argued rather than
+          # silently outliving the thing that made it safe.
+          grep -q '"/v1/commerce/orders/checkout"' "$H" || { echo "::error::the legacy checkout left FencedRoutes, but money-exempt markers still cite it"; BAD=1; }
+          grep -q '"/v1/commerce/returns"' "$H" || { echo "::error::returns left FencedPrefixes, but money-exempt markers still cite it"; BAD=1; }
+          grep -q '"/v1/commerce/payout"' "$H" || { echo "::error::payout left FencedPrefixes, but money-exempt markers still cite it"; BAD=1; }
+          # And every marker must actually carry a reason.
+          if grep -rn --include='*.go' 'money-exempt:[[:space:]]*$' Architecture/services/commerce-service Architecture/services/payments-service; then
+            echo "::error::a money-exempt marker has no stated reason"
+            BAD=1
+          fi
+          [ "$BAD" -eq 0 ] || exit 1
+          echo "every money-gate exemption is still behind a live fence and states a reason"
+
+      # B5: and the legacy money routes must stay unregistered. The fence is
+      # the backstop; this asserts the deletion itself, so a re-add fails CI
+      # rather than relying on a 404 nobody checks.
+      - name: Legacy money routes stay unregistered
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          BAD=0
+          for route in '"/orders/checkout"' '"/orders/:orderId/payment/confirm"'; do
+            if grep -rn --include='*.go' "v1.POST($route" internal/http/; then
+              echo "::error::$route was re-registered; it is a fenced legacy money route"
+              BAD=1
+            fi
+          done
+          [ "$BAD" -eq 0 ] || exit 1
+          echo "legacy money routes remain unregistered"
+
+      - name: Reject Double money in the Android commerce modules
+        run: |
+          set -euo pipefail
+          if [ -d mobile/android/core/commerce ]; then
+            if grep -rEn --include='*.kt' \
+                 '(amount|price|total|discount|tax|shipping|refund)[A-Za-z]*\s*:\s*(Double|Float)' \
+                 mobile/android/core/commerce mobile/android/feature/commerce 2>/dev/null; then
+              echo "::error::Double/Float money in the Android commerce modules. Use Paise (value class over Long)."
+              exit 1
+            fi
+          fi
+          echo "no Double money in :core:commerce / :feature:commerce"
+
+      # ── The commerce surface is reachable ─────────────────────────────
+      #
+      # Every commerce screen existed, compiled and was completely
+      # unreachable. The bottom bar has five tabs and none is a shop; the
+      # Explore tab rendered a "search is not built yet" placeholder;
+      # `ExploreScreen` — the file whose whole job is to be the way in — was
+      # written but never composed, so it had never even been COMPILED. It
+      # referenced a spacing token that does not exist, and nothing noticed.
+      #
+      # A grep, because the alternative is an instrumented test that needs a
+      # device. What it guards is narrow and exact: the entry point is
+      # composed, and it navigates into commerce.
+      - name: The commerce surface is reachable from the app
+        run: |
+          set -euo pipefail
+          H=mobile/android/app/src/main/kotlin/com/us/android/navigation/UsNavHost.kt
+          E=mobile/android/app/src/main/kotlin/com/us/android/navigation/ExploreScreen.kt
+          BAD=0
+          grep -q 'ExploreScreen(' "$H"             || { echo "::error::ExploreScreen is not composed; the whole commerce surface is unreachable"; BAD=1; }
+          grep -q 'navigateToCommerce()' "$H"             || { echo "::error::nothing navigates to the catalogue"; BAD=1; }
+          grep -q 'navigateToSeller()' "$H"             || { echo "::error::nothing navigates to the seller hub"; BAD=1; }
+          grep -q 'commerceScreens(' "$H"             || { echo "::error::the commerce graph is not registered"; BAD=1; }
+          # And the entry point must offer all three ways in.
+          for label in '"Shop"' '"My orders"' '"My shop"'; do
+            grep -q "text = $label" "$E"               || { echo "::error::ExploreScreen no longer offers $label"; BAD=1; }
+          done
+          [ "$BAD" -eq 0 ] || exit 1
+          echo "the buyer catalogue, order history and seller hub are all reachable"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 2. Unit suites that need no database.
+  # ─────────────────────────────────────────────────────────────────
+  unit:
+    name: Unit (GST, service tokens, provider port)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+
+      # LB-24: the PII key ring and the KMS-backed provider. No AWS account
+      # needed — a fake KMS client behind the real provider interface, which
+      # is the evidence shape the review asked for. These cover the defect
+      # that makes rows undecryptable: a provider that regenerates a key
+      # instead of unwrapping the stored blob.
+      - name: PII key provider (KMS envelope + rotation)
+        working-directory: Architecture/services/commerce-service
+        run: go test ./internal/pii/... -count=1 -v
+
+      # GST golden vectors AND 30k property-test iterations. §6 required more
+      # than five slabs: quantity, line and order discounts, the CGST/SGST
+      # split, IGST, and refund reuse of the stored components.
+      - name: GST arithmetic
+        working-directory: Architecture/services/commerce-service
+        run: go test ./internal/tax/... ./internal/money/... -count=1
+
+      # A2: issuer, subject, audience, expiry, not-before, kid, algorithm,
+      # scope, and the cross-caller cases (food token on a commerce order and
+      # the reverse).
+      - name: Service-token authorisation
+        working-directory: Architecture/shared
+        run: go test ./servicetoken/... -count=1
+
+      # D10: the provider port driven by BOTH adapters with each provider's
+      # own signature scheme. This is what makes the abstraction a claim we
+      # can check rather than a wrapper with aspirations.
+      - name: Provider-port contract (Razorpay + Cashfree fixtures)
+        working-directory: Architecture/services/payments-service
+        run: go test ./internal/gateway/... -count=1
+
+      # LB-1 + review §6.4: the gateway must not proxy a service-authority
+      # upstream, under its own prefix OR under a renamed one.
+      - name: Gateway route policy
+        working-directory: Architecture/services/api-gateway
+        run: go test ./pkg/routepolicy/... -count=1
+
+      # B1: the payment-event loss window. The dedupe receipt must never
+      # precede the effect it stands for. Includes the executed negative
+      # control that reproduces the pre-claim ordering and shows the event is
+      # lost.
+      - name: Payment-event durability (dedupe ordering)
+        working-directory: Architecture/shared
+        run: go test ./kafka/... -count=1 -v -run 'Receipt|Dedupe|NegativeControl|Durable|Completed|FailedHandler'
+
+      # B5 / B10: the production route table must BUILD (a duplicate
+      # method+path panics gin at startup), and the legacy money routes must
+      # be both unregistered and fenced.
+      - name: Route table builds and legacy money routes are fenced
+        working-directory: Architecture/services/commerce-service
+        run: go test ./internal/http/... -count=1
+
+      # B8: production shipping must carry a real rate. A serviceable lane
+      # with no usable price is an error, never a zero.
+      - name: Courier returns a real shipping rate
+        working-directory: Architecture/services/commerce-service
+        run: go test ./internal/courier/... -count=1
+
+      # B9: missing / invalid / legitimately-zero GST tax classes must be
+      # distinguishable. The silent 0% fall-through is the defect.
+      - name: GST tax-class resolution
+        working-directory: Architecture/services/commerce-service
+        run: go test ./internal/store/postgres/... -count=1 -run 'TestRateFromClass|TestNegativeControl'
+
+  # ─────────────────────────────────────────────────────────────────
+  # 3. The concurrency proofs, against a real PostgreSQL.
+  # ─────────────────────────────────────────────────────────────────
+  commerce-proofs:
+    name: Commerce proofs (live PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGUSER: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+
+      - name: Create scratch databases
+        run: |
+          psql -c "CREATE DATABASE commerce_p0;"
+          psql -c "CREATE DATABASE payments_p0;"
+
+      # Applied in order, with ON_ERROR_STOP, so a migration that cannot
+      # apply fails the build rather than being skipped.
+      - name: Apply commerce schema and migrations
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          psql -d commerce_p0 -v ON_ERROR_STOP=1 -q -f database/setup.sql
+          for f in database/migrations/*.sql; do
+            echo "applying $f"
+            psql -d commerce_p0 -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+          # B11 review follow-up: the GATED contract half must be applied
+          # before the proofs run.
+          #
+          # This job previously applied only setup + ordinary migrations,
+          # while TestProofFencedSurfacesRefuseWrites and
+          # TestProofIllegalOrderTransitionRejected assert on the triggers
+          # and constraints that 998 installs. Those proofs were therefore
+          # testing a schema CI never built — they passed locally, where 998
+          # had been run by hand, and would have reported a fence as present
+          # in an environment that did not have one.
+          #
+          # A launch environment runs the same two steps in the same order
+          # (`commerce-migrate` then `commerce-migrate -gated`), so applying
+          # it here makes CI match the deployment rather than a subset of it.
+          echo "applying gated contract half"
+          psql -d commerce_p0 -v ON_ERROR_STOP=1 -q -f database/gated/998_contract_triggers_and_fences.sql
+
+          # And assert it actually installed, so a silent no-op cannot leave
+          # the proofs asserting against an unfenced schema.
+          psql -d commerce_p0 -v ON_ERROR_STOP=1 -tAc "
+            SELECT CASE WHEN count(*) >= 10 THEN 'fences ok'
+                        ELSE 'FENCES MISSING: ' || count(*) END
+              FROM fenced_surfaces" | tee /tmp/fences.txt
+          grep -q 'fences ok' /tmp/fences.txt || { echo "::error::gated 998 did not install the fence triggers"; exit 1; }
+          for c in orders_payment_method_prepaid_only; do
+            psql -d commerce_p0 -v ON_ERROR_STOP=1 -tAc \
+              "SELECT 1 FROM pg_constraint WHERE conname='$c'" | grep -q 1 \
+              || { echo "::error::gated 998 did not install constraint $c"; exit 1; }
+          done
+          for tg in trg_order_transition trg_fence_returns; do
+            psql -d commerce_p0 -v ON_ERROR_STOP=1 -tAc \
+              "SELECT 1 FROM pg_trigger WHERE tgname='$tg'" | grep -q 1 \
+              || { echo "::error::gated 998 did not install trigger $tg"; exit 1; }
+          done
+
+      - name: Apply payments schema and migrations
+        working-directory: Architecture/services/payments-service
+        run: |
+          set -euo pipefail
+          psql -d payments_p0 -v ON_ERROR_STOP=1 -q -f database/setup.sql
+          for f in database/migrations/*.sql; do
+            echo "applying $f"
+            psql -d payments_p0 -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      # C1, C2, C3, C6, C7, C9, GST reconciliation against stored rows,
+      # moderation bypass, cross-user cancellation, the fence, and the order
+      # state machine.
+      - name: Commerce proofs
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: go test -tags=integration ./internal/store/postgres/... -run TestProof -count=1 -v
+
+      # ── C3 (Commerce Money Truth + Payable Android Checkout) ──────────
+      #
+      # C3-LB-2  the quote states the whole price, and checkout charges
+      #          exactly it; a moved price blocks with no durable effect
+      # C3-LB-3  one payment-method vocabulary at every server authority
+      - name: C3 quote-breakdown and payment-method proofs
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: go test -tags=integration ./internal/store/postgres/... -run TestC3 -count=1 -v
+
+      # The HTTP half: the public edge refuses a non-launch method, and a
+      # positive-value cart goes quote -> checkout -> one order + one stock
+      # hold through the REAL registered route table.
+      #
+      # B-LB-1 lived here. A store-only run cannot see it, because the defect
+      # was in what the client was HANDED and what the edge accepted back.
+      - name: C3 checkout journey and edge refusals (real routes)
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: go test -tags=integration ./internal/http/... -count=1 -v
+
+      # C3-LB-1: exact provider money truth on the two paths review 3 found
+      # open — immediate ambiguous-create recovery, and a SIGNED webhook that
+      # omits a money field. Driven through the real Razorpay adapter.
+      - name: C3 provider money truth (immediate recovery + signed webhooks)
+        working-directory: Architecture/services/payments-service
+        env:
+          PAYMENTS_TEST_DSN: postgres://postgres:postgres@localhost:5432/payments_p0?sslmode=disable
+        run: go test -tags=integration ./internal/service/... -run TestC3 -count=1 -v
+
+      # A silent skip must not read as a pass: TestMain exits 0 when the DSN
+      # is unset, so the named C3 proofs are asserted to have RUN.
+      - name: The C3 proofs actually executed
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+          PAYMENTS_TEST_DSN: postgres://postgres:postgres@localhost:5432/payments_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/store/postgres/... -run TestC3 -count=1 -v | tee c3.log
+          go test -tags=integration ./internal/http/... -count=1 -v | tee -a c3.log
+          (cd ../payments-service && go test -tags=integration ./internal/service/... -run TestC3 -count=1 -v) | tee -a c3.log
+          for p in TestC3QuoteReturnsACompleteBreakdown \
+                   TestC3QuotedTotalIsAcceptedByCheckoutExactly \
+                   TestC3ShippingOnlyTotalIsRefused \
+                   TestC3PriceChangeAfterQuoteCommitsNothing \
+                   TestC3AcceptingTheReplacementTotalCompletesOnce \
+                   TestC3QuoteTakenWithACouponIsRefusedWithout \
+                   TestC3QuotingACouponDoesNotClaimIt \
+                   TestC3NoUnsupportedMethodCreatesAnyDurableEffect \
+                   TestC3DatabaseRefusesAnUnsupportedMethodDirectly \
+                   TestC3EdgeRefusesEveryNonLaunchMethod \
+                   TestC3JourneyQuoteThenCheckoutOverHTTP \
+                   TestC3JourneyRefusesATotalTheServerNeverStated \
+                   TestC3ImmediateRecoveryRefusesAnOrderWithTheWrongAmount \
+                   TestC3ImmediateRecoveryRefusesAnAmbiguousLookup \
+                   TestC3SignedWebhookWithNoCurrencyCannotSettle \
+                   TestC3SignedWebhookInAnotherCurrencyCannotSettle; do
+            grep -q -- "--- PASS: $p" c3.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the C3 proofs executed against a live database"
+
+      # ── The seller surface ────────────────────────────────────────────
+      #
+      # These proofs live in ./internal/store/postgres, which CI runs only
+      # under `-run TestProof` and `-run TestC3`. None of these names match
+      # either pattern, so without this step they would be a suite that never
+      # executes — the same "a check that cannot fire" shape they exist to
+      # rule out. The HTTP half is already covered by the whole-package run.
+      #
+      #   stock was set-once: the only restock route was behind the fence
+      #   the storefront returned drafts and moderation rejections to anyone
+      #   the seller pickup address had no writer, so shipments had no origin
+      #   two column defaults were values their own CHECK rejects
+      - name: Seller surface proofs (stock, storefront, pickup address)
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/store/postgres/... -count=1 -v \
+            -run 'Stock|Storefront|SellerAddress|PickupType|CourierOrigin|SchemaRefuses|OwnerView|SellersOwnView|OwnCheckRejects|Restock|AnotherSellers|Ledger|ZeroDelta|UnknownVariant|ConcurrentAdjustments' \
+            | tee seller.log
+          for p in TestASoldOutSellerCanRestock \
+                   TestARestockAddsToWhatIsActuallyThere \
+                   TestStockCannotBeWrittenBelowWhatIsReserved \
+                   TestASellerCannotAdjustAnotherSellersStock \
+                   TestAnAdjustmentIsRecordedInBothTheLedgerAndTheAuditTable \
+                   TestConcurrentAdjustmentsBothLand \
+                   TestStockForRefusesAnotherSellersVariant \
+                   TestTheStorefrontHidesDraftsAndModerationRejections \
+                   TestTheSellersOwnViewStillShowsEverything \
+                   TestTheStorefrontAgreesWithTheBrowseSurface \
+                   TestSavedPickupAddressBecomesTheCourierOrigin \
+                   TestSellerAddressIsRefusedWithoutCiphertext \
+                   TestSellerAddressWritesItsCiphertext \
+                   TestSavingTheSamePickupTypeReplacesRatherThanAccumulates \
+                   TestTheSchemaRefusesTwoAddressesOfOneType \
+                   TestNoColumnDefaultsToAValueItsOwnCheckRejects; do
+            grep -q -- "--- PASS: $p" seller.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the seller-surface proofs executed against a live database"
+
+      # A product a buyer can actually complete.
+      #
+      # `tax_class_id` was optional and no endpoint listed the classes, so a
+      # create form had no way to offer the choice and every product made
+      # through the API had none. A product with no GST class is not untaxed —
+      # it is UNSELLABLE: checkout resolves the rate under a row lock and
+      # refuses with PRODUCT_TAX_UNCONFIGURED. The listing went live, appeared
+      # in search, sat in a cart, and failed at the last step with an error the
+      # seller never saw.
+      #
+      # And money entered as a rupee float, at the one keyboard where a human
+      # types the number every subsequent sale is charged at.
+      - name: Create-product contract (GST class required, money in paise)
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/http/... -count=1 -v \
+            -run 'RateTable|TaxClass|PaiseIsStored|NotFree|LegacyRupee|PaiseWin|OpeningStock|Cart|UnsellableLine' \
+            | tee create.log
+          for p in TestTheGstRateTableIsReadable \
+                   TestAProductWithNoTaxClassIsRefused \
+                   TestAPriceInPaiseIsStoredExactly \
+                   TestANewProductIsNotFree \
+                   TestTheLegacyRupeeShapeStillCreates \
+                   TestPaiseWinOverRupeesWhenBothAreSent \
+                   TestANewProductCarriesItsOpeningStock \
+                   TestTheCartIsNotEmptyOnTheWire \
+                   TestTheCartCarriesNoRupeeFloats \
+                   TestEveryCartMutationAnswersWithTheCart \
+                   TestAMovedPriceIsShownOnTheCartLine \
+                   TestAnUnsellableLineIsMarked; do
+            grep -q -- "--- PASS: $p" create.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the create-product and cart contracts executed against a live database"
+
+      # A shop that can actually be approved.
+      #
+      # Two endpoints existed and nothing called them — `POST
+      # /onboarding/submit` and `POST /products/:id/submit`. And submit itself
+      # checked nothing: a shop with no bank account, no KYC and no pickup
+      # address landed in a human reviewer's queue as an empty application,
+      # the seller was told "submitted" and waited, and a reviewer who
+      # approved anyway put live a shop that could take money with no
+      # settlement path.
+      #
+      # The payout step, which the shop cannot be approved without, failed on
+      # EVERY call since it was written: its ON CONFLICT matched no index.
+      - name: Seller onboarding contract (readiness, payout, submit)
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/http/... -count=1 -v \
+            -run 'Application|ReadinessChecklist|RefusalNames|Payout|BankDetails|Enveloped|RefusalCarries' \
+            | tee onboarding.log
+          for p in TestAnEmptyApplicationCannotBeSubmitted \
+                   TestTheRefusalNamesEverythingStillMissing \
+                   TestTheReadinessChecklistMatchesWhatSubmitEnforces \
+                   TestSavingAPayoutAccountWorks \
+                   TestChangingBankDetailsReplacesThem \
+                   TestACompleteApplicationIsSubmitted \
+                   TestEverySellerReadIsEnveloped \
+                   TestASellerWriteIsEnveloped \
+                   TestTheBuyerReadsAreEnveloped \
+                   TestARefusalCarriesACode; do
+            grep -q -- "--- PASS: $p" onboarding.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the seller onboarding and envelope contracts executed against a live database"
+
+      # A KYC document belongs to the person submitting it.
+      #
+      # `seller_documents` is what a human reviewer checks identity against. A
+      # seller who could point that row at somebody else's uploaded PAN card
+      # would be approved on it, which makes the review meaningless — and is
+      # how one person's identity documents end up attached to another
+      # person's payout account.
+      - name: KYC document ownership
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/http/... -count=1 -v \
+            -run 'KycDocument|SellersOwnDocument' \
+            | tee kyc.log
+          for p in TestAKycDocumentMustBelongToTheSellerSubmittingIt \
+                   TestASellersOwnDocumentIsAcceptedAndCountsTowardsReview; do
+            grep -q -- "--- PASS: $p" kyc.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the KYC document ownership proofs executed against a live database"
+
+      # The journey with NOTHING seeded past a seam.
+      #
+      # Four launch defects lived exactly where the fixtures wrote rows that a
+      # route was supposed to produce: the admin approval wrote an
+      # approval_status both sale gates refuse, the pickup address never
+      # reached the GST place of supply, a cart-dependent precheck defeated
+      # the idempotent replay, and the order list answered a shape the client
+      # cannot deserialise. Every suite was green throughout — each component
+      # was correct and tested, and the seams between them were not.
+      #
+      # These four build the seller through the real routes instead, including
+      # the admin approve nothing had ever called.
+      - name: The journey through the real routes (nothing seeded)
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/http/... -count=1 -v \
+            -run 'TestAnAdminApprovedProductCanActuallyBeBought|TestASellerWhoOnlyUsedTheAppCanBeCheckedOutFrom|TestARetriedCheckoutReturnsTheSameOrder|TestTheOrderListIsShapedTheWayTheClientReadsIt' \
+            | tee seam.log
+          for p in TestAnAdminApprovedProductCanActuallyBeBought \
+                   TestASellerWhoOnlyUsedTheAppCanBeCheckedOutFrom \
+                   TestARetriedCheckoutReturnsTheSameOrder \
+                   TestTheOrderListIsShapedTheWayTheClientReadsIt; do
+            grep -q -- "--- PASS: $p" seam.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the seller and buyer journeys ran end to end over the real routes"
+
+      # Repricing must move the column checkout READS.
+      #
+      # `selling_price` is a NUMERIC mirror; `selling_price_minor` is what the
+      # pricing path resolves. A seller who lowers a price and moves only the
+      # mirror has changed nothing a buyer will ever be charged — they see the
+      # new price everywhere and the buyer is billed the old one.
+      - name: Repricing contract (both money columns move, paise are authority)
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/http/... -count=1 -v \
+            -run 'Repric|MoneyColumns|ExactPrice|Disagreeing|Agreeing|PriceCannotBeSetToZero|FractionalPaise|NonMoneyFields' \
+            | tee reprice.log
+          for p in TestRepricingInPaiseMovesWhatTheBuyerPays \
+                   TestBothMoneyColumnsMoveTogether \
+                   TestTheLegacyRupeeShapeStillReprices \
+                   TestAnExactPriceSurvivesAnEdit \
+                   TestDisagreeingPriceShapesAreRefused \
+                   TestAgreeingPriceShapesAreAccepted \
+                   TestAPriceCannotBeSetToZero \
+                   TestFractionalPaiseAreRefused \
+                   TestAnotherSellerCannotRepriceYourProduct \
+                   TestNonMoneyFieldsStillUpdate; do
+            grep -q -- "--- PASS: $p" reprice.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the repricing contract executed against a live database"
+
+      # ── Who is allowed to say who the caller is ───────────────────────
+      #
+      # getUserID reads X-User-Id and believes it. Nothing verified where that
+      # header came from, so any process that could open a TCP connection to a
+      # commerce pod could act as any user — and every ownership check in the
+      # service resolves from it.
+      #
+      # Media ownership sits in the same job because it has the same shape: a
+      # value supplied by the client, trusted without verification. The KYC
+      # case is the sharp one — seller_documents holds PAN and Aadhaar.
+      - name: Caller identity and media ownership
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          go test ./internal/http/... ./internal/media/... -count=1 -v | tee identity.log
+          for p in TestAnIdentityClaimWithoutTheGatewayKeyIsRefused \
+                   TestAWrongGatewayKeyIsRefused \
+                   TestAPrefixOfTheGatewayKeyIsRefused \
+                   TestTheGatewaysRequestPassesThrough \
+                   TestProbesAndMetricsStayOpen \
+                   TestThePrefixMatchIsOnPathSegments \
+                   TestAnEmptyKeyPanicsRatherThanAllowingEverything \
+                   TestMediaUploadedByAnotherAccountIsRefused \
+                   TestTheRefusalIsNotAnOwnershipOracle \
+                   TestEveryConditionIsEnforced \
+                   TestAnUnreachableMediaServiceFailsClosed \
+                   TestAnUpstreamErrorIsUnavailableNotApproval \
+                   TestAnEmptyBodyDoesNotVerify; do
+            grep -q -- "--- PASS: $p" identity.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the identity and media-ownership proofs executed"
+
+      # A deployed environment must not be able to start without either
+      # protection. Asserted on the source, because a boot test would need the
+      # whole dependency set.
+      - name: A deployed environment cannot start unprotected
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          M=cmd/server/main.go
+          grep -q 'INTERNAL_SERVICE_KEY is required in a deployed environment' "$M"             || { echo "::error::commerce no longer refuses to start without the gateway key"; exit 1; }
+          grep -q 'MEDIA_SERVICE_URL is required in a deployed environment' "$M"             || { echo "::error::commerce no longer refuses to start without media verification"; exit 1; }
+          grep -q 'commercehttp.RequireGatewayTrust(internalKey)' "$M"             || { echo "::error::the gateway-trust middleware is no longer installed"; exit 1; }
+          # And both values files must supply what the service now demands, or
+          # the pod crash-loops on deploy.
+          for v in ../../../deploy/services/commerce-service/values-prod.yaml                    ../../../deploy/services/commerce-service/values-staging.yaml; do
+            grep -q 'MEDIA_SERVICE_URL: http' "$v" || { echo "::error::$v has no MEDIA_SERVICE_URL"; exit 1; }
+            grep -q 'INTERNAL_SERVICE_KEY' "$v"    || { echo "::error::$v has no INTERNAL_SERVICE_KEY"; exit 1; }
+          done
+          echo "a deployed commerce-service cannot start without the gateway key or media verification"
+
+      # C3-LB-3: the Android enum cannot import the Go allowlist, so the two
+      # are diffed here. This is the only thing standing between the client
+      # and the server drifting apart again — which is exactly how
+      # net_banking came to be offered by one and refused by the other.
+      - name: Payment-method vocabulary does not drift
+        run: |
+          set -euo pipefail
+          GO_LIST=$(grep -oE '^\s+(UPI|Card)\s+= "[a-z_]+"' \
+            Architecture/shared/paymentmethod/paymentmethod.go \
+            | grep -oE '"[a-z_]+"' | tr -d '"' | sort | tr '\n' ' ')
+          KT_LIST=$(grep -oE '^\s+[A-Z_]+\("[a-z_]+",' \
+            mobile/android/feature/commerce/src/main/kotlin/com/us/android/feature/commerce/checkout/CheckoutState.kt \
+            | grep -oE '"[a-z_]+"' | tr -d '"' | sort | tr '\n' ' ')
+          echo "go:      $GO_LIST"
+          echo "android: $KT_LIST"
+          if [ "$GO_LIST" != "$KT_LIST" ]; then
+            echo "::error::the Go launch vocabulary and the Android PaymentMethod enum disagree."
+            echo "::error::Widen payments-service FIRST, then shared/paymentmethod, then gated 998, then Android."
+            exit 1
+          fi
+          [ -n "$GO_LIST" ] || { echo "::error::the vocabulary scan matched nothing; the gate is not gating"; exit 1; }
+          echo "one payment-method vocabulary: $GO_LIST"
+
+      # C4 (webhook inbox, mark-before-effect), C8 (refund durability,
+      # duplicate settlement, concurrent cap) and the cross-domain refund —
+      # plus the correction-pass proofs in proof_b_integration_test.go:
+      #
+      #	B2  amount + currency verified INSIDE the terminal transaction,
+      #	    with no status, no outbox row and no inbox row on a mismatch
+      #	B3  refund inbox + refund ledger in ONE transaction, and the
+      #	    payment-id fallback for a refund payload with no order id
+      #	B4  owner domain fails CLOSED on an empty owner or an empty caller
+      #	B6  WasExisting from xmax, not from the row's age
+      - name: Payments proofs
+        working-directory: Architecture/services/payments-service
+        env:
+          PAYMENTS_TEST_DSN: postgres://postgres:postgres@localhost:5432/payments_p0?sslmode=disable
+        run: go test -tags=integration ./internal/store/postgres/... -run TestProof -count=1 -v
+
+      # B2/B3/B4: the assertions that matter are the ones about what did NOT
+      # happen, so a silent skip must not read as a pass. TestMain exits 0
+      # when the DSN is unset; assert the proofs actually ran.
+      # N2 lives at the SERVICE layer, not the store: the defect was in what
+      # the reconciler SENDS. A store-only proof run cannot see it, which is
+      # how the reconciler stayed broken through a whole correction pass.
+      - name: Reconciler and fingerprint proofs (N2 / MRC-1, MRC-2, MRC-3)
+        working-directory: Architecture/services/payments-service
+        env:
+          PAYMENTS_TEST_DSN: postgres://postgres:postgres@localhost:5432/payments_p0?sslmode=disable
+        run: go test -tags=integration ./internal/service/... -count=1 -v
+
+      # MRC-1.6: the ADAPTER contract, driven over httptest against recorded
+      # Razorpay bytes. This is the gate that would have caught the dropped
+      # currency: the previous reconciliation proof used a hand-built struct
+      # that supplied the exact field production never decoded, so it was
+      # green while production was wrong. No database needed.
+      - name: Razorpay adapter decoding contract (MRC-1 / MRC-2)
+        working-directory: Architecture/services/payments-service
+        run: go test ./internal/gateway/... -count=1 -v -run 'TestFetchPayment|TestFetchByIdempotencyKey'
+
+      - name: The B- and N-proofs actually executed
+        working-directory: Architecture/services/payments-service
+        env:
+          PAYMENTS_TEST_DSN: postgres://postgres:postgres@localhost:5432/payments_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/store/postgres/... -run 'TestProof' -count=1 -v | tee b.log
+          go test -tags=integration ./internal/service/... -count=1 -v | tee -a b.log
+          # TestMain exits 0 when the DSN is unset, so a silent skip would
+          # otherwise read as a pass. Name the proofs that must be present.
+          for p in TestProofB2_LowAmountCaptureWritesNothing \
+                   TestProofB3_UnattributableRefundLeavesNoInboxRow \
+                   TestProofB4_RefundRefusedWhenIntentHasNoOwner \
+                   TestProofB6_WasExistingIsExactNotTimeBased \
+                   TestProofN3_AttachingADifferentProviderOrderIsAConflict \
+                   TestProofN4_KeyReusedByAnotherDomainIsRefused \
+                   TestProofN5_DisagreeingIdentifiersAreRefused \
+                   TestReconcileAppliesACapturedPaymentWhoseWebhookWasLost \
+                   TestReconcileRefusesAMatchingAmountInTheWrongCurrency \
+                   TestReconcileRefusesACaptureWithNoCurrency \
+                   TestReconcileRepairsABlankProviderReference \
+                   TestReconcileRefusesMultipleOrdersForOneIdempotencyKey \
+                   TestReconcileRefusesARecoveredOrderWithTheWrongAmount \
+                   TestReconcileRefusesARecoveredOrderWithTheWrongCurrency \
+                   TestReconcileRepairIsRestartSafe \
+                   TestReconcileCannotRepairWhenTheProviderHasNoLookup \
+                   TestFingerprintRefusesAnOwnerlessStoredRow \
+                   TestFingerprintRefusesAnUnidentifiedCaller \
+                   TestFingerprintMismatchNeverCallsTheProvider \
+                   TestGenuineRetryReturnsTheSameIntentAndReference; do
+            grep -q -- "--- PASS: $p" b.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the B2/B3/B4/B6, N2-N5 and MRC-1/2/3 proofs executed against a live database"
+
+      # N1/N6 on the commerce side. N1 is the reason this assertion exists:
+      # the address-column defect passed vet and every unit test, and only a
+      # real schema caught it.
+      - name: The commerce N-proofs actually executed
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/store/postgres/... -run "TestProof" -count=1 -v | tee n.log
+          # LB-24: the key ring against the real schema — the partial unique
+          # index is what stops two pods each installing their own "version 1"
+          # and then writing rows the other cannot read. Appends, so the
+          # named-test assertions below can see both runs.
+          go test -tags=integration ./internal/store/postgres/... -run "TestKeyRing|TestRotation|TestConcurrentCreate|TestPartialUnique" -count=1 -v | tee -a n.log
+          for p in TestProofN1_CheckoutReadsTheRealAddressColumns \
+                   TestProofN1_EditedAddressInvalidatesTheQuote \
+                   TestProofN6_OmittedExpectedTotalCreatesNothing \
+                   TestProofN6_StaleTotalIsRefusedAfterAPriceRise \
+                   TestProofC1_FiftyConcurrentCheckoutsAgainstOneUnit \
+                   TestProofC2_SameKeyTwentyTimesConcurrently \
+                   TestKeyRingRefusesASecondActiveKey \
+                   TestRotationRetiresButKeepsTheOldKeyReadable \
+                   TestConcurrentCreateInstallsExactlyOneKey \
+                   TestPartialUniqueIndexRefusesTwoLiveRows; do
+            grep -q -- "--- PASS: $p" n.log || { echo "::error::$p did not run or did not pass"; exit 1; }
+          done
+          echo "the commerce N1/N6 proofs executed against a live database"
+
+      # The proof that the proofs are load-bearing. This asserts the negative
+      # control REPRODUCED the original defect; if it cannot, the protection
+      # it is controlling for is not what is making C1 pass.
+      - name: Negative control must reproduce the oversell
+        working-directory: Architecture/services/commerce-service
+        env:
+          COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/store/postgres/... \
+            -run TestProofC1_NegativeControl -count=1 -v 2>&1 | tee control.log
+          grep -q "negative control reproduced the original defect" control.log || {
+            echo "::error::the negative control did not reproduce the oversell, so C1 is not load-bearing"
+            exit 1
+          }
+
+  # ─────────────────────────────────────────────────────────────────
+  # 4. Migration safety. (C10, A7, review §5)
+  # ─────────────────────────────────────────────────────────────────
+  migration-safety:
+    name: Migration safety (fail-loud, serialised, expand-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGUSER: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+
+      # Review §5.1: 007-013 must be expand-phase only. A destructive step
+      # in the boot set would break a mixed fleet mid-rollout.
+      - name: Boot migrations must be expand-only
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          BAD=0
+          for f in database/migrations/00[789]*.sql database/migrations/0[12]*.sql; do
+            if grep -Ein 'DROP[[:space:]]+(COLUMN|TABLE)' "$f"; then
+              echo "::error file=$f::destructive step in a boot migration"
+              BAD=1
+            fi
+            if grep -Ein 'VALIDATE[[:space:]]+CONSTRAINT' "$f"; then
+              echo "::error file=$f::VALIDATE CONSTRAINT belongs in database/gated/, not the boot set"
+              BAD=1
+            fi
+            # B11. The three patterns below all passed the previous grep, and
+            # all three were present in 010/012: they are the reason this job
+            # reported "expand-only" over a boot set that could reject an old
+            # replica's live writes mid-rollout.
+            #
+            # CREATE TRIGGER — a BEFORE INSERT/UPDATE trigger that RAISEs
+            # refuses the old image's writes the moment it is attached.
+            # Defining the FUNCTION is fine and stays in the boot set; it is
+            # the attachment that contracts.
+            if grep -Ein '^[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?TRIGGER' "$f" | grep -v 'expand-only:'; then
+              echo "::error file=$f::CREATE TRIGGER in a boot migration. Attaching a rejecting trigger is a CONTRACT operation — move it to database/gated/ (the CREATE FUNCTION may stay). A trigger that cannot reject a write may stay if the line is marked '-- expand-only: <reason>'"
+              BAD=1
+            fi
+            # DROP CONSTRAINT — previously waved through as "permitted inside
+            # the guarded CHECK replacement blocks, which re-add immediately".
+            # That reasoning is wrong when the replacement is NARROWER than
+            # what it replaces, which is precisely what 012 did to
+            # orders.payment_method by removing 'cod'.
+            #
+            # A genuine WIDENING is safe and stays in the boot set, but it has
+            # to say so: mark the line `-- expand-only: <why it is a strict
+            # superset>`. Same design as the money gate's `money-exempt:` —
+            # the justification lives at the site and is greppable, rather
+            # than being a blanket pattern exemption nobody can audit.
+            if grep -Ein 'DROP[[:space:]]+CONSTRAINT' "$f" | grep -v 'expand-only:'; then
+              echo "::error file=$f::DROP CONSTRAINT in a boot migration. If the replacement is narrower it rejects the old fleet — move it to database/gated/, or mark the line '-- expand-only: <reason>' if it is a strict superset"
+              BAD=1
+            fi
+            # A CHECK added without NOT VALID is validated immediately against
+            # existing rows and enforced against new ones.
+            if grep -Ein 'ADD[[:space:]]+CONSTRAINT' "$f" | grep -Eiv 'NOT[[:space:]]+VALID' | grep -v 'expand-only:' | grep -Ei 'CHECK|FOREIGN[[:space:]]+KEY'; then
+              echo "::error file=$f::a CHECK/FK constraint is added without NOT VALID in a boot migration"
+              BAD=1
+            fi
+          done
+          [ "$BAD" -eq 0 ] || exit 1
+          echo "boot migrations are expand-only"
+
+      # B11: and the contract half must actually exist, so the operations
+      # removed from the boot set were MOVED rather than deleted.
+      - name: The contract half exists and is gated
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          F=database/gated/998_contract_triggers_and_fences.sql
+          test -f "$F" || { echo "::error::$F is missing; the contract operations removed from 010/012 must live somewhere"; exit 1; }
+          for needle in 'trg_order_transition' 'orders_payment_method_prepaid_only' 'trg_fence_returns' 'trg_fence_reviews'; do
+            grep -q "$needle" "$F" || { echo "::error::$F does not install $needle"; exit 1; }
+          done
+          echo "the contract half is present and gated"
+
+      # The approval-vocabulary contract must refuse a fleet that is still
+      # rolling. `ApproveProductByAdmin` wrote 'live' while both sale gates
+      # require 'approved', so approved products were visible and unbuyable.
+      # Boot 022 converts the backlog (expand); gated 1001 removes 'live' from
+      # the CHECK (contract). A 'live' row surviving 022 was written by a pod
+      # on the old image, which is exactly when 1001 must refuse rather than
+      # narrow a constraint under a live writer.
+      - name: The approval-vocabulary contract refuses a rolling fleet
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          psql -c "CREATE DATABASE approvalvocab;"
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/setup.sql
+          for f in database/migrations/*.sql; do
+            psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+          # A row an old pod writes AFTER 022 has converted the backlog.
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -c "
+            INSERT INTO sellers (id,user_id,store_name,slug,email)
+              VALUES ('00000000-0000-0000-0000-0000000000aa','00000000-0000-0000-0000-0000000000bb','S','s-av','s@x.test');
+            INSERT INTO products (id,seller_id,title,slug,status,approval_status)
+              VALUES ('00000000-0000-0000-0000-0000000000cc','00000000-0000-0000-0000-0000000000aa','P','p-av','active','live');"
+
+          if psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/gated/1001_approval_status_tighten.sql; then
+            echo "::error::gated 1001 narrowed the CHECK while a 'live' row existed — it must refuse while the old image is still writing"
+            exit 1
+          fi
+          # The refusal must be atomic: nothing installed.
+          STILL_WIDE=$(psql -d approvalvocab -tAc "SELECT pg_get_constraintdef(oid) LIKE '%live%' FROM pg_constraint WHERE conname='products_approval_status_check'")
+          [ "$STILL_WIDE" = "t" ] || { echo "::error::the refused migration left a partially-applied constraint"; exit 1; }
+
+          # Rollout complete: 022 converts, and 1001 then applies.
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/migrations/022_approval_status_one_vocabulary.sql
+          psql -d approvalvocab -v ON_ERROR_STOP=1 -q -f database/gated/1001_approval_status_tighten.sql
+          NARROW=$(psql -d approvalvocab -tAc "SELECT pg_get_constraintdef(oid) LIKE '%live%' FROM pg_constraint WHERE conname='products_approval_status_check'")
+          [ "$NARROW" = "f" ] || { echo "::error::gated 1001 ran but 'live' is still permitted"; exit 1; }
+
+          # And the database itself now refuses the spelling.
+          if psql -d approvalvocab -v ON_ERROR_STOP=1 -q -c "UPDATE products SET approval_status='live' WHERE id='00000000-0000-0000-0000-0000000000cc'"; then
+            echo "::error::PostgreSQL accepted approval_status='live' after the contract migration"
+            exit 1
+          fi
+          echo "the approval vocabulary contract refuses early, applies once drained, and is enforced by PostgreSQL"
+
+      # C10: a migration whose invariant is already violated must FAIL and
+      # must NOT be recorded as applied. A migration that installs nothing
+      # and is still marked done is the defect this catches.
+      - name: A failing invariant is not recorded as applied
+        working-directory: Architecture/services/commerce-service
+        run: |
+          set -euo pipefail
+          psql -c "CREATE DATABASE c10;"
+          psql -d c10 -v ON_ERROR_STOP=1 -q -f database/setup.sql
+          for f in database/migrations/00[1-8]*.sql; do
+            psql -d c10 -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+          # Plant a row that violates reserved_qty <= total_qty BEFORE 009,
+          # then apply the gated validation, which must refuse.
+          psql -d c10 -v ON_ERROR_STOP=1 -q -f database/migrations/009_inventory_integrity.sql
+          psql -d c10 -c "
+            INSERT INTO sellers (id,user_id,store_name,slug,email)
+              VALUES ('00000000-0000-0000-0000-0000000000aa','00000000-0000-0000-0000-0000000000bb','S','s','s@x.test');
+            INSERT INTO products (id,seller_id,title,slug,status,approval_status)
+              VALUES ('00000000-0000-0000-0000-0000000000cc','00000000-0000-0000-0000-0000000000aa','P','p','active','approved');
+            INSERT INTO product_variants (id,product_id,sku,mrp,selling_price)
+              VALUES ('00000000-0000-0000-0000-0000000000dd','00000000-0000-0000-0000-0000000000cc','SKU',1,1);
+            INSERT INTO inventory_items (variant_id,seller_id,total_qty,reserved_qty)
+              VALUES ('00000000-0000-0000-0000-0000000000dd','00000000-0000-0000-0000-0000000000aa',1,5);"
+          if psql -d c10 -v ON_ERROR_STOP=1 -q -c "ALTER TABLE inventory_items VALIDATE CONSTRAINT chk_inv_reserved_le_total"; then
+            echo "::error::VALIDATE succeeded against data that violates the invariant"
+            exit 1
+          fi
+          echo "validation correctly refused an already-violating table"
+
+      # A7: two runners must not both apply the same migration.
+      - name: Two concurrent migrators serialise
+        working-directory: Architecture/shared
+        run: go test ./store/migrationrunner/... -count=1
+
+      # Review §5.6: food-service still calls the legacy payments routes, so
+      # they must not be removed before it is migrated.
+      - name: Legacy payments callers are inventoried
+        run: |
+          set -euo pipefail
+          echo "Direct callers of payments-service outside commerce:"
+          grep -rn "v1/payments" Architecture/services --include='*.go' \
+            | grep -v 'Architecture/services/payments-service' \
+            | grep -v 'Architecture/services/commerce-service' || true
+          echo
+          echo "These MUST be migrated to service-token auth before the legacy routes are retired."

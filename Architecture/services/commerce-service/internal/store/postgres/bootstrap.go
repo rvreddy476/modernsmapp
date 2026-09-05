@@ -16,7 +16,7 @@ func BootstrapSchema(ctx context.Context, pool *pgxpool.Pool, sql string, migrat
 		return fmt.Errorf("bootstrap commerce schema: %w", err)
 	}
 	if migrations != nil {
-		if err := migrationrunner.Run(ctx, pool, "commerce-service", migrations, "migrations"); err != nil {
+		if err := migrationrunner.RunExclusive(ctx, pool, "commerce-service", migrations, "migrations"); err != nil {
 			return fmt.Errorf("apply commerce migrations: %w", err)
 		}
 	}

@@ -64,14 +64,48 @@ func isPermanent(err error) bool {
 // classification without reaching into the retry loop.
 func IsPermanent(err error) bool { return isPermanent(err) }
 
+// dedupeStore holds processing RECEIPTS — see the B1 note in
+// processWithRetry. It is an interface rather than a bare *redis.Client so
+// the ordering guarantee can be proven without a Redis server: the negative
+// control in consumer_dedupe_test.go injects a store that records the order
+// of receipt writes relative to handler invocations, and fails if a receipt
+// can precede its effect.
+type dedupeStore interface {
+	// Seen reports whether this key already has a receipt.
+	Seen(ctx context.Context, key string) bool
+	// Mark writes the receipt. Best-effort: a failure costs a redundant
+	// redelivery, never a lost effect.
+	Mark(ctx context.Context, key string, ttl time.Duration)
+}
+
+type redisDedupe struct{ rdb *redis.Client }
+
+func (r redisDedupe) Seen(ctx context.Context, key string) bool {
+	n, err := r.rdb.Exists(ctx, key).Result()
+	return err == nil && n > 0
+}
+
+func (r redisDedupe) Mark(ctx context.Context, key string, ttl time.Duration) {
+	if err := r.rdb.Set(ctx, key, "1", ttl).Err(); err != nil {
+		slog.Warn("kafka consumer: could not write dedupe receipt; a redelivery will reprocess",
+			"key", key, "error", err)
+	}
+}
+
 // Consumer is a resilient Kafka consumer with retry, DLQ, dedup, and metrics.
 type Consumer struct {
 	cfg     ConsumerConfig
 	reader  *kafkago.Reader
 	writer  *kafkago.Writer // for DLQ
-	rdb     *redis.Client   // for dedup (nil = no dedup)
+	dedupe  dedupeStore     // receipts (nil = no dedup)
 	metrics *metrics.KafkaConsumerMetrics
 	handler HandlerFunc
+
+	// commit offers the offset commit as a seam. Production wires it to
+	// reader.CommitMessages; the B1 negative control substitutes a recorder,
+	// because the ordering being proven is "effect before receipt before
+	// commit" and that sequence cannot be observed through a live broker.
+	commit func(context.Context, kafkago.Message) error
 }
 
 // NewConsumer creates a new resilient consumer.
@@ -115,14 +149,23 @@ func NewConsumer(
 		})
 	}
 
-	return &Consumer{
+	var dedupe dedupeStore
+	if rdb != nil {
+		dedupe = redisDedupe{rdb: rdb}
+	}
+
+	c := &Consumer{
 		cfg:     cfg,
 		reader:  reader,
 		writer:  writer,
-		rdb:     rdb,
+		dedupe:  dedupe,
 		metrics: m,
 		handler: handler,
 	}
+	c.commit = func(ctx context.Context, msg kafkago.Message) error {
+		return c.reader.CommitMessages(ctx, msg)
+	}
+	return c
 }
 
 // Start blocks, consuming messages until ctx is cancelled.
@@ -174,12 +217,36 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 		return
 	}
 
-	// Dedup check — key includes topic so the same event ID on different topics
-	// is treated as distinct and not incorrectly de-duplicated.
-	if c.rdb != nil {
-		dedupKey := fmt.Sprintf("consumed:%s:%s:%s", c.cfg.GroupID, msg.Topic, envelope.EventID)
-		set, err := c.rdb.SetNX(ctx, dedupKey, "1", c.cfg.DedupTTL).Result()
-		if err == nil && !set {
+	// Dedup — B1. This block used to perform the SETNX *before* invoking the
+	// handler, which made the Redis key a CLAIM rather than a RECEIPT. The
+	// interleaving that loses money:
+	//
+	//	1. SETNX succeeds;
+	//	2. the process dies, or PostgreSQL is briefly unavailable, before the
+	//	   handler's transaction commits;
+	//	3. redelivery finds the key, treats the event as already handled, and
+	//	   commits the Kafka offset.
+	//
+	// The PSP had captured the customer's money and the effect existed
+	// nowhere. Redis — a cache, with a TTL, no durability guarantee and no
+	// participation in the handler's transaction — was acting as the
+	// transaction log.
+	//
+	// The key is now written ONLY after the handler returns nil (see
+	// markProcessed), so its presence means "this event was already processed
+	// to completion" and a pre-check may skip safely. The cost is that a
+	// crash mid-handler re-runs the handler: plain at-least-once delivery,
+	// which is the same contract the retry loop below already imposes and
+	// which every handler must already tolerate.
+	//
+	// Consumers whose effect must never depend on a cache at all (money)
+	// should additionally pass a nil Redis client and set RetryForever, so
+	// the only dedupe authority is their own database. See
+	// commerce-service/internal/consumers/payments_p0.go.
+	dedupKey := ""
+	if c.dedupe != nil && envelope.EventID != "" {
+		dedupKey = fmt.Sprintf("consumed:%s:%s:%s", c.cfg.GroupID, msg.Topic, envelope.EventID)
+		if c.dedupe.Seen(ctx, dedupKey) {
 			if c.metrics != nil {
 				c.metrics.DedupHits.WithLabelValues(c.cfg.Topic, c.cfg.GroupID).Inc()
 			}
@@ -222,6 +289,9 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 				"partition", msg.Partition,
 				"offset", msg.Offset,
 			)
+			// B1: the receipt is written only here, on the success path,
+			// after the handler's effect is durable.
+			c.markProcessed(ctx, dedupKey)
 			c.commitMessageUntilDurable(ctx, logger, msg)
 			return
 		}
@@ -235,6 +305,9 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 
 		if isPermanent(err) {
 			if c.sendToDLQUntilDurable(ctx, msgLogger, msg, envelope, err) {
+				// The DLQ write is durable, so this event has reached a
+				// terminal disposition and the receipt is honest.
+				c.markProcessed(ctx, dedupKey)
 				c.commitMessageUntilDurable(ctx, logger, msg)
 			}
 			return
@@ -266,6 +339,7 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 		"retries", c.cfg.MaxRetries,
 	)
 	if c.sendToDLQUntilDurable(ctx, msgLogger, msg, envelope, lastErr) {
+		c.markProcessed(ctx, dedupKey)
 		c.commitMessageUntilDurable(ctx, logger, msg)
 	}
 }
@@ -334,9 +408,24 @@ func (c *Consumer) sendToDLQRawUntilDurable(ctx context.Context, logger *slog.Lo
 	return retryDurable(ctx, logger, "raw DLQ write", func() error { return c.sendToDLQRaw(ctx, logger, msg, cause) })
 }
 
+// markProcessed writes the dedupe receipt.
+//
+// B1. Called only once the event's effect is durable — either the handler
+// returned nil, or the message was durably written to the DLQ. A failure to
+// write the receipt is logged and otherwise ignored: losing it costs one
+// redundant redelivery, which the handler's own idempotency absorbs. Losing
+// the EFFECT is what this ordering exists to prevent, and that can no longer
+// happen, because the receipt can no longer precede the effect.
+func (c *Consumer) markProcessed(ctx context.Context, dedupKey string) {
+	if c.dedupe == nil || dedupKey == "" {
+		return
+	}
+	c.dedupe.Mark(ctx, dedupKey, c.cfg.DedupTTL)
+}
+
 func (c *Consumer) commitMessageUntilDurable(ctx context.Context, logger *slog.Logger, msg kafkago.Message) bool {
 	return retryDurable(ctx, logger, "offset commit", func() error {
-		return c.reader.CommitMessages(ctx, msg)
+		return c.commit(ctx, msg)
 	})
 }
 

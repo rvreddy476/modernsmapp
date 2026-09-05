@@ -35,6 +35,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.designsystem.component.UsNavigationBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsWordmark
@@ -90,6 +91,8 @@ import com.us.android.feature.chat.navigation.navigateToGroupInfo
 import com.us.android.feature.chat.navigation.navigateToInvitations
 import com.us.android.feature.chat.navigation.navigateToJoinByLink
 import com.us.android.feature.chat.ui.home.ChatHomeDestinations
+import com.us.android.feature.commerce.navigation.commerceScreens
+import com.us.android.feature.commerce.navigation.navigateToCommerce
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
@@ -240,6 +243,12 @@ fun UsNavHost(
     pushDestination: com.us.android.push.PushDestination? = null,
     onPushDestinationConsumed: () -> Unit = {},
     callState: com.us.android.core.call.CallState = com.us.android.core.call.CallState.Idle,
+    // Supplied by MainActivity, which IS the Activity the PSP SDK needs and
+    // which holds the coordinator. Passing it down rather than looking up a
+    // context here removes the "what if this is not an Activity" branch
+    // entirely, and keeps :app's provider choice in one place.
+    onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit = { _, _ -> },
+    onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit = { _ -> },
     navController: NavHostController = rememberNavController(),
 ) {
     val tabs = remember(shellState) {
@@ -350,7 +359,7 @@ fun UsNavHost(
             ) {
                 authDestinations(navController)
                 shellDestinations()
-                tabDestinations(navController, pool, launcher)
+                tabDestinations(navController, pool, launcher, onOpenPaymentSheet, onAbandonPaymentSheet)
             }
         }
     }
@@ -504,6 +513,10 @@ private fun NavGraphBuilder.tabDestinations(
     navController: NavHostController,
     pool: PlayerPool,
     launcher: List<LauncherTile>,
+    // Passed through rather than captured: this is a top-level extension, not
+    // a lambda inside UsNavHost, so the parameter is not otherwise in scope.
+    onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
+    onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit,
 ) {
     // A tapped feed video opens the Reels TAB (founder, 2026-09-05), which
     // reads the post id the feed left in ReelsEntry and opens on that reel.
@@ -572,6 +585,25 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         onGoLive = { navController.navigateToGoLive() },
         onWatch = { streamId -> navController.navigateToLiveWatch(streamId) },
+    )
+
+    // Commerce — the buyer journey: catalogue → product → cart → address →
+    // checkout → payment → orders, and the seller surface behind the
+    // catalogue. Entered from the Explore launcher's Shop tile.
+    //
+    // `onOpenPaymentSheet` is supplied HERE rather than inside the feature
+    // because the PSP integration is an app-level concern; `:feature:commerce`
+    // must not know that Razorpay is the provider, or swapping one becomes a
+    // change to every screen that touches payment.
+    //
+    // The handoff asks the SERVER to open the intent, hands the returned
+    // client session to the PSP SDK, and publishes the outcome onto
+    // PaymentHandoff. The checkout screen collects that and polls — because a
+    // sheet closing is evidence, never proof.
+    commerceScreens(
+        navController = navController,
+        onOpenPaymentSheet = onOpenPaymentSheet,
+        onAbandonPaymentSheet = onAbandonPaymentSheet,
     )
 
     // The classic composer route stays registered for any older entry point;
@@ -830,7 +862,10 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.ALERTS -> navController.navigateToNotifications()
                     LauncherApp.LIVE -> navController.navigateToLiveHub()
                     LauncherApp.TUBE -> navController.navigateToTube()
-                    LauncherApp.SHOP, LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST -> Unit
+                    // Shop opens the catalogue; Orders and the seller hub
+                    // hang off its top bar, so one tile is the whole way in.
+                    LauncherApp.SHOP -> navController.navigateToCommerce()
+                    LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST -> Unit
                 }
             },
         )
@@ -928,7 +963,12 @@ private const val BAR_ANIM_MILLIS = 200
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */
 @Composable
-fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
+fun UsApp(
+    viewModel: MainViewModel,
+    pool: PlayerPool,
+    onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit = { _, _ -> },
+    onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit = { _ -> },
+) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val shellState by viewModel.shellState.collectAsStateWithLifecycle()
     val pushDestination by viewModel.pushDestination.collectAsStateWithLifecycle()
@@ -940,6 +980,8 @@ fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
         pushDestination = pushDestination,
         onPushDestinationConsumed = viewModel::consumePushDestination,
         callState = callState,
+        onOpenPaymentSheet = onOpenPaymentSheet,
+        onAbandonPaymentSheet = onAbandonPaymentSheet,
     )
 }
 

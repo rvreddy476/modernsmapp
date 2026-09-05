@@ -27,6 +27,20 @@ type Config struct {
 	PollInterval time.Duration
 	// BatchSize max events per sweep. Default: 100.
 	BatchSize int
+	// LeaderAcksOnly downgrades the producer to RequireOne.
+	//
+	// Commerce P0 amendment A3 / review R-2. The default is now RequireAll,
+	// and no money topic may set this. Under RequireOne a leader can
+	// acknowledge a write, lose power before any replica has copied it, and
+	// this publisher will still mark the outbox row published — destroying
+	// the only durable record that a payment was captured. Consumer
+	// idempotency absorbs a duplicated event; nothing absorbs an event that
+	// no longer exists anywhere.
+	//
+	// The flag exists so a non-money, high-volume topic can opt into the
+	// weaker guarantee deliberately and visibly, not so the platform can
+	// drift back into it silently.
+	LeaderAcksOnly bool
 }
 
 // Publisher polls outbox_events and publishes to Kafka.
@@ -63,11 +77,21 @@ func (p *Publisher) Run(ctx context.Context) {
 		slog.Error("outbox publisher kafka brokers not configured", "table", p.table)
 		return
 	}
+	// A3: RequireAll by default. The publisher marks a row published as
+	// soon as WriteMessages returns, so the ack it waits for IS the
+	// durability guarantee for that event. Waiting only for the leader
+	// makes "published" a lie the moment that leader fails.
+	acks := kafka.RequireAll
+	if p.cfg.LeaderAcksOnly {
+		acks = kafka.RequireOne
+		slog.Warn("outbox publisher running with leader-only acks; an unreplicated leader failure will lose events",
+			"table", p.table, "topic", p.cfg.DefaultTopic)
+	}
 	writer := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:      brokers,
 		Topic:        p.cfg.DefaultTopic,
 		Balancer:     &kafka.LeastBytes{},
-		RequiredAcks: int(kafka.RequireOne),
+		RequiredAcks: int(acks),
 		Dialer:       dialer,
 	})
 	defer writer.Close()

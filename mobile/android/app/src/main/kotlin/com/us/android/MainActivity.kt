@@ -8,11 +8,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.lifecycleScope
+import com.razorpay.PaymentData
+import com.razorpay.PaymentResultWithDataListener
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.notifications.NotificationPresenter
 import com.us.android.navigation.MainViewModel
 import com.us.android.navigation.UsApp
+import com.us.android.payment.CheckoutPaymentCoordinator
+import com.us.android.payment.PaymentSheetOutcome
+import com.us.android.payment.RazorpayPaymentLauncher
 import com.us.android.push.PushDestinations
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -26,7 +32,7 @@ import javax.inject.Inject
  * graph to observe SessionState instead, so the first frame is never blocked.
  */
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
 
     /**
      * Injected here rather than into the reels screen so the pool outlives any
@@ -38,6 +44,19 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var pushDestinations: PushDestinations
+
+    /**
+     * Razorpay delivers its result to the ACTIVITY, not to whoever opened the
+     * sheet, so the Activity has to implement the listener and forward it.
+     * Injected as the concrete type because `deliver` is the forwarding seam
+     * and is not part of the [com.us.android.payment.PaymentLauncher] port —
+     * nothing above this line should be able to inject a payment result.
+     */
+    @Inject
+    lateinit var razorpayLauncher: RazorpayPaymentLauncher
+
+    @Inject
+    lateinit var paymentCoordinator: CheckoutPaymentCoordinator
 
     private val viewModel: MainViewModel by viewModels()
 
@@ -55,7 +74,28 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             UsTheme {
-                UsApp(viewModel, playerPool)
+                UsApp(
+                    viewModel = viewModel,
+                    pool = playerPool,
+                    // The Activity is what the PSP SDK opens onto and what it
+                    // calls back, so the handoff starts here rather than
+                    // somewhere in the Compose tree that would have to hunt
+                    // for an Activity in a LocalContext.
+                    onOpenPaymentSheet = { attempt, orderNumber ->
+                        paymentCoordinator.start(
+                            activity = this,
+                            scope = lifecycleScope,
+                            attempt = attempt,
+                            orderNumber = orderNumber,
+                        )
+                    },
+                    // C3-LB-4: releases the launcher's single in-flight slot
+                    // when the checkout screen goes away, so a buyer who backs
+                    // out mid-sheet is not refused on every later attempt.
+                    onAbandonPaymentSheet = { attempt ->
+                        razorpayLauncher.abandon(attempt)
+                    },
+                )
             }
         }
     }
@@ -85,5 +125,26 @@ class MainActivity : ComponentActivity() {
             entityId = intent?.getStringExtra(NotificationPresenter.KEY_ENTITY_ID),
             deepLink = intent?.getStringExtra(NotificationPresenter.KEY_DEEP_LINK),
         )
+    }
+
+    // ─── Razorpay result plumbing ────────────────────────────────────
+    //
+    // The SDK calls back HERE rather than on the code that opened the sheet,
+    // so these two overrides exist purely to forward it. They deliberately
+    // interpret nothing: A1/R-3 says a client callback is evidence, never
+    // proof, and the checkout flow polls the server for both outcomes. An
+    // Activity that decided "paid" from onPaymentSuccess would be asserting
+    // something no one has verified.
+
+    override fun onPaymentSuccess(razorpayPaymentId: String?, paymentData: PaymentData?) {
+        razorpayLauncher.deliver(PaymentSheetOutcome.Succeeded(razorpayPaymentId))
+    }
+
+    override fun onPaymentError(code: Int, response: String?, paymentData: PaymentData?) {
+        // A user-cancelled sheet and a genuine provider error arrive through
+        // the same callback. Both are reported as-is; the coordinator treats
+        // every ending the same way, because a reported failure can still sit
+        // on top of a capture that completed.
+        razorpayLauncher.deliver(PaymentSheetOutcome.Failed(code, response))
     }
 }

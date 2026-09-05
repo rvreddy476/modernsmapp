@@ -85,6 +85,18 @@ type ServiceabilityResult struct {
 	EstimatedETA  time.Time `json:"estimated_eta"`
 	Courier       string    `json:"courier"`
 	Reason        string    `json:"reason,omitempty"`
+
+	// ShippingChargeMinor is the delivery price in paise.
+	//
+	// Commerce P0 LB-20 / D7. Pricing used to hardcode ₹40, free over ₹499,
+	// platform-wide — while this adapter, which actually knows what a
+	// courier charges for this weight to this pincode, sat unused. The rate
+	// now comes from here, is persisted as a bound quote (A4), and is
+	// consumed inside the checkout transaction so no network call happens
+	// before the commit.
+	//
+	// Paise, not rupees: no float touches a money path (LB-19).
+	ShippingChargeMinor int64 `json:"shipping_charge_minor"`
 }
 
 // Provider is the courier adapter.
@@ -154,10 +166,15 @@ func (StubCourier) CheckServiceability(_ context.Context, req ServiceabilityRequ
 	}
 	return &ServiceabilityResult{
 		Serviceable:   true,
-		CODSupported:  true,
+		// A5: prepaid-only launch. Even the stub must not offer COD, or a
+		// dev environment would exercise a path production refuses.
+		CODSupported:  false,
 		EstimatedDays: 3,
 		EstimatedETA:  time.Now().AddDate(0, 0, 3),
 		Courier:       "stub",
+		// A visible, obviously-fake rate. M-10: production refuses to load
+		// this adapter at all, so a real order can never be quoted from it.
+		ShippingChargeMinor: 4900,
 	}, nil
 }
 

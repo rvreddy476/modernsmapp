@@ -33,13 +33,72 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
-    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+
+    # Commerce P0 M-10 — infrastructure the service cannot start without.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+
+    # A2 — commerce's PRIVATE service-token key. Only commerce holds it.
+    - { secretKey: COMMERCE_SERVICE_TOKEN_KEY, remoteRef: commerce_service_token_key }
+    - { secretKey: COMMERCE_SERVICE_TOKEN_KID, remoteRef: commerce_service_token_kid }
+
+    # LB-24 — address PII. Staging exercises the same envelope-encryption
+    # path as production, under a staging CMK, so the KMS grant and the
+    # decrypt-on-checkout latency are proven before launch rather than after.
+    - { secretKey: COMMERCE_KMS_KEY_ID, remoteRef: commerce_kms_key_id }
+    - { secretKey: COMMERCE_PII_LOOKUP_SALT, remoteRef: commerce_pii_lookup_salt }
+
+    # D7 — a real courier in staging too. Shiprocket's sandbox, but the
+    # adapter, not the stub: the stub's fake AWB would hide every
+    # integration defect until production.
+    - { secretKey: SHIPROCKET_EMAIL, remoteRef: shiprocket_email }
+    - { secretKey: SHIPROCKET_PASSWORD, remoteRef: shiprocket_password }
+    - { secretKey: SHIPROCKET_WEBHOOK_TOKEN, remoteRef: shiprocket_webhook_token }
+    - { secretKey: SHIPROCKET_WEBHOOK_HMAC, remoteRef: shiprocket_webhook_hmac }
 
 env:
   ENV: staging
   LOG_LEVEL: info
+  COURIER_PROVIDER: shiprocket
+  COMMERCE_SKIP_BOOT_MIGRATIONS: 'true'
+
+  # A5 / C3-LB-3 — prepaid only, and exactly two methods.
+  #
+  # DOCUMENTATION, not authority. Architecture/shared/paymentmethod is
+  # canonical and no production code reads this variable; it is here so the
+  # deployed manifest cannot say something different from what the service
+  # enforces. It used to advertise 'upi,card,net_banking,wallet', which the
+  # server has refused since B6 — a stale claim that would have become a bug
+  # the moment somebody made it authoritative.
+  COMMERCE_PAYMENT_METHODS: 'upi,card'
+
+  # B4/B5 — which half of the two-deploy address-PII cutover this image runs.
+  #
+  #   dual        write ciphertext AND plaintext, read either. Safe against a
+  #               database whose backfill has not finished, and safe to roll
+  #               back from. The backfill runs in this state.
+  #   ciphertext  write and read ciphertext ONLY. Deploy only once the
+  #               backfill reports every table complete with zero failures.
+  #
+  # The gated plaintext scrub (database/gated/1000_*) refuses until this is
+  # 'ciphertext' everywhere AND an operator has recorded the drain.
+  COMMERCE_PII_CUTOVER: 'dual'
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+
+  # Media ownership verification.
+  #
+  # commerce-service stores a media id on twelve columns, every one of them
+  # supplied in a request body: a product's primary image, a seller's logo and
+  # banner, and every row of seller_documents — where a seller's PAN, Aadhaar
+  # and cancelled cheque live. Nothing verified those ids belonged to the
+  # account submitting them, so a seller could attach another person's
+  # identity document to their own KYC and be approved on it.
+  #
+  # NOT optional in a deployed environment: cmd/server exits at boot if it is
+  # absent, and verification fails CLOSED when media-service is unreachable.
+  # Removing this line stops the service starting.
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

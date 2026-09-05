@@ -33,13 +33,41 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
-    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+
+    # Commerce P0 M-10. The placeholder comment that used to sit here is
+    # exactly what the review found: the service cannot boot without these,
+    # so the payment path had never run in a deployed environment.
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+
+    # PSP credentials. Staging uses Razorpay TEST keys — still real
+    # credentials, still belong in Secrets Manager.
+    - { secretKey: RAZORPAY_KEY_ID, remoteRef: razorpay_key_id }
+    - { secretKey: RAZORPAY_KEY_SECRET, remoteRef: razorpay_key_secret }
+    - { secretKey: RAZORPAY_WEBHOOK_SECRET, remoteRef: razorpay_webhook_secret }
+
+    # A2 caller allowlist — public keys only.
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY, remoteRef: caller_commerce_pubkey }
+    - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
+    - { secretKey: SERVICE_CALLER_FOOD_SERVICE_PUBKEY, remoteRef: caller_food_pubkey }
+    - { secretKey: SERVICE_CALLER_FOOD_SERVICE_KID, remoteRef: caller_food_kid }
 
 env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+
+  # A2. Staging carries the SAME allowlist as production, deliberately: the
+  # authorization boundary is one of the things staging exists to exercise,
+  # and a looser staging teaches the wrong lesson.
+  SERVICE_CALLERS: 'commerce-service,food-service'
+  SERVICE_CALLER_COMMERCE_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create,payments:payment.fetch'
+  SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: 'order'
+  SERVICE_CALLER_FOOD_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  SERVICE_CALLER_FOOD_SERVICE_REFTYPES: 'food_order'
+
+  PAYMENTS_RECONCILE_INTERVAL_SEC: '60'
+  PAYMENTS_PENDING_AGE_SEC: '300'
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
