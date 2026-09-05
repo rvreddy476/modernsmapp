@@ -1,6 +1,7 @@
 package com.us.android.feature.tube.ui
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.common.time.formatDuration
 import org.junit.Test
 import java.time.Instant
 

@@ -1,6 +1,7 @@
 package com.us.android.core.feed.data
 
 import androidx.paging.PagingData
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.model.FeedItem
@@ -141,6 +142,18 @@ class VideoFeedRepository @Inject constructor(
         }
 
     /**
+     * Moves a scheduled post to [publishAt] (RFC 3339), or publishes it now
+     * when [publishAt] is null (2026-09-05). Answers the post as the server
+     * now has it, hydrated; the failure carries the server's reason in
+     * [scheduleErrorMessage]'s words.
+     */
+    suspend fun reschedule(postId: String, publishAt: String?): AppResult<FeedItem> =
+        when (val result = apiCall(errorMapper) { api.updateSchedule(postId, ScheduleRequest(publishAt)) }) {
+            is AppResult.Success -> AppResult.Success(hydrator.hydrate(listOf(result.data.toDomain())).first())
+            is AppResult.Failure -> result
+        }
+
+    /**
      * The first page of one author's long videos, as a list — a channel's
      * strip bubble and the You header count read it without a pager.
      */
@@ -214,10 +227,32 @@ class VideoFeedRepository @Inject constructor(
     private val VideoFeedQuery.surface: FeedSurface
         get() = if (this is VideoFeedQuery.Following) FeedSurface.Watch else FeedSurface.Videos
 
-    private companion object {
-        const val LONG_VIDEO = "long_video"
+    companion object {
+        /** Why a reschedule was refused, in words the row can show. */
+        fun scheduleErrorMessage(error: AppError): String = when {
+            error is AppError.NoNetwork -> "You're offline. Check your connection and try again."
+            error is AppError.Timeout -> "That took too long. Try again."
+            error.contractCode() == CODE_NOT_SCHEDULED -> "This post is already live."
+            error.contractCode() == CODE_INVALID_PUBLISH_AT ->
+                "Pick a time between 5 minutes and 30 days from now."
+            error is AppError.Forbidden -> "Only the author can change this."
+            error is AppError.NotFound -> "This post is gone."
+            error is AppError.Unknown && !error.message.isNullOrBlank() -> error.message.orEmpty()
+            else -> "We couldn't change the schedule. Try again."
+        }
+
+        private fun AppError.contractCode(): String? = when (this) {
+            is AppError.Unknown -> code
+            is AppError.Server -> code
+            is AppError.Forbidden -> code
+            else -> null
+        }
+
+        private const val CODE_NOT_SCHEDULED = "NOT_SCHEDULED"
+        private const val CODE_INVALID_PUBLISH_AT = "INVALID_PUBLISH_AT"
+        private const val LONG_VIDEO = "long_video"
 
         /** Pages of non-video bookmarks skipped in one load before giving Paging the cursor back. */
-        const val MAX_PAGE_HOPS = 4
+        private const val MAX_PAGE_HOPS = 4
     }
 }

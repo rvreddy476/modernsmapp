@@ -116,6 +116,10 @@ import com.us.android.feature.profile.navigation.navigateToSettings
 import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
 import com.us.android.feature.profile.navigation.settingsScreens
+import com.us.android.feature.search.navigation.SearchDestinations
+import com.us.android.feature.search.navigation.SearchOrigin
+import com.us.android.feature.search.navigation.navigateToSearch
+import com.us.android.feature.search.navigation.searchScreen
 import com.us.android.feature.settings.navigation.OnboardingRoute
 import com.us.android.feature.settings.navigation.accountControlScreen
 import com.us.android.feature.settings.navigation.contentPreferencesScreen
@@ -133,6 +137,8 @@ import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
+import com.us.android.feature.tube.navigation.navigateToTubeSaved
+import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
 import com.us.android.feature.tube.navigation.navigateToWatch
 import com.us.android.feature.tube.navigation.tubeScreens
@@ -175,40 +181,12 @@ data object SplashRoute
 
 /**
  * The Explore tab — the mini-app launcher with a search field on top
- * (founder, 2026-09-05). [mode] is the scope a header's search glyph wants
- * the field to look in — see [ExploreMode] — carried as its wire name so the
- * route stays a plain serializable value; the bar's own tap opens it on
- * posts.
+ * (founder, 2026-09-05). Its field submits to the search page scoped to
+ * everything; the headers open the same page scoped to their own surface
+ * (see `SearchOrigin` in `:feature:search`).
  */
 @Serializable
-data class ExploreRoute(val mode: String = ExploreMode.POSTS.name)
-
-/**
- * Where the Explore field's query lands. A dedicated search surface does
- * not exist yet — the only search endpoint this client knows is the people
- * search the reel form tags with — so this is the placeholder, named with
- * the scope and the query so the plumbing is visible end to end.
- */
-@Serializable
-data class SearchRoute(val query: String, val mode: String = ExploreMode.POSTS.name)
-
-/**
- * What the header's search glyph looks for, per page (founder, 2026-09-04):
- * Home → posts, Reels → reels, Friends → people, Me → the viewer's own posts,
- * Tube → long videos (2026-09-05).
- */
-enum class ExploreMode(val label: String) {
-    POSTS("Posts"),
-    REELS("Reels"),
-    PEOPLE("People"),
-    OWN_POSTS("Your posts"),
-    TUBE("Videos"),
-    ;
-
-    companion object {
-        fun fromWire(name: String): ExploreMode = entries.firstOrNull { it.name == name } ?: POSTS
-    }
-}
+data object ExploreRoute
 
 /**
  * The design-system gallery.
@@ -523,10 +501,10 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
         onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
         onOpenNotifications = { navController.navigateToNotifications() },
-        // Search is the Explore placeholder until a dedicated surface exists,
-        // opened scoped to POSTS from Home; the create action left the header
-        // for the bar's centre button.
-        onOpenSearch = { navController.navigateToExplore(ExploreMode.POSTS) },
+        // The header glyph opens search scoped to Home — people and posts
+        // (founder, 2026-09-05); the create action left the header for the
+        // bar's centre button.
+        onOpenSearch = { navController.navigateToSearch(SearchOrigin.HOME) },
         onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
         onOpenReels = onOpenReels,
     )
@@ -682,8 +660,9 @@ private fun NavGraphBuilder.tabDestinations(
         onLeft = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
     )
     composable<GalleryRoute> {
-        // The gallery is still reachable from Explore so the design tokens stay
-        // reviewable on a real device at real density.
+        // Registered, not linked: the search placeholder that opened it is gone
+        // (2026-09-05). The route stays so the tokens can still be reviewed on
+        // a device by pushing it from a debug entry when one is wanted.
         DesignSystemGalleryScreen(
             onOpenOwnProfile = { navController.navigateToTopLevel(TopLevelDestination.ME) },
         )
@@ -694,12 +673,12 @@ private fun NavGraphBuilder.tabDestinations(
     // the stutter this surface exists to avoid.
     //
     // The header floats over the video (founder, 2026-09-05): the hamburger
-    // opens the reel's More sheet inside the screen; search opens the
-    // Explore tab scoped to reels.
+    // opens the reel's More sheet inside the screen; search opens the search
+    // page scoped to Reels — people and reels.
     reelsScreen(
         pool = pool,
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-        onOpenSearch = { navController.navigateToExplore(ExploreMode.REELS) },
+        onOpenSearch = { navController.navigateToSearch(SearchOrigin.REELS) },
     )
     exploreDestinations(navController, launcher)
 
@@ -707,7 +686,9 @@ private fun NavGraphBuilder.tabDestinations(
     // from the Explore launcher, with You beside it under Tube's own bar
     // (Subscriptions hangs off You), and the watch screen over any of them. Every route is
     // a pushed screen, so the shell's bar is already gone inside Tube.
-    // Search opens Explore scoped to videos; Reels is the app's Reels tab
+    // The header's search glyph opens the search page scoped to the video
+    // app (channels, people, videos); its More sheet's rows push the
+    // scheduled list and the saved videos. Reels is the app's Reels tab
     // (the screen has left the reel id in ReelsEntry, as the Home feed does);
     // "+" is the Create hub opened on Video; a channel bubble opens the
     // channel's page inside Tube.
@@ -715,13 +696,31 @@ private fun NavGraphBuilder.tabDestinations(
         TubeDestinations(
             onBack = { navController.popBackStack() },
             onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
-            onOpenSearch = { navController.navigateToExplore(ExploreMode.TUBE) },
+            onOpenSearch = { navController.navigateToSearch(SearchOrigin.VIDEO) },
             onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenNotifications = { navController.navigateToNotifications() },
             onOpenReels = onOpenReels,
             onCreateVideo = { navController.navigateToCreate(CreateSurface.Video) },
             onOpenExplore = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
             onOpenTab = { tab -> navController.navigateToTubeTab(tab) },
+            onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
+            onOpenScheduled = { navController.navigateToTubeScheduled() },
+            onOpenSaved = { navController.navigateToTubeSaved() },
+        ),
+    )
+
+    // Search (founder, 2026-09-05): one page, scoped by the header that
+    // opened it. Every row hands back an id and this is where it resolves: a
+    // user opens a profile, a post the post, a reel the Reels tab (the page
+    // has left the id in ReelsEntry, as the Home feed does), a video the
+    // watch screen, a channel its page inside Tube.
+    searchScreen(
+        SearchDestinations(
+            onBack = { navController.popBackStack() },
+            onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+            onOpenPost = { postId -> navController.navigateToPost(postId) },
+            onOpenReels = onOpenReels,
+            onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
         ),
     )
@@ -739,7 +738,7 @@ private fun NavGraphBuilder.tabDestinations(
 }
 
 /**
- * The Explore tab and the search placeholder its field submits to.
+ * The Explore tab. Its field submits to the search page scoped to everything.
  *
  * A launcher tile opens a destination in whichever feature owns it, and
  * this is the one place allowed to know all of them: Chat is the inbox,
@@ -752,11 +751,10 @@ private fun NavGraphBuilder.exploreDestinations(
     navController: NavHostController,
     launcher: List<LauncherTile>,
 ) {
-    composable<ExploreRoute> { entry ->
-        val mode = ExploreMode.fromWire(entry.toRoute<ExploreRoute>().mode)
+    composable<ExploreRoute> {
         ExploreScreen(
             tiles = launcher,
-            onSearch = { query -> navController.navigate(SearchRoute(query, mode.name)) },
+            onSearch = { query -> navController.navigateToSearch(SearchOrigin.EXPLORE, query) },
             onOpenApp = { app ->
                 when (app) {
                     LauncherApp.CHAT -> navController.navigateToChatInbox()
@@ -767,18 +765,6 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.SHOP, LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST -> Unit
                 }
             },
-        )
-    }
-    composable<SearchRoute> { entry ->
-        val route = entry.toRoute<SearchRoute>()
-        val mode = ExploreMode.fromWire(route.mode)
-        PlaceholderScreen(
-            title = "Search · ${mode.label}",
-            reason = "Search is not built yet. Explore asked for “${route.query}” in ${mode.label.lowercase()}. " +
-                "The design-system gallery lives here meanwhile so the tokens stay reviewable on a real device.",
-            onBack = { navController.popBackStack() },
-            actionLabel = "Open the design gallery",
-            onAction = { navController.navigate(GalleryRoute) },
         )
     }
 }
@@ -793,10 +779,10 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onEditProfile = { navController.navigateToEditProfile() },
         onOpenSettings = { navController.navigateToSettings() },
         onOpenFollowRequests = { navController.navigateToFollowRequests() },
-        // The Me tab wears the same Momentum header as Home; its search is
-        // scoped to the viewer's own posts.
+        // The Me tab wears the same Momentum header as Home, and its search
+        // is Home's: people and posts.
         header = MomentumHeaderDestinations(
-            onOpenSearch = { navController.navigateToExplore(ExploreMode.OWN_POSTS) },
+            onOpenSearch = { navController.navigateToSearch(SearchOrigin.HOME) },
             onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
             onOpenNotifications = { navController.navigateToNotifications() },
         ),

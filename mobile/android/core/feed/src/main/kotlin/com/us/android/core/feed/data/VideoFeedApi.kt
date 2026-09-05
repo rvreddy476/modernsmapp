@@ -4,7 +4,9 @@ import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.PATCH
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -79,7 +81,27 @@ interface VideoFeedApi {
         @Query("limit") limit: Int,
         @Query("cursor") cursor: String? = null,
     ): ApiEnvelope<List<FeedItemDto>>
+
+    /**
+     * Moves a scheduled post (2026-09-05) — post-service
+     * `PATCH /v1/posts/{id}/schedule`. A `publish_at` is the new instant;
+     * an ABSENT `publish_at` publishes now (the app's JSON drops nulls, and
+     * the server reads absent and null alike). Author only; 409
+     * `NOT_SCHEDULED` once the post is live, 400 `INVALID_PUBLISH_AT`
+     * outside the five-minutes-to-thirty-days window. Answers the post.
+     */
+    @PATCH("v1/posts/{postId}/schedule")
+    suspend fun updateSchedule(
+        @Path("postId") postId: String,
+        @Body body: ScheduleRequest,
+    ): ApiEnvelope<FeedItemDto>
 }
+
+/** The PATCH body: the new RFC 3339 instant, or nothing at all for "publish now". */
+@Serializable
+data class ScheduleRequest(
+    @SerialName("publish_at") val publishAt: String? = null,
+)
 
 /** One continue-watching row: where the viewer left `post_id`, and the post itself when the server embeds it. */
 @Serializable

@@ -1,4 +1,4 @@
-package com.us.android.feature.post.createhub
+package com.us.android.core.media.publish
 
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test

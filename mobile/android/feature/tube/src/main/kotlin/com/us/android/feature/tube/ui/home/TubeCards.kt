@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import com.us.android.core.common.time.formatDuration
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
@@ -55,7 +56,6 @@ import com.us.android.core.model.FeedItem
 import com.us.android.feature.tube.ui.BlurHashImage
 import com.us.android.feature.tube.ui.TubeRing
 import com.us.android.feature.tube.ui.TubeViewer
-import com.us.android.feature.tube.ui.formatDuration
 import com.us.android.feature.tube.ui.pressScale
 
 // ── Channels strip ──────────────────────────────────────────────────────

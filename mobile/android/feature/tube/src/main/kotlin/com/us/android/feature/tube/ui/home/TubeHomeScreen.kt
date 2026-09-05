@@ -103,13 +103,7 @@ fun TubeHomeScreen(
         },
     )
 
-    TubePage(
-        selected = TubeTab.HOME,
-        onOpenNotifications = destinations.onOpenNotifications,
-        onOpenSearch = destinations.onOpenSearch,
-        onOpenYou = { destinations.onOpenTab(TubeTab.YOU) },
-        onBarAction = destinations::onBarAction,
-    ) { padding ->
+    TubePage(selected = TubeTab.HOME, destinations = destinations) { padding ->
         Box(modifier = Modifier.fillMaxSize()) {
             TubeBody(
                 items = items,

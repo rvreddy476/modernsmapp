@@ -58,6 +58,7 @@ dependencies {
     implementation(projects.feature.chat)
     implementation(projects.feature.feed)
     implementation(projects.feature.tube)
+    implementation(projects.feature.search)
     implementation(projects.feature.live)
     implementation(projects.feature.post)
     implementation(projects.feature.profile)

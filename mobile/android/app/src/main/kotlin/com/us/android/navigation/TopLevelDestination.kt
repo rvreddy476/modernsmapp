@@ -83,7 +83,7 @@ val TopLevelDestination.rootRoute: Any
         TopLevelDestination.FRIENDS -> FriendsFeedRoute
         TopLevelDestination.ME -> OwnProfileRoute
         TopLevelDestination.MESSAGES -> ChatInboxRoute
-        TopLevelDestination.EXPLORE -> ExploreRoute()
+        TopLevelDestination.EXPLORE -> ExploreRoute
     }
 
 /**
@@ -106,19 +106,4 @@ fun NavController.navigateToTopLevel(destination: TopLevelDestination) {
         restoreState = true
     }
     navigate(destination.rootRoute, options)
-}
-
-/**
- * Opens the Explore tab with its search scoped to [mode] — the same
- * tab-switch options as [navigateToTopLevel], because Explore IS a bar tab
- * (founder, 2026-09-05); only the argument differs, and it only decides
- * what the page's search field looks for.
- */
-fun NavController.navigateToExplore(mode: ExploreMode) {
-    val options = navOptions {
-        popUpTo(graph.findStartDestination().id) { saveState = true }
-        launchSingleTop = true
-        restoreState = true
-    }
-    navigate(ExploreRoute(mode.name), options)
 }

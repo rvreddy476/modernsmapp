@@ -51,9 +51,9 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.PlayerSurface
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import com.us.android.core.common.time.formatDuration
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.feature.tube.ui.formatDuration
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 

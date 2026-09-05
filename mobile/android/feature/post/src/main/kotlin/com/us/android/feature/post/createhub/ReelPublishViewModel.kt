@@ -8,6 +8,7 @@ import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.ChannelState
+import com.us.android.core.media.publish.ScheduleWindow
 import com.us.android.core.media.publish.VideoKind
 import com.us.android.feature.post.data.dto.SupportedAudience
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC

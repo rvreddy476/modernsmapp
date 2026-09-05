@@ -1,4 +1,4 @@
-package com.us.android.feature.post.createhub
+package com.us.android.core.feed.ui.schedule
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.publish.ScheduleWindow
 import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
@@ -57,11 +58,12 @@ import java.time.ZoneOffset
  * five minutes to thirty days ahead. The calendar only offers days in the
  * window; the time is checked against the window as it changes, and the
  * button says why an instant is refused rather than letting the server.
- * "Post now instead" clears a schedule that was set.
+ * "Post now instead" clears a schedule that was set. Shared by the reel form
+ * and Tube's scheduled list (2026-09-05), so both pick from one window.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ScheduleSheet(
+fun ScheduleSheet(
     initial: Instant?,
     onSchedule: (Instant) -> Unit,
     onClear: () -> Unit,
@@ -88,7 +90,7 @@ internal fun ScheduleSheet(
         shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
         scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
         dragHandle = null,
-        modifier = Modifier.testTag("reel-schedule-sheet"),
+        modifier = Modifier.testTag("schedule-sheet"),
     ) {
         Column(
             modifier = Modifier
@@ -153,7 +155,7 @@ private fun SheetTitles(step: Step, preview: String?) {
         text = preview ?: "Up to 30 days ahead.",
         style = MaterialTheme.typography.bodySmall,
         color = UsTheme.extended.textMuted,
-        modifier = Modifier.testTag("reel-schedule-preview"),
+        modifier = Modifier.testTag("schedule-preview"),
     )
 }
 
@@ -165,7 +167,7 @@ private fun WindowNotice(check: ScheduleWindow.Check?) {
         text = message,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.error,
-        modifier = Modifier.testTag("reel-schedule-error"),
+        modifier = Modifier.testTag("schedule-error"),
     )
     Spacer(Modifier.height(UsTheme.spacing.m))
 }
@@ -180,7 +182,7 @@ private fun StepButton(step: Step, canProceed: Boolean, onNext: () -> Unit, onSc
             enabled = canProceed,
             modifier = Modifier
                 .fillMaxWidth()
-                .testTag("reel-schedule-next"),
+                .testTag("schedule-next"),
         )
         Step.TIME -> UsButton(
             text = "Schedule",
@@ -188,7 +190,7 @@ private fun StepButton(step: Step, canProceed: Boolean, onNext: () -> Unit, onSc
             enabled = canProceed,
             modifier = Modifier
                 .fillMaxWidth()
-                .testTag("reel-schedule-confirm"),
+                .testTag("schedule-confirm"),
         )
     }
 }
@@ -203,7 +205,7 @@ private fun ClearRow(onClear: () -> Unit) {
             .clip(RoundedCornerShape(UsTheme.radii.full))
             .clickable(onClick = onClear)
             .padding(vertical = UsTheme.spacing.l)
-            .testTag("reel-schedule-clear"),
+            .testTag("schedule-clear"),
         contentAlignment = Alignment.Center,
     ) {
         Text(

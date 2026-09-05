@@ -50,13 +50,7 @@ fun SubscriptionsScreen(
         destinations.onOpenVideo(item.id)
     }
 
-    TubePage(
-        selected = TubeTab.SUBSCRIPTIONS,
-        onOpenNotifications = destinations.onOpenNotifications,
-        onOpenSearch = destinations.onOpenSearch,
-        onOpenYou = { destinations.onOpenTab(TubeTab.YOU) },
-        onBarAction = destinations::onBarAction,
-    ) { padding ->
+    TubePage(selected = TubeTab.SUBSCRIPTIONS, destinations = destinations) { padding ->
         Box(modifier = Modifier.fillMaxSize()) {
             SubscriptionsBody(
                 items = items,

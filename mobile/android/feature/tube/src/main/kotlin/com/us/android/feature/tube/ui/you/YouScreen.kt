@@ -116,13 +116,7 @@ fun YouScreen(
         thumbFor = viewModel::thumb,
     )
 
-    TubePage(
-        selected = TubeTab.YOU,
-        onOpenNotifications = destinations.onOpenNotifications,
-        onOpenSearch = destinations.onOpenSearch,
-        onOpenYou = {},
-        onBarAction = destinations::onBarAction,
-    ) { padding ->
+    TubePage(selected = TubeTab.YOU, destinations = destinations) { padding ->
         Box(modifier = Modifier.fillMaxSize()) {
             LazyVerticalStaggeredGrid(
                 columns = StaggeredGridCells.Fixed(GRID_COLUMNS),

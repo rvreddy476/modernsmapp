@@ -9,12 +9,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridScope
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,7 +33,6 @@ import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsPillButton
-import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.offersFollow
@@ -47,11 +44,8 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.tube.navigation.TubeDestinations
-import com.us.android.feature.tube.ui.HeaderGlyph
 import com.us.android.feature.tube.ui.TubeMoreHost
 import com.us.android.feature.tube.ui.TubePage
-import com.us.android.feature.tube.ui.TubeTab
-import com.us.android.feature.tube.ui.TubeWordmark
 import com.us.android.feature.tube.ui.home.GRID_COLUMNS
 import com.us.android.feature.tube.ui.home.GridCard
 import com.us.android.feature.tube.ui.home.TubeGridSkeleton
@@ -77,14 +71,7 @@ fun ChannelScreen(
     val items = viewModel.items.collectAsLazyPagingItems()
     val moreState = rememberTubeMoreState()
 
-    TubePage(
-        selected = null,
-        onOpenNotifications = destinations.onOpenNotifications,
-        onOpenSearch = destinations.onOpenSearch,
-        onOpenYou = { destinations.onOpenTab(TubeTab.YOU) },
-        onBarAction = destinations::onBarAction,
-        topBar = { ChannelTopBar(onBack = destinations.onBack) },
-    ) { padding ->
+    TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
         Box(modifier = Modifier.fillMaxSize()) {
             LazyVerticalStaggeredGrid(
                 columns = StaggeredGridCells.Fixed(GRID_COLUMNS),
@@ -128,25 +115,6 @@ fun ChannelScreen(
                 more = more,
             )
         }
-    }
-}
-
-/** Back on the left, the wordmark beside it: a pushed page inside the mini-app. */
-@Composable
-private fun ChannelTopBar(onBack: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .height(TOP_BAR_HEIGHT)
-            .padding(horizontal = UsTheme.spacing.m),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-    ) {
-        HeaderGlyph(onClick = onBack, description = "Back", modifier = Modifier.testTag("tube_channel_back")) {
-            Icon(imageVector = UsIcons.Back, contentDescription = null, tint = UsTheme.extended.textPrimary)
-        }
-        TubeWordmark()
     }
 }
 
@@ -294,5 +262,4 @@ private fun LazyStaggeredGridScope.videos(
     }
 }
 
-private val TOP_BAR_HEIGHT = 56.dp
 private val HEADER_LOADING_HEIGHT = 160.dp

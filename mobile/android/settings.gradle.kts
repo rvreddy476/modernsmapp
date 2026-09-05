@@ -108,3 +108,8 @@ include(":core:feed")
 // Tube — long video: the home list, the watch screen. Reads through
 // :core:feed; posts through :feature:post's video pipeline.
 include(":feature:tube")
+
+// Search (founder, 2026-09-05): one page, scoped by where it was opened from
+// — Home, Reels, the video app, Explore. Its own feature so none of those
+// carries a screen the others also need.
+include(":feature:search")

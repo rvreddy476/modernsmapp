@@ -175,7 +175,8 @@ tasks.register("moduleGraphCheck") {
     //      nested paths and counts among subprojects.
     // 32 = 30 + :core:feed (the feed data seam split out of :feature:feed) +
     //      :feature:tube (long video), 2026-09-05.
-    val expectedModuleCount = 32
+    // 33 = 32 + :feature:search (page-scoped search), 2026-09-05.
+    val expectedModuleCount = 33
 
     doLast {
         val allViolations = buildList {
