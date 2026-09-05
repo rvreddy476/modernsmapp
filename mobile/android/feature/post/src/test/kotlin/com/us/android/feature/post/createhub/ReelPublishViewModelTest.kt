@@ -3,9 +3,18 @@ package com.us.android.feature.post.createhub
 import android.graphics.Bitmap
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.feed.data.ChannelApi
+import com.us.android.core.feed.data.ChannelDto
+import com.us.android.core.feed.data.ChannelRepository
+import com.us.android.core.feed.data.ChannelState
+import com.us.android.core.feed.data.CreateChannelRequest
+import com.us.android.core.feed.data.HandleAvailabilityDto
+import com.us.android.core.feed.data.UpdateChannelRequest
 import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.UploadSource
+import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
 import com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE
@@ -15,14 +24,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Rule
 import org.junit.Test
+import retrofit2.HttpException
+import retrofit2.Response
 import java.io.ByteArrayInputStream
 
 /**
  * The reel form: what it carries into the pending publish it hands over,
- * and the cover it writes first. The wire mapping of that record is
- * [ReelPublishPipelineTest]'s.
+ * the cover it writes first, and the channel gate. The wire mapping of the
+ * record is [ReelPublishPipelineTest]'s.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ReelPublishViewModelTest {
@@ -69,34 +82,62 @@ class ReelPublishViewModelTest {
         }
     }
 
-    /** Six frames; whether they carry a bitmap decides whether a cover exists. */
+    /** `v1/channels/me`: a channel, or a 404 — the two answers the gate reads. */
+    private class FakeChannelApi(var hasChannel: Boolean = true) : ChannelApi {
+        var meCalls = 0
+        override suspend fun create(body: CreateChannelRequest): ApiEnvelope<ChannelDto> = error("not under test")
+        override suspend fun me(): ApiEnvelope<ChannelDto> {
+            meCalls++
+            if (!hasChannel) throw HttpException(Response.error<Any>(NOT_FOUND, "".toResponseBody()))
+            return ApiEnvelope(ChannelDto(userId = "me", name = "Ada", handle = "ada"))
+        }
+        override suspend fun update(body: UpdateChannelRequest): ApiEnvelope<ChannelDto> = error("not under test")
+        override suspend fun get(key: String): ApiEnvelope<ChannelDto> = error("not under test")
+        override suspend fun handleAvailable(handle: String): ApiEnvelope<HandleAvailabilityDto> =
+            error("not under test")
+    }
+
+    /** The strip's thumbnails; whether they carry a bitmap decides whether a fallback cover exists. */
     private fun frames(withBitmaps: Boolean) = ReelFrameExtractor { _, count ->
-        List(count) {
-            CoverFrame(index = it, timeUs = it * 1_000L, bitmap = if (withBitmaps) mockk<Bitmap>() else null)
+        Filmstrip.timestampsUs(TEN_SECONDS_US, count).mapIndexed { index, timeUs ->
+            CoverFrame(index = index, timeUs = timeUs, bitmap = if (withBitmaps) mockk<Bitmap>() else null)
         }
     }
+
+    /** The exact-frame seeker: a frame for every instant, or none at all. */
+    private fun seeker(answers: Boolean) = ReelFrameSeeker { _, _ -> if (answers) mockk<Bitmap>() else null }
+
+    private val images = ReelCoverImageLoader { _, _ -> mockk<Bitmap>() }
 
     /** The encoded bytes carry the frame index in their length, so the test can tell frames apart. */
     private val encoder = ReelCoverEncoder { frame -> frame.bitmap?.let { ByteArray(frame.index + 1) } }
 
     /** What the probe says about every picked video; null values are "could not tell". */
-    private fun probe(durationMs: Long? = 30_000L, sizeBytes: Long? = 20L * 1024 * 1024) =
+    private fun probe(durationMs: Long? = 10_000L, sizeBytes: Long? = 20L * 1024 * 1024) =
         ReelVideoProbe { VideoProbe(durationMs = durationMs, sizeBytes = sizeBytes) }
+
+    private fun channels(api: FakeChannelApi = FakeChannelApi()) =
+        ChannelRepository(api, ErrorMapper(Json { ignoreUnknownKeys = true }))
 
     private fun viewModel(
         launcher: FakeLauncher = FakeLauncher(),
         files: FakeFiles = FakeFiles(),
         lookups: FakeLookups = FakeLookups(),
         frames: ReelFrameExtractor = frames(withBitmaps = true),
+        seeker: ReelFrameSeeker = seeker(answers = true),
         probe: ReelVideoProbe = probe(),
+        channels: ChannelRepository = channels(),
         surface: CreateSurface = CreateSurface.Reel,
     ) = ReelPublishViewModel(
         launcher = launcher,
         files = files,
         encoder = encoder,
         frames = frames,
+        seeker = seeker,
+        images = images,
         lookups = lookups,
         probe = probe,
+        channels = channels,
         io = Dispatchers.Unconfined,
         savedStateHandle = SavedStateHandle(mapOf(ReelPublishViewModel.SURFACE_ARG to surface.routeKey)),
     )
@@ -105,6 +146,14 @@ class ReelPublishViewModelTest {
         onVideoPicked("content://video/1")
         onCaptionChanged(caption)
         onPost()
+    }
+
+    /** Opens the picker, drags to the strip's [stripIndex]th frame, confirms. */
+    private suspend fun ReelPublishViewModel.chooseFrame(stripIndex: Int) {
+        openCoverPicker()
+        onScrub(state.value.frames[stripIndex].timeUs)
+        kotlinx.coroutines.delay(SETTLE_MILLIS)
+        confirmCover()
     }
 
     // ── Hand-off ────────────────────────────────────────────────────────
@@ -258,31 +307,100 @@ class ReelPublishViewModelTest {
     // ── Cover ───────────────────────────────────────────────────────────
 
     @Test
-    fun `the chosen frame is written as the cover before hand-off`() = runTest {
+    fun `the first frame is the default cover and the strip has two dozen thumbnails`() = runTest {
+        val vm = viewModel()
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.frames).hasSize(Filmstrip.FRAME_COUNT)
+        assertThat(vm.state.value.cover?.index).isEqualTo(0)
+        assertThat(vm.state.value.cover?.timeUs).isEqualTo(0L)
+        assertThat(vm.state.value.coverSource).isEqualTo(ReelPublishViewModel.CoverSource.Frame)
+        assertThat(vm.state.value.durationUs).isEqualTo(TEN_SECONDS_US)
+    }
+
+    @Test
+    fun `the frame under the handle becomes the cover and is written before hand-off`() = runTest {
         val launcher = FakeLauncher()
         val files = FakeFiles()
         val vm = viewModel(launcher = launcher, files = files)
 
         vm.onVideoPicked("content://video/1")
         advanceUntilIdle()
-        vm.onCoverSelected(3)
+        vm.chooseFrame(3)
+        advanceUntilIdle()
         vm.onPost()
         advanceUntilIdle()
 
+        assertThat(vm.state.value.cover?.index).isEqualTo(3)
+        assertThat(vm.state.value.cover?.timeUs).isEqualTo(vm.state.value.frames[3].timeUs)
+        assertThat(vm.state.value.picker).isNull()
         assertThat(files.covers.single()).hasLength(4)
         assertThat(launcher.enqueued.single().coverPath).isNotNull()
-        assertThat(vm.state.value.coverIndex).isEqualTo(3)
     }
 
     @Test
-    fun `the first frame is the default cover`() = runTest {
+    fun `scrubbing moves the readout at once and the frame follows the newest instant`() = runTest {
         val vm = viewModel()
         vm.onVideoPicked("content://video/1")
         advanceUntilIdle()
 
-        assertThat(vm.state.value.frames).hasSize(6)
-        assertThat(vm.state.value.coverIndex).isEqualTo(0)
-        assertThat(vm.state.value.cover?.index).isEqualTo(0)
+        vm.openCoverPicker()
+        vm.onScrub(4_000_000L)
+        assertThat(vm.state.value.picker?.timeUs).isEqualTo(4_000_000L)
+        assertThat(vm.state.value.picker?.seeking).isTrue()
+        vm.onScrub(6_000_000L)
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.picker?.timeUs).isEqualTo(6_000_000L)
+        assertThat(vm.state.value.picker?.seeking).isFalse()
+        assertThat(vm.state.value.picker?.preview).isNotNull()
+    }
+
+    @Test
+    fun `the handle cannot pass the end of the video`() = runTest {
+        val vm = viewModel()
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+
+        vm.openCoverPicker()
+        vm.onScrub(99_000_000L)
+
+        assertThat(vm.state.value.picker?.timeUs).isEqualTo(TEN_SECONDS_US - Filmstrip.TAIL_MARGIN_US)
+    }
+
+    @Test
+    fun `closing the picker keeps the cover that was there`() = runTest {
+        val vm = viewModel()
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+
+        vm.openCoverPicker()
+        vm.onScrub(5_000_000L)
+        advanceUntilIdle()
+        vm.closeCoverPicker()
+
+        assertThat(vm.state.value.picker).isNull()
+        assertThat(vm.state.value.cover?.timeUs).isEqualTo(0L)
+    }
+
+    @Test
+    fun `an uploaded image becomes the cover, marked as uploaded`() = runTest {
+        val launcher = FakeLauncher()
+        val files = FakeFiles()
+        val vm = viewModel(launcher = launcher, files = files)
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+
+        vm.onCoverImagePicked("content://image/7")
+        advanceUntilIdle()
+        vm.onPost()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.coverSource).isEqualTo(ReelPublishViewModel.CoverSource.Upload)
+        assertThat(vm.state.value.cover?.index).isEqualTo(CoverFrame.UPLOADED)
+        assertThat(files.covers).hasSize(1)
+        assertThat(launcher.enqueued.single().coverPath).isNotNull()
     }
 
     @Test
@@ -304,13 +422,30 @@ class ReelPublishViewModelTest {
     fun `with no extractable frame the post is handed over without a cover`() = runTest {
         val launcher = FakeLauncher()
         val files = FakeFiles()
-        val vm = viewModel(launcher = launcher, files = files, frames = frames(withBitmaps = false))
+        val vm = viewModel(
+            launcher = launcher,
+            files = files,
+            frames = frames(withBitmaps = false),
+            seeker = seeker(answers = false),
+        )
 
         vm.pickAndPost()
         advanceUntilIdle()
 
+        assertThat(vm.state.value.cover).isNull()
         assertThat(files.covers).isEmpty()
         assertThat(launcher.enqueued.single().coverPath).isNull()
+    }
+
+    @Test
+    fun `when the exact seek fails the strip's first thumbnail is the cover`() = runTest {
+        val vm = viewModel(frames = frames(withBitmaps = true), seeker = seeker(answers = false))
+
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.cover?.index).isEqualTo(0)
+        assertThat(vm.state.value.cover?.bitmap).isNotNull()
     }
 
     // ── Guards ──────────────────────────────────────────────────────────
@@ -385,7 +520,8 @@ class ReelPublishViewModelTest {
 
         vm.onVideoPicked("content://video/1")
         vm.onCaptionChanged("six minutes")
-        vm.onCoverSelected(2)
+        advanceUntilIdle()
+        vm.chooseFrame(2)
         advanceUntilIdle()
 
         assertThat(vm.state.value.gate).isEqualTo(VideoGate.TooLongForReel(360_000L))
@@ -395,10 +531,11 @@ class ReelPublishViewModelTest {
         assertThat(launcher.enqueued).isEmpty()
 
         vm.switchToLong()
+        advanceUntilIdle()
         assertThat(vm.state.value.kind).isEqualTo(VideoKind.LONG)
         assertThat(vm.state.value.gate).isEqualTo(VideoGate.Ok)
         assertThat(vm.state.value.videoUri).isEqualTo("content://video/1")
-        assertThat(vm.state.value.coverIndex).isEqualTo(2)
+        assertThat(vm.state.value.cover?.index).isEqualTo(2)
         assertThat(vm.state.value.caption).isEqualTo("six minutes")
         assertThat(vm.state.value.canPost).isFalse() // a video still needs its title
 
@@ -418,18 +555,55 @@ class ReelPublishViewModelTest {
         assertThat(reel.state.value.gate).isEqualTo(VideoGate.TooLarge(tooBig))
         assertThat(reel.state.value.canPost).isFalse()
 
-        reel.switchToLong()
-        reel.onTitleChanged("Big")
-        assertThat(reel.state.value.canPost).isFalse()
+        val video = viewModel(probe = probe(sizeBytes = tooBig), surface = CreateSurface.Video)
+        video.onVideoPicked("content://video/1")
+        video.onTitleChanged("Big")
+        advanceUntilIdle()
+        assertThat(video.state.value.gate).isEqualTo(VideoGate.TooLarge(tooBig))
+        assertThat(video.state.value.canPost).isFalse()
+    }
+
+    // ── Channel before video (2026-09-05) ───────────────────────────────
+
+    @Test
+    fun `a video asks for the channel once and a reel never does`() = runTest {
+        val api = FakeChannelApi(hasChannel = true)
+        val video = viewModel(surface = CreateSurface.Video, channels = channels(api))
+        advanceUntilIdle()
+        assertThat(video.state.value.channel).isInstanceOf(ChannelState.Present::class.java)
+        assertThat(api.meCalls).isEqualTo(1)
+
+        val reelApi = FakeChannelApi(hasChannel = true)
+        viewModel(surface = CreateSurface.Reel, channels = channels(reelApi))
+        advanceUntilIdle()
+        assertThat(reelApi.meCalls).isEqualTo(0)
     }
 
     @Test
-    fun `an unreadable probe never blocks a post`() = runTest {
-        val vm = viewModel(probe = probe(durationMs = null, sizeBytes = null))
-        vm.onVideoPicked("content://video/1")
+    fun `a 404 from the channel endpoint means none, so the sheet comes first`() = runTest {
+        val vm = viewModel(surface = CreateSurface.Video, channels = channels(FakeChannelApi(hasChannel = false)))
         advanceUntilIdle()
 
-        assertThat(vm.state.value.gate).isEqualTo(VideoGate.Ok)
-        assertThat(vm.state.value.canPost).isTrue()
+        assertThat(vm.state.value.channel).isEqualTo(ChannelState.None)
+    }
+
+    @Test
+    fun `switching a reel to a video asks for the channel`() = runTest {
+        val api = FakeChannelApi(hasChannel = true)
+        val vm = viewModel(surface = CreateSurface.Reel, channels = channels(api))
+        advanceUntilIdle()
+        assertThat(api.meCalls).isEqualTo(0)
+
+        vm.switchToLong()
+        advanceUntilIdle()
+
+        assertThat(api.meCalls).isEqualTo(1)
+        assertThat(vm.state.value.channel).isInstanceOf(ChannelState.Present::class.java)
+    }
+
+    private companion object {
+        const val TEN_SECONDS_US = 10_000_000L
+        const val NOT_FOUND = 404
+        const val SETTLE_MILLIS = 100L
     }
 }

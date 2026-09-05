@@ -61,6 +61,8 @@ fun NavGraphBuilder.profileScreen(
     onOpenFollowing: (userId: String) -> Unit,
     onBack: () -> Unit,
     onOpenChat: (conversationId: String, title: String) -> Unit,
+    /** A tile of the media grid; `:app` opens a long video in Tube and anything else as a post. */
+    onOpenPost: (postId: String, contentType: String) -> Unit,
 ) {
     composable<ProfileRoute> {
         ProfileScreen(
@@ -74,6 +76,7 @@ fun NavGraphBuilder.profileScreen(
                 // Message button on your own profile is a control whose only
                 // possible outcome is an error.
                 onOpenChat = onOpenChat,
+                onOpenPost = onOpenPost,
             ),
         )
     }
@@ -93,6 +96,8 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenFollowRequests: () -> Unit,
     /** The Momentum header the Me tab wears — search, messages, the bell. */
     header: MomentumHeaderDestinations,
+    /** A tile of the media grid; `:app` opens a long video in Tube and anything else as a post. */
+    onOpenPost: (postId: String, contentType: String) -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -108,6 +113,7 @@ fun NavGraphBuilder.ownProfileScreen(
                 // account is only ever offered on that account's own screen.
                 onOpenFollowRequests = onOpenFollowRequests,
                 header = header,
+                onOpenPost = onOpenPost,
             ),
         )
     }

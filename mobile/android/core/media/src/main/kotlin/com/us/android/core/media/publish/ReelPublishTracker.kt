@@ -41,8 +41,17 @@ sealed interface ReelPublishState {
     /** Done. The Reels tab swaps the pending item for the real reel. */
     data class Published(val postId: String) : ReelPublishState
 
-    /** Stopped. [retryable] decides whether the pending item offers "Retry". */
-    data class Failed(val message: String, val retryable: Boolean) : ReelPublishState
+    /**
+     * Stopped. [retryable] decides whether the pending item offers "Retry";
+     * [needsChannel] is the one refusal with a different way out — the
+     * server wants a channel before a long video (`CHANNEL_REQUIRED`), so
+     * the pending item offers "Create channel" and retries once there is one.
+     */
+    data class Failed(
+        val message: String,
+        val retryable: Boolean,
+        val needsChannel: Boolean = false,
+    ) : ReelPublishState
 
     /** Work is in flight — a second publish must wait for it. */
     val isActive: Boolean

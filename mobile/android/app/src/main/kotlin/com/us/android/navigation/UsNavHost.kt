@@ -131,8 +131,8 @@ import com.us.android.feature.settings.navigation.onboardingScreen
 import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
-import com.us.android.feature.tube.navigation.TubeHomeRoute
 import com.us.android.feature.tube.navigation.navigateToTube
+import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeTab
 import com.us.android.feature.tube.navigation.navigateToWatch
 import com.us.android.feature.tube.navigation.tubeScreens
@@ -559,12 +559,12 @@ private fun NavGraphBuilder.tabDestinations(
             }
         },
         onOpenStudio = { uris -> navController.navigateToStudio(uris) },
-        // A long video handed to the worker REPLACES the hub with Tube home,
-        // where its pending card is — the way a reel lands on the Reels tab.
-        onOpenTube = {
-            navController.navigate(TubeHomeRoute) {
-                popUpTo<CreateRoute> { inclusive = true }
-            }
+        // A long video handed to the worker closes the hub and lands on the
+        // viewer's OWN profile (founder, 2026-09-05), whose grid shows the
+        // posting video first with its ring — the way a reel lands on Reels.
+        onOpenOwnProfile = {
+            navController.popBackStack<CreateRoute>(inclusive = true)
+            navController.navigateToTopLevel(TopLevelDestination.ME)
         },
     )
 
@@ -707,10 +707,10 @@ private fun NavGraphBuilder.tabDestinations(
     // from the Explore launcher, with Subscriptions and You beside it under
     // Tube's own bar, and the watch screen over any of them. Every route is
     // a pushed screen, so the shell's bar is already gone inside Tube.
-    // Search opens Explore scoped to videos; the compass opens the Explore
-    // tab itself; Shorts is the app's Reels tab (the screen has left the
-    // reel id in ReelsEntry, as the Home feed does); "+" is the Create hub
-    // opened on Video.
+    // Search opens Explore scoped to videos; Reels is the app's Reels tab
+    // (the screen has left the reel id in ReelsEntry, as the Home feed does);
+    // "+" is the Create hub opened on Video; a channel bubble opens the
+    // channel's page inside Tube.
     tubeScreens(
         TubeDestinations(
             onBack = { navController.popBackStack() },
@@ -718,10 +718,10 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenSearch = { navController.navigateToExplore(ExploreMode.TUBE) },
             onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenNotifications = { navController.navigateToNotifications() },
-            onOpenExplore = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
             onOpenReels = onOpenReels,
             onCreateVideo = { navController.navigateToCreate(CreateSurface.Video) },
             onOpenTab = { tab -> navController.navigateToTubeTab(tab) },
+            onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
         ),
     )
 
@@ -799,6 +799,7 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             onOpenMessages = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
             onOpenNotifications = { navController.navigateToNotifications() },
         ),
+        onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
     )
     profileScreen(
         onOpenFollowers = {},
@@ -809,6 +810,7 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onOpenChat = { conversationId, title ->
             navController.navigateToChatThread(conversationId, title)
         },
+        onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
     )
     editProfileScreen(
         onBack = { navController.popBackStack() },
@@ -918,3 +920,14 @@ private fun NavHostController.openNotificationTarget(target: NotificationTarget)
         NotificationTarget.None -> Unit
     }
 }
+
+/**
+ * A tile of a profile's media grid (2026-09-05): a long video plays in
+ * Tube's watch screen, the surface built for it; anything else opens as
+ * a post.
+ */
+private fun NavHostController.openProfilePost(postId: String, contentType: String) {
+    if (contentType == LONG_VIDEO_CONTENT_TYPE) navigateToWatch(postId) else navigateToPost(postId)
+}
+
+private const val LONG_VIDEO_CONTENT_TYPE = "long_video"

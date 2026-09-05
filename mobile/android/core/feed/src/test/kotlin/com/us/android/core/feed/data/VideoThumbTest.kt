@@ -1,4 +1,4 @@
-package com.us.android.feature.tube.ui
+package com.us.android.core.feed.data
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.media.MediaUrlResolver
@@ -11,7 +11,7 @@ import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiConfig
 import org.junit.Test
 
-/** Which still a card shows, and where its wash and length come from. */
+/** Which still a card shows, and where its wash and length come from — the cover resolution rule. */
 class VideoThumbTest {
 
     private val resolver = MediaUrlResolver(
@@ -73,6 +73,53 @@ class VideoThumbTest {
         val thumb = resolver.videoThumb(item(listOf(video, small), coverId = "cov"))
 
         assertThat(thumb.url).isEqualTo("https://obj/cov/thumb.jpg")
+    }
+
+    @Test
+    fun `a cover the hydrator resolved wins over the video still`() {
+        val thumb = resolver.videoThumb(item(listOf(video), coverId = "cov").copy(coverMedia = cover))
+
+        assertThat(thumb.url).isEqualTo("https://obj/cov/720.jpg")
+        assertThat(thumb.blurhash).isEqualTo("COVERHASH")
+    }
+
+    @Test
+    fun `a resolved cover for another id is ignored`() {
+        val stale = item(listOf(video), coverId = "cov").copy(coverMedia = cover.copy(mediaId = "old"))
+        val thumb = resolver.videoThumb(stale)
+
+        assertThat(thumb.url).isEqualTo("https://obj/vid/thumb.jpg")
+    }
+
+    @Test
+    fun `a cover id that names the video itself never picks a rendition`() {
+        val thumb = resolver.videoThumb(item(listOf(video), coverId = "vid"))
+
+        assertThat(thumb.url).isEqualTo("https://obj/vid/thumb.jpg")
+    }
+
+    @Test
+    fun `a resolved cover without delivery yet falls back to the video`() {
+        val bare = cover.copy(variants = emptyMap())
+        val thumb = resolver.videoThumb(item(listOf(video), coverId = "cov").copy(coverMedia = bare))
+
+        assertThat(thumb.url).isEqualTo("https://obj/vid/thumb.jpg")
+    }
+
+    @Test
+    fun `a portrait video is flagged so a grid can give it a taller tile`() {
+        val tall = video.copy(width = 720, height = 1280)
+
+        assertThat(resolver.videoThumb(item(listOf(tall), coverId = null)).isPortrait).isTrue()
+        assertThat(resolver.videoThumb(item(listOf(video), coverId = null)).isPortrait).isFalse()
+    }
+
+    @Test
+    fun `the hydrator asks only for a cover the row does not carry`() {
+        assertThat(item(listOf(video), coverId = "cov").coverIdToResolve()).isEqualTo("cov")
+        assertThat(item(listOf(video, cover), coverId = "cov").coverIdToResolve()).isNull()
+        assertThat(item(listOf(video), coverId = "cov").copy(coverMedia = cover).coverIdToResolve()).isNull()
+        assertThat(item(listOf(video), coverId = null).coverIdToResolve()).isNull()
     }
 
     @Test

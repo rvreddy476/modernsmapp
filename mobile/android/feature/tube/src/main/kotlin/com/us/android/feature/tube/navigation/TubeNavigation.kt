@@ -8,6 +8,7 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.us.android.feature.tube.ui.TubeBarAction
 import com.us.android.feature.tube.ui.TubeTab
+import com.us.android.feature.tube.ui.channel.ChannelScreen
 import com.us.android.feature.tube.ui.home.TubeHomeScreen
 import com.us.android.feature.tube.ui.subscriptions.SubscriptionsScreen
 import com.us.android.feature.tube.ui.watch.WatchScreen
@@ -22,45 +23,50 @@ import kotlinx.serialization.Serializable
 @Serializable
 data object TubeHomeRoute
 
-/** The Subscriptions page: videos from authors the viewer follows. */
+/** The Subscriptions page: videos from channels the viewer follows. */
 @Serializable
 data object TubeSubscriptionsRoute
 
-/** The You page: the viewer's own videos, what they left unfinished, what they saved. */
+/** The You page: the viewer's channel, their own videos, what they left unfinished, what they saved. */
 @Serializable
 data object TubeYouRoute
+
+/** One creator's channel inside Tube (2026-09-05); [userId] is the channel's owner. */
+@Serializable
+data class TubeChannelRoute(val userId: String)
 
 /** One video, playing. Pushed over a Tube page; [postId] is the post to open on. */
 @Serializable
 data class WatchRoute(val postId: String)
 
 /**
- * Every way out of Tube, and the one way around it. All of it is `:app`'s
+ * Every way out of Tube, and the ways around it. All of it is `:app`'s
  * to resolve — the feature never holds a NavController, the shape every
  * other feature keeps — including the bar's switch between Tube's own
- * pages, which `:app` answers with [navigateToTubeTab].
+ * pages, which `:app` answers with [navigateToTubeTab], and a channel
+ * bubble, which it answers with [navigateToTubeChannel].
  */
 data class TubeDestinations(
     val onBack: () -> Unit,
     val onOpenAuthor: (userId: String) -> Unit,
-    /** The header's search glyph; `:app` opens Explore scoped to videos. */
+    /** The search pill; `:app` opens Explore scoped to videos. */
     val onOpenSearch: () -> Unit,
     /** A card was tapped; `:app` pushes [WatchRoute]. */
     val onOpenVideo: (postId: String) -> Unit,
     /** The header's bell. */
     val onOpenNotifications: () -> Unit,
-    /** The compass at the head of the chip rail: the app's launcher. */
-    val onOpenExplore: () -> Unit,
     /**
-     * A short was tapped, or the bar's Shorts slot: the app's Reels tab.
+     * A reel was tapped, or the bar's Reels slot: the app's Reels tab.
      * The screen has already left the post id in `ReelsEntry` when a
-     * short was tapped, the same handoff the Home feed makes.
+     * reel was tapped, the same handoff the Home feed makes.
      */
     val onOpenReels: () -> Unit,
     /** The bar's "+": the Create hub on its Video surface. */
     val onCreateVideo: () -> Unit,
-    /** The bar's Home / Subscriptions / You. */
+    /** The bar's Home / Subscriptions / You, and the header's avatar. */
     val onOpenTab: (TubeTab) -> Unit,
+    /** A channel bubble or a card's channel: the channel's page inside Tube. */
+    val onOpenChannel: (userId: String) -> Unit,
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {
@@ -70,11 +76,12 @@ data class TubeDestinations(
     }
 }
 
-/** Registers Tube's four destinations. */
+/** Registers Tube's five destinations. */
 fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeHomeRoute> { TubeHomeScreen(destinations = destinations) }
     composable<TubeSubscriptionsRoute> { SubscriptionsScreen(destinations = destinations) }
     composable<TubeYouRoute> { YouScreen(destinations = destinations) }
+    composable<TubeChannelRoute> { ChannelScreen(destinations = destinations) }
     composable<WatchRoute> {
         WatchScreen(
             onBack = destinations.onBack,
@@ -88,6 +95,9 @@ fun NavController.navigateToTube() = navigate(TubeHomeRoute)
 
 /** Type-safe navigation to one video. */
 fun NavController.navigateToWatch(postId: String) = navigate(WatchRoute(postId))
+
+/** Type-safe navigation to a channel's page inside Tube. */
+fun NavController.navigateToTubeChannel(userId: String) = navigate(TubeChannelRoute(userId))
 
 /**
  * The bar's switch between Tube's pages. Everything above Tube home is

@@ -7,10 +7,18 @@ import org.junit.Test
 class TubeBarTest {
 
     @Test
-    fun `the slots are Home, Shorts, Subscriptions, You — the plus sits between the pairs`() {
+    fun `the slots are Home, Reels, Subscriptions, You - the plus sits between the pairs`() {
         assertThat(TubeBarItem.entries.map { it.label })
-            .containsExactly("Home", "Shorts", "Subscriptions", "You")
+            .containsExactly("Home", "Reels", "Subscriptions", "You")
             .inOrder()
+    }
+
+    @Test
+    fun `nothing in Tube is called Shorts any more`() {
+        TubeBarItem.entries.forEach {
+            assertThat(it.label).doesNotContain("Shorts")
+            assertThat(it.contentDescription).doesNotContain("Shorts")
+        }
     }
 
     @Test
@@ -21,16 +29,16 @@ class TubeBarTest {
     }
 
     @Test
-    fun `Shorts leaves for the app's Reels tab`() {
-        assertThat(TubeBarItem.SHORTS.action()).isEqualTo(TubeBarAction.OpenReels)
+    fun `Reels leaves for the app Reels tab`() {
+        assertThat(TubeBarItem.REELS.action()).isEqualTo(TubeBarAction.OpenReels)
     }
 
     @Test
-    fun `each page lights its own slot and Shorts is never lit`() {
+    fun `each page lights its own slot and Reels is never lit`() {
         assertThat(TubeTab.HOME.barIndex()).isEqualTo(TubeBarItem.HOME.ordinal)
         assertThat(TubeTab.SUBSCRIPTIONS.barIndex()).isEqualTo(TubeBarItem.SUBSCRIPTIONS.ordinal)
         assertThat(TubeTab.YOU.barIndex()).isEqualTo(TubeBarItem.YOU.ordinal)
-        assertThat(TubeTab.entries.map { it.barIndex() }).doesNotContain(TubeBarItem.SHORTS.ordinal)
+        assertThat(TubeTab.entries.map { it.barIndex() }).doesNotContain(TubeBarItem.REELS.ordinal)
     }
 
     @Test

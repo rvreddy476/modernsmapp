@@ -77,7 +77,12 @@ data class PendingReelPublish(
 )
 
 @Serializable
-data class PendingReelFailure(val message: String, val retryable: Boolean)
+data class PendingReelFailure(
+    val message: String,
+    val retryable: Boolean,
+    /** The server wants a channel first (`CHANNEL_REQUIRED`); the tile offers "Create channel". */
+    val needsChannel: Boolean = false,
+)
 
 // ════════════════════════════════════════════════════════════════════════
 // Ports

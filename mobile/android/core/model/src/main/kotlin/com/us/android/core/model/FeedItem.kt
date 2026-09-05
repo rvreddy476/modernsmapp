@@ -70,7 +70,29 @@ data class FeedItem(
      */
     val reason: String = "",
     val reasonText: String = "",
-)
+    /**
+     * The channel this long video was posted under (Tube, 2026-09-05), when
+     * the server embeds one. Null on every other kind of post and on rows
+     * from a server that predates channels; see [FeedChannel].
+     */
+    val channel: FeedChannel? = null,
+    /**
+     * The chosen cover's delivery (cover fix, 2026-09-05), resolved by the
+     * client from `controls.coverMediaId` because feed-service hydrates only
+     * the post's own `media` list and the cover is uploaded beside it, not
+     * in it. Kept OFF [media] on purpose: a card's carousel is `media`, and
+     * the cover must not become a second page of a video post.
+     */
+    val coverMedia: FeedMedia? = null,
+) {
+    /** Who a video card credits: the channel when the row carries one, the author otherwise. */
+    val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay
+
+    /** The `@handle` under the name: the channel's, else the author's username, else nothing. */
+    val creatorHandle: String?
+        get() = channel?.handle?.takeIf { it.isNotBlank() }?.let { "@$it" }
+            ?: author.username?.takeIf { it.isNotBlank() }?.let { "@$it" }
+}
 
 /**
  * The author-set controls the reel form sends and the feed hands back.

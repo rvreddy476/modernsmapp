@@ -44,7 +44,7 @@ data class ContinueWatching(val item: FeedItem, val positionMs: Long, val durati
 
 /**
  * Tube's reads (2026-09-05): the video surfaces with their chips, the
- * Shorts shelf, continue-watching, the viewer's own videos and their saved
+ * Reels panel, continue-watching, the viewer's own videos and their saved
  * videos. Paged lists share [feedPager] with every other feed, so
  * de-duplication and the cursor rules are the same everywhere.
  *
@@ -69,7 +69,7 @@ class VideoFeedRepository @Inject constructor(
             cursor = it.cursor,
             followingOnly = (query is VideoFeedQuery.Following).takeIf { on -> on },
             category = (query as? VideoFeedQuery.Category)?.id,
-        ).toFeedPage()
+        ).toFeedPage().let { page -> page.copy(items = hydrator.hydrate(page.items)) }
     }
 
     /**
@@ -92,10 +92,50 @@ class VideoFeedRepository @Inject constructor(
         videosOnly(request) { limit, cursor -> api.bookmarks(limit, cursor) }
     }
 
-    /** The first page of reels for the Shorts shelf — [FeedQuery.Reels], as a list, not a pager. */
-    suspend fun shorts(limit: Int): List<FeedItem> =
+    /**
+     * The first page of long videos from followed authors, as a list — the
+     * channels strip groups it by author. Empty when nothing is followed or
+     * the read fails: the strip is then the viewer's own bubble alone.
+     */
+    suspend fun followingVideos(limit: Int): List<FeedItem> =
+        when (
+            val result = apiCall(errorMapper) {
+                api.getFeed(FeedSurface.Watch.path, limit, followingOnly = true)
+            }
+        ) {
+            is AppResult.Success ->
+                hydrator.hydrate(result.data.filter { it.deletedAt.isBlank() }.map { it.toDomain() })
+            is AppResult.Failure -> emptyList()
+        }
+
+    /** The first page of reels for the Reels panel — [FeedQuery.Reels], as a list, not a pager. */
+    suspend fun reels(limit: Int): List<FeedItem> =
         when (val result = apiCall(errorMapper) { api.getFeed(FeedQuery.Reels.surface.path, limit) }) {
-            is AppResult.Success -> result.data.filter { it.deletedAt.isBlank() }.map { it.toDomain() }
+            is AppResult.Success ->
+                hydrator.hydrate(result.data.filter { it.deletedAt.isBlank() }.map { it.toDomain() })
+            is AppResult.Failure -> emptyList()
+        }
+
+    /**
+     * One author's posts of one kind, newest first — bare post-service rows,
+     * hydrated per page. The profile grid's three tabs (posts, reels, videos)
+     * are three of these; [ownVideos] is the long-video one with the extra
+     * client-side filter Tube wants.
+     */
+    fun authorPosts(userId: String, contentType: String): Flow<PagingData<FeedItem>> =
+        feedPager(errorMapper) { request ->
+            val page = api.postsByAuthor(userId, contentType, request.limit, request.cursor).toFeedPage()
+            page.copy(items = hydrator.hydrate(page.items.filter { it.feedContentType == contentType }))
+        }
+
+    /**
+     * The first page of one author's long videos, as a list — a channel's
+     * strip bubble and the You header count read it without a pager.
+     */
+    suspend fun latestVideos(userId: String, limit: Int): List<FeedItem> =
+        when (val result = apiCall(errorMapper) { api.postsByAuthor(userId, LONG_VIDEO, limit) }) {
+            is AppResult.Success ->
+                hydrator.hydrate(result.data.filter { it.deletedAt.isBlank() }.map { it.toDomain() })
             is AppResult.Failure -> emptyList()
         }
 

@@ -59,6 +59,11 @@ data class FeedItemDto(
     @SerialName("location_name") val locationName: String = "",
     @SerialName("cover_media_id") val coverMediaId: String? = null,
     /**
+     * The channel a long video was posted under (Tube, 2026-09-05). Absent on
+     * every other kind of post and on a server without channels.
+     */
+    val channel: FeedChannelDto? = null,
+    /**
      * "Why you're seeing this post" — feed-service reason.go. A stable token
      * and the sentence to show; both `omitempty`, so absent on the viewer's
      * own posts and on older servers.
@@ -191,4 +196,17 @@ data class TrendingHashtagDto(
     /** `#tag` — what the server wants shown. */
     @SerialName("display_name") val displayName: String = "",
     @SerialName("post_count") val postCount: Long = 0,
+)
+
+/**
+ * The channel embedded on a long-video row — `{user_id, name, handle,
+ * avatar_url}` (Tube channels, 2026-09-05). `avatar_url` is a delivery URL
+ * the server already resolved, used as returned.
+ */
+@Serializable
+data class FeedChannelDto(
+    @SerialName("user_id") val userId: String = "",
+    val name: String = "",
+    val handle: String = "",
+    @SerialName("avatar_url") val avatarUrl: String? = null,
 )

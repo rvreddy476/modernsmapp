@@ -1,20 +1,27 @@
 package com.us.android.feature.post.createhub
 
+import android.graphics.Bitmap
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
+import com.us.android.core.feed.data.ChannelRepository
+import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.media.publish.VideoKind
 import com.us.android.feature.post.data.dto.SupportedAudience
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -31,10 +38,19 @@ import javax.inject.Inject
  * TikTok-shaped. A reel has no title: the description is the only text, and
  * the server extracts hashtags from it, so the client sends text and nothing
  * derived from it. A LONG video adds a required title (100 characters) above
- * the description, a 16:9 cover strip in place of the 9:16 one, and no remix
+ * the description, a 16:9 cover in place of the 9:16 one, and no remix
  * switch. Tag people, a typed place name, Audience, Category, and the
  * switches sent EXPLICITLY on every post — an omitted `allow_download` is
  * "unspecified", not "true".
+ *
+ * ## THE COVER (founder, 2026-09-05: an exact frame)
+ *
+ * The picker shows the chosen frame large over a filmstrip of two dozen
+ * thumbnails; dragging the handle asks [ReelFrameSeeker] for the frame at
+ * the handle's exact instant — throttled to one in flight, the newest
+ * request winning — and Confirm makes that frame the cover. "Upload" takes
+ * a gallery image through [ReelCoverImageLoader] instead. Either way the
+ * cover is a [CoverFrame] with a bitmap the encoder turns into the JPEG.
  *
  * ## THE GATE
  *
@@ -44,6 +60,15 @@ import javax.inject.Inject
  * selection, the cover and every field and only changes what the post will
  * be. A file over 500 MB is refused for either kind.
  *
+ * ## CHANNEL BEFORE VIDEO (founder, 2026-09-05)
+ *
+ * A long video posts under a channel. The form asks [ChannelRepository]
+ * once and exposes the answer as [ReelUiState.channel]; the surface opens
+ * the "Create your channel" sheet when there is none. The server is the
+ * authority — a post without one is refused with `CHANNEL_REQUIRED`, which
+ * the pending tile answers with the same sheet — so the gate here is a
+ * courtesy, never a lock.
+ *
  * ## POST HANDS OFF AND LEAVES
  *
  * Tapping Post no longer uploads here. A phone video took the dev server
@@ -51,19 +76,23 @@ import javax.inject.Inject
  * spinner the whole time, so the form now writes the chosen cover to disk,
  * hands a [PendingReelPublish] to the [ReelPublishLauncher] — WorkManager
  * from there, see [ReelPublishWorker] — and reports [Phase.Enqueued] so the
- * surface can close. The Reels tab's (or Tube's) pending item shows the rest.
+ * surface can close. The pending tile shows the rest.
  */
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
 // indirection, not clarity.
-@Suppress("LongParameterList")
+@Suppress("LongParameterList", "TooManyFunctions")
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class ReelPublishViewModel @Inject constructor(
     private val launcher: ReelPublishLauncher,
     private val files: ReelPublishFiles,
     private val encoder: ReelCoverEncoder,
     private val frames: ReelFrameExtractor,
+    private val seeker: ReelFrameSeeker,
+    private val images: ReelCoverImageLoader,
     private val lookups: ReelLookups,
     private val probe: ReelVideoProbe,
+    private val channels: ChannelRepository,
     @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -79,6 +108,15 @@ class ReelPublishViewModel @Inject constructor(
         data class Failure(val message: String) : Phase
     }
 
+    /** Where the cover came from — the video, or the gallery. */
+    enum class CoverSource { Frame, Upload }
+
+    /**
+     * The picker while it is open: the handle's instant, the frame found
+     * there (null until the seek answers), and whether a seek is running.
+     */
+    data class CoverPicker(val timeUs: Long, val preview: Bitmap?, val seeking: Boolean)
+
     data class ReelUiState(
         /** Reel or long video — what the form is making. Switchable by the gate. */
         val kind: VideoKind = VideoKind.REEL,
@@ -88,9 +126,14 @@ class ReelPublishViewModel @Inject constructor(
         /** The long video's title; ignored for a reel. */
         val title: String = "",
         val caption: String = "",
+        /** The filmstrip's thumbnails. */
         val frames: List<CoverFrame> = emptyList(),
         val framesLoading: Boolean = false,
-        val coverIndex: Int = 0,
+        /** The chosen cover, or null when no frame could be extracted and nothing was uploaded. */
+        val cover: CoverFrame? = null,
+        val coverSource: CoverSource = CoverSource.Frame,
+        /** Non-null while the cover picker is open. */
+        val picker: CoverPicker? = null,
         val visibility: String = VISIBILITY_PUBLIC,
         val category: String = "",
         val categories: List<ReelCategory> = FallbackReelCategories,
@@ -104,11 +147,9 @@ class ReelPublishViewModel @Inject constructor(
         val peopleSearching: Boolean = false,
         val locationName: String = "",
         val phase: Phase = Phase.Editing,
+        /** The viewer's channel, asked for a long video; unknown for a reel. */
+        val channel: ChannelState = ChannelState.Unknown,
     ) {
-        /** The chosen cover, or null when no frame could be extracted. */
-        val cover: CoverFrame?
-            get() = frames.getOrNull(coverIndex)?.takeIf { it.bitmap != null }
-
         val isBusy: Boolean
             get() = phase is Phase.Preparing || phase is Phase.Enqueued
 
@@ -127,6 +168,16 @@ class ReelPublishViewModel @Inject constructor(
 
         val canTagMore: Boolean
             get() = taggedUsers.size < MAX_TAGGED_PEOPLE
+
+        /** The video's length in microseconds: the probe's, else inferred from the strip's spacing. */
+        val durationUs: Long
+            get() = probe?.durationMs?.takeIf { it > 0L }?.times(MICROS_PER_MILLI)
+                ?: frames.takeIf { it.size > 1 }?.let { it.last().timeUs * it.size / (it.size - 1) }
+                ?: 0L
+
+        /** The cover's aspect (width / height): 16:9 for a video, 9:16 for a reel. */
+        val coverAspect: Float
+            get() = if (kind == VideoKind.LONG) LANDSCAPE_ASPECT else PORTRAIT_ASPECT
     }
 
     private val _state = MutableStateFlow(
@@ -138,18 +189,36 @@ class ReelPublishViewModel @Inject constructor(
 
     private var framesJob: Job? = null
     private var probeJob: Job? = null
+    private var coverJob: Job? = null
     private var peopleJob: Job? = null
+
+    /** The handle's newest instant; the seek loop takes the latest and drops the rest. */
+    private val scrubs = MutableSharedFlow<Long>(extraBufferCapacity = 1)
 
     init {
         viewModelScope.launch {
             lookups.categories()?.let { loaded -> _state.update { it.copy(categories = loaded) } }
         }
+        viewModelScope.launch { channels.own.collect { known -> _state.update { it.copy(channel = known) } } }
+        if (_state.value.kind == VideoKind.LONG) ensureChannel()
+        viewModelScope.launch { scrubs.collectLatest { timeUs -> seekPreview(timeUs) } }
+    }
+
+    // ── Channel ─────────────────────────────────────────────────────────
+
+    /** Asks for the viewer's channel once (a long video needs one); a failed read is retried by [retryChannel]. */
+    fun ensureChannel() {
+        viewModelScope.launch { channels.ensureLoaded() }
+    }
+
+    fun retryChannel() {
+        viewModelScope.launch { channels.refresh() }
     }
 
     // ── Video and cover ─────────────────────────────────────────────────
 
     fun onVideoPicked(uri: String) {
-        // A different video is a different post: new key, new frames, new probe.
+        // A different video is a different post: new key, new frames, new probe, new cover.
         creationKey = UUID.randomUUID().toString()
         _state.update {
             it.copy(
@@ -157,13 +226,15 @@ class ReelPublishViewModel @Inject constructor(
                 probe = null,
                 frames = emptyList(),
                 framesLoading = true,
-                coverIndex = 0,
+                cover = null,
+                coverSource = CoverSource.Frame,
+                picker = null,
                 phase = Phase.Editing,
             )
         }
         framesJob?.cancel()
         framesJob = viewModelScope.launch {
-            val extracted = frames.extract(uri, COVER_FRAME_COUNT)
+            val extracted = frames.extract(uri, Filmstrip.FRAME_COUNT)
             _state.update { current ->
                 if (current.videoUri == uri) current.copy(frames = extracted, framesLoading = false) else current
             }
@@ -173,18 +244,102 @@ class ReelPublishViewModel @Inject constructor(
             val found = probe.probe(uri)
             _state.update { current -> if (current.videoUri == uri) current.copy(probe = found) else current }
         }
+        coverJob?.cancel()
+        coverJob = viewModelScope.launch {
+            // The default cover: the very first frame, at full size. Falls
+            // back to the strip's first thumbnail when the exact seek fails.
+            val exact = seeker.frameAt(uri, 0L)
+            _state.update { current ->
+                if (current.videoUri != uri || current.cover != null) return@update current
+                val bitmap = exact ?: current.frames.firstOrNull()?.bitmap
+                current.copy(cover = bitmap?.let { CoverFrame(index = 0, timeUs = 0L, bitmap = it) })
+            }
+        }
     }
 
-    fun onCoverSelected(index: Int) = _state.update {
-        if (index in it.frames.indices) it.copy(coverIndex = index) else it
+    /** Opens the picker on the current cover's instant (or the start), and asks for that frame. */
+    fun openCoverPicker() {
+        val current = _state.value
+        if (current.videoUri == null) return
+        val start = current.cover?.takeIf { it.index != CoverFrame.UPLOADED }?.timeUs ?: 0L
+        val preview = current.cover?.takeIf { it.index != CoverFrame.UPLOADED }?.bitmap
+        _state.update { it.copy(picker = CoverPicker(timeUs = start, preview = preview, seeking = preview == null)) }
+        if (preview == null) scrubs.tryEmit(start)
+    }
+
+    fun closeCoverPicker() = _state.update { it.copy(picker = null) }
+
+    /**
+     * The handle moved: the readout follows at once; the frame follows as
+     * fast as the seeker answers, newest instant first.
+     */
+    fun onScrub(timeUs: Long) {
+        val clamped = timeUs.coerceIn(0L, (_state.value.durationUs - Filmstrip.TAIL_MARGIN_US).coerceAtLeast(0L))
+        _state.update { current ->
+            current.picker?.let { current.copy(picker = it.copy(timeUs = clamped, seeking = true)) } ?: current
+        }
+        scrubs.tryEmit(clamped)
+    }
+
+    private suspend fun seekPreview(timeUs: Long) {
+        // A drag emits many instants a second; one seek in flight is plenty,
+        // and a short wait lets a burst settle on the last one.
+        delay(SCRUB_SETTLE_MILLIS)
+        val uri = _state.value.videoUri ?: return
+        val bitmap = seeker.frameAt(uri, timeUs)
+        _state.update { current ->
+            val picker = current.picker ?: return@update current
+            if (picker.timeUs != timeUs) {
+                current
+            } else {
+                current.copy(picker = picker.copy(preview = bitmap, seeking = false))
+            }
+        }
+    }
+
+    /** The frame under the handle becomes the cover. */
+    fun confirmCover() {
+        val current = _state.value
+        val picker = current.picker ?: return
+        val bitmap = picker.preview ?: return
+        val stripIndex = current.frames.indexOfLast { it.timeUs <= picker.timeUs }.coerceAtLeast(0)
+        _state.update {
+            it.copy(
+                cover = CoverFrame(index = stripIndex, timeUs = picker.timeUs, bitmap = bitmap),
+                coverSource = CoverSource.Frame,
+                picker = null,
+            )
+        }
+    }
+
+    /** A gallery image, cropped to the kind's aspect, becomes the cover. */
+    fun onCoverImagePicked(imageUri: String) {
+        val aspect = _state.value.coverAspect
+        viewModelScope.launch {
+            val bitmap = images.load(imageUri, aspect) ?: run {
+                fail("That image couldn't be read. Pick another.")
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    cover = CoverFrame(index = CoverFrame.UPLOADED, timeUs = -1L, bitmap = bitmap),
+                    coverSource = CoverSource.Upload,
+                    picker = null,
+                    phase = if (it.phase is Phase.Failure) Phase.Editing else it.phase,
+                )
+            }
+        }
     }
 
     /**
      * The gate's way out for a reel over five minutes: the same video, the
      * same cover and every field, posted as a long video instead. The reel's
-     * remix switch simply stops applying.
+     * remix switch simply stops applying, and the channel is asked for.
      */
-    fun switchToLong() = _state.update { it.copy(kind = VideoKind.LONG) }
+    fun switchToLong() {
+        _state.update { it.copy(kind = VideoKind.LONG) }
+        ensureChannel()
+    }
 
     // ── Fields ──────────────────────────────────────────────────────────
 
@@ -274,9 +429,12 @@ class ReelPublishViewModel @Inject constructor(
         /** The Create route's argument, read to open the form as a reel or a video. */
         const val SURFACE_ARG = "surface"
 
-        private const val COVER_FRAME_COUNT = 6
         private const val MIN_PEOPLE_QUERY = 2
         private const val PEOPLE_DEBOUNCE_MILLIS = 300L
+        private const val SCRUB_SETTLE_MILLIS = 40L
+        private const val MICROS_PER_MILLI = 1_000L
+        private const val LANDSCAPE_ASPECT = 16f / 9f
+        private const val PORTRAIT_ASPECT = 9f / 16f
 
         /** The Video tile opens the form as a long video; every other way in is a reel. */
         fun videoKindForSurface(routeKey: String?): VideoKind =

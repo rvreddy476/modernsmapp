@@ -2,8 +2,11 @@ package com.us.android.feature.post.createhub
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import com.us.android.core.common.di.Dispatcher
+import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
@@ -14,7 +17,10 @@ import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
@@ -36,13 +42,20 @@ data class TaggedUser(val id: String, val name: String, val username: String)
 internal data class ReelOption(val value: String, val label: String, val hint: String? = null)
 
 /**
- * One candidate cover: a frame pulled from the video at [timeUs].
+ * One candidate cover: a frame pulled from the video at [timeUs], or — with
+ * [index] of [UPLOADED] and no time — an image the user picked from the
+ * gallery instead.
  *
  * [bitmap] is null when extraction failed for that position — the strip still
  * shows a slot so the count is stable, and Post falls back to no cover rather
  * than uploading nothing.
  */
-data class CoverFrame(val index: Int, val timeUs: Long, val bitmap: Bitmap?)
+data class CoverFrame(val index: Int, val timeUs: Long, val bitmap: Bitmap?) {
+    companion object {
+        /** The index of a cover that came from the gallery, not the video. */
+        const val UPLOADED = -1
+    }
+}
 
 /**
  * The client's own category list — the founder's set (2026-09-04), used until
@@ -67,6 +80,24 @@ fun interface ReelFrameExtractor {
     suspend fun extract(videoUri: String, count: Int): List<CoverFrame>
 }
 
+/**
+ * One frame at an exact instant — the cover picker's scrub (founder,
+ * 2026-09-05). `OPTION_CLOSEST`, so the frame IS the one under the handle,
+ * not the nearest keyframe; off-main inside, on the default dispatcher.
+ */
+fun interface ReelFrameSeeker {
+    suspend fun frameAt(videoUri: String, timeUs: Long): Bitmap?
+}
+
+/**
+ * A gallery image as a cover: decoded, centre-cropped to [aspect]
+ * (width / height) and no longer than 1080 on its long side. Null when the
+ * image cannot be read.
+ */
+fun interface ReelCoverImageLoader {
+    suspend fun load(imageUri: String, aspect: Float): Bitmap?
+}
+
 /** Turns a chosen frame into the JPEG bytes that get uploaded as the cover. */
 fun interface ReelCoverEncoder {
     fun encode(frame: CoverFrame): ByteArray?
@@ -88,7 +119,8 @@ interface ReelLookups {
  * `MediaMetadataRetriever` at evenly spaced times — the first frame, then
  * the rest spread over the duration so the last sits just before the end.
  * `OPTION_CLOSEST_SYNC` is what keeps this fast: a keyframe seek, not a
- * decode from the previous keyframe.
+ * decode from the previous keyframe. These are the filmstrip's thumbnails;
+ * the cover itself comes from [ReelFrameSeeker] at the exact instant.
  */
 @Singleton
 class AndroidReelFrameExtractor @Inject constructor(
@@ -107,12 +139,7 @@ class AndroidReelFrameExtractor @Inject constructor(
                     val durationMs = retriever
                         .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                         ?.toLongOrNull() ?: 0L
-                    val durationUs = durationMs * MICROS_PER_MILLI
-                    List(count) { index ->
-                        // Evenly spaced across [0, duration), the last one held
-                        // back from the very end where many encoders leave a
-                        // black frame.
-                        val timeUs = if (count <= 1) 0L else durationUs * index / count
+                    Filmstrip.timestampsUs(durationMs * MICROS_PER_MILLI, count).mapIndexed { index, timeUs ->
                         val bitmap = runCatching {
                             retriever.getScaledFrameAtTime(
                                 timeUs,
@@ -133,11 +160,120 @@ class AndroidReelFrameExtractor @Inject constructor(
         const val MICROS_PER_MILLI = 1_000L
 
         /**
-         * The strip frames are decoded at up to 1080 on the long edge, so the
-         * chosen one can be uploaded as the cover without a second decode at
-         * full size on Post.
+         * Strip thumbnails only: two dozen of them ride in memory at once, and
+         * the cover itself is decoded at full size by [ReelFrameSeeker] at the
+         * exact instant the handle chose.
          */
-        const val STRIP_MAX_PX = 1080
+        const val STRIP_MAX_PX = 240
+    }
+}
+
+/**
+ * `MediaMetadataRetriever` kept open on the video being scrubbed: opening
+ * one per frame costs more than the seek itself, and the picker asks for a
+ * frame on every drag tick. One video at a time; a different URI swaps the
+ * retriever. Calls are serialized — the retriever is not thread-safe.
+ */
+@Singleton
+class AndroidReelFrameSeeker @Inject constructor(
+    @ApplicationContext private val context: Context,
+    @Dispatcher(UsDispatcher.Default) private val default: CoroutineDispatcher,
+) : ReelFrameSeeker {
+
+    private val lock = Mutex()
+    private var openUri: String? = null
+    private var retriever: MediaMetadataRetriever? = null
+
+    override suspend fun frameAt(videoUri: String, timeUs: Long): Bitmap? = withContext(default) {
+        lock.withLock {
+            val source = open(videoUri)
+            source?.let {
+                runCatching {
+                    it.getScaledFrameAtTime(
+                        timeUs.coerceAtLeast(0L),
+                        MediaMetadataRetriever.OPTION_CLOSEST,
+                        COVER_MAX_PX,
+                        COVER_MAX_PX,
+                    )
+                }.getOrNull()
+            }
+        }
+    }
+
+    private fun open(videoUri: String): MediaMetadataRetriever? {
+        if (openUri == videoUri) return retriever
+        runCatching { retriever?.release() }
+        retriever = null
+        openUri = null
+        val next = MediaMetadataRetriever()
+        return runCatching {
+            next.setDataSource(context, Uri.parse(videoUri))
+            retriever = next
+            openUri = videoUri
+            next
+        }.getOrElse {
+            runCatching { next.release() }
+            null
+        }
+    }
+
+    private companion object {
+        const val COVER_MAX_PX = 1080
+    }
+}
+
+/**
+ * `BitmapFactory` with a sample size that lands near the cover's size,
+ * then a centre crop to the aspect and a scale to 1080 on the long side —
+ * the same shape the encoder uploads.
+ */
+@Singleton
+class AndroidReelCoverImageLoader @Inject constructor(
+    @ApplicationContext private val context: Context,
+    @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
+) : ReelCoverImageLoader {
+
+    override suspend fun load(imageUri: String, aspect: Float): Bitmap? = withContext(io) {
+        runCatching { decode(Uri.parse(imageUri))?.let { cropToAspect(it, aspect) } }.getOrNull()
+    }
+
+    private fun decode(uri: Uri): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val sample = sampleSize(max(bounds.outWidth, bounds.outHeight))
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+    }
+
+    private fun sampleSize(longest: Int): Int {
+        var sample = 1
+        while (longest / (sample * 2) >= COVER_MAX_PX) sample *= 2
+        return sample
+    }
+
+    private fun cropToAspect(source: Bitmap, aspect: Float): Bitmap {
+        val width = source.width
+        val height = source.height
+        val target = if (width.toFloat() / height > aspect) {
+            val cropWidth = (height * aspect).roundToInt().coerceIn(1, width)
+            Bitmap.createBitmap(source, (width - cropWidth) / 2, 0, cropWidth, height)
+        } else {
+            val cropHeight = (width / aspect).roundToInt().coerceIn(1, height)
+            Bitmap.createBitmap(source, 0, (height - cropHeight) / 2, width, cropHeight)
+        }
+        val longest = max(target.width, target.height)
+        if (longest <= COVER_MAX_PX) return target
+        val ratio = COVER_MAX_PX.toFloat() / longest
+        return Bitmap.createScaledBitmap(
+            target,
+            max(1, (target.width * ratio).roundToInt()),
+            max(1, (target.height * ratio).roundToInt()),
+            true,
+        )
+    }
+
+    private companion object {
+        const val COVER_MAX_PX = 1080
     }
 }
 
@@ -217,6 +353,14 @@ abstract class ReelModule {
     @Binds
     @Singleton
     abstract fun bindFrameExtractor(implementation: AndroidReelFrameExtractor): ReelFrameExtractor
+
+    @Binds
+    @Singleton
+    abstract fun bindFrameSeeker(implementation: AndroidReelFrameSeeker): ReelFrameSeeker
+
+    @Binds
+    @Singleton
+    abstract fun bindCoverImageLoader(implementation: AndroidReelCoverImageLoader): ReelCoverImageLoader
 
     @Binds
     @Singleton

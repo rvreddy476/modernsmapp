@@ -5,6 +5,7 @@ import androidx.paging.PagingState
 import com.us.android.core.common.error.AppError
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.model.FeedAuthor
+import com.us.android.core.model.FeedChannel
 import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPoll
@@ -246,6 +247,14 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     ),
     reason = reason,
     reasonText = reasonText,
+    channel = channel?.takeIf { it.handle.isNotBlank() || it.name.isNotBlank() }?.let {
+        FeedChannel(
+            userId = it.userId.ifBlank { authorId },
+            name = it.name,
+            handle = it.handle,
+            avatarUrl = it.avatarUrl?.takeIf { url -> url.isNotBlank() },
+        )
+    },
 )
 
 private const val PROCESSING_PENDING = "pending"

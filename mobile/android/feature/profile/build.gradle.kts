@@ -17,6 +17,8 @@ dependencies {
     implementation(projects.core.profile)
     implementation(projects.core.auth)
     implementation(projects.core.media)
+    implementation(projects.core.feed)
+    implementation(projects.core.engagement)
     // Start-direct only: the Message button on someone else's profile opens a
     // conversation through :core:chat. This is a feature depending on a core
     // module, which the graph rule allows; :feature:chat is NOT a dependency
@@ -35,6 +37,7 @@ dependencies {
     implementation(libs.hilt.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.coil.compose)
+    implementation(libs.paging.compose)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

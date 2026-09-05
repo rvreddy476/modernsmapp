@@ -1,5 +1,6 @@
 package com.us.android.core.feed.di
 
+import com.us.android.core.feed.data.ChannelApi
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedItemHydrator
 import com.us.android.core.feed.data.HashtagPostHydrator
@@ -23,6 +24,10 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideVideoFeedApi(retrofit: Retrofit): VideoFeedApi = retrofit.create(VideoFeedApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideChannelApi(retrofit: Retrofit): ChannelApi = retrofit.create(ChannelApi::class.java)
 
     /** The real hydrator behind the seam; tests bind the identity instead. */
     @Provides

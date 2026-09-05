@@ -717,6 +717,24 @@ object UsIcons {
     }
 
     /** A padlock — marks a private account, next to its name. */
+    /** Lucide `pencil` — "Edit channel". */
+    val Pencil: ImageVector = lucideStroked(
+        "Pencil",
+        "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622" +
+            "l4.353-1.32a2 2 0 0 0 .83-.497z",
+        "m15 5 4 4",
+    )
+
+    /** Lucide `image-plus` — upload a cover from the gallery. */
+    val ImagePlus: ImageVector = lucideStroked(
+        "ImagePlus",
+        "M16 5h6",
+        "M19 2v6",
+        "M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5",
+        "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21",
+        "M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0",
+    )
+
     val Lock: ImageVector = stroked("Lock") {
         moveTo(6.5f, 10.5f)
         horizontalLineTo(17.5f)

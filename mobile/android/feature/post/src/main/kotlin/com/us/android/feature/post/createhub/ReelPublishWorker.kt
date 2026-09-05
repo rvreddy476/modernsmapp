@@ -85,7 +85,7 @@ class ReelPublishWorker @AssistedInject constructor(
                 Result.success()
             }
             is ReelPublishPipeline.Outcome.Failed -> {
-                tracker.update(ReelPublishState.Failed(outcome.message, outcome.retryable))
+                tracker.update(ReelPublishState.Failed(outcome.message, outcome.retryable, outcome.needsChannel))
                 Result.failure(workDataOf(KEY_FAILURE_REASON to outcome.message))
             }
         }
@@ -195,7 +195,7 @@ class ReelPublishController @Inject constructor(
         if (tracker.preview.value == null) tracker.setPreview(pending.preview())
         val failure = pending.failure
         if (failure != null) {
-            tracker.restoreIfIdle(ReelPublishState.Failed(failure.message, failure.retryable))
+            tracker.restoreIfIdle(ReelPublishState.Failed(failure.message, failure.retryable, failure.needsChannel))
             return
         }
         val name = ReelPublishWorker.uniqueName(pending.creationKey)

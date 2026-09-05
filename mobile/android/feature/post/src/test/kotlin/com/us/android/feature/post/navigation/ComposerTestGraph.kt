@@ -1,14 +1,14 @@
 package com.us.android.feature.post.navigation
 
+import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.network.ApiConfig
-import com.us.android.core.network.TokenProvider
-import com.us.android.core.network.TokenRefresher
 import com.us.android.core.telemetry.TelemetryConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import dagger.multibindings.Multibinds
 import javax.inject.Singleton
 
 /**
@@ -18,15 +18,12 @@ import javax.inject.Singleton
  *
  * `ComposerDiscardDurabilityTest` builds the real Hilt graph so the composer's
  * ViewModel is created and owned by navigation. That graph reaches through
- * `:core:network`, `:core:media` and `:core:engagement`, all of which expect
- * configuration that only `:app` provides: `ApiConfig`, `TelemetryConfig`, and
- * a `TokenProvider` (bound in `:core:auth`, which `:feature:post` deliberately
- * does not depend on).
- *
- * Supplying them from the TEST source set rather than adding `:core:auth` as a
- * dependency keeps the module graph exactly as it is. `moduleGraphCheck` counts
- * production edges, and a feature reaching for an auth module just to make a
- * test compile would be a real architectural regression bought for nothing.
+ * `:core:network`, `:core:media`, `:core:engagement` and — since the channel
+ * gate (2026-09-05) — `:core:feed`, which brings `:core:auth` with it. The
+ * auth module now binds the token provider and refresher itself; what is
+ * still missing is what only `:app` provides: `ApiConfig`, `TelemetryConfig`,
+ * the comments viewer, and the session teardown set that `:app`'s modules
+ * contribute to ([ComposerTestMultibinds] declares it empty).
  *
  * Nothing here is ever called: no request is issued during the journey. These
  * exist so the graph can be CONSTRUCTED, which is the precondition for
@@ -62,20 +59,6 @@ object ComposerTestGraph {
         serviceVersion = "test",
     )
 
-    /** No session. The journey never authenticates and must never need to. */
-    @Provides
-    @Singleton
-    fun provideTokenProvider(): TokenProvider = object : TokenProvider {
-        override fun currentAccessToken(): String? = null
-    }
-
-    /** Never refreshes: with no session there is nothing to refresh. */
-    @Provides
-    @Singleton
-    fun provideTokenRefresher(): TokenRefresher = object : TokenRefresher {
-        override suspend fun refresh(): String? = null
-    }
-
     /**
      * Nobody is signed in, so the comments composer has no viewer to draw.
      * The real source lives in `:app` (`ProfileCommentsViewerSource`), which
@@ -84,4 +67,16 @@ object ComposerTestGraph {
     @Provides
     @Singleton
     fun provideCommentsViewerSource(): CommentsViewerSource = CommentsViewerSource { null }
+}
+
+/**
+ * `AuthRepository` takes the set of session teardown tasks that `:core:chat`,
+ * `:core:notifications` and `:app` contribute into. None of them is on this
+ * graph, and Dagger refuses an undeclared empty set, so it is declared here.
+ */
+@Module
+@InstallIn(SingletonComponent::class)
+abstract class ComposerTestMultibinds {
+    @Multibinds
+    abstract fun teardownTasks(): Set<SessionTeardownTask>
 }

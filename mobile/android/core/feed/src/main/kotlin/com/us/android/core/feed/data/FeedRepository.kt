@@ -35,7 +35,7 @@ class FeedRepository @Inject constructor(
             // so the request the server has served since day one is unchanged.
             followingOnly = query.followingOnly.takeIf { on -> on },
             circleOnly = query.circleOnly.takeIf { on -> on },
-        ).toFeedPage()
+        ).toFeedPage().withCovers()
     }
 
     /**
@@ -102,6 +102,13 @@ class FeedRepository @Inject constructor(
 
     private fun feedbackSignal(interested: Boolean): String =
         if (interested) FeedApi.FEEDBACK_INTERESTED else FeedApi.FEEDBACK_NOT_INTERESTED
+
+    /**
+     * A feed-service page through the hydrator: the rows already carry their
+     * author and media, so the only thing it fetches is each row's chosen
+     * cover (the cover fix, 2026-09-05) — see [HashtagPostHydrator].
+     */
+    private suspend fun FeedPage.withCovers(): FeedPage = copy(items = hashtagHydrator.hydrate(items))
 
     /** The shared Pager — see [feedPager]; every list in the app pages the same way. */
     private fun pager(load: suspend (FeedPageRequest) -> FeedPage): Flow<PagingData<FeedItem>> =

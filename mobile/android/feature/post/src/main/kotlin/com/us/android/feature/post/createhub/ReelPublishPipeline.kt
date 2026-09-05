@@ -2,6 +2,7 @@ package com.us.android.feature.post.createhub
 
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.media.publish.VideoKind
@@ -67,7 +68,7 @@ class ReelPublishPipeline @Inject constructor(
 
         /** The fallback poll is still waiting and this run's budget is spent. */
         data object Continue : Outcome
-        data class Failed(val message: String, val retryable: Boolean) : Outcome
+        data class Failed(val message: String, val retryable: Boolean, val needsChannel: Boolean = false) : Outcome
     }
 
     /** Thrown internally to unwind to [run] with the failure already persisted. */
@@ -153,7 +154,7 @@ class ReelPublishPipeline @Inject constructor(
                 val ready = awaitVideo(pending, videoId, now, runUntil)
                 createReadyFlick(ready, request)
             } else {
-                fail(pending, repository.message(result.error), retryable = !repository.isTerminal(result.error))
+                refused(pending, result.error)
             }
         }
     }
@@ -161,8 +162,19 @@ class ReelPublishPipeline @Inject constructor(
     private suspend fun createReadyFlick(pending: PendingReelPublish, request: CreatePostRequest): Outcome =
         when (val result = repository.createPost(pending.creationKey, request)) {
             is AppResult.Success -> Outcome.Published(result.data)
-            is AppResult.Failure ->
-                fail(pending, repository.message(result.error), retryable = !repository.isTerminal(result.error))
+            is AppResult.Failure -> refused(pending, result.error)
+        }
+
+    /**
+     * The create was refused. `CHANNEL_REQUIRED` (channel before video,
+     * 2026-09-05) is not terminal even though it is a 403: the pending tile
+     * opens the create-channel sheet and retries once there is one.
+     */
+    private suspend fun refused(pending: PendingReelPublish, error: AppError): Nothing =
+        if (ChannelRepository.requiresChannel(error)) {
+            fail(pending, CHANNEL_REQUIRED_MESSAGE, retryable = true, needsChannel = true)
+        } else {
+            fail(pending, repository.message(error), retryable = !repository.isTerminal(error))
         }
 
     /**
@@ -203,9 +215,14 @@ class ReelPublishPipeline @Inject constructor(
     }
 
     /** Persist the failure so a restart shows it, then unwind. */
-    private suspend fun fail(pending: PendingReelPublish, message: String, retryable: Boolean): Nothing {
-        store.save(pending.copy(failure = PendingReelFailure(message, retryable)))
-        throw Stop(Outcome.Failed(message, retryable))
+    private suspend fun fail(
+        pending: PendingReelPublish,
+        message: String,
+        retryable: Boolean,
+        needsChannel: Boolean = false,
+    ): Nothing {
+        store.save(pending.copy(failure = PendingReelFailure(message, retryable, needsChannel)))
+        throw Stop(Outcome.Failed(message, retryable, needsChannel))
     }
 
     private fun AppError.isNotReady(): Boolean = this is AppError.Server && code == MEDIA_NOT_READY
@@ -215,6 +232,9 @@ class ReelPublishPipeline @Inject constructor(
 
         /** post-service's refusal of a confirmed-but-untranscoded video. */
         const val MEDIA_NOT_READY = "MEDIA_NOT_READY"
+
+        /** What the pending tile says under a 403 `CHANNEL_REQUIRED`. */
+        const val CHANNEL_REQUIRED_MESSAGE = "Create a channel to post videos."
 
         /**
          * Under WorkManager's ten-minute stop, with room for the create after

@@ -4,8 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -34,50 +36,71 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsAvatar
+import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsBadgedIcon
-import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.feature.tube.ui.home.TubeChip
 
 /**
- * A Tube page's frame: Tube's header on top, Tube's bar underneath, the
- * page between (Tube redesign, 2026-09-05). The shell's bar is already
- * gone — every Tube route is a pushed screen, not a tab root — so the bar
- * here is the only one on screen.
+ * A Tube page's frame (Momentum look, 2026-09-05): the wordmark header and
+ * the glass search pill on top, the floating bar over the bottom, the page
+ * between. The bar FLOATS — the page scrolls under it — so the content is
+ * handed the clearance it needs as bottom padding rather than a reserved
+ * strip. The shell's bar is already gone: every Tube route is a pushed
+ * screen, not a tab root, so this bar is the only one on screen.
+ *
+ * [selected] is null on a page the bar does not own (a channel page).
  */
 @Composable
 fun TubePage(
-    selected: TubeTab,
+    selected: TubeTab?,
     onOpenNotifications: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenYou: () -> Unit,
     onBarAction: (TubeBarAction) -> Unit,
+    topBar: @Composable () -> Unit = {
+        TubeHeader(onOpenNotifications = onOpenNotifications, onOpenYou = onOpenYou)
+        TubeSearchPill(onClick = onOpenSearch)
+    },
     content: @Composable (PaddingValues) -> Unit,
 ) {
-    UsScaffold(
-        applyPageGutter = false,
-        topBar = { TubeHeader(onOpenNotifications = onOpenNotifications, onOpenSearch = onOpenSearch) },
-        bottomBar = { TubeBottomBar(selected = selected, onAction = onBarAction) },
-        content = content,
-    )
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        topBar()
+        Box(modifier = Modifier.weight(1f)) {
+            content(PaddingValues(bottom = TubeBarClearance))
+            TubeBottomBar(
+                selected = selected,
+                onAction = onBarAction,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+    }
 }
 
 /**
  * Tube's header: the wordmark — a small ember play badge and "Tube" in
- * Outfit — on the left; the bell with its unread count and search on the
- * right. No back arrow: Tube is a mini-app with its own bar, and the
- * system Back is the way out.
+ * Outfit — on the left; the bell with its unread count and the viewer's
+ * own avatar (which opens You) on the right. No back arrow: Tube is a
+ * mini-app with its own bar, and the system Back is the way out.
  */
 @Composable
 fun TubeHeader(
     onOpenNotifications: () -> Unit,
-    onOpenSearch: () -> Unit,
+    onOpenYou: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: UnreadBadgeViewModel = hiltViewModel(),
+    badge: UnreadBadgeViewModel = hiltViewModel(),
+    viewer: TubeViewerViewModel = hiltViewModel(),
 ) {
-    val unread by viewModel.count.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { viewModel.refresh() }
+    val unread by badge.count.collectAsStateWithLifecycle()
+    val who by viewer.viewer.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { badge.refresh() }
 
     Row(
         modifier = modifier
@@ -87,6 +110,7 @@ fun TubeHeader(
             .padding(horizontal = UsTheme.spacing.pageHorizontal)
             .testTag("tube_header"),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
     ) {
         TubeWordmark(modifier = Modifier.weight(1f))
         HeaderGlyph(
@@ -100,15 +124,20 @@ fun TubeHeader(
         ) {
             UsBadgedIcon(icon = UsIcons.Notifications, count = unread)
         }
-        HeaderGlyph(onClick = onOpenSearch, description = "Search videos", modifier = Modifier.testTag("tube_search")) {
-            Icon(imageVector = UsIcons.Search, contentDescription = null, tint = UsTheme.extended.textPrimary)
+        HeaderGlyph(onClick = onOpenYou, description = "You", modifier = Modifier.testTag("tube_avatar")) {
+            UsAvatar(
+                name = who?.name ?: "You",
+                seed = who?.userId ?: "you",
+                size = UsAvatarSize.Small,
+                imageUrl = who?.avatarUrl,
+            )
         }
     }
 }
 
 /** The ember play tile and the name — one heading for a screen reader. */
 @Composable
-private fun TubeWordmark(modifier: Modifier = Modifier) {
+internal fun TubeWordmark(modifier: Modifier = Modifier) {
     Row(
         modifier = modifier.semantics(mergeDescendants = true) { heading() },
         verticalAlignment = Alignment.CenterVertically,
@@ -139,7 +168,7 @@ private fun TubeWordmark(modifier: Modifier = Modifier) {
 
 /** A 40dp target with no ripple; the glyph dips on press like every other Tube control. */
 @Composable
-private fun HeaderGlyph(
+internal fun HeaderGlyph(
     onClick: () -> Unit,
     description: String,
     modifier: Modifier = Modifier,
@@ -160,73 +189,77 @@ private fun HeaderGlyph(
 }
 
 /**
- * The rail under the header: the compass square that opens the app's
- * launcher, then the pills — the selected one WHITE with navy text (the
- * bar's rule: selected is white, never the accent), the rest on the raised
- * surface behind a hairline. Sticks under the header as the list scrolls.
+ * The search entry under the header: a full-width glass pill with the
+ * search glyph and "Search videos, channels". The entry itself, not an
+ * icon (founder, 2026-09-05) — it opens the app's Explore scoped to videos.
+ */
+@Composable
+fun TubeSearchPill(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(UsTheme.radii.full)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s)
+            .height(SEARCH_HEIGHT)
+            .background(UsTheme.extended.glassBg, shape)
+            .border(HAIRLINE, UsTheme.extended.glassBorder, shape)
+            .pressScale(onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = "Search videos, channels"
+            }
+            .padding(horizontal = UsTheme.spacing.xxl)
+            .testTag("tube_search"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        Icon(
+            imageVector = UsIcons.Search,
+            contentDescription = null,
+            tint = UsTheme.extended.textPrimary,
+            modifier = Modifier.size(SEARCH_GLYPH),
+        )
+        Text(
+            text = "Search videos, channels",
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textMuted,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * The chip rail: glass pills, scrolling — "All", "Following", then the
+ * categories. The selected one is WHITE with navy text (the bar's rule:
+ * selected is white, never the accent). The compass square is gone:
+ * Explore is one tap away on the shell's bar.
  */
 @Composable
 fun TubeChipRail(
     chips: List<TubeChip>,
     selected: TubeChip,
     onSelect: (TubeChip) -> Unit,
-    onOpenExplore: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    LazyRow(
         modifier = modifier
             .fillMaxWidth()
-            .background(UsTheme.extended.bgCanvas)
-            .padding(vertical = UsTheme.spacing.m)
             .testTag("tube_chips"),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        contentPadding = PaddingValues(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m),
     ) {
-        CompassSquare(
-            onClick = onOpenExplore,
-            modifier = Modifier.padding(start = UsTheme.spacing.pageHorizontal, end = UsTheme.spacing.s),
-        )
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-            contentPadding = PaddingValues(start = UsTheme.spacing.s, end = UsTheme.spacing.pageHorizontal),
-        ) {
-            items(chips.size, key = { chips[it].key }) { index ->
-                val chip = chips[index]
-                TubeChipPill(chip = chip, active = chip == selected, onClick = { onSelect(chip) })
-            }
+        items(chips.size, key = { chips[it].key }) { index ->
+            val chip = chips[index]
+            TubeChipPill(chip = chip, active = chip == selected, onClick = { onSelect(chip) })
         }
-    }
-}
-
-@Composable
-private fun CompassSquare(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(UsTheme.radii.small)
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier
-            .size(CHIP_HEIGHT)
-            .background(UsTheme.extended.bgRaised, shape)
-            .border(HAIRLINE, UsTheme.extended.borderMedium, shape)
-            .pressScale(onClick)
-            .semantics {
-                role = Role.Button
-                contentDescription = "Explore apps"
-            }
-            .testTag("tube_explore"),
-    ) {
-        Icon(
-            imageVector = UsIcons.Compass,
-            contentDescription = null,
-            tint = UsTheme.extended.textPrimary,
-            modifier = Modifier.size(CHIP_GLYPH),
-        )
     }
 }
 
 @Composable
 private fun TubeChipPill(chip: TubeChip, active: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(UsTheme.radii.full)
-    val fill = if (active) Color.White else UsTheme.extended.bgRaised
-    val outline = if (active) Color.White else UsTheme.extended.borderMedium
+    val fill = if (active) Color.White else UsTheme.extended.glassBg
+    val outline = if (active) Color.White else UsTheme.extended.glassBorder
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -258,8 +291,9 @@ private val BADGE_RADIUS = 6.dp
 private val BADGE_GLYPH = 12.dp
 private val WORDMARK_SIZE = 22.sp
 private val GLYPH_TARGET = 40.dp
-private val CHIP_HEIGHT = 32.dp
-private val CHIP_GLYPH = 18.dp
+private val SEARCH_HEIGHT = 44.dp
+private val SEARCH_GLYPH = 18.dp
+private val CHIP_HEIGHT = 34.dp
 private val CHIP_HORIZONTAL = 14.dp
 private val CHIP_TEXT = 13.sp
 private val HAIRLINE = 1.dp

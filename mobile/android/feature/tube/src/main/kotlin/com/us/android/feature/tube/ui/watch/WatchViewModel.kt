@@ -13,7 +13,9 @@ import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.playbackFor
+import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaSources
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
@@ -24,8 +26,6 @@ import com.us.android.core.ui.UsReelQuality
 import com.us.android.feature.tube.data.TubeQueue
 import com.us.android.feature.tube.data.WatchProgressRepository
 import com.us.android.feature.tube.navigation.WatchRoute
-import com.us.android.feature.tube.ui.VideoThumb
-import com.us.android.feature.tube.ui.videoThumb
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay

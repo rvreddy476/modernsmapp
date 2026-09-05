@@ -43,10 +43,10 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
+import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.ui.formatCount
-import com.us.android.feature.tube.ui.VideoThumb
 import com.us.android.feature.tube.ui.home.VideoRow
 import com.us.android.feature.tube.ui.pressScale
 import com.us.android.feature.tube.ui.videoMetaLine
@@ -151,22 +151,19 @@ private fun AuthorRow(item: FeedItem, offersFollow: Boolean, actions: WatchDetai
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
         UsAvatar(
-            name = item.author.nameForDisplay,
-            seed = item.author.id,
+            name = item.creatorName,
+            seed = item.channel?.userId ?: item.author.id,
             size = UsAvatarSize.Post,
+            imageUrl = item.channel?.avatarUrl,
             modifier = Modifier.clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = open,
             ),
         )
-        Text(
-            text = item.author.nameForDisplay,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = UsTheme.extended.textPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        // The channel's name and @handle when the row carries a channel
+        // (Tube, 2026-09-05); the author's display name otherwise.
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .clickable(
@@ -176,7 +173,25 @@ private fun AuthorRow(item: FeedItem, offersFollow: Boolean, actions: WatchDetai
                 )
                 .semantics { role = Role.Button }
                 .testTag("watch_author"),
-        )
+        ) {
+            Text(
+                text = item.creatorName,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            item.creatorHandle?.let { handle ->
+                Text(
+                    text = handle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         if (offersFollow) {
             UsFollowButton(onClick = { actions.onFollow(item.author.id) }, modifier = Modifier.testTag("watch_follow"))
         }

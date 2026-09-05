@@ -14,6 +14,7 @@ import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.playbackFor
+import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ReelsEntry
@@ -388,9 +389,12 @@ class ReelsViewModel @Inject constructor(
      */
     fun playback(item: FeedItem): Playback? = urlResolver.playbackFor(item)
 
-    /** The still frame to show before the first video frame decodes. */
-    fun posterUrl(item: FeedItem): String? =
-        item.media.firstOrNull { it.kind == VIDEO }?.let { urlResolver.thumbnail(it.variants) }
+    /**
+     * The still frame to show before the first video frame decodes: the
+     * cover the author chose when the row carries one (the cover fix,
+     * 2026-09-05), else the transcode's own still — the same rule as Tube's.
+     */
+    fun posterUrl(item: FeedItem): String? = urlResolver.videoThumb(item).url
 
     // ── Engagement ──────────────────────────────────────────────────────
 
@@ -435,7 +439,6 @@ class ReelsViewModel @Inject constructor(
     }
 
     private companion object {
-        const val VIDEO = "video"
         const val STOP_TIMEOUT_MILLIS = 5_000L
 
         /** post-service can lag the worker's answer by a beat; three tries a second apart covers it. */

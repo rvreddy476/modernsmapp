@@ -43,7 +43,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.SolidColor
@@ -56,7 +55,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,7 +65,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.data.ChannelGate
+import com.us.android.core.feed.data.channelGate
+import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.media.publish.VideoKind
+import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.usSwitchColors
 import com.us.android.feature.post.createhub.ReelPublishViewModel.Phase
 import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
@@ -77,26 +79,29 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 /**
  * REEL and VIDEO — pick a video, then the TikTok-shaped form.
  *
- * Cover preview beside the description, the cover strip under them, then
- * one card of rows (Tag people, Add location, Audience, Category) and one
- * card of switches. Everything scrolls; the keyboard is an inset the root
- * column pads for, so the description is never under it.
+ * Cover preview beside the description (a reel) or above it (a video), a
+ * "Choose cover" pill that opens the exact-frame picker, then one card of
+ * rows (Tag people, Add location, Audience, Category) and one card of
+ * switches. Everything scrolls; the keyboard is an inset the root column
+ * pads for, so the description is never under it.
  *
  * Opened from the Video tile (Tube, 2026-09-05) the same form is a LONG
- * video: a required title on top, a 16:9 cover strip, no remix switch. The
- * ViewModel reads which from the route; a reel over five minutes can switch
- * to it in place ([GateNotice]).
+ * video: a required title on top, a 16:9 cover, no remix switch — and a
+ * channel first: without one the "Create your channel" sheet opens over
+ * the picker and the form continues once it exists. The ViewModel reads
+ * which kind from the route; a reel over five minutes can switch to a
+ * video in place ([GateNotice]).
  *
  * Post hands the publish to WorkManager and LEAVES — a reel closes back to
  * where the user was and the Reels tab's pending item shows the upload; a
- * long video opens Tube home, where its pending item is. There is no
- * published callback here because nothing is published while this surface
- * exists.
+ * long video opens the viewer's own profile, whose grid shows the posting
+ * video first with its ring. There is no published callback here because
+ * nothing is published while this surface exists.
  */
 @Composable
 internal fun ReelSurface(
     onClose: () -> Unit,
-    onOpenTube: () -> Unit,
+    onOpenOwnProfile: () -> Unit,
     viewModel: ReelPublishViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -120,8 +125,18 @@ internal fun ReelSurface(
         pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
     }
     val long = state.kind == VideoKind.LONG
-    if (state.videoUri == null) {
-        MediaGallerySurface(
+
+    if (state.phase is Phase.Enqueued) {
+        // Handed to the worker: leave, once. A reel lands the user back where
+        // they were and the Reels tab's pending item takes over; a long video
+        // opens the viewer's own profile, whose pending tile takes over there.
+        LaunchedEffect(Unit) { if (long) onOpenOwnProfile() else onClose() }
+    }
+
+    val gate = if (long) channelGate(state.channel) else ChannelGate.Proceed
+    when {
+        gate is ChannelGate.Blocked -> UsErrorState(message = gate.message, onRetry = viewModel::retryChannel)
+        state.videoUri == null -> MediaGallerySurface(
             kind = GalleryKind.Videos,
             title = if (long) "New video" else "New reel",
             subtitle = if (long) "Pick a video — it posts to Tube." else "Pick a video — it posts to Reels.",
@@ -130,17 +145,15 @@ internal fun ReelSurface(
             onPicked = { uris -> uris.firstOrNull()?.let { viewModel.onVideoPicked(it.toString()) } },
             onSystemPicker = openSystemPicker,
         )
-        return
+        else -> ReelForm(state = state, viewModel = viewModel, onClose = onClose, onChangeVideo = openSystemPicker)
     }
 
-    if (state.phase is Phase.Enqueued) {
-        // Handed to the worker: leave, once. A reel lands the user back where
-        // they were and the Reels tab's pending item takes over; a long video
-        // opens Tube home, whose pending item takes over there.
-        LaunchedEffect(Unit) { if (long) onOpenTube() else onClose() }
+    // Channel before video (founder, 2026-09-05): the sheet comes first, over
+    // whichever step the form is on. Dismissing it without a channel leaves
+    // the surface — a video cannot post without one.
+    if (gate is ChannelGate.CreateFirst) {
+        CreateChannelSheet(onCreated = {}, onDismiss = onClose)
     }
-
-    ReelForm(state = state, viewModel = viewModel, onClose = onClose, onChangeVideo = openSystemPicker)
 }
 
 private enum class ReelSheet { None, Audience, Category, Location, People }
@@ -190,16 +203,15 @@ private fun ReelForm(
                     cover = state.cover,
                     caption = state.caption,
                     onCaptionChanged = viewModel::onCaptionChanged,
+                    onOpenPicker = viewModel::openCoverPicker,
                     enabled = editable,
                 )
                 Spacer(Modifier.height(UsTheme.spacing.l))
-                CoverStrip(
-                    kind = state.kind,
-                    frames = state.frames,
+                CoverActions(
                     loading = state.framesLoading,
-                    coverIndex = state.coverIndex,
+                    source = state.coverSource,
                     enabled = editable,
-                    onSelect = viewModel::onCoverSelected,
+                    onChooseCover = viewModel::openCoverPicker,
                     onChangeVideo = onChangeVideo,
                 )
                 GateNotice(gate = state.gate, enabled = editable, onSwitchToLong = viewModel::switchToLong)
@@ -226,6 +238,20 @@ private fun ReelForm(
                 onTag = viewModel::onTagUser,
                 onUntag = viewModel::onUntagUser,
                 onDone = { sheet = ReelSheet.None },
+            )
+        }
+        state.picker?.let { picker ->
+            CoverPickerScreen(
+                kind = state.kind,
+                picker = picker,
+                frames = state.frames,
+                durationUs = state.durationUs,
+                actions = CoverPickerActions(
+                    onScrub = viewModel::onScrub,
+                    onConfirm = viewModel::confirmCover,
+                    onUpload = viewModel::onCoverImagePicked,
+                    onClose = viewModel::closeCoverPicker,
+                ),
             )
         }
     }
@@ -289,6 +315,7 @@ private fun ReelPickerSheets(
  * Instagram's arrangement for a reel: the 9:16 cover on the left, the text
  * beside it. A long video is landscape, so its 16:9 cover sits full-width
  * ABOVE the description instead — a 9:16 slot would crop most of the frame.
+ * The cover itself is a button: tapping it opens the picker.
  */
 @Composable
 private fun CoverAndDescription(
@@ -296,6 +323,7 @@ private fun CoverAndDescription(
     cover: CoverFrame?,
     caption: String,
     onCaptionChanged: (String) -> Unit,
+    onOpenPicker: () -> Unit,
     enabled: Boolean,
 ) {
     when (kind) {
@@ -306,6 +334,8 @@ private fun CoverAndDescription(
         ) {
             CoverPreview(
                 cover = cover,
+                onClick = onOpenPicker,
+                enabled = enabled,
                 modifier = Modifier
                     .width(PREVIEW_WIDTH)
                     .fillMaxHeight(),
@@ -324,6 +354,8 @@ private fun CoverAndDescription(
         VideoKind.LONG -> Column(modifier = Modifier.fillMaxWidth()) {
             CoverPreview(
                 cover = cover,
+                onClick = onOpenPicker,
+                enabled = enabled,
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(LANDSCAPE),
@@ -343,15 +375,23 @@ private fun CoverAndDescription(
 }
 
 @Composable
-private fun CoverPreview(cover: CoverFrame?, modifier: Modifier = Modifier) {
+private fun CoverPreview(cover: CoverFrame?, onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(UsTheme.radii.medium)
     val image = remember(cover?.bitmap) { cover?.bitmap?.asImageBitmap() }
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(targetValue = if (pressed) PRESS_SCALE else 1f, label = "coverPress")
     Box(
         modifier = modifier
+            .scale(scale)
             .clip(shape)
             .background(UsTheme.extended.bgCard)
             .border(HAIRLINE, UsTheme.extended.borderSubtle, shape)
-            .semantics { contentDescription = "Cover preview" }
+            .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = "Cover preview. Choose a cover"
+            }
             .testTag("reel-cover-preview"),
         contentAlignment = Alignment.Center,
     ) {
@@ -418,119 +458,49 @@ private fun DescriptionField(
     }
 }
 
-// ── Cover strip ─────────────────────────────────────────────────────────
+// ── Cover actions ───────────────────────────────────────────────────────
 
-/** Six frames, evenly spaced, in the kind's aspect; the chosen one carries the accent ring. */
+/** "Cover · from the video / uploaded", then "Choose cover" and "Change video". */
 @Composable
-private fun CoverStrip(
-    kind: VideoKind,
-    frames: List<CoverFrame>,
+private fun CoverActions(
     loading: Boolean,
-    coverIndex: Int,
+    source: ReelPublishViewModel.CoverSource,
     enabled: Boolean,
-    onSelect: (Int) -> Unit,
+    onChooseCover: () -> Unit,
     onChangeVideo: () -> Unit,
 ) {
-    Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = if (loading) "Finding cover frames…" else "Cover",
-                style = MaterialTheme.typography.labelLarge,
-                color = UsTheme.extended.textMuted,
-                modifier = Modifier.weight(1f),
-            )
-            val interaction = remember { MutableInteractionSource() }
-            Text(
-                text = "Change video",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = if (enabled) UsTheme.extended.accentSolid else UsTheme.extended.textGhost,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(UsTheme.radii.full))
-                    .clickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        enabled = enabled,
-                        onClick = onChangeVideo,
-                    )
-                    .pressDim(interaction)
-                    .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s)
-                    .testTag("reel-change-video"),
-            )
-        }
-        Spacer(Modifier.height(UsTheme.spacing.s))
-        val aspect = if (kind == VideoKind.LONG) LANDSCAPE else PORTRAIT
-        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-            if (frames.isEmpty()) {
-                repeat(STRIP_SLOTS) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .aspectRatio(aspect)
-                            .clip(RoundedCornerShape(UsTheme.radii.small))
-                            .background(UsTheme.extended.bgCard),
-                    )
-                }
-            } else {
-                frames.forEach { frame ->
-                    CoverFrameTile(
-                        frame = frame,
-                        aspect = aspect,
-                        selected = frame.index == coverIndex,
-                        enabled = enabled && frame.bitmap != null,
-                        onClick = { onSelect(frame.index) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-        }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = when {
+                loading -> "Finding cover frames…"
+                source == ReelPublishViewModel.CoverSource.Upload -> "Cover · uploaded"
+                else -> "Cover · from the video"
+            },
+            style = MaterialTheme.typography.labelLarge,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.weight(1f),
+        )
+        TextAction(label = "Choose cover", enabled = enabled, onClick = onChooseCover, testTag = "reel-choose-cover")
+        TextAction(label = "Change video", enabled = enabled, onClick = onChangeVideo, testTag = "reel-change-video")
     }
 }
 
 @Composable
-private fun CoverFrameTile(
-    frame: CoverFrame,
-    aspect: Float,
-    selected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val shape = RoundedCornerShape(UsTheme.radii.small)
-    val image = remember(frame.bitmap) { frame.bitmap?.asImageBitmap() }
+private fun TextAction(label: String, enabled: Boolean, onClick: () -> Unit, testTag: String) {
     val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(targetValue = if (pressed) PRESS_SCALE else 1f, label = "framePress")
-    Box(
-        modifier = modifier
-            .aspectRatio(aspect)
-            .scale(scale)
-            .clip(shape)
-            .background(UsTheme.extended.bgCard)
-            .border(
-                width = if (selected) RING_WIDTH else HAIRLINE,
-                color = if (selected) UsTheme.extended.accentSolid else UsTheme.extended.borderSubtle,
-                shape = shape,
-            )
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = if (enabled) UsTheme.extended.textPrimary else UsTheme.extended.textGhost,
+        modifier = Modifier
+            .clip(RoundedCornerShape(UsTheme.radii.full))
             .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
-            .semantics {
-                role = Role.RadioButton
-                this.selected = selected
-                contentDescription = "Cover frame ${frame.index + 1}"
-            }
-            .testTag("reel-cover-${frame.index}"),
-    ) {
-        if (image != null) {
-            Image(
-                bitmap = image,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .alpha(if (selected) 1f else UNSELECTED_ALPHA),
-            )
-        }
-    }
+            .pressDim(interaction)
+            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s)
+            .semantics { role = Role.Button }
+            .testTag(testTag),
+    )
 }
 
 // ── Details card ────────────────────────────────────────────────────────
@@ -795,7 +765,7 @@ private fun TitleField(
 // ── The gate ────────────────────────────────────────────────────────────
 
 /**
- * What stops a post, said inline under the cover strip (founder,
+ * What stops a post, said inline under the cover row (founder,
  * 2026-09-05): a reel over five minutes offers "Post as a Video" — the
  * same video, cover and fields, as a long video — and a file over 500 MB
  * says so and offers nothing, because no kind can take it. Nothing is
@@ -848,8 +818,8 @@ internal fun gateMessage(gate: VideoGate): String = when (gate) {
 
 /**
  * Only a failure has anything to say here now: the upload
- * and the post itself happen after this surface has closed, on the Reels
- * tab's pending item. The pill's spinner covers the moment before hand-off.
+ * and the post itself happen after this surface has closed, on the
+ * pending tile. The pill's spinner covers the moment before hand-off.
  */
 @Composable
 private fun PhaseStatus(phase: Phase) {
@@ -909,16 +879,12 @@ private val AudienceOptions = listOf(
 
 // ── Metrics ─────────────────────────────────────────────────────────────
 
-private const val STRIP_SLOTS = 6
-private const val PORTRAIT = 9f / 16f
 private const val LANDSCAPE = 16f / 9f
-private const val PRESS_SCALE = 0.94f
+private const val PRESS_SCALE = 0.97f
 private const val PRESS_ALPHA = 0.6f
-private const val UNSELECTED_ALPHA = 0.55f
 private const val SWITCH_SCALE = 0.8f
 
 private val HAIRLINE = 1.dp
-private val RING_WIDTH = 2.dp
 private val PREVIEW_WIDTH = 96.dp
 private val PREVIEW_HEIGHT = 170.dp
 private val PREVIEW_GLYPH = 22.dp

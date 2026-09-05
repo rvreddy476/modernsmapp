@@ -11,13 +11,13 @@ import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.VideoFeedQuery
 import com.us.android.core.feed.data.VideoFeedRepository
+import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.hides
+import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.feature.tube.data.TubeQueue
-import com.us.android.feature.tube.ui.VideoThumb
-import com.us.android.feature.tube.ui.videoThumb
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow

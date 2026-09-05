@@ -17,6 +17,7 @@ dependencies {
     implementation(projects.core.network)
     implementation(projects.core.profile)
     implementation(projects.core.media)
+    implementation(projects.core.feed)
     // The publish transport PORT lives in the pure contract module; this
     // adapter implements it beside the DTO whose bytes it freezes.
     implementation(projects.core.creatorModel)

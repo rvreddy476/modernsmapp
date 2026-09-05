@@ -1,0 +1,574 @@
+package com.us.android.feature.profile.ui
+
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.paging.LoadState
+import androidx.paging.compose.LazyPagingItems
+import androidx.paging.compose.collectAsLazyPagingItems
+import coil3.compose.AsyncImage
+import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.data.VideoThumb
+import com.us.android.core.feed.ui.channel.CreateChannelSheet
+import com.us.android.core.media.publish.PublishRing
+import com.us.android.core.media.publish.ReelPublishState
+import com.us.android.core.media.publish.ring
+import com.us.android.core.media.publish.ringLabel
+import com.us.android.core.model.FeedItem
+import com.us.android.core.ui.UsEmptyState
+import com.us.android.core.ui.UsErrorState
+import com.us.android.core.ui.UsLoadingState
+import java.io.File
+
+/**
+ * The profile's media grid (2026-09-05): three glass tabs — Posts, Reels,
+ * Videos — over three columns of tiles, read through Paging. On the
+ * viewer's own profile the video they are posting sits FIRST on the Videos
+ * tab, its chosen cover under an ember ring: a sweep while the bytes go up,
+ * a spin while the server works, the real tile once it is published; a
+ * failure shows the tile dimmed, and a tap opens Retry / Discard (or
+ * "Create channel", when that is what the server asked for).
+ *
+ * Drawn as rows inside the profile's scrolling column rather than as a lazy
+ * grid of its own: a lazy grid cannot live inside a vertical scroll, and
+ * the rows still read their tiles through [LazyPagingItems], which is what
+ * asks for the next page as they are laid out.
+ */
+@Composable
+internal fun ProfileMediaGrid(
+    onOpenPost: ((postId: String, contentType: String) -> Unit)?,
+    modifier: Modifier = Modifier,
+    viewModel: ProfileGridViewModel = hiltViewModel(),
+) {
+    val tab by viewModel.tab.collectAsStateWithLifecycle()
+    val pending by viewModel.pending.collectAsStateWithLifecycle()
+    val reloads by viewModel.reloadVideos.collectAsStateWithLifecycle()
+    val posts = viewModel.posts.collectAsLazyPagingItems()
+    val reels = viewModel.reels.collectAsLazyPagingItems()
+    val longVideos = viewModel.longVideos.collectAsLazyPagingItems()
+    var failureSheet by rememberSaveable { mutableStateOf(false) }
+    var createChannel by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(reloads) { if (reloads > 0) longVideos.refresh() }
+
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+        GridTabs(selected = tab, onSelect = viewModel::select)
+        val items = when (tab) {
+            ProfileGridTab.POSTS -> posts
+            ProfileGridTab.REELS -> reels
+            ProfileGridTab.VIDEOS -> longVideos
+        }
+        val head = pending.takeIf { tab == ProfileGridTab.VIDEOS }
+        GridRows(
+            tab = tab,
+            items = items,
+            head = head,
+            thumbFor = viewModel::thumb,
+            onOpen = { item -> onOpenPost?.invoke(item.id, item.feedContentType) },
+            onPendingTap = { if (head?.failure != null) failureSheet = true },
+        )
+    }
+
+    val failure = pending?.failure
+    if (failureSheet && failure != null) {
+        PublishFailureSheet(
+            failure = failure,
+            onRetry = {
+                failureSheet = false
+                viewModel.retryPublish()
+            },
+            onDiscard = {
+                failureSheet = false
+                viewModel.discardPublish()
+            },
+            onCreateChannel = {
+                failureSheet = false
+                createChannel = true
+            },
+            onDismiss = { failureSheet = false },
+        )
+    }
+    if (createChannel) {
+        CreateChannelSheet(
+            onCreated = {
+                createChannel = false
+                viewModel.retryPublish()
+            },
+            onDismiss = { createChannel = false },
+        )
+    }
+}
+
+/** Three glass pills; the selected one is white with navy text — the app's selection rule. */
+@Composable
+private fun GridTabs(selected: ProfileGridTab, onSelect: (ProfileGridTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("profile_grid_tabs"),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        ProfileGridTab.entries.forEach { tab ->
+            val active = tab == selected
+            val shape = RoundedCornerShape(UsTheme.radii.full)
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .height(TAB_HEIGHT)
+                    .clip(shape)
+                    .background(if (active) Color.White else UsTheme.extended.glassBg)
+                    .border(HAIRLINE, if (active) Color.White else UsTheme.extended.glassBorder, shape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { onSelect(tab) },
+                    )
+                    .semantics {
+                        role = Role.Tab
+                        this.selected = active
+                    }
+                    .padding(horizontal = TAB_HORIZONTAL)
+                    .testTag("profile_grid_tab:${tab.name.lowercase()}"),
+            ) {
+                Text(
+                    text = tab.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (active) UsTheme.extended.brandNavy else UsTheme.extended.textPrimary,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The tiles in rows of three: the pending tile first when there is one,
+ * then the page's rows, then the list's own state — a loader, an error
+ * with Retry, or the empty message.
+ */
+@Composable
+private fun GridRows(
+    tab: ProfileGridTab,
+    items: LazyPagingItems<FeedItem>,
+    head: PendingVideoTile?,
+    thumbFor: (FeedItem) -> VideoThumb,
+    onOpen: (FeedItem) -> Unit,
+    onPendingTap: () -> Unit,
+) {
+    val slots = (if (head != null) 1 else 0) + items.itemCount
+    Column(verticalArrangement = Arrangement.spacedBy(GRID_GAP)) {
+        for (rowStart in 0 until slots step GRID_COLUMNS) {
+            Row(horizontalArrangement = Arrangement.spacedBy(GRID_GAP)) {
+                for (slot in rowStart until rowStart + GRID_COLUMNS) {
+                    val cell = Modifier
+                        .weight(1f)
+                        .aspectRatio(tileAspect(tab))
+                    when {
+                        slot >= slots -> Spacer(cell)
+                        head != null && slot == 0 -> PendingTile(tile = head, onClick = onPendingTap, modifier = cell)
+                        else -> PagedTile(
+                            item = items[if (head != null) slot - 1 else slot],
+                            thumbFor = thumbFor,
+                            onOpen = onOpen,
+                            modifier = cell,
+                        )
+                    }
+                }
+            }
+        }
+        GridState(tab = tab, items = items, hasHead = head != null)
+    }
+}
+
+/** A tile for a row Paging has loaded; a placeholder-sized gap while it has not. */
+@Composable
+private fun PagedTile(
+    item: FeedItem?,
+    thumbFor: (FeedItem) -> VideoThumb,
+    onOpen: (FeedItem) -> Unit,
+    modifier: Modifier,
+) {
+    if (item != null) {
+        MediaTile(item = item, thumb = thumbFor(item), onClick = { onOpen(item) }, modifier = modifier)
+    } else {
+        Spacer(modifier)
+    }
+}
+
+/** The list's own state under the rows: the first load, its failure, the empty message, the next page. */
+@Composable
+private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, hasHead: Boolean) {
+    val refresh = items.loadState.refresh
+    val count = items.itemCount
+    Column {
+        when {
+            refresh is LoadState.Loading && count == 0 -> UsLoadingState(
+                label = "Loading ${tab.label.lowercase()}",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(STATE_HEIGHT),
+            )
+            refresh is LoadState.Error && count == 0 -> UsErrorState(
+                message = "We couldn't load ${tab.label.lowercase()}.",
+                onRetry = items::retry,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(STATE_HEIGHT),
+            )
+            refresh is LoadState.NotLoading && count == 0 && !hasHead -> UsEmptyState(
+                title = "No ${tab.label.lowercase()} yet",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(STATE_HEIGHT)
+                    .testTag("profile_grid_empty"),
+            )
+            items.loadState.append is LoadState.Loading -> UsLoadingState(
+                label = "Loading more",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(APPEND_HEIGHT),
+            )
+            items.loadState.append is LoadState.Error -> UsSecondaryButton(
+                text = "Load more",
+                onClick = items::retry,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/** Square for posts, 3:4 for reels, 16:9 for videos — the shape the content has. */
+internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
+    ProfileGridTab.POSTS -> SQUARE
+    ProfileGridTab.REELS -> PORTRAIT_TILE
+    ProfileGridTab.VIDEOS -> LANDSCAPE
+}
+
+/** One post as a tile: its still (the cover for a video), a film glyph for the video kinds. */
+@Composable
+private fun MediaTile(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(UsTheme.radii.small)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(UsTheme.extended.bgCard)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics {
+                role = Role.Button
+                contentDescription = "Open ${item.title.ifBlank { item.text }.ifBlank { "post" }}"
+            }
+            .testTag("profile_tile:${item.id}"),
+    ) {
+        val url = thumb.url ?: item.media.firstOrNull()?.variants?.values?.firstOrNull()
+        if (url != null) {
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else if (item.text.isNotBlank()) {
+            Text(
+                text = item.text,
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textSecondary,
+                maxLines = TEXT_TILE_LINES,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(UsTheme.spacing.m),
+            )
+        }
+        if (item.feedContentType == ProfileGridTab.REELS.contentType ||
+            item.feedContentType == ProfileGridTab.VIDEOS.contentType
+        ) {
+            Icon(
+                imageVector = UsIcons.Play,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(UsTheme.spacing.s)
+                    .size(KIND_GLYPH),
+            )
+        }
+    }
+}
+
+/** The posting video: its cover, dimmed, with the ring in the middle; the reason under a stopped one. */
+@Composable
+private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(UsTheme.radii.small)
+    val failed = tile.failure != null
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(UsTheme.extended.bgCard)
+            .border(HAIRLINE, UsTheme.extended.glassBorder, shape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = failed,
+                onClick = onClick,
+            )
+            .semantics {
+                contentDescription = if (failed) {
+                    "Couldn't post ${tile.title}. Tap for options"
+                } else {
+                    tile.state.ringLabel()
+                }
+                if (failed) role = Role.Button
+            }
+            .testTag("profile_pending"),
+        contentAlignment = Alignment.Center,
+    ) {
+        tile.coverPath?.let { path ->
+            AsyncImage(
+                model = File(path),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = if (failed) FAILED_DIM else PENDING_DIM)),
+        )
+        if (failed) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = UsIcons.RotateCcw,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(FAILED_GLYPH),
+                )
+                Text(
+                    text = "Couldn't post",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    modifier = Modifier.padding(top = UsTheme.spacing.xs),
+                )
+            }
+        } else {
+            PublishRingView(ring = tile.state.ring(), modifier = Modifier.size(RING_SIZE))
+        }
+    }
+}
+
+/**
+ * The ember ring: an arc from 12 o'clock for the uploaded fraction, or a
+ * short arc that turns while nothing measurable is happening — the Reels
+ * avatar ring's drawing, on a dark plate so it reads over any cover.
+ */
+@Composable
+internal fun PublishRingView(ring: PublishRing, modifier: Modifier = Modifier) {
+    val played = UsTheme.extended.ctaGradient
+    val track = Color.White.copy(alpha = TRACK_ALPHA)
+    val spin = rememberInfiniteTransition(label = "publishSpin")
+    val angle by spin.animateFloat(
+        initialValue = 0f,
+        targetValue = FULL_SWEEP,
+        animationSpec = infiniteRepeatable(tween(SPIN_MILLIS, easing = LinearEasing), RepeatMode.Restart),
+        label = "publishAngle",
+    )
+    val sweep = when (ring) {
+        is PublishRing.Determinate -> FULL_SWEEP * ring.fraction
+        PublishRing.Indeterminate -> INDETERMINATE_SWEEP
+        PublishRing.None -> 0f
+    }
+    val rotation = if (ring is PublishRing.Indeterminate) angle else 0f
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = PLATE_ALPHA))
+            .rotate(rotation)
+            .drawBehind { drawRing(track, played, sweep) }
+            .testTag("profile_pending_ring"),
+    )
+}
+
+private fun DrawScope.drawRing(track: Color, played: Brush, sweep: Float) {
+    val stroke = RING_STROKE.toPx()
+    val inset = stroke / 2 + RING_INSET.toPx()
+    val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
+    drawArc(
+        color = track,
+        startAngle = START_ANGLE,
+        sweepAngle = FULL_SWEEP,
+        useCenter = false,
+        topLeft = Offset(inset, inset),
+        size = arcSize,
+        style = Stroke(width = stroke),
+    )
+    if (sweep > 0f) {
+        drawArc(
+            brush = played,
+            startAngle = START_ANGLE,
+            sweepAngle = sweep,
+            useCenter = false,
+            topLeft = Offset(inset, inset),
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
+    }
+}
+
+/** Why the post stopped, and what to do: Retry (or Create channel) and Discard. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PublishFailureSheet(
+    failure: ReelPublishState.Failed,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+    onCreateChannel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = UsTheme.extended.bgCardSolid,
+        contentColor = UsTheme.extended.textPrimary,
+        shape = RoundedCornerShape(topStart = SHEET_RADIUS, topEnd = SHEET_RADIUS),
+        scrimColor = Color.Black.copy(alpha = SCRIM_ALPHA),
+        modifier = Modifier.testTag("profile_pending_sheet"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .padding(bottom = UsTheme.spacing.xxl)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
+            Text(
+                text = "Couldn't post your video",
+                style = MaterialTheme.typography.titleLarge.copy(fontSize = SHEET_TITLE_SIZE),
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.textPrimary,
+            )
+            Text(
+                text = failure.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textSecondary,
+            )
+            Spacer(Modifier.height(UsTheme.spacing.s))
+            when {
+                failure.needsChannel -> UsSecondaryButton(
+                    text = "Create channel",
+                    onClick = onCreateChannel,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("profile_pending_create_channel"),
+                )
+                failure.retryable -> UsSecondaryButton(
+                    text = "Retry",
+                    onClick = onRetry,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("profile_pending_retry"),
+                )
+            }
+            UsSecondaryButton(
+                text = "Discard",
+                onClick = onDiscard,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("profile_pending_discard"),
+            )
+        }
+    }
+}
+
+private const val GRID_COLUMNS = 3
+private const val SQUARE = 1f
+private const val PORTRAIT_TILE = 3f / 4f
+private const val LANDSCAPE = 16f / 9f
+private const val TEXT_TILE_LINES = 4
+private const val PENDING_DIM = 0.35f
+private const val FAILED_DIM = 0.6f
+private const val TRACK_ALPHA = 0.25f
+private const val PLATE_ALPHA = 0.45f
+private const val START_ANGLE = -90f
+private const val FULL_SWEEP = 360f
+private const val INDETERMINATE_SWEEP = 100f
+private const val SPIN_MILLIS = 1_100
+private const val SCRIM_ALPHA = 0.55f
+private val HAIRLINE = 1.dp
+private val GRID_GAP = 3.dp
+private val TAB_HEIGHT = 34.dp
+private val TAB_HORIZONTAL = 14.dp
+private val STATE_HEIGHT = 180.dp
+private val APPEND_HEIGHT = 64.dp
+private val KIND_GLYPH = 16.dp
+private val FAILED_GLYPH = 22.dp
+private val RING_SIZE = 44.dp
+private val RING_STROKE = 3.dp
+private val RING_INSET = 4.dp
+private val SHEET_RADIUS = 28.dp
+private val SHEET_TITLE_SIZE = 20.sp

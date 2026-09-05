@@ -1,10 +1,11 @@
 package com.us.android.feature.tube.ui.subscriptions
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -16,6 +17,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.model.FeedItem
 import com.us.android.core.ui.UsEmptyState
@@ -24,15 +26,16 @@ import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.ui.TubeMoreHost
 import com.us.android.feature.tube.ui.TubePage
 import com.us.android.feature.tube.ui.TubeTab
-import com.us.android.feature.tube.ui.home.TubeListSkeleton
-import com.us.android.feature.tube.ui.home.VideoCard
+import com.us.android.feature.tube.ui.home.GRID_COLUMNS
+import com.us.android.feature.tube.ui.home.GridCard
+import com.us.android.feature.tube.ui.home.TubeGridSkeleton
 import com.us.android.feature.tube.ui.home.appendFooter
 import com.us.android.feature.tube.ui.rememberTubeMoreState
 
 /**
- * Subscriptions (Tube redesign, 2026-09-05): videos from the authors the
- * viewer follows, as full-width cards under Tube's header, over Tube's
- * bar. Empty says what to do about it.
+ * Subscriptions (Momentum look, 2026-09-05): videos from the channels the
+ * viewer follows, as the same two-column mosaic as home under the same
+ * chrome. Empty says what to do about it.
  */
 @Composable
 fun SubscriptionsScreen(
@@ -51,14 +54,16 @@ fun SubscriptionsScreen(
         selected = TubeTab.SUBSCRIPTIONS,
         onOpenNotifications = destinations.onOpenNotifications,
         onOpenSearch = destinations.onOpenSearch,
+        onOpenYou = { destinations.onOpenTab(TubeTab.YOU) },
         onBarAction = destinations::onBarAction,
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Box(modifier = Modifier.fillMaxSize()) {
             SubscriptionsBody(
                 items = items,
                 thumbFor = viewModel::thumb,
                 onOpen = open,
                 onMore = { item -> moreState.open(item, suggested = false) },
+                bottomPadding = padding,
             )
             TubeMoreHost(
                 state = moreState,
@@ -75,14 +80,15 @@ fun SubscriptionsScreen(
 @Composable
 private fun SubscriptionsBody(
     items: LazyPagingItems<FeedItem>,
-    thumbFor: (FeedItem) -> com.us.android.feature.tube.ui.VideoThumb,
+    thumbFor: (FeedItem) -> VideoThumb,
     onOpen: (FeedItem) -> Unit,
     onMore: (FeedItem) -> Unit,
+    bottomPadding: PaddingValues,
 ) {
     val refresh = items.loadState.refresh
     val empty = items.itemCount == 0
     when {
-        refresh is LoadState.Loading && empty -> TubeListSkeleton()
+        refresh is LoadState.Loading && empty -> TubeGridSkeleton()
 
         refresh is LoadState.Error && empty -> UsErrorState(
             message = "We couldn't load your subscriptions.",
@@ -91,7 +97,7 @@ private fun SubscriptionsBody(
 
         refresh is LoadState.NotLoading && empty -> UsEmptyState(
             title = "Follow creators to see their videos here",
-            detail = "Videos from the people you follow show up on this page as they post them.",
+            detail = "Videos from the channels you follow show up on this page as they post them.",
             modifier = Modifier.testTag("tube_subs_empty"),
         )
 
@@ -100,15 +106,23 @@ private fun SubscriptionsBody(
             onRefresh = items::refresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            LazyColumn(
+            LazyVerticalStaggeredGrid(
+                columns = StaggeredGridCells.Fixed(GRID_COLUMNS),
                 modifier = Modifier
                     .fillMaxSize()
                     .testTag("tube_subs_list"),
-                contentPadding = PaddingValues(vertical = UsTheme.spacing.s),
+                contentPadding = PaddingValues(
+                    start = UsTheme.spacing.pageHorizontal,
+                    end = UsTheme.spacing.pageHorizontal,
+                    top = UsTheme.spacing.l,
+                    bottom = bottomPadding.calculateBottomPadding() + UsTheme.spacing.xxl,
+                ),
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+                verticalItemSpacing = UsTheme.spacing.l,
             ) {
                 items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
                     val item = items[index] ?: return@items
-                    VideoCard(
+                    GridCard(
                         item = item,
                         thumb = thumbFor(item),
                         onClick = { onOpen(item) },

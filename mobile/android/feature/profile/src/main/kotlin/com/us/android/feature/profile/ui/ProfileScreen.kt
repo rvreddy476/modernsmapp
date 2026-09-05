@@ -136,6 +136,13 @@ data class ProfileDestinations(
      * profile keeps the titled bar with its back arrow.
      */
     val header: MomentumHeaderDestinations? = null,
+    /**
+     * A tile of the media grid was tapped (2026-09-05): `:app` decides
+     * that a `long_video` opens Tube's watch screen and anything else the
+     * post. Null leaves the tiles inert — a grid that cannot open anything
+     * is still worth looking at.
+     */
+    val onOpenPost: ((postId: String, contentType: String) -> Unit)? = null,
 )
 
 internal data class ProfileActions(
@@ -307,7 +314,11 @@ private fun LoadedProfile(
             ActionErrorBanner(message = error, onDismiss = actions.onDismissActionError)
         }
 
-        PostsPlaceholder(profile = profile, followStatus = state.relationship.followStatus)
+        if (!profile.isOwnProfile && profile.isPrivate && state.relationship.followStatus != FollowStatus.FOLLOWING) {
+            PrivatePlaceholder()
+        } else {
+            ProfileMediaGrid(onOpenPost = destinations.onOpenPost)
+        }
     }
 
     if (state.showCancelRequestConfirm) {
@@ -349,28 +360,17 @@ private fun ActionErrorBanner(message: String, onDismiss: () -> Unit) {
 }
 
 /**
- * The post grid ITSELF is not built here. `/v1/posts/by-author/:id` was not
- * part of the original verified capture, and inventing its list DTO is
- * exactly the failure this project keeps paying for. What IS decidable
- * without that contract is which EMPTY state belongs here: a private account
- * the viewer cannot see into reads "no posts" as a lie — there may be plenty,
- * just not to this viewer.
+ * A private account the viewer cannot see into: "no posts" would be a lie —
+ * there may be plenty, just not to this viewer — so the grid is not drawn
+ * and this says why. Everyone else gets [ProfileMediaGrid].
  */
 @Composable
-private fun PostsPlaceholder(profile: Profile, followStatus: FollowStatus) {
-    if (!profile.isOwnProfile && profile.isPrivate && followStatus != FollowStatus.FOLLOWING) {
-        UsEmptyState(
-            title = "This account is private",
-            detail = "Follow to see their posts.",
-            modifier = Modifier.fillMaxWidth(),
-        )
-    } else {
-        UsEmptyState(
-            title = "Posts coming soon",
-            detail = "This surface lands once the post list contract is captured.",
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+private fun PrivatePlaceholder() {
+    UsEmptyState(
+        title = "This account is private",
+        detail = "Follow to see their posts.",
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 /** "Cancel your follow request?" — the one relationship action that confirms before it acts. */
