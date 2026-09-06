@@ -271,7 +271,7 @@ func TestOfferDualWrite_EveryLifecycleTransitionMovesBothCopies(t *testing.T) {
 	}
 	newTitle := "Edited While Approved"
 	if err := f.store.PatchProduct(ctx, f.productID,
-		ProductPatch{Title: &newTitle, Revalidate: true}, nil); err != nil {
+		ProductPatch{Title: &newTitle, Revalidate: true}, nil, nil); err != nil {
 		t.Fatalf("patch: %v", err)
 	}
 	f.assertAgrees("after revalidation bounce")
@@ -284,7 +284,7 @@ func TestOfferDualWrite_EveryLifecycleTransitionMovesBothCopies(t *testing.T) {
 	// lifecycle at all: `condition` is on the patch allowlist and lives on
 	// both sides, so a sync predicated on the revalidation flag would miss it.
 	cond := "refurbished"
-	if err := f.store.PatchProduct(ctx, f.productID, ProductPatch{Condition: &cond}, nil); err != nil {
+	if err := f.store.PatchProduct(ctx, f.productID, ProductPatch{Condition: &cond}, nil, nil); err != nil {
 		t.Fatalf("patch condition: %v", err)
 	}
 	if got := f.offer().Condition; got != "refurbished" {

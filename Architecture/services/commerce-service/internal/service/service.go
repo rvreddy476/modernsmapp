@@ -350,6 +350,17 @@ type CreateProductInput struct {
 	// product. Incomplete is fine — see productwrite.go on why a create must
 	// not demand every required field.
 	Attributes []AttributeValueInput
+
+	// VariationAxes are the attributes this product varies on, in order.
+	// Empty for a product that does not vary, which is most of them, and
+	// which is what every caller written before migration 028 sends.
+	//
+	// Validated against the category's schema — an axis must be an attribute
+	// the category asks for AND be marked as a variant axis for it — and
+	// every variant must then carry exactly one value on every axis. See
+	// internal/service/variationaxes.go, and in particular why the values
+	// are codes rather than whatever the seller typed.
+	VariationAxes []VariationAxisInput
 }
 
 type CreateVariantInput struct {
@@ -371,6 +382,11 @@ type CreateVariantInput struct {
 	SellingPrice      float64
 	CostPrice         *float64
 	StockQty          int
+
+	// Options are this variant's values on the product's declared axes.
+	// Exactly one per axis, no more and no fewer — a variant that answers
+	// only half the matrix is not a distinct thing to sell.
+	Options []VariantOptionInput
 }
 
 func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*postgres.Product, error) {
@@ -405,6 +421,18 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 	// at once, keyed by code, so a form can put each message under its own
 	// control. Incompleteness is NOT checked: a draft may be unfinished.
 	attrSets, err := s.resolveAttributeValues(ctx, in.CategoryID, in.Attributes)
+	if err != nil {
+		return nil, err
+	}
+
+	// The matrix, checked before anything is written and against the same
+	// category form the answers were. A nil result is "this product does not
+	// vary", which is the answer for most listings and is not an error.
+	vv := make([]variationVariant, len(in.Variants))
+	for i, vi := range in.Variants {
+		vv[i] = variationVariant{Name: vi.SKU, Options: vi.Options}
+	}
+	variation, err := s.resolveVariation(ctx, in.CategoryID, in.VariationAxes, vv)
 	if err != nil {
 		return nil, err
 	}
@@ -480,7 +508,7 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 	// values are one unit. Either the whole listing exists or none of it
 	// does, and the inventory insert is a hard failure rather than a warning.
 	variants := make([]postgres.NewVariant, 0, len(in.Variants))
-	for _, vi := range in.Variants {
+	for idx, vi := range in.Variants {
 		v := &postgres.ProductVariant{
 			ProductID:    p.ID,
 			SKU:          vi.SKU,
@@ -500,14 +528,25 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 			CurrencyCode:        "INR",
 			Status:              "active",
 		}
-		variants = append(variants, postgres.NewVariant{Variant: v, StockQty: vi.StockQty})
+		nv := postgres.NewVariant{Variant: v, StockQty: vi.StockQty}
+		if variation != nil {
+			// Zipped back on by INDEX, which is safe because
+			// resolveVariation returns a slice parallel to the one it was
+			// given and refuses outright rather than returning a short one.
+			nv.Options = variation.PerVariant[idx]
+		}
+		variants = append(variants, nv)
 	}
 
-	if err := s.store.CreateProductAtomic(ctx, postgres.NewProduct{
+	np := postgres.NewProduct{
 		Product:    p,
 		Variants:   variants,
 		Attributes: attrSets,
-	}); err != nil {
+	}
+	if variation != nil {
+		np.Axes = variation.Axes
+	}
+	if err := s.store.CreateProductAtomic(ctx, np); err != nil {
 		return nil, err
 	}
 

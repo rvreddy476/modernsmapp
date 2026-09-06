@@ -153,6 +153,14 @@ var patchableProductFields = map[string]patchField{
 var patchControlKeys = map[string]bool{
 	"attributes": true,
 	"revalidate": true,
+	// The variation matrix, added in the step that gave a product declared
+	// axes. `variation_axes` is what the product varies on and `variants`
+	// carries each existing variant's value on each axis — they travel
+	// together and are only read when `variation_axes` is present, because a
+	// matrix change replaces the whole picture. See
+	// service.VariationPatchInput.
+	"variation_axes": true,
+	"variants":       true,
 }
 
 // notNullable are the NOT NULL columns, where a JSON null is a bad request
@@ -239,6 +247,36 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 			}
 		}
 	}
+	// The matrix is read only when `variation_axes` is present. `variants`
+	// on its own is not a matrix change — it is a client that sent half the
+	// pair — and silently treating it as one would replace the axes with
+	// nothing, which is the most destructive reading of an ambiguous body.
+	if raw, present := body["variation_axes"]; present {
+		v := &service.VariationPatchInput{}
+		if string(raw) != "null" {
+			if err := json.Unmarshal(raw, &v.Axes); err != nil {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+					"INVALID_BODY", "variation_axes could not be decoded: "+err.Error(), nil)
+				return
+			}
+		}
+		if vr, ok := body["variants"]; ok && string(vr) != "null" {
+			if err := json.Unmarshal(vr, &v.Variants); err != nil {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+					"INVALID_BODY", "variants could not be decoded: "+err.Error(), nil)
+				return
+			}
+		}
+		in.Variation = v
+	} else if _, orphan := body["variants"]; orphan {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_BODY",
+			`"variants" changes each variant's options, which only mean anything against the `+
+				`axes the product declares; send "variation_axes" alongside it (an empty array `+
+				`clears the matrix)`, nil)
+		return
+	}
+
 	if raw, present := body["revalidate"]; present {
 		if err := json.Unmarshal(raw, &in.AckRevalidation); err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
@@ -306,6 +344,34 @@ func writeProductWriteError(c *gin.Context, err error) {
 	if errors.As(err, &invalid) {
 		api.ErrorWithContext(ctx, w, http.StatusUnprocessableEntity, "ATTRIBUTE_VALUES_INVALID",
 			"one or more attribute values were refused", gin.H{"fields": invalid.Fields})
+		return
+	}
+
+	// The variation matrix, per problem, keyed by the variant's SKU and the
+	// axis code. 422 for the same reason the attribute errors are: the body
+	// parsed and every key was one this route accepts — what failed is the
+	// content, and a client branches on that to decide whether it sent
+	// nonsense or the seller picked something the catalogue will not take.
+	var badMatrix *service.VariationInvalidError
+	if errors.As(err, &badMatrix) {
+		api.ErrorWithContext(ctx, w, http.StatusUnprocessableEntity, "VARIATION_INVALID",
+			"the variation matrix was refused", gin.H{"problems": badMatrix.Problems})
+		return
+	}
+
+	// The two constraints the database holds regardless of what the
+	// validation pass thought. Reaching either means the two disagree, which
+	// is worth a specific message rather than a 500 — see
+	// postgres.ErrUndeclaredVariationAxis.
+	switch {
+	case errors.Is(err, postgres.ErrDuplicateVariantCombination):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "VARIANT_COMBINATION_TAKEN",
+			"this listing already has a variant for that combination of options; a shop may offer "+
+				"each combination once (another shop offering the same one is fine)", nil)
+		return
+	case errors.Is(err, postgres.ErrUndeclaredVariationAxis):
+		api.ErrorWithContext(ctx, w, http.StatusUnprocessableEntity, "VARIATION_INVALID",
+			postgres.ErrUndeclaredVariationAxis.Error(), nil)
 		return
 	}
 

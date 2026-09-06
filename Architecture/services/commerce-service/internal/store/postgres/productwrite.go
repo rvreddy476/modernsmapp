@@ -90,6 +90,16 @@ func asDuplicateSKU(err error, sku string) error {
 type NewVariant struct {
 	Variant  *ProductVariant
 	StockQty int
+
+	// Options are this variant's values on the product's declared axes, as
+	// CODES. Empty for a product that does not vary, which is most of them.
+	//
+	// Here rather than in a parallel slice for the same reason StockQty is:
+	// "this SKU, size L, colour blue" is one fact, and a parallel slice is
+	// how a reordering bug gives one variant another's combination — which,
+	// unlike a swapped stock count, is invisible until a buyer opens the
+	// parcel.
+	Options []VariantOption
 }
 
 // NewProduct is everything one create writes, as one value.
@@ -103,6 +113,12 @@ type NewProduct struct {
 	Product    *Product
 	Variants   []NewVariant
 	Attributes []AttributeValueSet
+
+	// Axes are what this product varies on, in order. They are written
+	// BEFORE the variants, and they have to be: a variant's options carry a
+	// composite foreign key to the axis rows, so a variant inserted first
+	// could not carry an option at all.
+	Axes []VariationAxis
 }
 
 // CreateProductAtomic writes the product, every variant, every variant's
@@ -127,6 +143,15 @@ func (s *Store) CreateProductAtomic(ctx context.Context, in NewProduct) error {
 	if err := insertProductTx(ctx, tx, in.Product); err != nil {
 		return fmt.Errorf("create product: %w", err)
 	}
+	// Axes before variants, because a variant's options reference them
+	// through a composite foreign key. See NewProduct.Axes.
+	for _, a := range in.Axes {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO product_variation_axes (product_id, definition_id, position)
+			VALUES ($1, $2, $3)`, in.Product.ID, a.DefinitionID, a.Position); err != nil {
+			return fmt.Errorf("declare variation axis: %w", asVariationConflict(err))
+		}
+	}
 	for _, nv := range in.Variants {
 		nv.Variant.ProductID = in.Product.ID
 		if err := insertVariantTx(ctx, tx, nv.Variant); err != nil {
@@ -134,6 +159,16 @@ func (s *Store) CreateProductAtomic(ctx context.Context, in NewProduct) error {
 		}
 		if err := upsertInventoryTx(ctx, tx, nv.Variant.ID, in.Product.SellerID, nv.StockQty); err != nil {
 			return fmt.Errorf("open inventory for variant %s: %w", nv.Variant.SKU, err)
+		}
+		// After the variant AND after linkVariantToOfferTx inside it: the
+		// `variation_key` the option trigger derives is UNIQUE per OFFER, so
+		// a variant whose offer_id was still NULL when the options landed
+		// would escape the uniqueness check entirely and sit in the
+		// catalogue as a second "Blue / M" nobody refused.
+		if len(nv.Options) > 0 {
+			if err := insertVariantOptionsTx(ctx, tx, nv.Variant.ID, in.Product.ID, nv.Options); err != nil {
+				return fmt.Errorf("set options for variant %s: %w", nv.Variant.SKU, err)
+			}
 		}
 	}
 	if len(in.Attributes) > 0 {
@@ -376,9 +411,15 @@ func nilIfEmpty(s string) any {
 //
 // `attrs` may be empty, in which case nothing in `product_attributes` is
 // touched — not even to rebuild the doc, which cannot have changed.
-func (s *Store) PatchProduct(ctx context.Context, id uuid.UUID, p ProductPatch, attrs []AttributeValueSet) error {
+//
+// `variation` may be nil, which means "this patch does not mention the
+// matrix" and is the case for every patch written before 028. A non-nil one
+// REPLACES the whole picture — see VariationUpdate for why a partial change
+// to a product's axes has no honest meaning.
+func (s *Store) PatchProduct(ctx context.Context, id uuid.UUID, p ProductPatch,
+	attrs []AttributeValueSet, variation *VariationUpdate) error {
 	sets, args := p.assignments()
-	if len(sets) == 0 && len(attrs) == 0 {
+	if len(sets) == 0 && len(attrs) == 0 && variation == nil {
 		return nil
 	}
 
@@ -411,6 +452,16 @@ func (s *Store) PatchProduct(ctx context.Context, id uuid.UUID, p ProductPatch, 
 	}
 	if len(attrs) > 0 {
 		if err := putAttributeValuesTx(ctx, tx, id, attrs); err != nil {
+			return err
+		}
+	}
+	// In the SAME transaction as the columns above, for the reason the
+	// method comment gives about the attribute half: a patch whose axes
+	// landed and whose variant options did not is a product declaring a
+	// matrix its variants do not fill, and the seller has no way to tell
+	// which half they are looking at.
+	if variation != nil {
+		if err := replaceVariationTx(ctx, tx, id, *variation); err != nil {
 			return err
 		}
 	}

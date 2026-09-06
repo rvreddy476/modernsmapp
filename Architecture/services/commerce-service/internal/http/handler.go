@@ -384,6 +384,17 @@ type createProductReq struct {
 	// seller would type placeholders into fourteen controls to get past it.
 	// The submit-for-review gate is where "is this finished?" is asked.
 	Attributes []service.AttributeValueInput `json:"attributes"`
+
+	// VariationAxes are the attributes this product varies on, in order —
+	// `[{"code":"size","position":1},{"code":"colour","position":2}]`.
+	// Absent or empty for a product that does not vary, which is what every
+	// client written before this field sent and what most listings are.
+	//
+	// When present, every variant must carry exactly one `options` entry per
+	// axis, and the VALUE must be a code the schema knows. Free text is
+	// refused; see internal/service/variationaxes.go for why that refusal is
+	// the whole point rather than an inconvenience.
+	VariationAxes []service.VariationAxisInput `json:"variation_axes"`
 }
 
 // createVariantReq accepts money in PAISE.
@@ -423,6 +434,14 @@ type createVariantReq struct {
 	CostPrice *float64 `json:"cost_price"`
 
 	StockQty int `json:"stock_qty"`
+
+	// Options are this variant's values on the product's declared axes —
+	// `[{"code":"size","value":"l"}]`. The legacy `option_N_name` /
+	// `option_N_value` pairs above are still accepted and still written, but
+	// they are free text and nothing relates one variant's slots to
+	// another's; a product that sends `variation_axes` should send these
+	// instead and let the derived columns be derived.
+	Options []service.VariantOptionInput `json:"options"`
 }
 
 // minorOrRupees resolves one money field, preferring paise.
@@ -484,6 +503,7 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 			SellingPriceMinor: minorOrRupees(v.SellingPriceMinor, v.SellingPrice),
 			CostPriceMinor:    costMinor(v),
 			StockQty:          v.StockQty,
+			Options:           v.Options,
 		}
 	}
 
@@ -517,6 +537,7 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		MetaDescription:     req.MetaDescription,
 		Variants:            variants,
 		Attributes:          req.Attributes,
+		VariationAxes:       req.VariationAxes,
 	})
 	if err != nil {
 		// The product-write mapper, not the generic one: an unknown category

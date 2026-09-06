@@ -303,6 +303,33 @@ type UpdateProductInput struct {
 	// added without someone deciding which one it is.
 	AttributesPresent bool
 	AckRevalidation   bool
+
+	// Variation is the product's matrix, COMPLETE, or nil for a patch that
+	// does not mention it. See VariationPatchInput.
+	Variation *VariationPatchInput
+}
+
+// VariationPatchInput replaces a product's whole variation matrix.
+//
+// Whole, not partial, and the reason is in postgres.VariationUpdate: axes are
+// a fact about the product and options are a fact about each variant, so
+// "add an axis" leaves every existing variant carrying no value on it, and
+// there is no honest way to fill that in — this service cannot know whether
+// the shirts already listed are the blue ones or the red ones.
+//
+// So a caller changing the matrix sends every variant with it. An empty
+// `Axes` with every variant carrying no options is how a product stops
+// varying: the axes go, their options cascade with them, and the trigger
+// clears the legacy columns it had been deriving.
+type VariationPatchInput struct {
+	Axes     []VariationAxisInput  `json:"variation_axes"`
+	Variants []VariantOptionsPatch `json:"variants"`
+}
+
+// VariantOptionsPatch is one existing variant's options.
+type VariantOptionsPatch struct {
+	VariantID uuid.UUID            `json:"variant_id"`
+	Options   []VariantOptionInput `json:"options"`
 }
 
 // UpdateProductResult reports what the patch did, including the part the
@@ -370,7 +397,7 @@ func plural(n int, one, many string) string {
 
 // reviewNeutralPatch reports whether a patch touches only fields no reviewer
 // looks at. See RevalidationRequiredError for the list and the argument.
-func substantiveFields(p postgres.ProductPatch, attrs int) []string {
+func substantiveFields(p postgres.ProductPatch, attrs int, variation bool) []string {
 	out := []string{}
 	add := func(name string, changed bool) {
 		if changed {
@@ -395,6 +422,12 @@ func substantiveFields(p postgres.ProductPatch, attrs int) []string {
 	add("return_policy_days", p.ReturnPolicyDays != nil)
 	add("hsn_code", p.HSNCode != nil)
 	add("attributes", attrs > 0)
+	// A reviewer read a listing that varied on two axes with six
+	// combinations. Changing which axes it varies on, or which combination
+	// each variant is, changes what was permitted just as squarely as
+	// rewriting the description does — and it is the edit that most rewards
+	// doing quietly, because the price and the stock hang off it.
+	add("variation_axes", variation)
 	return out
 }
 
@@ -453,9 +486,15 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 		return nil, err
 	}
 
+	// ── The matrix ──────────────────────────────────────────
+	variation, err := s.resolveVariationPatch(ctx, in.ProductID, targetCategory, in.Variation)
+	if err != nil {
+		return nil, err
+	}
+
 	patch := in.Fields
 	if needsRevalidation {
-		if changed := substantiveFields(patch, len(sets)); len(changed) > 0 {
+		if changed := substantiveFields(patch, len(sets), variation != nil); len(changed) > 0 {
 			if !in.AckRevalidation {
 				return nil, &RevalidationRequiredError{Fields: changed}
 			}
@@ -474,13 +513,13 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 		patch.SchemaVersion = &v
 	}
 
-	if !patch.TouchesAnyColumn() && len(sets) == 0 {
+	if !patch.TouchesAnyColumn() && len(sets) == 0 && variation == nil {
 		// Nothing to do is not an error — a client re-sending an unchanged
 		// form should get the product back, not a refusal.
 		return &UpdateProductResult{Product: product}, nil
 	}
 
-	if err := s.store.PatchProduct(ctx, in.ProductID, patch, sets); err != nil {
+	if err := s.store.PatchProduct(ctx, in.ProductID, patch, sets, variation); err != nil {
 		return nil, err
 	}
 
