@@ -45,6 +45,21 @@ ingress:
   # design (Commerce P0 LB-1), because its internal-key stamp would hand any
   # signed-in user payment authority. Razorpay authenticates itself with a
   # signature over the body, so no gateway identity is wanted here.
+  # The apex is where Razorpay's webhook is actually registered
+  # (https://cleestudio.com/v1/payments/webhook). DNS already points it at
+  # this tunnel, but with no ingress rule it fell through to the catch-all and
+  # every real callback was answered 404 — silently, because a PSP retries and
+  # then gives up. Same path scoping and same origin as api-dev below: the
+  # apex serves this ONE path and nothing else, so adding it here does not put
+  # the rest of the API on a second public hostname.
+  - hostname: cleestudio.com
+    path: ^/v1/payments/webhook$
+    service: http://localhost:8102
+
+  - hostname: www.cleestudio.com
+    path: ^/v1/payments/webhook$
+    service: http://localhost:8102
+
   - hostname: api-dev.cleestudio.com
     path: ^/v1/payments/webhook$
     service: http://localhost:8102
