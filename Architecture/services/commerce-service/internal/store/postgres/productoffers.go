@@ -9,12 +9,43 @@ package postgres
 // product creates its offer, and every path that changes a product's
 // lifecycle columns changes the offer's copy in the SAME transaction.
 //
-// NOTHING IN THIS FILE IS READ BY ANY ENDPOINT, and that is on purpose. The
-// readers move over in a later step, and they can only move safely once the
-// two copies have been shown to agree over the real estate. Until then the
-// legacy columns on `products` are the truth, the offer is a shadow, and
-// CheckProductOfferConsistency below is the instrument that decides whether
-// the shadow is trustworthy enough to promote.
+// ─── THE SHADOW HAS BEEN PROMOTED ───────────────────────────────────────
+//
+// This file used to say that nothing read `product_offers`. That stopped
+// being true in step 14: the buyer-facing reads — browse, home, the product
+// page, the category counts, the seller's catalogue, cart hydration, the
+// search documents — now resolve a listing's lifecycle AND its seller from
+// the offer row. See `productOfferJoin` in storefront.go for the join and the
+// argument for its shape.
+//
+// CheckProductOfferConsistency below was the instrument that decided the
+// shadow was trustworthy enough to promote. It reported the estate clean —
+// every product matched, nothing missing, nothing diverging — and that report
+// is what the flip was gated on.
+//
+// ─── WHY THE DUAL-WRITE IS STILL HERE ───────────────────────────────────
+//
+// The legacy columns on `products` are still written by every path that
+// writes them, and this file is why. That is not leftover scaffolding and it
+// must not be tidied away:
+//
+//	ROLLBACK. Rolling the service image back one deploy puts readers on
+//	`products` again. If the writes had stopped when the reads moved, every
+//	lifecycle change made in between would be invisible to the rolled-back
+//	image — an approval that un-approves itself, a withdrawn listing back on
+//	sale.
+//
+//	THE PHONE. It is frozen on the shipped contract, and the contract is
+//	served from these columns' values. They are the same values; that is the
+//	whole point, and it stays true only while both copies are written.
+//
+//	THE CHECKER. It compares the two copies. Stop writing one and the
+//	instrument that would tell you the other is wrong stops working, in the
+//	same change.
+//
+// So the order is: write both (027), prove they agree (the checker), move the
+// readers (this step), and only then — a deploy later, deliberately, with the
+// checker still clean — narrow the columns. Not before.
 //
 // ─── WHY THE SYNC COPIES RATHER THAN MIRRORS ────────────────────────────
 //
@@ -333,10 +364,12 @@ func derefOrNULL(s *string) string {
 
 // GetOfferForProduct returns one seller's offer on a product.
 //
-// Test-facing and diagnostic ONLY — no endpoint calls it, and none may until
-// the step that moves the readers. It exists so the dual-write's tests can
-// assert on the row they claim to have written without reaching past the
-// store into raw SQL.
+// Test-facing and diagnostic. The reader flip did NOT route any endpoint
+// through here: the buyer-facing reads take the offer as a JOIN inside the
+// query that was already being run, because a second round trip per product
+// to fetch a row the first query could have joined is how a grid becomes
+// N+1. This exists so the dual-write's tests can assert on the row they claim
+// to have written without reaching past the store into raw SQL.
 func (s *Store) GetOfferForProduct(ctx context.Context, productID, sellerID uuid.UUID) (*ProductOffer, error) {
 	o := &ProductOffer{}
 	err := s.db.QueryRow(ctx, `

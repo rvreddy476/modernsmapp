@@ -103,7 +103,8 @@ func (l ProductLifecycle) Visible() bool {
 func (s *Store) GetProductLifecycle(ctx context.Context, productID uuid.UUID) (*ProductLifecycle, error) {
 	var l ProductLifecycle
 	err := s.db.QueryRow(ctx,
-		`SELECT id, seller_id, status, approval_status FROM products WHERE id = $1`,
+		`SELECT p.id, po.seller_id, po.status, po.approval_status `+
+			productsLiveFrom+` WHERE p.id = $1`,
 		productID).Scan(&l.ProductID, &l.SellerID, &l.Status, &l.ApprovalStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProductNotFound
@@ -195,8 +196,8 @@ type SearchDoc struct {
 // rather than NULL, so a plain COALESCE finds a non-NULL zero on an
 // unmigrated row and would index a paid product as free.
 const searchDocColumns = `
-	p.id, p.seller_id, sl.store_name,
-	p.status, p.approval_status,
+	p.id, po.seller_id, sl.store_name,
+	po.status, po.approval_status,
 	p.title, p.description, p.short_description, p.brand_name, p.condition,
 	p.product_type, p.slug,
 	p.category_id, pc.name AS category_name,
@@ -214,7 +215,7 @@ const searchDocColumns = `
 	p.avg_rating, p.review_count, p.order_count, p.view_count,
 	p.attributes_doc,
 	p.search_keywords,
-	p.published_at, p.created_at, p.updated_at`
+	po.published_at, p.created_at, p.updated_at`
 
 // searchDocFrom supplies every alias searchDocColumns reads.
 //
@@ -223,8 +224,8 @@ const searchDocColumns = `
 // set min_price_minor puts a listing at the top of a cheapest-first sort
 // for an offer that no longer exists.
 const searchDocFrom = `
-	FROM products p
-	JOIN sellers sl ON sl.id = p.seller_id
+	` + productsLiveFrom + `
+	JOIN sellers sl ON sl.id = po.seller_id
 	LEFT JOIN product_categories pc ON pc.id = p.category_id
 	LEFT JOIN LATERAL (
 		SELECT MIN(COALESCE(NULLIF(v.selling_price_minor, 0), ROUND(v.selling_price*100)))::bigint AS min_price_minor,
@@ -367,7 +368,7 @@ func (s *Store) ListProductSearchDocs(
 func (s *Store) CountVisibleProducts(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM products p WHERE `+productSummaryLive).Scan(&n)
+		`SELECT COUNT(*) `+productsLiveFrom+` WHERE `+productSummaryLive).Scan(&n)
 	return n, err
 }
 

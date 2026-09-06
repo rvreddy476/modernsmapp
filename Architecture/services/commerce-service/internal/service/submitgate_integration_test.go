@@ -662,12 +662,23 @@ func TestSweeperFlagsANewlyRequiredFieldAndTheListingKeepsSelling(t *testing.T) 
 	}
 
 	// ── The seller fixes it on their next edit ───────────────
-	if _, err := f.svc.UpdateProduct(ctx, UpdateProductInput{
+	//
+	// `AckRevalidation` is left on deliberately, and it must make no
+	// difference. The compliance carve-out (see
+	// Service.editOnlyFillsOpenComplianceGaps) decides this edit is not
+	// substantive, so there is no cost to acknowledge — a listing that came
+	// down BECAUSE the seller acknowledged something that was not going to
+	// happen would be the same defect wearing a different hat.
+	fixed, err := f.svc.UpdateProduct(ctx, UpdateProductInput{
 		ActorUserID: f.userID, ProductID: p.ID,
 		Attributes:      []AttributeValueInput{{Code: f.isbnCode, Value: "9780143039655"}},
 		AckRevalidation: true,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("fixing the gap: %v", err)
+	}
+	if fixed.Revalidated {
+		t.Error("filling the gap sent the listing back for review")
 	}
 	still, err := f.store.OpenGapsForProduct(ctx, p.ID)
 	if err != nil {
@@ -675,6 +686,27 @@ func TestSweeperFlagsANewlyRequiredFieldAndTheListingKeepsSelling(t *testing.T) 
 	}
 	if len(still) != 0 {
 		t.Fatalf("the gap survived the edit that closed it: %+v", still)
+	}
+
+	// ── AND IT IS STILL SELLING, AFTERWARDS ──────────────────
+	//
+	// This is the assertion the whole decision rests on and it was the one
+	// missing: before the carve-out, the sweep left the listing up and the
+	// remedy took it down, so "the listing keeps selling" was true only until
+	// the seller did as they were told.
+	if !sellable() {
+		t.Fatal("the listing stopped being purchasable when its seller filled in the field " +
+			"the dashboard asked for. Decision 8 promises the listing keeps selling; a " +
+			"remedy that delists it is the same outage arriving one step later.")
+	}
+	if err := svcTestPool.QueryRow(ctx,
+		`SELECT status, approval_status, published_at::text FROM products WHERE id=$1`, p.ID,
+	).Scan(&status, &approval, &published); err != nil {
+		t.Fatalf("read lifecycle after the fix: %v", err)
+	}
+	if status != "active" || approval != "approved" || published == nil {
+		t.Fatalf("filling the gap moved the listing's lifecycle: status=%q approval=%q published=%v",
+			status, approval, published)
 	}
 }
 

@@ -105,12 +105,19 @@ func (s *Store) CartViewFor(ctx context.Context, cartID uuid.UUID) (*CartView, e
 		       COALESCE(NULLIF(ci.price_snapshot_minor, 0), ROUND(ci.price_snapshot * 100))::bigint,
 		       COALESCE(NULLIF(v.selling_price_minor, 0), ROUND(v.selling_price * 100))::bigint,
 		       COALESCE(i.total_qty - i.reserved_qty, 0),
-		       p.seller_id, COALESCE(s.store_name, ''),
-		       (p.status = 'active' AND p.approval_status = 'approved' AND v.status = 'active')
+		       po.seller_id, COALESCE(s.store_name, ''),
+		       -- Whether the line is still sellable, and which shop it is
+		       -- from, both come off the OFFER now — see productOfferJoin in
+		       -- storefront.go. The sellable flag here has to agree with what
+		       -- checkout will decide about the same line, and checkout
+		       -- decides it under a row lock on products; the two copies are
+		       -- dual-written in one transaction and the consistency checker
+		       -- is what says so.
+		       (` + productSummaryLive + ` AND v.status = 'active')
 		  FROM cart_items ci
 		  JOIN product_variants v ON v.id = ci.variant_id
-		  JOIN products p         ON p.id = v.product_id
-		  LEFT JOIN sellers s     ON s.id = p.seller_id
+		  JOIN products p         ON p.id = v.product_id` + productOfferJoin + `
+		  LEFT JOIN sellers s     ON s.id = po.seller_id
 		  LEFT JOIN inventory_items i ON i.variant_id = v.id
 		 WHERE ci.cart_id = $1
 		 ORDER BY ci.added_at`, cartID)

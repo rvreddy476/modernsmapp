@@ -180,12 +180,14 @@ func (m SKUMatch) TakenByAnother() bool { return m.Variant == nil && m.OwnerSell
 // question nobody asked — "which shop in the world used this string first" —
 // and hands that shop's variant to whoever is importing.
 //
-// A global `UNIQUE(sku)` currently hides most of the damage by making the
-// second shop's insert fail. That constraint is being widened to
-// `(offer_id, sku)`, which is correct — a seller-local string should be
-// unique per seller, not per planet — and the day it lands, an unscoped
-// matcher stops failing and starts overwriting. There is no ordering in
-// which the scoping can safely come second.
+// A global `UNIQUE(sku)` used to hide most of the damage by making the
+// second shop's insert fail. Migration 031 widened it to
+// `UNIQUE NULLS NOT DISTINCT (offer_id, sku)`, which is correct — a
+// seller-local string should be unique per seller, not per planet — and that
+// is exactly the day an unscoped matcher would have stopped failing and
+// started overwriting. There was no ordering in which the scoping could
+// safely have come second, and it did not: this scoping shipped in step 10,
+// the widening in step 14.
 //
 // ─── DETERMINISM ────────────────────────────────────────────────────────
 //

@@ -441,6 +441,122 @@ func substantiveFields(p postgres.ProductPatch, attrs int, variation bool) []str
 	return out
 }
 
+// ─── The compliance-gap carve-out ───────────────────────────────────────
+
+// editOnlyFillsOpenComplianceGaps reports whether this edit's ONLY
+// substantive change is filling in attributes that are currently open
+// compliance gaps on this product — in which case it keeps its approval
+// instead of going back for review.
+//
+// ─── THE CONTRADICTION THIS RESOLVES ────────────────────────────────────
+//
+// Decision 8: making a field required later must NEVER take live listings
+// down. A listing that predates the rule stays on sale; the sweeper raises a
+// gap, the seller's dashboard says "action needed", and the seller fills the
+// field in on their next edit. `SweepComplianceGaps` is written around that
+// promise and does not touch status, approval_status or published_at once.
+//
+// But filling that field is an attribute edit, and `substantiveFields` counts
+// any attribute write as substantive, and a substantive edit to an approved
+// listing is `RevalidationRequiredError`: apply it and go back to
+// `approval_status='submitted'`, `status='draft'`, `published_at=NULL`.
+//
+// So the only action the sweeper asks for is the one action that takes the
+// listing down — which is precisely what the sweeper exists to prevent. A
+// seller doing what the dashboard told them loses their sales until a
+// reviewer gets to them, and the rational response is to ignore the warning.
+// The mechanism defeats itself.
+//
+// ─── WHY THIS IS NOT A MODERATION BYPASS ────────────────────────────────
+//
+// The whole force of the revalidation rule is that an approved listing is
+// text a human read and permitted, and the seller must not be able to get
+// bland copy approved and then rewrite it. This door is narrow enough that
+// it cannot be used that way, for three reasons that all have to hold:
+//
+//  1. IT ONLY OPENS FOR ATTRIBUTES. If the request changes ANY other
+//     substantive field in the same breath — the title, the description, the
+//     images, the category, the variation matrix — `changed` has more than
+//     one entry and the carve-out is refused outright. There is no partial
+//     application: the whole request goes to review, exactly as now.
+//
+//  2. IT ONLY OPENS FOR ATTRIBUTES THAT ARE ALREADY OPEN GAPS. Every
+//     definition this write names has to be one the sweeper has ALREADY
+//     flagged on THIS product. One unflagged attribute in the set and the
+//     whole request goes to review. The seller does not choose which fields
+//     qualify; the compliance sweep did, from the category schema, before
+//     this request existed.
+//
+//  3. THE SELLER CANNOT OPEN THE DOOR THEMSELVES. The obvious attack is to
+//     manufacture a gap — blank a required field, get it flagged, then use
+//     the carve-out to write whatever you like into it. That does not work,
+//     and it does not work structurally rather than by luck: blanking the
+//     field is itself an attribute edit, on a definition that is NOT yet an
+//     open gap, so it fails (2) and goes to review. The door can only be
+//     opened by an operator making a field required, which is the case it
+//     exists for.
+//
+// ─── WHAT IS STILL EXPOSED, HONESTLY ────────────────────────────────────
+//
+// The VALUE written into a gap-filling attribute is not read by a human
+// before it goes live. For an enum, a measure or anything with a regex or a
+// length bound that is a small surface — the definition's own validation ran
+// before we got here, and a value that fails it is not stored at all. For a
+// newly-required FREE-TEXT attribute it is a real one: a seller could put a
+// sentence of marketing into it without review. The control is the operator's
+// choice of type when they make a field required, and the sweeper's
+// out_of_range arm, which re-flags a value the rules stop accepting. This is
+// a narrower exposure than the alternative, which is that the compliance
+// mechanism does not work at all.
+//
+// ─── FAILING CLOSED ─────────────────────────────────────────────────────
+//
+// A gap read that errors denies the carve-out rather than failing the
+// request. Denying leaves the seller exactly where they are today — a
+// RevalidationRequiredError they can acknowledge — whereas failing would take
+// a working edit away over a bookkeeping table. It logs, because a carve-out
+// that silently stops applying is a promise that silently stops being kept.
+func (s *Service) editOnlyFillsOpenComplianceGaps(
+	ctx context.Context, productID uuid.UUID,
+	changed []string, sets []postgres.AttributeValueSet,
+) bool {
+	// (1) Attributes, and nothing else substantive. Non-substantive fields —
+	// meta_title, the dimensions, tax_class_id — are not in `changed` at all
+	// and never cost an approval, so a request carrying those alongside is
+	// still eligible; that is not a widening, it is the existing rule.
+	if len(changed) != 1 || changed[0] != "attributes" || len(sets) == 0 {
+		return false
+	}
+
+	gaps, err := s.store.OpenGapsForProduct(ctx, productID)
+	if err != nil {
+		slog.WarnContext(ctx, "commerce: could not read compliance gaps; treating a "+
+			"gap-filling edit as substantive", "product_id", productID, "error", err)
+		return false
+	}
+
+	// Matched on definition_id, not on the code. The code is the client-facing
+	// string and an operator may re-letter it; the definition is the thing the
+	// gap and the value both actually point at.
+	open := make(map[uuid.UUID]bool, len(gaps))
+	for _, g := range gaps {
+		if g.DefinitionID != nil {
+			open[*g.DefinitionID] = true
+		}
+	}
+
+	// (2) EVERY definition named, not merely one of them. `sets` is the set of
+	// definitions this write replaces the values of, and an attribute the
+	// sweeper has not flagged travelling alongside one it has is exactly the
+	// smuggling this has to refuse.
+	for _, set := range sets {
+		if !open[set.DefinitionID] {
+			return false
+		}
+	}
+	return true
+}
+
 // UpdateProduct patches a product the caller owns.
 //
 // Three gates, in this order, and the order is the point: ownership before
@@ -505,10 +621,16 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 	patch := in.Fields
 	if needsRevalidation {
 		if changed := substantiveFields(patch, len(sets), variation != nil); len(changed) > 0 {
-			if !in.AckRevalidation {
+			if s.editOnlyFillsOpenComplianceGaps(ctx, in.ProductID, changed, sets) {
+				// The carve-out. The edit is not substantive after all, so
+				// AckRevalidation is moot here in exactly the way it is moot
+				// for a meta_title-only edit: there is nothing to acknowledge.
+				// See editOnlyFillsOpenComplianceGaps for the argument.
+			} else if !in.AckRevalidation {
 				return nil, &RevalidationRequiredError{Fields: changed}
+			} else {
+				patch.Revalidate = true
 			}
-			patch.Revalidate = true
 		}
 	}
 

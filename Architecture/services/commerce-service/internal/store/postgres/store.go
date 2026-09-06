@@ -170,12 +170,23 @@ func (s *Store) CreateProduct(ctx context.Context, p *Product) error {
 func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, error) {
 	var p Product
 	err := s.db.QueryRow(ctx, `
-		SELECT id,seller_id,category_id,brand_id,tax_class_id,title,short_title,slug,description,
-		  short_description,brand_name,manufacturer_name,product_type,condition,sku_root,status,visibility,approval_status,
-		  rejection_reason,primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
+		SELECT p.id,
+		  -- The five columns the offer is now the authority for. `+"`condition`"+` and
+		  -- `+"`rejection_reason`"+` deliberately stay on `+"`products`"+`: the consistency
+		  -- checker asserts these five and NOT those two, and says why —
+		  -- rejection_reason is free text an operator may have edited on one
+		  -- side, and condition becomes a genuinely per-offer fact the moment
+		  -- a second shop lists the same item. Moving a read the checker does
+		  -- not cover would be moving it on faith.
+		  po.seller_id,
+		  p.category_id,brand_id,tax_class_id,title,short_title,slug,description,
+		  short_description,brand_name,manufacturer_name,product_type,p.condition,sku_root,
+		  po.status,po.visibility,po.approval_status,
+		  p.rejection_reason,primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
 		  country_of_origin,warranty_info,return_policy_type,return_policy_days,hsn_code,search_keywords,
 		  meta_title,meta_description,
-		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at
+		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,
+		  p.created_at,p.updated_at,po.published_at
 		  -- A real column since migration 026, not a per-row dig through
 		  -- product_attributes.
 		  ,source_image_url
@@ -184,14 +195,16 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		  -- show it: a listing stamped with an older version is one whose
 		  -- answers were checked against bounds that have since moved.
 		  ,schema_version
-		  ,(SELECT store_name FROM sellers WHERE id=products.seller_id)
-		  ,(SELECT name FROM product_categories WHERE id=products.category_id)
+		  -- The shop's name comes from the OFFER's seller, for the same
+		  -- reason po.seller_id above does.
+		  ,(SELECT store_name FROM sellers WHERE id=po.seller_id)
+		  ,(SELECT name FROM product_categories WHERE id=p.category_id)
 		  -- The gallery cover, so a detail page whose seller used the gallery
 		  -- (and therefore left primary_image_media_id NULL) still hydrates
 		  -- to a real image instead of a placeholder.
-		  ,(SELECT media_id FROM product_media WHERE product_id=products.id AND media_type='image'
+		  ,(SELECT media_id FROM product_media WHERE product_id=p.id AND media_type='image'
 		     ORDER BY sort_order ASC, created_at ASC LIMIT 1)
-		FROM products WHERE id=$1`, id).Scan(
+		`+productsLiveFrom+` WHERE p.id=$1`, id).Scan(
 		&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.TaxClassID,
 		&p.Title, &p.ShortTitle, &p.Slug, &p.Description, &p.ShortDescription,
 		&p.BrandName, &p.ManufacturerName,
@@ -356,17 +369,20 @@ func (s *Store) GetProductAttributes(ctx context.Context, productID uuid.UUID) (
 // (`status='active' AND approval_status='approved'`), so a product
 // cannot be visible on a storefront while being invisible in search.
 func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, status string, publicOnly bool, limit, offset int) ([]*Product, int, error) {
-	where := "WHERE p.seller_id=$1"
+	// Whose catalogue this is, and what state each listing is in, both come
+	// off the offer now — see productOfferJoin. `?status=` filters the
+	// seller's own switch, which is an offer column too, so it moves with it.
+	where := "WHERE po.seller_id=$1"
 	args := []any{sellerID}
 	if publicOnly {
 		where += " AND " + productSummaryLive
 	}
 	if status != "" {
-		where += fmt.Sprintf(" AND p.status=$%d", len(args)+1)
+		where += fmt.Sprintf(" AND po.status=$%d", len(args)+1)
 		args = append(args, status)
 	}
 	var total int
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products p "+where, args...).Scan(&total)
+	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) "+productsLiveFrom+" "+where, args...).Scan(&total)
 
 	args = append(args, limit, offset)
 	// The shared summary projection, same as the two browse surfaces.
@@ -430,7 +446,7 @@ func productSearchCondition(param int) string {
 		COALESCE(p.brand_name, '') ILIKE ` + placeholder + ` OR
 		COALESCE(array_to_string(p.search_keywords, ' '), '') ILIKE ` + placeholder + ` OR
 		EXISTS (SELECT 1 FROM product_categories pc WHERE pc.id=p.category_id AND (pc.name ILIKE ` + placeholder + ` OR pc.slug ILIKE ` + placeholder + `)) OR
-		EXISTS (SELECT 1 FROM sellers ss WHERE ss.id=p.seller_id AND (ss.store_name ILIKE ` + placeholder + ` OR COALESCE(ss.brand_name, '') ILIKE ` + placeholder + `)) OR
+		EXISTS (SELECT 1 FROM sellers ss WHERE ss.id=po.seller_id AND (ss.store_name ILIKE ` + placeholder + ` OR COALESCE(ss.brand_name, '') ILIKE ` + placeholder + `)) OR
 		EXISTS (SELECT 1 FROM product_variants psv WHERE psv.product_id=p.id AND (psv.sku ILIKE ` + placeholder + ` OR COALESCE(psv.barcode, '') ILIKE ` + placeholder + `))
 	)`
 }
@@ -445,7 +461,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
+	conds := []string{productSummaryLive}
 	args := []any{}
 	idx := 1
 	if f.CategoryID != nil {
@@ -454,7 +470,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 		idx++
 	}
 	if f.SellerID != nil {
-		conds = append(conds, fmt.Sprintf("p.seller_id = $%d", idx))
+		conds = append(conds, fmt.Sprintf("po.seller_id = $%d", idx))
 		args = append(args, *f.SellerID)
 		idx++
 	}
@@ -548,7 +564,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 // paused, archived. approval_status: draft, submitted, under_review,
 // approved, rejected, hidden, archived. We surface active+approved.
 func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*Product, int, error) {
-	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
+	conds := []string{productSummaryLive}
 	args := []any{}
 	idx := 1
 	if categoryID != nil {
@@ -564,7 +580,7 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 	where := "WHERE " + strings.Join(conds, " AND ")
 
 	var total int
-	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products p "+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) "+productsLiveFrom+" "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 

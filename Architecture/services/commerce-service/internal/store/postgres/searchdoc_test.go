@@ -8,7 +8,10 @@ package postgres
 // can actually reach, and the reason each is or is not visible is the
 // reason a buyer would or would not see the listing.
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestProductLifecycleVisible(t *testing.T) {
 	cases := []struct {
@@ -57,11 +60,37 @@ func TestProductLifecycleVisible(t *testing.T) {
 // The Go rule and the SQL rule must be the same rule. If someone widens one
 // they have to widen the other, and this is the line that says so.
 func TestVisibilityRuleMatchesTheStorefrontPredicate(t *testing.T) {
-	const want = `p.status = 'active' AND p.approval_status = 'approved'`
+	// Read off `po` — the seller's OFFER — not off `products`. The reader
+	// flip moved the two lifecycle columns and the seller behind them onto
+	// `product_offers`; the values are the same, the vocabulary is the same,
+	// and only the table changed. The legacy columns are still WRITTEN, so a
+	// rollback puts `p.` back here and nothing else has to move.
+	const want = `po.status = 'active' AND po.approval_status = 'approved'`
 	if productSummaryLive != want {
 		t.Fatalf("productSummaryLive changed to %q.\n"+
 			"ProductLifecycle.Visible() in searchdoc.go encodes the same rule in Go and must "+
 			"move with it — otherwise the search index and the storefront disagree about which "+
 			"listings a buyer can see.", productSummaryLive)
+	}
+}
+
+// Every query that applies productSummaryLive must have the offer join in
+// scope, or it fails at the database with "missing FROM-clause entry for
+// table po" — at runtime, on a buyer's request, not at compile time.
+//
+// The two FROM fragments are the only sanctioned way to get it, so this
+// asserts they carry it. A new read surface that hand-rolls its own FROM and
+// then appends the predicate is the mistake this cannot catch, and the reason
+// the join is a constant rather than nine copies of one line.
+func TestTheLiveFromClausesCarryTheOfferJoin(t *testing.T) {
+	for name, from := range map[string]string{
+		"productsLiveFrom":   productsLiveFrom,
+		"productSummaryFrom": productSummaryFrom,
+		"searchDocFrom":      searchDocFrom,
+	} {
+		if !strings.Contains(from, "JOIN product_offers po ON po.product_id = p.id") {
+			t.Errorf("%s does not join product_offers, but productSummaryLive reads po.*:\n%s",
+				name, from)
+		}
 	}
 }

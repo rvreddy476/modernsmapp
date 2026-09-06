@@ -30,13 +30,63 @@ import (
 
 // ─── The one product-summary projection ─────────────────────────────────
 
+// ─── Where a listing's lifecycle comes from ─────────────────────────────
+//
+// Since migration 027 the seller's side of a listing — who is selling it,
+// whether it is switched on, whether moderation approved it, when it was
+// published — lives in `product_offers`, not in the columns of the same name
+// on `products`. The write paths have dual-written both copies since then and
+// CheckProductOfferConsistency has reported them identical over the whole
+// estate; THIS is the step that makes the offer the copy buyers are served
+// from.
+//
+// The legacy columns are still written and are not dropped: rollback has to
+// stay available for at least one deploy, and the phone is frozen on the
+// shipped contract. They are simply no longer READ by a buyer-facing surface.
+//
+// ─── WHY THE JOIN IS ON product_id ALONE ────────────────────────────────
+//
+// Not on (product_id, seller_id). Joining on the seller would make the
+// PRODUCT row the authority on who is selling, and then reading the seller
+// back off the offer would be theatre — the answer would have come from
+// `products` either way. The point of the split is that the offer says who
+// is selling, so the offer is what is joined and `po.seller_id` is what is
+// selected.
+//
+// That is safe today for a reason that is checked rather than assumed:
+// `product_offers` is UNIQUE on (product_id, seller_id), and the checker
+// reports zero rows where an offer's seller differs from its product's — so
+// there is exactly one offer per product and the join is 1:1. When a second
+// shop lists an existing catalogue item, this join starts returning one row
+// per OFFER, which is what a marketplace grid should show; picking one of
+// them for a product page is the buy-box step, not this one.
+//
+// ─── AND WHY IT IS AN INNER JOIN ────────────────────────────────────────
+//
+// A LEFT JOIN with a COALESCE back onto the legacy columns would look
+// safer and would be worse. It would leave the read half-moved — served from
+// the offer when there is one and from `products` when there is not — so a
+// dual-write that silently stopped working would go on serving correct
+// answers from the fallback and nothing would ever fail. The inner join says
+// what is actually true: a product with no offer is not something anybody is
+// offering to sell. `insertOfferForProductTx` runs inside `insertProductTx`,
+// which is the only INSERT into `products` in this package, and the checker
+// is the standing evidence that no row escaped it.
+const productOfferJoin = `
+	JOIN product_offers po ON po.product_id = p.id`
+
+// productsLiveFrom is the FROM clause for the bare COUNT(*) reads that apply
+// productSummaryLive without needing the rest of the summary projection.
+const productsLiveFrom = `FROM products p` + productOfferJoin
+
 // productSummaryColumns is the SELECT list every product-summary read uses.
 //
-// `p` is products, `sl` sellers, `pc` product_categories, `v` the cheapest
-// active variant and `s` the stock roll-up — all supplied by
-// productSummaryFrom, which must always accompany this list.
+// `p` is products, `po` the seller's offer, `sl` sellers, `pc`
+// product_categories, `v` the cheapest active variant and `s` the stock
+// roll-up — all supplied by productSummaryFrom, which must always accompany
+// this list.
 const productSummaryColumns = `
-	p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
+	p.id, po.seller_id, p.category_id, p.title, p.slug, po.status, po.approval_status,
 	p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
 	p.primary_image_media_id,
 	-- Migration 026 gave this a real column. It used to be a correlated
@@ -64,8 +114,8 @@ const productSummaryColumns = `
 // NULL, so a plain COALESCE finds a non-NULL zero on an unmigrated row and
 // advertises a paid product as free.
 const productSummaryFrom = `
-	FROM products p
-	JOIN sellers sl ON sl.id = p.seller_id
+	` + productsLiveFrom + `
+	JOIN sellers sl ON sl.id = po.seller_id
 	LEFT JOIN product_categories pc ON pc.id = p.category_id
 	LEFT JOIN LATERAL (
 		SELECT id, selling_price AS min_selling_price, mrp AS min_mrp,
@@ -85,7 +135,11 @@ const productSummaryFrom = `
 
 // productSummaryLive is the shopper-facing visibility rule. A surface that
 // forgets it shows drafts and moderation rejections to buyers.
-const productSummaryLive = `p.status = 'active' AND p.approval_status = 'approved'`
+//
+// Read off the OFFER since the reader flip — see productOfferJoin. Every
+// query using it must have that join in scope; `productsLiveFrom` and
+// `productSummaryFrom` both carry it.
+const productSummaryLive = `po.status = 'active' AND po.approval_status = 'approved'`
 
 // scanProductSummary reads one row of productSummaryColumns, in order.
 func scanProductSummary(rows pgx.Rows) (*Product, error) {
@@ -409,12 +463,21 @@ func (s *Store) ListCategoryCards(ctx context.Context) ([]*CategoryCard, error) 
 		       COALESCE(n.cnt, 0)                           AS product_count
 		FROM product_categories c
 		LEFT JOIN LATERAL (
-			SELECT COUNT(*)::int AS cnt FROM products p
+			SELECT COUNT(*)::int AS cnt `+productsLiveFrom+`
 			WHERE p.category_id IN (SELECT node_id FROM subtree WHERE root_id = c.id)
 			  AND `+productSummaryLive+`
 		) n ON true
 		WHERE c.is_active = TRUE AND c.parent_id IS NULL
-		ORDER BY c.display_order, c.name`)
+		-- c.id is a TIEBREAK, not a sort anybody asked for. Without it the
+		-- key is (display_order, name), which is not unique — this database
+		-- holds several active roots sharing both — and the order among tied
+		-- rows is then whatever the plan happens to emit. Moving the count
+		-- subquery onto product_offers changed that plan and reshuffled the
+		-- category strip, which is how this was found; an ANALYZE would have
+		-- done the same thing on any Tuesday, silently. The rows and the
+		-- counts are identical either way. This makes the order a property of
+		-- the query rather than of the planner.
+		ORDER BY c.display_order, c.name, c.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +573,7 @@ func (s *Store) NewArrivalProducts(ctx context.Context, limit int) ([]*Product, 
 		SELECT `+productSummaryColumns+`
 		`+productSummaryFrom+`
 		WHERE `+productSummaryLive+`
-		ORDER BY COALESCE(p.published_at, p.created_at) DESC, p.id DESC
+		ORDER BY COALESCE(po.published_at, p.created_at) DESC, p.id DESC
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -665,7 +728,7 @@ func (s *Store) VisibleProductMediaIDs(ctx context.Context, viewerID uuid.UUID, 
 	rows, err := s.db.Query(ctx, `
 		WITH asked(media_id) AS (SELECT unnest($1::uuid[])),
 		referenced AS (
-			SELECT a.media_id, p.status, p.approval_status, sl.user_id AS seller_user_id
+			SELECT a.media_id, po.status, po.approval_status, sl.user_id AS seller_user_id
 			FROM asked a
 			JOIN products p ON (
 				    p.primary_image_media_id = a.media_id
@@ -673,8 +736,8 @@ func (s *Store) VisibleProductMediaIDs(ctx context.Context, viewerID uuid.UUID, 
 				             WHERE pm.product_id = p.id AND pm.media_id = a.media_id)
 				 OR EXISTS (SELECT 1 FROM product_variants pv
 				             WHERE pv.product_id = p.id AND pv.image_media_id = a.media_id)
-			)
-			JOIN sellers sl ON sl.id = p.seller_id
+			)`+productOfferJoin+`
+			JOIN sellers sl ON sl.id = po.seller_id
 		)
 		SELECT DISTINCT media_id FROM referenced
 		WHERE (status = 'active' AND approval_status = 'approved')

@@ -456,18 +456,21 @@ type DashboardStats struct {
 func (s *Store) GetDashboardStats(ctx context.Context, sellerID uuid.UUID) (*DashboardStats, error) {
 	stats := &DashboardStats{}
 
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1`, sellerID).Scan(&stats.TotalProducts)
+	// Every one of these counts "this shop's listings, in this state", and
+	// both halves of that sentence are offer facts since migration 027 — see
+	// productOfferJoin in storefront.go.
+	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) `+productsLiveFrom+` WHERE po.seller_id=$1`, sellerID).Scan(&stats.TotalProducts)
 	// 'approved' is the sale-eligible value (see ApproveProductByAdmin). This
 	// counted 'live', so after the vocabulary fix it would have reported zero
 	// live products to every seller whose catalogue was in fact on sale.
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1 AND approval_status='approved'`, sellerID).Scan(&stats.LiveProducts)
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1 AND approval_status='draft'`, sellerID).Scan(&stats.DraftProducts)
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE seller_id=$1 AND approval_status IN ('submitted','under_review')`, sellerID).Scan(&stats.PendingProducts)
+	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) `+productsLiveFrom+` WHERE po.seller_id=$1 AND po.approval_status='approved'`, sellerID).Scan(&stats.LiveProducts)
+	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) `+productsLiveFrom+` WHERE po.seller_id=$1 AND po.approval_status='draft'`, sellerID).Scan(&stats.DraftProducts)
+	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) `+productsLiveFrom+` WHERE po.seller_id=$1 AND po.approval_status IN ('submitted','under_review')`, sellerID).Scan(&stats.PendingProducts)
 	_ = s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM inventory_items i
 		JOIN product_variants v ON v.id = i.variant_id
-		JOIN products p ON p.id = v.product_id
-		WHERE p.seller_id=$1 AND (i.total_qty - i.reserved_qty) <= i.low_stock_alert`, sellerID).Scan(&stats.LowStockItems)
+		JOIN products p ON p.id = v.product_id`+productOfferJoin+`
+		WHERE po.seller_id=$1 AND (i.total_qty - i.reserved_qty) <= i.low_stock_alert`, sellerID).Scan(&stats.LowStockItems)
 	_ = s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM orders o
 		JOIN order_items oi ON oi.order_id = o.id

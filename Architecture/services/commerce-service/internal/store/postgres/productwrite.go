@@ -55,13 +55,31 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// ErrDuplicateSKU is returned when a create names a SKU that already exists.
+// ErrDuplicateSKU is returned when a create names a SKU this listing already
+// uses.
 //
-// `product_variants.sku` is globally UNIQUE, so this is the single most likely
-// way a real create fails halfway — a seller pasting a code they have already
-// used. Before the atomic create it produced a half-built listing AND an
-// unmapped 500, so the seller was told the service was broken rather than that
-// their SKU was taken.
+// This is the single most likely way a real create fails halfway — a seller
+// pasting a code they have already used. Before the atomic create it produced
+// a half-built listing AND an unmapped 500, so the seller was told the service
+// was broken rather than that their SKU was taken.
+//
+// The GRAIN of "already in use" changed in migration 031, and it is worth
+// being exact about, because the obvious reading is wrong. The rule was
+// `UNIQUE(sku)` — global across the catalogue, so a seller could be refused a
+// code because a shop they have never heard of used it first, a refusal with
+// no honest explanation. It is now
+// `UNIQUE NULLS NOT DISTINCT (offer_id, sku)`, and an offer is ONE SHOP'S
+// LISTING OF ONE ITEM. So the rule is per LISTING, not per shop and not per
+// catalogue:
+//
+//	two shops, same code                 allowed. This is the point.
+//	one shop, two listings, same code    allowed. Wider than the case above
+//	                                     needed; see the migration.
+//	one listing, two variants, same code REFUSED, and this is that error.
+//
+// Which means this message is now only true of the third row. It is left as
+// it is because it is what the seller filling in a variant form needs to
+// read, and the form they are filling in is one listing.
 var ErrDuplicateSKU = errors.New("commerce: that SKU is already in use")
 
 // asDuplicateSKU recognises the unique violation on the SKU index.
@@ -70,6 +88,12 @@ var ErrDuplicateSKU = errors.New("commerce: that SKU is already in use")
 // indexes sit on this write path (the product slug, the typed-attribute
 // index), and reporting any of them as "your SKU is taken" would send the
 // seller to change the one field that was fine.
+//
+// The substring is "sku", not the constraint's full name, and that is what
+// carried this through 031: the index was renamed from
+// `product_variants_sku_key` to `product_variants_offer_sku_key`, and a
+// matcher pinned to the old full name would have started reporting a
+// duplicate SKU as a 500 with nothing failing in any test.
 func asDuplicateSKU(err error, sku string) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" &&

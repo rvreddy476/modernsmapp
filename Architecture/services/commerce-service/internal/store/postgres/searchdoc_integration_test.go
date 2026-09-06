@@ -231,7 +231,7 @@ func TestListProductSearchDocsWalksTheCatalogueExactlyOnce(t *testing.T) {
 	liveIDs := func() map[uuid.UUID]struct{} {
 		t.Helper()
 		rows, err := testPool.Query(ctx,
-			`SELECT p.id FROM products p WHERE `+productSummaryLive)
+			`SELECT p.id `+productsLiveFrom+` WHERE `+productSummaryLive)
 		if err != nil {
 			t.Fatalf("live ids: %v", err)
 		}

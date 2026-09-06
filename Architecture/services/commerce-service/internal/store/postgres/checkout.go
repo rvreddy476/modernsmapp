@@ -755,6 +755,41 @@ func lockCartLines(ctx context.Context, tx pgx.Tx, cartID uuid.UUID) ([]cartLine
 
 // lockAndPriceLines reads catalogue truth under lock and enforces LB-17
 // (moderation) and D2 (single seller).
+//
+// ─── WHY THIS DID NOT MOVE ONTO product_offers ──────────────────────────
+//
+// Step 14 moved every buyer-facing READ onto `product_offers`: browse, home,
+// the product page, the category counts, the seller's catalogue, cart
+// hydration. This statement is deliberately not one of them, and neither is
+// `ProductSaleEligibility` (the add-to-cart guard) or `CartMetaForQuote`.
+// The money path stays on `products` as ONE SET, so that the pre-checkout
+// guard, the shipping quote and this authoritative re-check cannot disagree
+// with each other about which table is the truth. They move together, later,
+// or not at all.
+//
+// The specific reason it cannot move on its own is the lock. `FOR UPDATE OF
+// v, p` re-reads the products row at its committed head, which is what makes
+// the moderation check below authoritative against a rejection that lands
+// between add-to-cart and checkout. An offer row read in the same statement
+// is NOT in the OF list, so it would be read from the transaction's snapshot
+// instead: a concurrent takedown that committed both copies would be seen on
+// `p` and missed on the offer, and the check would pass on a listing that has
+// just been withdrawn. Adding the offer to the OF list would fix the read and
+// introduce a new lock on a new table into the most contended transaction in
+// this service — for no change in the answer, since the checker reports the
+// two copies identical.
+//
+// ─── THE OPTIONS SUBQUERY STAYS OUT OF `FOR UPDATE OF` ──────────────────
+//
+// The variant's options are built with jsonb_build_object over v's own
+// columns, in the target list. They must stay there. Reading them instead
+// from `product_variant_options` as a joined table inside a statement that
+// says `FOR UPDATE OF v, p, …` would take row locks on the options in the
+// order the plan produces them, which is not the ascending-variant_id order
+// lockCartLines and lockInventory both take theirs in — two checkouts sharing
+// two variants would then be able to hold each other's rows and deadlock.
+// A subquery in the target list is not locked at all, which is why this shape
+// is safe and why any future move of the options must keep it.
 func lockAndPriceLines(ctx context.Context, tx pgx.Tx, lines []cartLine) ([]pricedLine, uuid.UUID, error) {
 	out := make([]pricedLine, 0, len(lines))
 	var sellerID uuid.UUID

@@ -583,11 +583,14 @@ func (s *Store) CategoryTree(ctx context.Context, includeInactive bool) ([]*Cate
 		       COALESCE(n.cnt, 0)                           AS product_count
 		  FROM product_categories c
 		  LEFT JOIN LATERAL (
-		      SELECT COUNT(*)::int AS cnt FROM products p
+		      SELECT COUNT(*)::int AS cnt `+productsLiveFrom+`
 		       WHERE p.category_id = c.id AND `+productSummaryLive+`
 		  ) n ON TRUE
 		 WHERE ($1 OR c.is_active)
-		 ORDER BY c.display_order, c.name`, includeInactive)
+		 -- c.id breaks the tie. See ListCategoryCards in storefront.go: the
+		 -- (display_order, name) key is not unique, and the tree's node order
+		 -- was therefore the planner's choice rather than this query's.
+		 ORDER BY c.display_order, c.name, c.id`, includeInactive)
 	if err != nil {
 		return nil, err
 	}
@@ -1009,11 +1012,11 @@ const attributeViolationCTE = `
 	      FROM eff WHERE NOT is_excluded GROUP BY category_id
 	),
 	live AS (
-	    SELECT p.id, p.seller_id, cats.is_required,
+	    SELECT p.id, po.seller_id, cats.is_required,
 	           (SELECT pa.value FROM product_attributes pa
 	             WHERE pa.product_id = p.id AND pa.name = $2
 	             ORDER BY pa.sort_order LIMIT 1) AS val
-	      FROM products p
+	      ` + productsLiveFrom + `
 	      JOIN cats ON cats.category_id = p.category_id
 	     WHERE ` + productSummaryLive + `
 	),

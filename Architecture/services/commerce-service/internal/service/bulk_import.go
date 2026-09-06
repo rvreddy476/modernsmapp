@@ -355,8 +355,8 @@ func importRowFailure(row *BulkImportRow, err error) BulkImportError {
 // match in another seller's shop was indistinguishable from a match in the
 // caller's. Treating it as an update is a catalogue takeover by file upload.
 //
-// Treating it as a CREATE is not available either, and that is the part that
-// is easy to get wrong. `product_variants.sku` is globally UNIQUE today, so
+// Treating it as a CREATE was not available either, and that is the part
+// that was easy to get wrong. `product_variants.sku` was globally UNIQUE, so
 // the insert would fail — but only after the product row had already been
 // written by a separate statement, leaving the importing seller a titled,
 // empty, variant-less listing in their catalogue for every row that
@@ -367,6 +367,18 @@ func importRowFailure(row *BulkImportRow, err error) BulkImportError {
 // error report can turn into a sentence. And it is refused per row: an
 // import of nine hundred lines, one of which happens to name a code another
 // shop already uses, imports eight hundred and ninety-nine.
+//
+// ─── THE REFUSAL IS NOW A POLICY, NOT A CONSTRAINT ──────────────────────
+//
+// Migration 031 widened `UNIQUE(sku)` to `(offer_id, sku)`, so the database
+// would now ACCEPT the create: two shops may hold the same code. The refusal
+// stays anyway, deliberately and unchanged. A seller uploading a file that
+// names a code another shop is using is far more likely to have pasted the
+// wrong column than to have chosen that collision, and silently minting a
+// second listing under a code they will later search for and not find is the
+// expensive way to discover it. Turning this into a create is a product
+// decision with a seller-facing message attached, not a side effect of a
+// constraint moving.
 func (s *Service) upsertImportRow(ctx context.Context, sellerID uuid.UUID, row *BulkImportRow) error {
 	match, err := s.store.ResolveSKUForSeller(ctx, sellerID, row.SKU)
 	if err != nil {
@@ -476,7 +488,8 @@ func (s *Service) createVariantAndProduct(ctx context.Context, sellerID uuid.UUI
 	// This was three statements: insert the product, insert the variant,
 	// insert the inventory row. The product insert cannot fail (the slug
 	// carries eight hex characters of randomness), and the variant insert
-	// can — on the global UNIQUE(sku) — so every colliding row left behind a
+	// can — on the sku unique index, global then and per-offer since 031 — so
+	// every colliding row left behind a
 	// product with a title, no variant, no stock and no way for the seller
 	// to notice, counted in their dashboard's product total and reachable
 	// from nothing. Re-running the import made another one.
