@@ -18,10 +18,10 @@ import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ReelsEntry
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
-import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
@@ -204,7 +204,7 @@ class ReelsViewModel @Inject constructor(
         // Several reels may be pending (2026-09-05); this slot shows the
         // OLDEST still in flight — the one uploading now — and the own
         // profile's grid shows them all.
-        val pending = items.firstOrNull { it.isDrawable && it.preview?.kind == VideoKind.REEL }
+        val pending = items.firstOrNull { it.isDrawable && it.preview?.kind == PublishKind.REEL }
         val preview = pending?.preview
         when {
             live != null -> ReelsHead.Live(live)
@@ -225,7 +225,7 @@ class ReelsViewModel @Inject constructor(
         // fetch; this slot leaves it alone.
         viewModelScope.launch {
             tracker.items.collect { items ->
-                items.firstOrNull { it.state is ReelPublishState.Published && it.preview?.kind == VideoKind.REEL }
+                items.firstOrNull { it.state is ReelPublishState.Published && it.preview?.kind == PublishKind.REEL }
                     ?.let { becomeLive(it.creationKey, (it.state as ReelPublishState.Published).postId) }
             }
         }

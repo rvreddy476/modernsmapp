@@ -28,6 +28,8 @@ import com.us.android.core.creator.model.SourceAsset
 import com.us.android.core.creator.model.TextStyle
 import com.us.android.core.database.CreatorLegacyRecoveryEntity
 import com.us.android.core.media.creator.CreatorFonts
+import com.us.android.core.media.publish.ReelPublishState
+import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.ui.photoeditor.PhotoEditor
 import com.us.android.feature.post.navigation.StudioRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -73,6 +75,7 @@ class StudioViewModel @Inject constructor(
     private val store: ProjectStore,
     private val recoveryRetrier: LegacyRecoveryRetrier,
     private val photoEditor: PhotoEditor,
+    private val tracker: ReelPublishTracker,
 ) : ViewModel() {
 
     /**
@@ -153,6 +156,12 @@ class StudioViewModel @Inject constructor(
         val canUndo: Boolean = false,
         val canRedo: Boolean = false,
         val publish: PublishUi = PublishUi.Idle,
+        /**
+         * The publish is the worker's now and this screen is done. The host
+         * navigates to the profile once; it never goes back to false, because
+         * a studio whose project has left it has nothing more to edit.
+         */
+        val handedOff: Boolean = false,
         val recoveries: List<RecoveryUi> = emptyList(),
         /** A rejected command or import, surfaced once. */
         val notice: String? = null,
@@ -448,6 +457,20 @@ class StudioViewModel @Inject constructor(
 
     // ── Publishing ──────────────────────────────────────────────────────
 
+    /**
+     * Hand the post to the worker and GET OUT OF THE WAY.
+     *
+     * The founder's ask (2026-09-06): pressing Post returns them to their
+     * profile, where the upload shows its progress, and lands them on the feed
+     * when it finishes. So this no longer parks the viewer on a spinner
+     * waiting for [PublishUi.Success] — it puts the publish on the shared
+     * queue, where the profile grid draws it, and raises [handedOff] so the
+     * screen leaves. Exactly what the reel surface already does.
+     *
+     * The preview is set BEFORE the worker is enqueued, so the tile is already
+     * on the profile when the viewer arrives rather than appearing a beat
+     * later when the worker first runs.
+     */
     fun onPublish() {
         val current = _state.value
         if (!current.canPublish) return
@@ -455,8 +478,10 @@ class StudioViewModel @Inject constructor(
             // The document must be durable BEFORE the worker starts: the worker
             // reads it from the store, not from this process.
             store.save(session.current, System.currentTimeMillis())
+            tracker.setPreview(studioPublishPreview(session.current, vault))
+            tracker.update(session.current.projectId, ReelPublishState.Preparing)
             PublishWorker.enqueue(appContext, session.current.projectId)
-            _state.update { it.copy(publish = PublishUi.Publishing) }
+            _state.update { it.copy(publish = PublishUi.Publishing, handedOff = true) }
         }
     }
 

@@ -105,7 +105,13 @@ import java.io.File
 @Composable
 fun StudioScreen(
     onClose: () -> Unit,
-    onPublished: (postId: String) -> Unit,
+    /**
+     * The post is the worker's now: leave the studio for the viewer's own
+     * profile, where the grid draws the upload's progress (founder,
+     * 2026-09-06). There is no published callback because nothing is published
+     * while this screen exists — the same shape the reel surface uses.
+     */
+    onOpenOwnProfile: () -> Unit,
     viewModel: StudioViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -133,8 +139,11 @@ fun StudioScreen(
             viewModel.onNoticeShown()
         }
     }
-    LaunchedEffect(state.publish) {
-        (state.publish as? StudioViewModel.PublishUi.Success)?.let { onPublished(it.postId) }
+    // Once, on hand-off. `handedOff` never goes back to false, so keying the
+    // effect on it means the studio leaves exactly once however often the rest
+    // of the state changes on the way out.
+    LaunchedEffect(state.handedOff) {
+        if (state.handedOff) onOpenOwnProfile()
     }
 
     // System Back walks the flow backwards before it leaves it.
@@ -1117,16 +1126,16 @@ private fun ShareStep(
                 .testTag("studio-publish")
                 .semantics {
                     contentDescription = when {
-                        publishing -> "Share. In progress."
-                        state.canPublish -> "Share"
-                        else -> "Share. Unavailable: add photos first."
+                        publishing -> "Post. In progress."
+                        state.canPublish -> "Post"
+                        else -> "Post. Unavailable: add photos first."
                     }
                 },
         ) {
             if (publishing) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
             } else {
-                Text("Share")
+                Text("Post")
             }
         }
         Spacer(Modifier.height(UsTheme.spacing.xl))

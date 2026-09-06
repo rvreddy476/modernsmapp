@@ -2,6 +2,10 @@ package com.us.android.core.media.creator
 
 import android.content.Context
 import android.graphics.Typeface
+import android.graphics.fonts.Font
+import android.graphics.fonts.FontFamily
+import android.os.Build
+import androidx.annotation.RequiresApi
 import java.io.File
 import java.security.MessageDigest
 
@@ -69,8 +73,11 @@ object CreatorFonts {
      * Load a face by its contract id, verifying its bytes first.
      *
      * Null means "refuse to render": unknown id, or bytes that do not match the
-     * pinned hash. The caller surfaces that as a render failure — never a
-     * fallback face, because a fallback silently changes the artwork.
+     * pinned hash. The caller surfaces that as a render failure — a MISSING
+     * face is never quietly swapped for another one, because that would change
+     * every authored glyph. That is a different thing from the per-code-point
+     * fallback [createTypeface] attaches to a face that DID verify, which only
+     * covers glyphs the pinned face does not contain at all.
      */
     @Synchronized
     fun typeface(context: Context, fontAssetId: String): Typeface? {
@@ -91,9 +98,58 @@ object CreatorFonts {
         val loaded = runCatching {
             val file = File(context.cacheDir, "font-${font.fontAssetId}.ttf")
             file.writeBytes(bytes)
-            Typeface.createFromFile(file)
+            createTypeface(file)
         }.getOrNull()
 
         return loaded?.also { cache[fontAssetId] = it }
     }
+
+    /**
+     * The pinned face FIRST, the system's own chain behind it.
+     *
+     * ## WHY THE FALLBACK IS NOT A BREACH OF THE PINNING CONTRACT
+     *
+     * A `Typeface` built from a single file has a font collection of exactly
+     * one family, and Minikin does not look past it. So a code point the
+     * pinned face has no glyph for — every emoji, since none of the three
+     * bundled faces carries one — drew a tofu box, on screen AND baked into
+     * the exported picture (founder, 2026-09-06: "emoji cannot be added with
+     * text").
+     *
+     * [Typeface.CustomFallbackBuilder] fixes that without weakening the
+     * guarantee this object exists for: the pinned family is still the FIRST
+     * family in the collection, so every glyph it owns is still drawn from the
+     * verified bytes and authored Latin, Devanagari and Tamil text is
+     * byte-identical to what it was before. The system chain is consulted ONLY
+     * for code points the pinned face cannot draw at all — where the previous
+     * behaviour was not determinism, it was a blank box. A device-supplied
+     * emoji that varies in style across vendors is strictly better than one
+     * that renders nowhere.
+     *
+     * Below API 29 there is no way to build a fallback chain, so those devices
+     * keep the old single-family behaviour and still tofu on emoji. Closing
+     * that gap needs a bundled colour emoji font (NotoColorEmoji is ~10 MB of
+     * APK), which is a size decision, not a code one.
+     */
+    private fun createTypeface(file: File): Typeface =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { withSystemFallback(file) }.getOrElse { Typeface.createFromFile(file) }
+        } else {
+            Typeface.createFromFile(file)
+        }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun withSystemFallback(file: File): Typeface {
+        val family = FontFamily.Builder(Font.Builder(file).build()).build()
+        return Typeface.CustomFallbackBuilder(family)
+            .setSystemFallback(SYSTEM_FALLBACK)
+            .build()
+    }
+
+    /**
+     * The default system family, whose chain ends in the vendor's colour emoji
+     * font. Naming it explicitly rather than taking the default keeps the
+     * behaviour the same whatever the platform's default family becomes.
+     */
+    private const val SYSTEM_FALLBACK = "sans-serif"
 }

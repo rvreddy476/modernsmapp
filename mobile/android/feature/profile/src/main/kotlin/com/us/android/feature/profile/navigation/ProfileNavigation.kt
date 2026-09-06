@@ -98,6 +98,12 @@ fun NavGraphBuilder.ownProfileScreen(
     header: MomentumHeaderDestinations,
     /** A tile of the media grid; `:app` opens a long video in Tube and anything else as a post. */
     onOpenPost: (postId: String, contentType: String) -> Unit,
+    /**
+     * An upload the viewer watched on this grid has landed: `:app` takes them
+     * to the feed it lives on (founder, 2026-09-06). Only the Me tab offers
+     * it — nobody watches a stranger's upload.
+     */
+    onPublished: (contentType: String) -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -114,6 +120,7 @@ fun NavGraphBuilder.ownProfileScreen(
                 onOpenFollowRequests = onOpenFollowRequests,
                 header = header,
                 onOpenPost = onOpenPost,
+                onPublished = onPublished,
             ),
         )
     }

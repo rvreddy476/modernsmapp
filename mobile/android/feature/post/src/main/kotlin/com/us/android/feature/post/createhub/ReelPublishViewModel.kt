@@ -8,8 +8,8 @@ import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.ChannelState
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ScheduleWindow
-import com.us.android.core.media.publish.VideoKind
 import com.us.android.feature.post.data.dto.SupportedAudience
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -124,7 +124,7 @@ class ReelPublishViewModel @Inject constructor(
 
     data class ReelUiState(
         /** Reel or long video — what the form is making. Switchable by the gate. */
-        val kind: VideoKind = VideoKind.REEL,
+        val kind: PublishKind = PublishKind.REEL,
         val videoUri: String? = null,
         /** The studio's exported file, when the video came through it: uploaded as is, never copied. */
         val exportedPath: String? = null,
@@ -174,7 +174,7 @@ class ReelPublishViewModel @Inject constructor(
 
         /** A long video needs its title; a reel needs nothing but the video. */
         val hasRequiredText: Boolean
-            get() = kind == VideoKind.REEL || title.isNotBlank()
+            get() = kind == PublishKind.REEL || title.isNotBlank()
 
         /** A media-only post is legal, so a chosen video that passes the gate is enough. */
         val canPost: Boolean
@@ -195,7 +195,7 @@ class ReelPublishViewModel @Inject constructor(
 
         /** The cover's aspect (width / height): 16:9 for a video, 9:16 for a reel. */
         val coverAspect: Float
-            get() = if (kind == VideoKind.LONG) LANDSCAPE_ASPECT else PORTRAIT_ASPECT
+            get() = if (kind == PublishKind.LONG) LANDSCAPE_ASPECT else PORTRAIT_ASPECT
     }
 
     private val _state = MutableStateFlow(
@@ -222,7 +222,7 @@ class ReelPublishViewModel @Inject constructor(
             lookups.categories()?.let { loaded -> _state.update { it.copy(categories = loaded) } }
         }
         viewModelScope.launch { channels.own.collect { known -> _state.update { it.copy(channel = known) } } }
-        if (_state.value.kind == VideoKind.LONG) ensureChannel()
+        if (_state.value.kind == PublishKind.LONG) ensureChannel()
         viewModelScope.launch { scrubs.collectLatest { timeUs -> seekPreview(timeUs) } }
     }
 
@@ -391,7 +391,7 @@ class ReelPublishViewModel @Inject constructor(
      * remix switch simply stops applying, and the channel is asked for.
      */
     fun switchToLong() {
-        _state.update { it.copy(kind = VideoKind.LONG) }
+        _state.update { it.copy(kind = PublishKind.LONG) }
         ensureChannel()
     }
 
@@ -536,8 +536,8 @@ class ReelPublishViewModel @Inject constructor(
         private const val PORTRAIT_ASPECT = 9f / 16f
 
         /** The Video tile opens the form as a long video; every other way in is a reel. */
-        fun videoKindForSurface(routeKey: String?): VideoKind =
-            if (routeKey == CreateSurface.Video.routeKey) VideoKind.LONG else VideoKind.REEL
+        fun videoKindForSurface(routeKey: String?): PublishKind =
+            if (routeKey == CreateSurface.Video.routeKey) PublishKind.LONG else PublishKind.REEL
 
         /**
          * The form, whole, as the record the worker publishes from. Any

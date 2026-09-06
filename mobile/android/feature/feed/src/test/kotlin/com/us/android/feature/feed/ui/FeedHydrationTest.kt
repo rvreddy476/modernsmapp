@@ -8,6 +8,7 @@ import com.us.android.core.engagement.data.EngagementWrites
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedCounts
@@ -94,6 +95,7 @@ class FeedHydrationTest {
             shares = EngagementRepository(UnusedEngagementApi(), ErrorMapper(json)),
             tabState = FeedTabState(),
             follows = followGraph(),
+            feedEntry = FeedEntry(),
             hidden = HiddenPosts(),
         )
     }

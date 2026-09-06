@@ -1,7 +1,7 @@
 package com.us.android.feature.post.createhub
 
 import com.google.common.truth.Truth.assertThat
-import com.us.android.core.media.publish.VideoKind
+import com.us.android.core.media.publish.PublishKind
 import org.junit.Test
 
 /**
@@ -17,35 +17,35 @@ class VideoGateTest {
 
     @Test
     fun `a reel at the cap passes and one millisecond over is offered as a video`() {
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(fiveMinutes, 1L))).isEqualTo(VideoGate.Ok)
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(fiveMinutes + 1, 1L)))
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(fiveMinutes, 1L))).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(fiveMinutes + 1, 1L)))
             .isEqualTo(VideoGate.TooLongForReel(fiveMinutes + 1))
     }
 
     @Test
     fun `a long video has no duration cap`() {
-        assertThat(videoGate(VideoKind.LONG, VideoProbe(3L * 60L * 60L * 1_000L, 1L))).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.LONG, VideoProbe(3L * 60L * 60L * 1_000L, 1L))).isEqualTo(VideoGate.Ok)
     }
 
     @Test
     fun `the upload ceiling applies to both kinds and outranks the reel cap`() {
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(1L, fiveHundredMb))).isEqualTo(VideoGate.Ok)
-        assertThat(videoGate(VideoKind.LONG, VideoProbe(1L, fiveHundredMb))).isEqualTo(VideoGate.Ok)
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(1L, fiveHundredMb + 1)))
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(1L, fiveHundredMb))).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.LONG, VideoProbe(1L, fiveHundredMb))).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(1L, fiveHundredMb + 1)))
             .isEqualTo(VideoGate.TooLarge(fiveHundredMb + 1))
-        assertThat(videoGate(VideoKind.LONG, VideoProbe(1L, fiveHundredMb + 1)))
+        assertThat(videoGate(PublishKind.LONG, VideoProbe(1L, fiveHundredMb + 1)))
             .isEqualTo(VideoGate.TooLarge(fiveHundredMb + 1))
         // Too long AND too large: the size is the one nothing can fix.
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(fiveMinutes * 2, fiveHundredMb + 1)))
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(fiveMinutes * 2, fiveHundredMb + 1)))
             .isEqualTo(VideoGate.TooLarge(fiveHundredMb + 1))
     }
 
     @Test
     fun `unknown facts pass`() {
-        assertThat(videoGate(VideoKind.REEL, null)).isEqualTo(VideoGate.Ok)
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(null, null))).isEqualTo(VideoGate.Ok)
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(null, fiveHundredMb))).isEqualTo(VideoGate.Ok)
-        assertThat(videoGate(VideoKind.REEL, VideoProbe(fiveMinutes, null))).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.REEL, null)).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(null, null))).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(null, fiveHundredMb))).isEqualTo(VideoGate.Ok)
+        assertThat(videoGate(PublishKind.REEL, VideoProbe(fiveMinutes, null))).isEqualTo(VideoGate.Ok)
     }
 
     @Test

@@ -66,15 +66,24 @@ sealed interface ReelPublishState {
 }
 
 /**
- * Which kind of video a publish is (Tube, 2026-09-05).
+ * Which kind of post a publish is making.
  *
- * The same pipeline posts both: a [REEL] is a `flick` — vertical, up to five
- * minutes, lands on the Reels tab — and a [LONG] video is a `long_video`
- * with a required title that lands in Tube. Product-neutral on purpose: this
- * module only needs to know which SURFACE the pending item belongs to, so
- * Reels never shows a long video posting and Tube never shows a reel.
+ * A [REEL] is a `flick` — vertical, up to five minutes, lands on the Reels
+ * tab; a [LONG] video is a `long_video` with a required title that lands in
+ * Tube; a [PHOTO] is an ordinary photo post (one picture or a carousel) that
+ * lands on the home feed and the profile's Posts tab.
+ *
+ * Product-neutral on purpose: this module only needs to know which SURFACE the
+ * pending item belongs to, so Reels never shows a long video posting, Tube
+ * never shows a reel, and neither of them shows a photo carousel.
+ *
+ * Was `VideoKind` until the photo studio joined this queue (founder,
+ * 2026-09-06: pressing Post should land on the profile with the upload's
+ * progress, the way a reel already does). The two video pipelines are
+ * unchanged; only the name widened to match what the queue now carries.
  */
-enum class VideoKind {
+enum class PublishKind {
+    PHOTO,
     REEL,
     LONG,
 }
@@ -91,7 +100,7 @@ data class ReelPublishPreview(
     val creationKey: String,
     val coverPath: String?,
     val caption: String,
-    val kind: VideoKind = VideoKind.REEL,
+    val kind: PublishKind = PublishKind.REEL,
     val title: String = "",
     val publishAt: String? = null,
 )

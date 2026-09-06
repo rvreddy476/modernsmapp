@@ -101,6 +101,12 @@ import java.io.File
 @Composable
 internal fun ProfileMediaGrid(
     onOpenPost: ((postId: String, contentType: String) -> Unit)?,
+    /**
+     * A publish the viewer watched here has landed, and its content type says
+     * where it lives now. `:app` carries them on to that feed (founder,
+     * 2026-09-06); null leaves them on the profile with the finished tile.
+     */
+    onPublished: ((contentType: String) -> Unit)?,
     modifier: Modifier = Modifier,
     viewModel: ProfileGridViewModel = hiltViewModel(),
 ) {
@@ -118,6 +124,15 @@ internal fun ProfileMediaGrid(
         if ((reloads[ProfileGridTab.POSTS] ?: 0) > 0) posts.refresh()
         if ((reloads[ProfileGridTab.REELS] ?: 0) > 0) reels.refresh()
         if ((reloads[ProfileGridTab.VIDEOS] ?: 0) > 0) longVideos.refresh()
+    }
+
+    // The last leg of the journey. Collected here rather than watched as
+    // state because arriving at a feed HAPPENS ONCE — a state would fire it
+    // again on the next recomposition and every return to this screen.
+    if (onPublished != null) {
+        LaunchedEffect(viewModel) {
+            viewModel.published.collect { onPublished(it.contentType) }
+        }
     }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {

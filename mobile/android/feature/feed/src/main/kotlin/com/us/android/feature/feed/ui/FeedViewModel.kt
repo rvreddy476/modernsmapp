@@ -18,6 +18,7 @@ import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.KeywordFilter
 import com.us.android.core.feed.data.hides
+import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
@@ -30,6 +31,7 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -74,6 +76,7 @@ class FeedViewModel @AssistedInject constructor(
     private val shares: EngagementRepository,
     private val tabState: FeedTabState,
     private val follows: FollowGraph,
+    private val feedEntry: FeedEntry,
     hidden: HiddenPosts,
     settings: SettingsDataStore? = null,
 ) : ViewModel() {
@@ -146,6 +149,21 @@ class FeedViewModel @AssistedInject constructor(
      * and after that flipping back to For You replays its pages instead of
      * refetching them and dropping the reader to the top.
      */
+    /**
+     * The post the viewer has just published, drawn above the ranked rows.
+     *
+     * The founder's journey ends here (2026-09-06): Post, then the profile
+     * with the upload's progress, then "the feed with their new post at the
+     * top". The server does not promise that order — a ranked timeline puts a
+     * brand-new post wherever it puts it, and the first page may not carry it
+     * at all yet — so the feed does not refresh and hope. It fetches that one
+     * post by id and pins it, filtering it out of the paged rows so it never
+     * shows twice. The Reels tab has held its just-posted reel this way since
+     * 2026-09-05; this is the same slot for the home timeline.
+     */
+    private val _head = MutableStateFlow<FeedItem?>(null)
+    val head: StateFlow<FeedItem?> = _head.asStateFlow()
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val items: Flow<PagingData<FeedItem>> = when (mode) {
         FeedMode.Home -> {
@@ -173,6 +191,10 @@ class FeedViewModel @AssistedInject constructor(
         // because a PagingData row cannot be removed in place and a refresh
         // would drop the reader to the top to remove one row.
         if (set.isEmpty) page else page.filter { !set.hides(it) }
+    }.combine(_head) { page, pinned ->
+        // The pinned post is drawn above these rows, so it must not also be
+        // one of them. The Reels tab does the same for the reel it is holding.
+        if (pinned == null) page else page.filter { it.id != pinned.id }
     }
 
     private fun cached(query: FeedQuery) = repository.feed(query).cachedIn(viewModelScope)
@@ -191,7 +213,36 @@ class FeedViewModel @AssistedInject constructor(
                     if (selected == FeedTab.HASHTAG && !trendingRequested) refreshTrending()
                 }
             }
+            viewModelScope.launch {
+                feedEntry.first.collect { postId -> postId?.let { pin(it) } }
+            }
         }
+    }
+
+    /**
+     * Fetch the just-published post and hold it at the top.
+     *
+     * Retried a few times: the publish reported a post id, so the post exists,
+     * but a read straight after a write can still miss on a replica. The
+     * request is let go either way — a feed that keeps asking for a post it
+     * cannot have would spin for the rest of the session, and the ordinary
+     * paged feed will carry the post soon enough.
+     */
+    private suspend fun pin(postId: String) {
+        if (_head.value?.id != postId) {
+            repeat(PIN_FETCH_ATTEMPTS) { attempt ->
+                when (val result = repository.post(postId)) {
+                    is AppResult.Success -> {
+                        _head.value = result.data
+                        feedEntry.clear()
+                        return
+                    }
+                    is AppResult.Failure ->
+                        if (attempt < PIN_FETCH_ATTEMPTS - 1) delay(PIN_FETCH_RETRY_MILLIS)
+                }
+            }
+        }
+        feedEntry.clear()
     }
 
     fun refreshTrending() {
@@ -349,3 +400,9 @@ private const val FEED_IMAGE_MAX_HEIGHT = 720
 
 /** `kind` on a feed media entry; `image` is the other value in use. */
 private const val VIDEO_KIND = "video"
+
+/** How many times the pinned post is asked for before the feed lets it go. */
+private const val PIN_FETCH_ATTEMPTS = 3
+
+/** Long enough for a read replica to catch up with the write that just happened. */
+private const val PIN_FETCH_RETRY_MILLIS = 700L

@@ -71,7 +71,7 @@ import com.us.android.core.feed.data.ChannelGate
 import com.us.android.core.feed.data.channelGate
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.feed.ui.schedule.ScheduleSheet
-import com.us.android.core.media.publish.VideoKind
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.usSwitchColors
 import com.us.android.feature.post.createhub.ReelPublishViewModel.Phase
@@ -131,7 +131,7 @@ internal fun ReelSurface(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val studioState by studio.state.collectAsStateWithLifecycle()
-    val long = state.kind == VideoKind.LONG
+    val long = state.kind == PublishKind.LONG
 
     // A reel goes through an editor first; a long video is picked as is.
     val editing = rememberReelEditing(long = long, viewModel = viewModel, studio = studio, banuba = banuba)
@@ -338,7 +338,7 @@ private fun ReelForm(
 ) {
     var sheet by rememberSaveable { mutableStateOf(ReelSheet.None) }
     val editable = !state.isBusy
-    val long = state.kind == VideoKind.LONG
+    val long = state.kind == PublishKind.LONG
     val noun = if (long) "video" else "reel"
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -514,15 +514,18 @@ private fun ReelPickerSheets(
  */
 @Composable
 private fun CoverAndDescription(
-    kind: VideoKind,
+    kind: PublishKind,
     cover: CoverFrame?,
     caption: String,
     onCaptionChanged: (String) -> Unit,
     onOpenPicker: () -> Unit,
     enabled: Boolean,
 ) {
-    when (kind) {
-        VideoKind.REEL -> Row(
+    // Video only: a reel is a portrait cover beside its caption, a long video a
+    // landscape cover above one. A photo post shares the publish queue but not
+    // this surface, so it is not a case here.
+    if (kind != PublishKind.LONG) {
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(PREVIEW_HEIGHT),
@@ -546,7 +549,8 @@ private fun CoverAndDescription(
                     .fillMaxHeight(),
             )
         }
-        VideoKind.LONG -> Column(modifier = Modifier.fillMaxWidth()) {
+    } else {
+        Column(modifier = Modifier.fillMaxWidth()) {
             CoverPreview(
                 cover = cover,
                 onClick = onOpenPicker,
@@ -849,7 +853,7 @@ private fun SwitchesCard(
             enabled = enabled,
             testTag = "reel-allow-download",
         )
-        if (state.kind == VideoKind.REEL) {
+        if (state.kind == PublishKind.REEL) {
             RowDivider()
             ReelSwitchRow(
                 title = "Allow remix",

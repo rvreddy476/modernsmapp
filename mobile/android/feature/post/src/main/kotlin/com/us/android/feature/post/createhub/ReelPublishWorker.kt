@@ -15,6 +15,7 @@ import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishPreview
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.feature.post.studio.PublishWorker
 import dagger.Binds
 import dagger.Module
 import dagger.assisted.Assisted
@@ -185,7 +186,12 @@ class ReelPublishController @Inject constructor(
 
     override fun retry(creationKey: String) {
         scope.launch {
-            val pending = store.load(creationKey) ?: return@launch
+            // No video record means this is a PHOTO publish (2026-09-06). The
+            // queue is shared, so its failed tile offers the same Retry, but
+            // the work behind it is the studio's own worker — whose creation
+            // key IS the project id, and whose pipeline is checkpointed page by
+            // page, so re-enqueuing resumes rather than re-uploading.
+            val pending = store.load(creationKey) ?: return@launch retryPhoto(creationKey)
             // A fresh readiness window: the retry is a new decision by the
             // user, not the tail of the one that timed out.
             store.save(pending.copy(failure = null, processingSinceMillis = null))
@@ -199,10 +205,24 @@ class ReelPublishController @Inject constructor(
         discards.discard(creationKey)
         scope.launch {
             val pending = store.load(creationKey)
+            if (pending == null) {
+                // A photo publish: stop its worker and let the tile go. The
+                // project document is deliberately left alone — the studio
+                // reopens the most recent editable project, so discarding the
+                // upload does not throw away the edit behind it.
+                WorkManager.getInstance(context).cancelUniqueWork(PublishWorker.uniqueName(creationKey))
+                tracker.reset(creationKey)
+                return@launch
+            }
             store.remove(creationKey)
-            if (pending != null) files.delete(listOf(pending.videoPath, pending.coverPath))
+            files.delete(listOf(pending.videoPath, pending.coverPath))
             tracker.reset(creationKey)
         }
+    }
+
+    private fun retryPhoto(creationKey: String) {
+        tracker.update(creationKey, ReelPublishState.Preparing)
+        PublishWorker.enqueue(context, creationKey)
     }
 
     override fun dismiss(creationKey: String) = tracker.dismiss(creationKey)

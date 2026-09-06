@@ -175,6 +175,7 @@ internal fun FeedContent(
     playback: FeedPlaybackViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
+    val head by viewModel.head.collectAsStateWithLifecycle()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val pollVotes by viewModel.pollVotes.collectAsStateWithLifecycle()
     val failures by viewModel.failures.collectAsStateWithLifecycle()
@@ -235,6 +236,7 @@ internal fun FeedContent(
             EngagementFailureBar(failures, onRetry = viewModel::retryFailure, onDismiss = viewModel::dismissFailure)
             FeedList(
                 items = items,
+                head = head,
                 overlays = overlays,
                 pollVotes = pollVotes,
                 followEdges = followEdges,
@@ -417,6 +419,8 @@ internal fun viewerStartPage(ids: List<String>, tappedId: String, tappedIndex: I
 @Composable
 private fun FeedList(
     items: LazyPagingItems<FeedItem>,
+    /** The just-published post, pinned above the ranked rows; null ordinarily. */
+    head: FeedItem?,
     overlays: Map<String, EngagementOverlay>,
     pollVotes: Map<String, Set<String>>,
     followEdges: Map<String, FollowStatus>,
@@ -434,20 +438,25 @@ private fun FeedList(
     val refresh = items.loadState.refresh
     val playingId = feedAutoplay(listState, items, autoplay)
 
+    // A pinned post counts as a row: a viewer who has just posted must see it
+    // even while the ranked page behind it is still loading, and must never be
+    // told the feed is empty with their own new post in hand.
+    val empties = items.itemCount == 0 && head == null
+
     when {
-        refresh is LoadState.Loading && items.itemCount == 0 ->
+        refresh is LoadState.Loading && empties ->
             UsLoadingState(modifier = modifier, label = "Loading feed")
 
         // Only when nothing is on screen. A refresh failure with rows already
         // loaded must never clear them — the reader would lose their place to
         // a transient network blip.
-        refresh is LoadState.Error && items.itemCount == 0 -> UsErrorState(
+        refresh is LoadState.Error && empties -> UsErrorState(
             message = refresh.error.feedMessage(),
             modifier = modifier,
             onRetry = items::retry,
         )
 
-        refresh is LoadState.NotLoading && items.itemCount == 0 -> UsEmptyState(
+        refresh is LoadState.NotLoading && empties -> UsEmptyState(
             title = empty.title,
             detail = empty.detail,
             modifier = modifier,
@@ -468,49 +477,51 @@ private fun FeedList(
             // `key` is what lets Compose keep an item's state across a page
             // append. Without it every append re-keys by index and the whole
             // visible list recomposes, which is the classic feed jank.
+            // The post the viewer has just published, above everything the
+            // server ranked (founder, 2026-09-06). It is filtered out of the
+            // paged rows by the ViewModel, so it appears here and nowhere
+            // else. Never autoplayed: the autoplay target is computed over the
+            // paging snapshot, which this row is deliberately not in.
+            head?.let { pinned ->
+                item(key = "head_${pinned.id}") {
+                    FeedRow(
+                        item = pinned,
+                        overlay = overlays[pinned.id] ?: EngagementOverlay(),
+                        poster = posterUrl(pinned),
+                        pages = mediaPages(pinned),
+                        votes = pollVotes[pinned.id].orEmpty(),
+                        followEdge = followEdges[pinned.author.id],
+                        ownUserId = ownUserId,
+                        callbacks = callbacks,
+                        video = null,
+                        onClick = { onOpenMedia(0, pinned) },
+                    )
+                }
+            }
+
             items(
                 count = items.itemCount,
                 key = { index -> items.peek(index)?.id ?: index },
             ) { index ->
                 val item = items[index] ?: return@items
-                val overlay = overlays[item.id] ?: EngagementOverlay()
                 val poster = posterUrl(item)
-                val video = autoplaySlot(
+                FeedRow(
                     item = item,
-                    playing = item.id == playingId,
-                    player = autoplay.player,
-                    posterUrl = poster,
-                    onClick = { onOpenMedia(index, item) },
-                )
-                PostCard(
-                    state = item.toCardState(
-                        overlay,
-                        poster,
-                        mediaPages(item),
-                        pollVotes[item.id].orEmpty(),
+                    overlay = overlays[item.id] ?: EngagementOverlay(),
+                    poster = poster,
+                    pages = mediaPages(item),
+                    votes = pollVotes[item.id].orEmpty(),
+                    followEdge = followEdges[item.author.id],
+                    ownUserId = ownUserId,
+                    callbacks = callbacks,
+                    video = autoplaySlot(
+                        item = item,
+                        playing = item.id == playingId,
+                        player = autoplay.player,
+                        posterUrl = poster,
+                        onClick = { onOpenMedia(index, item) },
                     ),
-                    // A tap on the media: a video goes to Reels, a photo opens
-                    // the viewer in place at this row; a text-only post has no
-                    // media and never fires it.
                     onClick = { onOpenMedia(index, item) },
-                    mediaOverride = video,
-                    onAuthorClick = { callbacks.onOpenAuthor(item.author.id) },
-                    onReact = { callbacks.onReact(item.id, item.viewer.hasReacted) },
-                    onComment = { callbacks.onOpenComments(item.id) },
-                    onRepost = { callbacks.onRepost(item.id, item.viewer.hasReposted) },
-                    onBookmark = { callbacks.onBookmark(item.id, item.viewer.isBookmarked) },
-                    onShare = { callbacks.onShare(item) },
-                    onVotePoll = if (item.poll?.hasEnded == false) {
-                        { optionId -> callbacks.onVotePoll(item.id, optionId) }
-                    } else {
-                        null
-                    },
-                    onFollow = if (offersFollow(ownUserId, item.author.id, followEdges[item.author.id])) {
-                        { callbacks.onFollow(item.author.id) }
-                    } else {
-                        null
-                    },
-                    onMore = callbacks.onMore?.let { more -> { more(item) } },
                 )
             }
 
@@ -541,6 +552,54 @@ private fun feedAutoplay(
         load = autoplay.load,
     )
     return playingId
+}
+
+/**
+ * One post card, wherever it sits.
+ *
+ * Extracted so the pinned just-published post and the paged rows are the SAME
+ * row — a second copy of this wiring would be a second place for a feed
+ * affordance to go missing, and the pinned post is the one row the author
+ * looks hardest at.
+ */
+@Suppress("LongParameterList")
+@Composable
+private fun FeedRow(
+    item: FeedItem,
+    overlay: EngagementOverlay,
+    poster: String?,
+    pages: List<PostCardMediaPage>,
+    votes: Set<String>,
+    followEdge: FollowStatus?,
+    ownUserId: String,
+    callbacks: FeedRowCallbacks,
+    video: (@Composable () -> Unit)?,
+    onClick: () -> Unit,
+) {
+    PostCard(
+        state = item.toCardState(overlay, poster, pages, votes),
+        // A tap on the media: a video goes to Reels, a photo opens the viewer
+        // in place at this row; a text-only post has no media and never fires it.
+        onClick = onClick,
+        mediaOverride = video,
+        onAuthorClick = { callbacks.onOpenAuthor(item.author.id) },
+        onReact = { callbacks.onReact(item.id, item.viewer.hasReacted) },
+        onComment = { callbacks.onOpenComments(item.id) },
+        onRepost = { callbacks.onRepost(item.id, item.viewer.hasReposted) },
+        onBookmark = { callbacks.onBookmark(item.id, item.viewer.isBookmarked) },
+        onShare = { callbacks.onShare(item) },
+        onVotePoll = if (item.poll?.hasEnded == false) {
+            { optionId -> callbacks.onVotePoll(item.id, optionId) }
+        } else {
+            null
+        },
+        onFollow = if (offersFollow(ownUserId, item.author.id, followEdge)) {
+            { callbacks.onFollow(item.author.id) }
+        } else {
+            null
+        },
+        onMore = callbacks.onMore?.let { more -> { more(item) } },
+    )
 }
 
 /**

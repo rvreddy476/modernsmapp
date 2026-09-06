@@ -627,15 +627,17 @@ private fun NavGraphBuilder.tabDestinations(
         },
     )
 
-    // The Post Studio — the multi-photo editor. Same success contract as the
-    // composer: the published post replaces the studio in the back stack, so
-    // Back lands on the feed rather than an editor whose work is already live.
+    // The Post Studio — the multi-photo editor. Post hands the project to the
+    // background worker and lands on the viewer's OWN profile, whose grid
+    // shows the upload with its ring (founder, 2026-09-06) — the same contract
+    // the reel and long-video surfaces have had since 2026-09-05. The studio
+    // is popped inclusive, so Back from the profile never returns to an editor
+    // whose work has already left it.
     studioScreen(
         onClose = { navController.popBackStack() },
-        onPublished = { postId ->
-            navController.navigate(PostRoute(postId)) {
-                popUpTo<StudioRoute> { inclusive = true }
-            }
+        onOpenOwnProfile = {
+            navController.popBackStack<StudioRoute>(inclusive = true)
+            navController.navigateToTopLevel(TopLevelDestination.ME)
         },
     )
 
@@ -902,6 +904,19 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             onOpenNotifications = { navController.navigateToNotifications() },
         ),
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
+        // The end of the publish journey: the upload the viewer was watching
+        // on this grid is live, so carry them to the feed it landed on with it
+        // first (founder, 2026-09-06). The post id travelled ahead through
+        // FeedEntry / ReelsEntry — a tab root is restored, not pushed, so the
+        // navigation itself cannot carry one. A long video has no feed tab in
+        // this app; its Videos tab is already showing it, so nothing moves.
+        onPublished = { contentType ->
+            when (contentType) {
+                POST_CONTENT_TYPE -> navController.navigateToTopLevel(TopLevelDestination.HOME)
+                FLICK_CONTENT_TYPE -> navController.navigateToTopLevel(TopLevelDestination.REELS)
+                else -> Unit
+            }
+        },
     )
     profileScreen(
         onOpenFollowers = {},
@@ -1040,6 +1055,12 @@ private fun NavHostController.openProfilePost(postId: String, contentType: Strin
 }
 
 private const val LONG_VIDEO_CONTENT_TYPE = "long_video"
+
+/** An ordinary photo/text post; it lives on the Home feed. */
+private const val POST_CONTENT_TYPE = "post"
+
+/** A reel; it lives on the Reels tab. */
+private const val FLICK_CONTENT_TYPE = "flick"
 
 /** The push-destination type MainActivity mints for an `atpost.app/chat/join/{code}` link. */
 private const val CHAT_JOIN_LINK = com.us.android.push.PushDestinations.TYPE_CHAT_JOIN

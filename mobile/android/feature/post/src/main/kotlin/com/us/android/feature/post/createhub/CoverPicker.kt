@@ -57,7 +57,7 @@ import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.core.media.publish.VideoKind
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.feature.post.createhub.ReelPublishViewModel.CoverPicker
 import kotlin.math.roundToInt
 
@@ -74,7 +74,7 @@ import kotlin.math.roundToInt
  */
 @Composable
 internal fun CoverPickerScreen(
-    kind: VideoKind,
+    kind: PublishKind,
     picker: CoverPicker,
     frames: List<CoverFrame>,
     durationUs: Long,
@@ -142,13 +142,13 @@ internal fun CoverPickerScreen(
 
 /** The frame at the handle, in the kind's aspect; the spinner sits in the corner while a seek runs. */
 @Composable
-private fun FramePreview(kind: VideoKind, bitmap: Bitmap?, seeking: Boolean) {
+private fun FramePreview(kind: PublishKind, bitmap: Bitmap?, seeking: Boolean) {
     val shape = RoundedCornerShape(UsTheme.radii.large)
     val image = remember(bitmap) { bitmap?.asImageBitmap() }
-    val aspect = if (kind == VideoKind.LONG) LANDSCAPE else PORTRAIT
+    val aspect = if (kind == PublishKind.LONG) LANDSCAPE else PORTRAIT
     BoxWithConstraints(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         // A portrait preview is capped so the strip stays on screen under it.
-        val width = if (kind == VideoKind.LONG) maxWidth else minOf(maxWidth, PORTRAIT_PREVIEW_WIDTH)
+        val width = if (kind == PublishKind.LONG) maxWidth else minOf(maxWidth, PORTRAIT_PREVIEW_WIDTH)
         Box(
             modifier = Modifier
                 .width(width)
@@ -197,7 +197,7 @@ private fun FramePreview(kind: VideoKind, bitmap: Bitmap?, seeking: Boolean) {
  */
 @Composable
 private fun FilmstripTimeline(
-    kind: VideoKind,
+    kind: PublishKind,
     frames: List<CoverFrame>,
     durationUs: Long,
     timeUs: Long,
@@ -211,7 +211,7 @@ private fun FilmstripTimeline(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (kind == VideoKind.LONG) STRIP_HEIGHT_LANDSCAPE else STRIP_HEIGHT_PORTRAIT)
+            .height(if (kind == PublishKind.LONG) STRIP_HEIGHT_LANDSCAPE else STRIP_HEIGHT_PORTRAIT)
             .clip(shape)
             .background(UsTheme.extended.bgCard)
             .pointerInput(Unit) {

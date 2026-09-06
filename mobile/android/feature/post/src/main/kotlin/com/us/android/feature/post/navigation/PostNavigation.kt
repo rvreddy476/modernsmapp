@@ -97,12 +97,19 @@ data class StudioRoute(
 
 fun NavGraphBuilder.studioScreen(
     onClose: () -> Unit,
-    onPublished: (postId: String) -> Unit,
+    /**
+     * Post was pressed and the worker has the project: close the studio onto
+     * the viewer's own profile, where the pending tile shows the upload. No
+     * `onPublished` — the studio no longer waits for a post id (founder,
+     * 2026-09-06), and the hop onward to the feed is the profile's to ask for
+     * once the post exists.
+     */
+    onOpenOwnProfile: () -> Unit,
 ) {
     composable<StudioRoute> {
         com.us.android.feature.post.studio.StudioScreen(
             onClose = onClose,
-            onPublished = onPublished,
+            onOpenOwnProfile = onOpenOwnProfile,
         )
     }
 }

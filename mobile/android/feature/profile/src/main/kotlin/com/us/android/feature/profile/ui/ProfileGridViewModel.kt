@@ -9,19 +9,24 @@ import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.videoThumb
+import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
+import com.us.android.core.media.ReelsEntry
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.PublishSchedule
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishItem
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
-import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.model.FeedItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -63,13 +68,15 @@ data class ScheduledTile(val item: FeedItem, val tab: ProfileGridTab) {
 }
 
 /**
- * Which tab a pending video belongs on: a long video posts to Videos; a
+ * Which tab a pending publish belongs on: a long video posts to Videos; a
  * reel — since the studio (2026-09-05) lands on the own profile — to
- * Reels. Pure, so the placement is a table test.
+ * Reels; a photo post to Posts, since the photo studio now lands here too
+ * (founder, 2026-09-06). Pure, so the placement is a table test.
  */
-fun pendingTabFor(kind: VideoKind?): ProfileGridTab? = when (kind) {
-    VideoKind.LONG -> ProfileGridTab.VIDEOS
-    VideoKind.REEL -> ProfileGridTab.REELS
+fun pendingTabFor(kind: PublishKind?): ProfileGridTab? = when (kind) {
+    PublishKind.LONG -> ProfileGridTab.VIDEOS
+    PublishKind.REEL -> ProfileGridTab.REELS
+    PublishKind.PHOTO -> ProfileGridTab.POSTS
     null -> null
 }
 
@@ -88,11 +95,17 @@ fun scheduledTabFor(contentType: String): ProfileGridTab? =
  * once its tab has refreshed to carry the real post.
  */
 @HiltViewModel
+// Constructor injection of the grid's collaborators: three paged lists, the
+// publish queue, and the two tab-root hand-offs. A wrapper would add
+// indirection, not clarity.
+@Suppress("LongParameterList")
 class ProfileGridViewModel @Inject constructor(
     private val videos: VideoFeedRepository,
     private val urlResolver: MediaUrlResolver,
     private val tracker: ReelPublishTracker,
     private val publishActions: ReelPublishActions,
+    private val feedEntry: FeedEntry,
+    private val reelsEntry: ReelsEntry,
     follows: FollowGraph,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -110,6 +123,15 @@ class ProfileGridViewModel @Inject constructor(
     /** A nudge, per tab, for its list to reload once a pending post is published. */
     private val _reloads = MutableStateFlow<Map<ProfileGridTab, Int>>(emptyMap())
     val reloads: StateFlow<Map<ProfileGridTab, Int>> = _reloads
+
+    /**
+     * "Your post is live, here is where it lives." One event per finished
+     * publish, replayed to nobody: a buffered SharedFlow rather than a state,
+     * because arriving at the feed is something that HAPPENS ONCE — a state
+     * would fire again on every recomposition and every return to the profile.
+     */
+    private val _published = MutableSharedFlow<ProfileGridTab>(extraBufferCapacity = PUBLISHED_BUFFER)
+    val published: SharedFlow<ProfileGridTab> = _published.asSharedFlow()
 
     val posts: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.POSTS)
     val reels: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.REELS)
@@ -135,10 +157,21 @@ class ProfileGridViewModel @Inject constructor(
     }
 
     /**
-     * A pending video arriving switches the grid to where it will show.
+     * A pending publish arriving switches the grid to where it will show.
      * Published: reload that tab so the real post lands (or the scheduled
-     * list, when it was scheduled), then let the tracker go so the pending
-     * tile leaves.
+     * list, when it was scheduled), ASK THE SHELL TO CARRY THE VIEWER ON to
+     * where the post now lives, then let the tracker go so the pending tile
+     * leaves.
+     *
+     * The hand-off is an event rather than a read of the tracker by the
+     * destination, because this ViewModel dismisses the tracker entry on the
+     * same pass — a destination that is not composed yet would find nothing
+     * left to read. The post id travels in [FeedEntry] / [ReelsEntry] for the
+     * same reason the feed-to-Reels tap does: a tab root is restored, not
+     * pushed, so the navigation itself carries no argument.
+     *
+     * A SCHEDULED post is not carried anywhere. It does not exist on any feed
+     * yet, so the viewer stays on the profile where its clock tile is.
      */
     private fun onQueueChanged(items: List<ReelPublishItem>) {
         val tiles = items.mapNotNull { it.toTile() }
@@ -146,11 +179,35 @@ class ProfileGridViewModel @Inject constructor(
         seenKeys = tiles.mapTo(mutableSetOf()) { it.creationKey }
         fresh.lastOrNull()?.let { _tab.value = it.tab }
         items.filter { it.state is ReelPublishState.Published }.forEach { item ->
+            val postId = (item.state as ReelPublishState.Published).postId
             item.toTile()?.let { tile ->
-                if (tile.publishAt != null) refreshScheduled() else reload(tile.tab)
+                if (tile.publishAt != null) {
+                    refreshScheduled()
+                } else {
+                    reload(tile.tab)
+                    handOff(tile.tab, postId)
+                }
             }
             publishActions.dismiss(item.creationKey)
         }
+    }
+
+    /**
+     * Where a finished publish takes the viewer.
+     *
+     * Posts and reels have a feed to land on, so the post id is pinned there
+     * and the shell is asked to switch tabs. A LONG video has no such tab in
+     * this app — Tube is its home and the profile's Videos tab already shows
+     * it — so it stays put rather than being sent somewhere arbitrary.
+     */
+    private fun handOff(tab: ProfileGridTab, postId: String) {
+        if (postId.isBlank()) return
+        when (tab) {
+            ProfileGridTab.POSTS -> feedEntry.showFirst(postId)
+            ProfileGridTab.REELS -> reelsEntry.open(postId)
+            ProfileGridTab.VIDEOS -> return
+        }
+        _published.tryEmit(tab)
     }
 
     private fun reload(tab: ProfileGridTab) = _reloads.update { map -> map + (tab to (map[tab] ?: 0) + 1) }
@@ -196,5 +253,8 @@ class ProfileGridViewModel @Inject constructor(
         const val USER_ID_KEY = "userId"
         const val STOP_TIMEOUT_MILLIS = 5_000L
         const val SCHEDULED_LIMIT = 50
+
+        /** Room for a queue that finishes several publishes while the screen is away. */
+        const val PUBLISHED_BUFFER = 4
     }
 }

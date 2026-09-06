@@ -5,7 +5,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
-import com.us.android.core.media.publish.VideoKind
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.upload.MediaSourceResolver
 import dagger.Binds
 import dagger.Module
@@ -32,7 +32,7 @@ fun interface ReelVideoProbe {
 }
 
 /**
- * Whether the picked video may be posted as [VideoKind] (founder, 2026-09-05).
+ * Whether the picked video may be posted as [PublishKind] (founder, 2026-09-05).
  *
  *  - A REEL is at most five minutes — the server's cap since 2026-09-05.
  *    Anything longer is not refused outright: the form offers to post it as
@@ -55,11 +55,11 @@ sealed interface VideoGate {
     val allowsPost: Boolean get() = this is Ok
 }
 
-fun videoGate(kind: VideoKind, probe: VideoProbe?): VideoGate {
+fun videoGate(kind: PublishKind, probe: VideoProbe?): VideoGate {
     val size = probe?.sizeBytes
     if (size != null && size > MAX_UPLOAD_BYTES) return VideoGate.TooLarge(size)
     val duration = probe?.durationMs
-    if (kind == VideoKind.REEL && duration != null && duration > REEL_MAX_DURATION_MS) {
+    if (kind == PublishKind.REEL && duration != null && duration > REEL_MAX_DURATION_MS) {
         return VideoGate.TooLongForReel(duration)
     }
     return VideoGate.Ok

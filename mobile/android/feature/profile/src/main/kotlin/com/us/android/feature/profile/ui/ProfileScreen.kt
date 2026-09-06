@@ -143,6 +143,13 @@ data class ProfileDestinations(
      * is still worth looking at.
      */
     val onOpenPost: ((postId: String, contentType: String) -> Unit)? = null,
+    /**
+     * A publish this screen was showing the progress of has landed, and its
+     * content type says where. Only ever supplied to the OWN-profile
+     * registration: the pending tiles are the viewer's own, so nobody else's
+     * profile could raise it.
+     */
+    val onPublished: ((contentType: String) -> Unit)? = null,
 )
 
 internal data class ProfileActions(
@@ -317,7 +324,10 @@ private fun LoadedProfile(
         if (!profile.isOwnProfile && profile.isPrivate && state.relationship.followStatus != FollowStatus.FOLLOWING) {
             PrivatePlaceholder()
         } else {
-            ProfileMediaGrid(onOpenPost = destinations.onOpenPost)
+            ProfileMediaGrid(
+                onOpenPost = destinations.onOpenPost,
+                onPublished = destinations.onPublished,
+            )
         }
     }
 

@@ -31,6 +31,7 @@ import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.feed.ui.more.moreFollowRow
 import com.us.android.core.feed.ui.more.toMoreState
+import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedCounts
@@ -264,6 +265,7 @@ class PostMoreViewModelTest {
         shares = EngagementRepository(UnusedEngagementApi(), mapper),
         tabState = FeedTabState(),
         follows = followGraph(h.graph),
+        feedEntry = FeedEntry(),
         hidden = h.hidden,
     )
 

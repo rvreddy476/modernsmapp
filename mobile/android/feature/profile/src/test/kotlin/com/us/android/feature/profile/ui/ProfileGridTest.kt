@@ -1,8 +1,8 @@
 package com.us.android.feature.profile.ui
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishState
-import com.us.android.core.media.publish.VideoKind
 import org.junit.Test
 
 /** The media grid's rules: where a pending video goes, what each tab reads, and the tile shapes. */
@@ -10,9 +10,25 @@ class ProfileGridTest {
 
     @Test
     fun `a posting long video belongs on the Videos tab and a reel on the Reels tab`() {
-        assertThat(pendingTabFor(VideoKind.LONG)).isEqualTo(ProfileGridTab.VIDEOS)
-        assertThat(pendingTabFor(VideoKind.REEL)).isEqualTo(ProfileGridTab.REELS)
+        assertThat(pendingTabFor(PublishKind.LONG)).isEqualTo(ProfileGridTab.VIDEOS)
+        assertThat(pendingTabFor(PublishKind.REEL)).isEqualTo(ProfileGridTab.REELS)
         assertThat(pendingTabFor(null)).isNull()
+    }
+
+    /**
+     * The photo studio joined this queue on 2026-09-06. Without a tab its
+     * pending tile is dropped on the floor and pressing Post lands the viewer
+     * on a profile showing no sign that anything is happening.
+     */
+    @Test
+    fun `a posting photo belongs on the Posts tab`() {
+        assertThat(pendingTabFor(PublishKind.PHOTO)).isEqualTo(ProfileGridTab.POSTS)
+    }
+
+    /** Every kind the queue can carry has somewhere to be drawn. */
+    @Test
+    fun `no publish kind is left without a tab`() {
+        assertThat(PublishKind.entries.map { pendingTabFor(it) }).doesNotContain(null)
     }
 
     @Test

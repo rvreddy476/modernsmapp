@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Build
 import androidx.core.content.res.ResourcesCompat
 import com.us.android.core.designsystem.R
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -24,8 +25,35 @@ import kotlin.math.roundToInt
 class TextPillRenderer @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
-    private val outfit: Typeface? by lazy {
-        runCatching { ResourcesCompat.getFont(context, R.font.outfit_variable) }.getOrNull()
+    /**
+     * Outfit Bold, with the system's own chain behind it.
+     *
+     * A `Typeface` carrying one font file resolves glyphs from that file and
+     * nowhere else, so every emoji in a pill baked a tofu box into the exported
+     * video — Outfit has no emoji glyphs, and neither does the
+     * [Typeface.SANS_SERIF] this used to fall back to, which is just as much a
+     * single concrete face. [Typeface.CustomFallbackBuilder] (API 29) keeps
+     * Outfit first and lets the system supply what Outfit cannot draw.
+     *
+     * Below API 29 there is no fallback chain to build and the pill keeps the
+     * old behaviour.
+     */
+    private val outfit: Typeface by lazy { buildTypeface() }
+
+    private fun buildTypeface(): Typeface {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                val font = android.graphics.fonts.Font.Builder(context.resources, R.font.outfit_variable)
+                    .setFontVariationSettings(BOLD_AXIS)
+                    .setWeight(android.graphics.fonts.FontStyle.FONT_WEIGHT_BOLD)
+                    .build()
+                Typeface.CustomFallbackBuilder(android.graphics.fonts.FontFamily.Builder(font).build())
+                    .setSystemFallback(SYSTEM_FALLBACK)
+                    .build()
+            }.getOrNull()?.let { return it }
+        }
+        val face = runCatching { ResourcesCompat.getFont(context, R.font.outfit_variable) }.getOrNull()
+        return Typeface.create(face ?: Typeface.SANS_SERIF, Typeface.BOLD)
     }
 
     /** Null for blank text — there is nothing to draw. */
@@ -33,7 +61,7 @@ class TextPillRenderer @Inject constructor(
         val text = pill.text.trim().ifBlank { return null }
         val textSize = frameWidth * TEXT_FRACTION
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = Typeface.create(outfit ?: Typeface.SANS_SERIF, Typeface.BOLD)
+            typeface = outfit
             this.textSize = textSize
             color = if (pill.style == TextPillStyle.WHITE) NAVY else Color.WHITE
         }
@@ -54,11 +82,21 @@ class TextPillRenderer @Inject constructor(
         return bitmap
     }
 
-    /** The line, ellipsised to the width the frame allows. */
+    /**
+     * The line, ellipsised to the width the frame allows.
+     *
+     * Trimmed by CODE POINT, not by UTF-16 unit: an emoji is a surrogate pair,
+     * and cutting between its halves leaves a lone surrogate that draws as a
+     * replacement box. Now that emoji actually render (see [outfit]) that stops
+     * being a latent bug and becomes a visible one.
+     */
     private fun fit(text: String, paint: Paint, maxWidth: Float): String {
         if (paint.measureText(text) <= maxWidth) return text
         var end = text.length
-        while (end > 1 && paint.measureText(text.substring(0, end) + ELLIPSIS) > maxWidth) end--
+        while (end > 1 && paint.measureText(text.substring(0, end) + ELLIPSIS) > maxWidth) {
+            end--
+            if (end > 0 && Character.isLowSurrogate(text[end])) end--
+        }
         return text.substring(0, end) + ELLIPSIS
     }
 
@@ -74,5 +112,11 @@ class TextPillRenderer @Inject constructor(
         const val PAD_Y = 0.42f
         const val MAX_WIDTH_FRACTION = 0.86f
         const val ELLIPSIS = "…"
+
+        /** Outfit is variable; the pill is drawn at its bold weight. */
+        const val BOLD_AXIS = "'wght' 700"
+
+        /** The default family, whose chain ends in the vendor's colour emoji font. */
+        const val SYSTEM_FALLBACK = "sans-serif"
     }
 }

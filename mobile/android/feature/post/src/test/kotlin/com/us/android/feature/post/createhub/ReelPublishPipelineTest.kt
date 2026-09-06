@@ -3,9 +3,9 @@ package com.us.android.feature.post.createhub
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
-import com.us.android.core.media.publish.VideoKind
 import com.us.android.core.media.upload.FILE_TYPE_IMAGE
 import com.us.android.core.media.upload.FILE_TYPE_VIDEO
 import com.us.android.core.media.upload.MediaAltTextRequest
@@ -261,7 +261,7 @@ class ReelPublishPipelineTest {
         val outcome = run(
             h,
             pending("Full walkthrough").copy(
-                kind = VideoKind.LONG,
+                kind = PublishKind.LONG,
                 title = "  How the feed ranks  ",
                 allowRemix = false,
                 hideShare = true,
@@ -284,7 +284,7 @@ class ReelPublishPipelineTest {
     @Test
     fun `buildRequest differs between the kinds in exactly three fields`() {
         val reel = ReelPublishPipeline.buildRequest(pending("hi"), "v", "c")
-        val long = ReelPublishPipeline.buildRequest(pending("hi").copy(kind = VideoKind.LONG, title = "T"), "v", "c")
+        val long = ReelPublishPipeline.buildRequest(pending("hi").copy(kind = PublishKind.LONG, title = "T"), "v", "c")
 
         assertThat(reel.contentType).isEqualTo(CONTENT_TYPE_FLICK)
         assertThat(long.contentType).isEqualTo(CONTENT_TYPE_LONG_VIDEO)

@@ -3,9 +3,9 @@ package com.us.android.feature.post.createhub
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.ChannelRepository
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
-import com.us.android.core.media.publish.VideoKind
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_LONG_VIDEO
@@ -308,37 +308,44 @@ class ReelPublishPipeline @Inject constructor(
          * never folded into the text; `publish_at` is sent only when the user
          * scheduled the post.
          */
-        fun buildRequest(pending: PendingReelPublish, videoId: String, coverId: String?) = CreatePostRequest(
-            text = pending.caption.trim(),
-            visibility = pending.visibility,
-            contentType = when (pending.kind) {
-                VideoKind.REEL -> CONTENT_TYPE_FLICK
-                VideoKind.LONG -> CONTENT_TYPE_LONG_VIDEO
-            },
-            postType = POST_TYPE_VIDEO,
-            mediaIds = listOf(videoId),
-            language = DEFAULT_LANGUAGE,
-            distribution = DistributionRequest(),
-            title = when (pending.kind) {
-                VideoKind.REEL -> ""
-                VideoKind.LONG -> pending.title.trim()
-            },
-            noComments = !pending.allowComments,
-            hideShare = pending.hideShare,
-            allowDownload = pending.allowDownload,
-            remixSetting = when (pending.kind) {
-                VideoKind.REEL -> if (pending.allowRemix) REMIX_ALLOW else REMIX_DISALLOW
-                VideoKind.LONG -> null
-            },
-            category = pending.category.trim().ifBlank { null },
-            coverMediaId = coverId,
-            taggedUserIds = pending.taggedUserIds.takeIf { it.isNotEmpty() },
-            locationName = pending.locationName.trim().ifBlank { null },
-            hashtags = pending.hashtags.takeIf { it.isNotEmpty() },
-            mentions = pending.mentions.takeIf { it.isNotEmpty() },
-            publishAt = pending.publishAt?.takeIf { it.isNotBlank() },
-        )
+        fun buildRequest(pending: PendingReelPublish, videoId: String, coverId: String?): CreatePostRequest {
+            // This pipeline posts VIDEO, and only video. A photo post shares
+            // the publish QUEUE (so the profile can draw both) but not this
+            // pipeline: it is rendered page by page and created with a
+            // carousel of media ids by `CreatorPublisher`, a shape
+            // `PendingReelPublish` — one video, one cover — cannot hold.
+            require(pending.kind != PublishKind.PHOTO) { PHOTO_NOT_A_VIDEO }
+            val long = pending.kind == PublishKind.LONG
+            return CreatePostRequest(
+                text = pending.caption.trim(),
+                visibility = pending.visibility,
+                contentType = if (long) CONTENT_TYPE_LONG_VIDEO else CONTENT_TYPE_FLICK,
+                postType = POST_TYPE_VIDEO,
+                mediaIds = listOf(videoId),
+                language = DEFAULT_LANGUAGE,
+                distribution = DistributionRequest(),
+                title = if (long) pending.title.trim() else "",
+                noComments = !pending.allowComments,
+                hideShare = pending.hideShare,
+                allowDownload = pending.allowDownload,
+                remixSetting = when {
+                    long -> null
+                    pending.allowRemix -> REMIX_ALLOW
+                    else -> REMIX_DISALLOW
+                },
+                category = pending.category.trim().ifBlank { null },
+                coverMediaId = coverId,
+                taggedUserIds = pending.taggedUserIds.takeIf { it.isNotEmpty() },
+                locationName = pending.locationName.trim().ifBlank { null },
+                hashtags = pending.hashtags.takeIf { it.isNotEmpty() },
+                mentions = pending.mentions.takeIf { it.isNotEmpty() },
+                publishAt = pending.publishAt?.takeIf { it.isNotBlank() },
+            )
+        }
 
         private const val DEFAULT_LANGUAGE = "en"
+
+        /** A photo post never reaches this pipeline; see [buildRequest]. */
+        const val PHOTO_NOT_A_VIDEO = "the reel pipeline does not publish photos"
     }
 }

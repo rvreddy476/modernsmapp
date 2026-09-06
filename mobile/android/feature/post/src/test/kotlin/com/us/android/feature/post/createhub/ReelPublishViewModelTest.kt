@@ -10,7 +10,7 @@ import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.feed.data.CreateChannelRequest
 import com.us.android.core.feed.data.HandleAvailabilityDto
 import com.us.android.core.feed.data.UpdateChannelRequest
-import com.us.android.core.media.publish.VideoKind
+import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.network.ApiEnvelope
@@ -488,10 +488,10 @@ class ReelPublishViewModelTest {
 
     @Test
     fun `the Video tile opens the form as a long video and every other way in is a reel`() {
-        assertThat(viewModel(surface = CreateSurface.Video).state.value.kind).isEqualTo(VideoKind.LONG)
-        assertThat(viewModel(surface = CreateSurface.Reel).state.value.kind).isEqualTo(VideoKind.REEL)
-        assertThat(ReelPublishViewModel.videoKindForSurface(null)).isEqualTo(VideoKind.REEL)
-        assertThat(ReelPublishViewModel.videoKindForSurface("video")).isEqualTo(VideoKind.LONG)
+        assertThat(viewModel(surface = CreateSurface.Video).state.value.kind).isEqualTo(PublishKind.LONG)
+        assertThat(viewModel(surface = CreateSurface.Reel).state.value.kind).isEqualTo(PublishKind.REEL)
+        assertThat(ReelPublishViewModel.videoKindForSurface(null)).isEqualTo(PublishKind.REEL)
+        assertThat(ReelPublishViewModel.videoKindForSurface("video")).isEqualTo(PublishKind.LONG)
     }
 
     @Test
@@ -512,7 +512,7 @@ class ReelPublishViewModelTest {
         advanceUntilIdle()
 
         val pending = launcher.enqueued.single()
-        assertThat(pending.kind).isEqualTo(VideoKind.LONG)
+        assertThat(pending.kind).isEqualTo(PublishKind.LONG)
         assertThat(pending.title).isEqualTo("How the feed ranks")
     }
 
@@ -542,7 +542,7 @@ class ReelPublishViewModelTest {
 
         vm.switchToLong()
         advanceUntilIdle()
-        assertThat(vm.state.value.kind).isEqualTo(VideoKind.LONG)
+        assertThat(vm.state.value.kind).isEqualTo(PublishKind.LONG)
         assertThat(vm.state.value.gate).isEqualTo(VideoGate.Ok)
         assertThat(vm.state.value.videoUri).isEqualTo("content://video/1")
         assertThat(vm.state.value.cover?.index).isEqualTo(2)
@@ -552,7 +552,7 @@ class ReelPublishViewModelTest {
         vm.onTitleChanged("Six minutes")
         vm.onPost()
         advanceUntilIdle()
-        assertThat(launcher.enqueued.single().kind).isEqualTo(VideoKind.LONG)
+        assertThat(launcher.enqueued.single().kind).isEqualTo(PublishKind.LONG)
         assertThat(launcher.enqueued.single().caption).isEqualTo("six minutes")
     }
 
