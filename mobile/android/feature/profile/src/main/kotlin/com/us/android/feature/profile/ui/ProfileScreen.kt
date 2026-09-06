@@ -1,6 +1,7 @@
 package com.us.android.feature.profile.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -230,6 +231,26 @@ internal fun ProfileContent(
     }
 }
 
+/**
+ * The bottom of a profile: its media grid, or the placeholder that stands
+ * in for it on someone else's private account the viewer does not follow.
+ * The viewer's own profile is never hidden from them, however private.
+ */
+@Composable
+private fun ProfileMedia(state: ProfileUiState.Content, destinations: ProfileDestinations) {
+    val profile = state.profile
+    val hidden = !profile.isOwnProfile && profile.isPrivate &&
+        state.relationship.followStatus != FollowStatus.FOLLOWING
+    if (hidden) {
+        PrivatePlaceholder()
+    } else {
+        ProfileMediaGrid(
+            onOpenPost = destinations.onOpenPost,
+            onPublished = destinations.onPublished,
+        )
+    }
+}
+
 private fun ProfileUiState.title(): String = when (this) {
     is ProfileUiState.Content -> if (profile.isOwnProfile) "My profile" else profile.nameForDisplay
     else -> "Profile"
@@ -245,89 +266,90 @@ private fun LoadedProfile(
     modifier: Modifier = Modifier,
 ) {
     val profile = state.profile
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = UsTheme.spacing.pageHorizontal),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
-    ) {
-        ProfileHeader(profile = profile, avatarUrl = media.avatar, coverUrl = media.cover)
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = UsTheme.spacing.pageHorizontal),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
+        ) {
+            ProfileHeader(profile = profile, avatarUrl = media.avatar, coverUrl = media.cover)
 
-        UsStatRow(
-            stats = listOf(
-                UsStat("Posts", state.counts.posts),
-                UsStat("Followers", state.counts.followers) { destinations.onOpenFollowers(profile.userId) },
-                UsStat("Following", state.counts.following) { destinations.onOpenFollowing(profile.userId) },
-            ),
-        )
+            UsStatRow(
+                stats = listOf(
+                    UsStat("Posts", state.counts.posts),
+                    UsStat("Followers", state.counts.followers) { destinations.onOpenFollowers(profile.userId) },
+                    UsStat("Following", state.counts.following) { destinations.onOpenFollowing(profile.userId) },
+                ),
+            )
 
-        // Editing is offered only when the host supplied a destination AND the
-        // loaded profile is genuinely the viewer's. Two conditions rather than
-        // one because the endpoint behind the form replaces the OWNER's fields
-        // keyed off the access token — an edit control on someone else's page
-        // would silently overwrite the viewer's own profile.
-        if (profile.isOwnProfile && destinations.onEditProfile != null) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                UsSecondaryButton(
-                    text = "Edit profile",
-                    onClick = destinations.onEditProfile,
-                    modifier = Modifier.weight(1f),
-                )
-                // Settings sits here when the Momentum header owns the top
-                // bar; a pushed own-profile (no header) keeps it in the bar.
-                if (destinations.header != null && destinations.onOpenSettings != null) {
-                    IconButton(onClick = destinations.onOpenSettings) {
-                        Icon(
-                            imageVector = UsIcons.Settings,
-                            contentDescription = "Settings",
-                            tint = UsTheme.extended.textPrimary,
-                        )
+            // Editing is offered only when the host supplied a destination AND the
+            // loaded profile is genuinely the viewer's. Two conditions rather than
+            // one because the endpoint behind the form replaces the OWNER's fields
+            // keyed off the access token — an edit control on someone else's page
+            // would silently overwrite the viewer's own profile.
+            if (profile.isOwnProfile && destinations.onEditProfile != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    UsSecondaryButton(
+                        text = "Edit profile",
+                        onClick = destinations.onEditProfile,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // Settings sits here when the Momentum header owns the top
+                    // bar; a pushed own-profile (no header) keeps it in the bar.
+                    if (destinations.header != null && destinations.onOpenSettings != null) {
+                        IconButton(onClick = destinations.onOpenSettings) {
+                            Icon(
+                                imageVector = UsIcons.Settings,
+                                contentDescription = "Settings",
+                                tint = UsTheme.extended.textPrimary,
+                            )
+                        }
                     }
                 }
             }
+
+            // Same gating as Edit profile, and for the same reason: approving
+            // someone into THIS account only makes sense on the account's own
+            // screen.
+            if (profile.isOwnProfile && destinations.onOpenFollowRequests != null) {
+                RequestsPill(
+                    count = state.incomingFollowRequestCount,
+                    onClick = destinations.onOpenFollowRequests,
+                )
+            }
+
+            if (!profile.isOwnProfile) {
+                MessageControls(
+                    profile = profile,
+                    chatState = chatState,
+                    onMessage = actions.onMessage,
+                    onDismissChatError = actions.onDismissChatError,
+                )
+
+                RelationshipControls(
+                    relationship = state.relationship,
+                    busy = state.relationshipBusy,
+                    onFollowToggle = actions.onFollowToggle,
+                    onBlockToggle = actions.onBlockToggle,
+                )
+            }
+
+            state.actionError?.let { error ->
+                ActionErrorBanner(message = error, onDismiss = actions.onDismissActionError)
+            }
+
+            ProfileMedia(state = state, destinations = destinations)
         }
 
-        // Same gating as Edit profile, and for the same reason: approving
-        // someone into THIS account only makes sense on the account's own
-        // screen.
-        if (profile.isOwnProfile && destinations.onOpenFollowRequests != null) {
-            RequestsPill(
-                count = state.incomingFollowRequestCount,
-                onClick = destinations.onOpenFollowRequests,
-            )
-        }
-
-        if (!profile.isOwnProfile) {
-            MessageControls(
-                profile = profile,
-                chatState = chatState,
-                onMessage = actions.onMessage,
-                onDismissChatError = actions.onDismissChatError,
-            )
-
-            RelationshipControls(
-                relationship = state.relationship,
-                busy = state.relationshipBusy,
-                onFollowToggle = actions.onFollowToggle,
-                onBlockToggle = actions.onBlockToggle,
-            )
-        }
-
-        state.actionError?.let { error ->
-            ActionErrorBanner(message = error, onDismiss = actions.onDismissActionError)
-        }
-
-        if (!profile.isOwnProfile && profile.isPrivate && state.relationship.followStatus != FollowStatus.FOLLOWING) {
-            PrivatePlaceholder()
-        } else {
-            ProfileMediaGrid(
-                onOpenPost = destinations.onOpenPost,
-                onPublished = destinations.onPublished,
-            )
+        // Over the page, not in the column — see [PublishSuccessBanner]. Own
+        // profile only, which a non-null `onPublished` already means.
+        if (destinations.onPublished != null) {
+            PublishSuccessBanner(modifier = Modifier.align(Alignment.TopCenter))
         }
     }
 

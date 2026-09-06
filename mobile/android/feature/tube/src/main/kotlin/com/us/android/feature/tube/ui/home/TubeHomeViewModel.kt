@@ -13,6 +13,7 @@ import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.feed.data.ContinueWatching
+import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoThumb
@@ -20,7 +21,9 @@ import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.ReelsEntry
+import com.us.android.core.media.TubeEntry
 import com.us.android.core.media.data.MediaRepository
+import com.us.android.core.media.publish.playsInReels
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.feature.tube.data.TubeQueue
@@ -31,6 +34,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -52,6 +56,10 @@ data class TubeShelves(
     val channels: List<TubeChannelBubble> = emptyList(),
 )
 
+/** Whether a row is short enough to be a reel — the app's one five-minute rule. */
+private fun FeedItem.isReelLength(): Boolean =
+    playsInReels(feedContentType, media.maxOfOrNull { it.durationMs } ?: 0L)
+
 /**
  * Tube home (Momentum layout, 2026-09-05): the chip rail's query paged
  * through the video surface, the channels strip from the Following feed,
@@ -61,7 +69,8 @@ data class TubeShelves(
  * A video the viewer is posting no longer shows here: since 2026-09-05
  * Post lands on the viewer's own profile, whose grid draws the pending
  * tile with its ring. Tube reads the finished post from the feed like any
- * other.
+ * other — and since 2026-09-06 the profile SENDS the viewer here when that
+ * upload finishes, with the video's id in [TubeEntry]; see [pinned].
  */
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
@@ -75,6 +84,8 @@ class TubeHomeViewModel @Inject constructor(
     private val media: MediaRepository,
     private val queue: TubeQueue,
     private val reelsEntry: ReelsEntry,
+    private val tubeEntry: TubeEntry,
+    private val posts: FeedRepository,
     private val channels: ChannelRepository,
     private val viewerStore: TubeViewerStore,
     private val follows: FollowGraph,
@@ -100,6 +111,21 @@ class TubeHomeViewModel @Inject constructor(
     /** The viewer, for the "You" bubble's face. */
     val viewer: StateFlow<TubeViewer?> = viewerStore.viewer
 
+    private val _pinned = MutableStateFlow<FeedItem?>(null)
+
+    /**
+     * The video the viewer has just finished posting, above the ranked rows
+     * (founder, 2026-09-06: a long video's journey ends "on the Tube home
+     * page with that video there").
+     *
+     * A PIN and not a refresh, exactly as the home feed's is: the ranked
+     * mosaic decides its own order and a brand-new video may not be in its
+     * first page at all, so the post is fetched by id and drawn first, and
+     * filtered out of the paged rows so it never appears twice. Null on an
+     * ordinary visit, and again as soon as the viewer leaves and returns.
+     */
+    val pinned: StateFlow<FeedItem?> = _pinned
+
     /**
      * The ranked videos for the selected chip, one cached stream per
      * selection so rotation replays the pages rather than refetching.
@@ -107,6 +133,9 @@ class TubeHomeViewModel @Inject constructor(
     val items: Flow<PagingData<FeedItem>> = selectedKey
         .map { key -> _chips.value.chipFor(key).toQuery() }
         .flatMapLatest { query -> videos.videos(query).cachedIn(viewModelScope) }
+        .combine(_pinned) { page, first ->
+            if (first == null) page else page.filter { it.id != first.id }
+        }
         .combine(hidden.state) { page, set ->
             // "Not interested", Block and Delete from the more sheet — removed
             // at once, the same way every feed removes them.
@@ -123,7 +152,32 @@ class TubeHomeViewModel @Inject constructor(
         viewModelScope.launch { _chips.value = tubeChips(videos.categories()) }
         viewModelScope.launch { channels.ensureLoaded() }
         viewModelScope.launch { viewerStore.ensureLoaded() }
+        takeEntry()
         refreshShelves()
+    }
+
+    /**
+     * The publish journey's last hop: the profile left a post id in
+     * [TubeEntry] and sent the viewer here. The request is cleared FIRST, so
+     * a fetch that fails leaves an ordinary Tube home rather than a page
+     * that keeps trying; post-service can lag the worker's answer by a beat,
+     * so the read is retried a few times before it is given up on — the same
+     * allowance the Reels head makes for a just-published reel.
+     */
+    private fun takeEntry() {
+        val postId = tubeEntry.first.value ?: return
+        tubeEntry.clear()
+        viewModelScope.launch {
+            repeat(PIN_FETCH_ATTEMPTS) { attempt ->
+                when (val result = posts.post(postId)) {
+                    is AppResult.Success -> {
+                        _pinned.value = result.data
+                        return@launch
+                    }
+                    is AppResult.Failure -> if (attempt < PIN_FETCH_ATTEMPTS - 1) delay(PIN_FETCH_RETRY_MILLIS)
+                }
+            }
+        }
     }
 
     /** A chip was tapped: the list reloads for it. */
@@ -142,7 +196,10 @@ class TubeHomeViewModel @Inject constructor(
                 val channel = async { channels.refresh() }
                 _shelves.value = TubeShelves(
                     continueWatching = continueWatching.await(),
-                    reels = reels.await(),
+                    // The same five-minute rule the Reels feed applies
+                    // (founder, 2026-09-06): a mistagged long video is not a
+                    // reel and does not belong on a shelf called Reels.
+                    reels = reels.await().filter { it.isReelLength() },
                     channels = strip.await(),
                 )
                 channel.await()
@@ -199,5 +256,9 @@ class TubeHomeViewModel @Inject constructor(
 
         /** One page of the Following feed is plenty of authors for a strip. */
         const val FOLLOWING_LIMIT = 30
+
+        /** post-service can lag the worker's answer by a beat; three tries a second apart covers it. */
+        const val PIN_FETCH_ATTEMPTS = 3
+        const val PIN_FETCH_RETRY_MILLIS = 1_000L
     }
 }

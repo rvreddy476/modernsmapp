@@ -75,7 +75,13 @@ data class TubeDestinations(
      * reel was tapped, the same handoff the Home feed makes.
      */
     val onOpenReels: () -> Unit,
-    /** The bar's "+": the Create hub on its Video surface. */
+    /**
+     * The "+" — the header's (2026-09-06) and the bar's alike. `:app` opens
+     * the Create sheet SCOPED TO TUBE: post a video, post a reel, go live,
+     * and nothing else (founder, 2026-09-06: "only that plus button should
+     * change according to the app we are on"). Which set that is belongs to
+     * `:feature:post`; Tube only says the plus was pressed here.
+     */
     val onCreateVideo: () -> Unit,
     /** The bar's Explore slot: the app's launcher, the way to every other mini-app. */
     val onOpenExplore: () -> Unit,

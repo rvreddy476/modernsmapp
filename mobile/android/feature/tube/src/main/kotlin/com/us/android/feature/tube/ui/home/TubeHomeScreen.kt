@@ -66,6 +66,7 @@ fun TubeHomeScreen(
     more: PostMoreViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
+    val pinned by viewModel.pinned.collectAsStateWithLifecycle()
     val chips by viewModel.chips.collectAsStateWithLifecycle()
     val selected by viewModel.selected.collectAsStateWithLifecycle()
     val shelves by viewModel.shelves.collectAsStateWithLifecycle()
@@ -107,6 +108,7 @@ fun TubeHomeScreen(
         Box(modifier = Modifier.fillMaxSize()) {
             TubeBody(
                 items = items,
+                pinned = pinned,
                 shelves = shelves,
                 strip = StripState(ownChannel = ownChannel, viewer = viewer),
                 actions = actions,
@@ -167,6 +169,8 @@ internal data class StripState(
 @Composable
 private fun TubeBody(
     items: LazyPagingItems<FeedItem>,
+    /** The just-posted video, drawn above everything — see `TubeHomeViewModel.pinned`. */
+    pinned: FeedItem?,
     shelves: TubeShelves,
     strip: StripState,
     actions: TubeHomeActions,
@@ -194,8 +198,22 @@ private fun TubeBody(
             contentPadding = PaddingValues(bottom = bottomPadding.calculateBottomPadding() + UsTheme.spacing.xxl),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
         ) {
+            // The viewer's own just-posted video, first and above the rail:
+            // the end of the publish journey (founder, 2026-09-06) is landing
+            // on Tube WITH that video, so it must not be somewhere the reader
+            // has to look for it.
+            if (pinned != null) {
+                item(key = "pinned:${pinned.id}") {
+                    VideoCard(
+                        item = pinned,
+                        thumb = actions.videos.thumbFor(pinned),
+                        onClick = { actions.videos.open(pinned) },
+                        onMore = { actions.videos.more(pinned) },
+                    )
+                }
+            }
             sections(sections, items, shelves, strip, actions, rail)
-            pageState(items)
+            pageState(items, hasPinned = pinned != null)
         }
     }
 }
@@ -279,9 +297,11 @@ private fun TubeSectionRow(
  * load, the error with Retry, the empty message, then the next page's
  * loader or its failure — never a silent end.
  */
-private fun LazyListScope.pageState(items: LazyPagingItems<FeedItem>) {
+private fun LazyListScope.pageState(items: LazyPagingItems<FeedItem>, hasPinned: Boolean) {
     val refresh = items.loadState.refresh
-    val empty = items.itemCount == 0
+    // A pinned video is content: "No videos yet" under the one the viewer
+    // just posted would be the page contradicting itself.
+    val empty = items.itemCount == 0 && !hasPinned
     when {
         refresh is LoadState.Loading && empty -> item(key = "state:loading") { TubeListSkeleton() }
         refresh is LoadState.Error && empty -> item(key = "state:error") {

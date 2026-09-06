@@ -82,6 +82,13 @@ import kotlinx.coroutines.launch
  * its own (`ComposerDraftStore`). A link to a list that does not exist would
  * be dead UI, so it is omitted rather than stubbed.
  *
+ * ## WHAT IT OFFERS IS THE SCOPE'S, NOT THE SHEET'S (2026-09-06)
+ *
+ * [scope] decides which tiles are drawn and whether Go Live is under them —
+ * see [CreateScope], which is the ONE place that mapping lives. In Tube the
+ * plus offers three things and nothing else; everywhere else it is the full
+ * sheet. The sheet itself never asks where it is.
+ *
  * [onPick] receives the chosen surface; `:app` turns it into the route. The
  * sheet never navigates itself — the feature does not own the graph.
  */
@@ -91,14 +98,15 @@ fun CreateSheet(
     onPick: (CreateSurface) -> Unit,
     onOpenLive: () -> Unit,
     onDismiss: () -> Unit,
+    scope: CreateScope = CreateScope.App,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val scope = rememberCoroutineScope()
+    val sheetScope = rememberCoroutineScope()
 
     // Slide the sheet away FIRST, then act: navigating while the sheet is
     // still up would leave the composer arriving under a scrim.
     fun leaveThen(action: () -> Unit) {
-        scope.launch { sheetState.hide() }.invokeOnCompletion {
+        sheetScope.launch { sheetState.hide() }.invokeOnCompletion {
             onDismiss()
             action()
         }
@@ -138,9 +146,11 @@ fun CreateSheet(
             GrabHandle()
             SheetHeader(onClose = { leaveThen {} })
             Spacer(Modifier.height(HEADER_GAP))
-            TileGrid(onPick = { leaveThen { onPick(it) } })
-            Spacer(Modifier.height(GAP))
-            GoLiveRow(onClick = { leaveThen(onOpenLive) })
+            TileGrid(surfaces = scope.surfaces, onPick = { leaveThen { onPick(it) } })
+            if (scope.offersLive) {
+                Spacer(Modifier.height(GAP))
+                GoLiveRow(onClick = { leaveThen(onOpenLive) })
+            }
         }
     }
 }
@@ -204,15 +214,17 @@ private fun SheetHeader(onClose: () -> Unit) {
 // ── The grid ────────────────────────────────────────────────────────────
 
 /**
- * 4 columns × 2 rows, 8dp gaps. Rows, not a lazy grid: seven items, all
+ * Up to 4 columns, 8dp gaps. Rows, not a lazy grid: a handful of items, all
  * visible. Four across since Video joined Reel (2026-09-05) — three would
  * have left one tile alone on a third row. A short last row is padded with
- * empty slots so every tile keeps the same width.
+ * empty slots so every tile keeps the same width, which is also what keeps
+ * Tube's two tiles the size of the app sheet's rather than half the screen
+ * each.
  */
 @Composable
-private fun TileGrid(onPick: (CreateSurface) -> Unit) {
+private fun TileGrid(surfaces: List<CreateSurface>, onPick: (CreateSurface) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(GAP)) {
-        CreateSurface.entries.chunked(COLUMNS).forEach { row ->
+        surfaces.chunked(COLUMNS).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(GAP)) {
                 row.forEach { surface ->
                     CreateTile(

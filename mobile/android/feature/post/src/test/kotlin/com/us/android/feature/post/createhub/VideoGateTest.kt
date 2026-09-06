@@ -2,6 +2,7 @@ package com.us.android.feature.post.createhub
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.media.publish.PublishKind
+import com.us.android.core.media.publish.REEL_MAX_DURATION_MS
 import org.junit.Test
 
 /**
@@ -55,6 +56,11 @@ class VideoGateTest {
         assertThat(VideoGate.TooLarge(1L).allowsPost).isFalse()
     }
 
+    /**
+     * The five minutes now lives in `:core:media` (the Reels FEED applies the
+     * same number and cannot see this module); this asserts the gate is still
+     * judging by it and not by a second copy.
+     */
     @Test
     fun `the constants are the agreed limits`() {
         assertThat(REEL_MAX_DURATION_MS).isEqualTo(300_000L)

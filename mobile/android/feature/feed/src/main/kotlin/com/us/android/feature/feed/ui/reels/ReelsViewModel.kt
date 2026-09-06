@@ -22,6 +22,7 @@ import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.media.publish.playsInReels
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -139,6 +141,22 @@ fun ReelsMode.chrome(): ReelsChrome = when (this) {
  * does not hold it (yet). Pure, so the scroll a feed tap asks for can be
  * pinned without a pager.
  */
+/**
+ * Whether this row belongs in the Reels feed at all (founder, 2026-09-06:
+ * a video over five minutes "should not appear in the reels section").
+ *
+ * The client refuses to POST a long capture as a reel — `videoGate` in
+ * `:feature:post` disables Post for it — but that only covers what THIS
+ * build creates. `/v1/feed/reels` can still hand back a post an older
+ * client, or a publish whose length could not be probed, tagged `flick`.
+ * So the length is judged again here, from the transcode's own
+ * `duration_ms`: the longest video on the row, since a reel carries one.
+ *
+ * Pure and internal so the rule is a table test without a repository.
+ */
+internal fun FeedItem.belongsInReels(): Boolean =
+    playsInReels(feedContentType, media.maxOfOrNull { it.durationMs } ?: 0L)
+
 fun entryPage(postId: String, headId: String?, rankedIds: List<String>): Int? {
     if (headId == postId) return 0
     val index = rankedIds.indexOf(postId)
@@ -181,6 +199,10 @@ class ReelsViewModel @Inject constructor(
      */
     val items: Flow<PagingData<FeedItem>> = repository.feed(FeedQuery.Reels)
         .cachedIn(viewModelScope)
+        // A long video is not a reel, whatever the row is tagged
+        // (founder, 2026-09-06) — see [belongsInReels]. Applied AFTER the
+        // cache so a page already held from before this build is filtered too.
+        .map { page -> page.filter { it.belongsInReels() } }
         .combine(_live) { page, live ->
             if (live == null) page else page.filter { it.id != live.id }
         }

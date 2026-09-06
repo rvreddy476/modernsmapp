@@ -1,6 +1,6 @@
 package com.us.android.feature.post.createhub.studio
 
-import com.us.android.feature.post.createhub.REEL_MAX_DURATION_MS
+import com.us.android.core.media.publish.REEL_MAX_DURATION_MS
 
 /** The Speed step's four chips. */
 @Suppress("MagicNumber") // The chips ARE the numbers.

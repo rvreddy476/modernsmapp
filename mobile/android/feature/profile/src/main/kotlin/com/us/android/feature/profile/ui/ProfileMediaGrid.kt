@@ -1,11 +1,15 @@
 package com.us.android.feature.profile.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -51,8 +55,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -182,6 +188,67 @@ internal fun ProfileMediaGrid(
             },
             onDismiss = { createChannelKey = null },
         )
+    }
+}
+
+/**
+ * "Uploaded successfully", in green, over the profile (founder, 2026-09-06:
+ * "no OK button needed — just show the message, it disappears, and then go
+ * to that post, video or reel").
+ *
+ * Drawn by the profile as an OVERLAY rather than as a row of the grid: the
+ * viewer has just landed here and the grid may well be below the fold, and
+ * a message nobody sees is not a message. It carries no control at all —
+ * not even a close — because the one thing the founder said about it twice
+ * is that it takes itself away.
+ *
+ * Its ViewModel is the grid's: `hiltViewModel()` in the same destination
+ * returns the same instance, so this is the same publish the tiles above
+ * were drawing, not a second reading of the queue.
+ */
+@Composable
+internal fun PublishSuccessBanner(
+    modifier: Modifier = Modifier,
+    viewModel: ProfileGridViewModel = hiltViewModel(),
+) {
+    val success by viewModel.success.collectAsStateWithLifecycle()
+    // Held so the words stay put while the banner fades out, after the
+    // state that carried them has already gone.
+    var message by remember { mutableStateOf("") }
+    success?.let { message = it.message }
+
+    AnimatedVisibility(
+        visible = success != null,
+        enter = fadeIn() + slideInVertically { -it },
+        exit = fadeOut(),
+        modifier = modifier,
+    ) {
+        val shape = RoundedCornerShape(UsTheme.radii.full)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            modifier = Modifier
+                .padding(UsTheme.spacing.l)
+                .clip(shape)
+                .background(UsTheme.extended.statusSuccess)
+                .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.m)
+                .semantics { liveRegion = LiveRegionMode.Polite }
+                .testTag("profile_publish_success"),
+        ) {
+            Icon(
+                imageVector = UsIcons.Check,
+                contentDescription = null,
+                tint = UsTheme.extended.brandNavy,
+                modifier = Modifier.size(SUCCESS_GLYPH),
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.brandNavy,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -710,6 +777,7 @@ private val STATE_HEIGHT = 180.dp
 private val APPEND_HEIGHT = 64.dp
 private val KIND_GLYPH = 16.dp
 private val FAILED_GLYPH = 22.dp
+private val SUCCESS_GLYPH = 16.dp
 private val RING_SIZE = 48.dp
 private val RING_STROKE = 3.dp
 private val RING_INSET = 4.dp

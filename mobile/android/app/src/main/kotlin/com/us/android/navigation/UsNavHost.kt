@@ -108,8 +108,8 @@ import com.us.android.feature.live.navigation.navigateToLiveHub
 import com.us.android.feature.live.navigation.navigateToLiveWatch
 import com.us.android.feature.notifications.navigation.navigateToNotifications
 import com.us.android.feature.notifications.navigation.notificationsScreen
+import com.us.android.feature.post.createhub.CreateScope
 import com.us.android.feature.post.createhub.CreateSheet
-import com.us.android.feature.post.createhub.CreateSurface
 import com.us.android.feature.post.navigation.ComposerRoute
 import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
@@ -289,8 +289,11 @@ fun UsNavHost(
     val currentTab = TopLevelDestination.forDestination(backStackEntry?.destination)
 
     // The Create sheet opens OVER the current tab; nothing is pushed until a
-    // tile is picked. Saveable so a rotation mid-choice keeps it open.
-    var createSheetOpen by rememberSaveable { mutableStateOf(false) }
+    // tile is picked. Saveable so a rotation mid-choice keeps it open. The
+    // SCOPE is the state rather than a boolean: what the plus offers changes
+    // with the app it was pressed in (founder, 2026-09-06) and `CreateScope`
+    // is the one place that mapping lives. Null means closed.
+    var createScope by rememberSaveable { mutableStateOf<CreateScope?>(null) }
 
     // A screen's request about the chrome — today only "hide the bar", made
     // by Reels' full mode. The shell owns the holder and the decision
@@ -338,8 +341,8 @@ fun UsNavHost(
                         // Momentum's raised centre button is always Create, not a
                         // tab. It opens the Create SHEET over the current screen;
                         // while the sheet is up the "+" reads as "×" and closes it.
-                        centerAction = { createSheetOpen = !createSheetOpen },
-                        centerActive = createSheetOpen,
+                        centerAction = { createScope = createScope?.let { null } ?: CreateScope.App },
+                        centerActive = createScope != null,
                     )
                 }
             }
@@ -361,21 +364,14 @@ fun UsNavHost(
             ) {
                 authDestinations(navController)
                 shellDestinations()
-                tabDestinations(navController, pool, launcher, onOpenPaymentSheet, onAbandonPaymentSheet)
+                tabDestinations(navController, pool, launcher, onOpenPaymentSheet, onAbandonPaymentSheet) {
+                    createScope = it
+                }
             }
         }
     }
 
-    // The Create sheet: six typed tiles and Go Live. A tile pushes the hub
-    // opened on that surface; Go Live opens the live hub, which is where the
-    // old create rail's LIVE slot went too.
-    if (createSheetOpen) {
-        CreateSheet(
-            onPick = { surface -> navController.navigateToCreate(surface) },
-            onOpenLive = { navController.navigateToLiveHub() },
-            onDismiss = { createSheetOpen = false },
-        )
-    }
+    CreateSheetHost(scope = createScope, navController = navController, onDismiss = { createScope = null })
 
     // Screen-time nudge, over whatever is on screen. Gated on an authenticated
     // session: the wellbeing endpoint it polls needs a session, and the nudge
@@ -385,6 +381,26 @@ fun UsNavHost(
             onChangeLimit = { navController.navigateToScreenTime() },
         )
     }
+}
+
+/**
+ * The Create sheet, when a "+" has asked for one.
+ *
+ * A tile pushes the hub opened on that surface; Go Live opens the live hub,
+ * which is where the old create rail's LIVE slot went too. WHAT it offers is
+ * the SCOPE's, not this function's: the shell's own plus offers everything,
+ * Tube's offers a video, a reel and going live (founder, 2026-09-06). A null
+ * scope is a closed sheet.
+ */
+@Composable
+private fun CreateSheetHost(scope: CreateScope?, navController: NavHostController, onDismiss: () -> Unit) {
+    if (scope == null) return
+    CreateSheet(
+        onPick = { surface -> navController.navigateToCreate(surface) },
+        onOpenLive = { navController.navigateToLiveHub() },
+        onDismiss = onDismiss,
+        scope = scope,
+    )
 }
 
 /**
@@ -519,6 +535,8 @@ private fun NavGraphBuilder.tabDestinations(
     // a lambda inside UsNavHost, so the parameter is not otherwise in scope.
     onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit,
+    /** A mini-app's "+" was pressed: the shell opens the Create sheet in that scope. */
+    onOpenCreate: (CreateScope) -> Unit,
 ) {
     // A tapped feed video opens the Reels TAB (founder, 2026-09-05), which
     // reads the post id the feed left in ReelsEntry and opens on that reel.
@@ -812,7 +830,12 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenVideo = { postId -> navController.navigateToWatch(postId) },
             onOpenNotifications = { navController.navigateToNotifications() },
             onOpenReels = onOpenReels,
-            onCreateVideo = { navController.navigateToCreate(CreateSurface.Video) },
+            // Tube's "+" — the header's and the bar's — opens the Create
+            // sheet scoped to Tube: video, reel, live (founder, 2026-09-06).
+            // It used to jump straight into the video composer, which is why
+            // there was nothing to find at the top and no way to start a reel
+            // from inside the video app.
+            onCreateVideo = { onOpenCreate(CreateScope.Tube) },
             onOpenExplore = { navController.navigateToTopLevel(TopLevelDestination.EXPLORE) },
             onOpenTab = { tab -> navController.navigateToTubeTab(tab) },
             onOpenChannel = { userId -> navController.navigateToTubeChannel(userId) },
@@ -905,15 +928,21 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         ),
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
         // The end of the publish journey: the upload the viewer was watching
-        // on this grid is live, so carry them to the feed it landed on with it
+        // on this grid is live, so carry them to where it landed with it
         // first (founder, 2026-09-06). The post id travelled ahead through
-        // FeedEntry / ReelsEntry — a tab root is restored, not pushed, so the
-        // navigation itself cannot carry one. A long video has no feed tab in
-        // this app; its Videos tab is already showing it, so nothing moves.
+        // FeedEntry / ReelsEntry / TubeEntry — a tab root is restored, not
+        // pushed, and Tube's home is a `data object` route, so neither
+        // navigation can carry an argument.
+        //
+        // All three kinds move now. A long video used to stay put; the
+        // founder asked for it to land on Tube's main page with that video
+        // there, and Tube is a PUSH from this tab rather than a tab of its
+        // own — so Back from it returns to the profile the viewer posted from.
         onPublished = { contentType ->
             when (contentType) {
                 POST_CONTENT_TYPE -> navController.navigateToTopLevel(TopLevelDestination.HOME)
                 FLICK_CONTENT_TYPE -> navController.navigateToTopLevel(TopLevelDestination.REELS)
+                LONG_VIDEO_CONTENT_TYPE -> navController.navigateToTube()
                 else -> Unit
             }
         },

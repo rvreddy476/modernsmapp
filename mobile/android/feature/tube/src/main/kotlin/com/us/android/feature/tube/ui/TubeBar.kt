@@ -44,7 +44,11 @@ sealed interface TubeBarAction {
     /** The app's Explore launcher — the way to every other mini-app. */
     data object OpenExplore : TubeBarAction
 
-    /** The Create hub, opened on Video. */
+    /**
+     * Create, from inside Tube: the Create sheet scoped to Tube's three —
+     * video, reel, live. Raised by the bar's centre tile and by the
+     * header's "+" (2026-09-06); `:app` resolves both the same way.
+     */
     data object CreateVideo : TubeBarAction
 }
 

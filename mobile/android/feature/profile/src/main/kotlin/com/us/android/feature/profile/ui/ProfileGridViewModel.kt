@@ -12,6 +12,7 @@ import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.ReelsEntry
+import com.us.android.core.media.TubeEntry
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.PublishSchedule
 import com.us.android.core.media.publish.ReelPublishActions
@@ -20,6 +21,7 @@ import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.model.FeedItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -80,6 +82,23 @@ fun pendingTabFor(kind: PublishKind?): ProfileGridTab? = when (kind) {
     null -> null
 }
 
+/**
+ * "Uploaded successfully" — the green moment at the end of a publish
+ * (founder, 2026-09-06: "once uploaded we show a green message, uploaded
+ * successfully. No OK button needed — just show the message, it disappears,
+ * and then go to that post, video or reel").
+ *
+ * [tab] is only carried so a reader of this state knows WHAT finished; the
+ * hand-off itself is a separate one-shot event, because the banner is
+ * something the profile draws and the navigation is something the shell
+ * does.
+ */
+data class PublishSuccess(val tab: ProfileGridTab) {
+
+    /** What the banner says. One sentence, no control — it takes itself away. */
+    val message: String get() = "Uploaded successfully"
+}
+
 /** Which tab a scheduled post belongs on, by its content type; null for a kind the grid has no tab for. */
 fun scheduledTabFor(contentType: String): ProfileGridTab? =
     ProfileGridTab.entries.firstOrNull { it.contentType == contentType }
@@ -106,6 +125,7 @@ class ProfileGridViewModel @Inject constructor(
     private val publishActions: ReelPublishActions,
     private val feedEntry: FeedEntry,
     private val reelsEntry: ReelsEntry,
+    private val tubeEntry: TubeEntry,
     follows: FollowGraph,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -132,6 +152,16 @@ class ProfileGridViewModel @Inject constructor(
      */
     private val _published = MutableSharedFlow<ProfileGridTab>(extraBufferCapacity = PUBLISHED_BUFFER)
     val published: SharedFlow<ProfileGridTab> = _published.asSharedFlow()
+
+    private val _success = MutableStateFlow<PublishSuccess?>(null)
+
+    /**
+     * The green "Uploaded successfully" message, while it is up. A STATE,
+     * unlike [published]: the banner is a thing that is on screen for a
+     * while and must survive a recomposition, where arriving at a feed is a
+     * thing that happens once. See [succeedThenHandOff] for the timing.
+     */
+    val success: StateFlow<PublishSuccess?> = _success
 
     val posts: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.POSTS)
     val reels: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.REELS)
@@ -185,7 +215,7 @@ class ProfileGridViewModel @Inject constructor(
                     refreshScheduled()
                 } else {
                     reload(tile.tab)
-                    handOff(tile.tab, postId)
+                    succeedThenHandOff(tile.tab, postId)
                 }
             }
             publishActions.dismiss(item.creationKey)
@@ -193,19 +223,47 @@ class ProfileGridViewModel @Inject constructor(
     }
 
     /**
-     * Where a finished publish takes the viewer.
+     * The end of the journey, as ONE moment (founder, 2026-09-06).
      *
-     * Posts and reels have a feed to land on, so the post id is pinned there
-     * and the shell is asked to switch tabs. A LONG video has no such tab in
-     * this app — Tube is its home and the profile's Videos tab already shows
-     * it — so it stays put rather than being sent somewhere arbitrary.
+     * The green message goes up, stays [SUCCESS_MILLIS], and then — in the
+     * same step, not a second beat later — takes itself away AND hands the
+     * viewer on. Two reasons for that order rather than navigating first and
+     * showing the message on the destination: the message is about the
+     * upload the viewer was WATCHING here, so it belongs where they watched
+     * it; and a banner that outlived the navigation would arrive on the feed
+     * as a leftover from the previous screen.
+     *
+     * 1.8 seconds is the number. Long enough to read three words without
+     * hurrying — comfortably past the ~1.2 s a short banner needs to be seen
+     * and read — and short enough that a viewer who already knows what it
+     * says is not held on a screen they are done with. Material's shortest
+     * snackbar is four seconds, which is right for a message you might act
+     * on and much too long for one that is followed by a jump.
+     */
+    private fun succeedThenHandOff(tab: ProfileGridTab, postId: String) {
+        if (postId.isBlank()) return
+        _success.value = PublishSuccess(tab)
+        viewModelScope.launch {
+            delay(SUCCESS_MILLIS)
+            _success.value = null
+            handOff(tab, postId)
+        }
+    }
+
+    /**
+     * Where a finished publish takes the viewer: the post is pinned on the
+     * surface it now lives on, and the shell is asked to go there.
+     *
+     * All three kinds land somewhere as of 2026-09-06 — a photo on the home
+     * feed, a reel on Reels, a long video on Tube home. The long video used
+     * to stay put, because Tube had no way of being told which video to open
+     * with; [TubeEntry] is that way, and the founder asked for the hop.
      */
     private fun handOff(tab: ProfileGridTab, postId: String) {
-        if (postId.isBlank()) return
         when (tab) {
             ProfileGridTab.POSTS -> feedEntry.showFirst(postId)
             ProfileGridTab.REELS -> reelsEntry.open(postId)
-            ProfileGridTab.VIDEOS -> return
+            ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
         }
         _published.tryEmit(tab)
     }
@@ -256,5 +314,8 @@ class ProfileGridViewModel @Inject constructor(
 
         /** Room for a queue that finishes several publishes while the screen is away. */
         const val PUBLISHED_BUFFER = 4
+
+        /** How long the green message stays before it takes itself away — see [succeedThenHandOff]. */
+        const val SUCCESS_MILLIS = 1_800L
     }
 }

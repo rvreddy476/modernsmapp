@@ -31,6 +31,16 @@ class ProfileGridTest {
         assertThat(PublishKind.entries.map { pendingTabFor(it) }).doesNotContain(null)
     }
 
+    /**
+     * The green moment (founder, 2026-09-06): the same three words whatever
+     * was posted, and no control on it — it takes itself away.
+     */
+    @Test
+    fun `every finished publish says the same thing`() {
+        assertThat(ProfileGridTab.entries.map { PublishSuccess(it).message }.distinct())
+            .containsExactly("Uploaded successfully")
+    }
+
     @Test
     fun `a scheduled post lands on the tab of its content type`() {
         assertThat(scheduledTabFor("flick")).isEqualTo(ProfileGridTab.REELS)

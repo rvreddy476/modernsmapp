@@ -15,7 +15,7 @@ import com.banuba.sdk.export.data.ExportParamsProvider
 import com.banuba.sdk.veui.data.EditorConfig
 import com.banuba.sdk.veui.domain.textonvideo.TextOnVideoTypeface
 import com.banuba.sdk.veui.ui.TextOnVideoTypefaceProvider
-import com.us.android.feature.post.createhub.REEL_MAX_DURATION_MS
+import com.us.android.core.media.publish.REEL_MAX_DURATION_MS
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.Module
 import org.koin.core.qualifier.named

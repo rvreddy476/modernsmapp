@@ -6,6 +6,7 @@ import android.net.Uri
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.media.publish.PublishKind
+import com.us.android.core.media.publish.REEL_MAX_DURATION_MS
 import com.us.android.core.media.upload.MediaSourceResolver
 import dagger.Binds
 import dagger.Module
@@ -65,8 +66,9 @@ fun videoGate(kind: PublishKind, probe: VideoProbe?): VideoGate {
     return VideoGate.Ok
 }
 
-/** The server's shorts cap: five minutes (2026-09-05). */
-const val REEL_MAX_DURATION_MS: Long = 5L * 60L * 1_000L
+// The five-minute cap itself now lives in :core:media
+// (`publish/ReelLength.kt`), because the Reels FEED has to apply the same
+// number and cannot see this module. Imported above, not redeclared.
 
 /** The upload ceiling for any video: 500 MB. */
 const val MAX_UPLOAD_BYTES: Long = 500L * 1024L * 1024L
