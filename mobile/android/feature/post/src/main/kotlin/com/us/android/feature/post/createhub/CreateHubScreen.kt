@@ -97,7 +97,7 @@ fun CreateHubScreen(
     surface: CreateSurface,
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
-    onOpenStudio: (uris: List<String>) -> Unit,
+    onOpenStudio: (uris: List<String>, alreadyEdited: Boolean) -> Unit,
     /** A long video was handed to the worker: `:app` opens the viewer's own profile, where its pending tile is. */
     onOpenOwnProfile: () -> Unit,
 ) {
@@ -234,7 +234,7 @@ internal fun PublishPill(
 @Composable
 private fun ImageSourceSurface(
     onClose: () -> Unit,
-    onOpenStudio: (uris: List<String>) -> Unit,
+    onOpenStudio: (uris: List<String>, alreadyEdited: Boolean) -> Unit,
     banuba: BanubaGateViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -243,12 +243,15 @@ private fun ImageSourceSurface(
     // cancel or a failure can fall back to the right one.
     var editing by remember { mutableStateOf<android.net.Uri?>(null) }
     val openStudioWithOriginal = {
-        (editing ?: cameraTarget)?.let { onOpenStudio(listOf(it.toString())) } ?: Unit
+        (editing ?: cameraTarget)?.let { onOpenStudio(listOf(it.toString()), false) } ?: Unit
     }
 
     val editPhoto = rememberPhotoEditor(
         editor = banuba.photoEditor,
-        onEdited = { path -> onOpenStudio(listOf(android.net.Uri.fromFile(File(path)).toString())) },
+        onEdited = { path ->
+            // Edited already, so the studio opens on Share.
+            onOpenStudio(listOf(android.net.Uri.fromFile(File(path)).toString()), true)
+        },
         onFailed = { message ->
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             openStudioWithOriginal()
@@ -263,7 +266,7 @@ private fun ImageSourceSurface(
             editing = single
             editPhoto(single)
         } else {
-            onOpenStudio(uris.map { it.toString() })
+            onOpenStudio(uris.map { it.toString() }, false)
         }
     }
 

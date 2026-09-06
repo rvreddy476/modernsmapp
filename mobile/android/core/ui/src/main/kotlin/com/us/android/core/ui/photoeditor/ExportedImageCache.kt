@@ -22,7 +22,16 @@ const val PHOTO_EDITS_DIR = "photo_edits"
 fun copyExportToCache(context: Context, source: Uri): String? {
     val dir = File(context.cacheDir, PHOTO_EDITS_DIR).apply { mkdirs() }
     val target = File(dir, "edit_${System.currentTimeMillis()}.jpg")
-    val open = { context.contentResolver.openInputStream(source) }
+    // The editor does not promise a content:// URI. Banuba exports to its own
+    // working directory and can hand back a plain file path, and
+    // ContentResolver.openInputStream throws on a "file" scheme with no
+    // authority / on a bare path — which runCatching turned into a null, which
+    // the caller reported as "The edited photo could not be saved". The edit
+    // existed; only this copy failed to reach it.
+    val open = {
+        runCatching { context.contentResolver.openInputStream(source) }.getOrNull()
+            ?: sourceFile(source)?.takeIf { it.canRead() }?.inputStream()
+    }
     return runCatching {
         val jpeg = open()?.use(::isJpeg) ?: return null
         if (jpeg) {
@@ -49,3 +58,15 @@ private fun isJpeg(input: InputStream): Boolean {
 private const val SOI_FIRST = 0xFF.toByte()
 private const val SOI_SECOND = 0xD8.toByte()
 private const val JPEG_QUALITY = 95
+
+/**
+ * The export as a plain file, when the Uri names one.
+ *
+ * Covers `file:///…`, and a Uri with no scheme at all — an editor that hands
+ * back `/data/user/0/…/export.jpg` parses as a Uri whose path is the whole
+ * string and whose scheme is null.
+ */
+private fun sourceFile(source: Uri): File? = when (source.scheme) {
+    null, "file" -> source.path?.let(::File)
+    else -> null
+}

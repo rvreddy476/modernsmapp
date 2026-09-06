@@ -191,6 +191,21 @@ private fun EditStep(
             .testTag("studio"),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // Which editing tools this studio offers.
+            //
+            // With the advanced editor available, the studio's own Filter,
+            // Edit and Text duplicate it — two things labelled "Edit" a
+            // centimetre apart, doing different jobs, and neither one obviously
+            // the real one. The advanced editor is the editor; the studio
+            // frames the picture, describes it and posts it.
+            //
+            // Ratio and Alt stay either way: the crop is the studio's own
+            // (the editor exports a picture, not a frame) and alt text is
+            // accessibility, which no image editor gives back.
+            val advanced = onEditPhoto != null
+            val availableTools = remember(advanced) {
+                if (advanced) listOf(StudioTool.Ratio, StudioTool.Alt) else StudioTool.entries.toList()
+            }
             EditTopBar(
                 canUndo = state.canUndo,
                 canRedo = state.canRedo,
@@ -215,7 +230,7 @@ private fun EditStep(
             val page = state.selectedPage
             if (page != null) {
                 when (tool) {
-                    null -> ToolChipsRow(onOpen = { tool = it })
+                    null -> ToolChipsRow(tools = availableTools, onOpen = { tool = it })
                     StudioTool.Filter -> FilterSheet(
                         page = page,
                         draft = draft ?: page.adjustments,
@@ -411,14 +426,14 @@ private fun parseArgb(argb: String): Color =
 // ── Tool chips ──────────────────────────────────────────────────────────
 
 @Composable
-private fun ToolChipsRow(onOpen: (StudioTool) -> Unit) {
+private fun ToolChipsRow(tools: List<StudioTool>, onOpen: (StudioTool) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
     ) {
-        StudioTool.entries.forEach { tool ->
+        tools.forEach { tool ->
             Box(
                 modifier = Modifier
                     .weight(1f)

@@ -89,6 +89,15 @@ class StudioViewModel @Inject constructor(
                 .getOrDefault(emptyList())
         }
 
+    /**
+     * These pictures came out of the advanced editor already edited.
+     *
+     * Read every time (unlike [initialUris], which is consumed once) because
+     * it describes the route, not a pending action.
+     */
+    private val arrivedEdited: Boolean =
+        runCatching { savedStateHandle.toRoute<StudioRoute>().alreadyEdited }.getOrDefault(false)
+
     /** Which of the two Instagram-style steps is on screen. */
     enum class Step { Edit, Share }
 
@@ -219,7 +228,17 @@ class StudioViewModel @Inject constructor(
             // emulator, not by a test, which is exactly why item 14 exists.
             refresh()
             _state.update { state ->
-                state.copy(selectedPageId = session.current.pages.lastOrNull()?.pageId)
+                val landed = state.copy(selectedPageId = session.current.pages.lastOrNull()?.pageId)
+                // Pictures that arrived already edited go straight to Share.
+                // Checked HERE, not at the call site, because the import runs
+                // in this coroutine — at the call site the page list is still
+                // empty and the step would never move.
+                //
+                // Someone who has just finished in the advanced editor is not
+                // asking to be dropped into a second set of editing tools; that
+                // reads as the edit having been discarded. Back from Share
+                // still reaches them.
+                if (arrivedEdited && landed.pages.isNotEmpty()) landed.copy(step = Step.Share) else landed
             }
         }
     }

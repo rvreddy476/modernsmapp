@@ -571,7 +571,7 @@ private fun NavGraphBuilder.tabDestinations(
                 popUpTo<CreateRoute> { inclusive = true }
             }
         },
-        onOpenStudio = { uris -> navController.navigateToStudio(uris) },
+        onOpenStudio = { uris, alreadyEdited -> navController.navigateToStudio(uris, alreadyEdited) },
         // A long video handed to the worker closes the hub and lands on the
         // viewer's OWN profile (founder, 2026-09-05), whose grid shows the
         // posting video first with its ring — the way a reel lands on Reels.

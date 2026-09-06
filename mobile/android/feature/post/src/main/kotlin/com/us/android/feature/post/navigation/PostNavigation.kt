@@ -83,7 +83,17 @@ fun NavController.navigateToComposer() = navigate(ComposerRoute)
  * the not-yet-imported picks, consumed once by the ViewModel.
  */
 @Serializable
-data class StudioRoute(val initialUris: List<String> = emptyList())
+data class StudioRoute(
+    val initialUris: List<String> = emptyList(),
+    /**
+     * The pictures arrived from the advanced photo editor, already edited.
+     *
+     * The studio then opens on Share rather than on its own edit tools. A
+     * person who has just finished editing in one editor is not asking to be
+     * put into a second one — that reads as the edit having been thrown away.
+     */
+    val alreadyEdited: Boolean = false,
+)
 
 fun NavGraphBuilder.studioScreen(
     onClose: () -> Unit,
@@ -98,8 +108,10 @@ fun NavGraphBuilder.studioScreen(
 }
 
 /** Type-safe navigation to the Post Studio. */
-fun NavController.navigateToStudio(initialUris: List<String> = emptyList()) =
-    navigate(StudioRoute(initialUris))
+fun NavController.navigateToStudio(
+    initialUris: List<String> = emptyList(),
+    alreadyEdited: Boolean = false,
+) = navigate(StudioRoute(initialUris, alreadyEdited))
 
 /**
  * A create composer, opened directly on one surface.
@@ -124,7 +136,7 @@ data class CreateRoute(val surface: String = CreateSurface.Text.routeKey) {
 fun NavGraphBuilder.createHubScreen(
     onClose: () -> Unit,
     onPublished: (postId: String) -> Unit,
-    onOpenStudio: (uris: List<String>) -> Unit,
+    onOpenStudio: (uris: List<String>, alreadyEdited: Boolean) -> Unit,
     /** A long video was handed to the worker; `:app` closes the hub and opens the viewer's own profile. */
     onOpenOwnProfile: () -> Unit,
 ) {
