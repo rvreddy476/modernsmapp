@@ -39,7 +39,7 @@ func (s *EngagementStore) RecordReelView(ctx context.Context, v *ReelView) error
 	return s.session.Query(`
 		INSERT INTO social_analytics.reel_views (content_id, viewed_at, viewer_id, watch_duration_ms, completion_pct, source)
 		VALUES (?, ?, ?, ?, ?, ?)`,
-		v.ContentID, v.ViewedAt, v.ViewerID, v.WatchDurationMs, v.CompletionPct, v.Source,
+		cql(v.ContentID), v.ViewedAt, cql(v.ViewerID), v.WatchDurationMs, v.CompletionPct, v.Source,
 	).WithContext(ctx).Exec()
 }
 
@@ -64,7 +64,7 @@ func (s *EngagementStore) IncrementViewCount(ctx context.Context, contentID uuid
 	}
 	// Counter tables require UPDATE ... SET counter = counter + 1
 	query := fmt.Sprintf(`UPDATE social_analytics.reel_view_counts SET %s = %s + 1 WHERE content_id = ?`, counterType, counterType)
-	return s.session.Query(query, contentID).WithContext(ctx).Exec()
+	return s.session.Query(query, cql(contentID)).WithContext(ctx).Exec()
 }
 
 // GetViewCount returns the view counts for a content item.
@@ -74,7 +74,7 @@ func (s *EngagementStore) GetViewCount(ctx context.Context, contentID uuid.UUID)
 		SELECT display_views, quality_views, monetization_views
 		FROM social_analytics.reel_view_counts
 		WHERE content_id = ?`,
-		contentID,
+		cql(contentID),
 	).WithContext(ctx).Scan(&c.DisplayViews, &c.QualityViews, &c.MonetizationViews)
 	if err != nil {
 		if err == gocql.ErrNotFound {
@@ -103,7 +103,7 @@ func (s *EngagementStore) RecordEngagement(ctx context.Context, e *ContentEngage
 	return s.session.Query(`
 		INSERT INTO social_analytics.content_engagement (content_id, engagement_type, created_at, user_id)
 		VALUES (?, ?, ?, ?)`,
-		e.ContentID, e.EngagementType, e.CreatedAt, e.UserID,
+		cql(e.ContentID), e.EngagementType, e.CreatedAt, cql(e.UserID),
 	).WithContext(ctx).Exec()
 }
 
@@ -119,7 +119,7 @@ func (s *EngagementStore) GetEngagementCounts(ctx context.Context, contentID uui
 		err := s.session.Query(`
 			SELECT COUNT(*) FROM social_analytics.content_engagement
 			WHERE content_id = ? AND engagement_type = ?`,
-			contentID, engType,
+			cql(contentID), engType,
 		).WithContext(ctx).Scan(&count)
 		if err != nil && err != gocql.ErrNotFound {
 			return nil, err

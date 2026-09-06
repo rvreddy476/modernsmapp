@@ -17,9 +17,16 @@ type Event struct {
 	SessionID     uuid.UUID
 	ContentID     uuid.UUID
 	Type          string
-	Payload       []byte // jsonb
-	Timestamp     time.Time
-	ReceivedAt    time.Time
+	// DedupeKey narrows the "one per (actor, session, content, type)"
+	// receipt rule for the event types where repetition is an artefact
+	// rather than a new signal — the milestone kind for milestones, a
+	// constant for once-per-session engagement. nil means the client's
+	// event_id is the only dedupe key, which is right for heartbeats,
+	// impressions and comments.
+	DedupeKey  *string
+	Payload    []byte // jsonb
+	Timestamp  time.Time
+	ReceivedAt time.Time
 }
 
 type ContentOwnership struct {
@@ -108,32 +115,37 @@ func (s *Store) GetContentOwnership(ctx context.Context, contentID uuid.UUID) (C
 // InsertAcceptedBatch atomically creates each dedupe receipt and its raw
 // analytics row. A duplicate receipt is a successful no-op. No 2xx caller can
 // therefore depend on an in-memory queue that disappears on restart.
-func (s *Store) InsertAcceptedBatch(ctx context.Context, events []Event) (int, error) {
+//
+// Returns the events that were actually written (not the duplicates), so
+// the caller can fan those — and only those — out to the downstream
+// accelerators without double-counting a replay.
+func (s *Store) InsertAcceptedBatch(ctx context.Context, events []Event) ([]Event, error) {
 	if len(events) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
-	inserted := 0
+	inserted := make([]Event, 0, len(events))
 	for _, event := range events {
 		var receiptID string
 		err := tx.QueryRow(ctx, `
 			INSERT INTO analytics.ingest_receipts
-				(event_id, actor_id, session_id, content_id, event_type)
-			VALUES ($1, $2, $3, $4, $5)
+				(event_id, actor_id, session_id, content_id, event_type, dedupe_key)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT DO NOTHING
 			RETURNING event_id`,
-			event.ClientEventID, event.UserID, event.SessionID, event.ContentID, event.Type,
+			event.ClientEventID, event.UserID, event.SessionID, event.ContentID,
+			event.Type, event.DedupeKey,
 		).Scan(&receiptID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO analytics.events_raw
@@ -142,12 +154,12 @@ func (s *Store) InsertAcceptedBatch(ctx context.Context, events []Event) (int, e
 			event.ID, event.UserID, event.SessionID, event.Type, event.Payload,
 			event.Timestamp, event.ReceivedAt,
 		); err != nil {
-			return 0, err
+			return nil, err
 		}
-		inserted++
+		inserted = append(inserted, event)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return nil, err
 	}
 	return inserted, nil
 }

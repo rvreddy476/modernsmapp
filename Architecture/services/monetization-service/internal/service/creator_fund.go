@@ -27,17 +27,21 @@ import (
 // 'eligible'. Tuned for an early-stage launch — small but non-trivial.
 // Tweak via env (CF_*) without recompile.
 const (
-	defaultEligibilityViewScore     = 1000.0           // 1k aggregated view-score points
-	defaultEligibilityWatchTimeMs   = int64(36_000_000) // 10 hours of watch time
-	defaultEligibilityContentCount  = 3                 // at least 3 earning videos
-	defaultPlatformFeeBps           = int64(3000)       // 30% — creator keeps 70%
-	defaultEligibilitySweepBatch    = 200
-	defaultEligibilityStaleAfter    = 24 * time.Hour
-	defaultEarningsCurrency         = "INR"
-	defaultRegionCode               = "IN"
-	creatorWalletAccountType        = "user_wallet"
-	platformRevenueAccountType      = "platform_revenue"
-	creatorFundReferenceType        = "creator_fund"
+	defaultEligibilityViewScore    = 1000.0            // 1k aggregated view-score points
+	defaultEligibilityWatchTimeMs  = int64(36_000_000) // 10 hours of watch time
+	defaultEligibilityContentCount = 3                 // at least 3 earning videos
+	defaultPlatformFeeBps          = int64(3000)       // 30% — creator keeps 70%
+	defaultEligibilitySweepBatch   = 200
+	defaultEligibilityStaleAfter   = 24 * time.Hour
+	defaultEarningsCurrency        = "INR"
+	defaultRegionCode              = "IN"
+	creatorWalletAccountType       = "user_wallet"
+	platformRevenueAccountType     = "platform_revenue"
+	// The fee sub-account the platform's share is booked into. Must stay
+	// in the accounts.account_type CHECK — see migration 016, which is
+	// what this used to violate on every settlement.
+	platformFeeAccountType   = "platform_revenue_fees"
+	creatorFundReferenceType = "creator_fund"
 )
 
 // platformOwnerID is the synthetic account owner the platform fee is
@@ -72,16 +76,16 @@ func DefaultCreatorFundConfig() CreatorFundConfig {
 // for tests (so the formula stays asserted directly) and for the
 // `creator-fund/status` endpoint to surface why a creator isn't yet in.
 type EligibilityDecision struct {
-	Status                  string  `json:"status"`
-	ViewScore90D            float64 `json:"view_score_90d"`
-	WatchTimeMs90D          int64   `json:"watch_time_ms_90d"`
-	QualifyingContentCount  int     `json:"qualifying_content_count"`
-	MetViewScoreThreshold   bool    `json:"met_view_score_threshold"`
-	MetWatchTimeThreshold   bool    `json:"met_watch_time_threshold"`
-	MetContentCountThreshold bool   `json:"met_content_count_threshold"`
-	ConfigViewScore         float64 `json:"threshold_view_score"`
-	ConfigWatchTimeMs       int64   `json:"threshold_watch_time_ms"`
-	ConfigContentCount      int     `json:"threshold_content_count"`
+	Status                   string  `json:"status"`
+	ViewScore90D             float64 `json:"view_score_90d"`
+	WatchTimeMs90D           int64   `json:"watch_time_ms_90d"`
+	QualifyingContentCount   int     `json:"qualifying_content_count"`
+	MetViewScoreThreshold    bool    `json:"met_view_score_threshold"`
+	MetWatchTimeThreshold    bool    `json:"met_watch_time_threshold"`
+	MetContentCountThreshold bool    `json:"met_content_count_threshold"`
+	ConfigViewScore          float64 `json:"threshold_view_score"`
+	ConfigWatchTimeMs        int64   `json:"threshold_watch_time_ms"`
+	ConfigContentCount       int     `json:"threshold_content_count"`
 }
 
 // DecideEligibility is the pure-function decision: given a creator's
@@ -276,25 +280,40 @@ func (s *Service) SettleCreatorFundDay(ctx context.Context, creatorID uuid.UUID,
 			// Admin can backfill once a rate is set.
 			continue
 		}
-		gross := ComputeGrossPaise(m.ViewCount, rate.RpmPaise)
+		// Quality band: how much the content quality score is allowed to
+		// move the payment. Missing row => launch default. The band is
+		// resolved as of `day` so re-settling an old day cannot pay it at
+		// today's curve.
+		band, err := s.ResolveQualityBand(ctx, m.ContentType, defaultRegionCode, day)
+		if err != nil {
+			return credited, fmt.Errorf("fetch quality band: %w", err)
+		}
+
+		gross, baseGross, multiplierBps := ComputeQualityAdjustedGrossPaise(
+			m.ViewCount, rate.RpmPaise, m.AvgCQS, m.Impressions, band)
 		if gross <= 0 {
 			continue
 		}
 		net, fee := SplitEarnings(gross, cfg.PlatformFeeBps)
 
 		earning := &postgres.CreatorFundEarning{
-			CreatorID:        creatorID,
-			DayBucket:        day,
-			ContentType:      m.ContentType,
-			RegionCode:       defaultRegionCode,
-			ViewCount:        m.ViewCount,
-			WatchTimeMs:      m.WatchTimeMs,
-			RpmPaise:         rate.RpmPaise,
-			GrossPaise:       gross,
-			PlatformFeePaise: fee,
-			NetPaise:         net,
-			Status:           "settled",
-			SettledAt:        time.Now(),
+			CreatorID:            creatorID,
+			DayBucket:            day,
+			ContentType:          m.ContentType,
+			RegionCode:           defaultRegionCode,
+			ViewCount:            m.ViewCount,
+			WatchTimeMs:          m.WatchTimeMs,
+			RpmPaise:             rate.RpmPaise,
+			GrossPaise:           gross,
+			PlatformFeePaise:     fee,
+			NetPaise:             net,
+			Status:               "settled",
+			SettledAt:            time.Now(),
+			BaseGrossPaise:       baseGross,
+			QualityCQS:           m.AvgCQS,
+			QualityEffectiveCQS:  ShrinkCQS(m.AvgCQS, m.Impressions, band),
+			QualityImpressions:   m.Impressions,
+			QualityMultiplierBps: multiplierBps,
 		}
 		inserted, err := s.store.InsertCreatorFundEarning(ctx, earning)
 		if err != nil {
@@ -310,8 +329,27 @@ func (s *Service) SettleCreatorFundDay(ctx context.Context, creatorID uuid.UUID,
 			return credited, fmt.Errorf("ensure wallet: %w", err)
 		}
 
-		desc := fmt.Sprintf("Creator fund: %s, %d views @ %d paise/1000 (%s)",
-			m.ContentType, m.ViewCount, rate.RpmPaise, day.Format("2006-01-02"))
+		// The wallet transaction description is the last place a creator
+		// looks before opening a support ticket, so it carries the whole
+		// derivation, not just the total.
+		desc := fmt.Sprintf("Creator fund %s (%s): %s",
+			m.ContentType, day.Format("2006-01-02"),
+			ExplainQualityPayout(QualityPayoutExplanation{
+				ViewCount:        m.ViewCount,
+				RpmPaise:         rate.RpmPaise,
+				BaseGrossPaise:   baseGross,
+				MeasuredCQS:      m.AvgCQS,
+				Impressions:      m.Impressions,
+				EffectiveCQS:     earning.QualityEffectiveCQS,
+				MultiplierBps:    multiplierBps,
+				FloorBps:         band.FloorBps,
+				CeilingBps:       band.CeilingBps,
+				PivotCQS:         band.PivotCQS,
+				GrossPaise:       gross,
+				PlatformFeeBps:   cfg.PlatformFeeBps,
+				PlatformFeePaise: fee,
+				NetPaise:         net,
+			}))
 
 		// Wallet credit + wallet-side transaction row.
 		if err := s.store.CreditCreatorFundEarning(ctx, creatorID, net, defaultEarningsCurrency, earning.ID, desc); err != nil {
@@ -339,7 +377,7 @@ func (s *Service) SettleCreatorFundDay(ctx context.Context, creatorID uuid.UUID,
 			if err := s.CreateLedgerEntry(
 				ctx,
 				platformOwnerID, platformRevenueAccountType,
-				platformOwnerID, platformRevenueAccountType+":fees",
+				platformOwnerID, platformFeeAccountType,
 				fee, defaultEarningsCurrency,
 				creatorFundReferenceType, &earningRef,
 				fmt.Sprintf("cf_fee:%s:%s", earning.ID, m.ContentType),
@@ -380,7 +418,10 @@ func (s *Service) SettleCreatorFundDayForAllEligible(ctx context.Context, day ti
 // ---------------------------------------------------------------------------
 
 // GetCreatorFundEarnings returns the creator's settled fund earnings
-// over the last `days` days. days is clamped to [1, 365].
+// over the last `days` days. days is clamped to [1, 365]. Each row is
+// annotated with the plain-language derivation of its amount, so the
+// question "why was I paid this?" is answered in the same response as
+// the amount itself.
 func (s *Service) GetCreatorFundEarnings(ctx context.Context, creatorID uuid.UUID, days int) (*postgres.EarningsSummary, error) {
 	if days <= 0 {
 		days = 30
@@ -391,7 +432,104 @@ func (s *Service) GetCreatorFundEarnings(ctx context.Context, creatorID uuid.UUI
 	now := time.Now().UTC()
 	until := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 	since := until.AddDate(0, 0, -days)
-	return s.store.GetCreatorFundEarningsSummary(ctx, creatorID, since, until)
+	summary, err := s.store.GetCreatorFundEarningsSummary(ctx, creatorID, since, until)
+	if err != nil || summary == nil {
+		return summary, err
+	}
+	feeBps := s.creatorFundCfg.PlatformFeeBps
+	for i := range summary.Breakdown {
+		row := &summary.Breakdown[i]
+		band, bErr := s.ResolveQualityBand(ctx, row.ContentType, defaultRegionCode, row.DayBucket)
+		if bErr != nil {
+			band = DefaultQualityBand()
+		}
+		row.Explanation = ExplainQualityPayout(QualityPayoutExplanation{
+			ViewCount:        row.ViewCount,
+			RpmPaise:         row.RpmPaise,
+			BaseGrossPaise:   row.BaseGrossPaise,
+			MeasuredCQS:      row.QualityCQS,
+			Impressions:      row.QualityImpressions,
+			EffectiveCQS:     row.QualityEffectiveCQS,
+			MultiplierBps:    row.QualityMultiplierBps,
+			FloorBps:         band.FloorBps,
+			CeilingBps:       band.CeilingBps,
+			PivotCQS:         band.PivotCQS,
+			GrossPaise:       row.GrossPaise,
+			PlatformFeeBps:   feeBps,
+			PlatformFeePaise: row.GrossPaise - row.NetPaise,
+			NetPaise:         row.NetPaise,
+		})
+	}
+	return summary, nil
+}
+
+// ---------------------------------------------------------------------------
+// Quality bands
+// ---------------------------------------------------------------------------
+
+// ResolveQualityBand returns the multiplier band in force for a
+// (content_type, region) at a point in time, falling back to the launch
+// default when no row is configured. Resolving as-of a date means
+// re-settling an old day pays it at the curve that applied then.
+func (s *Service) ResolveQualityBand(ctx context.Context, contentType, regionCode string, asOf time.Time) (QualityBand, error) {
+	if regionCode == "" {
+		regionCode = defaultRegionCode
+	}
+	row, err := s.store.GetActiveQualityBand(ctx, contentType, regionCode, asOf)
+	if err != nil {
+		return DefaultQualityBand(), err
+	}
+	if row == nil {
+		return DefaultQualityBand(), nil
+	}
+	return QualityBand{
+		FloorBps:              row.FloorBps,
+		CeilingBps:            row.CeilingBps,
+		PivotCQS:              row.PivotCQS,
+		ConfidenceImpressions: row.ConfidenceImpressions,
+		Enabled:               row.Enabled,
+	}, nil
+}
+
+// ListActiveQualityBands returns the current curve sheet. Creator-facing
+// alongside the RPM rate sheet: a creator can see both the rate and the
+// band their pay is scaled by.
+func (s *Service) ListActiveQualityBands(ctx context.Context) ([]postgres.QualityBandRow, error) {
+	return s.store.ListActiveQualityBands(ctx, time.Now())
+}
+
+// SetQualityBand configures a new active band (closing the previous
+// one), the same shape and the same admin authorisation contract as
+// SetRpmRate. Setting floor == ceiling == 10000, or enabled = false,
+// restores the pre-quality views x RPM payout exactly.
+func (s *Service) SetQualityBand(ctx context.Context, band postgres.QualityBandRow, adminID *uuid.UUID) (*postgres.QualityBandRow, error) {
+	switch band.ContentType {
+	case "long_video", "flick":
+	default:
+		return nil, fmt.Errorf("INVALID_CONTENT_TYPE: %q (expected long_video|flick)", band.ContentType)
+	}
+	if band.RegionCode == "" {
+		band.RegionCode = defaultRegionCode
+	}
+	if band.FloorBps < 0 || band.CeilingBps < 0 {
+		return nil, fmt.Errorf("INVALID_BAND: floor_bps and ceiling_bps must be >= 0")
+	}
+	if band.CeilingBps < band.FloorBps {
+		return nil, fmt.Errorf("INVALID_BAND: ceiling_bps must be >= floor_bps")
+	}
+	// A floor of zero re-opens exactly the failure this band exists to
+	// prevent: a creator paid nothing for views that really happened.
+	if band.FloorBps == 0 {
+		return nil, fmt.Errorf("INVALID_BAND: floor_bps must be > 0 so genuine views always pay")
+	}
+	if band.PivotCQS <= 0 || band.PivotCQS >= 1 {
+		return nil, fmt.Errorf("INVALID_BAND: pivot_cqs must be strictly between 0 and 1")
+	}
+	if band.ConfidenceImpressions < 0 {
+		return nil, fmt.Errorf("INVALID_BAND: confidence_impressions must be >= 0")
+	}
+	band.CreatedBy = adminID
+	return s.store.SetQualityBand(ctx, &band)
 }
 
 // ---------------------------------------------------------------------------

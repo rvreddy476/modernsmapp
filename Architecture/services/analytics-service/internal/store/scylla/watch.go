@@ -47,7 +47,7 @@ func (s *WatchStore) UpsertWatchSession(ctx context.Context, ws *WatchSession) e
 			milestones_hit, surface, country, device_hash, is_autoplay,
 			end_reason, trust_factor, vqs, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ws.ContentID, ws.SessionID, ws.ViewerID, ws.ContentType, ws.DurationMS,
+		cql(ws.ContentID), ws.SessionID, cql(ws.ViewerID), ws.ContentType, ws.DurationMS,
 		ws.WatchedMS, ws.PercentViewed, ws.LoopCount, ws.IsDisplayView,
 		ws.MilestonesHit, ws.Surface, ws.Country, ws.DeviceHash, ws.IsAutoplay,
 		ws.EndReason, ws.TrustFactor, ws.VQS, ws.CreatedAt, ws.UpdatedAt,
@@ -57,6 +57,7 @@ func (s *WatchStore) UpsertWatchSession(ctx context.Context, ws *WatchSession) e
 // GetWatchSession retrieves a watch session by content_id and session_id.
 func (s *WatchStore) GetWatchSession(ctx context.Context, contentID uuid.UUID, sessionID string) (*WatchSession, error) {
 	ws := &WatchSession{}
+	var rowContent, rowViewer gocql.UUID
 	err := s.session.Query(`
 		SELECT content_id, session_id, viewer_id, content_type, duration_ms,
 		       watched_ms, percent_viewed, loop_count, is_display_view,
@@ -64,9 +65,9 @@ func (s *WatchStore) GetWatchSession(ctx context.Context, contentID uuid.UUID, s
 		       end_reason, trust_factor, vqs, created_at, updated_at
 		FROM social_analytics.watch_sessions
 		WHERE content_id = ? AND session_id = ?`,
-		contentID, sessionID,
+		cql(contentID), sessionID,
 	).WithContext(ctx).Scan(
-		&ws.ContentID, &ws.SessionID, &ws.ViewerID, &ws.ContentType, &ws.DurationMS,
+		&rowContent, &ws.SessionID, &rowViewer, &ws.ContentType, &ws.DurationMS,
 		&ws.WatchedMS, &ws.PercentViewed, &ws.LoopCount, &ws.IsDisplayView,
 		&ws.MilestonesHit, &ws.Surface, &ws.Country, &ws.DeviceHash, &ws.IsAutoplay,
 		&ws.EndReason, &ws.TrustFactor, &ws.VQS, &ws.CreatedAt, &ws.UpdatedAt,
@@ -74,6 +75,8 @@ func (s *WatchStore) GetWatchSession(ctx context.Context, contentID uuid.UUID, s
 	if err != nil {
 		return nil, err
 	}
+	ws.ContentID = gouuid(rowContent)
+	ws.ViewerID = gouuid(rowViewer)
 	return ws, nil
 }
 
@@ -87,20 +90,23 @@ func (s *WatchStore) GetContentSessions(ctx context.Context, contentID uuid.UUID
 		FROM social_analytics.watch_sessions
 		WHERE content_id = ?
 		LIMIT ?`,
-		contentID, limit,
+		cql(contentID), limit,
 	).WithContext(ctx).Iter()
 
 	var sessions []*WatchSession
 	for {
 		ws := &WatchSession{}
+		var rowContent, rowViewer gocql.UUID
 		if !iter.Scan(
-			&ws.ContentID, &ws.SessionID, &ws.ViewerID, &ws.ContentType, &ws.DurationMS,
+			&rowContent, &ws.SessionID, &rowViewer, &ws.ContentType, &ws.DurationMS,
 			&ws.WatchedMS, &ws.PercentViewed, &ws.LoopCount, &ws.IsDisplayView,
 			&ws.MilestonesHit, &ws.Surface, &ws.Country, &ws.DeviceHash, &ws.IsAutoplay,
 			&ws.EndReason, &ws.TrustFactor, &ws.VQS, &ws.CreatedAt, &ws.UpdatedAt,
 		) {
 			break
 		}
+		ws.ContentID = gouuid(rowContent)
+		ws.ViewerID = gouuid(rowViewer)
 		sessions = append(sessions, ws)
 	}
 	if err := iter.Close(); err != nil {
@@ -117,7 +123,7 @@ func (s *WatchStore) IncrementViewerHistory(ctx context.Context, viewerID, conte
 	err := s.session.Query(`
 		SELECT view_count, first_view FROM social_analytics.viewer_history
 		WHERE viewer_id = ? AND content_id = ?`,
-		viewerID, contentID,
+		cql(viewerID), cql(contentID),
 	).WithContext(ctx).Scan(&currentCount, &firstView)
 
 	now := time.Now()
@@ -126,7 +132,7 @@ func (s *WatchStore) IncrementViewerHistory(ctx context.Context, viewerID, conte
 		return s.session.Query(`
 			INSERT INTO social_analytics.viewer_history (viewer_id, content_id, first_view, view_count)
 			VALUES (?, ?, ?, ?)`,
-			viewerID, contentID, now, 1,
+			cql(viewerID), cql(contentID), now, 1,
 		).WithContext(ctx).Exec()
 	}
 
@@ -134,7 +140,7 @@ func (s *WatchStore) IncrementViewerHistory(ctx context.Context, viewerID, conte
 	return s.session.Query(`
 		INSERT INTO social_analytics.viewer_history (viewer_id, content_id, first_view, view_count)
 		VALUES (?, ?, ?, ?)`,
-		viewerID, contentID, firstView, currentCount+1,
+		cql(viewerID), cql(contentID), firstView, currentCount+1,
 	).WithContext(ctx).Exec()
 }
 
@@ -144,7 +150,7 @@ func (s *WatchStore) GetViewerHistory(ctx context.Context, viewerID, contentID u
 	err := s.session.Query(`
 		SELECT view_count FROM social_analytics.viewer_history
 		WHERE viewer_id = ? AND content_id = ?`,
-		viewerID, contentID,
+		cql(viewerID), cql(contentID),
 	).WithContext(ctx).Scan(&count)
 	if err != nil {
 		return 0, err
@@ -179,7 +185,7 @@ func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID,
 
 	iter := s.session.Query(
 		`SELECT watched_ms FROM social_analytics.watch_sessions WHERE content_id = ?`,
-		contentID,
+		cql(contentID),
 	).WithContext(ctx).Iter()
 
 	hist := make([]int64, maxBuckets+1)
@@ -255,14 +261,14 @@ func (s *WatchStore) GetAudienceDemographics(ctx context.Context, contentID uuid
 	}
 	iter := s.session.Query(
 		`SELECT viewer_id, country, surface FROM social_analytics.watch_sessions WHERE content_id = ?`,
-		contentID,
+		cql(contentID),
 	).WithContext(ctx).Iter()
 
 	countries := map[string]int64{}
 	surfaces := map[string]int64{}
 	uniqueViewers := map[uuid.UUID]struct{}{}
 	var total int64
-	var viewerID uuid.UUID
+	var viewerID gocql.UUID
 	var country, surface string
 	for iter.Scan(&viewerID, &country, &surface) {
 		if country == "" {
@@ -273,7 +279,7 @@ func (s *WatchStore) GetAudienceDemographics(ctx context.Context, contentID uuid
 		}
 		countries[country]++
 		surfaces[surface]++
-		uniqueViewers[viewerID] = struct{}{}
+		uniqueViewers[gouuid(viewerID)] = struct{}{}
 		total++
 	}
 	if err := iter.Close(); err != nil {
@@ -343,7 +349,7 @@ func (s *WatchStore) CountDisplayViews(ctx context.Context, contentID uuid.UUID)
 	iter := s.session.Query(`
 		SELECT is_display_view FROM social_analytics.watch_sessions
 		WHERE content_id = ?`,
-		contentID,
+		cql(contentID),
 	).WithContext(ctx).Iter()
 
 	var isView bool

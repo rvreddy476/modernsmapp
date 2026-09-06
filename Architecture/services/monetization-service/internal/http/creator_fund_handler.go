@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	pgstore "github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -198,4 +199,71 @@ func (h *Handler) ForceSettleCreatorFund(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"day": dayStr, "rows_credited": rows}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Quality multiplier band
+// ---------------------------------------------------------------------------
+
+// ListCreatorFundQualityBands is creator-facing: alongside the RPM rate
+// sheet, a creator can read the exact curve their pay is scaled by —
+// the floor they can never fall below, the ceiling, the score at which
+// the multiplier is neutral, and how many impressions a score needs
+// before it is fully trusted.
+func (h *Handler) ListCreatorFundQualityBands(c *gin.Context) {
+	bands, err := h.svc.ListActiveQualityBands(c.Request.Context())
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, bands, nil)
+}
+
+// SetCreatorFundQualityBand writes a new active quality band and closes
+// off the previous one, mirroring SetCreatorFundRate. The admin's
+// user_id is captured on the row.
+func (h *Handler) SetCreatorFundQualityBand(c *gin.Context) {
+	adminID, ok := getAdminID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		ContentType           string   `json:"content_type" binding:"required"`
+		RegionCode            string   `json:"region_code"`
+		FloorBps              int64    `json:"floor_bps" binding:"required"`
+		CeilingBps            int64    `json:"ceiling_bps" binding:"required"`
+		PivotCQS              *float64 `json:"pivot_cqs"`
+		ConfidenceImpressions *int64   `json:"confidence_impressions"`
+		Enabled               *bool    `json:"enabled"`
+		Notes                 string   `json:"notes"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	band := pgstore.QualityBandRow{
+		ContentType:           req.ContentType,
+		RegionCode:            req.RegionCode,
+		FloorBps:              req.FloorBps,
+		CeilingBps:            req.CeilingBps,
+		PivotCQS:              0.35,
+		ConfidenceImpressions: 1000,
+		Enabled:               true,
+		Notes:                 req.Notes,
+	}
+	if req.PivotCQS != nil {
+		band.PivotCQS = *req.PivotCQS
+	}
+	if req.ConfidenceImpressions != nil {
+		band.ConfidenceImpressions = *req.ConfidenceImpressions
+	}
+	if req.Enabled != nil {
+		band.Enabled = *req.Enabled
+	}
+	saved, err := h.svc.SetQualityBand(c.Request.Context(), band, &adminID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BAND", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, saved, nil)
 }

@@ -157,11 +157,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			cf.POST("/apply", h.ApplyCreatorFund)
 			cf.GET("/earnings", h.GetCreatorFundEarnings)
 			cf.GET("/rates", h.ListCreatorFundRates)
+			cf.GET("/quality-bands", h.ListCreatorFundQualityBands)
 		}
 		admin := v1.Group("/admin/creator-fund")
 		{
 			admin.GET("/rates", h.ListCreatorFundRatesAdmin)
 			admin.PUT("/rates", h.SetCreatorFundRate)
+			admin.PUT("/quality-bands", h.SetCreatorFundQualityBand)
 			admin.POST("/:userId/suspend", h.SuspendCreatorFund)
 			admin.POST("/:userId/unsuspend", h.UnsuspendCreatorFund)
 			admin.POST("/settle", h.ForceSettleCreatorFund)

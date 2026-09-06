@@ -78,6 +78,11 @@ func (s *CreatorService) GetStats(ctx context.Context, userID uuid.UUID, period 
 		stats.TotalLikes = agg.TotalLikes
 		stats.TotalComments = agg.TotalComments
 		stats.TotalShares = agg.TotalShares
+		// follower_growth was previously always zero because nothing
+		// populated it. follows_from_content — a viewer following the
+		// creator directly off a video — is exactly the number this
+		// field is supposed to report.
+		stats.FollowerGrowth = agg.TotalFollows
 	}
 	daily, err := s.store.GetCreatorDailyTrend(ctx, userID, since)
 	if err != nil {

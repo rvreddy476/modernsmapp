@@ -271,3 +271,39 @@ CREATE TABLE IF NOT EXISTS social_analytics.user_pair_signals (
     PRIMARY KEY (viewer_id, candidate_id)
 ) WITH default_time_to_live = 604800;
 
+
+-- Engagement analytics tables (analytics-service EngagementStore).
+-- These used to exist only because analytics-service ran
+-- EnsureEngagementSchema at boot when Scylla happened to be reachable,
+-- which meant a fresh stack had no reel_views / reel_view_counts /
+-- content_engagement until that service came up (and none at all if it
+-- came up before Scylla was healthy). Provisioning them here matches how
+-- every other keyspace in this file is created — scylla-init applies the
+-- whole file once, before any service starts.
+-- Mirrors scylla.EngagementDDL in
+-- services/analytics-service/internal/store/scylla/engagement.go.
+
+CREATE TABLE IF NOT EXISTS social_analytics.reel_views (
+    content_id        UUID,
+    viewer_id         UUID,
+    viewed_at         TIMESTAMP,
+    watch_duration_ms INT,
+    completion_pct    FLOAT,
+    source            TEXT,
+    PRIMARY KEY ((content_id), viewed_at, viewer_id)
+) WITH CLUSTERING ORDER BY (viewed_at DESC);
+
+CREATE TABLE IF NOT EXISTS social_analytics.reel_view_counts (
+    content_id         UUID PRIMARY KEY,
+    display_views      COUNTER,
+    quality_views      COUNTER,
+    monetization_views COUNTER
+);
+
+CREATE TABLE IF NOT EXISTS social_analytics.content_engagement (
+    content_id      UUID,
+    engagement_type TEXT,
+    user_id         UUID,
+    created_at      TIMESTAMP,
+    PRIMARY KEY ((content_id, engagement_type), created_at, user_id)
+) WITH CLUSTERING ORDER BY (created_at DESC);

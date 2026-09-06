@@ -239,6 +239,13 @@ type CreatorAggStats struct {
 	TotalLikes    int64
 	TotalComments int64
 	TotalShares   int64
+	// TotalFollows is follows_from_content: viewers who followed the
+	// creator off the back of a specific video. This is the number that
+	// backs the dashboard's follower_growth / followers_gained field,
+	// which read a hard-coded zero before the video events were ingested.
+	TotalFollows    int64
+	TotalSaves      int64
+	TotalWatchTimeMS int64
 }
 
 // GetCreatorAggStats returns aggregated analytics for a creator since a given time.
@@ -249,11 +256,15 @@ func (s *AggregateStore) GetCreatorAggStats(ctx context.Context, creatorID uuid.
 			COALESCE(SUM(views_display), 0),
 			COALESCE(SUM(likes), 0),
 			COALESCE(SUM(comments), 0),
-			COALESCE(SUM(shares), 0)
+			COALESCE(SUM(shares), 0),
+			COALESCE(SUM(follows_from_content), 0),
+			COALESCE(SUM(saves), 0),
+			COALESCE(SUM(watch_time_total_ms), 0)
 		FROM analytics.content_hourly_agg
 		WHERE creator_id = $1 AND hour_bucket >= $2
 	`, creatorID, since).Scan(
 		&stats.TotalViews, &stats.TotalLikes, &stats.TotalComments, &stats.TotalShares,
+		&stats.TotalFollows, &stats.TotalSaves, &stats.TotalWatchTimeMS,
 	)
 	if err != nil {
 		return nil, err
@@ -287,4 +298,36 @@ func (s *AggregateStore) UpsertDailySummary(ctx context.Context, contentID, crea
 		viewScoreTotal, cqs,
 	)
 	return err
+}
+
+// ContentViewBuckets is the lifetime view-counter set for one content
+// item, in the exact field names GET /v1/analytics/content/:id/views
+// returns. Sourced from content_hourly_agg, which the aggregator
+// rebuilds from the ingested milestone and play_end events.
+type ContentViewBuckets struct {
+	Display  int64
+	Views1s  int64
+	Views3s  int64
+	Views10s int64
+	Views30s int64
+	Views60s int64
+}
+
+// GetContentViewBuckets sums every hour bucket for one content item.
+// Used as the durable fallback behind the Redis real-time counters:
+// Redis is a cache that expires and is empty on a cold start, whereas
+// these rows are the recorded truth.
+func (s *AggregateStore) GetContentViewBuckets(ctx context.Context, contentID uuid.UUID) (*ContentViewBuckets, error) {
+	var b ContentViewBuckets
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(views_display), 0), COALESCE(SUM(views_1s), 0),
+		       COALESCE(SUM(views_3s), 0), COALESCE(SUM(views_10s), 0),
+		       COALESCE(SUM(views_30s), 0), COALESCE(SUM(views_60s), 0)
+		FROM analytics.content_hourly_agg
+		WHERE content_id = $1`, contentID,
+	).Scan(&b.Display, &b.Views1s, &b.Views3s, &b.Views10s, &b.Views30s, &b.Views60s)
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
 }

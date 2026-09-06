@@ -56,23 +56,67 @@ type CreatorFundEarning struct {
 	NetPaise         int64     `json:"net_paise"`
 	Status           string    `json:"status"`
 	SettledAt        time.Time `json:"settled_at"`
+
+	// Quality audit trail. BaseGrossPaise is the historical
+	// views x RPM / 1000 figure; GrossPaise above is what was actually
+	// paid after the quality band was applied. When the band is disabled
+	// the two are equal and QualityMultiplierBps is 10000 (1.0x), which
+	// is the pre-quality behaviour, visibly recorded rather than implied.
+	BaseGrossPaise       int64   `json:"base_gross_paise"`
+	QualityCQS           float64 `json:"quality_cqs"`
+	QualityEffectiveCQS  float64 `json:"quality_effective_cqs"`
+	QualityImpressions   int64   `json:"quality_impressions"`
+	QualityMultiplierBps int64   `json:"quality_multiplier_bps"`
+}
+
+// QualityBandRow is one versioned payout-multiplier band, the quality
+// analogue of RpmRate. Same effective_from/effective_to versioning so a
+// rate change never rewrites what an already-settled day was paid at.
+type QualityBandRow struct {
+	ID                    uuid.UUID  `json:"id"`
+	ContentType           string     `json:"content_type"`
+	RegionCode            string     `json:"region_code"`
+	FloorBps              int64      `json:"floor_bps"`
+	CeilingBps            int64      `json:"ceiling_bps"`
+	PivotCQS              float64    `json:"pivot_cqs"`
+	ConfidenceImpressions int64      `json:"confidence_impressions"`
+	Enabled               bool       `json:"enabled"`
+	EffectiveFrom         time.Time  `json:"effective_from"`
+	EffectiveTo           *time.Time `json:"effective_to,omitempty"`
+	Notes                 string     `json:"notes,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
+	CreatedBy             *uuid.UUID `json:"created_by,omitempty"`
 }
 
 // DailyContentMetric is one (content_type, view_count, watch_time)
 // rollup row for a creator on a given day, sourced from analytics.
+// Impressions and AvgCQS are the quality inputs the payout multiplier
+// reads: the score itself, plus how much evidence stands behind it.
 type DailyContentMetric struct {
 	ContentType string
 	ViewCount   int64
 	WatchTimeMs int64
+	Impressions int64
+	AvgCQS      float64
 }
 
-// EarningsDailyBreakdown is one row for the dashboard view.
+// EarningsDailyBreakdown is one row for the dashboard view. The quality
+// fields are additive: a creator must be able to see not just what they
+// were paid but why, without a support ticket.
 type EarningsDailyBreakdown struct {
 	DayBucket   time.Time `json:"day_bucket"`
 	ContentType string    `json:"content_type"`
 	ViewCount   int64     `json:"view_count"`
 	GrossPaise  int64     `json:"gross_paise"`
 	NetPaise    int64     `json:"net_paise"`
+
+	RpmPaise             int64   `json:"rpm_paise"`
+	BaseGrossPaise       int64   `json:"base_gross_paise"`
+	QualityCQS           float64 `json:"quality_cqs"`
+	QualityEffectiveCQS  float64 `json:"quality_effective_cqs"`
+	QualityImpressions   int64   `json:"quality_impressions"`
+	QualityMultiplierBps int64   `json:"quality_multiplier_bps"`
+	Explanation          string  `json:"explanation,omitempty"`
 }
 
 // EarningsSummary aggregates a creator's fund earnings over a time range.
@@ -366,7 +410,17 @@ func (s *Store) QueryCreatorDailyMetrics(ctx context.Context, creatorID uuid.UUI
 	rows, err := s.db.Query(ctx, `
 		SELECT content_type,
 		       COALESCE(SUM(views_display), 0)::BIGINT,
-		       COALESCE(SUM(watch_time_total_ms), 0)::BIGINT
+		       COALESCE(SUM(watch_time_total_ms), 0)::BIGINT,
+		       COALESCE(SUM(impressions), 0)::BIGINT,
+		       -- Weight each content item's score by the views it earned,
+		       -- so one obscure clip cannot drag down a day carried by a
+		       -- video that actually reached people. NULLIF keeps a
+		       -- zero-view day from dividing by zero.
+		       COALESCE(
+		           SUM(content_quality_score * GREATEST(views_display, 0))
+		           / NULLIF(SUM(GREATEST(views_display, 0)), 0),
+		           0
+		       )::DOUBLE PRECISION
 		FROM analytics.content_daily_summary
 		WHERE creator_id = $1 AND day_bucket = $2
 		GROUP BY content_type
@@ -378,7 +432,7 @@ func (s *Store) QueryCreatorDailyMetrics(ctx context.Context, creatorID uuid.UUI
 	var out []DailyContentMetric
 	for rows.Next() {
 		var m DailyContentMetric
-		if err := rows.Scan(&m.ContentType, &m.ViewCount, &m.WatchTimeMs); err != nil {
+		if err := rows.Scan(&m.ContentType, &m.ViewCount, &m.WatchTimeMs, &m.Impressions, &m.AvgCQS); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -434,13 +488,18 @@ func (s *Store) InsertCreatorFundEarning(ctx context.Context, e *CreatorFundEarn
 		INSERT INTO creator_fund_earnings (
 			id, creator_id, day_bucket, content_type, region_code,
 			view_count, watch_time_ms, rpm_paise, gross_paise,
-			platform_fee_paise, net_paise, status, settled_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			platform_fee_paise, net_paise, status, settled_at,
+			base_gross_paise, quality_cqs, quality_effective_cqs,
+			quality_impressions, quality_multiplier_bps
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+		          $14, $15, $16, $17, $18)
 		ON CONFLICT (creator_id, day_bucket, content_type, region_code) DO NOTHING
 	`,
 		e.ID, e.CreatorID, e.DayBucket, e.ContentType, e.RegionCode,
 		e.ViewCount, e.WatchTimeMs, e.RpmPaise, e.GrossPaise,
 		e.PlatformFeePaise, e.NetPaise, e.Status, e.SettledAt,
+		e.BaseGrossPaise, e.QualityCQS, e.QualityEffectiveCQS,
+		e.QualityImpressions, e.QualityMultiplierBps,
 	)
 	if err != nil {
 		return false, err
@@ -508,7 +567,9 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 	}
 
 	rows, err := s.db.Query(ctx, `
-		SELECT day_bucket, content_type, view_count, gross_paise, net_paise
+		SELECT day_bucket, content_type, view_count, gross_paise, net_paise,
+		       rpm_paise, base_gross_paise, quality_cqs, quality_effective_cqs,
+		       quality_impressions, quality_multiplier_bps
 		FROM creator_fund_earnings
 		WHERE creator_id = $1
 		  AND day_bucket >= $2
@@ -522,7 +583,10 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 	defer rows.Close()
 	for rows.Next() {
 		var b EarningsDailyBreakdown
-		if err := rows.Scan(&b.DayBucket, &b.ContentType, &b.ViewCount, &b.GrossPaise, &b.NetPaise); err != nil {
+		if err := rows.Scan(&b.DayBucket, &b.ContentType, &b.ViewCount,
+			&b.GrossPaise, &b.NetPaise, &b.RpmPaise, &b.BaseGrossPaise,
+			&b.QualityCQS, &b.QualityEffectiveCQS, &b.QualityImpressions,
+			&b.QualityMultiplierBps); err != nil {
 			return nil, err
 		}
 		summary.Breakdown = append(summary.Breakdown, b)
@@ -539,4 +603,109 @@ func nullableString(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// ---------------------------------------------------------------------------
+// Quality multiplier bands
+// ---------------------------------------------------------------------------
+
+// GetActiveQualityBand returns the payout-multiplier band effective at
+// asOf for a (content_type, region). Returns nil when none is
+// configured, which the service reads as "use the launch default".
+func (s *Store) GetActiveQualityBand(ctx context.Context, contentType, regionCode string, asOf time.Time) (*QualityBandRow, error) {
+	var b QualityBandRow
+	err := s.db.QueryRow(ctx, `
+		SELECT id, content_type, region_code, floor_bps, ceiling_bps,
+		       pivot_cqs, confidence_impressions, enabled, effective_from,
+		       effective_to, COALESCE(notes, ''), created_at, created_by
+		FROM monetization_quality_bands
+		WHERE content_type = $1 AND region_code = $2
+		  AND effective_from <= $3
+		  AND (effective_to IS NULL OR effective_to > $3)
+		ORDER BY effective_from DESC
+		LIMIT 1
+	`, contentType, regionCode, asOf).Scan(
+		&b.ID, &b.ContentType, &b.RegionCode, &b.FloorBps, &b.CeilingBps,
+		&b.PivotCQS, &b.ConfidenceImpressions, &b.Enabled, &b.EffectiveFrom,
+		&b.EffectiveTo, &b.Notes, &b.CreatedAt, &b.CreatedBy,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
+// ListActiveQualityBands returns the current band per (content_type,
+// region). Creator-visible: a creator is entitled to know the curve
+// their pay is scaled by before they are paid by it.
+func (s *Store) ListActiveQualityBands(ctx context.Context, asOf time.Time) ([]QualityBandRow, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT ON (content_type, region_code)
+		       id, content_type, region_code, floor_bps, ceiling_bps,
+		       pivot_cqs, confidence_impressions, enabled, effective_from,
+		       effective_to, COALESCE(notes, ''), created_at, created_by
+		FROM monetization_quality_bands
+		WHERE effective_from <= $1
+		  AND (effective_to IS NULL OR effective_to > $1)
+		ORDER BY content_type, region_code, effective_from DESC
+	`, asOf)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QualityBandRow
+	for rows.Next() {
+		var b QualityBandRow
+		if err := rows.Scan(
+			&b.ID, &b.ContentType, &b.RegionCode, &b.FloorBps, &b.CeilingBps,
+			&b.PivotCQS, &b.ConfidenceImpressions, &b.Enabled, &b.EffectiveFrom,
+			&b.EffectiveTo, &b.Notes, &b.CreatedAt, &b.CreatedBy,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// SetQualityBand inserts a new band and closes off the previously-active
+// one for the same (content_type, region), in one transaction. Mirrors
+// SetRpmRate exactly, so the multiplier is configurable through the same
+// admin flow and the same audit trail as the rate it multiplies.
+func (s *Store) SetQualityBand(ctx context.Context, b *QualityBandRow) (*QualityBandRow, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	now := time.Now()
+	if _, err := tx.Exec(ctx, `
+		UPDATE monetization_quality_bands
+		SET effective_to = $3
+		WHERE content_type = $1 AND region_code = $2 AND effective_to IS NULL
+	`, b.ContentType, b.RegionCode, now); err != nil {
+		return nil, err
+	}
+	b.ID = uuid.New()
+	b.EffectiveFrom = now
+	b.CreatedAt = now
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO monetization_quality_bands (
+			id, content_type, region_code, floor_bps, ceiling_bps,
+			pivot_cqs, confidence_impressions, enabled, effective_from,
+			notes, created_at, created_by
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, b.ID, b.ContentType, b.RegionCode, b.FloorBps, b.CeilingBps,
+		b.PivotCQS, b.ConfidenceImpressions, b.Enabled, b.EffectiveFrom,
+		nullableString(b.Notes), b.CreatedAt, b.CreatedBy); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return b, nil
 }

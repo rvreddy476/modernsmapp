@@ -158,9 +158,17 @@ func main() {
 	store := pgstore.New(dbPool)
 	aggStore := pgstore.NewAggregateStore(dbPool)
 	svc := service.New(ctx, store, kafkaWriter)
+	if watchStore != nil {
+		// Mirror accepted play_end events into Scylla so the retention
+		// curve and audience breakdown have data for HTTP-ingested
+		// sessions, not only Kafka-consumed ones. A typed-nil would
+		// satisfy the interface, so the check is here rather than inside.
+		svc = svc.WithWatchStore(watchStore)
+	}
 	creatorSvc := service.NewCreatorService(aggStore)
 	handler := httpHandler.New(svc, rdb).
 		WithCreatorService(creatorSvc).
+		WithAggregateStore(aggStore).
 		WithInternalKey(internalKey)
 	dashHandler := httpHandler.NewDashboardHandler(aggStore).WithWatchStore(watchStore)
 

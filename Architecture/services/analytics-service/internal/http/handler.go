@@ -18,8 +18,17 @@ import (
 type Handler struct {
 	svc            *service.IngestService
 	creatorService *service.CreatorService
+	aggStore       *pgstore.AggregateStore
 	rdb            *redis.Client
 	internalKey    string
+}
+
+// WithAggregateStore wires the durable aggregate store that backs the
+// content view counters when the Redis real-time cache is cold or
+// unavailable. Optional — nil keeps the historical Redis-only behaviour.
+func (h *Handler) WithAggregateStore(s *pgstore.AggregateStore) *Handler {
+	h.aggStore = s
+	return h
 }
 
 func New(svc *service.IngestService, rdb *redis.Client) *Handler {
@@ -138,14 +147,35 @@ func (h *Handler) GetContentViews(c *gin.Context) {
 	result, err := h.rdb.HGetAll(c.Request.Context(), "post:views:"+contentID).Result()
 	if err != nil {
 		log.Printf("Redis error fetching views for %s: %v", contentID, err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch view counts", nil)
-		return
+		result = nil
 	}
 
 	counts := make(map[string]int64)
 	for k, v := range result {
 		n, _ := strconv.ParseInt(v, 10, 64)
 		counts[k] = n
+	}
+
+	// Redis is a real-time cache: it expires, it is empty after a
+	// restart, and nothing populates it on the HTTP ingest path. The
+	// recorded truth is content_hourly_agg, rebuilt from the ingested
+	// milestone and play_end events, so fall back to it whenever the
+	// cache has nothing to say about this content. Response shape is
+	// unchanged — the same six fields, just no longer always zero.
+	if len(counts) == 0 && h.aggStore != nil {
+		if parsed, err := uuid.Parse(contentID); err == nil {
+			buckets, bErr := h.aggStore.GetContentViewBuckets(c.Request.Context(), parsed)
+			if bErr != nil {
+				log.Printf("Aggregate view lookup failed for %s: %v", contentID, bErr)
+			} else {
+				counts["display"] = buckets.Display
+				counts["views_1s"] = buckets.Views1s
+				counts["views_3s"] = buckets.Views3s
+				counts["views_10s"] = buckets.Views10s
+				counts["views_30s"] = buckets.Views30s
+				counts["views_60s"] = buckets.Views60s
+			}
+		}
 	}
 
 	// Ensure all expected fields exist with zero defaults

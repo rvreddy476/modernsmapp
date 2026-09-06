@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     status         TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'failed', 'reversed')),
     reference_type TEXT NOT NULL DEFAULT '',
     reference_id   TEXT NOT NULL DEFAULT '',
+    -- Human-readable derivation of the amount. The creator fund writes
+    -- the full "N views at RPM x quality multiplier" sentence here so a
+    -- creator can see why they were paid what they were. See migration
+    -- 015 for why this had to be backfilled onto existing installs.
+    description    TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

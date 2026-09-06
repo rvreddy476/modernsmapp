@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -80,6 +81,11 @@ func (h *DashboardHandler) GetContentRetention(c *gin.Context) {
 
 	curve, err := h.watchStore.GetRetentionCurve(c.Request.Context(), contentID, bucketSec, maxBuckets)
 	if err != nil {
+		// The response stays opaque (this is a private, per-content
+		// surface), but the cause has to reach the operator: a bare
+		// "Failed to compute retention curve" with no log line is the
+		// reason this endpoint could 500 unexplained.
+		slog.Error("retention curve failed", "content_id", contentID.String(), "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute retention curve", nil)
 		return
 	}
@@ -115,6 +121,7 @@ func (h *DashboardHandler) GetContentDemographics(c *gin.Context) {
 	}
 	dem, err := h.watchStore.GetAudienceDemographics(c.Request.Context(), contentID, topN)
 	if err != nil {
+		slog.Error("audience demographics failed", "content_id", contentID.String(), "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute demographics", nil)
 		return
 	}
