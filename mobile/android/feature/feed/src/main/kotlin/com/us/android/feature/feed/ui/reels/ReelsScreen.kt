@@ -89,6 +89,7 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
+import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
@@ -118,6 +119,7 @@ import com.us.android.core.ui.UsReelMoreState
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
+import com.us.android.feature.feed.ui.watchProbe
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.io.File
@@ -539,8 +541,15 @@ internal class ReelActions(
     val onComment: (postId: String) -> Unit,
     val onShare: (FeedItem) -> Unit,
     val onFollow: (authorId: String) -> Unit,
-    /** The pager settled on this reel. */
-    val onShown: (FeedItem) -> Unit,
+    /**
+     * The pager settled on this reel.
+     *
+     * The probe is how analytics reads the player without `:core:analytics`
+     * depending on media3 — the ViewModel passes it straight through, and the
+     * tracker polls it on its own cadence. Null when the page has no player
+     * (a reel still transcoding), which means the view is not counted.
+     */
+    val onShown: (FeedItem, (suspend () -> WatchProbe)?) -> Unit,
     /** The reel of the settled page, or null when the settled page has none (the pending head). */
     val onSettledReel: (FeedItem?) -> Unit,
     /** The player of the settled page, or null when the settled page has none (the pending head). */
@@ -657,7 +666,7 @@ private fun ReelsPager(
         val player = reel?.let(playbackFor)?.let { pool.acquire(current, it) }
         actions.onSettledReel(reel)
         actions.onSettledPlayer(player)
-        reel?.let(actions.onShown)
+        reel?.let { actions.onShown(it, player?.let(::watchProbe)) }
         pool.playOnly(current)
         listOf(current - 1, current + 1).forEach { index ->
             reelAt(index)?.let(playbackFor)?.let { pool.preload(index, it) }

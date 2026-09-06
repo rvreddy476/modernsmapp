@@ -5,6 +5,14 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
+import com.us.android.core.analytics.AnalyticsEventType
+import com.us.android.core.analytics.AnalyticsRecorder
+import com.us.android.core.analytics.AnalyticsSurface
+import com.us.android.core.analytics.PlayEndReason
+import com.us.android.core.analytics.PlayStartMethod
+import com.us.android.core.analytics.VideoWatchTracker
+import com.us.android.core.analytics.WatchProbe
+import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.datastore.SettingsDataStore
@@ -77,9 +85,14 @@ class FeedViewModel @AssistedInject constructor(
     private val tabState: FeedTabState,
     private val follows: FollowGraph,
     private val feedEntry: FeedEntry,
+    private val watchTracker: VideoWatchTracker,
+    private val analytics: AnalyticsRecorder,
     hidden: HiddenPosts,
     settings: SettingsDataStore? = null,
 ) : ViewModel() {
+
+    /** The analytics view for the row currently autoplaying, if any. */
+    private var watchSession: WatchSession? = null
 
     @AssistedFactory
     interface Factory {
@@ -294,11 +307,59 @@ class FeedViewModel @AssistedInject constructor(
         }
     }
 
+    /**
+     * The autoplaying row changed: close the previous view, open one for the
+     * new row.
+     *
+     * The feed autoplays MUTED — `FeedPlaybackViewModel` disables the audio
+     * track outright — which is a real dimension for the ranking model, so it
+     * is reported rather than assumed.
+     */
+    fun onAutoplayChanged(item: FeedItem?, probe: suspend () -> WatchProbe) {
+        if (item?.id == watchSession?.contentId) return
+        endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
+        if (item == null) return
+        watchSession = watchTracker.startView(
+            contentId = item.id,
+            creatorId = item.author.id,
+            surface = AnalyticsSurface.FEED,
+            contentDurationMs = item.media.maxOfOrNull { it.durationMs } ?: 0L,
+            startMethod = PlayStartMethod.AUTOPLAY,
+            isMuted = true,
+            isAutoplay = true,
+            probe = probe,
+        )
+    }
+
+    private fun endWatchAnalytics(reason: PlayEndReason) {
+        watchSession?.let { watchTracker.endView(it.contentId, reason) }
+        watchSession = null
+    }
+
+    /**
+     * Engagement on a feed row.
+     *
+     * Unlike reels, the row acted on is usually NOT the one autoplaying — a
+     * like on a text post three rows up is the normal case — so the playback
+     * session is used only when the ids match, and otherwise the event carries
+     * the content id alone. That is not a loss: analytics-service decodes
+     * `creator_id` into a field it explicitly discards and rebuilds
+     * attribution from its own ownership projection, so the only thing a
+     * session would add here is the tie back to a view that did not happen.
+     */
+    private fun recordEngagement(postId: String, type: String) {
+        val session = watchSession?.takeIf { it.contentId == postId }
+            ?: WatchSession.forEngagement(postId, AnalyticsSurface.FEED)
+        analytics.recordEngagement(type, session)
+    }
+
     fun onReact(postId: String, serverReacted: Boolean) = viewModelScope.launch {
+        if (!serverReacted) recordEngagement(postId, AnalyticsEventType.LIKE)
         engagement.toggleReaction(postId, serverReacted)
     }
 
     fun onBookmark(postId: String, serverBookmarked: Boolean) = viewModelScope.launch {
+        if (!serverBookmarked) recordEngagement(postId, AnalyticsEventType.SAVE)
         engagement.toggleBookmark(postId, serverBookmarked)
     }
 
@@ -314,6 +375,7 @@ class FeedViewModel @AssistedInject constructor(
      * server event per chooser launch.
      */
     fun onExternalShared(postId: String) = viewModelScope.launch {
+        recordEngagement(postId, AnalyticsEventType.SHARE)
         shares.recordExternalShare(postId)
     }
 
@@ -383,6 +445,20 @@ class FeedViewModel @AssistedInject constructor(
     /** The signed-in user; own posts never offer Follow. */
     val ownUserId: String get() = follows.ownId
 
+    /**
+     * NO `follow_from_content` HERE — deliberately.
+     *
+     * The event means "this creator earned a follow with THIS piece of
+     * content", so it needs the content id. This callback receives only an
+     * author id: `FeedRowCallbacks.onFollow` is shared by the row header and
+     * the viewer overlay, and the post card's own follow affordance is not the
+     * only thing behind it. Emitting with a guessed content id — the
+     * autoplaying row, say — would attribute follows to whichever video
+     * happened to be playing, which is worse than not counting them.
+     *
+     * Reels and the Tube watch page DO emit it: there the follow button sits
+     * on exactly one piece of content and there is nothing to guess.
+     */
     fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
 
     /** One relationship lookup per author never seen before, off the hydration path. */

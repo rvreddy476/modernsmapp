@@ -152,8 +152,48 @@ val MIGRATION_5_6 = object : Migration(SCHEMA_V5, SCHEMA_V6) {
     }
 }
 
+private const val SCHEMA_V7 = 7
+
+/**
+ * 6 → 7: the product-analytics outbox (:core:analytics, 2026-09-07).
+ *
+ * Purely additive — one new table and its unique index, nothing altered. An
+ * upgrading install keeps every draft, chat row and queued send it had.
+ *
+ * The DDL must match what Room generates from [AnalyticsPendingEventEntity]
+ * *exactly*, indices included: Room re-reads the SQLite catalog on every open
+ * and refuses a schema that differs by so much as an index name. That is why
+ * the index is given an explicit name in the entity rather than relying on
+ * Room's derived one — the two are then impossible to drift apart by reading.
+ * `RoomOpenAfterMigrationTest` is what proves it.
+ */
+val MIGRATION_6_7 = object : Migration(SCHEMA_V6, SCHEMA_V7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `analytics_pending_event` (
+                `eventId` TEXT NOT NULL,
+                `type` TEXT NOT NULL,
+                `timestamp` TEXT NOT NULL,
+                `payloadJson` TEXT NOT NULL,
+                `sessionId` TEXT NOT NULL,
+                `contentId` TEXT NOT NULL,
+                `dedupeKey` TEXT NOT NULL,
+                `createdAtMillis` INTEGER NOT NULL,
+                `attempts` INTEGER NOT NULL,
+                PRIMARY KEY(`eventId`)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_analytics_pending_event_dedupe` " +
+                "ON `analytics_pending_event` (`sessionId`, `contentId`, `type`, `dedupeKey`)",
+        )
+    }
+}
+
 val UsDatabaseMigrations: List<Migration> =
-    listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+    listOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
 
 /**
  * Callbacks the production database builder installs.

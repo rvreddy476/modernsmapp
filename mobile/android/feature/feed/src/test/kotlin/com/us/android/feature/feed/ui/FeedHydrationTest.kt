@@ -1,6 +1,8 @@
 package com.us.android.feature.feed.ui
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.analytics.NoOpAnalyticsRecorder
+import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -96,6 +98,8 @@ class FeedHydrationTest {
             tabState = FeedTabState(),
             follows = followGraph(),
             feedEntry = FeedEntry(),
+            watchTracker = VideoWatchTracker.disabled(),
+            analytics = NoOpAnalyticsRecorder,
             hidden = HiddenPosts(),
         )
     }

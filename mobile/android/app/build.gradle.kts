@@ -50,6 +50,9 @@ dependencies {
     implementation(projects.core.engagement)
     // Production chat pass: the chat lock lifecycle hooks.
     implementation(projects.core.chat)
+    // The product-analytics client: its background flush hangs off the
+    // process lifecycle observer in UsApplication.
+    implementation(projects.core.analytics)
     implementation(projects.core.call)
     // The shell gates on module preferences (which tabs, which home).
     implementation(projects.core.profile)

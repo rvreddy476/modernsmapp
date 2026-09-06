@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
@@ -197,6 +198,7 @@ private fun WatchSheetsHost(
             onDismiss = { sheets.moreFor = null },
             viewModel = more,
             suggested = false,
+            surface = AnalyticsSurface.POSTTUBE,
         )
     }
 }

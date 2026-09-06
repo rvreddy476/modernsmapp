@@ -2,6 +2,8 @@ package com.us.android.feature.feed.ui.more
 
 import androidx.paging.testing.asSnapshot
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.analytics.NoOpAnalyticsRecorder
+import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.engagement.data.CreateCommentRequest
@@ -245,6 +247,7 @@ class PostMoreViewModelTest {
             reports = ReportRepository(h.reportApi, mapper),
             hidden = h.hidden,
             lifecycle = PostLifecycleRepository(h.lifecycleApi, mapper),
+            analytics = NoOpAnalyticsRecorder,
         )
     }
 
@@ -266,6 +269,8 @@ class PostMoreViewModelTest {
         tabState = FeedTabState(),
         follows = followGraph(h.graph),
         feedEntry = FeedEntry(),
+        watchTracker = VideoWatchTracker.disabled(),
+        analytics = NoOpAnalyticsRecorder,
         hidden = h.hidden,
     )
 

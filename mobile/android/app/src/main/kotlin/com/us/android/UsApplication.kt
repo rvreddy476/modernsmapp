@@ -87,6 +87,16 @@ class UsApplication : Application(), Configuration.Provider {
     /** Local daily-limit / sleep-hours nudge, fetched once per foreground session; see the class doc. */
     @Inject lateinit var screenTimeGuard: com.us.android.screentime.ScreenTimeGuardCoordinator
 
+    /**
+     * Closes open views and flushes the analytics queue on background.
+     *
+     * Here rather than on each surface because it is a property of the PROCESS
+     * going away, not of any one screen: the feed, reels and the watch player
+     * can all have a view open, and a screen-level hook would miss whichever
+     * one happened not to be on top.
+     */
+    @Inject lateinit var analyticsLifecycle: com.us.android.core.analytics.AnalyticsAppLifecycle
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
@@ -97,6 +107,7 @@ class UsApplication : Application(), Configuration.Provider {
                     chatLockManager.onAppBackgrounded()
                     screenTimeSync.onBackground()
                     screenTimeGuard.onAppBackground()
+                    analyticsLifecycle.onBackground()
                 }
 
                 override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
@@ -107,6 +118,7 @@ class UsApplication : Application(), Configuration.Provider {
                     // ScreenTimeGuardCoordinator's class doc for why this
                     // replaced fetching on every per-minute tick.
                     screenTimeGuard.onAppForeground()
+                    analyticsLifecycle.onForeground()
                 }
             },
         )

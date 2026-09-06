@@ -199,12 +199,15 @@ internal fun FeedContent(
         playback.openInReels(item)
         onOpenReels()
     }
-    val autoplay = remember(feedPlayer, autoplayAllowed, playback) {
+    val autoplay = remember(feedPlayer, autoplayAllowed, playback, viewModel) {
         FeedAutoplay(
             player = feedPlayer,
             allowed = autoplayAllowed,
             playbackFor = playback::playback,
             load = playback::load,
+            onPlayingChanged = { item ->
+                viewModel.onAutoplayChanged(item, watchProbe(feedPlayer))
+            },
         )
     }
 
@@ -311,6 +314,15 @@ internal data class FeedAutoplay(
     val allowed: Boolean,
     val playbackFor: (FeedItem) -> Playback?,
     val load: (ExoPlayer, Playback) -> Unit,
+    /**
+     * The autoplaying row changed.
+     *
+     * The feed is the surface most at risk of being under-counted: it plays
+     * video nobody deliberately opened, so without this a scroll past ten
+     * videos reports nothing at all while reels reports every one. Null means
+     * nothing is playing, which closes the open view.
+     */
+    val onPlayingChanged: (FeedItem?) -> Unit,
 )
 
 /**
@@ -545,6 +557,9 @@ private fun feedAutoplay(
 ): String? {
     val playingId by rememberAutoplayTarget(listState, items, autoplay.playbackFor)
     val playingItem = playingId?.let { id -> items.itemSnapshotList.items.firstOrNull { it.id == id } }
+    // Keyed on the id, not the item: a hydration that swaps the row object for
+    // an equal one must not read as the viewer moving to a different video.
+    LaunchedEffect(playingId) { autoplay.onPlayingChanged(playingItem) }
     DriveFeedPlayer(
         player = autoplay.player,
         playback = playingItem?.let(autoplay.playbackFor),

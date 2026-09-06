@@ -126,3 +126,25 @@ include(":feature:search")
 // by the `checkFeatureGraph` task, not by convention.
 include(":core:commerce")
 include(":feature:commerce")
+
+// Product analytics — the client half of analytics-service (2026-09-07).
+//
+// SEPARATE FROM :core:telemetry ON PURPOSE.
+//
+// :core:telemetry is OpenTelemetry: operational metrics and spans, exported to
+// an OTLP collector by the OTel SDK's own sender, and its KDoc explicitly
+// FORBIDS a post id, content id or user id as a dimension — high-cardinality
+// labels are what turn a metrics bill into an incident.
+//
+// This module is the opposite by design: every event is keyed by content id
+// and creator id, because it feeds view counts, the content quality score and
+// ultimately creator payouts. It also needs three things :core:telemetry has
+// none of — the app's authenticated OkHttp stack, a disk-backed queue that
+// survives process death, and WorkManager. Folding it in would have added all
+// four dependencies to a module whose whole value is being small and having
+// no product knowledge.
+//
+// It is not :core:media either: half the events here (like, comment, share,
+// save, follow-from-content, not-interested, report) have nothing to do with
+// a player.
+include(":core:analytics")

@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.model.FeedItem
@@ -49,11 +50,23 @@ fun PostMoreSheetHost(
      * about.
      */
     suggested: Boolean? = null,
+    /**
+     * Where the sheet was opened from, for analytics.
+     *
+     * The sheet is shared by the feed, reels and Tube's watch screen, so it
+     * cannot derive its own surface. Defaulting to `feed` covers the two feed
+     * surfaces; Tube passes `posttube`. Guessing instead would put every
+     * "not interested" on a long video into the feed's numbers.
+     */
+    surface: AnalyticsSurface = AnalyticsSurface.FEED,
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
     val dontRecommend by viewModel.dontRecommend.collectAsStateWithLifecycle()
-    LaunchedEffect(item.id) { viewModel.opened() }
+    LaunchedEffect(item.id, surface) {
+        viewModel.onSurface(surface)
+        viewModel.opened()
+    }
 
     val callbacks = remember(item, viewModel, onShare, onClearScreen, onSelectQuality) {
         UsPostMoreCallbacks(

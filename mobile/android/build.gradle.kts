@@ -179,7 +179,11 @@ tasks.register("moduleGraphCheck") {
     // 35 = 33 + :core:commerce and :feature:commerce (Commerce P0, LB-A1/A2).
     //      Rule 3 already forbids a :feature → :feature edge, so the commerce
     //      feature is covered by it without a new rule.
-    val expectedModuleCount = 35
+    // 36 = 35 + :core:analytics (product analytics ingest client, 2026-09-07).
+    //      The app had no client for analytics-service at all, so every view,
+    //      watch-second and engagement signal the creator payout model is
+    //      built on was being discarded on the device.
+    val expectedModuleCount = 36
 
     doLast {
         val allViolations = buildList {

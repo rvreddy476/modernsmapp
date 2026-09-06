@@ -2,6 +2,11 @@ package com.us.android.core.feed.ui.more
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.analytics.AnalyticsEventType
+import com.us.android.core.analytics.AnalyticsRecorder
+import com.us.android.core.analytics.AnalyticsSurface
+import com.us.android.core.analytics.NegativeSignalReason
+import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessage
@@ -64,7 +69,23 @@ class PostMoreViewModel @Inject constructor(
     private val reports: ReportRepository,
     private val hidden: HiddenPosts,
     private val lifecycle: PostLifecycleRepository,
+    private val analytics: AnalyticsRecorder,
 ) : ViewModel() {
+
+    /** Where the sheet was opened from; set by the host, defaulted for safety. */
+    private var surface: AnalyticsSurface = AnalyticsSurface.FEED
+
+    fun onSurface(value: AnalyticsSurface) {
+        surface = value
+    }
+
+    /**
+     * Every action on this sheet has the row in hand, so both the content id
+     * and the creator id are known — which is what makes this the one place
+     * `not_interested`, `report` and `block_creator` can be reported honestly.
+     */
+    private fun session(item: FeedItem) =
+        WatchSession.forEngagement(item.id, surface, item.author.id)
 
     private val _report = MutableStateFlow<UsPostReportState>(UsPostReportState.Idle)
 
@@ -103,11 +124,18 @@ class PostMoreViewModel @Inject constructor(
     }
 
     fun toggleSave(item: FeedItem) = viewModelScope.launch {
+        if (!item.viewer.isBookmarked) analytics.recordEngagement(AnalyticsEventType.SAVE, session(item))
         engagement.toggleBookmark(item.id, item.viewer.isBookmarked)
     }
 
     /** Recorded AFTER the chooser was launched; a failed count is not the viewer's problem. */
     fun externalShared(postId: String) = viewModelScope.launch {
+        analytics.recordEngagement(
+            AnalyticsEventType.SHARE,
+            // The creator is not in scope on this one — it takes a bare id —
+            // and the server discards a client-sent creator_id anyway.
+            WatchSession.forEngagement(postId, surface),
+        )
         shares.recordExternalShare(postId)
     }
 
@@ -123,6 +151,10 @@ class PostMoreViewModel @Inject constructor(
     }
 
     fun notInterested(item: FeedItem) {
+        // The sheet offers no "why", so the reason is genuinely unspecified —
+        // and the server's closed set turns anything it does not recognise
+        // into exactly that, so inventing one would be a lie that survives.
+        analytics.recordNegativeSignal(AnalyticsEventType.NOT_INTERESTED, session(item))
         hidden.hidePost(item.id)
         say("We'll show you fewer posts like this", UsMessageType.Success)
         viewModelScope.launch {
@@ -173,6 +205,11 @@ class PostMoreViewModel @Inject constructor(
      */
     fun block(item: FeedItem) {
         val authorId = item.author.id
+        analytics.recordNegativeSignal(
+            AnalyticsEventType.BLOCK_CREATOR,
+            session(item),
+            NegativeSignalReason.DISLIKE_CREATOR,
+        )
         hidden.hideAuthor(authorId)
         say("Blocked @${item.author.username ?: item.author.nameForDisplay}", UsMessageType.Success)
         viewModelScope.launch {
@@ -185,6 +222,7 @@ class PostMoreViewModel @Inject constructor(
 
     fun report(item: FeedItem, reason: UsReportReason, details: String) {
         if (_report.value == UsPostReportState.Sending) return
+        analytics.recordNegativeSignal(AnalyticsEventType.REPORT, session(item), reason.toAnalyticsReason())
         _report.value = UsPostReportState.Sending
         viewModelScope.launch {
             _report.value = when (reports.reportPost(item.id, reason.wire, details)) {
@@ -234,4 +272,32 @@ class PostMoreViewModel @Inject constructor(
         const val COULD_NOT_SAVE = "Couldn't save that. Try again."
         const val COULD_NOT_DELETE = "Couldn't delete this post. Try again."
     }
+}
+
+/**
+ * Maps the report sheet's reasons onto the analytics vocabulary.
+ *
+ * The two lists overlap but are not the same, and they answer to different
+ * owners: the sheet's reasons are trust-and-safety's routing categories, the
+ * analytics ones are the closed aggregation set in `normalizeNegativeReason`.
+ * Anything without a counterpart becomes `unspecified` — the same value the
+ * server would substitute — rather than being forced into a neighbouring
+ * bucket, which would quietly overstate whichever category it was forced into.
+ *
+ * Note this is the ANALYTICS copy only. The report itself still carries the
+ * viewer's real reason to trust-and-safety, untouched.
+ */
+private fun UsReportReason.toAnalyticsReason(): NegativeSignalReason = when (this) {
+    UsReportReason.SPAM -> NegativeSignalReason.SPAM
+    UsReportReason.NUDITY -> NegativeSignalReason.NUDITY
+    UsReportReason.VIOLENCE -> NegativeSignalReason.VIOLENCE
+    UsReportReason.HATE -> NegativeSignalReason.HATE
+    UsReportReason.FALSE_INFO -> NegativeSignalReason.MISINFORMATION
+    UsReportReason.HARASSMENT,
+    UsReportReason.SCAM,
+    UsReportReason.IMPERSONATION,
+    UsReportReason.SELF_HARM,
+    UsReportReason.INTELLECTUAL_PROPERTY,
+    UsReportReason.OTHER,
+    -> NegativeSignalReason.UNSPECIFIED
 }

@@ -16,6 +16,7 @@ android {
 // this module only shows the pending item the tracker reports.
 dependencies {
     implementation(projects.core.model)
+    implementation(projects.core.analytics)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)

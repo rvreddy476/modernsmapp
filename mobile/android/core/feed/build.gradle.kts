@@ -19,6 +19,7 @@ android {
 // same shape as :core:engagement and :core:chat.
 dependencies {
     implementation(projects.core.model)
+    implementation(projects.core.analytics)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)

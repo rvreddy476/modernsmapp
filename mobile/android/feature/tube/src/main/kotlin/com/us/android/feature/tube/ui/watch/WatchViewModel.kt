@@ -6,6 +6,14 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.navigation.toRoute
+import com.us.android.core.analytics.AnalyticsEventType
+import com.us.android.core.analytics.AnalyticsRecorder
+import com.us.android.core.analytics.AnalyticsSurface
+import com.us.android.core.analytics.PlayEndReason
+import com.us.android.core.analytics.PlayStartMethod
+import com.us.android.core.analytics.VideoWatchTracker
+import com.us.android.core.analytics.WatchProbe
+import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.di.ApplicationScope
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementOverlay
@@ -93,9 +101,21 @@ class WatchViewModel @Inject constructor(
     private val engagement: EngagementStore,
     private val shares: EngagementRepository,
     private val follows: FollowGraph,
+    private val watchTracker: VideoWatchTracker,
+    private val analytics: AnalyticsRecorder,
     /** Progress reports outlive the screen: the last one is sent as the ViewModel clears. */
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
+
+    /**
+     * The analytics view currently open, if any.
+     *
+     * Held so engagement — a like, a save, a follow — can be attributed to the
+     * playback session that produced it. `follow_from_content` in particular
+     * only means anything with the content in scope, and on this screen it
+     * always is.
+     */
+    private var watchSession: WatchSession? = null
 
     private val _currentId = MutableStateFlow(savedStateHandle.toRoute<WatchRoute>().postId)
 
@@ -137,7 +157,13 @@ class WatchViewModel @Inject constructor(
         // WatchPlayer). A second reading of the same player here would be a
         // copy that can disagree with the first.
         override fun onPlaybackStateChanged(playbackState: Int) {
-            if (playbackState == Player.STATE_ENDED) advance()
+            if (playbackState == Player.STATE_ENDED) {
+                // Closed as `ended` BEFORE advancing, so the completed view is
+                // attributed to this video rather than being swept up by the
+                // swipe_next that moves to the following one.
+                endWatchAnalytics(PlayEndReason.ENDED)
+                advance()
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -165,6 +191,7 @@ class WatchViewModel @Inject constructor(
     fun open(postId: String) {
         if (postId == _currentId.value) return
         report()
+        endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
         _currentId.value = postId
     }
 
@@ -187,7 +214,53 @@ class WatchViewModel @Inject constructor(
         player.setMediaSource(sources.create(playback))
         player.prepare()
         player.playWhenReady = true
+        startWatchAnalytics(item)
         resume(postId, item)
+    }
+
+    /**
+     * Opens the analytics view for this video.
+     *
+     * Started beside `prepare()` rather than on the first frame, because
+     * `time_to_first_frame_ms` is measured from the moment playback was ASKED
+     * for — starting the clock when the frame arrives would report zero for
+     * every video.
+     *
+     * The duration comes from the row, not the player: at this point the player
+     * has none, and analytics-service requires `content_duration_ms > 0` and
+     * divides by it for `percent_viewed`. A row with no duration is not
+     * tracked rather than reported as zero-length.
+     */
+    private fun startWatchAnalytics(item: FeedItem) {
+        endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
+        watchSession = watchTracker.startView(
+            contentId = item.id,
+            creatorId = item.author.id,
+            surface = AnalyticsSurface.POSTTUBE,
+            contentDurationMs = item.durationMs(),
+            // Tube plays because the viewer opened this video, not because it
+            // scrolled past. `resume` seeks afterwards; the method describes
+            // how playback BEGAN.
+            startMethod = PlayStartMethod.TAP,
+            isMuted = player.volume == 0f,
+            isAutoplay = false,
+        ) {
+            WatchProbe(
+                playheadMs = player.currentPosition.coerceAtLeast(0L),
+                isPlaying = player.isPlaying,
+                isBuffering = player.playbackState == Player.STATE_BUFFERING,
+                // The first frame has been drawn once the player is out of
+                // BUFFERING and into READY with content behind it.
+                renderedFirstFrame = player.playbackState == Player.STATE_READY,
+                speed = player.playbackParameters.speed,
+                durationMs = player.duration.takeIf { it > 0L } ?: 0L,
+            )
+        }
+    }
+
+    private fun endWatchAnalytics(reason: PlayEndReason) {
+        watchSession?.let { watchTracker.endView(it.contentId, reason) }
+        watchSession = null
     }
 
     private suspend fun fetch(postId: String): FeedItem? =
@@ -245,10 +318,25 @@ class WatchViewModel @Inject constructor(
     /** ±10 s from a double-tap; clamped so a skip past the end lands on the end. */
     fun seekBy(deltaMillis: Long) {
         val duration = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+        noteSeek()
         player.seekTo((player.currentPosition + deltaMillis).coerceIn(0L, duration))
     }
 
-    fun seekTo(positionMillis: Long) = player.seekTo(positionMillis.coerceAtLeast(0L))
+    fun seekTo(positionMillis: Long) {
+        noteSeek()
+        player.seekTo(positionMillis.coerceAtLeast(0L))
+    }
+
+    /**
+     * Tells the tracker a jump was deliberate.
+     *
+     * Without it the next playhead sample looks like a huge forward or backward
+     * step, and the tracker would either credit the skipped stretch as watched
+     * or mistake a scrub back for a loop.
+     */
+    private fun noteSeek() {
+        watchSession?.let { watchTracker.recordSeek(it.contentId) }
+    }
 
     fun selectQuality(quality: UsReelQuality) {
         _quality.value = quality
@@ -264,6 +352,10 @@ class WatchViewModel @Inject constructor(
     fun onBackground() {
         player.playWhenReady = false
         report()
+        // The view is closed rather than paused: the process may not survive
+        // the background, and an unclosed view is a view the creator is never
+        // paid for. Coming back to the foreground opens a fresh one.
+        endWatchAnalytics(PlayEndReason.BACKGROUNDED)
     }
 
     /** What the card draws for an "Up next" row. */
@@ -272,22 +364,43 @@ class WatchViewModel @Inject constructor(
     // ── Engagement ───────────────────────────────────────────────────────
 
     fun onReact(postId: String, serverReacted: Boolean) = viewModelScope.launch {
+        // Only the POSITIVE direction is an analytics signal. `serverReacted`
+        // is the state before the tap, so an un-like is `true` here — and
+        // there is no "unlike" event in the model, because the engagement rate
+        // that feeds the content quality score counts likes given, not the net.
+        if (!serverReacted) recordEngagement(AnalyticsEventType.LIKE)
         engagement.toggleReaction(postId, serverReacted)
     }
 
     fun onBookmark(postId: String, serverBookmarked: Boolean) = viewModelScope.launch {
+        if (!serverBookmarked) recordEngagement(AnalyticsEventType.SAVE)
         engagement.toggleBookmark(postId, serverBookmarked)
     }
 
     /** Recorded AFTER the chooser was launched; a failed count is not the viewer's problem. */
     fun onExternalShared(postId: String) = viewModelScope.launch {
+        recordEngagement(AnalyticsEventType.SHARE)
         shares.recordExternalShare(postId)
     }
 
-    fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
+    fun onFollow(authorId: String) = viewModelScope.launch {
+        // follow_from_content, not a bare follow: this button sits on the video
+        // being watched, so the content that earned the follow is known. The
+        // channel page's follow button deliberately does NOT emit this — see
+        // ChannelViewModel.
+        recordEngagement(AnalyticsEventType.FOLLOW_FROM_CONTENT)
+        follows.follow(authorId)
+    }
+
+    private fun recordEngagement(type: String) {
+        watchSession?.let { analytics.recordEngagement(type, it) }
+    }
 
     override fun onCleared() {
         report()
+        // Leaving the screen. Not `ended` — the video did not finish — and not
+        // `backgrounded`, which is a different signal about the app.
+        endWatchAnalytics(PlayEndReason.PAUSED)
         player.removeListener(listener)
         player.release()
     }

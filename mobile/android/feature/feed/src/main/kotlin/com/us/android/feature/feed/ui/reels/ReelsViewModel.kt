@@ -5,6 +5,14 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
+import com.us.android.core.analytics.AnalyticsEventType
+import com.us.android.core.analytics.AnalyticsRecorder
+import com.us.android.core.analytics.AnalyticsSurface
+import com.us.android.core.analytics.PlayEndReason
+import com.us.android.core.analytics.PlayStartMethod
+import com.us.android.core.analytics.VideoWatchTracker
+import com.us.android.core.analytics.WatchProbe
+import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
@@ -177,8 +185,21 @@ class ReelsViewModel @Inject constructor(
     private val publishActions: ReelPublishActions,
     private val follows: FollowGraph,
     private val reelsEntry: ReelsEntry,
+    private val watchTracker: VideoWatchTracker,
+    private val analytics: AnalyticsRecorder,
     hidden: HiddenPosts,
 ) : ViewModel() {
+
+    /**
+     * The analytics view for the reel on screen.
+     *
+     * Reels engagement always applies to the reel being watched — the rail sits
+     * on top of it — so holding the settled session here is what lets a like, a
+     * save, a share or a follow be attributed to the view that earned it,
+     * without widening every action signature to carry a creator id the store
+     * layer would only throw away.
+     */
+    private var watchSession: WatchSession? = null
 
     /**
      * The reel pinned above the ranked pages, once fetched: the one this
@@ -404,6 +425,9 @@ class ReelsViewModel @Inject constructor(
     fun resetView() {
         _mode.value = ReelsMode.NORMAL
         _paused.value = false
+        // The screen is leaving composition, so the view is over. `paused`
+        // rather than `ended` — the reel did not finish, the viewer left.
+        endWatchAnalytics(PlayEndReason.PAUSED)
     }
 
     /**
@@ -435,15 +459,21 @@ class ReelsViewModel @Inject constructor(
     val overlays: StateFlow<Map<String, EngagementOverlay>> = engagement.overlays
 
     fun onReact(postId: String, serverReacted: Boolean) = viewModelScope.launch {
+        // Only the positive direction: the model has no "unlike" event, because
+        // the engagement rate behind the content quality score counts likes
+        // given rather than the running net.
+        if (!serverReacted) recordEngagement(postId, AnalyticsEventType.LIKE)
         engagement.toggleReaction(postId, serverReacted)
     }
 
     fun onBookmark(postId: String, serverBookmarked: Boolean) = viewModelScope.launch {
+        if (!serverBookmarked) recordEngagement(postId, AnalyticsEventType.SAVE)
         engagement.toggleBookmark(postId, serverBookmarked)
     }
 
     /** Recorded AFTER the chooser was launched; a failed count is not the viewer's problem. */
     fun onExternalShared(postId: String) = viewModelScope.launch {
+        recordEngagement(postId, AnalyticsEventType.SHARE)
         shares.recordExternalShare(postId)
     }
 
@@ -454,16 +484,70 @@ class ReelsViewModel @Inject constructor(
 
     val ownUserId: String get() = follows.ownId
 
-    fun onFollow(authorId: String) = viewModelScope.launch { follows.follow(authorId) }
+    fun onFollow(authorId: String) = viewModelScope.launch {
+        // The reels follow pill sits ON the reel, so this is unambiguously
+        // follow_from_content — the creator earned it with that piece of
+        // content, which is exactly the distinction the event exists to draw.
+        watchSession?.let { analytics.recordEngagement(AnalyticsEventType.FOLLOW_FROM_CONTENT, it) }
+        follows.follow(authorId)
+    }
 
     /**
      * The pager settled on a page: the new reel plays — a pause belongs to
      * the reel it was made on, not the one swiped to — and its author's edge
      * is made known.
      */
-    fun onReelShown(item: FeedItem) {
+    fun onReelShown(item: FeedItem, probe: (suspend () -> WatchProbe)? = null) {
         _paused.value = false
         viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
+        startWatchAnalytics(item, probe)
+    }
+
+    /**
+     * Opens the analytics view for the settled reel and closes the previous one.
+     *
+     * The previous reel ends as `swipe_next` — which is the whole point of the
+     * distinction in the wire contract: a reel abandoned by a swipe is a very
+     * different signal from one watched to the end, and the ranking model reads
+     * them differently.
+     *
+     * [probe] is null in tests and wherever the pager has no player for the
+     * page yet (a reel still transcoding). Without one there is nothing to
+     * measure, so no view is opened rather than one that would report zero.
+     */
+    private fun startWatchAnalytics(item: FeedItem, probe: (suspend () -> WatchProbe)?) {
+        if (probe == null) return
+        watchSession?.takeIf { it.contentId != item.id }
+            ?.let { watchTracker.endView(it.contentId, PlayEndReason.SWIPE_NEXT) }
+        if (watchSession?.contentId == item.id) return
+        watchSession = watchTracker.startView(
+            contentId = item.id,
+            creatorId = item.author.id,
+            surface = AnalyticsSurface.FEED,
+            // Reels take the LONGEST of the row's media: the same rule
+            // `belongsInReels` already uses to decide the reel is a reel.
+            contentDurationMs = item.media.maxOfOrNull { it.durationMs } ?: 0L,
+            // The pager plays whatever it settles on; the viewer never presses
+            // play. Landing here from a feed tap is still autoplay once the
+            // pager owns it — `tap` describes a play button, which reels has
+            // none of.
+            startMethod = PlayStartMethod.AUTOPLAY,
+            isMuted = false,
+            isAutoplay = true,
+            probe = probe,
+        )
+    }
+
+    private fun endWatchAnalytics(reason: PlayEndReason) {
+        watchSession?.let { watchTracker.endView(it.contentId, reason) }
+        watchSession = null
+    }
+
+    private fun recordEngagement(postId: String, type: String) {
+        // Guarded on the id: a tap that arrives after the pager has moved on
+        // must not be credited to the reel now on screen.
+        watchSession?.takeIf { it.contentId == postId }
+            ?.let { analytics.recordEngagement(type, it) }
     }
 
     private companion object {

@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
@@ -41,6 +42,7 @@ fun BoxScope.TubeMoreHost(
             onDismiss = state::close,
             viewModel = more,
             suggested = state.suggested,
+            surface = AnalyticsSurface.POSTTUBE,
         )
     }
 }

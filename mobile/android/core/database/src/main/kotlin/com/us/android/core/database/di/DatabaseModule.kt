@@ -2,6 +2,7 @@ package com.us.android.core.database.di
 
 import android.content.Context
 import androidx.room.Room
+import com.us.android.core.database.AnalyticsDao
 import com.us.android.core.database.ChatDao
 import com.us.android.core.database.ComposerDraftDao
 import com.us.android.core.database.RemoteKeyDao
@@ -51,4 +52,7 @@ object DatabaseModule {
 
     @Provides
     fun provideChatDao(database: UsDatabase): ChatDao = database.chatDao()
+
+    @Provides
+    fun provideAnalyticsDao(database: UsDatabase): AnalyticsDao = database.analyticsDao()
 }

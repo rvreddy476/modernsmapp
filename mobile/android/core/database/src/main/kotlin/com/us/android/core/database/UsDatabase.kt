@@ -51,6 +51,18 @@ interface RemoteKeyDao {
 }
 
 /**
+ * The current schema version.
+ *
+ * A named constant rather than a literal in the annotation because tests open
+ * the database through raw `SupportSQLiteOpenHelper` and must declare the same
+ * number. When that was a second literal it silently drifted on the first
+ * version bump after it was written, and the failure — "Can't downgrade
+ * database from version 7 to 6" — points at the test, not at the bump that
+ * caused it.
+ */
+const val US_DATABASE_VERSION = 7
+
+/**
  * Phase 1 ships the database skeleton only — one table, so that the schema is
  * exported, migrations are testable, and the DI wiring is proven before any
  * feature depends on it. Feed, chat and upload-queue tables land with their
@@ -75,8 +87,10 @@ interface RemoteKeyDao {
         ChatConversationEntity::class,
         ChatMessageEntity::class,
         ChatPendingSendEntity::class,
+        // The product-analytics outbox (:core:analytics, 2026-09-07).
+        AnalyticsPendingEventEntity::class,
     ],
-    version = 6,
+    version = US_DATABASE_VERSION,
     exportSchema = true,
 )
 abstract class UsDatabase : RoomDatabase() {
@@ -91,6 +105,8 @@ abstract class UsDatabase : RoomDatabase() {
     abstract fun creatorPublishOperationDao(): CreatorPublishOperationDao
 
     abstract fun creatorMigrationDao(): CreatorMigrationDao
+
+    abstract fun analyticsDao(): AnalyticsDao
 
     companion object {
         const val NAME = "us.db"

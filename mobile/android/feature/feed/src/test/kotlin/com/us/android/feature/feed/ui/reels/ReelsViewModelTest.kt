@@ -2,6 +2,8 @@ package com.us.android.feature.feed.ui.reels
 
 import androidx.paging.testing.asSnapshot
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.analytics.NoOpAnalyticsRecorder
+import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
@@ -177,6 +179,8 @@ class ReelsViewModelTest {
         publishActions = h.actions,
         follows = followGraph(h.graph),
         reelsEntry = h.entry,
+        watchTracker = VideoWatchTracker.disabled(),
+        analytics = NoOpAnalyticsRecorder,
         hidden = HiddenPosts(),
     )
 

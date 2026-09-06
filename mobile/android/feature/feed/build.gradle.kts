@@ -14,6 +14,7 @@ dependencies {
     // The feed data seam (API, paging, hydration, follow graph) and the shared
     // more/comments sheets — shared with :feature:tube.
     implementation(projects.core.feed)
+    implementation(projects.core.analytics)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
