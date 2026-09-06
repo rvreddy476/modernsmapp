@@ -2,6 +2,7 @@ package com.us.android.feature.post.createhub
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -213,14 +214,22 @@ internal fun PublishPill(
 // ════════════════════════════════════════════════════════════════════════
 // PHOTO — Camera or Gallery, then the Studio
 // ════════════════════════════════════════════════════════════════════════
-
 /**
- * Camera or gallery, then the Studio. A capture is "take & edit" when the
- * advanced photo editor is licensed: it opens on the shot, and the export
- * goes to the studio in the shot's place. Backing out of the editor, or an
- * editor that returns nothing, still opens the studio with the shot — a
- * photo just taken is never lost to the editor. The studio's own Edit pill
- * repeats the licence notice if the editor keeps returning nothing.
+ * Camera or gallery, then the Studio.
+ *
+ * "Editing opens next" is what this screen promises, so ONE photo — taken or
+ * picked — opens the editor on it whenever the editor is available. It used
+ * to be the camera only: a picked photo went straight past the editor to the
+ * studio, which is the whole of "the photo editor doesn't open" for anyone
+ * who chose a photo rather than shooting one. Several photos still go
+ * straight through, because the editor edits one image and the studio's own
+ * Edit pill is the way into each page.
+ *
+ * A photo is never lost to the editor: backing out, or an editor that returns
+ * nothing, still opens the studio on the original. But a FAILURE now says so
+ * out loud. It used to fall through to the studio in silence, which left no
+ * way — for the person or for us — to tell "the licence does not cover the
+ * Photo Editor" apart from "nothing happened".
  */
 @Composable
 private fun ImageSourceSurface(
@@ -230,25 +239,43 @@ private fun ImageSourceSurface(
 ) {
     val context = LocalContext.current
     var cameraTarget by remember { mutableStateOf<android.net.Uri?>(null) }
-    val openStudioWithCapture = { cameraTarget?.let { onOpenStudio(listOf(it.toString())) } ?: Unit }
+    // The image the editor was opened on, whichever way in was used, so a
+    // cancel or a failure can fall back to the right one.
+    var editing by remember { mutableStateOf<android.net.Uri?>(null) }
+    val openStudioWithOriginal = {
+        (editing ?: cameraTarget)?.let { onOpenStudio(listOf(it.toString())) } ?: Unit
+    }
+
+    val editPhoto = rememberPhotoEditor(
+        editor = banuba.photoEditor,
+        onEdited = { path -> onOpenStudio(listOf(android.net.Uri.fromFile(File(path)).toString())) },
+        onFailed = { message ->
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            openStudioWithOriginal()
+        },
+        onCancelled = openStudioWithOriginal,
+    )
+
+    /** One image goes through the editor when there is one; everything else straight to the studio. */
+    val openWith = { uris: List<android.net.Uri> ->
+        val single = uris.singleOrNull()
+        if (single != null && editPhoto != null) {
+            editing = single
+            editPhoto(single)
+        } else {
+            onOpenStudio(uris.map { it.toString() })
+        }
+    }
 
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_PICK),
-    ) { uris -> if (uris.isNotEmpty()) onOpenStudio(uris.map { it.toString() }) }
+    ) { uris -> if (uris.isNotEmpty()) openWith(uris) }
 
-    val editCapture = rememberPhotoEditor(
-        editor = banuba.photoEditor,
-        onEdited = { path -> onOpenStudio(listOf(android.net.Uri.fromFile(File(path)).toString())) },
-        onFailed = { openStudioWithCapture() },
-        onCancelled = openStudioWithCapture,
-    )
     val takePicture = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture(),
     ) { saved ->
         val shot = cameraTarget
-        if (saved && shot != null) {
-            if (editCapture != null) editCapture(shot) else onOpenStudio(listOf(shot.toString()))
-        }
+        if (saved && shot != null) openWith(listOf(shot))
     }
 
     val openCamera = rememberCameraLaunch {
@@ -262,7 +289,7 @@ private fun ImageSourceSurface(
         subtitle = "Up to ten photos. Editing opens next.",
         onClose = onClose,
         onCamera = openCamera,
-        onPicked = { uris -> onOpenStudio(uris.map { it.toString() }) },
+        onPicked = { uris -> openWith(uris) },
         onSystemPicker = {
             pickImages.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
