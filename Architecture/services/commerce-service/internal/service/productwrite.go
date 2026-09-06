@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -66,7 +67,16 @@ var ErrProductNotEditable = errors.New("commerce: this product cannot be edited 
 // point of the registry — so keying an error on it would break the form the
 // first time an operator fixed a typo.
 type AttributeFieldError struct {
-	Code   string `json:"code"`
+	Code string `json:"code"`
+	// Label is the human name of the field, and is `omitempty` because the
+	// write path leaves it blank: a value the seller typed is on their screen
+	// under a control they can see, so the code is enough to find it.
+	//
+	// The submit gate DOES set it (see ProductIncompleteError). A field that
+	// is MISSING has nothing on screen — the message may be the only thing
+	// naming it — and "hsn_code is required" is a worse sentence than
+	// "HSN Code is required".
+	Label  string `json:"label,omitempty"`
 	Reason string `json:"reason"`
 }
 
@@ -521,6 +531,22 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 
 	if err := s.store.PatchProduct(ctx, in.ProductID, patch, sets, variation); err != nil {
 		return nil, err
+	}
+
+	// "The seller fixes the gap on their next edit" is decision 8's whole
+	// mechanism, and this is the line that makes it true. A seller who filled
+	// in the newly-required field and still saw "action needed" on their
+	// dashboard until the next nightly sweep would reasonably conclude the
+	// warning is noise — and the next thing they conclude is that the one
+	// after it is noise too.
+	//
+	// Best effort, and deliberately so: the edit HAS landed. Failing the
+	// patch because a bookkeeping table could not be updated would take a
+	// successful save away from the seller over a row nobody has read yet,
+	// and SweepComplianceGaps is the backstop that closes it anyway.
+	if _, err := s.store.ResolveGapsForProduct(ctx, in.ProductID); err != nil {
+		slog.WarnContext(ctx, "commerce: could not re-check compliance gaps after a patch",
+			"product_id", in.ProductID, "error", err)
 	}
 
 	updated, err := s.store.GetProductByID(ctx, in.ProductID)

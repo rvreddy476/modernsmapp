@@ -231,7 +231,7 @@ func TestOfferDualWrite_EveryLifecycleTransitionMovesBothCopies(t *testing.T) {
 	actor := uuid.New()
 
 	// 1. submit  (SubmitProductForReview — draft → submitted)
-	if err := f.store.SubmitProductForReview(ctx, f.productID, f.sellerID); err != nil {
+	if err := f.store.SubmitProductForReview(ctx, f.productID, f.sellerID, nil, 0, nil); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	f.assertAgrees("after submit")
@@ -309,7 +309,7 @@ func TestOfferConsistencyCheckerOverTheWholeEstate(t *testing.T) {
 	// the run is never vacuous: a checker reporting "0 divergent" over an
 	// empty products table is not evidence of anything.
 	f := newOfferFixture(t)
-	if err := store.SubmitProductForReview(ctx, f.productID, f.sellerID); err != nil {
+	if err := store.SubmitProductForReview(ctx, f.productID, f.sellerID, nil, 0, nil); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 

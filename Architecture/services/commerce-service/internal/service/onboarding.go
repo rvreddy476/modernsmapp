@@ -200,14 +200,9 @@ func (s *Service) GetDashboard(ctx context.Context, userID uuid.UUID) (*postgres
 	return s.store.GetDashboardStats(ctx, sel.ID)
 }
 
-// SubmitProduct submits a product for admin review.
-func (s *Service) SubmitProduct(ctx context.Context, productID, userID uuid.UUID) error {
-	sel, err := s.store.GetSellerByUserID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("seller not found")
-	}
-	return s.store.SubmitProductForReview(ctx, productID, sel.ID)
-}
+// SubmitProduct has moved to submitgate.go, where it acquired the
+// completeness gate. It used to be four lines here and asked nothing about
+// the listing at all.
 
 // ─── Internal admin operations (called by admin-service) ─────────
 

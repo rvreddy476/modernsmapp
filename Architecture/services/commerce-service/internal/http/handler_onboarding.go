@@ -340,6 +340,26 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, stats, nil)
 }
 
+// SubmitProduct POST /v1/commerce/products/:productId/submit
+//
+// ─── THE REFUSAL BODY CHANGED, AND THAT IS THE POINT ────────────────────
+//
+// Every failure used to be `400 SUBMIT_FAILED` with the raw error string in
+// it. So "your shop is not approved yet", "this listing is already in front
+// of a reviewer" and "this listing has no price, no stock, no image and is
+// missing six of its category's fields" were the same status, the same code
+// and one flat sentence a client could do nothing with but print.
+//
+// Now the completeness refusal is `422 PRODUCT_INCOMPLETE` carrying every gap
+// at once, keyed by code, in the same envelope
+// `ATTRIBUTE_VALUES_INVALID` already uses — so a client that can already put
+// a per-field message under a control does not have to learn a second shape.
+// 422 rather than 400 for the reason the write path's is: the request is
+// perfectly well formed, and what is not ready is the LISTING.
+//
+// The other refusals keep working and gain codes of their own: 409
+// SELLER_NOT_APPROVED and 409 PRODUCT_NOT_SUBMITTABLE, both states somebody
+// can resolve rather than malformed requests.
 func (h *Handler) SubmitProduct(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -350,7 +370,7 @@ func (h *Handler) SubmitProduct(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SubmitProduct(c.Request.Context(), productID, userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SUBMIT_FAILED", err.Error(), nil)
+		writeProductWriteError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

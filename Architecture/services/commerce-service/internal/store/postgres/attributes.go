@@ -948,6 +948,108 @@ func (s *Store) RecordAttributeRevision(ctx context.Context, definitionID uuid.U
 
 // ─── Impact ─────────────────────────────────────────────────────────────
 
+// attributeViolationCTE is the ONE definition of "this live listing is in
+// violation of this attribute definition".
+//
+// It is a fragment rather than a query because two callers need the same
+// verdict and must not be allowed to disagree about it:
+//
+//	AttributeImpact         counts it, BEFORE an operator tightens a rule,
+//	                        so the admin patch can refuse a narrowing edit
+//	                        that has not quoted the damage back.
+//	SweepAttributeViolations lists it, AFTER the rule was tightened, so the
+//	                        listings it left behind get a per-product gap
+//	                        row that a seller can act on.
+//
+// Written twice, those two drift, and the drift is invisible: the operator is
+// warned about 412 listings and the sweeper flags 380 of them, or 470. The
+// fragment ends with a `judged` CTE exposing `is_missing` and
+// `is_out_of_range` as booleans, and each caller does nothing but aggregate
+// or select from it.
+//
+// Placeholders, in both callers:
+//
+//	$1 definition id   $2 definition code
+//	$3 min_num   $4 max_num   $5 min_len   $6 max_len   $7 regex
+//	$8 whether the definition is an enum
+//
+// The category set is computed by propagating the binding DOWNWARD: each
+// binding seeds the walk, and a child that has its own binding for the same
+// definition stops the inheritance at that point — because its own row is a
+// separate seed. That is the same nearest-ancestor-wins rule the form uses,
+// read from the other end.
+//
+// `is_required` is carried through the walk alongside `is_excluded` because
+// the sweeper needs it and the count does not: "how many listings would this
+// break" is asked about a field that is NOT yet required, so filtering the
+// count by required-ness would always answer zero.
+//
+// The value is read from `product_attributes.value` — the free-text mirror —
+// rather than from the typed columns, and that is correct rather than lazy:
+// putAttributeValuesTx writes the mirror for every typed row (see
+// attributevalues.go), so it covers the typed estate AND the pre-026 rows
+// that have no typed column filled in at all. A typed-only read would report
+// every legacy listing as compliant because it could not see its values.
+const attributeViolationCTE = `
+	WITH RECURSIVE eff AS (
+	    SELECT ca.category_id, ca.is_excluded, ca.is_required, 0 AS depth
+	      FROM category_attributes ca
+	     WHERE ca.definition_id = $1
+	    UNION ALL
+	    SELECT pc.id, e.is_excluded, e.is_required, e.depth + 1
+	      FROM product_categories pc
+	      JOIN eff e ON pc.parent_id = e.category_id
+	     WHERE e.depth < 32
+	       AND NOT EXISTS (
+	           SELECT 1 FROM category_attributes ca2
+	            WHERE ca2.category_id = pc.id AND ca2.definition_id = $1)
+	),
+	cats AS (
+	    SELECT category_id, bool_or(is_required) AS is_required
+	      FROM eff WHERE NOT is_excluded GROUP BY category_id
+	),
+	live AS (
+	    SELECT p.id, p.seller_id, cats.is_required,
+	           (SELECT pa.value FROM product_attributes pa
+	             WHERE pa.product_id = p.id AND pa.name = $2
+	             ORDER BY pa.sort_order LIMIT 1) AS val
+	      FROM products p
+	      JOIN cats ON cats.category_id = p.category_id
+	     WHERE ` + productSummaryLive + `
+	),
+	judged AS (
+	    SELECT id, seller_id, is_required, val,
+	           (val IS NULL OR btrim(val) = '') AS is_missing,
+	           (val IS NOT NULL AND btrim(val) <> '' AND (
+	                ($3::numeric IS NOT NULL AND (num IS NULL OR num < $3::numeric))
+	             OR ($4::numeric IS NOT NULL AND (num IS NULL OR num > $4::numeric))
+	             OR ($5::int     IS NOT NULL AND length(val) < $5::int)
+	             OR ($6::int     IS NOT NULL AND length(val) > $6::int)
+	             OR ($7::text    IS NOT NULL AND val !~ $7::text)
+	             OR ($8::bool AND NOT EXISTS (
+	                    SELECT 1 FROM attribute_enum_values e
+	                     WHERE e.definition_id = $1 AND e.is_active AND e.code = val))
+	           )) AS is_out_of_range
+	      FROM (
+	          SELECT id, seller_id, is_required, val,
+	                 CASE WHEN val ~ '^-?[0-9]+(\.[0-9]+)?$' THEN val::numeric END AS num
+	            FROM live
+	      ) t
+	)`
+
+// attributeViolationArgs is the argument list attributeViolationCTE expects,
+// in order. Shared for the same reason the SQL is: two callers passing eight
+// positional parameters in two places is one refactor away from passing
+// min_len where max_len goes and reporting a different set of violations to
+// the operator than to the seller.
+func attributeViolationArgs(d *AttributeDefinition) []any {
+	return []any{
+		d.ID, d.Code,
+		d.MinNum, d.MaxNum, d.MinLen, d.MaxLen, d.Regex,
+		d.DataType == "enum",
+	}
+}
+
 // AttributeImpact counts what a narrowing edit to this definition would do.
 //
 // ─── WHY THIS EXISTS ────────────────────────────────────────────────────
@@ -968,11 +1070,7 @@ func (s *Store) RecordAttributeRevision(ctx context.Context, definitionID uuid.U
 //	               that is no longer active. Non-zero here means the catalogue
 //	               is already inconsistent with its own definition.
 //
-// The category set is computed by propagating the binding DOWNWARD: each
-// binding seeds the walk, and a child that has its own binding for the same
-// definition stops the inheritance at that point — because its own row is a
-// separate seed. That is the same nearest-ancestor-wins rule the form uses,
-// read from the other end.
+// The verdict itself is attributeViolationCTE, shared with the sweeper.
 func (s *Store) AttributeImpact(ctx context.Context, definitionID uuid.UUID) (*AttributeImpact, error) {
 	d, err := s.GetAttributeDefinition(ctx, definitionID)
 	if err != nil {
@@ -980,53 +1078,12 @@ func (s *Store) AttributeImpact(ctx context.Context, definitionID uuid.UUID) (*A
 	}
 
 	imp := &AttributeImpact{DefinitionID: definitionID}
-	err = s.db.QueryRow(ctx, `
-		WITH RECURSIVE eff AS (
-		    SELECT ca.category_id, ca.is_excluded, 0 AS depth
-		      FROM category_attributes ca
-		     WHERE ca.definition_id = $1
-		    UNION ALL
-		    SELECT pc.id, e.is_excluded, e.depth + 1
-		      FROM product_categories pc
-		      JOIN eff e ON pc.parent_id = e.category_id
-		     WHERE e.depth < 32
-		       AND NOT EXISTS (
-		           SELECT 1 FROM category_attributes ca2
-		            WHERE ca2.category_id = pc.id AND ca2.definition_id = $1)
-		),
-		cats AS (SELECT DISTINCT category_id FROM eff WHERE NOT is_excluded),
-		live AS (
-		    SELECT p.id,
-		           (SELECT pa.value FROM product_attributes pa
-		             WHERE pa.product_id = p.id AND pa.name = $2
-		             ORDER BY pa.sort_order LIMIT 1) AS val
-		      FROM products p
-		      JOIN cats ON cats.category_id = p.category_id
-		     WHERE `+productSummaryLive+`
-		),
-		judged AS (
-		    SELECT id, val,
-		           CASE WHEN val ~ '^-?[0-9]+(\.[0-9]+)?$' THEN val::numeric END AS num
-		      FROM live
-		)
-		SELECT
-		    COUNT(*)::int,
-		    COUNT(*) FILTER (WHERE val IS NULL OR btrim(val) = '')::int,
-		    COUNT(*) FILTER (
-		        WHERE val IS NOT NULL AND btrim(val) <> '' AND (
-		            ($3::numeric IS NOT NULL AND (num IS NULL OR num < $3::numeric))
-		         OR ($4::numeric IS NOT NULL AND (num IS NULL OR num > $4::numeric))
-		         OR ($5::int     IS NOT NULL AND length(val) < $5::int)
-		         OR ($6::int     IS NOT NULL AND length(val) > $6::int)
-		         OR ($7::text    IS NOT NULL AND val !~ $7::text)
-		         OR ($8::bool AND NOT EXISTS (
-		                SELECT 1 FROM attribute_enum_values e
-		                 WHERE e.definition_id = $1 AND e.is_active AND e.code = val))
-		        ))::int
+	err = s.db.QueryRow(ctx, attributeViolationCTE+`
+		SELECT COUNT(*)::int,
+		       COUNT(*) FILTER (WHERE is_missing)::int,
+		       COUNT(*) FILTER (WHERE is_out_of_range)::int
 		  FROM judged`,
-		definitionID, d.Code,
-		d.MinNum, d.MaxNum, d.MinLen, d.MaxLen, d.Regex,
-		d.DataType == "enum",
+		attributeViolationArgs(d)...,
 	).Scan(&imp.LiveProducts, &imp.Missing, &imp.OutOfRange)
 	if err != nil {
 		return nil, err

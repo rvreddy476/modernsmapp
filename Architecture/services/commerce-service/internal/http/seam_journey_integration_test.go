@@ -119,6 +119,21 @@ func openAShopForReal(t *testing.T, r *gin.Engine) realJourney {
 		}), http.StatusCreated)
 	j.productID = uuid.MustParse(createdProductID(t, created))
 
+	// A photograph, because the submit gate now requires one: a listing with
+	// no image renders as a blank tile in every grid and nothing anywhere
+	// reports it as an error, which is why it is the one built-in requirement
+	// whose failure is otherwise silent.
+	//
+	// Written directly rather than through POST …/media for the same reason
+	// the PAN document above is: the media route verifies the id against
+	// media-service, which is not running in this journey, and this seam is
+	// about checkout rather than about media ownership.
+	if _, err := edgePool.Exec(ctx, `
+		INSERT INTO product_media (product_id, media_id, media_type, sort_order)
+		VALUES ($1, gen_random_uuid(), 'image', 0)`, j.productID); err != nil {
+		t.Fatal(err)
+	}
+
 	mustCall(http.MethodPost,
 		"/v1/commerce/products/"+j.productID.String()+"/submit", nil,
 		http.StatusNoContent, http.StatusOK)

@@ -483,8 +483,53 @@ func (s *Store) GetDashboardStats(ctx context.Context, sellerID uuid.UUID) (*Das
 
 // ─── Product submit ───────────────────────────────────────────────
 
-// SubmitProductForReview sets approval_status=submitted (only if seller is approved).
-func (s *Store) SubmitProductForReview(ctx context.Context, productID, sellerID uuid.UUID) error {
+// submittableApprovalStatuses is what a submit is permitted to move FROM.
+//
+// ─── WHY THIS IS NO LONGER 'draft' ALONE ────────────────────────────────
+//
+// It was, and that made "request changes" a dead end. RequestProductChangesByAdmin
+// parks a product at `changes_requested` with the reviewer's feedback, and its
+// own doc comment says the point is "so the seller can fix + resubmit" — but
+// the only path back into the queue refused anything that was not a draft. So
+// a seller who was asked for a better photograph could edit the listing (the
+// patch path permits it: see ProductEditability) and then had no way to submit
+// it again. Same for `rejected` and `flagged`.
+//
+// The states still refused are refused for reasons, not by omission:
+//
+//	submitted, under_review   already in front of a reviewer. Re-submitting
+//	                          would mint a second attempt for a listing
+//	                          nobody has finished reading.
+//	approved                  live. The way an approved listing goes back to
+//	                          review is a substantive edit acknowledging the
+//	                          cost — RevalidationRequiredError — not a bare
+//	                          submit that would take the listing off sale
+//	                          with no warning.
+//	hidden, archived          an operator took it down, or it is retired.
+//	                          Submitting around either routes past whoever
+//	                          made that decision.
+//
+// The set deliberately matches the "editable without revalidation" arm of
+// ProductEditability: a state a seller may fix a listing in is a state they
+// may then submit it from, and any other pairing strands somebody.
+var submittableApprovalStatuses = []string{"draft", "pending", "rejected", "changes_requested", "flagged"}
+
+// SubmitProductForReview moves a listing into the review queue and records the
+// submission.
+//
+// The submission row is written in the SAME transaction as the status change.
+// A row without the status change is an audit trail claiming a listing was
+// submitted that the reviewer queue never shows; a status change without the
+// row is a re-submission whose diff silently compares against the wrong
+// attempt. Neither is recoverable after the fact.
+//
+// `snapshot` is the listing as submitted, assembled by the service layer's
+// completeness gate — which has just read every one of those values in order
+// to decide whether to allow the submit at all, so this costs no extra query.
+func (s *Store) SubmitProductForReview(
+	ctx context.Context, productID, sellerID uuid.UUID,
+	submittedBy *uuid.UUID, schemaVersion int, snapshot []SubmissionValue,
+) error {
 	// Check seller is approved
 	var status string
 	if err := s.db.QueryRow(ctx, `SELECT status FROM sellers WHERE id=$1`, sellerID).Scan(&status); err != nil {
@@ -504,8 +549,9 @@ func (s *Store) SubmitProductForReview(ctx context.Context, productID, sellerID 
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	tag, err := tx.Exec(ctx,
-		`UPDATE products SET approval_status='submitted', updated_at=NOW() WHERE id=$1 AND seller_id=$2 AND approval_status='draft'`,
-		productID, sellerID)
+		`UPDATE products SET approval_status='submitted', updated_at=NOW()
+		  WHERE id=$1 AND seller_id=$2 AND approval_status = ANY($3::text[])`,
+		productID, sellerID, submittableApprovalStatuses)
 	if err != nil {
 		return err
 	}
@@ -513,6 +559,9 @@ func (s *Store) SubmitProductForReview(ctx context.Context, productID, sellerID 
 		return ErrProductNotDraft
 	}
 	if err := syncOfferLifecycleTx(ctx, tx, productID); err != nil {
+		return err
+	}
+	if err := recordSubmissionTx(ctx, tx, productID, sellerID, submittedBy, schemaVersion, snapshot); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

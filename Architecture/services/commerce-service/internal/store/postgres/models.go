@@ -13,7 +13,13 @@ import (
 var (
 	ErrAlreadySubmitted  = errors.New("seller application already submitted")
 	ErrSellerNotApproved = errors.New("seller account not yet approved")
-	ErrProductNotDraft   = errors.New("product is not in draft status")
+	// ErrProductNotDraft is what a submit gets when the listing is not in a
+	// state a submit may move from. The name is kept — callers match on the
+	// sentinel — but the message is no longer "not a draft": a rejected or
+	// changes-requested listing is submittable too, and telling its seller
+	// their listing "is not a draft" would send them looking for a state they
+	// are not supposed to be in. See submittableApprovalStatuses.
+	ErrProductNotDraft = errors.New("product cannot be submitted for review in its current state")
 	ErrProductNotFound   = errors.New("product not found")
 )
 

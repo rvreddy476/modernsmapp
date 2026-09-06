@@ -347,6 +347,25 @@ func writeProductWriteError(c *gin.Context, err error) {
 		return
 	}
 
+	// The submit gate's refusal, in the SAME envelope: `fields`, keyed by
+	// code, every gap at once. Deliberately not a new shape — a client that
+	// can render ATTRIBUTE_VALUES_INVALID under its controls renders this
+	// with the code it already has, and the `code` on the error object is
+	// what tells it whether the field is wrong or merely absent.
+	//
+	// 422, matching that one, and for the same reason: the request parsed and
+	// every key was one this route accepts. What is not ready is the listing.
+	var incomplete *service.ProductIncompleteError
+	if errors.As(err, &incomplete) {
+		api.ErrorWithContext(ctx, w, http.StatusUnprocessableEntity, "PRODUCT_INCOMPLETE",
+			"this listing is not ready for review yet", gin.H{
+				"fields": incomplete.Fields,
+				"how_to_fix": "fill in every field listed, then submit again; " +
+					"GET /v1/commerce/products/{id}/readiness answers this without submitting",
+			})
+		return
+	}
+
 	// The variation matrix, per problem, keyed by the variant's SKU and the
 	// axis code. 422 for the same reason the attribute errors are: the body
 	// parsed and every key was one this route accepts — what failed is the
@@ -404,6 +423,21 @@ func writeProductWriteError(c *gin.Context, err error) {
 				"hidden by an operator, or archived", nil)
 	case errors.Is(err, service.ErrNoSellerProfile):
 		api.ErrorWithContext(ctx, w, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+	case errors.Is(err, postgres.ErrSellerNotApproved):
+		// 409, not 403: the seller is not forbidden, their shop is not open
+		// yet — a state that resolves without anybody granting a permission.
+		// It reached the submit route as a flat 400 with the sentinel's own
+		// text in it and no code a client could branch on.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "SELLER_NOT_APPROVED",
+			"your shop is still being reviewed; listings can be submitted once it is approved", nil)
+	case errors.Is(err, postgres.ErrProductNotDraft):
+		// 409 for the same reason PRODUCT_NOT_EDITABLE is one: nothing about
+		// the request is wrong. The listing is in a state a submit may not
+		// move from — see postgres.submittableApprovalStatuses, which now
+		// permits a re-submission after a rejection or a change request.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "PRODUCT_NOT_SUBMITTABLE",
+			"this listing cannot be submitted right now: it is already in front of a reviewer, "+
+				"already approved, or has been hidden or archived", nil)
 	case errors.Is(err, postgres.ErrDuplicateSKU):
 		// 409, and named. `product_variants.sku` is globally UNIQUE, so this
 		// is the likeliest way a real create fails — a seller pasting a code

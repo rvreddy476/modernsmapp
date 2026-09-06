@@ -51,6 +51,10 @@ func (h *Handler) WithStubSettlement(allow bool) *Handler {
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	h.RegisterOnboardingRoutes(r)
+	// The submit gate's reads: the seller's pre-submit checklist and
+	// "action needed" list, and the reviewer's submission history and the
+	// founder's compliance-gap queue. See handler_submissions.go.
+	h.RegisterSubmissionRoutes(r)
 
 	v1 := r.Group("/v1/commerce")
 
