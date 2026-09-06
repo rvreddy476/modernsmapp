@@ -54,6 +54,9 @@ import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
 import com.us.android.core.common.time.formatDuration
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.ui.VideoLoadState
+import com.us.android.core.media.ui.VideoLoadingOverlay
+import com.us.android.core.media.ui.rememberVideoLoadState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -111,7 +114,12 @@ fun rememberPlayhead(player: Player, polling: Boolean): Playhead {
  *    the bottom the elapsed time, the seek bar (buffered under played, a
  *    thumb to drag) the total, and fullscreen;
  *  - with the controls hidden a two-pixel line along the bottom keeps the
- *    playhead visible ([ProgressLine]).
+ *    playhead visible ([ProgressLine]);
+ *  - and while the player has no frames to give — a cold open, a rebuffer —
+ *    the shared indicator spins in the centre in place of the play button
+ *    ([rememberVideoLoadState]). A long video on a slow connection is where
+ *    a silent black frame is least forgivable, because the viewer chose
+ *    this one video and is waiting on it.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -122,6 +130,10 @@ fun WatchPlayer(
     transport: WatchTransport,
     modifier: Modifier = Modifier,
 ) {
+    // The shared observer, read here rather than in the ViewModel: the
+    // centre play/pause has to stand aside while it spins, which is a fact
+    // about this layout and not about the video.
+    val loadState = rememberVideoLoadState(player)
     var controlsVisible by remember { mutableStateOf(true) }
     var skipHint by remember { mutableStateOf<SkipHint?>(null) }
     // Bumped on every interaction so the auto-hide restarts from the last touch.
@@ -167,11 +179,22 @@ fun WatchPlayer(
             enter = fadeIn(tween(FADE_MILLIS)),
             exit = fadeOut(tween(FADE_MILLIS)),
         ) {
-            Controls(playhead = playhead, fullscreen = fullscreen, transport = transport, onInteract = interact)
+            Controls(
+                playhead = playhead,
+                fullscreen = fullscreen,
+                transport = transport,
+                onInteract = interact,
+                // The spinner takes the centre while it is there; two discs
+                // stacked on one another is how a control reads as broken.
+                busy = loadState != VideoLoadState.NONE,
+            )
         }
         if (!controlsVisible) {
             ProgressLine(playhead = playhead, modifier = Modifier.align(Alignment.BottomCenter))
         }
+        // Last, so the stall's Retry is reachable: the tap layer above sits
+        // under it, and this box consumes nothing else.
+        VideoLoadingOverlay(state = loadState, onRetry = player::prepare)
     }
 }
 
@@ -230,6 +253,8 @@ private fun Controls(
     fullscreen: Boolean,
     transport: WatchTransport,
     onInteract: () -> Unit,
+    /** The buffering spinner has the centre; the play/pause stands down. */
+    busy: Boolean,
 ) {
     Box(
         modifier = Modifier
@@ -255,14 +280,16 @@ private fun Controls(
                 tag = "watch_settings",
             )
         }
-        PlayPauseButton(
-            playing = playhead.playing,
-            onClick = {
-                onInteract()
-                transport.onTogglePlay()
-            },
-            modifier = Modifier.align(Alignment.Center),
-        )
+        if (!busy) {
+            PlayPauseButton(
+                playing = playhead.playing,
+                onClick = {
+                    onInteract()
+                    transport.onTogglePlay()
+                },
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
         BottomRow(
             playhead = playhead,
             fullscreen = fullscreen,

@@ -63,6 +63,9 @@ import androidx.media3.common.util.UnstableApi
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.ui.VideoLoadState
+import com.us.android.core.media.ui.VideoLoadingOverlay
+import com.us.android.core.media.ui.rememberVideoLoadState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.feature.post.createhub.CreateTopBar
 import com.us.android.feature.post.createhub.pressDim
@@ -283,7 +286,15 @@ private fun StudioPreview(
                     onMove = actions.moveText,
                 )
             }
-            if (!playing) {
+            // A look change re-prepares the player, and the first prepare
+            // of a long source can take a moment on a mid-range phone — the
+            // preview box is black in both gaps, which reads as an editor
+            // that has crashed. Only ever while the preview is meant to be
+            // running: a scrubbed trim handle pauses it, and a paused
+            // preview shows the play glyph below instead.
+            val loadState = rememberVideoLoadState(player.player)
+            VideoLoadingOverlay(state = loadState, onRetry = player.player::prepare)
+            if (!playing && loadState == VideoLoadState.NONE) {
                 Icon(
                     imageVector = UsIcons.Play,
                     contentDescription = null,

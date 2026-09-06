@@ -41,6 +41,7 @@ import androidx.media3.ui.compose.state.rememberPresentationState
 import androidx.paging.compose.LazyPagingItems
 import coil3.compose.AsyncImage
 import com.us.android.core.media.Playback
+import com.us.android.core.media.ui.VideoLoadingIndicator
 import com.us.android.core.model.FeedItem
 import com.us.android.core.ui.MEDIA_FRAME_ASPECT
 import com.us.android.core.ui.POST_CARD_HEADER_HEIGHT
@@ -244,6 +245,12 @@ internal fun FeedVideo(
                 modifier = Modifier.fillMaxSize(),
             )
         }
+        // Over the poster, deliberately. The poster alone cannot tell a
+        // reader whether the video is a beat away or never coming — it is a
+        // picture either way — and a feed of stills that never move is the
+        // same "stuck" the reels surface was reported for. The debounce
+        // means a card that starts playing promptly shows nothing at all.
+        VideoLoadingIndicator(player = player, onRetry = player::prepare)
     }
 }
 

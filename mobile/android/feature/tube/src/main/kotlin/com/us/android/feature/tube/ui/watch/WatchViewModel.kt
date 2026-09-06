@@ -130,6 +130,12 @@ class WatchViewModel @Inject constructor(
     val ownUserId: String get() = follows.ownId
 
     private val listener = object : Player.Listener {
+        // Only the END is business here. STATE_BUFFERING is deliberately not
+        // handled in this class: buffering is something the SURFACE draws,
+        // and it is drawn by the one shared observer every video surface in
+        // the app uses (`core.media.ui.rememberVideoLoadState`, consumed by
+        // WatchPlayer). A second reading of the same player here would be a
+        // copy that can disagree with the first.
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) advance()
         }

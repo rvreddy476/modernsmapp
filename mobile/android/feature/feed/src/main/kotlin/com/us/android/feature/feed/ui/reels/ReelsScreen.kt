@@ -107,6 +107,7 @@ import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerPool
+import com.us.android.core.media.ui.VideoLoadingIndicator
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.HideShellBottomBar
@@ -910,6 +911,13 @@ private fun ReelPage(
                 surfaceType = SURFACE_TYPE_SURFACE_VIEW,
                 modifier = Modifier.fillMaxSize(),
             )
+            // A reel that has not drawn its first frame is a BLACK page —
+            // there is no poster behind a reel — so this is the surface the
+            // "stuck" complaint was loudest about. It only ever draws on the
+            // page the viewer is on: the pool preloads the neighbours with
+            // playWhenReady false, and a paused reel shows the play glyph
+            // instead. Retry re-prepares the player where it stands.
+            VideoLoadingIndicator(player = player, onRetry = player::prepare)
             TrackProgress(player = player, polling = settled && !view.paused) { progress = it }
         } else {
             // No playable rendition yet. An asset still processing has no
