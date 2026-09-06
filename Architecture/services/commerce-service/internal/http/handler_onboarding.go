@@ -42,6 +42,21 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.GET("/payouts/pending", h.AdminListPendingPayouts)
 	adm.GET("/jobs/dead-letter", h.AdminListDeadLetterJobs)
 	adm.GET("/products/queue", h.AdminListProductQueue)
+	// ── The search read-back ─────────────────────────────────────
+	//
+	// search-service fetches a product's document by id after a
+	// visibility event, and walks the whole live catalogue on a reindex.
+	// See handler_searchdoc.go for why these are internal rather than
+	// public, and internal/service/searchdoc.go for why the consumer
+	// reads back at all instead of trusting the event payload.
+	//
+	// `/products/search-docs` is a STATIC sibling of `/products/:productId`
+	// — the same shape `/products/queue` above already has, which gin
+	// resolves by preferring the static segment. See
+	// TestSearchDocRoutesRegisterWithoutConflict.
+	adm.GET("/products/search-docs", h.AdminListProductSearchDocs)
+	adm.GET("/products/:productId/search-doc", h.AdminProductSearchDoc)
+	adm.GET("/search-facets", h.AdminSearchFacets)
 	adm.POST("/products/:productId/approve", h.AdminApproveProduct)
 	adm.POST("/products/:productId/reject", h.AdminRejectProduct)
 	adm.POST("/products/:productId/request-changes", h.AdminRequestProductChanges)

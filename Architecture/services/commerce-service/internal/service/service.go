@@ -69,6 +69,10 @@ var (
 	// a reviewer needs still missing. The message names everything that is
 	// absent, not the first thing.
 	ErrApplicationIncomplete = fmt.Errorf("the seller application is incomplete")
+	// ErrInvalidSearchDocCursor means the reindex walk was handed a cursor
+	// it did not mint. Handlers map it to 400 — see searchdoc.go for why a
+	// bad cursor must not silently restart the walk.
+	ErrInvalidSearchDocCursor = fmt.Errorf("invalid search-doc cursor")
 )
 
 // ConfirmPaymentInput is the request body the customer-facing confirm
@@ -550,9 +554,25 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 		return nil, err
 	}
 
-	s.publish(ctx, "commerce.product.created", map[string]any{
-		"product_id": p.ID, "seller_id": p.SellerID, "title": p.Title,
-	})
+	// No event here any more, and its absence is the fix.
+	//
+	// This published "commerce.product.created". Nothing has ever consumed
+	// it: search-service's consumer listens for events.ProductListed — the
+	// literal "ProductListed" — so the two strings have never matched and
+	// product search has never seen a live event. But the name was only the
+	// visible half of the mistake. A create is the wrong MOMENT to tell a
+	// search index about: every path into this function writes
+	// status='draft', approval_status='draft' (see the struct above), so an
+	// index driven by creation would index drafts, index listings a
+	// moderator later rejects, and never hear about an approved listing
+	// being taken down.
+	//
+	// The events search actually needs are commerce.product.published and
+	// commerce.product.unpublished, fired from the transitions that move a
+	// listing in and out of buyers' view. See internal/service/searchdoc.go.
+	//
+	// A grep for a "product created" event that finds nothing here should
+	// find this comment instead.
 	return p, nil
 }
 

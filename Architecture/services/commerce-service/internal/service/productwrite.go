@@ -558,5 +558,22 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 		"product_id": updated.ID, "seller_id": updated.SellerID,
 		"revalidated": patch.Revalidate,
 	})
+	// Two different transitions arrive here and publishProductVisibility
+	// tells them apart by reading the row rather than by asking the patch:
+	//
+	//	revalidation bounce   an approved listing edited substantively goes
+	//	                      status='draft', approval_status='submitted' —
+	//	                      it must LEAVE the index, or search keeps
+	//	                      offering a listing the catalogue has taken off
+	//	                      sale pending re-review.
+	//	an ordinary edit      the listing is still live, and the document
+	//	                      search holds is now stale. Re-publishing makes
+	//	                      the consumer read it back, so a retitled or
+	//	                      recategorised listing is findable under what it
+	//	                      says now rather than what it said when it was
+	//	                      approved.
+	//
+	// Which is why this is not `if patch.Revalidate`.
+	s.publishProductVisibility(ctx, updated.ID)
 	return &UpdateProductResult{Product: updated, Revalidated: patch.Revalidate}, nil
 }

@@ -6,10 +6,16 @@ package search
 // products_v1) and the new entities ship as plain hashtags/communities
 // /channels indices.
 const (
-	IndexPosts       = "posts_v1"
-	IndexUsers       = "users_v1"
-	IndexHashtags    = "hashtags_v1"
-	IndexProducts    = "products_v1"
+	IndexPosts    = "posts_v1"
+	IndexUsers    = "users_v1"
+	IndexHashtags = "hashtags_v1"
+	// IndexProducts is an ALIAS, not an index — the one name in this
+	// service that is. It resolves to products_v2 (the mapping that
+	// supports category ancestors, minor-unit prices and attribute
+	// facets) and can be moved back to products_v1 with a single atomic
+	// call and no deploy. See productsv2.go for why, and for why nothing
+	// here deletes products_v1.
+	IndexProducts    = "products"
 	IndexCommunities = "communities_v1"
 	IndexChannels    = "channels_v1"
 )

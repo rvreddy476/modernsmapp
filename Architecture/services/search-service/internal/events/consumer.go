@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/search-service/internal/commerceclient"
 	"github.com/atpost/search-service/internal/privacyclient"
+	"github.com/atpost/search-service/internal/productindex"
 	"github.com/atpost/search-service/internal/purge"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/events"
@@ -78,6 +81,11 @@ type Consumer struct {
 	// public and a startup warning is logged — acceptable only on a dev
 	// rig without the identity user-service.
 	privacy privacyclient.Lookup
+	// commerce resolves a product document by id after a visibility
+	// event. Nil means product events cannot be handled — see
+	// handleProductVisibility for why that is an error rather than a
+	// silent skip.
+	commerce *commerceclient.Client
 	// lifecycle handles user.deactivated / deletion_scheduled / reactivated
 	// / deletion_cancelled / purge_requested (see internal/purge). Wired
 	// onto the identity-topic consumer only. Optional.
@@ -95,6 +103,79 @@ func (c *Consumer) WithPrivacyLookup(l privacyclient.Lookup) *Consumer {
 func (c *Consumer) WithLifecycleHandler(h *purge.Handler) *Consumer {
 	c.lifecycle = h
 	return c
+}
+
+// WithCommerceClient wires the product read-back. Without it, product
+// visibility events cannot be handled at all — see handleProductVisibility.
+func (c *Consumer) WithCommerceClient(cc *commerceclient.Client) *Consumer {
+	c.commerce = cc
+	return c
+}
+
+// handleProductVisibility is the whole product indexing path: BOTH
+// commerce.product.published and commerce.product.unpublished land here,
+// and so does a replayed legacy ProductListed.
+//
+// ─── WHY THE EVENT TYPE DOES NOT DECIDE ─────────────────────────────────
+//
+// The obvious implementation indexes on `published` and deletes on
+// `unpublished`. It is wrong for the same reason a fat payload is wrong:
+// the event says what was true when it was produced, and by the time it is
+// consumed something else may be.
+//
+//	replay          a `published` replayed from the DLQ a day after the
+//	                listing was rejected would put a rejected listing back
+//	                into search, and nothing would ever take it out again.
+//	out of order    Kafka orders within a partition, and these events are
+//	                not keyed by product. An approve followed by a reject
+//	                can arrive backwards, and an index that trusted the
+//	                arrival order would settle on "published" — a listing
+//	                the catalogue has taken down, live in search forever.
+//	delay           an approve, an edit and a re-approve all reduce to
+//	                "read the product": the last read wins and it wins with
+//	                the truth.
+//
+// So the event is only a WAKE-UP. The decision is made from the document
+// commerce hands back, whose `Visible` field it computed from the product's
+// own columns at the instant of the read. Both event types therefore
+// converge here, and the worst an out-of-order pair can do is make this run
+// twice and reach the same answer twice.
+//
+// A 404 from commerce is "deleted", not "failed": the product is gone, so
+// the document goes. Every OTHER failure is an error, which makes the
+// message retry and eventually dead-letter, because "I could not reach
+// commerce" must never be quietly rendered as "this listing is not
+// visible" — that would empty the product index during a commerce outage.
+func (c *Consumer) handleProductVisibility(ctx context.Context, p events.ProductVisibilityPayload) error {
+	if p.ProductID == "" {
+		// Nothing to look up and nothing to delete. Not an error: a
+		// malformed payload that blocked the partition forever would be a
+		// worse outcome than a dropped one we can see in the logs.
+		slog.WarnContext(ctx, "search: product visibility event carried no product_id")
+		return nil
+	}
+	if c.commerce == nil || !c.commerce.Configured() {
+		// Refusing is deliberate. Returning nil here would commit the
+		// offset and lose the event, and the index would then be missing a
+		// listing with nothing left in the system that would ever notice.
+		// An error retries, dead-letters, and shows up.
+		return fmt.Errorf("search: no commerce client wired; cannot resolve product %s", p.ProductID)
+	}
+
+	doc, err := c.commerce.ProductSearchDoc(ctx, p.ProductID)
+	if err != nil {
+		if errors.Is(err, commerceclient.ErrProductGone) {
+			return c.store.DeleteProduct(ctx, p.ProductID)
+		}
+		return err
+	}
+	if !doc.Visible {
+		// Idempotent: deleteDoc treats a 404 as success, so an unpublish
+		// for a product that was never indexed is a no-op rather than a
+		// dead-letter.
+		return c.store.DeleteProduct(ctx, doc.ProductID)
+	}
+	return c.store.IndexProductV2Doc(ctx, productindex.Doc(*doc))
 }
 
 // authorIsPrivate resolves the flag for one user. A lookup FAILURE is an
@@ -768,18 +849,38 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		return c.store.AddToEngagementScore(ctx, search.IndexChannels, p.ChannelID, -1)
 
 	// --- Products / Commerce ---
+	//
+	// ONE CASE FOR BOTH EVENT TYPES, and that is the design rather than a
+	// shortcut. See handleProductVisibility.
+	case events.ProductPublished, events.ProductUnpublished:
+		var p events.ProductVisibilityPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.handleProductVisibility(ctx, p)
+
 	case events.ProductListed:
+		// Dead on arrival, and kept only so a payload sitting in the DLQ
+		// from before this step still decodes rather than dead-lettering
+		// again forever.
+		//
+		// Nothing ever published this. commerce-service emitted
+		// "commerce.product.created"; this listened for the literal
+		// "ProductListed"; the two never matched, so product search has
+		// never once indexed a live event. The pair above replaces it —
+		// with the read-back that a payload like ProductListedPayload
+		// (title and price copied into the message) could never provide.
 		var p events.ProductListedPayload
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		return c.store.IndexProductDoc(ctx, search.ProductDoc{
-			ProductID: p.ProductID,
-			SellerID:  p.SellerID,
-			Title:     p.Title,
-			Category:  p.Category,
-			Price:     p.Price,
-			CreatedAt: p.CreatedAt,
+		if p.ProductID == "" {
+			return nil
+		}
+		slog.WarnContext(ctx, "search: legacy ProductListed replayed; re-reading the product from commerce",
+			"product_id", p.ProductID)
+		return c.handleProductVisibility(ctx, events.ProductVisibilityPayload{
+			ProductID: p.ProductID, SellerID: p.SellerID,
 		})
 
 	case events.EventOrderCreated, events.OrderCreated:

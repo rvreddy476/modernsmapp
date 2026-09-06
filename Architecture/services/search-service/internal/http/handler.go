@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/search-service/internal/commerceclient"
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/mediaclient"
 	"github.com/atpost/search-service/internal/privacyclient"
@@ -32,6 +33,10 @@ type Handler struct {
 	privacy privacyclient.Lookup
 	// mediaClient resolves thumbnails / avatars for result rows (nil-safe).
 	mediaClient *mediaclient.Client
+	// commerceClient reads the attribute definitions a facet response is
+	// built from, and walks the catalogue for the product reindex.
+	// Nil-safe: the facet and reindex routes answer 503 without it.
+	commerceClient *commerceclient.Client
 }
 
 // WithPrivacyLookup wires the identity settings lookup the reindex uses.
@@ -125,6 +130,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/history", h.GetSearchHistory)
 		v1.DELETE("/history", h.ClearSearchHistory)
 		v1.GET("/products", h.SearchProducts)
+		// The filter rail beside the product results. A static sibling of
+		// /products, not a child of a param, so there is no route conflict.
+		v1.GET("/products/facets", h.ProductFacets)
 		v1.GET("/events", h.SearchEvents)
 		v1.GET("/messages", h.SearchMessages)
 
@@ -133,6 +141,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// set). Use this after an OpenSearch wipe or any time search
 		// has drifted from reality.
 		v1.POST("/internal/reindex/users", h.ReindexUsers)
+
+		// The product index: rebuild it from commerce, read where the
+		// `products` alias points, and move it. The alias move is the
+		// rollback for the products_v2 mapping — see handler_products.go.
+		v1.POST("/internal/reindex/products", h.ReindexProducts)
+		v1.GET("/internal/products/alias", h.ProductsAlias)
+		v1.POST("/internal/products/alias", h.MoveProductsAlias)
 	}
 
 	discover := r.Group("/v1/discover", h.resolveBlockScope())
@@ -742,15 +757,33 @@ func (h *Handler) ClearSearchHistory(c *gin.Context) {
 }
 
 // SearchProducts handles GET /v1/search/products
-// Query params: q (required), category (optional), limit (default: 20)
+//
+//	?q=         the text to match. Required UNLESS ?category= is given.
+//	?category=  a category id, slug or name; matches descendants too.
+//	?sort=      price_asc | price_desc | newest. Default: relevance.
+//	?limit=     default 20, max 100.
+//
+// Response shape is unchanged: {"items": [ …product documents… ]}.
 func (h *Handler) SearchProducts(c *gin.Context) {
 	query := c.Query("q")
-	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
+	category := c.Query("category")
+
+	// A category with no text is a BROWSE — clicking a department — and it
+	// used to be a 400. That refusal made the category filter unusable for
+	// the one thing shoppers do with it, since the only way to see a
+	// department was to also think of a word to type. A request with
+	// NEITHER is still refused: an unbounded match-all is not a search.
+	if category == "" || strings.TrimSpace(query) != "" {
+		if errMsg := validateSearchQuery(query); errMsg != "" {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
+			return
+		}
+	} else if len(query) > 500 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST",
+			"query too long: maximum 500 characters", nil)
 		return
 	}
 
-	category := c.Query("category")
 	limit := 20
 	if l := c.Query("limit"); l != "" {
 		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
@@ -758,7 +791,13 @@ func (h *Handler) SearchProducts(c *gin.Context) {
 		}
 	}
 
-	results, err := h.store.SearchProducts(c.Request.Context(), query, category, limit)
+	// ?sort=price_asc|price_desc|newest, default relevance. A new optional
+	// parameter — the response shape is exactly what it has always been,
+	// a list of raw product documents under "items".
+	//
+	// The sort itself orders on min_price_minor (paise, an integer), not
+	// on the legacy `price` float: see Store.SearchProductsSorted.
+	results, err := h.store.SearchProductsSorted(c.Request.Context(), query, category, c.Query("sort"), limit)
 	if err != nil {
 		slog.Error("SearchProducts error", "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Product search failed", nil)

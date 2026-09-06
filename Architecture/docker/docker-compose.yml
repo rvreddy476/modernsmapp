@@ -971,6 +971,10 @@ services:
       # Page-scoped search result rows: thumbnails / avatars are resolved
       # through media-service's batch endpoint as the viewer.
       MEDIA_SERVICE_URL: http://media-service:8087
+      # Product search: the catalogue read-back behind
+      # commerce.product.published / .unpublished, and the attribute
+      # definitions the facet rail is built from at query time.
+      COMMERCE_SERVICE_URL: http://commerce-service:8109
     ports:
       - "8089:8089"
     # Wait for OpenSearch to actually serve, not merely to have started —

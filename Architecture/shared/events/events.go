@@ -102,9 +102,51 @@ const (
 	ReportDismissed = "ReportDismissed" // payload: ReportFiledPayload
 
 	// Shop / E-Commerce
+	// ProductListed is DEAD and kept only so an old payload sitting in a
+	// DLQ still decodes. Nothing has ever published it: commerce-service
+	// emitted "commerce.product.created" while search-service listened for
+	// this literal, so product search has never seen a live event. The pair
+	// below replaces it — see ProductPublished.
+	//
+	// Deprecated: listen for ProductPublished / ProductUnpublished.
 	ProductListed      = "ProductListed"      // payload: ProductListedPayload
 	OrderCreated       = "OrderCreated"       // payload: OrderCreatedPayload
 	OrderStatusUpdated = "OrderStatusUpdated" // payload: OrderStatusUpdatedPayload
+
+	// ─── Product visibility (commerce-service → search-service) ─────
+	//
+	// WHY THESE TWO AND NOT "created"/"updated".
+	//
+	// A product is created as a draft and stays invisible to buyers until a
+	// moderator approves it. An index driven by creation therefore indexes
+	// drafts and rejected listings, and never learns when an approved one is
+	// taken down. What a search index needs to hear about is not the row
+	// coming into existence — it is the LISTING BECOMING VISIBLE, and its
+	// ceasing to be. That is what these name.
+	//
+	// The visibility rule itself lives in exactly one place, commerce's
+	// `productSummaryLive` (status='active' AND approval_status='approved'),
+	// and these events are fired from the transitions that can change it:
+	// approve, reject, request-changes, submit, and the patch's revalidation
+	// bounce.
+	//
+	// WHY THE PAYLOAD IS THIN.
+	//
+	// ProductVisibilityPayload carries ids and nothing a consumer could act
+	// on as if it were current. A fat payload — title, price, category —
+	// is a copy of the catalogue taken at publish time, and between the
+	// publish and the consumption it can go stale: the seller edits the
+	// price, the event is replayed from a DLQ a day later, two events
+	// arrive out of order. The consumer instead reads the document back
+	// from commerce by id (GET /v1/commerce/internal/products/:id/search-doc)
+	// and indexes what commerce says NOW. The event says "look again at this
+	// product"; the read-back says what is true.
+	//
+	// That is also why an out-of-order pair is harmless: both event types
+	// trigger the same read-back, and the doc's own `visible` flag — not the
+	// event's name — decides whether the consumer indexes or deletes.
+	ProductPublished   = "commerce.product.published"   // payload: ProductVisibilityPayload
+	ProductUnpublished = "commerce.product.unpublished" // payload: ProductVisibilityPayload
 
 	// Live Streaming (v1 — RTMP/OBS; live-service)
 	LiveStarted = "LiveStarted" // payload: LiveStartedPayload
@@ -1120,6 +1162,33 @@ type FlagEvaluatedPayload struct {
 }
 
 // --- Shop / E-Commerce Payloads ---
+
+// ProductVisibilityPayload is the payload of ProductPublished and
+// ProductUnpublished.
+//
+// Everything here is either an identifier or a fact about the TRANSITION,
+// and that is the whole design. A consumer cannot render a search result
+// from this, and is not meant to: it reads the document back from commerce
+// by ProductID. See the constants' comment for why.
+//
+// SellerID is present because it is the only field a consumer may need
+// BEFORE the read-back — a seller-scoped purge or fence decides whether to
+// bother reading at all. Status/ApprovalStatus are the two columns the
+// visibility rule is made of, carried for operators reading a DLQ payload,
+// never as the basis of an index decision.
+type ProductVisibilityPayload struct {
+	ProductID string `json:"product_id"`
+	SellerID  string `json:"seller_id"`
+
+	// Status and ApprovalStatus are diagnostic. The read-back is
+	// authoritative.
+	Status         string `json:"status,omitempty"`
+	ApprovalStatus string `json:"approval_status,omitempty"`
+
+	// OccurredAt is when the transition committed, not when the message
+	// was produced.
+	OccurredAt time.Time `json:"occurred_at"`
+}
 
 type ProductListedPayload struct {
 	ProductID string    `json:"product_id"`

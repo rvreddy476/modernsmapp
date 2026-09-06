@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/search-service/database"
+	"github.com/atpost/search-service/internal/commerceclient"
 	"github.com/atpost/search-service/internal/events"
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
@@ -128,9 +129,29 @@ func main() {
 		slog.Warn("search-service: IDENTITY_USER_SERVICE_URL not set — private accounts index as public. Do not run this in production.")
 	}
 
+	// Commerce catalogue client — the product read-back.
+	//
+	// commerce-service publishes commerce.product.published /
+	// .unpublished carrying ids only; the consumer fetches the document
+	// by id from here and indexes what commerce says NOW. That is what
+	// keeps the index correct when an event is delayed, replayed or
+	// arrives out of order. See internal/commerceclient.
+	//
+	// Built before the consumer because product events cannot be handled
+	// without it — the consumer treats a missing client as an ERROR (the
+	// message retries and dead-letters) rather than silently dropping a
+	// listing out of search.
+	commerceServiceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
+	commerceClient := commerceclient.New(commerceServiceURL, os.Getenv("INTERNAL_SERVICE_KEY"))
+	if !commerceClient.Configured() {
+		slog.Warn("search-service: COMMERCE_SERVICE_URL not set — product events cannot be indexed and the facet rail is unavailable")
+	} else {
+		slog.Info("search-service: commerce client wired", "url", commerceServiceURL)
+	}
+
 	socialConsumer := events.NewConsumerWithDialer(
 		brokerList, "search-service-group", socialTopic, searchStore, kafkaDialer,
-	).WithPrivacyLookup(privacyLookup)
+	).WithPrivacyLookup(privacyLookup).WithCommerceClient(commerceClient)
 	go socialConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", socialTopic, "group", "search-service-group")
 
@@ -204,6 +225,8 @@ func main() {
 	// viewer, one batch per page. Optional; unresolved is a null URL.
 	mediaServiceURL := env("MEDIA_SERVICE_URL", "http://media-service:8087")
 	handler.WithMediaClient(mediaclient.New(mediaServiceURL, internalKey))
+	// The facet rail and the product reindex both read from commerce.
+	handler.WithCommerceClient(commerceClient)
 	slog.Info("search-service: media client wired", "url", mediaServiceURL)
 
 	// Postgres analytics + extras stores built in step 4b above; wire them

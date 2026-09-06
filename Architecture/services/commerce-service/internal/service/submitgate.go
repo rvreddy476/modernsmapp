@@ -450,6 +450,14 @@ func (s *Service) SubmitProduct(ctx context.Context, productID, userID uuid.UUID
 	s.publish(ctx, "commerce.product.submitted", map[string]any{
 		"product_id": productID, "seller_id": sel.ID,
 	})
+	// A submit is a visibility transition too, even though the usual case —
+	// a draft going to review — was never visible in the first place. It is
+	// published anyway rather than guarded by "was it live before?", because
+	// the guard would be a second copy of the visibility rule with a
+	// before-and-after of its own to get wrong, and the consumer's read-back
+	// makes an event about an already-invisible product a no-op delete
+	// rather than damage. See searchdoc.go.
+	s.publishProductVisibility(ctx, productID)
 	return nil
 }
 

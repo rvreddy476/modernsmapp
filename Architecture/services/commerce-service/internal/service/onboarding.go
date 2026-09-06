@@ -345,15 +345,31 @@ func (s *Service) AdminApproveProduct(ctx context.Context, productID, actorID uu
 		return err
 	}
 	s.publish(ctx, events.EventProductApproved, map[string]any{"product_id": productID})
+	// The listing is now live. This is THE transition search exists to hear
+	// about — see internal/service/searchdoc.go. Separate from the
+	// EventProductApproved above, which is a moderation-audit fact whose
+	// consumers care that a human decided something; this one is a
+	// visibility fact whose consumer cares what a buyer can now find.
+	s.publishProductVisibility(ctx, productID)
 	return nil
 }
 
 func (s *Service) AdminRejectProduct(ctx context.Context, productID, actorID uuid.UUID, reason string) error {
-	return s.store.RejectProductByAdmin(ctx, productID, actorID, reason)
+	if err := s.store.RejectProductByAdmin(ctx, productID, actorID, reason); err != nil {
+		return err
+	}
+	// A rejected listing must leave the index. Before this line the index
+	// had no way to learn that: nothing was published on rejection at all.
+	s.publishProductVisibility(ctx, productID)
+	return nil
 }
 
 // AdminRequestProductChanges parks the product so the seller can fix +
 // resubmit. Phase 3.4 — admins previously had only approve/reject.
 func (s *Service) AdminRequestProductChanges(ctx context.Context, productID, actorID uuid.UUID, message string) error {
-	return s.store.RequestProductChangesByAdmin(ctx, productID, actorID, message)
+	if err := s.store.RequestProductChangesByAdmin(ctx, productID, actorID, message); err != nil {
+		return err
+	}
+	s.publishProductVisibility(ctx, productID)
+	return nil
 }

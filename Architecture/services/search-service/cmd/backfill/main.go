@@ -30,6 +30,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/search-service/internal/commerceclient"
+	"github.com/atpost/search-service/internal/reindex"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/events"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -443,44 +445,62 @@ func backfillHashtags(ctx context.Context, store *search.Store, dsn string, limi
 
 // --- products --------------------------------------------------------------
 
-func backfillProducts(ctx context.Context, store *search.Store, dsn string, limit int, dry bool) (int, error) {
-	pool, err := connect(ctx, dsn, "COMMERCE_POSTGRES_DSN")
-	if err != nil {
-		return 0, err
+// backfillProducts walks commerce-service, not commerce's database.
+//
+// ─── WHAT THIS REPLACES, AND WHY ────────────────────────────────────────
+//
+// It used to hand-write a SELECT over commerce's `products` table:
+//
+//	SELECT id, seller_id, title, description, view_count, order_count,
+//	       status, created_at
+//	  FROM products WHERE status IN ('active','paused')
+//
+// Three things were wrong with that, and they compounded.
+//
+// It set NEITHER CATEGORY NOR PRICE. Both are real work — the price lives
+// on the variants (cheapest active one, in paise, with a NULLIF dance for
+// the rows migration 007 defaulted to zero) and the category needs a
+// recursive walk to get the ancestor chain. So the index it produced could
+// not be filtered by category or sorted by price, which is most of what a
+// product search is for.
+//
+// It filtered on `status IN ('active','paused')` alone, where commerce's
+// own shopper-facing rule is `status='active' AND approval_status='approved'`
+// — so it indexed listings awaiting moderation and listings a moderator had
+// rejected.
+//
+// And it was a SECOND opinion about a projection commerce already owns.
+// Both problems above are what a second opinion looks like six months on.
+//
+// It now calls the same endpoint the reindex does, converts with the same
+// productindex.Doc the Kafka consumer uses, and therefore cannot disagree
+// with either. COMMERCE_POSTGRES_DSN is no longer read for products; the
+// address is COMMERCE_SERVICE_URL.
+func backfillProducts(ctx context.Context, store *search.Store, _ string, limit int, dry bool) (int, error) {
+	baseURL := os.Getenv("COMMERCE_SERVICE_URL")
+	if baseURL == "" {
+		baseURL = "http://commerce-service:8109"
 	}
-	defer pool.Close()
+	client := commerceclient.New(baseURL, os.Getenv("INTERNAL_SERVICE_KEY"))
 
-	args := []any{}
-	q := `SELECT id::text, seller_id::text, title, COALESCE(description,''),
-	             COALESCE(view_count,0), COALESCE(order_count,0), status, created_at
-	      FROM products WHERE status IN ('active','paused') ORDER BY created_at DESC`
-	if limit > 0 {
-		q += limitClause(limit, 1)
-		args = append(args, limit)
+	if dry {
+		// A dry run reports what a real one would index, and the only
+		// honest source for that is commerce's own count of live listings.
+		page, err := client.ListProductSearchDocs(ctx, "", 1)
+		if err != nil {
+			return 0, err
+		}
+		if limit > 0 && page.VisibleTotal > limit {
+			return limit, nil
+		}
+		return page.VisibleTotal, nil
 	}
-	rows, err := pool.Query(ctx, q, args...)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
 
-	count := 0
-	for rows.Next() {
-		var d search.ProductDoc
-		if err := rows.Scan(&d.ProductID, &d.SellerID, &d.Title, &d.Description, &d.ViewCount, &d.OrderCount, &d.Status, &d.CreatedAt); err != nil {
-			return count, err
-		}
-		if dry {
-			count++
-			continue
-		}
-		if err := store.IndexProductDoc(ctx, d); err != nil {
-			slog.Warn("backfill products: index failed", "id", d.ProductID, "err", err)
-			continue
-		}
-		count++
+	res, err := reindex.ReindexProducts(ctx, client, store, slog.Default())
+	if err != nil {
+		return res.Indexed, err
 	}
-	return count, rows.Err()
+	return res.Indexed, nil
 }
 
 // --- communities -----------------------------------------------------------

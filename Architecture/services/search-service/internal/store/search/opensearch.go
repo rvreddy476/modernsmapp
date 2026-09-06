@@ -136,6 +136,16 @@ func (s *Store) initIndices() {
 		}
 	}`)
 
+	// products_v2 + the `products` alias. Created BEFORE initEntityIndices
+	// because everything below names the alias (IndexProducts), and a
+	// put-mapping against an alias that does not resolve yet is a silent
+	// no-op that would leave the new index without engagement_score.
+	//
+	// products_v1 above is left exactly as it is — created if absent,
+	// never deleted, never written to again once the alias moves. It is
+	// the rollback target. See productsv2.go.
+	s.ensureProductsIndex(ctx)
+
 	// Six-entity relevance system: hashtags / communities / channels
 	// indices + engagement_score mappings layered onto users/posts/
 	// products. See mappings.go.
@@ -1623,7 +1633,11 @@ func (s *Store) IndexProduct(ctx context.Context, doc map[string]any) error {
 	id, _ := doc["product_id"].(string)
 	data, _ := json.Marshal(doc)
 	req := opensearchapi.IndexRequest{
-		Index:      "products_v1",
+		// The alias, so a legacy map-shaped write lands wherever the
+		// typed writes do. A literal "products_v1" here would have kept
+		// writing to the index the alias no longer points at, and those
+		// documents would simply never be searched again.
+		Index:      IndexProducts,
 		DocumentID: id,
 		Body:       bytes.NewReader(data),
 	}
@@ -1678,24 +1692,62 @@ func (s *Store) IndexMessage(ctx context.Context, doc map[string]any) error {
 	return nil
 }
 
-// SearchProducts searches products by query text with optional category filter.
+// SearchProducts searches products by query text with optional category
+// filter and sort. Response shape is unchanged — raw _source maps, as it
+// has always returned.
+//
+// ─── WHY THE CATEGORY FILTER IS NOT A `term` ON `category` ──────────────
+//
+// It was, and that is why category filtering has never been usable. A
+// product is filed under a LEAF category — "Textbooks" — and a buyer
+// clicks the department, "Books". An exact term on the leaf name matches
+// neither the department nor anything a shopper would type.
+//
+// products_v2 carries the whole ancestor chain on every document
+// (category_ids / category_names / category_slugs, root-first, leaf
+// included), so the filter is a `terms` across those three: a UUID matches
+// the id list, a slug the slug list, a name the name list, and a listing
+// under Books › Textbooks answers all three of "Books", "Textbooks" and
+// either id. The legacy `category` keyword stays in the OR so a document
+// written before this step still matches.
+//
+// ─── AND WHY THE SORT IS ON `min_price_minor` ───────────────────────────
+//
+// Sorting on the legacy `price` float sorts on rupees rendered as a
+// float — the field this catalogue has spent two migrations demoting to a
+// mirror. min_price_minor is the integer count of paise, which is the
+// money, and it is what a price sort must order on.
 func (s *Store) SearchProducts(ctx context.Context, query, category string, limit int) ([]map[string]any, error) {
+	return s.SearchProductsSorted(ctx, query, category, "", limit)
+}
+
+// SearchProductsSorted is SearchProducts with an explicit sort.
+//
+//	""            relevance (the default, unchanged)
+//	price_asc     cheapest first
+//	price_desc    dearest first
+//	newest        most recently published
+func (s *Store) SearchProductsSorted(ctx context.Context, query, category, sortBy string, limit int) ([]map[string]any, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 
-	must := []interface{}{
-		map[string]interface{}{
+	must := []interface{}{}
+	// An empty query is a browse, not a match-nothing. multi_match with an
+	// empty string matches no documents, so a category-only request used
+	// to come back empty — which reads as "this department is empty".
+	if query != "" {
+		must = append(must, map[string]interface{}{
 			"multi_match": map[string]interface{}{
 				"query":  query,
-				"fields": []string{"title^2", "description", "category"},
+				"fields": []string{"title^3", "brand_name^2", "description", "category_names", "seller_name", "search_keywords"},
 			},
-		},
+		})
+	} else {
+		must = append(must, map[string]interface{}{"match_all": map[string]interface{}{}})
 	}
 	if category != "" {
-		must = append(must, map[string]interface{}{
-			"term": map[string]interface{}{"category": category},
-		})
+		must = append(must, CategoryFilterClause(category))
 	}
 
 	q := map[string]interface{}{
@@ -1706,7 +1758,54 @@ func (s *Store) SearchProducts(ctx context.Context, query, category string, limi
 			},
 		},
 	}
-	return s.execGenericSearch(ctx, "products_v1", q)
+	if sort := productSortClause(sortBy); sort != nil {
+		q["sort"] = sort
+	}
+	return s.execGenericSearch(ctx, IndexProducts, q)
+}
+
+// CategoryFilterClause is the "this product belongs to this category, or
+// to one of its descendants" clause. Exported because the facet query
+// applies exactly the same filter and the two must not drift.
+func CategoryFilterClause(category string) map[string]interface{} {
+	return map[string]interface{}{
+		"bool": map[string]interface{}{
+			"should": []interface{}{
+				map[string]interface{}{"term": map[string]interface{}{"category_ids": category}},
+				map[string]interface{}{"term": map[string]interface{}{"category_slugs": category}},
+				map[string]interface{}{"term": map[string]interface{}{"category_names": category}},
+				map[string]interface{}{"term": map[string]interface{}{"category": category}},
+			},
+			"minimum_should_match": 1,
+		},
+	}
+}
+
+// productSortClause turns a sort key into an OpenSearch sort array, or nil
+// for relevance.
+//
+// `missing:_last` on the price sorts: a document with no priced active
+// variant has no min_price_minor, and OpenSearch would otherwise sort it
+// first on an ascending sort — putting every unpriced listing at the top
+// of "cheapest first", which is precisely where a shopper is least likely
+// to forgive it.
+func productSortClause(sortBy string) []interface{} {
+	switch sortBy {
+	case "price_asc":
+		return []interface{}{map[string]interface{}{
+			"min_price_minor": map[string]interface{}{"order": "asc", "missing": "_last"},
+		}}
+	case "price_desc":
+		return []interface{}{map[string]interface{}{
+			"min_price_minor": map[string]interface{}{"order": "desc", "missing": "_last"},
+		}}
+	case "newest":
+		return []interface{}{map[string]interface{}{
+			"published_at": map[string]interface{}{"order": "desc", "missing": "_last"},
+		}}
+	default:
+		return nil
+	}
 }
 
 // SearchEvents searches events by query text.
