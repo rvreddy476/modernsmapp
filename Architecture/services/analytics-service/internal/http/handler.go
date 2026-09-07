@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/analytics-service/internal/personalization"
 	"github.com/atpost/analytics-service/internal/service"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -21,6 +22,9 @@ type Handler struct {
 	aggStore       *pgstore.AggregateStore
 	rdb            *redis.Client
 	internalKey    string
+	// personalization is the viewer-signal warmer, exposed for on-demand
+	// runs under /v1/analytics/internal/. Optional — see personalization.go.
+	personalization *personalization.Warmer
 }
 
 // WithAggregateStore wires the durable aggregate store that backs the
@@ -59,6 +63,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/events", h.IngestEvents)
 		v1.GET("/content/:contentId/views", h.GetContentViews)
 		v1.GET("/creator/me", h.GetMyCreatorStats)
+
+		// Viewer-signal warmer: run it now, or ask when it last ran.
+		// Registered only when the warmer is wired. See
+		// personalization.go for why these are under /internal/.
+		if h.personalization != nil {
+			v1.POST("/internal/personalization/run", h.RunPersonalization)
+			v1.GET("/internal/personalization", h.PersonalizationStatus)
+		}
 	}
 }
 

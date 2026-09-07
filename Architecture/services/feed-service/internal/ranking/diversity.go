@@ -13,8 +13,11 @@ import (
 //  2. Greedily place candidates while respecting constraints:
 //     - Max 3 consecutive posts from the same author.
 //     - Max 5 consecutive posts of the same content type.
-//  3. Apply a -0.1 per-consecutive-same-author penalty.
-//  4. Freshness floor: at least 3 of the top 10 must be <4 h old.
+//  3. If the page is short, place again with the content-type rule
+//     relaxed but the author cap still enforced; only if it is STILL
+//     short, place with both relaxed.
+//  4. Apply a -0.1 per-consecutive-same-author penalty.
+//  5. Freshness floor: at least 3 of the top 10 must be <4 h old.
 func ApplyDiversity(scored []Candidate, limit int) []Candidate {
 	if len(scored) == 0 {
 		return nil
@@ -28,65 +31,48 @@ func ApplyDiversity(scored []Candidate, limit int) []Candidate {
 	placed := make([]Candidate, 0, limit)
 	used := make([]bool, len(scored))
 
-	// Rolling windows for constraint checks.
-	lastAuthors := make([]string, 0, 3) // track up to last 3 placed author IDs
-	lastTypes := make([]string, 0, 5)   // track up to last 5 placed content types
-
-	for len(placed) < limit {
-		found := false
-		for idx := 0; idx < len(scored); idx++ {
-			if used[idx] {
-				continue
-			}
-			c := scored[idx]
-			aid := c.AuthorID.String()
-
-			// --- Constraint: max 3 consecutive same author ---
-			if consecutiveTrailing(lastAuthors, aid) >= 3 {
-				continue
-			}
-
-			// --- Constraint: max 5 consecutive same content type ---
-			if consecutiveTrailing(lastTypes, c.ContentType) >= 5 {
-				continue
-			}
-
-			// Apply same-author penalty for consecutive runs.
-			consec := consecutiveTrailing(lastAuthors, aid)
-			if consec > 0 {
-				c.Score -= 0.1 * float64(consec)
-			}
-
-			// Place candidate.
-			placed = append(placed, c)
-			used[idx] = true
-			found = true
-
-			// Update rolling windows.
-			lastAuthors = appendWindow(lastAuthors, aid, 3)
-			lastTypes = appendWindow(lastTypes, c.ContentType, 5)
-			break
-		}
-		if !found {
-			// No more candidates can satisfy constraints; stop.
-			break
-		}
+	// Rolling windows for constraint checks. Shared across the passes
+	// below so relaxing one rule does not amnesty the other.
+	st := &placementState{
+		lastAuthors: make([]string, 0, maxConsecutiveAuthor),
+		lastTypes:   make([]string, 0, maxConsecutiveType),
 	}
 
-	// Relaxed second pass: if the diversity rules prevented us from filling
-	// `limit` and there are still unused candidates, place them in score
-	// order without the consecutive-author / consecutive-type constraints.
-	// Without this, a cold-start user whose timeline has only their own
-	// posts gets capped at 3, even though they expect to see all of them.
-	if len(placed) < limit {
-		for idx := 0; idx < len(scored) && len(placed) < limit; idx++ {
-			if used[idx] {
-				continue
-			}
-			placed = append(placed, scored[idx])
-			used[idx] = true
-		}
-	}
+	// Placement runs in three passes, each relaxing one more rule.
+	//
+	// THE BUG THIS REPLACES
+	//
+	// There used to be two passes: everything, then nothing. The second
+	// existed for a real case — "a cold-start user whose timeline has only
+	// their own posts gets capped at 3, even though they expect to see all
+	// of them" — but it dropped BOTH rules the moment EITHER of them
+	// stalled the first pass, and on the video surfaces the type rule
+	// stalls it every single time.
+	//
+	// Every candidate on /feed/videos and /feed/watch is a long video, so
+	// after five placements the consecutive-content-type check rejected
+	// the entire remaining pool, the first pass gave up at five, and the
+	// relaxed pass filled the rest of the page in pure score order with no
+	// author cap at all. On a page of twenty that is fifteen slots where
+	// one creator could take every one.
+	//
+	// It did not show, because until the affinity signal was written every
+	// author scored identically and the ordering was recency. Making
+	// personalisation real is exactly what would have turned this into a
+	// feed of one person. Fixing it here rather than weakening the
+	// affinity term keeps the intended behaviour of both rules: the type
+	// rule is advisory (it interleaves media when there is media to
+	// interleave), the author rule is the one that protects the viewer
+	// from a monoculture, and only a pool that genuinely has nothing else
+	// in it should be able to set the author rule aside.
+	placeCandidates(scored, used, &placed, limit, st, true, true)
+	// Pass 2: drop the content-type rule, KEEP the author cap. This is
+	// where a video-only surface finishes its page.
+	placeCandidates(scored, used, &placed, limit, st, true, false)
+	// Pass 3: drop everything. Only reachable when the remaining pool
+	// cannot satisfy the author cap at all — the single-author timeline
+	// the original relaxed pass was written for.
+	placeCandidates(scored, used, &placed, limit, st, false, false)
 
 	// --- Freshness floor ---
 	// At least 3 of the top 10 must be < 4 h old.
@@ -164,6 +150,72 @@ func enforceFreshnessFloor(placed []Candidate, pool []Candidate, used []bool, li
 		if now.Sub(zone[si].CreatedAt) >= fourHours {
 			zone[si] = freshReplacements[ri]
 			ri++
+		}
+	}
+}
+
+const (
+	// maxConsecutiveAuthor is the run length one creator may occupy. The
+	// rule that stops a personalised feed becoming one person's channel.
+	maxConsecutiveAuthor = 3
+	// maxConsecutiveType interleaves media formats where there is a mix
+	// to interleave. Advisory: on a single-format surface it has nothing
+	// to say, and must not be able to stall placement — see the passes in
+	// ApplyDiversity.
+	maxConsecutiveType = 5
+	// sameAuthorPenalty is docked per consecutive slot a creator already
+	// holds, so the second and third in a run have to be that much better
+	// than the alternatives to earn their place.
+	sameAuthorPenalty = 0.1
+)
+
+// placementState is the rolling window of what has been placed so far. It
+// is threaded through the passes rather than rebuilt, so a run that starts
+// under strict rules is still counted when a later pass relaxes them.
+type placementState struct {
+	lastAuthors []string
+	lastTypes   []string
+}
+
+// placeCandidates greedily fills `placed` up to `limit` from the unused
+// entries of `scored`, honouring whichever constraints are enabled. It
+// returns when the page is full or when no remaining candidate satisfies
+// the enabled rules.
+func placeCandidates(scored []Candidate, used []bool, placed *[]Candidate, limit int, st *placementState, enforceAuthor, enforceType bool) {
+	for len(*placed) < limit {
+		found := false
+		for idx := 0; idx < len(scored); idx++ {
+			if used[idx] {
+				continue
+			}
+			c := scored[idx]
+			aid := c.AuthorID.String()
+
+			consec := consecutiveTrailing(st.lastAuthors, aid)
+			if enforceAuthor && consec >= maxConsecutiveAuthor {
+				continue
+			}
+			if enforceType && consecutiveTrailing(st.lastTypes, c.ContentType) >= maxConsecutiveType {
+				continue
+			}
+
+			// The same-author penalty is applied whether or not the cap
+			// is being enforced: it is what makes a run cost something
+			// even on the pass that permits it.
+			if consec > 0 {
+				c.Score -= sameAuthorPenalty * float64(consec)
+			}
+
+			*placed = append(*placed, c)
+			used[idx] = true
+			found = true
+
+			st.lastAuthors = appendWindow(st.lastAuthors, aid, maxConsecutiveAuthor)
+			st.lastTypes = appendWindow(st.lastTypes, c.ContentType, maxConsecutiveType)
+			break
+		}
+		if !found {
+			return
 		}
 	}
 }

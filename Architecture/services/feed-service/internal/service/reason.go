@@ -37,7 +37,10 @@ const (
 	ReasonConnection  = "connection"
 	ReasonTrending    = "trending"
 	ReasonRecommended = "recommended"
-	reasonCategory    = "category:"
+	// ReasonMoreFromCreator is the related-videos surface saying "this is
+	// another video by the person you are watching".
+	ReasonMoreFromCreator = "more_from_creator"
+	reasonCategory        = "category:"
 )
 
 // categoryLabels mirrors post-service's flick taxonomy labels
@@ -73,6 +76,19 @@ func deriveReason(source string, post HydratedPost, viewerID uuid.UUID, velocity
 	}
 	if post.Visibility == "trusted" {
 		return ReasonConnection, "Shared with close friends"
+	}
+	// Related-videos sources. Checked before the cold-start branch: they
+	// are recommendations too, but ones with something much more specific
+	// to say than "suggested for you", and they need no velocity lookup
+	// to say it.
+	if source == sourceRelatedAuthor {
+		return ReasonMoreFromCreator, "More from this creator"
+	}
+	if source == sourceRelatedTopic {
+		if post.Category != "" {
+			return reasonCategory + post.Category, "More in " + categoryLabel(post.Category)
+		}
+		return ReasonRecommended, "Similar to what you're watching"
 	}
 	if source == sourceColdStart {
 		switch {

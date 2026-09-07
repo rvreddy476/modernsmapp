@@ -56,6 +56,7 @@ func NetWithMute(postNet float64, muted bool) float64 {
 // v2.0 spec Appendix A formula:
 //
 //	score = (interest * recency * mediaBoost) + momentum + socialProximity
+//	        + qualityBoost + topicBoost + seedBoost
 //	        - authorPenalty - interactionPenalty
 //
 // penalty_same_author is deferred to the diversity placement pass.
@@ -94,13 +95,24 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 		}
 
 		// 3. media_boost (1.0-1.5)
+		//
+		// The case list used to name only "image", "reel" and "video".
+		// post-service normalises on write — "reel" becomes "flick" and
+		// "video" becomes "long_video" — so in practice EVERY reel and
+		// every long video fell through to the default 1.0. The reel
+		// boost had not applied to a reel in the live catalogue, and the
+		// dwell-sensitive branch had never seen a long video, which is
+		// the other half of why user:media_prefs being empty went
+		// unnoticed: nothing would have read it anyway. Both spellings
+		// are listed because both exist in the database's CHECK
+		// constraint and older rows still carry the legacy ones.
 		mediaBoost := 1.0
 		switch c.ContentType {
 		case "image":
 			mediaBoost = 1.2
-		case "reel":
+		case "reel", "flick":
 			mediaBoost = 1.3
-		case "video":
+		case "video", "long_video":
 			switch {
 			case signals.MediaPrefs.VideoP95Dwell > 60:
 				mediaBoost = 1.5
@@ -148,7 +160,21 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 		// posts (post "more" sheet). See AuthorPenalty.
 		authorPenalty := AuthorPenalty(signals.AuthorFeedback[aid])
 
-		c.Score = (interest * recency * mediaBoost) + momentum + socialProximity + qualityBoost - authorPenalty - interactionPenalty
+		// 9. topic_boost (-0.20 to +0.20): what the video is ABOUT,
+		// weighed against what this viewer has watched about that
+		// subject. Zero for a post with no topics and zero for a viewer
+		// with no topic history, so it costs a cold viewer nothing.
+		// See topical.go for the honest limits of this signal.
+		topics := signals.PostTopics[pid]
+		topicBoost := TopicWeight * TopicInterest(topics, signals.TopicAffinity)
+
+		// 10. seed_boost (0.0-0.35): only the related-videos surface sets
+		// a seed. Elsewhere signals.Seed is nil and this is exactly zero,
+		// which is why the ordinary feeds are unaffected by its existence.
+		seedBoost := SeedWeight * SeedRelatedness(signals.Seed, aid, topics)
+
+		c.Score = (interest * recency * mediaBoost) + momentum + socialProximity + qualityBoost +
+			topicBoost + seedBoost - authorPenalty - interactionPenalty
 	}
 
 	return scored

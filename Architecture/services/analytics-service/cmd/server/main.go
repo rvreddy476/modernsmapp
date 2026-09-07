@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/analytics-service/internal/aggregation"
 	"github.com/atpost/analytics-service/internal/consumers"
 	httpHandler "github.com/atpost/analytics-service/internal/http"
+	"github.com/atpost/analytics-service/internal/personalization"
 	"github.com/atpost/analytics-service/internal/reconcile"
 	"github.com/atpost/analytics-service/internal/scoring"
 	"github.com/atpost/analytics-service/internal/service"
@@ -166,9 +167,13 @@ func main() {
 		svc = svc.WithWatchStore(watchStore)
 	}
 	creatorSvc := service.NewCreatorService(aggStore)
+	// The viewer-signal warmer publishes the four Redis keys feed-service's
+	// ranker reads and nothing wrote. See internal/personalization.
+	personalizationWarmer := personalization.NewWarmer(dbPool, rdb)
 	handler := httpHandler.New(svc, rdb).
 		WithCreatorService(creatorSvc).
 		WithAggregateStore(aggStore).
+		WithPersonalizationWarmer(personalizationWarmer).
 		WithInternalKey(internalKey)
 	dashHandler := httpHandler.NewDashboardHandler(aggStore).WithWatchStore(watchStore)
 
@@ -207,6 +212,14 @@ func main() {
 	dailyRollup := aggregation.NewDailyRollup(dbPool, rdb)
 	go dailyRollup.Start(workerCtx)
 	slog.Info("daily rollup started")
+
+	// 13b. Start the personalization warmer. It publishes the viewer
+	// signals feed-service's ranker consumes — author affinity, media
+	// preference, topic affinity, content quality, completions. The
+	// aggregator above computes the numbers; this is what puts them
+	// where the feed can read them.
+	go personalizationWarmer.Start(workerCtx)
+	slog.Info("personalization warmer started")
 
 	// 14. Start view reconciler (5-min interval)
 	if scyllaSession != nil {

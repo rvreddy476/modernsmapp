@@ -144,6 +144,15 @@ func main() {
 	go velocityTracker.Start(ctx)
 	slog.Info("velocity tracker started")
 
+	// Topic projection: post:topics:{postID} for recent posts, so the
+	// ranker can weigh what a candidate is ABOUT before hydration has
+	// told it. See internal/pipeline/topics.go. The viewer half of that
+	// signal (user:topic_affinity) and the three watch-history signals
+	// come from analytics-service's personalization warmer; this is the
+	// catalogue half, which belongs to the service that reads it.
+	topicProjector := pipeline.NewTopicProjector(dbPool, rdb)
+	go topicProjector.Start(ctx)
+
 	feedHandler := http.New(feedSvc).WithRedis(rdb)
 
 	// Audit CF2: gate every /v1/feed route behind the shared internal

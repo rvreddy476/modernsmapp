@@ -66,6 +66,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/reels", h.GetReelFeed)
 		v1.GET("/flicks", h.GetFlickFeed)
 		v1.GET("/videos", h.GetLongVideoFeed)
+		// Up-next / related videos for one video (related.go). Registered
+		// under /videos/ rather than as a top-level route so it sits with
+		// the Tube surfaces it belongs to; the reel family is served by
+		// the same handler, which picks the family from the seed.
+		v1.GET("/videos/:postId/related", h.GetRelatedVideos)
 		v1.GET("/watch", h.GetVideoFeed)
 		v1.POST("/preference", h.SetPreference)
 		v1.GET("/preference", h.GetPreference)

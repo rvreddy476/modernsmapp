@@ -142,9 +142,20 @@ const (
 	sourceTimeline  = "timeline"
 	sourceColdStart = "cold_start"
 	sourceCircle    = "circle"
+	// The related-videos surface's two specific sources (related.go).
+	// They exist so the up-next list can say WHY each row is there —
+	// "more from this creator" reads very differently from "suggested for
+	// you", and the client has no other way to tell them apart.
+	sourceRelatedAuthor = "related_author"
+	sourceRelatedTopic  = "related_topic"
 )
 
 func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) ([]FeedItem, error) {
+	// Refresh the viewer's mutual-follow set if it is missing or stale.
+	// Non-blocking and detached — this request is scored with whatever is
+	// already there. See mutuals.go.
+	s.warmViewerSignals(ctx, userID)
+
 	// Audit HF1: ranking over-fetch was 5x with a 500-row ceiling — each
 	// feed request hit Scylla for up to 500 timeline rows and then the
 	// ranker did per-post Redis reads on every one (audit HF2). 2.5x is
@@ -332,6 +343,7 @@ func (s *Service) GetFlickFeed(ctx context.Context, userID uuid.UUID, limit int)
 // feed's and the watch feed's following_only). The viewer's own reels are
 // not "followed" and are excluded, matching the home feed.
 func (s *Service) GetFlickFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
+	s.warmViewerSignals(ctx, userID) // see mutuals.go
 	target := limit + 1
 	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"flick", "reel"}, before, target*3)
 	if err != nil {
@@ -456,6 +468,7 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 // windows and rank once. The resolved block set is returned so a caller's
 // fill can pass the same filter without a second graph round trip.
 func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, map[uuid.UUID]struct{}, error) {
+	s.warmViewerSignals(ctx, userID) // see mutuals.go
 	target := limit + 1
 	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
 	if err != nil {
