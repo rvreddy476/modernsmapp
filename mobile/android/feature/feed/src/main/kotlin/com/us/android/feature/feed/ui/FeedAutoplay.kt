@@ -167,6 +167,9 @@ internal fun mostDwelledPost(
  * candidates: a video still processing with no rendition is a poster and
  * stays one.
  *
+ * Rows are addressed by their KEY, not their list index — see the body for
+ * why that distinction is load-bearing when a post is pinned.
+ *
  * `derivedStateOf` so the list's per-frame layout changes recompose nothing
  * until the ANSWER changes — the id, which changes a handful of times per
  * screenful, not sixty times a second.
@@ -175,15 +178,26 @@ internal fun mostDwelledPost(
 internal fun rememberAutoplayTarget(
     listState: LazyListState,
     items: LazyPagingItems<FeedItem>,
+    head: FeedItem?,
     playbackFor: (FeedItem) -> Playback?,
 ): State<String?> {
     val headerPx = with(LocalDensity.current) { POST_CARD_HEADER_HEIGHT.roundToPx() }
-    return remember(listState, items, playbackFor, headerPx) {
+    return remember(listState, items, head, playbackFor, headerPx) {
         derivedStateOf {
             val info = listState.layoutInfo
             val frameHeight = (info.viewportSize.width / MEDIA_FRAME_ASPECT).roundToInt()
+            val paged = items.itemSnapshotList.items
             val frames = info.visibleItemsInfo.mapNotNull { row ->
-                val item = if (row.index < items.itemCount) items.peek(row.index) else null
+                // Addressed by KEY, never by index. The list's rows are not all
+                // paging rows: a just-published post is pinned above them, so
+                // every paged row's list index is one GREATER than its paging
+                // index while that pin is present. Looking up by index returned
+                // the item BELOW the row being measured — which either pointed
+                // the single feed player at the wrong video, or refused to play
+                // a video row because the item it happened to find had nothing
+                // to play. [rememberDwellTarget] avoided this from the start;
+                // this is the same footing.
+                val item = feedItemForKey(row.key, paged, head) ?: return@mapNotNull null
                 item?.takeIf { playbackFor(it) != null }?.let {
                     val top = row.offset + headerPx
                     VisibleFrame(postId = it.id, top = top, bottom = top + frameHeight)
@@ -362,3 +376,21 @@ internal const val AUTOPLAY_VISIBLE_FRACTION = 0.6f
  * should not mean two different things on one screen.
  */
 internal const val DWELL_VISIBLE_FRACTION = 0.6f
+
+/**
+ * The feed item a row's key stands for, or null when the row is not a post.
+ *
+ * Pure, and separate from [rememberAutoplayTarget], for the reason the bug it
+ * replaces existed at all: the resolution used to be a one-line index lookup
+ * buried inside a `derivedStateOf`, where nothing could reach it. The geometry
+ * rule beside it ([mostVisibleVideo]) has always been tested; this half never
+ * was, so a lookup that returned the row BELOW the one being measured survived
+ * until someone read it.
+ *
+ * The pinned row is searched last rather than first only because the paged
+ * list is the common case; the ids are unique across both.
+ */
+internal fun feedItemForKey(key: Any?, paged: List<FeedItem>, head: FeedItem?): FeedItem? {
+    val id = dwellPostId(key) ?: return null
+    return paged.firstOrNull { it.id == id } ?: head?.takeIf { it.id == id }
+}

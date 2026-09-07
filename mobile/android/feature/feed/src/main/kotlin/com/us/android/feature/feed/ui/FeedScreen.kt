@@ -461,7 +461,7 @@ private fun FeedList(
     modifier: Modifier = Modifier,
 ) {
     val refresh = items.loadState.refresh
-    val playingId = feedAutoplay(listState, items, autoplay)
+    val playingId = feedAutoplay(listState, items, head, autoplay)
     FeedDwell(listState, items, head, playingId, autoplay)
 
     // A pinned post counts as a row: a viewer who has just posted must see it
@@ -570,10 +570,15 @@ private fun FeedList(
 private fun feedAutoplay(
     listState: LazyListState,
     items: LazyPagingItems<FeedItem>,
+    head: FeedItem?,
     autoplay: FeedAutoplay,
 ): String? {
-    val playingId by rememberAutoplayTarget(listState, items, autoplay.playbackFor)
-    val playingItem = playingId?.let { id -> items.itemSnapshotList.items.firstOrNull { it.id == id } }
+    val playingId by rememberAutoplayTarget(listState, items, head, autoplay.playbackFor)
+    // The pinned row is a candidate like any other, so resolving the answer back
+    // to an item has to be able to reach it.
+    val playingItem = playingId?.let { id ->
+        items.itemSnapshotList.items.firstOrNull { it.id == id } ?: head?.takeIf { it.id == id }
+    }
     // Keyed on the id, not the item: a hydration that swaps the row object for
     // an equal one must not read as the viewer moving to a different video.
     LaunchedEffect(playingId) { autoplay.onPlayingChanged(playingItem) }
