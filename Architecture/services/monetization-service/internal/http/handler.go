@@ -179,11 +179,32 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 }
 
+// The beta reads, and the line they are drawn on: the RULES of payment are
+// open, the AMOUNTS are not.
+//
+// A creator is entitled to know what a thousand views is worth and what curve
+// their score is scaled by before they decide what to publish — those are the
+// same for everyone, they are what the founder authors in the admin console,
+// and publishing them costs nothing. Hence rates, quality-bands and status.
+//
+// earnings and statements stay closed, deliberately. They are rupee figures
+// computed from a rate card that is still being argued about: flick RPM is ₹3
+// against long-form ₹50, and the platform's take across all three streams came
+// out at 0.38% on the first real settlement. The first number a creator sees is
+// the number they believe they are owed, so showing one that is about to move
+// is worse than showing none. They open when the rate card is settled.
 var betaReadOnlyPaths = map[string]struct{}{
 	"/v1/monetization/creator-ledger": {},
 	"/v1/monetization/wallet":         {}, // deprecated read-only alias
 	"/v1/monetization/transactions":   {},
 	"/v1/monetization/payouts":        {},
+
+	// The pay rules. Public, identical for every creator, no amounts.
+	"/v1/monetization/creator-fund/rates":         {},
+	"/v1/monetization/creator-fund/quality-bands": {},
+	// Whether the caller is in the programme at all. Per-caller, but it
+	// carries eligibility, not money.
+	"/v1/monetization/creator-fund/status": {},
 }
 
 // launchBoundary fails closed while financial products are not launched.

@@ -311,7 +311,11 @@ func (s *Store) GetActiveRpmRate(ctx context.Context, contentType, regionCode st
 		WHERE content_type = $1 AND region_code = $2
 		  AND effective_from <= $3
 		  AND (effective_to IS NULL OR effective_to > $3)
-		ORDER BY effective_from DESC
+		-- created_at, then id, break a tie on effective_from. Without them
+		-- Postgres may return either row, and a re-settlement of the same
+		-- period can price it differently. See GetActiveQualityBand below
+		-- for the full reasoning; the exposure is identical here.
+		ORDER BY effective_from DESC, created_at DESC, id DESC
 		LIMIT 1
 	`, contentType, regionCode, asOf).Scan(
 		&r.ID, &r.ContentType, &r.RegionCode, &r.RpmPaise, &r.EffectiveFrom,
@@ -336,7 +340,7 @@ func (s *Store) ListActiveRpmRates(ctx context.Context, asOf time.Time) ([]RpmRa
 		FROM monetization_rpm_rates
 		WHERE effective_from <= $1
 		  AND (effective_to IS NULL OR effective_to > $1)
-		ORDER BY content_type, region_code, effective_from DESC
+		ORDER BY content_type, region_code, effective_from DESC, created_at DESC, id DESC
 	`, asOf)
 	if err != nil {
 		return nil, err
@@ -622,7 +626,22 @@ func (s *Store) GetActiveQualityBand(ctx context.Context, contentType, regionCod
 		WHERE content_type = $1 AND region_code = $2
 		  AND effective_from <= $3
 		  AND (effective_to IS NULL OR effective_to > $3)
-		ORDER BY effective_from DESC
+		-- THE TIEBREAKER IS LOAD-BEARING.
+		--
+		-- Two rows can legitimately share an effective_from: SetQualityBand
+		-- stamps time.Now() and closes the previous row in the same
+		-- transaction, so two writes in one instant collide, as does any
+		-- row inserted outside that path — this dev database has 26
+		-- long_video rows, four of them tying on 2025-03-05, left by
+		-- integration fixtures.
+		--
+		-- With ORDER BY effective_from alone, Postgres may return either.
+		-- Settlement runs on a lag and periods are re-settled, so an
+		-- arbitrary winner means the same period can be priced two ways by
+		-- two runs, or by two pods, with nothing in the data to say which
+		-- was right. created_at then id makes the most recently written
+		-- row win, and win every time.
+		ORDER BY effective_from DESC, created_at DESC, id DESC
 		LIMIT 1
 	`, contentType, regionCode, asOf).Scan(
 		&b.ID, &b.ContentType, &b.RegionCode, &b.FloorBps, &b.CeilingBps,
@@ -650,7 +669,7 @@ func (s *Store) ListActiveQualityBands(ctx context.Context, asOf time.Time) ([]Q
 		FROM monetization_quality_bands
 		WHERE effective_from <= $1
 		  AND (effective_to IS NULL OR effective_to > $1)
-		ORDER BY content_type, region_code, effective_from DESC
+		ORDER BY content_type, region_code, effective_from DESC, created_at DESC, id DESC
 	`, asOf)
 	if err != nil {
 		return nil, err

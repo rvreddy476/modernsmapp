@@ -39,6 +39,7 @@ func TestLaunchBoundaryUsesExactReadAllowlist(t *testing.T) {
 		"/v1/monetization/admin/fraud-reviews",
 		"/v1/monetization/payout-statements/00000000-0000-0000-0000-000000000000",
 		"/v1/monetization/creator-fund/earnings",
+		"/v1/monetization/creator-fund/statements",
 		"/v1/monetization/creator-ledger/extra",
 	} {
 		t.Run(path, func(t *testing.T) {
@@ -51,6 +52,33 @@ func TestLaunchBoundaryUsesExactReadAllowlist(t *testing.T) {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// The beta line: the rules of payment are open, the amounts are not.
+//
+// Stated as a test because it is a judgement, not an accident. Anyone
+// widening this list to include a rupee figure should have to delete an
+// assertion that says not to, and read why in handler.go while they do it.
+func TestLaunchBoundaryOpensPayRulesAndNotPayAmounts(t *testing.T) {
+	rules := []string{
+		"/v1/monetization/creator-fund/rates",
+		"/v1/monetization/creator-fund/quality-bands",
+		"/v1/monetization/creator-fund/status",
+	}
+	amounts := []string{
+		"/v1/monetization/creator-fund/earnings",
+		"/v1/monetization/creator-fund/statements",
+	}
+	for _, path := range rules {
+		if _, open := betaReadOnlyPaths[path]; !open {
+			t.Errorf("%s is a pay RULE and should be readable in beta", path)
+		}
+	}
+	for _, path := range amounts {
+		if _, open := betaReadOnlyPaths[path]; open {
+			t.Errorf("%s is a pay AMOUNT and must stay closed until the rate card is settled", path)
+		}
 	}
 }
 
