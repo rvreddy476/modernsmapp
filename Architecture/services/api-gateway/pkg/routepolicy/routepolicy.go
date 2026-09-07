@@ -41,6 +41,22 @@ var ForbiddenPrefixes = []string{
 	// Payment authority. Every write here can move money, and the service
 	// trusts the gateway-injected key. See LB-1..LB-5.
 	"/v1/payments",
+
+	// Role-granting authority. auth-service's /v1/auth/internal/roles lets a
+	// caller holding the internal key grant a platform role.
+	//
+	// It is guarded by RequireInternalServiceKey, and the gateway strips any
+	// client-sent X-Internal-Service-Key and injects its own — so an ordinary
+	// user cannot reach it. But /v1/auth IS proxied, and the only other gate
+	// on an /internal/ path is requireAdminForInternalPaths, which admits
+	// admin, moderator AND superadmin. A moderator with a browser could
+	// therefore grant themselves a role, which is a privilege escalation from
+	// the weakest platform role upward.
+	//
+	// The endpoint exists for commerce, food and rider to call in-cluster
+	// when they approve a seller or a partner. None of them goes through the
+	// edge to do it, so the edge never needs to forward this at all.
+	"/v1/auth/internal",
 }
 
 // ForbiddenTargets are upstreams the edge must never forward to, whatever

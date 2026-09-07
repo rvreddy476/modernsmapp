@@ -311,10 +311,17 @@ func main() {
 			return
 		}
 
-		// LB-1 backstop. The route table is the control; this catches a path
-		// that reaches a payments upstream some other way — a future
-		// catch-all, a rewrite, a default target. 404 rather than 403: an
-		// edge client should not be able to confirm the service exists.
+		// LB-1 backstop, and the only control for a forbidden path that sits
+		// UNDER a legitimately proxied prefix.
+		//
+		// For payments the route table is the control and this is the belt:
+		// it catches a path reaching a payments upstream some other way — a
+		// future catch-all, a rewrite, a default target. For
+		// /v1/auth/internal there is no route to remove, because /v1/auth is
+		// proxied and must stay proxied; this check IS the control.
+		//
+		// 404 rather than 403: an edge client should not be able to confirm
+		// the endpoint exists.
 		if routepolicy.IsForbidden(r.URL.Path) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)

@@ -106,3 +106,63 @@ func TestGuardAllowsNonPaymentsUpstreams(t *testing.T) {
 		t.Fatalf("unrelated upstreams must be unaffected: %v", err)
 	}
 }
+
+// TestAuthInternalIsForbiddenAtTheEdge pins the second entry in
+// ForbiddenPrefixes.
+//
+// /v1/auth/internal/roles grants platform roles. It is guarded by the
+// internal service key, which the gateway strips and re-injects, so an
+// ordinary user cannot reach it. But /v1/auth is proxied and the only other
+// gate on an /internal/ path — requireAdminForInternalPaths — admits
+// moderator as well as admin and superadmin. A moderator could therefore
+// grant themselves a role. The endpoint is only ever called in-cluster, so
+// the edge refuses it outright.
+//
+// Note the asymmetry with /v1/payments: there, the control is the absence of
+// a route and this is a backstop. Here /v1/auth must stay proxied, so this
+// check is the only control there is.
+func TestAuthInternalIsForbiddenAtTheEdge(t *testing.T) {
+	forbidden := []string{
+		"/v1/auth/internal",
+		"/v1/auth/internal/roles",
+		"/v1/auth/internal/roles/1f1a0b1c-0000-0000-0000-000000000000",
+	}
+	for _, p := range forbidden {
+		if !IsForbidden(p) {
+			t.Errorf("IsForbidden(%q) = false; the edge must never forward a role grant", p)
+		}
+	}
+
+	// The rest of auth must keep working — this is the login surface for
+	// every client on the platform.
+	allowed := []string{
+		"/v1/auth",
+		"/v1/auth/login",
+		"/v1/auth/register",
+		"/v1/auth/refresh",
+		"/v1/auth/me",
+		"/v1/auth/me/capabilities",
+		"/v1/auth/admin/roles",
+		// Segment-boundary matching, not a raw prefix: a route that merely
+		// starts with the same letters is not the forbidden one.
+		"/v1/auth/internals",
+		"/v1/auth/internally-managed",
+	}
+	for _, p := range allowed {
+		if IsForbidden(p) {
+			t.Errorf("IsForbidden(%q) = true; this is ordinary auth traffic and must be forwarded", p)
+		}
+	}
+}
+
+// TestAuthRouteStillPasesTheBootGuard — adding /v1/auth/internal to the
+// forbidden list must not make the gateway refuse to start, because the
+// route table legitimately contains /v1/auth.
+func TestAuthRouteStillPassesTheBootGuard(t *testing.T) {
+	err := GuardRouteTable([]Route{
+		{Prefix: "/v1/auth", Target: "http://identity-auth:8081"},
+	})
+	if err != nil {
+		t.Fatalf("GuardRouteTable rejected the auth route: %v", err)
+	}
+}
