@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -51,6 +52,13 @@ func (s *Store) CreatePartnerRestaurant(ctx context.Context, ownerID uuid.UUID, 
 	`, partnerID, ownerID, in.Name, slug, in.Description, in.Phone, in.Email,
 		in.AddressLine1, in.AddressLine2, in.City, in.State, in.PostalCode,
 		in.Latitude, in.Longitude, in.MinOrderAmount, in.PackagingFee).Scan(&restaurantID); err != nil {
+		return nil, err
+	}
+	// The role is granted HERE, at PENDING_REVIEW — not at approval. See
+	// identity_roles.go for why, and note the intent commits with the partner
+	// row, so an identity outage delays the grant but cannot lose it.
+	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, ownerID,
+		identityroles.RoleRestaurantOwner, "restaurant partner created"); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -471,8 +479,16 @@ func (s *Store) UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in 
 	if strings.TrimSpace(in.FullName) == "" || strings.TrimSpace(in.Phone) == "" {
 		return nil, fmt.Errorf("full_name and phone are required")
 	}
+	// Wrapped in a transaction only so the role intent commits with the
+	// partner row. The upsert itself is unchanged.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	var partner DeliveryPartner
-	if err := s.db.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.delivery_partners (
 			user_id, full_name, phone, email, vehicle_type, vehicle_number, city, status
 		)
@@ -492,6 +508,21 @@ func (s *Store) UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in 
 		&partner.ID, &partner.UserID, &partner.FullName, &partner.Phone, &partner.Email,
 		&partner.Status, &partner.VehicleType, &partner.VehicleNumber, &partner.City,
 		&partner.IsOnline, &partner.CreatedAt); err != nil {
+		return nil, err
+	}
+	// Granted on create AND on every profile update. That looks redundant and
+	// is not: the ON CONFLICT branch means this is also the path a partner
+	// takes when they edit their profile, which makes it a free, idempotent
+	// repair for anyone whose original grant was dead-lettered. It is skipped
+	// only for a partner who has already left the journey — re-granting a
+	// REJECTED partner would undo the revoke that rejection performed.
+	if op, ok := deliveryPartnerRoleForStatus(partner.Status); ok && op == identityroles.OpGrant {
+		if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, partner.UserID,
+			identityroles.RoleDeliveryPartner, "delivery partner profile saved"); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &partner, nil
@@ -827,13 +858,31 @@ func (s *Store) AdminApproveRestaurant(ctx context.Context, adminID, restaurantI
 	`, restaurantID, status, approve, adminID, reason).Scan(&partnerID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
+	// RETURNING owner_user_id: the role is keyed on the identity account, and
+	// :restaurantId / partner_id are local primary keys. Confusing the two is
+	// the easiest way to grant a role to nobody.
+	var ownerUserID uuid.UUID
+	if err := tx.QueryRow(ctx, `
 		UPDATE food.restaurant_partners
 		SET status = $2::food.partner_status, approved_by = CASE WHEN $2 = 'APPROVED' THEN $3::uuid ELSE approved_by END,
 			approved_at = CASE WHEN $2 = 'APPROVED' THEN NOW() ELSE approved_at END,
 			rejection_reason = CASE WHEN $2 = 'APPROVED' THEN NULL ELSE $4 END
 		WHERE id = $1
-	`, partnerID, partnerStatus, adminID, reason); err != nil {
+		RETURNING owner_user_id
+	`, partnerID, partnerStatus, adminID, reason).Scan(&ownerUserID); err != nil {
+		return err
+	}
+	if approve {
+		// Idempotent re-grant; the safety net if the create-time intent was
+		// dead-lettered.
+		if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, ownerUserID,
+			identityroles.RoleRestaurantOwner, "restaurant approved"); err != nil {
+			return err
+		}
+	} else if err := s.revokeRestaurantOwnerIfLast(ctx, tx, ownerUserID, partnerID,
+		"restaurant rejected"); err != nil {
+		// owner_user_id is not unique: only revoke if this was their last
+		// live restaurant. See identity_roles.go.
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -845,6 +894,15 @@ func (s *Store) AdminApproveRestaurant(ctx context.Context, adminID, restaurantI
 	return tx.Commit(ctx)
 }
 
+// AdminSetRestaurantStatus changes food.restaurants.status only.
+//
+// NO ROLE ACTION HERE, and that is a real decision rather than an oversight:
+// this setter never touches food.restaurant_partners, so an owner whose
+// restaurant is moved to CLOSED still holds a live partner row and is still a
+// restaurant owner. That asymmetry is pre-existing (see the note in the
+// report) — a restaurant closing and a PARTNER closing are different events,
+// and only the second one ends the journey. The partner-row transitions live
+// in AdminApproveRestaurant.
 func (s *Store) AdminSetRestaurantStatus(ctx context.Context, adminID, restaurantID uuid.UUID, status, reason string) error {
 	allowed := map[string]bool{
 		"DRAFT": true, "PENDING_REVIEW": true, "APPROVED": true, "REJECTED": true,
@@ -936,15 +994,25 @@ func (s *Store) AdminApproveDeliveryPartner(ctx context.Context, adminID, partne
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `
+	// RETURNING user_id — :partnerId is delivery_partners.id, a local key, not
+	// the identity account the role attaches to.
+	var partnerUserID uuid.UUID
+	if err := tx.QueryRow(ctx, `
 		UPDATE food.delivery_partners
 		SET status = $2::food.delivery_partner_status,
 			approved_by = CASE WHEN $2 = 'APPROVED' THEN $3::uuid ELSE approved_by END,
 			approved_at = CASE WHEN $2 = 'APPROVED' THEN NOW() ELSE approved_at END,
 			rejection_reason = CASE WHEN $2 = 'APPROVED' THEN NULL ELSE $4 END
 		WHERE id = $1
-	`, partnerID, status, adminID, reason); err != nil {
+		RETURNING user_id
+	`, partnerID, status, adminID, reason).Scan(&partnerUserID); err != nil {
 		return err
+	}
+	if op, ok := deliveryPartnerRoleForStatus(status); ok {
+		if err := s.enqueueRoleIntent(ctx, tx, op, partnerUserID,
+			identityroles.RoleDeliveryPartner, "delivery partner "+strings.ToLower(status)); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO food.admin_audit_logs (actor_user_id, action, entity_type, entity_id, new_value)
@@ -968,18 +1036,26 @@ func (s *Store) AdminSetDeliveryPartnerStatus(ctx context.Context, adminID, part
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `
+	var partnerUserID uuid.UUID
+	if err := tx.QueryRow(ctx, `
 		UPDATE food.delivery_partners
 		SET status = $2::food.delivery_partner_status,
 			is_online = CASE WHEN $2 = 'ACTIVE' THEN is_online ELSE FALSE END,
 			rejection_reason = CASE WHEN $2 = 'REJECTED' THEN $3 ELSE rejection_reason END
 		WHERE id = $1
-	`, partnerID, status, reason)
-	if err != nil {
+		RETURNING user_id
+	`, partnerID, status, reason).Scan(&partnerUserID); err != nil {
+		// Preserves the previous contract: no matching row is ErrNoRows, which
+		// the handler turns into a 404.
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+	// Same mapping as the review path, deliberately shared, so this free-form
+	// status setter cannot disagree with it about what SUSPENDED means.
+	if op, ok := deliveryPartnerRoleForStatus(status); ok {
+		if err := s.enqueueRoleIntent(ctx, tx, op, partnerUserID,
+			identityroles.RoleDeliveryPartner, "delivery partner status set to "+status); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO food.admin_audit_logs (actor_user_id, action, entity_type, entity_id, new_value)

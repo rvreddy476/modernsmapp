@@ -148,6 +148,12 @@ func (s *Store) ListPartners(ctx context.Context, f PartnerListFilter) ([]Partne
 
 // SetPartnerApprovedAt stamps approved_at = now() and status = approved.
 // Used by the admin approval flow.
+//
+// Re-grants `rider_partner` even though CreatePartner already granted it. That
+// is deliberate: identity's grant is idempotent, and this is the safety net
+// for a partner whose create-time intent was dead-lettered during an identity
+// outage. Approval is the moment it matters most that the role is really
+// there.
 func (s *Store) SetPartnerApprovedAt(ctx context.Context, partnerID uuid.UUID) error {
 	const q = `
         UPDATE rider_partners
@@ -155,13 +161,14 @@ func (s *Store) SetPartnerApprovedAt(ctx context.Context, partnerID uuid.UUID) e
             kyc_status  = 'approved',
             approved_at = NOW(),
             updated_at  = NOW()
-        WHERE id = $1 AND deleted_at IS NULL`
-	tag, err := s.db.Exec(ctx, q, partnerID)
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING user_id`
+	err := s.updatePartnerStatusTx(ctx, q, "approved", "rider partner approved", partnerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrPartnerNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("approve partner: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrPartnerNotFound
 	}
 	return nil
 }

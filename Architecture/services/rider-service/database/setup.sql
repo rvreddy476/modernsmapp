@@ -938,3 +938,48 @@ ALTER TABLE rider_rides
 CREATE INDEX IF NOT EXISTS idx_rider_rides_scheduled
     ON rider_rides(scheduled_for)
     WHERE scheduled_for IS NOT NULL AND activated_at IS NULL;
+
+-- ============================================================
+-- Identity role intents
+--
+-- identity-auth-service owns ecosystem roles for the whole platform. rider
+-- must tell it when somebody becomes a `rider_partner` and when they stop.
+-- That is an HTTP call to another service from inside an approval flow, so it
+-- cannot be made inline: an identity outage would either fail the approval or
+-- silently lose the role. The intent is written HERE instead, in the same
+-- transaction as the partner row, and a worker delivers it
+-- (shared/identityroles).
+--
+-- In the `rider` schema for the same reason rider.outbox_events is: this
+-- service shares the `app` database with others, and a public-schema table of
+-- this name belongs to whoever got there first.
+--
+-- The DDL is a copy of shared/identityroles.SchemaSQL("rider");
+-- TestSetupSQLMatchesSharedSchema in internal/store asserts the two have not
+-- drifted.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS rider.identity_role_intents (
+    id               BIGSERIAL PRIMARY KEY,
+    op               TEXT        NOT NULL CHECK (op IN ('grant','revoke')),
+    user_id          UUID        NOT NULL,
+    role_name        TEXT        NOT NULL,
+    service          TEXT        NOT NULL,
+    reason           TEXT        NOT NULL DEFAULT '',
+    attempts         INT         NOT NULL DEFAULT 0,
+    next_attempt_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error       TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivered_at     TIMESTAMPTZ,
+    dead_lettered_at TIMESTAMPTZ
+);
+
+-- The worker's only query. Partial so the index stays the size of the backlog
+-- rather than the size of history.
+CREATE INDEX IF NOT EXISTS idx_rider_identity_role_intents_pending
+    ON rider.identity_role_intents (next_attempt_at)
+    WHERE delivered_at IS NULL AND dead_lettered_at IS NULL;
+
+-- Operator query: "what is stuck and why".
+CREATE INDEX IF NOT EXISTS idx_rider_identity_role_intents_dead
+    ON rider.identity_role_intents (dead_lettered_at)
+    WHERE dead_lettered_at IS NOT NULL;

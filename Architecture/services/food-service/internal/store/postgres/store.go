@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,10 +13,23 @@ import (
 
 type Store struct {
 	db *pgxpool.Pool
+	// roles is the durable queue that tells identity somebody became (or
+	// stopped being) a restaurant_owner or delivery_partner. It lives here
+	// rather than on the Service because the partner lifecycle writes own
+	// their transactions in this package, and the intent must commit inside
+	// them. nil is supported — see identity_roles.go.
+	roles *identityroles.Outbox
 }
 
 func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
+}
+
+// WithRoleIntents attaches the identity role queue, matching the fluent With…
+// convention the Service already uses for its optional dependencies.
+func (s *Store) WithRoleIntents(ob *identityroles.Outbox) *Store {
+	s.roles = ob
+	return s
 }
 
 type RestaurantFilter struct {

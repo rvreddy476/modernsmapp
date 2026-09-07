@@ -1557,3 +1557,43 @@ CREATE INDEX IF NOT EXISTS ix_food_assignments_batch ON food.delivery_assignment
 ALTER TABLE food.delivery_offers
     ADD COLUMN IF NOT EXISTS batch_id UUID REFERENCES food.delivery_batches(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS ix_food_offers_batch ON food.delivery_offers(batch_id) WHERE batch_id IS NOT NULL;
+
+-- ─── Identity role intents ────────────────────────────────────────────
+--
+-- identity-auth-service owns ecosystem roles for the whole platform. food
+-- must tell it when somebody becomes a restaurant_owner or a
+-- delivery_partner, and when they stop. That is an HTTP call to another
+-- service from inside a partner-approval transaction, so it cannot be made
+-- inline: an identity outage would either fail the approval or silently lose
+-- the role. The intent is written HERE instead, in food's own database, in
+-- the same transaction as the partner row, and a worker delivers it
+-- (shared/identityroles).
+--
+-- Public schema, matching this service's existing outbox_events. The DDL is a
+-- copy of shared/identityroles.SchemaSQL(""); TestSetupSQLMatchesSharedSchema
+-- in internal/store/postgres asserts the two have not drifted.
+CREATE TABLE IF NOT EXISTS identity_role_intents (
+    id               BIGSERIAL PRIMARY KEY,
+    op               TEXT        NOT NULL CHECK (op IN ('grant','revoke')),
+    user_id          UUID        NOT NULL,
+    role_name        TEXT        NOT NULL,
+    service          TEXT        NOT NULL,
+    reason           TEXT        NOT NULL DEFAULT '',
+    attempts         INT         NOT NULL DEFAULT 0,
+    next_attempt_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error       TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivered_at     TIMESTAMPTZ,
+    dead_lettered_at TIMESTAMPTZ
+);
+
+-- The worker's only query. Partial so the index stays the size of the backlog
+-- rather than the size of history.
+CREATE INDEX IF NOT EXISTS idx_identity_role_intents_pending
+    ON identity_role_intents (next_attempt_at)
+    WHERE delivered_at IS NULL AND dead_lettered_at IS NULL;
+
+-- Operator query: "what is stuck and why".
+CREATE INDEX IF NOT EXISTS idx_identity_role_intents_dead
+    ON identity_role_intents (dead_lettered_at)
+    WHERE dead_lettered_at IS NOT NULL;

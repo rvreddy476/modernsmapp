@@ -40,6 +40,7 @@ import (
 	"github.com/atpost/rider-service/internal/service/jobs"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
+	"github.com/atpost/shared/identityroles"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -68,7 +69,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	st := store.New(pool)
+	// The cron binary gets the role queue too, even though its only partner
+	// writer today (the fraud job's auto-suspend) deliberately performs no
+	// role action. Without it, the day someone adds a status change to a job
+	// the intent would be silently dropped instead of enqueued. There is no
+	// worker here on purpose — the server drains the same table.
+	st := store.New(pool).WithRoleIntents(identityroles.NewOutbox("rider", "rider-service"))
 
 	walletURL := os.Getenv("WALLET_SERVICE_URL")
 	if walletURL == "" {

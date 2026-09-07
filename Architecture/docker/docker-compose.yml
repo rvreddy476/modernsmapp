@@ -1431,6 +1431,10 @@ services:
       # buyer-email resolution for order events silently failed until it
       # was declared here against identity-auth.
       AUTH_SERVICE_URL: http://identity-auth:8081
+      # Same host, separate variable, for the identity role client (which
+      # grants `seller`). Kept distinct so the two clients can be pointed
+      # apart if identity ever splits contact lookup from role management.
+      IDENTITY_AUTH_URL: http://identity-auth:8081
       PAYMENTS_SERVICE_URL: http://payments-service:8102
       # Commerce speaks to payments with its own signed identity, not the
       # shared internal key (Commerce P0 A2). Key material lives in .env.
@@ -1492,6 +1496,12 @@ services:
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       MONETIZATION_SERVICE_URL: http://monetization-service:8099
       PAYMENTS_SERVICE_URL: http://payments-service:8102
+      # identity-auth owns ecosystem roles for the whole platform; food grants
+      # restaurant_owner / delivery_partner through its internal role API.
+      # Declared explicitly rather than left to the compiled-in default, for
+      # the reason recorded in commerce-service's block below: a client that
+      # defaults to a host name compose does not have fails silently forever.
+      IDENTITY_AUTH_URL: http://identity-auth:8081
     ports:
       - "8113:8113"
     depends_on:
@@ -1593,6 +1603,10 @@ services:
       KAFKA_TOPIC: rider-events
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       WALLET_SERVICE_URL: http://wallet-service:8114
+      # identity-auth owns ecosystem roles; rider grants rider_partner through
+      # its internal role API. See the note in commerce-service's block about
+      # why this is declared rather than left to a compiled-in default.
+      IDENTITY_AUTH_URL: http://identity-auth:8081
       DIGILOCKER_MODE: ${DIGILOCKER_MODE:-mock}
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}
       DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:-}

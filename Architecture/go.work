@@ -34,4 +34,5 @@ use (
 	./shared
 	./tools/schemacheck
 	./tools/integration
+	./tools/identityrolebackfill
 )

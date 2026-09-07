@@ -10,6 +10,7 @@ package store
 import (
 	"time"
 
+	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,6 +18,11 @@ import (
 // Store wraps a pgxpool with per-aggregate methods.
 type Store struct {
 	db *pgxpool.Pool
+	// roles is the durable queue that tells identity somebody became (or
+	// stopped being) a rider_partner. It lives on the Store because the
+	// partner lifecycle writes happen here and the intent must commit inside
+	// their transaction. See identity_roles.go.
+	roles *identityroles.Outbox
 }
 
 // New returns a Store backed by the given pool.

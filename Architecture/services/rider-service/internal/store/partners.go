@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -28,6 +29,14 @@ type CreatePartnerInput struct {
 // The unique index on (user_id) WHERE deleted_at IS NULL prevents two active
 // partner rows for the same AtPost user — the service layer translates the
 // resulting unique-violation into a friendly "already exists" error.
+//
+// The `rider_partner` role is granted HERE, at status='draft'. The partner
+// still has to upload a KYC document before anyone reviews them, and that
+// endpoint is in the partner area — so gating the role on approval would lock
+// them out of the only route to approval. See identity_roles.go.
+//
+// The insert is now wrapped in a transaction purely so the role intent commits
+// with the partner row; the statement itself is unchanged.
 func (s *Store) CreatePartner(ctx context.Context, in CreatePartnerInput) (*Partner, error) {
 	const q = `
         INSERT INTO rider_partners (user_id, partner_type, full_name, phone, email, city_id, status, kyc_status)
@@ -35,8 +44,28 @@ func (s *Store) CreatePartner(ctx context.Context, in CreatePartnerInput) (*Part
         RETURNING id, user_id, partner_type, fleet_owner_id, full_name, phone, email, profile_photo_url,
                   city_id, status, kyc_status, bank_status, rating, total_rides_completed, total_rides_cancelled,
                   acceptance_rate, cancellation_rate, fraud_score, is_online, approved_at, created_at, updated_at`
-	row := s.db.QueryRow(ctx, q, in.UserID, in.PartnerType, in.FullName, in.Phone, in.Email, in.CityID)
-	return scanPartner(row)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	row := tx.QueryRow(ctx, q, in.UserID, in.PartnerType, in.FullName, in.Phone, in.Email, in.CityID)
+	p, err := scanPartner(row)
+	if err != nil {
+		// Includes the unique-violation the service layer translates into
+		// "already exists" — the rollback leaves no orphan intent behind.
+		return nil, err
+	}
+	if err := s.enqueueRoleIntentTx(ctx, tx, identityroles.OpGrant, p.UserID,
+		"rider partner profile created"); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetPartner returns the partner row by id.
@@ -114,14 +143,20 @@ func (s *Store) UpdatePartnerProfile(ctx context.Context, partnerID uuid.UUID, i
 
 // UpdatePartnerStatus changes the partner status (admin-only path; exposed
 // here because the service layer reuses it during onboarding too).
+//
+// This is the single writer behind admin reject / suspend / block AND the
+// draft -> pending_verification onboarding transition, so it is where the
+// role table in identity_roles.go is applied. 'rejected' and 'blocked' revoke;
+// 'suspended' deliberately does not.
 func (s *Store) UpdatePartnerStatus(ctx context.Context, partnerID uuid.UUID, status string) error {
-	const q = `UPDATE rider_partners SET status = $2::rider_partner_status, updated_at = NOW() WHERE id = $1`
-	tag, err := s.db.Exec(ctx, q, partnerID, status)
+	const q = `UPDATE rider_partners SET status = $2::rider_partner_status, updated_at = NOW()
+	           WHERE id = $1 RETURNING user_id`
+	err := s.updatePartnerStatusTx(ctx, q, status, "rider partner status set to "+status, partnerID, status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrPartnerNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("update partner status: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrPartnerNotFound
 	}
 	return nil
 }

@@ -221,6 +221,15 @@ func (s *Store) SetFraudScore(ctx context.Context, partnerID uuid.UUID, score fl
 
 // SetPartnerSuspended sets status='suspended' + suspended_reason. Used by
 // the auto-suspend branch of the nightly fraud-score job (score >= 90).
+//
+// NO ROLE ACTION, and that is the whole point of the suspension rule: a
+// suspended partner is still a partner, and this one was suspended by a
+// heuristic. Revoking `rider_partner` on a fraud score would lock a possibly
+// innocent partner out of the partner area — including out of any appeal —
+// on the say-so of a nightly job, and rider-service has no unblock route to
+// let them back in. identity says who you are; rider_partners.status says what
+// state you are in. Kept in step with commerce's SuspendSellerByAdmin and
+// food's SUSPENDED; see internal/store/identity_roles.go.
 func (s *Store) SetPartnerSuspended(ctx context.Context, partnerID uuid.UUID, reason string) error {
 	const q = `
         UPDATE rider_partners

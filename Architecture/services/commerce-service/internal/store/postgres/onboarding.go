@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -12,11 +13,28 @@ import (
 // ─── Seller onboarding store methods ────────────────────────────
 
 // StartSellerOnboarding creates a draft seller record linked to a business page.
+//
+// THE ROLE IS GRANTED HERE, at status='draft', not at approval. The seller
+// still has eight onboarding steps and a submission ahead of them, and every
+// one of those screens lives behind the seller area — so gating `seller` on
+// approval would lock the applicant out of the flow that gets them approved.
+// identity says who you are; sellers.status says what state you are in. The
+// full argument is in shared/identityroles' package doc.
+//
+// The insert is now wrapped in a transaction purely so the intent commits with
+// the seller row. Nothing else about the write changed.
 func (s *Store) StartSellerOnboarding(ctx context.Context, sel *Seller) error {
 	sel.ID = uuid.New()
 	sel.CreatedAt = time.Now()
 	sel.UpdatedAt = time.Now()
-	_, err := s.db.Exec(ctx, `
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO sellers (id, user_id, business_page_id, seller_type, business_type, store_name,
 		  brand_name, owner_name, slug, description, tagline, email, phone,
 		  state, city, postal_code, status, onboarding_step, created_at, updated_at)
@@ -24,8 +42,14 @@ func (s *Store) StartSellerOnboarding(ctx context.Context, sel *Seller) error {
 		sel.ID, sel.UserID, sel.BusinessPageID, sel.SellerType, sel.BusinessType, sel.StoreName,
 		sel.BrandName, sel.OwnerName, sel.Slug, sel.Description, sel.Tagline, sel.Email, sel.Phone,
 		sel.State, sel.City, sel.PostalCode, sel.CreatedAt, sel.UpdatedAt,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, sel.UserID,
+		"seller onboarding started"); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // GetSellerOnboardingStatus returns full seller row including new onboarding fields.
@@ -216,6 +240,13 @@ func (s *Store) ListSellerQueue(ctx context.Context, limit, offset int) ([]*Sell
 }
 
 // ApproveSellerByAdmin sets status=approved and logs the action.
+//
+// Re-grants the `seller` role even though StartSellerOnboarding already
+// granted it. That is deliberate, not redundant: identity's grant is
+// idempotent (200 on a role already held), and this second grant is the safety
+// net for a seller whose create-time intent was dead-lettered during an
+// identity outage. Approval is the moment it matters most that the role is
+// actually there.
 func (s *Store) ApproveSellerByAdmin(ctx context.Context, sellerID, actorID uuid.UUID, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -224,9 +255,15 @@ func (s *Store) ApproveSellerByAdmin(ctx context.Context, sellerID, actorID uuid
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE sellers SET status='approved', approved_at=$2, store_status='active', updated_at=$2 WHERE id=$1`,
-		sellerID, now); err != nil {
+	var userID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`UPDATE sellers SET status='approved', approved_at=$2, store_status='active', updated_at=$2
+		  WHERE id=$1 RETURNING user_id`,
+		sellerID, now).Scan(&userID); err != nil {
+		return err
+	}
+	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, userID,
+		"seller application approved"); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
@@ -239,6 +276,13 @@ func (s *Store) ApproveSellerByAdmin(ctx context.Context, sellerID, actorID uuid
 }
 
 // RejectSellerByAdmin sets status=rejected and logs the action.
+//
+// REVOKES the `seller` role, because in commerce rejection is terminal, not a
+// pause: SubmitSellerApplication only accepts status='draft', so a rejected
+// seller cannot resubmit and is genuinely off the journey. The reversible
+// "go and fix it" outcome is AdminRequestSellerChanges
+// (status='changes_required'), which deliberately does NOT revoke — that
+// applicant still has to reach the seller area to make the changes.
 func (s *Store) RejectSellerByAdmin(ctx context.Context, sellerID, actorID uuid.UUID, reason, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -247,9 +291,15 @@ func (s *Store) RejectSellerByAdmin(ctx context.Context, sellerID, actorID uuid.
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE sellers SET status='rejected', rejected_at=$2, rejection_reason=$3, updated_at=$2 WHERE id=$1`,
-		sellerID, now, reason); err != nil {
+	var userID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`UPDATE sellers SET status='rejected', rejected_at=$2, rejection_reason=$3, updated_at=$2
+		  WHERE id=$1 RETURNING user_id`,
+		sellerID, now, reason).Scan(&userID); err != nil {
+		return err
+	}
+	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpRevoke, userID,
+		"seller application rejected"); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
@@ -285,6 +335,16 @@ func (s *Store) RequestSellerChanges(ctx context.Context, sellerID, actorID uuid
 }
 
 // SuspendSellerByAdmin sets status=suspended.
+//
+// DELIBERATELY DOES NOT REVOKE THE ROLE. A suspended seller is still a seller:
+// they must reach the seller area to read why they were suspended and to
+// appeal, and commerce already expresses the suspension in
+// sellers.status='suspended', which its own handlers check. Copying that state
+// into identity as a missing role would create a second, weaker answer to
+// "is this person suspended" living in another database — the exact disease
+// this module is curing. identity says who you are; commerce says what state
+// you are in. See shared/identityroles' package doc, and keep this in step
+// with food-service's SUSPENDED and rider-service's suspended.
 func (s *Store) SuspendSellerByAdmin(ctx context.Context, sellerID, actorID uuid.UUID, reason, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)

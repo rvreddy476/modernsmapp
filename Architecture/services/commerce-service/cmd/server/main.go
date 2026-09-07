@@ -26,6 +26,7 @@ import (
 	"github.com/atpost/commerce-service/internal/workers"
 	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/identityroles"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
@@ -128,7 +129,7 @@ func main() {
 	}))
 
 	// 9. Service (+ courier + invoice blob store)
-	store := pgstore.New(dbPool)
+	store := pgstore.New(dbPool).WithRoleIntents(identityroles.NewOutbox("", "commerce-service"))
 	svc := service.NewWithDialer(store, rdb, strings.Join(kafkaBrokers, ","), kafkaDialer)
 	defer svc.Close()
 
@@ -340,6 +341,31 @@ func main() {
 	})
 	go outboxPublisher.Run(consumerCtx)
 	slog.Info("commerce outbox publisher started", "topic", "social.events.v1")
+
+	// Identity role worker. Drains identity_role_intents — rows the seller
+	// lifecycle commits alongside the seller row itself — into
+	// identity-auth-service's internal role API.
+	//
+	// The default is identity-auth:8081, NOT auth-service:8081, which is the
+	// mistake documented in this service's compose block: the older
+	// AUTH_SERVICE_URL default named a host that does not exist in compose and
+	// buyer-email resolution failed silently for it. IDENTITY_AUTH_URL is
+	// preferred; AUTH_SERVICE_URL is honoured so a deployment that already
+	// sets it does not need a second variable.
+	identityAuthURL := env("IDENTITY_AUTH_URL", env("AUTH_SERVICE_URL", "http://identity-auth:8081"))
+	roleWorker := identityroles.NewWorker(
+		identityroles.NewClient(identityAuthURL, internalKey, "commerce-service"),
+		identityroles.NewOutbox("", "commerce-service"),
+		dbPool, slog.Default(), identityroles.WorkerConfig{},
+	)
+	go roleWorker.Run(consumerCtx)
+	slog.Info("identity role worker started", "identity_auth_url", identityAuthURL)
+	if internalKey == "" {
+		// Worth shouting about: without the key every grant will 403 and
+		// dead-letter on its first attempt, so no seller will ever hold the
+		// `seller` role.
+		slog.Warn("INTERNAL_SERVICE_KEY is empty; identity role grants will be rejected")
+	}
 
 	// The old `runInventoryExpiry` sweeper is GONE — replaced by
 	// svc.RunReservationExpiry above (LB-22 / M-5).

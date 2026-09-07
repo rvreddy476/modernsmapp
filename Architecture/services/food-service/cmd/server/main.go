@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/identityroles"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
@@ -68,7 +69,7 @@ func main() {
 	checker := health.New("food-service")
 	checker.Register("postgres", health.PingCheck(dbPool))
 
-	store := postgres.New(dbPool)
+	store := postgres.New(dbPool).WithRoleIntents(identityroles.NewOutbox("", "food-service"))
 	svc := service.New(store)
 
 	// Realtime: best-effort Pub/Sub publishes + topic-token signer.
@@ -97,6 +98,27 @@ func main() {
 	})
 	go outboxPublisher.Run(outboxCtx)
 	slog.Info("outbox publisher started", "topic", kafkaTopic)
+
+	// Identity role worker. Drains identity_role_intents — rows the partner
+	// lifecycle commits alongside the partner row itself — into
+	// identity-auth-service's internal role API.
+	//
+	// The default host is identity-auth:8081, the compose service name.
+	// commerce-service's compose block records what happens when a client
+	// defaults to `auth-service` instead: the calls fail silently forever.
+	identityAuthURL := env("IDENTITY_AUTH_URL", env("AUTH_SERVICE_URL", "http://identity-auth:8081"))
+	roleWorker := identityroles.NewWorker(
+		identityroles.NewClient(identityAuthURL, internalKey, "food-service"),
+		identityroles.NewOutbox("", "food-service"),
+		dbPool, slog.Default(), identityroles.WorkerConfig{},
+	)
+	go roleWorker.Run(outboxCtx)
+	slog.Info("identity role worker started", "identity_auth_url", identityAuthURL)
+	if internalKey == "" {
+		// Loud on purpose: without the key every grant 403s and dead-letters
+		// on its first attempt, so no partner ever holds their role.
+		slog.Warn("INTERNAL_SERVICE_KEY is empty; identity role grants will be rejected")
+	}
 
 	svc.WithOutbox(outbox.NewQueuer(""), dbPool)
 

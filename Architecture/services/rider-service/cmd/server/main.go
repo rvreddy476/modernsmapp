@@ -21,6 +21,7 @@ import (
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
 	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/identityroles"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
@@ -105,7 +106,7 @@ func main() {
 		return rdb.Ping(ctx).Err()
 	}))
 
-	riderStore := store.New(dbPool)
+	riderStore := store.New(dbPool).WithRoleIntents(identityroles.NewOutbox("rider", "rider-service"))
 
 	// DigiLocker partner client. Default mock; production must explicitly opt
 	// in via DIGILOCKER_MODE=http. Mirrors dating-service.
@@ -160,6 +161,27 @@ func main() {
 	riderSvc.WithOutbox(outbox.NewQueuer("rider"), dbPool)
 	go outboxPublisher.Run(dispatchCtx)
 	slog.Info("outbox publisher started", "topic", kafkaTopic)
+
+	// Identity role worker. Drains rider.identity_role_intents — rows the
+	// partner lifecycle commits alongside the partner row itself — into
+	// identity-auth-service's internal role API.
+	//
+	// The default host is identity-auth:8081, the compose service name, not
+	// auth-service:8081. commerce-service's compose block records what the
+	// wrong default costs: calls that fail silently forever.
+	identityAuthURL := env("IDENTITY_AUTH_URL", env("AUTH_SERVICE_URL", "http://identity-auth:8081"))
+	roleWorker := identityroles.NewWorker(
+		identityroles.NewClient(identityAuthURL, internalKey, "rider-service"),
+		identityroles.NewOutbox("rider", "rider-service"),
+		dbPool, slog.Default(), identityroles.WorkerConfig{},
+	)
+	go roleWorker.Run(dispatchCtx)
+	slog.Info("identity role worker started", "identity_auth_url", identityAuthURL)
+	if internalKey == "" {
+		// Loud on purpose: without the key every grant 403s and dead-letters
+		// on its first attempt, so no partner ever holds `rider_partner`.
+		slog.Warn("INTERNAL_SERVICE_KEY is empty; identity role grants will be rejected")
+	}
 
 	// P0.2 — dispatch consumer. CreateRide publishes
 	// `rider.ride.requested`; without this consumer the ride sat in
