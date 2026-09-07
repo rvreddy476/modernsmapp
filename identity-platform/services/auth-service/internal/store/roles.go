@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/identity-auth-service/internal/roles"
 	"github.com/google/uuid"
 )
 
@@ -17,24 +18,43 @@ type UserRole struct {
 }
 
 // AdminAuditEntry is one row of the privileged-action audit trail.
+//
+// ActorID is a POINTER and ActorService exists because an actor is no longer
+// always a person. When commerce-service approves a seller it calls the
+// internal grant API, and there is no user acting — the service is. actor_id
+// was `UUID NOT NULL`, so representing that honestly needed a schema change;
+// the alternative was to invent a uuid for each service and write it into an
+// audit trail as though a human had done the thing, which is exactly the sort
+// of quiet fiction an audit trail exists to prevent.
+//
+// The change is the smallest one that stays truthful: actor_id drops NOT NULL
+// and a nullable actor_service TEXT column is added. Exactly one of the two is
+// set on every row. See the ALTERs in database/setup.sql.
 type AdminAuditEntry struct {
-	ID        uuid.UUID  `json:"id"`
-	ActorID   uuid.UUID  `json:"actor_id"`
-	Action    string     `json:"action"`
-	TargetID  *uuid.UUID `json:"target_id,omitempty"`
-	Detail    string     `json:"detail"`
-	Allowed   bool       `json:"allowed"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID uuid.UUID `json:"id"`
+	// ActorID is the acting user, or nil when a service acted.
+	ActorID *uuid.UUID `json:"actor_id,omitempty"`
+	// ActorService is the calling service's name (e.g. "commerce-service"),
+	// or "" when a user acted.
+	ActorService string     `json:"actor_service,omitempty"`
+	Action       string     `json:"action"`
+	TargetID     *uuid.UUID `json:"target_id,omitempty"`
+	Detail       string     `json:"detail"`
+	Allowed      bool       `json:"allowed"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 // ValidRole reports whether r is an assignable role.
-func ValidRole(r string) bool {
-	switch r {
-	case "superadmin", "admin", "moderator":
-		return true
-	}
-	return false
-}
+//
+// The vocabulary itself lives in internal/roles, which is the single list the
+// CHECK constraint, this function and config.ExpandRoles all derive from. This
+// wrapper stays because it is the name the service layer already calls.
+func ValidRole(r string) bool { return roles.Valid(r) }
+
+// ValidEcosystemRole reports whether r is one of the four roles a SERVICE may
+// grant over the internal API (seller, restaurant_owner, delivery_partner,
+// rider_partner). A service must never be able to mint admin or superadmin.
+func ValidEcosystemRole(r string) bool { return roles.IsEcosystem(r) }
 
 // GrantRole grants role to a user. Idempotent: re-granting is a no-op.
 // grantedBy may be uuid.Nil for env/system grants.
@@ -101,11 +121,32 @@ func (s *Store) InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUI
 	return nil
 }
 
+// InsertServiceAudit is InsertAdminAudit for an actor that is not a person.
+//
+// actor_id is left NULL and the calling service is named in actor_service, so
+// a reader of the trail can tell "commerce-service granted this seller role"
+// from "a superadmin granted it" without guessing from the detail string.
+func (s *Store) InsertServiceAudit(ctx context.Context, targetID uuid.UUID, service, action, detail string, allowed bool) error {
+	var target *uuid.UUID
+	if targetID != uuid.Nil {
+		target = &targetID
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO auth.admin_audit (actor_id, actor_service, action, target_id, detail, allowed)
+		VALUES (NULL, $1, $2, $3, $4, $5)
+	`, service, action, target, detail, allowed)
+	if err != nil {
+		return fmt.Errorf("insert service audit: %w", err)
+	}
+	return nil
+}
+
 // ListAdminAudit returns the most recent privileged-action audit rows, newest
 // first. limit is clamped by the caller.
 func (s *Store) ListAdminAudit(ctx context.Context, limit int) ([]AdminAuditEntry, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, actor_id, action, target_id, COALESCE(detail, ''), allowed, created_at
+		SELECT id, actor_id, COALESCE(actor_service, ''), action, target_id,
+		       COALESCE(detail, ''), allowed, created_at
 		FROM auth.admin_audit ORDER BY created_at DESC LIMIT $1
 	`, limit)
 	if err != nil {
@@ -115,7 +156,7 @@ func (s *Store) ListAdminAudit(ctx context.Context, limit int) ([]AdminAuditEntr
 	var out []AdminAuditEntry
 	for rows.Next() {
 		var e AdminAuditEntry
-		if err := rows.Scan(&e.ID, &e.ActorID, &e.Action, &e.TargetID, &e.Detail, &e.Allowed, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ActorID, &e.ActorService, &e.Action, &e.TargetID, &e.Detail, &e.Allowed, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan admin audit: %w", err)
 		}
 		out = append(out, e)

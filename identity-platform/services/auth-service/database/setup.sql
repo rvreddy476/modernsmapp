@@ -97,12 +97,44 @@ CREATE INDEX IF NOT EXISTS idx_recovery_codes_user_id ON auth.recovery_codes(use
 -- previous model where clients declared their own privileges via X-Scopes.
 CREATE TABLE IF NOT EXISTS auth.user_roles (
     user_id    UUID NOT NULL,
-    role       TEXT NOT NULL CHECK (role IN ('superadmin','admin','moderator')),
+    role       TEXT NOT NULL CHECK (role IN (
+                   'superadmin','admin','moderator',
+                   'seller','restaurant_owner','delivery_partner','rider_partner'
+               )),
     granted_by UUID,
     granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, role)
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON auth.user_roles(user_id);
+
+-- Identity is the whole ecosystem's SSO, so the four ecosystem roles live here
+-- too: seller (commerce), restaurant_owner + delivery_partner (food),
+-- rider_partner (rider). They used to be rows in those services' own
+-- databases, which meant the access token could not carry them and answering
+-- "what is this person allowed to be" required calling four services.
+--
+-- There is deliberately NO 'customer' value and one must never be added: every
+-- account is a customer, so the absence of a role IS the customer state.
+--
+-- The CHECK above only takes effect on a database that does not yet have the
+-- table. CREATE TABLE IF NOT EXISTS is a no-op against an existing one, so an
+-- environment created before this change would keep the old three-role
+-- constraint and reject every ecosystem grant with 23514. The DROP/ADD pair
+-- below is what actually migrates it.
+--
+-- This service has no numbered-migration ledger: database/setup.sql IS the
+-- mechanism, applied statement by statement on every boot by
+-- schemabootstrap.Apply and then asserted by schemaguard. That is why the
+-- statements here have to be idempotent. DROP CONSTRAINT IF EXISTS followed by
+-- ADD CONSTRAINT is the idempotent form of "replace this CHECK": PostgreSQL
+-- has no ADD CONSTRAINT IF NOT EXISTS, and the name is the one PostgreSQL
+-- generates for an inline column CHECK (<table>_<column>_check), so it matches
+-- both a database created by the old DDL and one created by the new.
+ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_role_check;
+ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_role_check CHECK (role IN (
+    'superadmin','admin','moderator',
+    'seller','restaurant_owner','delivery_partner','rider_partner'
+));
 
 -- Immutable audit trail of privileged actions (role grants/revokes, etc.).
 -- Append-only: revokes delete the user_roles row, so this is the durable record
@@ -118,6 +150,31 @@ CREATE TABLE IF NOT EXISTS auth.admin_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON auth.admin_audit(actor_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON auth.admin_audit(target_id, created_at DESC);
+
+-- An actor is no longer always a person.
+--
+-- commerce/food/rider grant an ecosystem role over POST /v1/auth/internal/roles
+-- when they approve someone. There is no acting user in that request and there
+-- is no uuid that honestly represents "commerce-service". Writing a made-up
+-- one — a fixed sentinel, a UUIDv5 of the service name — would put a value in
+-- the actor column of an audit trail that looks like an account and is not,
+-- which is precisely the confusion an audit trail must not create.
+--
+-- So actor_id stops being mandatory and the service names itself in its own
+-- column. Exactly one of the two is populated per row; the CHECK enforces it.
+-- This is additive and idempotent, like the ALTERs further down this file.
+ALTER TABLE auth.admin_audit
+    ADD COLUMN IF NOT EXISTS actor_service TEXT;
+ALTER TABLE auth.admin_audit
+    ALTER COLUMN actor_id DROP NOT NULL;
+ALTER TABLE auth.admin_audit DROP CONSTRAINT IF EXISTS admin_audit_actor_present;
+ALTER TABLE auth.admin_audit ADD CONSTRAINT admin_audit_actor_present CHECK (
+    (actor_id IS NOT NULL AND actor_service IS NULL) OR
+    (actor_id IS NULL AND actor_service IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_actor_service
+    ON auth.admin_audit(actor_service, created_at DESC)
+    WHERE actor_service IS NOT NULL;
 
 -- WebAuthn / passkey credentials. One row per registered authenticator. The
 -- public key + sign_count are used to verify assertions at login; credential_id

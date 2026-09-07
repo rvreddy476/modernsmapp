@@ -70,6 +70,14 @@ type AuthService interface {
 	RevokeRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
 	ListUserRoles(ctx context.Context, actorID, targetID uuid.UUID) ([]store.UserRole, error)
 	ListAdminAudit(ctx context.Context, actorID uuid.UUID, limit int) ([]store.AdminAuditEntry, error)
+	// Service-to-service ecosystem role management. Guarded at the route by
+	// RequireInternalServiceKey and constrained in the service layer to the
+	// four ecosystem roles — a service can never mint admin or superadmin.
+	GrantEcosystemRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string) error
+	RevokeEcosystemRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string) error
+	// Role read path. ResolveRoles is env-allowlist ∪ DB, implication-expanded.
+	ResolveRoles(ctx context.Context, userID uuid.UUID) []string
+	CapabilitiesForUser(ctx context.Context, userID uuid.UUID) service.Capabilities
 	// 2FA
 	Setup2FA(ctx context.Context, userID uuid.UUID) (*service.TwoFASetupResponse, error)
 	Verify2FASetup(ctx context.Context, userID uuid.UUID, code string) error
@@ -222,6 +230,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 
 		// Token introspection — auth only (no CSRF; safe GET used by server-side proxies)
 		v1.GET("/me", authMW, h.Me)
+		// Role switcher payload. Identity is the ecosystem's single role
+		// authority, so this answers "which hats does this person wear" in one
+		// request, without the client calling commerce, food and rider.
+		v1.GET("/me/capabilities", authMW, h.MeCapabilities)
 
 		// Protected routes (require auth + CSRF)
 		protected := v1.Group("", authMW, csrfMW)
@@ -270,6 +282,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		{
 			internal.POST("/mini-app-session", h.CreateMiniAppSession)
 			internal.GET("/users/:userId", h.InternalGetUserContact)
+			// Ecosystem role grant/revoke for commerce, food and rider. See
+			// internal_roles.go for the contract and the boundary.
+			internal.POST("/roles", h.InternalGrantRole)
+			internal.DELETE("/roles", h.InternalRevokeRole)
+			internal.GET("/roles/:userId", h.InternalListRoles)
 		}
 	}
 }
@@ -338,6 +355,16 @@ func (h *Handler) Me(c *gin.Context) {
 		"account_type":       user.AccountType,
 		"account_status":     user.AccountStatus,
 		"age_verification":   user.AgeVerification,
+		// Identity is the ecosystem's single role authority, so /me carries
+		// the answer. This used to return no roles at all, which meant a
+		// client had to read them out of the token (and could not see a role
+		// granted since that token was minted) or ask four other services.
+		//
+		// Resolved live from env allowlist ∪ auth.user_roles, NOT from the
+		// presented token's `scopes` claim — so a role granted a moment ago
+		// shows up here immediately, even though the token still predates it.
+		// Always an array, never null.
+		"roles": h.svc.ResolveRoles(c.Request.Context(), uid),
 		// Account control: null unless the account is deactivated /
 		// pending deletion respectively. A client renders "Your account is
 		// scheduled for deletion on <date>; log in to cancel" from these.
@@ -346,6 +373,41 @@ func (h *Handler) Me(c *gin.Context) {
 		"last_login_at":        user.LastLoginAt,
 		"created_at":           user.CreatedAt,
 	}, nil)
+}
+
+// MeCapabilities returns the role-switcher payload for the authenticated user.
+//
+//	GET /v1/auth/me/capabilities
+//	{
+//	  "user_id": "…",
+//	  "roles": ["moderator","seller"],
+//	  "is_customer": true,
+//	  "capabilities": {
+//	    "superadmin": false, "admin": false, "moderator": true,
+//	    "seller": true, "restaurant_owner": false,
+//	    "delivery_partner": false, "rider_partner": false
+//	  },
+//	  "switcher": [
+//	    {"role":"customer","label":"Customer"},
+//	    {"role":"moderator","label":"Moderator"},
+//	    {"role":"seller","label":"Seller"}
+//	  ]
+//	}
+//
+// `capabilities` names every role in the vocabulary explicitly, so a client
+// never has to know which roles exist to render "you are not a seller", and
+// adding a role to the vocabulary reaches clients without a shape change.
+//
+// Read live from identity's own roles. Deliberately NOT derived from other
+// services' partner tables, which is the design this replaces — see
+// food-service's GET /v1/food/me/capabilities.
+func (h *Handler) MeCapabilities(c *gin.Context) {
+	uid, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user identity", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, h.svc.CapabilitiesForUser(c.Request.Context(), uid), nil)
 }
 
 func (h *Handler) MiniAppJWKS(c *gin.Context) {

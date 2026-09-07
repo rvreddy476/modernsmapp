@@ -103,6 +103,10 @@ type Store interface {
 	RolesForUser(ctx context.Context, userID uuid.UUID) ([]string, error)
 	ListUserRoles(ctx context.Context, userID uuid.UUID) ([]store.UserRole, error)
 	InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUID, action, detail string, allowed bool) error
+	// InsertServiceAudit records an action whose actor is a SERVICE, not a
+	// person (commerce approving a seller, etc.). Separate method rather than
+	// a sentinel uuid on InsertAdminAudit — see store.AdminAuditEntry.
+	InsertServiceAudit(ctx context.Context, targetID uuid.UUID, service, action, detail string, allowed bool) error
 	ListAdminAudit(ctx context.Context, limit int) ([]store.AdminAuditEntry, error)
 	// Sessions
 	CreateSession(ctx context.Context, sess *store.Session) error

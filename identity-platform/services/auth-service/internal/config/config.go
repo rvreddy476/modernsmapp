@@ -2,11 +2,13 @@ package config
 
 import (
 	"errors"
-	"github.com/atpost/identity-auth-service/pkg/appenv"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/atpost/identity-auth-service/internal/roles"
+	"github.com/atpost/identity-auth-service/pkg/appenv"
 )
 
 // Config holds runtime configuration sourced from environment variables.
@@ -116,43 +118,36 @@ type Config struct {
 
 // EnvRolesForUser returns the raw roles assigned to a user via the env
 // allowlists (the bootstrap source of truth, alongside the DB roles table).
+//
+// Only the privilege ladder is bootstrappable from the environment. The four
+// ecosystem roles (seller, restaurant_owner, delivery_partner, rider_partner)
+// deliberately have NO env allowlist: they are granted by the owning service
+// when it approves someone, and an env var that could mint a seller would be a
+// second, unaudited source of truth for exactly the thing this work is
+// centralising.
 func (c *Config) EnvRolesForUser(userID string) []string {
-	var roles []string
+	var out []string
 	if _, ok := c.ScopeSuperadminUserIDs[userID]; ok {
-		roles = append(roles, "superadmin")
+		out = append(out, roles.Superadmin)
 	}
 	if _, ok := c.ScopeAdminUserIDs[userID]; ok {
-		roles = append(roles, "admin")
+		out = append(out, roles.Admin)
 	}
 	if _, ok := c.ScopeModeratorUserIDs[userID]; ok {
-		roles = append(roles, "moderator")
+		out = append(out, roles.Moderator)
 	}
-	return roles
+	return out
 }
 
 // ExpandRoles turns a set of raw roles into the space-separated scope string
-// embedded in the access-token `scopes` claim. superadmin implies admin+
-// moderator; admin implies moderator. Order is stable for deterministic tokens.
-// Returns "" when no privileged role is present.
-func ExpandRoles(roles []string) string {
-	set := map[string]struct{}{}
-	for _, r := range roles {
-		switch r {
-		case "superadmin":
-			set["superadmin"], set["admin"], set["moderator"] = struct{}{}, struct{}{}, struct{}{}
-		case "admin":
-			set["admin"], set["moderator"] = struct{}{}, struct{}{}
-		case "moderator":
-			set["moderator"] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(set))
-	for _, s := range []string{"superadmin", "admin", "moderator"} {
-		if _, ok := set[s]; ok {
-			out = append(out, s)
-		}
-	}
-	return strings.Join(out, " ")
+// embedded in the access-token `scopes` claim.
+//
+// The implication rules and the canonical ordering live in internal/roles, so
+// there is one definition of "superadmin implies admin implies moderator" and
+// one definition of "the ecosystem roles imply nothing". Order is stable for
+// deterministic tokens. Returns "" when the user holds no role at all.
+func ExpandRoles(in []string) string {
+	return strings.Join(roles.Expand(in), " ")
 }
 
 // ScopesForUser returns the env-derived scopes for a user (bootstrap path).

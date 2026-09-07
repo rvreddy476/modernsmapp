@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/roles"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,10 @@ type stubAuthService struct {
 	logoutFn         func(refreshToken string) error
 	issueMiniAppFn   func(appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error)
 	miniAppJWKSFn    func() (*service.JSONWebKeySet, error)
+	// Identity-as-SSO role surface.
+	grantEcosystemFn  func(callingService string, target uuid.UUID, role, reason string) error
+	revokeEcosystemFn func(callingService string, target uuid.UUID, role, reason string) error
+	resolveRolesFn    func(userID uuid.UUID) []string
 }
 
 func (s *stubAuthService) RequestOTP(ctx context.Context, phone, purpose string) error {
@@ -102,6 +107,43 @@ func (s *stubAuthService) DeleteAccount(_ context.Context, _ uuid.UUID, _ string
 // RBAC stubs
 func (s *stubAuthService) GrantRole(_ context.Context, _, _ uuid.UUID, _ string) error  { return nil }
 func (s *stubAuthService) RevokeRole(_ context.Context, _, _ uuid.UUID, _ string) error { return nil }
+
+// Ecosystem role stubs. The fns let a test observe what the handler forwarded
+// (and return the service-layer sentinels) without a second stub type.
+func (s *stubAuthService) GrantEcosystemRole(_ context.Context, callingService string, target uuid.UUID, role, reason string) error {
+	if s.grantEcosystemFn == nil {
+		return nil
+	}
+	return s.grantEcosystemFn(callingService, target, role, reason)
+}
+func (s *stubAuthService) RevokeEcosystemRole(_ context.Context, callingService string, target uuid.UUID, role, reason string) error {
+	if s.revokeEcosystemFn == nil {
+		return nil
+	}
+	return s.revokeEcosystemFn(callingService, target, role, reason)
+}
+func (s *stubAuthService) ResolveRoles(_ context.Context, uid uuid.UUID) []string {
+	if s.resolveRolesFn == nil {
+		return []string{}
+	}
+	return s.resolveRolesFn(uid)
+}
+func (s *stubAuthService) CapabilitiesForUser(_ context.Context, uid uuid.UUID) service.Capabilities {
+	held := s.ResolveRoles(context.Background(), uid)
+	caps := map[string]bool{}
+	for _, r := range roles.All() {
+		caps[r] = false
+	}
+	switcher := []service.CapabilitySwitch{{Role: service.CustomerSwitchRole, Label: "Customer"}}
+	for _, r := range held {
+		caps[r] = true
+		switcher = append(switcher, service.CapabilitySwitch{Role: r, Label: roles.Label(r)})
+	}
+	return service.Capabilities{
+		UserID: uid.String(), Roles: held, IsCustomer: true,
+		Capabilities: caps, Switcher: switcher,
+	}
+}
 func (s *stubAuthService) ListUserRoles(_ context.Context, _, _ uuid.UUID) ([]store.UserRole, error) {
 	return nil, nil
 }

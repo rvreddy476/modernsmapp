@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/atpost/identity-auth-service/internal/roles"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
@@ -58,7 +60,12 @@ func (h *Handler) GrantRole(c *gin.Context) {
 	}
 	if err := h.svc.GrantRole(c.Request.Context(), actor, target, req.Role); err != nil {
 		if err.Error() == "invalid role" {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid role (allowed: superadmin, admin, moderator)", nil, nil)
+			// Derived from the vocabulary, not spelled out: this message named
+			// three roles and would have quietly gone stale the moment the
+			// ecosystem roles were added.
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST",
+				"invalid role (allowed: "+strings.Join(roles.All(), ", ")+")",
+				map[string]any{"allowed_roles": roles.All()}, nil)
 			return
 		}
 		h.writeRoleErr(c, err)

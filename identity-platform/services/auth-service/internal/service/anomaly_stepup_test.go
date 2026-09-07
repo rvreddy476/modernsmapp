@@ -401,6 +401,9 @@ func (f *fakeAnomalyStore) ListUserRoles(_ context.Context, _ uuid.UUID) ([]stor
 func (f *fakeAnomalyStore) InsertAdminAudit(_ context.Context, _, _ uuid.UUID, _, _ string, _ bool) error {
 	return nil
 }
+func (f *fakeAnomalyStore) InsertServiceAudit(_ context.Context, _ uuid.UUID, _, _, _ string, _ bool) error {
+	return nil
+}
 func (f *fakeAnomalyStore) ListAdminAudit(_ context.Context, _ int) ([]store.AdminAuditEntry, error) {
 	return nil, nil
 }
