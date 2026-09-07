@@ -77,14 +77,14 @@ func TestAdminGuard_RejectsBadUser(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/rider/admin/dashboard", nil)
 	req.Header.Set("X-User-ID", "not-a-uuid")
-	req.Header.Set(AdminRoleHeader, AdminRoleValue)
+	req.Header.Set(ScopesHeader, "admin")
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d; want 400", rec.Code)
 	}
 }
 
-// TestAdminGuard_RejectsMissingRole — uuid present but no rider:admin -> 403.
+// TestAdminGuard_RejectsMissingRole — uuid present but no admin scope -> 403.
 func TestAdminGuard_RejectsMissingRole(t *testing.T) {
 	w := &fakeAuditWriter{}
 	r := newTestRouter(w)
@@ -97,14 +97,14 @@ func TestAdminGuard_RejectsMissingRole(t *testing.T) {
 	}
 }
 
-// TestAdminGuard_RejectsWrongRole — role header present but wrong value -> 403.
+// TestAdminGuard_RejectsWrongRole — scopes present but not admin -> 403.
 func TestAdminGuard_RejectsWrongRole(t *testing.T) {
 	w := &fakeAuditWriter{}
 	r := newTestRouter(w)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/rider/admin/dashboard", nil)
 	req.Header.Set("X-User-ID", uuid.NewString())
-	req.Header.Set(AdminRoleHeader, "guest")
+	req.Header.Set(ScopesHeader, "guest")
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d; want 403", rec.Code)
@@ -122,7 +122,7 @@ func TestAuditAdmin_WritesRow_PartnerApprove(t *testing.T) {
 	body := []byte(`{"foo":"bar"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/rider/admin/partners/"+partnerID.String()+"/approve", bytes.NewReader(body))
 	req.Header.Set("X-User-ID", adminID.String())
-	req.Header.Set(AdminRoleHeader, AdminRoleValue)
+	req.Header.Set(ScopesHeader, "admin")
 	req.Header.Set("User-Agent", "test/1.0")
 	r.ServeHTTP(rec, req)
 
@@ -173,7 +173,7 @@ func TestAuditAdmin_FallbackLabels(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/rider/admin/no-label", nil)
 	req.Header.Set("X-User-ID", uuid.NewString())
-	req.Header.Set(AdminRoleHeader, AdminRoleValue)
+	req.Header.Set(ScopesHeader, "admin")
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rec.Code)
@@ -235,5 +235,70 @@ func TestTruncateBody(t *testing.T) {
 	}
 	if len(got) <= 1024 {
 		t.Errorf("truncated body should be > 1024 (1024 + suffix), got %d", len(got))
+	}
+}
+
+// TestAdminGuard_IgnoresClientSuppliedAdminRoleHeader is the regression guard
+// for the hole this middleware used to be.
+//
+// Until 2026-09-07 AdminGuard authorised on `X-Admin-Role: rider:admin` and
+// nothing else, and the api-gateway did not strip that header — X-Scopes was
+// in its trustedIdentityHeaders list and X-Admin-Role was not. So the whole
+// /v1/rider/admin group, which approves, rejects, suspends and blocks
+// delivery partners, was open to any authenticated user who sent one header.
+// atpost-web's api-client sent it on every /v1/rider/admin/ request, so the
+// forgery was not even hypothetical: it was the shipped client's behaviour.
+//
+// The gateway now strips and re-stamps it, but this asserts the second line
+// of defence: even reaching the service with a perfect forgery and no admin
+// scope, the guard says no.
+func TestAdminGuard_IgnoresClientSuppliedAdminRoleHeader(t *testing.T) {
+	w := &fakeAuditWriter{}
+	r := newTestRouter(w)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/rider/admin/dashboard", nil)
+	req.Header.Set("X-User-ID", uuid.NewString())
+	req.Header.Set(AdminRoleHeader, "rider:admin")
+	// No X-Scopes: this caller holds nothing.
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d; want 403 — a client-set X-Admin-Role must not authorise anything", rec.Code)
+	}
+}
+
+// TestAdminGuard_AcceptsSuperadmin — superadmin implies admin here, matching
+// auth-service's ExpandRoles, which already unions superadmin into admin.
+func TestAdminGuard_AcceptsSuperadmin(t *testing.T) {
+	w := &fakeAuditWriter{}
+	r := newTestRouter(w)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/rider/admin/dashboard", nil)
+	req.Header.Set("X-User-ID", uuid.NewString())
+	req.Header.Set(ScopesHeader, "superadmin admin moderator")
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d; want 200", rec.Code)
+	}
+}
+
+// TestHasAdminScope_MatchesWholeSegmentsOnly — a substring test would let
+// "superadministrator-readonly" through.
+func TestHasAdminScope_MatchesWholeSegmentsOnly(t *testing.T) {
+	for _, tc := range []struct {
+		scopes string
+		want   bool
+	}{
+		{"admin", true},
+		{"superadmin", true},
+		{"moderator admin", true},
+		{"", false},
+		{"moderator", false},
+		{"administrator", false},
+		{"superadministrator-readonly", false},
+		{"rider:admin", false},
+	} {
+		if got := hasAdminScope(tc.scopes); got != tc.want {
+			t.Errorf("hasAdminScope(%q) = %v; want %v", tc.scopes, got, tc.want)
+		}
 	}
 }

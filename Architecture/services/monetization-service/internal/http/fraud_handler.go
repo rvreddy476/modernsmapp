@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -14,9 +15,27 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
+// hasAdminScope reads the gateway's verified X-Scopes claim.
+//
+// X-Scopes has always been stripped from inbound requests and re-set from
+// the signed token, so it is the only header here that a client cannot
+// assert. X-Admin-Role was NOT stripped until 2026-09-07, and this function
+// used to admit any non-empty value of it — which fronted rate-setting,
+// creator suspension and the settlement run to any authenticated caller
+// willing to send one header. The gateway now strips and re-stamps it, but
+// the authorisation reads the scopes claim directly rather than trusting a
+// header to have been derived correctly one hop upstream.
+func hasAdminScope(c *gin.Context) bool {
+	for _, s := range strings.Fields(c.GetHeader("X-Scopes")) {
+		if s == "admin" || s == "superadmin" {
+			return true
+		}
+	}
+	return false
+}
+
 func getAdminID(c *gin.Context) (uuid.UUID, bool) {
-	adminRole := c.GetHeader("X-Admin-Role")
-	if adminRole == "" {
+	if !hasAdminScope(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin access required", nil)
 		return uuid.Nil, false
 	}

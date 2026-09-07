@@ -471,6 +471,20 @@ var trustedIdentityHeaders = []string{
 	"X-User-Id",
 	"X-Verified-User-Id",
 	"X-Scopes",
+	// X-Admin-Role is in this list for exactly the reason X-Scopes is, and
+	// it was missing until 2026-09-07.
+	//
+	// rider-service's AdminGuard authorises its ENTIRE /v1/rider/admin group
+	// — approve, reject, suspend, block a delivery partner — on this header
+	// and nothing else. monetization-service's getAdminID admits any non-
+	// empty value, which fronts rate-setting, creator suspension and the
+	// settlement run. Both call it a dev stub that production would replace.
+	// Production is here and it had not been replaced, so any authenticated
+	// user could send the header and hold both.
+	//
+	// It is now stripped like every other identity header and re-stamped
+	// below from the verified token. See stampAdminRole.
+	"X-Admin-Role",
 	"X-Device-Id",
 	"X-Internal-Service-Key",
 	// Module 3 LB-3: the graph write-source label.
@@ -491,6 +505,24 @@ const graphWriteSourceHeader = edgeheaders.GraphWriteSourceHeader
 func stripInboundIdentityHeaders(r *http.Request) {
 	for _, h := range trustedIdentityHeaders {
 		r.Header.Del(h)
+	}
+}
+
+// stampAdminRole re-derives X-Admin-Role from the verified scopes claim, so
+// the services that already read it keep working while it stops being
+// something a client can assert.
+//
+// It carries the HIGHEST platform role held, because both consumers ask
+// "is this an admin", not "which roles exactly" — X-Scopes remains the
+// complete answer for anything that needs the set. A user with no platform
+// role gets no header at all, which is what every non-admin should look
+// like and what a stripped forgery now looks like too.
+func stampAdminRole(r *http.Request, scopes string) {
+	for _, role := range []string{"superadmin", "admin", "moderator"} {
+		if scopeAllows(scopes, role) {
+			r.Header.Set("X-Admin-Role", role)
+			return
+		}
 	}
 }
 
@@ -554,6 +586,7 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		}
 		if scopes != "" {
 			r.Header.Set("X-Scopes", scopes)
+			stampAdminRole(r, scopes)
 		}
 		if deviceID != "" {
 			r.Header.Set("X-Device-Id", deviceID)

@@ -35,14 +35,28 @@ import (
 // typically tiny; the cap keeps a hostile client from filling the audit log.
 const auditBodyLimit = 1024
 
-// AdminRoleHeader is the stub header the middleware enforces in dev. In
-// production the JWT carries a `roles` claim including `rider:admin`; the
-// middleware can be swapped for a JWT-aware variant without touching
-// handlers.
+// ScopesHeader carries the verified `scopes` claim off the access token.
+//
+// The gateway deletes any inbound copy on every request and re-sets it from
+// the signed JWT, so unlike a plain header it cannot be asserted by a client.
+// That is the whole reason authorisation reads it.
+const ScopesHeader = "X-Scopes"
+
+// AdminRoleHeader is the older header this guard used to authorise on. It is
+// no longer trusted here and is kept only as documentation of what changed.
+//
+// Until 2026-09-07 the guard admitted anyone who sent
+// `X-Admin-Role: rider:admin`, and the gateway did not strip that header —
+// it was absent from trustedIdentityHeaders while X-Scopes was in it. So the
+// entire /v1/rider/admin group (approve, reject, suspend, block a delivery
+// partner) was reachable by any authenticated user willing to send one
+// header, and atpost-web's api-client attached it to every /v1/rider/admin/
+// request unconditionally. The comment here said production would carry a
+// roles claim instead; production had arrived and it did not.
 const AdminRoleHeader = "X-Admin-Role"
 
-// AdminRoleValue is the required value for AdminRoleHeader.
-const AdminRoleValue = "rider:admin"
+// adminScopes are the platform roles that may act on the rider admin group.
+var adminScopes = []string{"admin", "superadmin"}
 
 // AdminUserKey is the gin context key holding the resolved admin user id.
 const AdminUserKey = "admin_user_id"
@@ -65,7 +79,7 @@ type AuditWriter interface {
 
 // AdminGuard is a gin middleware that enforces:
 //   - X-User-ID header (parsed as uuid; the admin user id),
-//   - X-Admin-Role: rider:admin (production: JWT claim),
+//   - an admin or superadmin scope in the gateway-verified X-Scopes claim.
 //
 // On success the resolved admin user id lives at c.Keys[AdminUserKey] for
 // handlers to consume.
@@ -84,14 +98,27 @@ func AdminGuard() gin.HandlerFunc {
 			c.AbortWithStatusJSON(400, gin.H{"error": gin.H{"code": "INVALID_ID", "message": "invalid user id"}})
 			return
 		}
-		role := c.GetHeader(AdminRoleHeader)
-		if role != AdminRoleValue {
-			c.AbortWithStatusJSON(403, gin.H{"error": gin.H{"code": "FORBIDDEN", "message": "rider:admin role required"}})
+		if !hasAdminScope(c.GetHeader(ScopesHeader)) {
+			c.AbortWithStatusJSON(403, gin.H{"error": gin.H{"code": "FORBIDDEN", "message": "admin scope required"}})
 			return
 		}
 		c.Set(AdminUserKey, uid)
 		c.Next()
 	}
+}
+
+// hasAdminScope reports whether the space-separated scopes claim carries a
+// role allowed on the rider admin group. Exact segment match, never a
+// substring test: "superadministrator-readonly" must not satisfy "admin".
+func hasAdminScope(scopes string) bool {
+	for _, s := range strings.Fields(scopes) {
+		for _, want := range adminScopes {
+			if s == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AuditAdmin is the gin middleware that writes one audit row per admin
