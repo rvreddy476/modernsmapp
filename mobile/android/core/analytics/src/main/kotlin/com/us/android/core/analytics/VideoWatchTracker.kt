@@ -363,7 +363,7 @@ class VideoWatchTracker @Inject constructor(
         val session = tracked.session
         val watched = tracked.watchedMs
         val ladder = when (session.contentType) {
-            AnalyticsContentType.REEL -> WatchMilestone.REEL_LADDER
+            AnalyticsContentType.FLICK -> WatchMilestone.SHORT_FORM_LADDER
             AnalyticsContentType.LONG_VIDEO -> WatchMilestone.LONG_VIDEO_LADDER
         }
         ladder.filter { watched >= it.thresholdMs }.forEach { send(tracked, it.wire, watched, now) }

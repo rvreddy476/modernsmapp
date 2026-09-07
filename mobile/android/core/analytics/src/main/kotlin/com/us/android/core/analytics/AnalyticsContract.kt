@@ -110,9 +110,11 @@ enum class NegativeSignalReason(val wire: String) {
  *
  * `validMilestone` in ingest.go accepts the union of both time ladders plus the
  * four percent steps; the split between them comes from `ReelMilestones` and
- * `LongVideoMilestones` in video_events.go. Sending a reel a `VIEW_120S` is
- * accepted by the server but meaningless — a reel is at most 90 seconds — so
- * the ladder is chosen by content type here rather than sending everything.
+ * `LongVideoMilestones` in video_events.go. Sending a short-form session a
+ * `VIEW_120S` is accepted by the server but nearly always meaningless — the
+ * short-form view rules only apply below `SHORT_FORM_VIEW_BAR_MS`, so a session
+ * on that ladder has under ninety seconds to give — hence the ladder is chosen
+ * by content type here rather than sending everything.
  */
 // The thresholds ARE the contract — VIEW_30S is thirty seconds and nothing
 // else — so naming each one a constant would only add a second place to read.
@@ -127,8 +129,14 @@ enum class WatchMilestone(val wire: String, val thresholdMs: Long) {
     ;
 
     companion object {
-        /** `ReelMilestones.Time` — a reel is capped at 90s, so the ladder stops at 10s. */
-        val REEL_LADDER = listOf(VIEW_1S, VIEW_3S, VIEW_10S)
+        /**
+         * `ReelMilestones.Time` — the ladder stops at 10s because a session
+         * scored under the short-form view rules is under ninety seconds long.
+         * Note the cap is the *view rule* bar, not the definition of a flick:
+         * a flick may run to five minutes, and one that does is scored under
+         * the long-form rules and gets the long-form ladder.
+         */
+        val SHORT_FORM_LADDER = listOf(VIEW_1S, VIEW_3S, VIEW_10S)
 
         /** `LongVideoMilestones.Time`. */
         val LONG_VIDEO_LADDER = listOf(VIEW_10S, VIEW_30S, VIEW_60S, VIEW_120S)
@@ -145,32 +153,53 @@ enum class PercentMilestone(val wire: String, val percent: Int) {
 }
 
 /**
- * Reel or long video.
+ * Which milestone ladder a watch session reports against.
  *
- * ## THE 90-SECOND BOUNDARY IS THE SERVER'S, NOT OURS
+ * ## THIS IS NOT WHAT DECIDES A FLICK
  *
- * `model.ClassifyContentType` is `durationMS <= 90000 -> reel`, i.e. exactly
- * ninety seconds is still a reel. It matters well beyond a label: `IsDisplayView`
- * gives reels a 3-second / 25% bar and long video a 30-second / 50% one, so a
- * video misclassified at the boundary is counted under the wrong view rule and
- * the creator is paid on the wrong basis.
+ * The platform has exactly one content-type rule and it is the server's:
+ * `shared/postclassify` says a video ≤ 300 seconds and portrait or square is a
+ * `flick`, everything else a `long_video`. That is what post-service writes on
+ * the timeline, what `PostCreated` carries into `analytics.content_ownership`,
+ * and what monetization resolves its per-content-type RPM against. `ingest.go`
+ * rebuilds [wire] from that projection and drops whatever the client claimed,
+ * so nothing here can misclassify a post or misprice a payout.
  *
- * The client classifies too, because it must choose a milestone ladder before
- * the server ever sees the event. The server re-derives content type from its
- * own ownership projection and ignores whatever the client claims, so the two
- * cannot disagree in the stored row — but they must agree here or the
- * milestones are drawn from the wrong ladder.
+ * What the ninety seconds below actually is: the *view-counting* bar,
+ * `model.ShortFormViewRuleMaxDurationMS`. `IsDisplayView` gives content under
+ * it a 3-second / 25% threshold and everything else 30 seconds / 50%. A
+ * four-minute flick is still a flick — reels feed, flick RPM — but three
+ * seconds of it is not a view, so it is judged by the long-form bar.
+ *
+ * The client picks a ladder from duration alone because it must choose one
+ * before the first milestone fires, long before the server sees anything. Get
+ * it wrong and the retention curve is drawn from the wrong rungs; view counts
+ * and money are unaffected, because `IsDisplayView` reads `watched_ms_total`
+ * and `percent_viewed` off `play_end` and never looks at which milestones
+ * arrived.
  */
 enum class AnalyticsContentType(val wire: String) {
-    REEL("reel"),
+    /** Short-form. The wire value is the server's vocabulary: `flick`, not `reel`. */
+    FLICK("flick"),
     LONG_VIDEO("long_video"),
     ;
 
     companion object {
-        const val REEL_MAX_DURATION_MS = 90_000L
+        /**
+         * `model.ShortFormViewRuleMaxDurationMS`. Ninety seconds, and exactly
+         * ninety seconds is still under the bar.
+         *
+         * Deliberately NOT the flick cap — that is
+         * `core.media.publish.REEL_MAX_DURATION_MS`, which is 300 000 and
+         * governs what may be published as a reel. The two constants were both
+         * called `REEL_MAX_DURATION_MS` until 2026-09-07 and meant different
+         * things; if you are reaching for a limit on how long a reel may be,
+         * you want the other one.
+         */
+        const val SHORT_FORM_VIEW_BAR_MS = 90_000L
 
-        /** Mirrors `model.ClassifyContentType`: `<= 90000` is a reel. */
+        /** Which ladder to report against, by duration. See the class doc. */
         fun classify(durationMs: Long): AnalyticsContentType =
-            if (durationMs <= REEL_MAX_DURATION_MS) REEL else LONG_VIDEO
+            if (durationMs <= SHORT_FORM_VIEW_BAR_MS) FLICK else LONG_VIDEO
     }
 }

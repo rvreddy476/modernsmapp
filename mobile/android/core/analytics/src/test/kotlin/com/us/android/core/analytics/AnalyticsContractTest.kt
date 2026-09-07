@@ -8,24 +8,27 @@ import java.util.UUID
 /**
  * The wire contract, restated as tests.
  *
- * These are the rules a wrong answer to is expensive and invisible: a
- * misclassified reel is paid on the wrong view rule, and an event the server
- * refuses takes its whole batch down with it.
+ * These are the rules a wrong answer to is expensive and invisible: a session
+ * put on the wrong milestone ladder draws a retention curve from rungs it can
+ * never reach, and an event the server refuses takes its whole batch down
+ * with it.
  */
 class AnalyticsContractTest {
 
-    // ── the 90-second boundary ──────────────────────────────────────────
+    // ── the 90-second view bar ──────────────────────────────────────────
 
     /**
-     * `model.ClassifyContentType` is `durationMS <= 90000`, so ninety seconds
-     * EXACTLY is still a reel. Off by one millisecond in either direction and
-     * the video is judged by the other content type's display-view rule — 3s
-     * and 25% for a reel, 30s and 50% for long video — which is the difference
-     * between a view a creator is paid for and one they are not.
+     * `model.ShortFormViewRuleMaxDurationMS` is 90 000 and the comparison is
+     * `<=`, so ninety seconds EXACTLY is still under the short-form bar.
+     *
+     * This is the VIEW-COUNTING bar, not the definition of a flick — a flick
+     * may run to five minutes (`postclassify.FlickMaxDurationSeconds`) and one
+     * that does is scored by the long-form rule. Nothing on this side decides
+     * content type: `ingest.go` takes it from the ownership projection.
      */
     @Test
-    fun `exactly ninety seconds is a reel`() {
-        assertThat(AnalyticsContentType.classify(90_000)).isEqualTo(AnalyticsContentType.REEL)
+    fun `exactly ninety seconds is under the short form bar`() {
+        assertThat(AnalyticsContentType.classify(90_000)).isEqualTo(AnalyticsContentType.FLICK)
     }
 
     @Test
@@ -35,22 +38,44 @@ class AnalyticsContractTest {
 
     @Test
     fun `well under and well over the boundary classify as expected`() {
-        assertThat(AnalyticsContentType.classify(1)).isEqualTo(AnalyticsContentType.REEL)
-        assertThat(AnalyticsContentType.classify(89_999)).isEqualTo(AnalyticsContentType.REEL)
+        assertThat(AnalyticsContentType.classify(1)).isEqualTo(AnalyticsContentType.FLICK)
+        assertThat(AnalyticsContentType.classify(89_999)).isEqualTo(AnalyticsContentType.FLICK)
         assertThat(AnalyticsContentType.classify(600_000)).isEqualTo(AnalyticsContentType.LONG_VIDEO)
+    }
+
+    /**
+     * The wire word is the server's, and the server's word is `flick`.
+     * `postclassify.IsShortForm` still accepts `reel` as a legacy synonym, so
+     * sending the old string would not have failed — it would quietly have
+     * been the only place in the platform still saying it.
+     */
+    @Test
+    fun `short form goes on the wire as flick`() {
+        assertThat(AnalyticsContentType.FLICK.wire).isEqualTo("flick")
+        assertThat(AnalyticsContentType.LONG_VIDEO.wire).isEqualTo("long_video")
+    }
+
+    /**
+     * The view bar and the flick cap are different numbers with different
+     * jobs, and were both called `REEL_MAX_DURATION_MS` until 2026-09-07.
+     */
+    @Test
+    fun `the view bar is not the flick cap`() {
+        assertThat(AnalyticsContentType.SHORT_FORM_VIEW_BAR_MS).isEqualTo(90_000L)
     }
 
     // ── milestone ladders ───────────────────────────────────────────────
 
     /**
-     * A reel is capped at 90s, so its ladder stops at VIEW_10S. Sending it
-     * VIEW_30S would be accepted by the server — `validMilestone` takes the
-     * union of both ladders — and would then sit in the aggregates as a
-     * threshold no reel can ever cross.
+     * A session under the short-form view bar has under ninety seconds to
+     * give, so its ladder stops at VIEW_10S. Sending it VIEW_30S would be
+     * accepted by the server — `validMilestone` takes the union of both
+     * ladders — and would then sit in the aggregates as a threshold that
+     * session could never have crossed.
      */
     @Test
-    fun `reel ladder stops at ten seconds`() {
-        assertThat(WatchMilestone.REEL_LADDER.map { it.wire })
+    fun `short form ladder stops at ten seconds`() {
+        assertThat(WatchMilestone.SHORT_FORM_LADDER.map { it.wire })
             .containsExactly("VIEW_1S", "VIEW_3S", "VIEW_10S").inOrder()
     }
 

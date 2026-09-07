@@ -97,7 +97,10 @@ data class WatchSession(
             creatorId = creatorId,
             surface = surface,
             contentDurationMs = 0L,
-            contentType = AnalyticsContentType.REEL,
+            // Arbitrary, and safely so: there is no playback here, so no
+            // milestone ladder is ever consulted, and `ingest.go` overwrites
+            // content_type from the ownership projection regardless.
+            contentType = AnalyticsContentType.FLICK,
             position = position,
         )
     }
