@@ -57,6 +57,26 @@ type ProductsResult struct {
 	Pages          int    `json:"pages"`
 	AliasTarget    string `json:"alias_target"`
 	Duration       string `json:"duration"`
+
+	// IndexTotal is how many documents the index holds AFTER the run, and
+	// Orphans is how many more that is than the live catalogue.
+	//
+	// A reindex only ever adds and updates — see the note on
+	// ReindexProducts — so before these fields existed, an operator could
+	// run one, read "indexed: 8", and have no way to learn that the index
+	// was serving four thousand listings that no longer exist. That is not
+	// hypothetical: on 2026-09-08 this index held 4,356 documents against a
+	// live catalogue of 8, because a manual SQL cleanup deleted sellers
+	// without publishing the unpublish events the index relies on. Search
+	// was returning products that had been deleted the day before, and
+	// nothing in the system said so.
+	//
+	// Orphans > 0 does not mean the reindex failed. It means the index and
+	// the catalogue disagree and something has to reconcile them — see
+	// OrphansNote for what.
+	IndexTotal  int64  `json:"index_total"`
+	Orphans     int64  `json:"orphans"`
+	OrphansNote string `json:"orphans_note,omitempty"`
 }
 
 // ReindexProducts walks commerce's live catalogue and bulk-indexes it
@@ -72,6 +92,15 @@ type ProductsResult struct {
 // unpublish event, and a sweep here would need to hold the whole live id
 // set in memory to be safe. When a clean rebuild is wanted, the honest way
 // is a new index and an alias move — which is what this step's alias is for.
+//
+// That reasoning still holds, but it rests on an assumption worth naming:
+// that every product leaving the catalogue publishes an unpublish event.
+// Anything that removes rows WITHOUT going through the service — a manual
+// SQL cleanup, a restore from backup, a migration that deletes — breaks it
+// silently, and the index goes on serving listings that no longer exist.
+//
+// So the run now reports Orphans rather than only what it wrote. It still
+// deletes nothing; it just stops the drift being invisible.
 func ReindexProducts(
 	ctx context.Context,
 	client *commerceclient.Client,
@@ -134,10 +163,32 @@ func ReindexProducts(
 		log.Warn("reindex: products refresh failed; documents will become searchable shortly", "err", err)
 	}
 
+	// Count AFTER the refresh, so the number is the one a search would see
+	// rather than the one from before the writes landed.
+	if total, err := store.CountProducts(ctx); err != nil {
+		// Not fatal. The reindex did its work; only the drift report is
+		// missing, and reporting nothing is better than reporting a zero
+		// that would read as "no orphans".
+		log.Warn("reindex: could not count the index; orphan check skipped", "err", err)
+	} else {
+		res.IndexTotal = total
+		if drift := total - int64(res.CatalogueTotal); drift > 0 {
+			res.Orphans = drift
+			res.OrphansNote = "the index holds documents the live catalogue does not. " +
+				"A reindex only adds and updates; it never deletes. Reconcile by " +
+				"rebuilding into a new index and moving the products alias " +
+				"(POST /v1/search/internal/products/alias), or by deleting the " +
+				"unknown ids directly."
+			log.Warn("reindex: index and catalogue disagree",
+				"index_total", total, "catalogue_total", res.CatalogueTotal, "orphans", drift)
+		}
+	}
+
 	res.Duration = time.Since(started).Round(time.Millisecond).String()
 	log.Info("reindex: products complete",
 		"fetched", res.Fetched, "indexed", res.Indexed,
 		"catalogue_total", res.CatalogueTotal, "pages", res.Pages,
+		"index_total", res.IndexTotal, "orphans", res.Orphans,
 		"alias_target", res.AliasTarget, "duration", res.Duration)
 	return res, nil
 }
