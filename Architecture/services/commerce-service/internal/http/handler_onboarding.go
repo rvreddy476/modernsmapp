@@ -38,6 +38,7 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.POST("/sellers/:sellerId/reject", h.AdminRejectSeller)
 	adm.POST("/sellers/:sellerId/request-changes", h.AdminRequestSellerChanges)
 	adm.POST("/sellers/:sellerId/suspend", h.AdminSuspendSeller)
+	adm.POST("/sellers/:sellerId/unsuspend", h.AdminUnsuspendSeller)
 	adm.POST("/sellers/:sellerId/kyc/verify", h.AdminVerifySellerKYC)
 	adm.GET("/payouts/pending", h.AdminListPendingPayouts)
 	adm.GET("/jobs/dead-letter", h.AdminListDeadLetterJobs)
@@ -478,6 +479,24 @@ func (h *Handler) AdminSuspendSeller(c *gin.Context) {
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
 	if err := h.svc.AdminSuspendSeller(c.Request.Context(), sellerID, actorID(c), req.Reason, req.Notes); err != nil {
+		handleErr(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// AdminUnsuspendSeller lifts a suspension. 404 when the seller is not
+// currently suspended, because the store's UPDATE is guarded on that state —
+// unsuspending a draft or rejected seller would silently promote them to
+// approved.
+func (h *Handler) AdminUnsuspendSeller(c *gin.Context) {
+	sellerID, ok := parseUUID(c, "sellerId")
+	if !ok {
+		return
+	}
+	var req adminActionReq
+	_ = c.ShouldBindJSON(&req)
+	if err := h.svc.AdminUnsuspendSeller(c.Request.Context(), sellerID, actorID(c), req.Notes); err != nil {
 		handleErr(c, err)
 		return
 	}

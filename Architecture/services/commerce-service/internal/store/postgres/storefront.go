@@ -139,7 +139,28 @@ const productSummaryFrom = `
 // Read off the OFFER since the reader flip — see productOfferJoin. Every
 // query using it must have that join in scope; `productsLiveFrom` and
 // `productSummaryFrom` both carry it.
-const productSummaryLive = `po.status = 'active' AND po.approval_status = 'approved'`
+//
+// THE SELLER CLAUSE IS NOT DECORATION. Until 2026-09-07 this rule asked only
+// whether the offer was live and never whether the seller still was, so
+// suspending a seller left every listing they had on the storefront, in
+// search, in category pages, in "most viewed" and in the cart. Suspension
+// looked like it worked — sellers.status flipped — and changed nothing a
+// buyer could see.
+//
+// It is an EXISTS on po.seller_id rather than a predicate on an `sl` alias
+// because the eighteen callers of this constant do not all join sellers:
+// productSummaryFrom does, productsLiveFrom does not. po is in scope
+// everywhere by construction, since the two clauses above already read it.
+// sellers(id) is the primary key and there is a partial index on
+// store_status = 'active', so the cost is a lookup per row.
+//
+// 'active' specifically, not "not suspended": inactive and banned are also
+// not open for business, and a new store_status value should have to be
+// added here deliberately rather than defaulting into visibility.
+const productSummaryLive = `po.status = 'active' AND po.approval_status = 'approved'
+	AND EXISTS (SELECT 1 FROM sellers live_sl
+	             WHERE live_sl.id = po.seller_id
+	               AND live_sl.store_status = 'active')`
 
 // scanProductSummary reads one row of productSummaryColumns, in order.
 func scanProductSummary(rows pgx.Rows) (*Product, error) {

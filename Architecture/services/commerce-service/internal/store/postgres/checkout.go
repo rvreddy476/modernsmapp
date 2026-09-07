@@ -815,8 +815,23 @@ func lockAndPriceLines(ctx context.Context, tx pgx.Tx, lines []cartLine) ([]pric
 			           'option_3_name', v.option_3_name, 'option_3_value', v.option_3_value)
 			  FROM product_variants v
 			  JOIN products p ON p.id = v.product_id
+			  JOIN sellers sl ON sl.id = p.seller_id
 			  LEFT JOIN tax_classes tc ON tc.id = p.tax_class_id
 			 WHERE v.id = $1
+			   -- The seller has to still be open for business, checked HERE
+			   -- under the lock for the same reason the product's own status
+			   -- is: a seller can be suspended between add-to-cart and
+			   -- checkout. Before 2026-09-07 nothing on this path looked at
+			   -- the seller at all, so a suspended seller kept taking money.
+			   --
+			   -- Deliberately NOT in FOR UPDATE OF: locking sellers here
+			   -- would put a second lock ordering on the checkout path,
+			   -- which can deadlock against the cart lock. Reading it
+			   -- unlocked means a suspension landing in the microsecond
+			   -- after this read still completes one order — the same race
+			   -- the product-status check has always had, and the same
+			   -- answer: one order, not a storefront.
+			   AND sl.store_status = 'active'
 			 FOR UPDATE OF v, p`,
 			l.VariantID).Scan(
 			&pl.VariantID, &pl.ProductID, &pl.SellerID, &pl.Title, &pl.SKU,

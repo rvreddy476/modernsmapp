@@ -336,6 +336,20 @@ func (s *Service) AdminSuspendSeller(ctx context.Context, sellerID, actorID uuid
 	return nil
 }
 
+// AdminUnsuspendSeller lifts a suspension. See UnsuspendSellerByAdmin for why
+// this exists: suspension now closes a storefront, so it needs an undo.
+//
+// Reuses EventSellerApproved rather than minting an EventSellerUnsuspended
+// nobody consumes: the downstream meaning is identical — this seller is open
+// again — and a new event type with no subscriber is a promise, not a feature.
+func (s *Service) AdminUnsuspendSeller(ctx context.Context, sellerID, actorID uuid.UUID, notes string) error {
+	if err := s.store.UnsuspendSellerByAdmin(ctx, sellerID, actorID, notes); err != nil {
+		return err
+	}
+	s.publish(ctx, events.EventSellerApproved, map[string]any{"seller_id": sellerID})
+	return nil
+}
+
 func (s *Service) AdminListProductQueue(ctx context.Context, limit, offset int) ([]*postgres.Product, int, error) {
 	return s.store.ListProductQueue(ctx, limit, offset)
 }

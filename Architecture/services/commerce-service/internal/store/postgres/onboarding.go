@@ -334,7 +334,16 @@ func (s *Store) RequestSellerChanges(ctx context.Context, sellerID, actorID uuid
 	return tx.Commit(ctx)
 }
 
-// SuspendSellerByAdmin sets status=suspended.
+// SuspendSellerByAdmin suspends the seller AND closes their storefront.
+//
+// It used to set status='suspended' and stop there, leaving store_status
+// 'active'. ApproveSellerByAdmin sets both, so the two halves of the same
+// switch disagreed: an admin could suspend a seller, see the queue update,
+// and the seller would carry on selling. Both columns move together now.
+//
+// Reversible by UnsuspendSellerByAdmin — added in the same change, because a
+// suspension that actually takes a storefront down and has no way back is a
+// worse bug than one that does nothing.
 //
 // DELIBERATELY DOES NOT REVOKE THE ROLE. A suspended seller is still a seller:
 // they must reach the seller area to read why they were suspended and to
@@ -353,14 +362,61 @@ func (s *Store) SuspendSellerByAdmin(ctx context.Context, sellerID, actorID uuid
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE sellers SET status='suspended', suspension_reason=$2, updated_at=$3 WHERE id=$1`,
-		sellerID, reason, now); err != nil {
+	var userID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`UPDATE sellers SET status='suspended', store_status='suspended',
+		        suspension_reason=$2, updated_at=$3
+		  WHERE id=$1 RETURNING user_id`,
+		sellerID, reason, now).Scan(&userID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO seller_onboarding_reviews (id,seller_id,action,notes,actor_user_id,created_at)
 		 VALUES (gen_random_uuid(),$1,'suspend',$2,$3,$4)`,
+		sellerID, notes, actorID, now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// UnsuspendSellerByAdmin lifts a suspension: back to approved, storefront open.
+//
+// There was no route back at all before 2026-09-07. That was survivable only
+// because suspension did not really do anything; now that it closes a
+// storefront, a one-way door would mean an admin could end a seller's
+// business by clicking the wrong row, with no undo anywhere in the product.
+//
+// Returns to 'approved' rather than to whatever the seller was before,
+// because suspension is only reachable from approved — the queue offers it on
+// live sellers — and reconstructing a prior state nobody recorded would be a
+// guess. suspension_reason is cleared so a later reader cannot mistake a
+// stale reason for a current one.
+//
+// The role is untouched in both directions, for the reason given above: a
+// suspended seller is still a seller and must reach the seller area to read
+// why and to appeal.
+func (s *Store) UnsuspendSellerByAdmin(ctx context.Context, sellerID, actorID uuid.UUID, notes string) error {
+	now := time.Now()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Guarded on the current state: unsuspending something that was never
+	// suspended would quietly promote a draft or rejected seller to
+	// approved, which is the same class of bug in the opposite direction.
+	var userID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`UPDATE sellers SET status='approved', store_status='active',
+		        suspension_reason=NULL, updated_at=$2
+		  WHERE id=$1 AND status='suspended' RETURNING user_id`,
+		sellerID, now).Scan(&userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO seller_onboarding_reviews (id,seller_id,action,notes,actor_user_id,created_at)
+		 VALUES (gen_random_uuid(),$1,'unsuspend',$2,$3,$4)`,
 		sellerID, notes, actorID, now); err != nil {
 		return err
 	}

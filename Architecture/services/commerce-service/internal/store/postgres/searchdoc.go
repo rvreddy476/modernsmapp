@@ -70,13 +70,19 @@ import (
 
 // ─── The visibility rule, once ──────────────────────────────────────────
 
-// ProductLifecycle is the three columns the shopper-facing visibility rule
-// is made of, for one product.
+// ProductLifecycle is the columns the shopper-facing visibility rule is made
+// of, for one product.
+//
+// SellerStoreStatus joined the struct on 2026-09-07 with the seller clause in
+// productSummaryLive. A listing is only live if its seller is, and this type
+// is what tells the search index so.
 type ProductLifecycle struct {
 	ProductID      uuid.UUID `json:"product_id"`
 	SellerID       uuid.UUID `json:"seller_id"`
 	Status         string    `json:"status"`
 	ApprovalStatus string    `json:"approval_status"`
+	// SellerStoreStatus is sellers.store_status for SellerID.
+	SellerStoreStatus string `json:"seller_store_status"`
 }
 
 // Visible reports whether buyers can see this listing.
@@ -87,8 +93,16 @@ type ProductLifecycle struct {
 // decision that spelled the rule out for itself would be the fourth copy,
 // and copies of this rule are how a rejected listing ends up in a search
 // result.
+//
+// The seller half is the reason a suspended seller's listings now leave the
+// index. Before it, suspending a seller took their products off the
+// storefront (once the SQL learned to check) and left them in search, which
+// is the worst of both: unreachable from the shop, still findable, still
+// linkable.
 func (l ProductLifecycle) Visible() bool {
-	return l.Status == "active" && l.ApprovalStatus == "approved"
+	return l.Status == "active" &&
+		l.ApprovalStatus == "approved" &&
+		l.SellerStoreStatus == "active"
 }
 
 // GetProductLifecycle reads the three columns after a transition has
@@ -103,9 +117,13 @@ func (l ProductLifecycle) Visible() bool {
 func (s *Store) GetProductLifecycle(ctx context.Context, productID uuid.UUID) (*ProductLifecycle, error) {
 	var l ProductLifecycle
 	err := s.db.QueryRow(ctx,
-		`SELECT p.id, po.seller_id, po.status, po.approval_status `+
-			productsLiveFrom+` WHERE p.id = $1`,
-		productID).Scan(&l.ProductID, &l.SellerID, &l.Status, &l.ApprovalStatus)
+		`SELECT p.id, po.seller_id, po.status, po.approval_status,
+		        COALESCE(sl.store_status, '') `+
+			productsLiveFrom+`
+			 JOIN sellers sl ON sl.id = po.seller_id
+			 WHERE p.id = $1`,
+		productID).Scan(&l.ProductID, &l.SellerID, &l.Status, &l.ApprovalStatus,
+		&l.SellerStoreStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProductNotFound
 	}
@@ -196,7 +214,7 @@ type SearchDoc struct {
 // rather than NULL, so a plain COALESCE finds a non-NULL zero on an
 // unmigrated row and would index a paid product as free.
 const searchDocColumns = `
-	p.id, po.seller_id, sl.store_name,
+	p.id, po.seller_id, sl.store_name, COALESCE(sl.store_status, ''),
 	po.status, po.approval_status,
 	p.title, p.description, p.short_description, p.brand_name, p.condition,
 	p.product_type, p.slug,
@@ -247,8 +265,9 @@ func scanSearchDoc(row rowScanner) (*SearchDoc, error) {
 	var attrs []byte
 	var description, shortDescription, brandName, condition, productType *string
 	var storeName, categoryName, sourceImageURL *string
+	var sellerStoreStatus string
 	if err := row.Scan(
-		&d.ProductID, &d.SellerID, &storeName,
+		&d.ProductID, &d.SellerID, &storeName, &sellerStoreStatus,
 		&d.Status, &d.ApprovalStatus,
 		&d.Title, &description, &shortDescription, &brandName, &condition,
 		&productType, &d.Slug,
@@ -272,7 +291,15 @@ func scanSearchDoc(row rowScanner) (*SearchDoc, error) {
 	d.CategoryName = derefStr(categoryName)
 	d.ImageURL = derefStr(sourceImageURL)
 	d.InStock = d.TotalStock > 0
-	d.Visible = ProductLifecycle{Status: d.Status, ApprovalStatus: d.ApprovalStatus}.Visible()
+	// The seller's status is read here and NOT kept on the doc: search does
+	// not need to know why a listing is invisible, only that it is, and
+	// putting a second lifecycle column on the document would invite a
+	// consumer to re-derive the rule for itself. Visible is the answer.
+	d.Visible = ProductLifecycle{
+		Status:            d.Status,
+		ApprovalStatus:    d.ApprovalStatus,
+		SellerStoreStatus: sellerStoreStatus,
+	}.Visible()
 
 	// An empty doc is `{}`, never nil: a consumer that has to distinguish
 	// "no attributes" from "the field was absent" would have to know which
