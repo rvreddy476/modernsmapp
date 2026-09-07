@@ -8,8 +8,10 @@ import androidx.paging.filter
 import com.us.android.core.analytics.AnalyticsEventType
 import com.us.android.core.analytics.AnalyticsRecorder
 import com.us.android.core.analytics.AnalyticsSurface
+import com.us.android.core.analytics.DwellTarget
 import com.us.android.core.analytics.PlayEndReason
 import com.us.android.core.analytics.PlayStartMethod
+import com.us.android.core.analytics.PostDwellTracker
 import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
@@ -87,6 +89,11 @@ class FeedViewModel @AssistedInject constructor(
     private val feedEntry: FeedEntry,
     private val watchTracker: VideoWatchTracker,
     private val analytics: AnalyticsRecorder,
+    /**
+     * Defaulted so a test about paging or engagement can build this without
+     * one; Hilt provides the real singleton, exactly as for [analytics].
+     */
+    private val dwellTracker: PostDwellTracker = PostDwellTracker.disabled(),
     hidden: HiddenPosts,
     settings: SettingsDataStore? = null,
 ) : ViewModel() {
@@ -334,6 +341,55 @@ class FeedViewModel @AssistedInject constructor(
     private fun endWatchAnalytics(reason: PlayEndReason) {
         watchSession?.let { watchTracker.endView(it.contentId, reason) }
         watchSession = null
+    }
+
+    /**
+     * The row the reader is on changed, or the feed stopped being what they
+     * are looking at.
+     *
+     * This is the ONLY thing that can fill `MediaPrefs.ImageP95Dwell` and
+     * `TextP95Dwell`: `play_end` measures the video rows and nothing measures
+     * the rest, so a viewer who reads every caption and skips every video
+     * currently reaches the ranker as a viewer with no preferences. The dwell
+     * goes out as the `impression` event's `visible_ms` — see
+     * [PostDwellTracker] for why that is the only shape the server will take.
+     *
+     * [running] is the feed's own autoplay condition: resumed, no comments
+     * sheet, no viewer over the list. A card that is on screen behind a sheet
+     * is not being read, and time spent there would be time the ranker credits
+     * to a post nobody was looking at.
+     *
+     * Video rows are reported too, not just photos and text. `visible_ms`
+     * means the same thing for all three, and the impression is the
+     * denominator analytics-service divides every engagement rate by — with
+     * none ever sent, `ComputeCQS` returns 0 for every piece of content on the
+     * platform, so the creator fund's quality score cannot work at all until
+     * something emits these.
+     */
+    fun onDwellChanged(item: FeedItem?, position: Int?, isAutoplaying: Boolean, running: Boolean) {
+        dwellTracker.onDwellChanged(
+            target = item?.let {
+                DwellTarget(
+                    contentId = it.id,
+                    creatorId = it.author.id,
+                    surface = AnalyticsSurface.FEED,
+                    isAutoplay = isAutoplaying,
+                    position = position,
+                )
+            },
+            running = running,
+        )
+    }
+
+    /**
+     * Leaving the feed closes the open dwell.
+     *
+     * Without this the last card of every visit is measured and never
+     * reported, and that card is disproportionately the one that held the
+     * reader — which is precisely the observation the percentile is for.
+     */
+    override fun onCleared() {
+        dwellTracker.flush()
     }
 
     /**

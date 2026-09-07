@@ -80,11 +80,17 @@ data class WatchSession(
          * attribution from the PostCreated ownership projection. Sending a
          * blank is exactly as accurate as sending a correct one, and unlike a
          * guessed one it cannot be wrong.
+         *
+         * [position] is the feed rank when the caller genuinely knows it — an
+         * impression measured on a ranked row does, and the server keeps the
+         * field for exactly that. It stays null everywhere it would have to be
+         * guessed.
          */
         fun forEngagement(
             contentId: String,
             surface: AnalyticsSurface,
             creatorId: String = "",
+            position: Int? = null,
         ): WatchSession = WatchSession(
             sessionId = "",
             contentId = contentId,
@@ -92,7 +98,7 @@ data class WatchSession(
             surface = surface,
             contentDurationMs = 0L,
             contentType = AnalyticsContentType.REEL,
-            position = null,
+            position = position,
         )
     }
 }

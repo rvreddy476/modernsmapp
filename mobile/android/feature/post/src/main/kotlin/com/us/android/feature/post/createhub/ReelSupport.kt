@@ -69,6 +69,50 @@ val FallbackReelCategories: List<ReelCategory> = listOf(
     "fashion", "gaming", "fitness", "pets", "art", "news", "lifestyle", "business", "other",
 ).map { ReelCategory(id = it, label = it.replaceFirstChar(Char::uppercaseChar)) }
 
+/**
+ * The category id "other", which is a real taxonomy entry and a useless topic.
+ *
+ * The feed ranker turns a post's category into a `cat:<id>` token and
+ * recommends by overlap with the tokens a viewer has engaged with. `cat:other`
+ * would make a cooking video and a car review look related, which is worse
+ * than either of them carrying nothing — so it is never SUGGESTED. It stays
+ * pickable: an author who means "none of these" should be able to say so.
+ */
+const val CATEGORY_OTHER = "other"
+
+/**
+ * The category the author's own hashtags already name, or null.
+ *
+ * ## WHY ONLY AN EXACT MATCH
+ *
+ * The topical signal is dormant because almost nothing carries a category
+ * (4 posts in 484 at the time of writing), and the cheapest way to change that
+ * is to stop making people answer a question they have already answered: a
+ * creator who typed `#food` has said what the video is about. Matching the tag
+ * to a taxonomy id is not a guess — it is the same word.
+ *
+ * Anything cleverer is a guess. A synonym table would map `#cover` to music
+ * and mis-file a video about phone cases, and a wrong category is worse than
+ * an absent one: an absent category costs the ranker nothing, while a wrong
+ * one actively relates the post to the wrong neighbours. So this fires less
+ * often and is never wrong, and the author sees the result on the form before
+ * they post either way.
+ *
+ * [categories] is the SERVER's list when it has loaded ([ReelLookups.categories])
+ * and the fallback until then, so a category added server-side starts being
+ * suggested without an app release.
+ */
+fun suggestCategory(hashtags: List<String>, categories: List<ReelCategory>): String? {
+    if (hashtags.isEmpty()) return null
+    val ids = categories.asSequence()
+        .map { it.id }
+        .filter { it != CATEGORY_OTHER }
+        .toSet()
+    // The author's order, not the taxonomy's: the first tag they typed is the
+    // one they led with.
+    return hashtags.firstNotNullOfOrNull { tag -> tag.trim().lowercase().takeIf { it in ids } }
+}
+
 /** The most people one reel may tag. */
 const val MAX_TAGGED_PEOPLE = 20
 

@@ -1,6 +1,7 @@
 package com.us.android.core.analytics.data
 
 import com.us.android.core.analytics.PlayEndReason
+import com.us.android.core.analytics.PostDwellTracker
 import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.common.session.SessionTeardownTask
 import javax.inject.Inject
@@ -25,15 +26,19 @@ import javax.inject.Singleton
 @Singleton
 class AnalyticsTeardown @Inject constructor(
     private val tracker: VideoWatchTracker,
+    private val dwell: PostDwellTracker,
     private val store: AnalyticsStore,
     private val scheduler: AnalyticsUploadScheduler,
 ) : SessionTeardownTask {
 
     override suspend fun onSignOut() {
         // endAll suspends until every play_end is on disk, so the drain below
-        // actually carries them.
+        // actually carries them. The open dwell is closed on the same terms:
+        // the clear below is unconditional, so anything not written by now is
+        // wiped rather than delivered.
         runCatching {
             tracker.endAll(PlayEndReason.BACKGROUNDED)
+            dwell.endAll()
             store.drain()
         }
         // A job left scheduled would wake up against the next account's token.

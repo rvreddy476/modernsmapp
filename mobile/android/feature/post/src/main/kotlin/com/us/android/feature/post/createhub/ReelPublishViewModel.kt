@@ -147,7 +147,16 @@ class ReelPublishViewModel @Inject constructor(
         /** Non-null while the cover picker is open. */
         val picker: CoverPicker? = null,
         val visibility: String = VISIBILITY_PUBLIC,
+        /** What the author picked. Empty until they open the picker; see [effectiveCategory]. */
         val category: String = "",
+        /**
+         * Whether the author has answered the Category question at all.
+         *
+         * The distinction matters because "" is a legitimate ANSWER — None, on
+         * a reel — and must not be re-filled by the suggestion the author has
+         * just overruled.
+         */
+        val categoryChosen: Boolean = false,
         val categories: List<ReelCategory> = FallbackReelCategories,
         val allowComments: Boolean = true,
         val hideShare: Boolean = false,
@@ -176,9 +185,52 @@ class ReelPublishViewModel @Inject constructor(
         val hasRequiredText: Boolean
             get() = kind == PublishKind.REEL || title.isNotBlank()
 
+        /**
+         * The category that will actually be posted: the author's answer when
+         * they have given one, otherwise the one their own hashtags already
+         * name ([suggestCategory]).
+         *
+         * Derived rather than written into [category] on every keystroke, so
+         * the suggestion follows the tags as they are edited and disappears
+         * with them, and so the author's answer — including None — is the one
+         * thing that can silence it.
+         */
+        val effectiveCategory: String
+            get() = if (categoryChosen) category else suggestCategory(hashtags, categories).orEmpty()
+
+        /**
+         * A long video must say what it is about.
+         *
+         * ## WHY REQUIRED HERE AND OPTIONAL ON A REEL
+         *
+         * The feed's topical term recommends by what a post IS rather than by
+         * who made it, and it reads the category and the hashtags — the only
+         * subject information a post carries. It is correct, wired, and almost
+         * entirely dormant: 4 of 484 posts carry a category. An optional field
+         * that nobody fills is the state we are already in, so leaving it
+         * optional everywhere changes nothing.
+         *
+         * Required everywhere is the other extreme and is worse than it looks:
+         * a reel is posted in seconds, often several in a sitting, and a
+         * mandatory picker between the author and Post is friction paid on
+         * every single one. A long video is the opposite trade — minutes of
+         * upload, a required title already above it, and the content type
+         * whose discovery depends most on being findable by subject. One more
+         * tap there is proportionate; the same tap on a reel is a tax.
+         *
+         * The reel is not left empty either: it takes the same
+         * [effectiveCategory] suggestion from the hashtags the author typed
+         * anyway, which is the cheap half of the win.
+         */
+        val requiresCategory: Boolean
+            get() = kind == PublishKind.LONG
+
+        val hasRequiredCategory: Boolean
+            get() = !requiresCategory || effectiveCategory.isNotBlank()
+
         /** A media-only post is legal, so a chosen video that passes the gate is enough. */
         val canPost: Boolean
-            get() = videoUri != null && gate.allowsPost && hasRequiredText &&
+            get() = videoUri != null && gate.allowsPost && hasRequiredText && hasRequiredCategory &&
                 (phase is Phase.Editing || phase is Phase.Failure)
 
         val canTagMore: Boolean
@@ -406,8 +458,13 @@ class ReelPublishViewModel @Inject constructor(
         if (value in SupportedAudience) it.copy(visibility = value) else it
     }
 
-    /** An empty id is "None". */
-    fun onCategoryChanged(id: String) = _state.update { it.copy(category = id) }
+    /**
+     * An empty id is "None" — a real answer, not "unanswered", which is why
+     * this also records that the question has been answered. Without that a
+     * reel author who deliberately picked None would watch the hashtag
+     * suggestion put a category straight back.
+     */
+    fun onCategoryChanged(id: String) = _state.update { it.copy(category = id, categoryChosen = true) }
 
     fun onAllowCommentsChanged(on: Boolean) = _state.update { it.copy(allowComments = on) }
 
@@ -554,7 +611,9 @@ class ReelPublishViewModel @Inject constructor(
             title = current.title,
             caption = current.caption,
             visibility = current.visibility,
-            category = current.category,
+            // The suggestion counts when the author left it standing — it was
+            // on the form in front of them, under Category, before they posted.
+            category = current.effectiveCategory,
             allowComments = current.allowComments,
             hideShare = current.hideShare,
             allowDownload = current.allowDownload,

@@ -29,6 +29,7 @@ import javax.inject.Singleton
 @Singleton
 class AnalyticsAppLifecycle @Inject constructor(
     private val tracker: VideoWatchTracker,
+    private val dwell: PostDwellTracker,
     private val analytics: AnalyticsClient,
     @ApplicationScope private val scope: CoroutineScope,
 ) {
@@ -53,8 +54,13 @@ class AnalyticsAppLifecycle @Inject constructor(
         foregroundLoop = null
         scope.launch {
             // Ends every open view and WAITS for the writes, so the flush
-            // below actually carries them.
+            // below actually carries them. The dwell on the card the reader was
+            // looking at is closed for the same reason: the feed's own effect
+            // only PAUSES its clock when the screen stops being resumed, and a
+            // paused measurement that is never closed is a measurement lost
+            // when the process is reclaimed.
             tracker.endAll(PlayEndReason.BACKGROUNDED)
+            dwell.endAll()
             analytics.flush()
         }
     }

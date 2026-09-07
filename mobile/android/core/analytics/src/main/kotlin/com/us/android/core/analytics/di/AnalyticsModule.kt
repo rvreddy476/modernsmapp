@@ -1,5 +1,6 @@
 package com.us.android.core.analytics.di
 
+import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
@@ -18,6 +19,7 @@ import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
 import retrofit2.Retrofit
@@ -51,11 +53,25 @@ object AnalyticsModule {
      *
      * The network constraint is what keeps this off the radio when there is no
      * connection: an analytics flush is never worth waking a modem for.
+     *
+     * ## WHY THE CONTEXT AND NOT AN INJECTED `WorkManager`
+     *
+     * The only `@Provides WorkManager` in the app is `:core:chat`'s, so asking
+     * for one here quietly made every Hilt graph that reaches analytics also
+     * require `:core:chat` to be on it — which broke `:feature:post`'s
+     * `@HiltAndroidTest` graph the moment `PostMoreViewModel` gained an
+     * `AnalyticsRecorder`, with a `MissingBinding` about a module analytics has
+     * nothing to do with. `getInstance` is the same call `:core:chat` makes to
+     * produce that binding and the same one `ReelPublishWorker` makes directly,
+     * so nothing about the behaviour changes; it just stops one module's DI
+     * choice being a hidden requirement of another's.
      */
     @Provides
     @Singleton
-    fun provideAnalyticsUploadScheduler(workManager: WorkManager): AnalyticsUploadScheduler =
+    fun provideAnalyticsUploadScheduler(@ApplicationContext context: Context): AnalyticsUploadScheduler =
         object : AnalyticsUploadScheduler {
+            private val workManager: WorkManager get() = WorkManager.getInstance(context)
+
             override fun scheduleUpload() {
                 workManager.enqueueUniqueWork(
                     AnalyticsStore.UPLOAD_WORK_NAME,

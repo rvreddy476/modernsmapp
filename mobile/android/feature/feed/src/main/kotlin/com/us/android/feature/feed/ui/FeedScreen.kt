@@ -208,6 +208,7 @@ internal fun FeedContent(
             onPlayingChanged = { item ->
                 viewModel.onAutoplayChanged(item, watchProbe(feedPlayer))
             },
+            onDwellChanged = viewModel::onDwellChanged,
         )
     }
 
@@ -323,6 +324,18 @@ internal data class FeedAutoplay(
      * nothing is playing, which closes the open view.
      */
     val onPlayingChanged: (FeedItem?) -> Unit,
+    /**
+     * The row the reader is ON changed, or the feed stopped being what they
+     * are looking at.
+     *
+     * Separate from [onPlayingChanged] because it is a different question
+     * about a different set of rows: that one asks which VIDEO should play,
+     * this one asks which POST — photo, poll or text included — is holding
+     * the reader, which is the only thing that can fill the ranker's
+     * image and text dwell percentiles. `running` is [allowed]: a card behind
+     * the comments sheet is on screen and is not being read.
+     */
+    val onDwellChanged: (item: FeedItem?, position: Int?, isAutoplaying: Boolean, running: Boolean) -> Unit,
 )
 
 /**
@@ -449,6 +462,7 @@ private fun FeedList(
 ) {
     val refresh = items.loadState.refresh
     val playingId = feedAutoplay(listState, items, autoplay)
+    FeedDwell(listState, items, head, playingId, autoplay)
 
     // A pinned post counts as a row: a viewer who has just posted must see it
     // even while the ranked page behind it is still loading, and must never be
@@ -495,7 +509,10 @@ private fun FeedList(
             // else. Never autoplayed: the autoplay target is computed over the
             // paging snapshot, which this row is deliberately not in.
             head?.let { pinned ->
-                item(key = "head_${pinned.id}") {
+                // The key carries the id so the dwell rule can read it back
+                // ([dwellPostId]); prefixed so it cannot collide with the
+                // paged row for the same post during the moment both exist.
+                item(key = "$HEAD_KEY_PREFIX${pinned.id}") {
                     FeedRow(
                         item = pinned,
                         overlay = overlays[pinned.id] ?: EngagementOverlay(),
@@ -537,7 +554,7 @@ private fun FeedList(
                 )
             }
 
-            item(key = "append_state") {
+            item(key = APPEND_KEY) {
                 AppendState(state = items.loadState.append, onRetry = items::retry)
             }
         }
@@ -567,6 +584,42 @@ private fun feedAutoplay(
         load = autoplay.load,
     )
     return playingId
+}
+
+/**
+ * Reports which post is holding the reader, for as long as it holds them.
+ *
+ * The target is the most visible ROW ([rememberDwellTarget]) — not the most
+ * visible video frame — so a photo, a poll and a text post are candidates and
+ * the ranker can finally learn that someone reads captions. The clock runs
+ * only while [FeedAutoplay.allowed]: the same condition the player pauses on,
+ * because a card behind the comments sheet is on screen and is not being read.
+ *
+ * `LaunchedEffect` keyed on the id and that flag: the tracker is told which
+ * card and whether the clock is running, and works out the rest. The row's
+ * rank is 1-based over the PAGED rows; the pinned just-published post is not a
+ * ranked row and carries none.
+ */
+@Composable
+private fun FeedDwell(
+    listState: LazyListState,
+    items: LazyPagingItems<FeedItem>,
+    head: FeedItem?,
+    playingId: String?,
+    autoplay: FeedAutoplay,
+) {
+    val dwellId by rememberDwellTarget(listState)
+    val paged = items.itemSnapshotList.items
+    val index = dwellId?.let { id -> paged.indexOfFirst { it.id == id } } ?: -1
+    val item = paged.getOrNull(index) ?: head?.takeIf { it.id == dwellId }
+    LaunchedEffect(dwellId, autoplay.allowed) {
+        autoplay.onDwellChanged(
+            item,
+            (index + 1).takeIf { index >= 0 },
+            item != null && item.id == playingId,
+            autoplay.allowed,
+        )
+    }
 }
 
 /**

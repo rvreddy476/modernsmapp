@@ -245,6 +245,115 @@ class ReelPublishViewModelTest {
         assertThat(launcher.enqueued.map { it.creationKey }.distinct()).hasSize(2)
     }
 
+    // ── Category: required for a long video, suggested for both ─────────
+
+    /**
+     * The obstacle is deliberate and is confined to long video. The topical
+     * term recommends by what a post is ABOUT and reads only the category and
+     * the hashtags; 4 of 484 posts carry a category, so an optional field
+     * everywhere is the state we are already in. A long upload already costs
+     * minutes and already demands a title — one more tap there is
+     * proportionate in a way it is not on a reel posted in seconds.
+     */
+    @Test
+    fun `a long video cannot be posted until it says what it is about`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher, surface = CreateSurface.Video)
+        advanceUntilIdle()
+
+        vm.onVideoPicked("content://video/1")
+        vm.onTitleChanged("Restoring a 1962 Fender")
+        advanceUntilIdle()
+        assertThat(vm.state.value.canPost).isFalse()
+
+        vm.onCategoryChanged("music")
+        assertThat(vm.state.value.canPost).isTrue()
+
+        vm.onPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.single().category).isEqualTo("music")
+    }
+
+    /** A reel is posted in seconds; the same demand there would be a tax on every one. */
+    @Test
+    fun `a reel posts with no category at all`() = runTest {
+        val vm = viewModel()
+        advanceUntilIdle()
+
+        vm.onVideoPicked("content://video/1")
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.canPost).isTrue()
+        assertThat(vm.state.value.effectiveCategory).isEmpty()
+    }
+
+    /**
+     * The cheap half of the win: the author typed `#food`, so they have
+     * already said what it is about and should not be asked twice. It is
+     * visible on the Category row before they post, and overrulable.
+     */
+    @Test
+    fun `a hashtag that names a category fills the field in`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+        advanceUntilIdle()
+
+        vm.onHashtagInputChanged("food ")
+        assertThat(vm.state.value.effectiveCategory).isEqualTo("food")
+
+        vm.pickAndPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.single().category).isEqualTo("food")
+    }
+
+    /** And it satisfies the long video's requirement without a second question. */
+    @Test
+    fun `a suggested category is enough for a long video`() = runTest {
+        val vm = viewModel(surface = CreateSurface.Video)
+        advanceUntilIdle()
+
+        vm.onVideoPicked("content://video/1")
+        vm.onTitleChanged("Two days in Lisbon")
+        vm.onHashtagInputChanged("travel ")
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.canPost).isTrue()
+    }
+
+    /**
+     * None is an ANSWER, not an absence. Without that distinction a reel
+     * author who deliberately picked None would watch the hashtag suggestion
+     * put a category straight back and would have no way to say no.
+     */
+    @Test
+    fun `picking None on a reel overrules the suggestion for good`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+        advanceUntilIdle()
+
+        vm.onHashtagInputChanged("food ")
+        vm.onCategoryChanged("")
+        vm.onHashtagInputChanged("travel ")
+
+        assertThat(vm.state.value.effectiveCategory).isEmpty()
+        vm.pickAndPost()
+        advanceUntilIdle()
+        assertThat(launcher.enqueued.single().category).isEmpty()
+    }
+
+    /** Removing the tag the suggestion came from takes the suggestion with it. */
+    @Test
+    fun `the suggestion follows the hashtags`() = runTest {
+        val vm = viewModel()
+        advanceUntilIdle()
+
+        vm.onHashtagInputChanged("food ")
+        assertThat(vm.state.value.effectiveCategory).isEqualTo("food")
+
+        vm.removeHashtag("food")
+        assertThat(vm.state.value.effectiveCategory).isEmpty()
+    }
+
     @Test
     fun `the server category list replaces the fallback when it loads`() = runTest {
         val loaded = listOf(ReelCategory("skits", "Skits"))
@@ -500,6 +609,9 @@ class ReelPublishViewModelTest {
         val vm = viewModel(launcher = launcher, surface = CreateSurface.Video)
 
         vm.onVideoPicked("content://video/1")
+        // The category is the OTHER thing a long video must have; set here so
+        // what this test asserts is the title and nothing else.
+        vm.onCategoryChanged("education")
         advanceUntilIdle()
         assertThat(vm.state.value.canPost).isFalse()
         assertThat(vm.state.value.hasRequiredText).isFalse()
@@ -550,6 +662,9 @@ class ReelPublishViewModelTest {
         assertThat(vm.state.value.canPost).isFalse() // a video still needs its title
 
         vm.onTitleChanged("Six minutes")
+        // ...and, since it is now a long video, a category.
+        assertThat(vm.state.value.canPost).isFalse()
+        vm.onCategoryChanged("sports")
         vm.onPost()
         advanceUntilIdle()
         assertThat(launcher.enqueued.single().kind).isEqualTo(PublishKind.LONG)

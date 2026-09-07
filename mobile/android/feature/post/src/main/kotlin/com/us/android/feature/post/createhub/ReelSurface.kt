@@ -448,6 +448,8 @@ private fun postDescription(state: ReelPublishViewModel.ReelUiState, noun: Strin
     state.canPost -> "Post $noun"
     !state.gate.allowsPost -> "Post $noun. Unavailable: ${gateMessage(state.gate)}"
     !state.hasRequiredText -> "Post video. Unavailable: add a title first."
+    // Only a long video can fail this; a reel's category is optional.
+    !state.hasRequiredCategory -> "Post video. Unavailable: choose a category first."
     else -> "Post $noun. Unavailable: choose a video first."
 }
 
@@ -472,8 +474,14 @@ private fun ReelPickerSheets(
         )
         ReelSheet.Category -> ReelOptionSheet(
             title = "Category",
-            options = listOf(ReelOption("", "None")) + state.categories.map { ReelOption(it.id, it.label) },
-            selected = state.category,
+            // "None" is not offered for a long video: it is the one answer
+            // that cannot be posted, and a sheet that lets someone pick an
+            // answer the Post button then refuses is a worse obstacle than
+            // simply not offering it. "Other" is still there for an author
+            // who means none of these.
+            options = (if (state.requiresCategory) emptyList() else listOf(ReelOption("", "None"))) +
+                state.categories.map { ReelOption(it.id, it.label) },
+            selected = state.effectiveCategory,
             onPick = {
                 viewModel.onCategoryChanged(it)
                 onClose()
@@ -752,7 +760,13 @@ private fun DetailsCard(
         DetailRow(
             icon = UsIcons.Tag,
             title = "Category",
-            value = state.categories.firstOrNull { it.id == state.category }?.label ?: "None",
+            // What the post will actually carry, suggestion included, so the
+            // author can see and overrule it before they post. A long video
+            // says "Required" instead of "None": the field is the reason the
+            // Post button is off, and the row is where that has to be legible.
+            value = state.categories.firstOrNull { it.id == state.effectiveCategory }?.label
+                ?: if (state.requiresCategory) "Required" else "None",
+            emphasised = !state.hasRequiredCategory,
             enabled = enabled,
             onClick = onCategory,
             testTag = "reel-category-row",
@@ -769,6 +783,8 @@ private fun DetailRow(
     enabled: Boolean,
     onClick: () -> Unit,
     testTag: String,
+    /** Draws the value in the accent: this row is why Post is off. */
+    emphasised: Boolean = false,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Row(
@@ -801,7 +817,7 @@ private fun DetailRow(
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textMuted,
+                color = if (emphasised) UsTheme.extended.accentSolid else UsTheme.extended.textMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = ROW_VALUE_MAX),

@@ -91,12 +91,65 @@ internal fun mostVisibleVideo(
     var best: String? = null
     var bestFraction = 0f
     for (frame in frames) {
-        val height = frame.bottom - frame.top
-        if (height <= 0) continue
-        val visible = (min(frame.bottom, viewportBottom) - max(frame.top, viewportTop)).coerceAtLeast(0)
-        val fraction = visible.toFloat() / height
+        val fraction = visibleFraction(frame, viewportTop, viewportBottom)
         if (fraction >= threshold && fraction > bestFraction) {
             best = frame.postId
+            bestFraction = fraction
+        }
+    }
+    return best
+}
+
+/**
+ * How much of [frame] is on screen, 0..1. Zero for a frame with no height,
+ * which is what a row reports before it has been measured.
+ */
+internal fun visibleFraction(frame: VisibleFrame, viewportTop: Int, viewportBottom: Int): Float {
+    val height = frame.bottom - frame.top
+    if (height <= 0) return 0f
+    val visible = (min(frame.bottom, viewportBottom) - max(frame.top, viewportTop)).coerceAtLeast(0)
+    return visible.toFloat() / height
+}
+
+/**
+ * The post the reader is ON — the card a dwell is measured against.
+ *
+ * The same "most visible wins, ties to the top" rule as [mostVisibleVideo],
+ * applied to whole ROWS instead of video frames, so a photo, a poll and a
+ * text post are all candidates. Two differences, both forced by what a row is
+ * rather than by taste:
+ *
+ *  - The unit is the row, not the 4:5 frame. A text post has no frame, and for
+ *    a caption the reading happens in the text, which is the part of the row
+ *    the frame rule would have thrown away.
+ *  - A row TALLER than the viewport can never be 60 % visible, so it would be
+ *    permanently invisible to this rule — and a long caption is exactly the
+ *    post whose dwell is most worth knowing. Such a row qualifies on the other
+ *    side of the same question instead: it counts when it fills at least
+ *    [DWELL_VISIBLE_FRACTION] of the VIEWPORT. Whichever fraction is larger is
+ *    the one compared, so short rows and tall rows are ranked on one number.
+ *
+ * Exactly one post at a time, deliberately. Three short text posts fully on
+ * screen for ten seconds are not thirty seconds of reading, and counting them
+ * as three ten-second dwells would tell the ranker that short text posts hold
+ * people three times over.
+ */
+internal fun mostDwelledPost(
+    rows: List<VisibleFrame>,
+    viewportTop: Int,
+    viewportBottom: Int,
+    threshold: Float = DWELL_VISIBLE_FRACTION,
+): String? {
+    val viewportHeight = (viewportBottom - viewportTop).coerceAtLeast(1)
+    var best: String? = null
+    var bestFraction = 0f
+    for (row in rows) {
+        val ofRow = visibleFraction(row, viewportTop, viewportBottom)
+        val visiblePx = ofRow * (row.bottom - row.top)
+        val ofViewport = visiblePx / viewportHeight
+        val fraction = max(ofRow, ofViewport)
+        if (fraction >= threshold && fraction > bestFraction) {
+            best = row.postId
             bestFraction = fraction
         }
     }
@@ -140,6 +193,52 @@ internal fun rememberAutoplayTarget(
         }
     }
 }
+
+/**
+ * The id of the post the reader is currently on, for dwell measurement.
+ *
+ * Read from the list's own layout info like [rememberAutoplayTarget], but
+ * addressed by item KEY rather than by index. The list's rows are not all
+ * paging rows — a just-published post is pinned above them and the append
+ * state sits below — so `layoutInfo.visibleItemsInfo[n].index` is not the
+ * paging index whenever the pinned row is present, and a lookup by index
+ * would attribute the reader's time to the row above the one they are on.
+ * The key is the post's own id ([FeedList] sets it), which cannot drift.
+ *
+ * `derivedStateOf` for the same reason as autoplay: the layout changes sixty
+ * times a second while the ANSWER changes a handful of times per screenful.
+ */
+@Composable
+internal fun rememberDwellTarget(listState: LazyListState): State<String?> =
+    remember(listState) {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val rows = info.visibleItemsInfo.mapNotNull { row ->
+                dwellPostId(row.key)?.let { VisibleFrame(it, row.offset, row.offset + row.size) }
+            }
+            mostDwelledPost(rows, info.viewportStartOffset, info.viewportEndOffset)
+        }
+    }
+
+/**
+ * The post id behind a feed row's key, or null for a row that is not a post.
+ *
+ * The list keys its paged rows by the post id, the pinned just-published row
+ * by [HEAD_KEY_PREFIX] + the id, and its footer by [APPEND_KEY]. A paging row
+ * whose item has not loaded falls back to an Int index key, which is not a
+ * post either.
+ */
+internal fun dwellPostId(key: Any?): String? {
+    if (key !is String) return null
+    if (key == APPEND_KEY) return null
+    return key.removePrefix(HEAD_KEY_PREFIX).takeIf { it.isNotEmpty() }
+}
+
+/** The pinned just-published row's key prefix; see [dwellPostId]. */
+internal const val HEAD_KEY_PREFIX = "head_"
+
+/** The list's footer row key; see [dwellPostId]. */
+internal const val APPEND_KEY = "append_state"
 
 /**
  * The feed's one player, created once per list and released with it.
@@ -256,3 +355,10 @@ internal fun FeedVideo(
 
 /** A frame plays when at least this much of it is on screen. */
 internal const val AUTOPLAY_VISIBLE_FRACTION = 0.6f
+
+/**
+ * A row is being read when at least this much of it — or of the viewport — is
+ * on screen. The same 60 % bar autoplay uses: "the card the reader is on"
+ * should not mean two different things on one screen.
+ */
+internal const val DWELL_VISIBLE_FRACTION = 0.6f
