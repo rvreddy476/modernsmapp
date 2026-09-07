@@ -6,15 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"math"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/atpost/analytics-service/database"
 	"github.com/atpost/analytics-service/internal/scoring"
-	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
+	"github.com/atpost/analytics-service/internal/testsupport"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // A realistic hour of the full event model, folded into one aggregate
@@ -22,19 +19,9 @@ import (
 // hand-computed values, so the numbers the creator dashboard and the
 // creator fund read are pinned, not just "non-zero".
 func TestLiveHourlyAggregationFoldsEveryEventTypeIntoCorrectAverages(t *testing.T) {
-	dsn := os.Getenv("ANALYTICS_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("ANALYTICS_POSTGRES_DSN is required")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err := pgstore.BootstrapSchema(ctx, pool, database.SetupSQL, database.Migrations); err != nil {
-		t.Fatal(err)
-	}
+	// Own database, own truncates: see internal/testsupport.
+	pool := testsupport.Pool(t, "aggregation")
 	if _, err := pool.Exec(ctx, `TRUNCATE analytics.content_hourly_agg, analytics.ingest_receipts, analytics.events_raw, analytics.content_ownership CASCADE`); err != nil {
 		t.Fatal(err)
 	}
@@ -231,19 +218,9 @@ func TestLiveHourlyAggregationFoldsEveryEventTypeIntoCorrectAverages(t *testing.
 // A content item that only ever got impressions - nobody played it -
 // must aggregate to a zero score without dividing by zero anywhere.
 func TestLiveAggregationOfContentWithNoPlaybacksIsSafe(t *testing.T) {
-	dsn := os.Getenv("ANALYTICS_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("ANALYTICS_POSTGRES_DSN is required")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err := pgstore.BootstrapSchema(ctx, pool, database.SetupSQL, database.Migrations); err != nil {
-		t.Fatal(err)
-	}
+	// Own database, own truncates: see internal/testsupport.
+	pool := testsupport.Pool(t, "aggregation")
 
 	content, creator := uuid.New(), uuid.New()
 	hour := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)

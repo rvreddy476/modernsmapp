@@ -282,7 +282,12 @@ const hourlyScanSQL = `
 	SELECT
 		payload->>'content_id'                                   AS content_id,
 		MIN(payload->>'creator_id')                              AS creator_id,
-		COALESCE(MIN(payload->>'content_type'), 'reel')          AS content_type,
+		-- The ownership projection always stamps a content_type, so this
+		-- COALESCE only fires for pre-projection legacy rows. It must not
+		-- invent a kind: 'unknown' is skipped by monetization's rate
+		-- lookup, whereas the old 'reel' default quietly labelled
+		-- unattributed rows as short-form.
+		COALESCE(MIN(payload->>'content_type'), 'unknown')       AS content_type,
 
 		COUNT(*) FILTER (WHERE type = 'impression')              AS impressions,
 		COUNT(*) FILTER (WHERE type = 'play_start')              AS plays,

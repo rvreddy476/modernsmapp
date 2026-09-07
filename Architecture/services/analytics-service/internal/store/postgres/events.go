@@ -99,6 +99,31 @@ func (s *Store) UpsertContentOwnership(ctx context.Context, ownership ContentOwn
 	return nil
 }
 
+// UpdateContentType applies a post-service reclassification to an already
+// projected row. post-service fires PostContentTypeChanged when the
+// transcode pipeline reveals a video's real duration and dimensions and
+// shared/postclassify puts it in the other bucket; without this the
+// ownership projection kept whatever kind the post had at create time,
+// and that stale label is what decides both the display-view bar
+// (model.IsDisplayView) and the RPM rate monetization settles at.
+//
+// Deliberately an UPDATE and not an upsert: it must never invent an
+// ownership row. PostCreated and PostContentTypeChanged are produced to
+// the same topic keyed by author, so the create always lands first;
+// applied=false means the row genuinely is not there and there is
+// nothing to correct.
+func (s *Store) UpdateContentType(ctx context.Context, contentID, creatorID uuid.UUID, contentType string) (applied bool, err error) {
+	command, err := s.db.Exec(ctx, `
+		UPDATE analytics.content_ownership
+		SET content_type = $3, projected_at = NOW()
+		WHERE content_id = $1 AND creator_id = $2`,
+		contentID, creatorID, contentType)
+	if err != nil {
+		return false, err
+	}
+	return command.RowsAffected() > 0, nil
+}
+
 func (s *Store) GetContentOwnership(ctx context.Context, contentID uuid.UUID) (ContentOwnership, error) {
 	var ownership ContentOwnership
 	err := s.db.QueryRow(ctx, `

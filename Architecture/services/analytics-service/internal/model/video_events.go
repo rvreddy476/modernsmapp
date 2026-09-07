@@ -1,9 +1,25 @@
 package model
 
-// ContentType constants for video analytics.
+import "github.com/atpost/shared/postclassify"
+
+// ContentType constants for video analytics. These are aliases of the
+// platform-wide values in shared/postclassify, which is the single
+// authority on what kind of post something is (<=300s portrait/square is
+// a flick, everything else is a long_video). Analytics does not classify
+// content — it reads the label post-service put on the timeline row and
+// carried into analytics.content_ownership via PostCreated.
+//
+// The duration boundary that used to live in this package (90 seconds)
+// was never a content type; it is a view-counting threshold and now says
+// so: model.ShortFormViewRuleMaxDurationMS in view_rules.go.
 const (
-	ContentTypeReel      = "reel"       // <= 90 seconds
-	ContentTypeLongVideo = "long_video" // > 90 seconds
+	ContentTypeFlick     = postclassify.Flick     // "flick"
+	ContentTypeLongVideo = postclassify.LongVideo // "long_video"
+
+	// ContentTypeReel is the legacy wire synonym for a flick. Rows
+	// written before the rename still carry it, and postclassify's
+	// IsShortForm accepts it, so it stays recognised on read.
+	ContentTypeReel = "reel"
 )
 
 // Event name constants — the 13 video analytics event types.
@@ -62,7 +78,7 @@ type VideoEventCommon struct {
 }
 
 // ImpressionEvent — content became visible in viewport.
-// Reels: visible >= 300ms, Long card: visible >= 500ms.
+// Short-form card: visible >= 300ms, long card: visible >= 500ms.
 type ImpressionEvent struct {
 	VideoEventCommon
 	VisibleMS int64 `json:"visible_ms"`
@@ -72,7 +88,7 @@ type ImpressionEvent struct {
 type PlayStartEvent struct {
 	VideoEventCommon
 	ContentDurationMS   int64  `json:"content_duration_ms"`
-	ContentType         string `json:"content_type"` // "reel" or "long_video"
+	ContentType         string `json:"content_type"` // server-authoritative; "flick" or "long_video"
 	StartMethod         string `json:"start_method"` // autoplay, tap, resume
 	IsMuted             bool   `json:"is_muted"`
 	TimeToFirstFrameMS  int64  `json:"time_to_first_frame_ms"`
@@ -80,7 +96,7 @@ type PlayStartEvent struct {
 }
 
 // WatchHeartbeatEvent — periodic progress update.
-// Reels: every 2s, Long Video: every 5s.
+// Short-form sessions beat every 2s, long-form every 5s.
 type WatchHeartbeatEvent struct {
 	VideoEventCommon
 	WatchedMSIncrement   int64   `json:"watched_ms_increment"`
@@ -110,7 +126,10 @@ type PlayEndEvent struct {
 	LoopCount            int     `json:"loop_count"`
 }
 
-// ReelMilestones — time and percent thresholds for reels (<= 90s).
+// ReelMilestones — the ladder a client sends for a short-form session,
+// i.e. content judged by the short-form view bar
+// (model.ShortFormViewRuleMaxDurationMS). The time rungs stop at 10s
+// because nothing past that is meaningful in a swipe feed.
 var ReelMilestones = struct {
 	Time    []string // milestone_type values
 	Percent []string
@@ -119,7 +138,10 @@ var ReelMilestones = struct {
 	Percent: []string{"PCT_25", "PCT_50", "PCT_75", "PCT_95"},
 }
 
-// LongVideoMilestones — time and percent thresholds for long video (> 90s).
+// LongVideoMilestones — the ladder for everything else: a long_video,
+// or a flick longer than the short-form view bar. A flick can run to
+// 300s (shared/postclassify.FlickMaxDurationSeconds), so the ladder it
+// needs is chosen by duration, not by which feed it lives in.
 var LongVideoMilestones = struct {
 	Time    []string
 	Percent []string

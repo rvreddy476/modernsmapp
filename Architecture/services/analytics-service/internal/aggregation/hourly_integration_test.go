@@ -5,31 +5,19 @@ package aggregation
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/atpost/analytics-service/database"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
+	"github.com/atpost/analytics-service/internal/testsupport"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestLiveHourlyAggregationIsLockedAndCountsDisplayViews(t *testing.T) {
-	dsn := os.Getenv("ANALYTICS_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("ANALYTICS_POSTGRES_DSN is required")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err := pgstore.BootstrapSchema(ctx, pool, database.SetupSQL, database.Migrations); err != nil {
-		t.Fatal(err)
-	}
+	// Own database, own truncates: see internal/testsupport.
+	pool := testsupport.Pool(t, "aggregation")
 	if _, err := pool.Exec(ctx, `TRUNCATE analytics.content_hourly_agg, analytics.events_raw, analytics.content_ownership CASCADE`); err != nil {
 		t.Fatal(err)
 	}
