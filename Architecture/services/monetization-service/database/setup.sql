@@ -229,10 +229,19 @@ CREATE INDEX IF NOT EXISTS idx_tips_stream    ON tips (stream_id, created_at DES
 -- Extend transactions.type CHECK to recognise the fund + tip kinds.
 -- Idempotent re-state so the constraint matches the application code
 -- regardless of which historical migration order the DB took.
+--
+-- This runs BEFORE the migrations, so it has to already know about every
+-- type any migration introduces. Leaving
+-- 'creator_fund_period_settlement' out of it (migration 017 adds it)
+-- meant bootstrap failed on any database that already had a settled
+-- period: the re-state tried to narrow a constraint the existing rows no
+-- longer satisfied. Anything added to a later migration's CHECK belongs
+-- here too.
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
 ALTER TABLE transactions ADD CONSTRAINT transactions_type_check
     CHECK (type IN (
         'earning','payout','refund','adjustment','subscription_payment',
         'view_earnings','creator_fund_earning',
-        'tip_sent','tip_received'
+        'tip_sent','tip_received',
+        'creator_fund_period_settlement'
     ));

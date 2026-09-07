@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/analytics-service/internal/aggregation"
 	"github.com/atpost/analytics-service/internal/personalization"
 	"github.com/atpost/analytics-service/internal/service"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
@@ -25,6 +26,10 @@ type Handler struct {
 	// personalization is the viewer-signal warmer, exposed for on-demand
 	// runs under /v1/analytics/internal/. Optional — see personalization.go.
 	personalization *personalization.Warmer
+	// hourlyAgg/dailyRollup back the on-demand aggregation route in
+	// aggregation_ops.go. Optional.
+	hourlyAgg   *aggregation.HourlyAggregator
+	dailyRollup *aggregation.DailyRollup
 }
 
 // WithAggregateStore wires the durable aggregate store that backs the
@@ -70,6 +75,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		if h.personalization != nil {
 			v1.POST("/internal/personalization/run", h.RunPersonalization)
 			v1.GET("/internal/personalization", h.PersonalizationStatus)
+		}
+
+		// On-demand aggregation: rebuild an hour or a whole day now,
+		// instead of waiting for the timer. See aggregation_ops.go.
+		if h.hourlyAgg != nil && h.dailyRollup != nil {
+			v1.POST("/internal/aggregate", h.RunAggregation)
 		}
 	}
 }

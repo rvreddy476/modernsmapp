@@ -38,7 +38,11 @@ func StartAll(ctx context.Context, store *postgres.Store, producer *events.Produ
 	go runStuckTransactionDetector(ctx, store)
 	go runStalePayoutDetector(ctx, store)
 	if svc != nil {
-		go runCreatorFundEarnings(ctx, svc)
+		// Capture is continuous, payment is periodic. The accrual worker
+		// measures each day and moves nothing; the settlement worker is
+		// the only scheduled thing that credits a wallet from the fund.
+		go runCreatorFundAccrual(ctx, svc)
+		go runCreatorFundPeriodSettlement(ctx, store, svc)
 		go runEligibilityEvaluator(ctx, svc)
 	}
 
@@ -83,7 +87,12 @@ func renewSubscriptions(ctx context.Context, store *postgres.Store, producer *ev
 		newPeriodEnd := extendPeriod(sub.CurrentPeriodEnd, tier.BillingPeriod)
 
 		// Attempt to charge subscriber → credit creator.
-		chargeErr := store.ChargeAndCredit(ctx, sub.SubscriberID.String(), sub.CreatorID.String(), sub.PricePaise, "Subscription renewal: "+tier.Name)
+		// reference_type='subscription' is what makes this renewal show up
+		// on the creator's monthly statement. Without it a renewal looked
+		// identical to a tip credit on the wallet, and the subscription
+		// line under-reported everything past month one.
+		chargeErr := store.ChargeAndCreditRef(ctx, sub.SubscriberID.String(), sub.CreatorID.String(), sub.PricePaise,
+			"Subscription renewal: "+tier.Name, "subscription", sub.ID.String())
 		if chargeErr != nil {
 			// Charge failed — use retry/grace/cancel state machine.
 			slog.Warn("subscription renewal: charge failed",

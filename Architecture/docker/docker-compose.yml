@@ -1190,6 +1190,14 @@ services:
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      # The financial launch boundary. Default stays CLOSED: only the
+      # read-only creator-ledger endpoints are served and no money-moving
+      # worker starts. Set MONETIZATION_WRITES_ENABLED=true in the shell
+      # to open it for a local settlement run.
+      MONETIZATION_WRITES_ENABLED: ${MONETIZATION_WRITES_ENABLED:-false}
+      # How often the creator-fund payment run happens: monthly (default)
+      # or semimonthly (1st-15th, 16th-end).
+      CF_SETTLEMENT_CADENCE: ${CF_SETTLEMENT_CADENCE:-monthly}
     ports:
       - "8099:8099"
     depends_on:

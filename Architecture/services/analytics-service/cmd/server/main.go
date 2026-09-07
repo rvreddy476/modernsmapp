@@ -213,6 +213,11 @@ func main() {
 	go dailyRollup.Start(workerCtx)
 	slog.Info("daily rollup started")
 
+	// 13a. Expose both aggregators for on-demand runs. Registered before
+	// RegisterRoutes below, so POST /v1/analytics/internal/aggregate
+	// exists. See internal/http/aggregation_ops.go for why.
+	handler = handler.WithAggregationOps(hourlyAgg, dailyRollup)
+
 	// 13b. Start the personalization warmer. It publishes the viewer
 	// signals feed-service's ranker consumes — author affinity, media
 	// preference, topic affinity, content quality, completions. The

@@ -158,6 +158,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			cf.GET("/earnings", h.GetCreatorFundEarnings)
 			cf.GET("/rates", h.ListCreatorFundRates)
 			cf.GET("/quality-bands", h.ListCreatorFundQualityBands)
+			// Period statements: which period, and how much came from
+			// each of the three streams.
+			cf.GET("/statements", h.ListCreatorFundStatements)
+			cf.GET("/statements/:periodKey", h.GetCreatorFundStatement)
 		}
 		admin := v1.Group("/admin/creator-fund")
 		{
@@ -166,7 +170,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			admin.PUT("/quality-bands", h.SetCreatorFundQualityBand)
 			admin.POST("/:userId/suspend", h.SuspendCreatorFund)
 			admin.POST("/:userId/unsuspend", h.UnsuspendCreatorFund)
-			admin.POST("/settle", h.ForceSettleCreatorFund)
+			// Re-measure one day (accrual only — moves no money).
+			admin.POST("/settle", h.ForceAccrueCreatorFundDay)
+			// The payment run. Same call the scheduled worker makes.
+			admin.POST("/settle-period", h.SettleCreatorFundPeriod)
+			admin.POST("/:userId/settle-period", h.SettleCreatorFundPeriodForCreator)
 		}
 	}
 }

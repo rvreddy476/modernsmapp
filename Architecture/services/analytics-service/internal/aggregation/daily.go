@@ -42,7 +42,20 @@ func (d *DailyRollup) Start(ctx context.Context) {
 
 func (d *DailyRollup) rollupPreviousDay(ctx context.Context) {
 	yesterday := time.Now().UTC().AddDate(0, 0, -1).Truncate(24 * time.Hour)
-	dayEnd := yesterday.AddDate(0, 0, 1)
+	d.RollupDay(ctx, yesterday)
+}
+
+// RollupDay rebuilds analytics.content_daily_summary for one UTC day from
+// the hourly aggregates. Exported so a specific day can be rebuilt on
+// demand — after an outage, after a bad hour was corrected, or (the case
+// that forced it out of an unexported method) so that money owed for a
+// day can be measured without waiting for the next midnight tick. The
+// INSERT ... ON CONFLICT DO UPDATE means running it repeatedly converges
+// on the same numbers rather than accumulating them.
+func (d *DailyRollup) RollupDay(ctx context.Context, day time.Time) error {
+	day = day.UTC().Truncate(24 * time.Hour)
+	dayEnd := day.AddDate(0, 0, 1)
+	yesterday := day
 
 	log.Printf("[DailyRollup] rolling up day: %s", yesterday.Format("2006-01-02"))
 
@@ -77,11 +90,12 @@ func (d *DailyRollup) rollupPreviousDay(ctx context.Context) {
 	)
 	if err != nil {
 		log.Printf("[DailyRollup] rollup error: %v", err)
-		return
+		return err
 	}
 
 	// Refresh CQS cache in Redis for all content with activity
 	d.refreshCQSCache(ctx, yesterday, dayEnd)
+	return nil
 }
 
 func (d *DailyRollup) refreshCQSCache(ctx context.Context, dayStart, dayEnd time.Time) {

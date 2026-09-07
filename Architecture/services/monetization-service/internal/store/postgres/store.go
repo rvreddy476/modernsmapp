@@ -683,6 +683,22 @@ func (s *Store) GetSubscriptionByIdempotencyKey(ctx context.Context, key string)
 // ChargeAndCredit atomically debits fromUserID and credits toUserID in a single transaction.
 // Returns ErrInsufficientFunds if fromUserID has insufficient balance.
 func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string, amountPaise int64, description string) error {
+	return s.ChargeAndCreditRef(ctx, fromUserID, toUserID, amountPaise, description, "", "")
+}
+
+// ChargeAndCreditRef is ChargeAndCredit with provenance on the two
+// transaction rows it writes.
+//
+// This exists because the period statement has to be able to tell a
+// creator's subscription revenue apart from their tip revenue, and both
+// arrive on the same wallet as type='earning'. Store.Subscribe already
+// stamped reference_type='subscription'; the RENEWAL worker went through
+// plain ChargeAndCredit and stamped nothing, so every renewal after the
+// first month was invisible to any query that asked "what did
+// subscriptions earn this creator". Passing the reference through fixes
+// that without touching a single amount: same transfer, same wallets,
+// same money, now attributable.
+func (s *Store) ChargeAndCreditRef(ctx context.Context, fromUserID, toUserID string, amountPaise int64, description, referenceType, referenceID string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -713,9 +729,9 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 
 	// Record debit transaction
 	_, err = tx.Exec(ctx,
-		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
-		 SELECT $1, user_id, 'subscription_payment', $3, currency, 'completed', $4, NOW() FROM creator_ledger WHERE user_id = $2`,
-		uuid.New(), fromUserID, amountPaise, description,
+		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
+		 SELECT $1, user_id, 'subscription_payment', $3, currency, 'completed', $5, $6, $4, NOW() FROM creator_ledger WHERE user_id = $2`,
+		uuid.New(), fromUserID, amountPaise, description, referenceType, referenceID,
 	)
 	if err != nil {
 		return fmt.Errorf("debit transaction record: %w", err)
@@ -723,9 +739,9 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 
 	// Record credit transaction
 	_, err = tx.Exec(ctx,
-		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
-		 SELECT $1, user_id, 'earning', $3, currency, 'completed', $4, NOW() FROM creator_ledger WHERE user_id = $2`,
-		uuid.New(), toUserID, amountPaise, description,
+		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
+		 SELECT $1, user_id, 'earning', $3, currency, 'completed', $5, $6, $4, NOW() FROM creator_ledger WHERE user_id = $2`,
+		uuid.New(), toUserID, amountPaise, description, referenceType, referenceID,
 	)
 	if err != nil {
 		return fmt.Errorf("credit transaction record: %w", err)

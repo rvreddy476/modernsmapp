@@ -201,6 +201,23 @@ func loadCreatorFundConfig() service.CreatorFundConfig {
 			cfg.PlatformFeeBps = n
 		}
 	}
+	// How often the payment run happens. The founder asked for "monthly
+	// once or twice": CF_SETTLEMENT_CADENCE=monthly (default) or
+	// =semimonthly. Anything unrecognised falls back to monthly rather
+	// than paying on a cadence nobody chose.
+	if v := os.Getenv("CF_SETTLEMENT_CADENCE"); v != "" {
+		cfg.SettlementCadence = service.NormalizeCadence(v)
+	}
+	if v := os.Getenv("CF_SETTLEMENT_LAG_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 28 {
+			cfg.SettlementLagDays = n
+		}
+	}
+	if v := os.Getenv("CF_SETTLEMENT_HOUR_UTC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 23 {
+			cfg.SettlementHourUTC = n
+		}
+	}
 	return cfg
 }
 

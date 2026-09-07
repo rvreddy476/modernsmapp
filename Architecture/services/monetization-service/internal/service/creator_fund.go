@@ -33,6 +33,8 @@ const (
 	defaultPlatformFeeBps          = int64(3000)       // 30% — creator keeps 70%
 	defaultEligibilitySweepBatch   = 200
 	defaultEligibilityStaleAfter   = 24 * time.Hour
+	defaultSettlementLagDays       = 1
+	defaultSettlementHourUTC       = 4
 	defaultEarningsCurrency        = "INR"
 	defaultRegionCode              = "IN"
 	creatorWalletAccountType       = "user_wallet"
@@ -58,6 +60,21 @@ type CreatorFundConfig struct {
 	PlatformFeeBps          int64
 	SweepBatchSize          int
 	EligibilityStaleAfter   time.Duration
+
+	// SettlementCadence is how often the payment run happens:
+	// "monthly" (one run per calendar month) or "semimonthly" (two runs:
+	// 1st-15th, 16th-end). The founder asked for "monthly once or twice",
+	// so both are supported and the choice is one env var.
+	SettlementCadence string
+	// SettlementLagDays is how long after a period closes the settlement
+	// runs. Analytics for the last day of the period has to have landed
+	// and been rolled up first; 1 day is the same margin the old nightly
+	// job used (03:00 UTC against a midnight rollup), expressed in the
+	// unit that now matters.
+	SettlementLagDays int
+	// SettlementHourUTC is the hour of the day the settlement worker will
+	// attempt the closed period.
+	SettlementHourUTC int
 }
 
 // DefaultCreatorFundConfig returns the launch-baseline configuration.
@@ -69,6 +86,9 @@ func DefaultCreatorFundConfig() CreatorFundConfig {
 		PlatformFeeBps:          defaultPlatformFeeBps,
 		SweepBatchSize:          defaultEligibilitySweepBatch,
 		EligibilityStaleAfter:   defaultEligibilityStaleAfter,
+		SettlementCadence:       CadenceMonthly,
+		SettlementLagDays:       defaultSettlementLagDays,
+		SettlementHourUTC:       defaultSettlementHourUTC,
 	}
 }
 
@@ -227,191 +247,32 @@ func (s *Service) ClearCreatorFundSuspension(ctx context.Context, creatorID uuid
 // ---------------------------------------------------------------------------
 // Earnings settlement
 // ---------------------------------------------------------------------------
-
-// SettleCreatorFundDay pays one creator for one UTC day across all the
-// content types they uploaded views for. Each (content_type) row is
-// idempotent on (creator, day, content_type, region); a partial-failure
-// re-run will skip the rows already written.
 //
-// Returns the number of rows actually credited (may be 0 if the day was
-// already settled, the creator has no qualifying views, or rates are
-// missing).
-func (s *Service) SettleCreatorFundDay(ctx context.Context, creatorID uuid.UUID, day time.Time) (int, error) {
-	day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
-
-	row, err := s.store.GetCreatorFundEligibility(ctx, creatorID)
-	if err != nil {
-		return 0, err
-	}
-	if row == nil || row.Status != "eligible" {
-		return 0, nil
-	}
-
-	metrics, err := s.store.QueryCreatorDailyMetrics(ctx, creatorID, day)
-	if err != nil {
-		return 0, fmt.Errorf("query daily metrics: %w", err)
-	}
-	if len(metrics) == 0 {
-		return 0, nil
-	}
-
-	cfg := s.creatorFundCfg
-	credited := 0
-	for _, m := range metrics {
-		if m.ViewCount <= 0 {
-			continue
-		}
-		if m.ContentType != "long_video" && m.ContentType != "flick" {
-			continue
-		}
-		exists, err := s.store.HasCreatorFundEarning(ctx, creatorID, day, m.ContentType, defaultRegionCode)
-		if err != nil {
-			return credited, fmt.Errorf("idempotency check: %w", err)
-		}
-		if exists {
-			continue
-		}
-		rate, err := s.store.GetActiveRpmRate(ctx, m.ContentType, defaultRegionCode, day)
-		if err != nil {
-			return credited, fmt.Errorf("fetch rpm rate: %w", err)
-		}
-		if rate == nil || rate.RpmPaise <= 0 {
-			// No rate configured for this content type — skip silently.
-			// Admin can backfill once a rate is set.
-			continue
-		}
-		// Quality band: how much the content quality score is allowed to
-		// move the payment. Missing row => launch default. The band is
-		// resolved as of `day` so re-settling an old day cannot pay it at
-		// today's curve.
-		band, err := s.ResolveQualityBand(ctx, m.ContentType, defaultRegionCode, day)
-		if err != nil {
-			return credited, fmt.Errorf("fetch quality band: %w", err)
-		}
-
-		gross, baseGross, multiplierBps := ComputeQualityAdjustedGrossPaise(
-			m.ViewCount, rate.RpmPaise, m.AvgCQS, m.Impressions, band)
-		if gross <= 0 {
-			continue
-		}
-		net, fee := SplitEarnings(gross, cfg.PlatformFeeBps)
-
-		earning := &postgres.CreatorFundEarning{
-			CreatorID:            creatorID,
-			DayBucket:            day,
-			ContentType:          m.ContentType,
-			RegionCode:           defaultRegionCode,
-			ViewCount:            m.ViewCount,
-			WatchTimeMs:          m.WatchTimeMs,
-			RpmPaise:             rate.RpmPaise,
-			GrossPaise:           gross,
-			PlatformFeePaise:     fee,
-			NetPaise:             net,
-			Status:               "settled",
-			SettledAt:            time.Now(),
-			BaseGrossPaise:       baseGross,
-			QualityCQS:           m.AvgCQS,
-			QualityEffectiveCQS:  ShrinkCQS(m.AvgCQS, m.Impressions, band),
-			QualityImpressions:   m.Impressions,
-			QualityMultiplierBps: multiplierBps,
-		}
-		inserted, err := s.store.InsertCreatorFundEarning(ctx, earning)
-		if err != nil {
-			return credited, fmt.Errorf("insert earning: %w", err)
-		}
-		if !inserted {
-			// Lost the race with a parallel run; row exists, our work
-			// is already done.
-			continue
-		}
-
-		if _, err := s.store.EnsureWallet(ctx, creatorID); err != nil {
-			return credited, fmt.Errorf("ensure wallet: %w", err)
-		}
-
-		// The wallet transaction description is the last place a creator
-		// looks before opening a support ticket, so it carries the whole
-		// derivation, not just the total.
-		desc := fmt.Sprintf("Creator fund %s (%s): %s",
-			m.ContentType, day.Format("2006-01-02"),
-			ExplainQualityPayout(QualityPayoutExplanation{
-				ViewCount:        m.ViewCount,
-				RpmPaise:         rate.RpmPaise,
-				BaseGrossPaise:   baseGross,
-				MeasuredCQS:      m.AvgCQS,
-				Impressions:      m.Impressions,
-				EffectiveCQS:     earning.QualityEffectiveCQS,
-				MultiplierBps:    multiplierBps,
-				FloorBps:         band.FloorBps,
-				CeilingBps:       band.CeilingBps,
-				PivotCQS:         band.PivotCQS,
-				GrossPaise:       gross,
-				PlatformFeeBps:   cfg.PlatformFeeBps,
-				PlatformFeePaise: fee,
-				NetPaise:         net,
-			}))
-
-		// Wallet credit + wallet-side transaction row.
-		if err := s.store.CreditCreatorFundEarning(ctx, creatorID, net, defaultEarningsCurrency, earning.ID, desc); err != nil {
-			return credited, fmt.Errorf("credit wallet: %w", err)
-		}
-
-		// Double-entry: platform_revenue debited, creator wallet credited
-		// for the *gross*; the platform fee is captured separately as a
-		// platform_revenue → platform_revenue self-entry would be a no-op,
-		// so we book net-creator and fee-creator-to-platform as two
-		// distinct entries that sum to gross.
-		earningRef := earning.ID
-		if err := s.CreateLedgerEntry(
-			ctx,
-			platformOwnerID, platformRevenueAccountType,
-			creatorID, creatorWalletAccountType,
-			net, defaultEarningsCurrency,
-			creatorFundReferenceType, &earningRef,
-			fmt.Sprintf("cf_net:%s:%s", earning.ID, m.ContentType),
-			"creator_fund net credit",
-		); err != nil {
-			return credited, fmt.Errorf("ledger net credit: %w", err)
-		}
-		if fee > 0 {
-			if err := s.CreateLedgerEntry(
-				ctx,
-				platformOwnerID, platformRevenueAccountType,
-				platformOwnerID, platformFeeAccountType,
-				fee, defaultEarningsCurrency,
-				creatorFundReferenceType, &earningRef,
-				fmt.Sprintf("cf_fee:%s:%s", earning.ID, m.ContentType),
-				"creator_fund platform fee",
-			); err != nil {
-				return credited, fmt.Errorf("ledger fee entry: %w", err)
-			}
-		}
-		credited++
-	}
-	return credited, nil
-}
-
-// SettleCreatorFundDayForAllEligible drives the settlement worker. Walks
-// every eligible creator and settles `day`. Errors on a single creator
-// are logged and skipped so one bad row doesn't stall the batch.
-func (s *Service) SettleCreatorFundDayForAllEligible(ctx context.Context, day time.Time, log func(creatorID uuid.UUID, credited int, err error)) (int, error) {
-	creators, err := s.store.ListEligibleCreators(ctx)
-	if err != nil {
-		return 0, err
-	}
-	total := 0
-	for _, id := range creators {
-		credited, err := s.SettleCreatorFundDay(ctx, id, day)
-		if log != nil {
-			log(id, credited, err)
-		}
-		if err != nil {
-			continue
-		}
-		total += credited
-	}
-	return total, nil
-}
+// This used to be SettleCreatorFundDay / SettleCreatorFundDayForAllEligible:
+// one creator, one UTC day, computed and CREDITED in the same pass,
+// idempotent on (creator, day, content_type, region).
+//
+// The founder asked for a payment service that runs "not every day —
+// monthly once or twice, to calculate the monthly", so the per-day
+// PAYMENT path is gone. It has not been kept for back-fill, deliberately:
+// leaving a second path that credits a wallet per day, next to one that
+// credits per period, is exactly how a day gets paid twice — the two
+// paths had different idempotency keys and neither could see the other.
+//
+// What replaced it, in creator_fund_period.go:
+//
+//   AccrueCreatorFundDay          — the identical per-day measurement and
+//                                   pricing, writing the same
+//                                   creator_fund_earnings row, crediting
+//                                   nothing. Runs nightly.
+//   SettleCreatorFundPeriod       — accrues any missing day in the period,
+//                                   then credits the period's accruals
+//                                   once. This is the only code left in
+//                                   the service that moves fund money.
+//
+// Back-fill is therefore "settle the period that contains the day", which
+// is safe to run as often as you like: a day already credited carries
+// credited = true and cannot be claimed a second time.
 
 // ---------------------------------------------------------------------------
 // Earnings dashboard

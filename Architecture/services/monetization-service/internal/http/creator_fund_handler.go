@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/atpost/monetization-service/internal/service"
 	pgstore "github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -31,8 +32,8 @@ func (h *Handler) GetCreatorFundStatus(c *gin.Context) {
 	}
 	cfg := h.svc.CreatorFundConfigSnapshot()
 	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"row":             status.Row,
-		"decision":        status.Decision,
+		"row":              status.Row,
+		"decision":         status.Decision,
 		"platform_fee_bps": cfg.PlatformFeeBps,
 	}, nil)
 }
@@ -176,10 +177,17 @@ func (h *Handler) ListCreatorFundRatesAdmin(c *gin.Context) {
 	h.ListCreatorFundRates(c)
 }
 
-// ForceSettleCreatorFund is an admin escape hatch for re-running a
-// specific day's settlement (e.g. after a rate fix or after manually
-// repairing the analytics rollup). day=YYYY-MM-DD; idempotent.
-func (h *Handler) ForceSettleCreatorFund(c *gin.Context) {
+// ForceAccrueCreatorFundDay re-measures one day for every eligible
+// creator. It is NOT a payment any more: this endpoint used to credit
+// wallets, and now writes accrual rows that the period settlement pays.
+// Kept because "the analytics rollup for the 12th was wrong, re-measure
+// it" is a real operation, and because a re-measure is harmless when the
+// money for that period has not moved yet.
+//
+// day=YYYY-MM-DD. Idempotent: a day already accrued is skipped, and a day
+// already paid cannot be re-measured into a second payment because its
+// row carries credited = true.
+func (h *Handler) ForceAccrueCreatorFundDay(c *gin.Context) {
 	if _, ok := getAdminID(c); !ok {
 		return
 	}
@@ -193,12 +201,139 @@ func (h *Handler) ForceSettleCreatorFund(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "day must be YYYY-MM-DD", nil)
 		return
 	}
-	rows, err := h.svc.SettleCreatorFundDayForAllEligible(c.Request.Context(), day, nil)
+	rows, err := h.svc.AccrueCreatorFundDayForAllEligible(c.Request.Context(), day, nil)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"day": dayStr, "rows_credited": rows}, nil)
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"day":          dayStr,
+		"rows_accrued": rows,
+		"note":         "accrual only — no money moved. Run POST /admin/creator-fund/settle-period to pay.",
+	}, nil)
+}
+
+// SettleCreatorFundPeriod is the payment run, fired by hand. Same call
+// the scheduled worker makes, so an operator re-running a period sees
+// exactly what the worker would have done.
+//
+// period=YYYY-MM (calendar month) | YYYY-MM-H1 | YYYY-MM-H2 (twice
+// monthly). Omit it and the most recently closed period for the
+// configured cadence is used.
+//
+// Re-running a settled period is a no-op you can read off the response:
+// creators_newly_credited and credited_paise both come back zero, while
+// the statement figures stay whatever they were.
+func (h *Handler) SettleCreatorFundPeriod(c *gin.Context) {
+	if _, ok := getAdminID(c); !ok {
+		return
+	}
+	cfg := h.svc.CreatorFundConfigSnapshot()
+	var period service.SettlementPeriod
+	if key := c.Query("period"); key != "" {
+		p, err := service.ParsePeriodKey(key)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PERIOD", err.Error(), nil)
+			return
+		}
+		period = p
+	} else {
+		period = service.PreviousPeriod(time.Now().UTC(), cfg.SettlementCadence)
+	}
+
+	res, err := h.svc.SettleCreatorFundPeriodForAll(c.Request.Context(), period, nil)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"period":             period,
+		"period_label":       period.Label(),
+		"configured_cadence": service.NormalizeCadence(cfg.SettlementCadence),
+		"result":             res,
+		"platform_fee_bps":   cfg.PlatformFeeBps,
+	}, nil)
+}
+
+// SettleCreatorFundPeriodForCreator settles a single creator's period.
+// Useful when one creator's analytics was repaired and the rest of the
+// month is already correct.
+func (h *Handler) SettleCreatorFundPeriodForCreator(c *gin.Context) {
+	if _, ok := getAdminID(c); !ok {
+		return
+	}
+	creatorID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
+		return
+	}
+	cfg := h.svc.CreatorFundConfigSnapshot()
+	period := service.PreviousPeriod(time.Now().UTC(), cfg.SettlementCadence)
+	if key := c.Query("period"); key != "" {
+		p, perr := service.ParsePeriodKey(key)
+		if perr != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PERIOD", perr.Error(), nil)
+			return
+		}
+		period = p
+	}
+	st, err := h.svc.SettleCreatorFundPeriod(c.Request.Context(), creatorID, period)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, st, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Creator-facing period statements
+// ---------------------------------------------------------------------------
+
+// ListCreatorFundStatements answers "what did I earn, in which period,
+// and from what" — the three streams side by side rather than a fund
+// total and a start date. Newest period first.
+func (h *Handler) ListCreatorFundStatements(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	limit := 12
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	statements, err := h.svc.ListCreatorPeriodStatements(c.Request.Context(), userID, limit)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	cfg := h.svc.CreatorFundConfigSnapshot()
+	current := service.PeriodContaining(time.Now().UTC(), cfg.SettlementCadence)
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"cadence":        service.NormalizeCadence(cfg.SettlementCadence),
+		"current_period": gin.H{"key": current.Key, "label": current.Label(), "start": current.Start, "end": current.End},
+		"statements":     statements,
+	}, nil)
+}
+
+// GetCreatorFundStatement returns one period statement with the per-day,
+// per-content-type fund breakdown behind its fund line.
+func (h *Handler) GetCreatorFundStatement(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	st, err := h.svc.GetCreatorPeriodStatement(c.Request.Context(), userID, c.Param("periodKey"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PERIOD", err.Error(), nil)
+		return
+	}
+	if st == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "STATEMENT_NOT_FOUND", "No settlement for that period", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, st, nil)
 }
 
 // ---------------------------------------------------------------------------

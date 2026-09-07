@@ -28,7 +28,11 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	// t.Cleanup, not defer: deferred calls run BEFORE registered cleanups,
+	// so `defer pool.Close()` closed the pool out from under every fixture
+	// teardown below and left their rows behind in the shared database.
+	// Registered here first, LIFO puts the close last.
+	t.Cleanup(pool.Close)
 
 	store := postgres.New(pool)
 	svc := New(store, nil)
@@ -88,12 +92,12 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		credited, err := svc.SettleCreatorFundDay(ctx, creator, day)
+		accrued, err := svc.AccrueCreatorFundDay(ctx, creator, day)
 		if err != nil {
-			t.Fatalf("%s: settle failed: %v", tc.name, err)
+			t.Fatalf("%s: accrual failed: %v", tc.name, err)
 		}
-		if credited != 1 {
-			t.Fatalf("%s: credited %d rows, want 1", tc.name, credited)
+		if accrued != 1 {
+			t.Fatalf("%s: accrued %d rows, want 1", tc.name, accrued)
 		}
 
 		var e postgres.CreatorFundEarning
@@ -134,10 +138,10 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 		}
 		results = append(results, outcome{name: tc.name, earning: e, explanation: explanation})
 
-		// Re-settling the same day must not pay twice.
-		again, err := svc.SettleCreatorFundDay(ctx, creator, day)
+		// Re-accruing the same day must not measure it twice.
+		again, err := svc.AccrueCreatorFundDay(ctx, creator, day)
 		if err != nil || again != 0 {
-			t.Errorf("%s: re-settlement credited %d rows (err=%v), want 0", tc.name, again, err)
+			t.Errorf("%s: re-accrual wrote %d rows (err=%v), want 0", tc.name, again, err)
 		}
 	}
 
@@ -185,7 +189,11 @@ func TestLiveSettlementOfAZeroImpressionDayPaysTheNeutralAmount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	// t.Cleanup, not defer: deferred calls run BEFORE registered cleanups,
+	// so `defer pool.Close()` closed the pool out from under every fixture
+	// teardown below and left their rows behind in the shared database.
+	// Registered here first, LIFO puts the close last.
+	t.Cleanup(pool.Close)
 
 	svc := New(postgres.New(pool), nil)
 	day := time.Date(2026, 1, 16, 0, 0, 0, 0, time.UTC)
@@ -215,7 +223,7 @@ func TestLiveSettlementOfAZeroImpressionDayPaysTheNeutralAmount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := svc.SettleCreatorFundDay(ctx, creator, day); err != nil {
+	if _, err := svc.AccrueCreatorFundDay(ctx, creator, day); err != nil {
 		t.Fatal(err)
 	}
 
