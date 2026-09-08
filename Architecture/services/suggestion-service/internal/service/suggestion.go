@@ -538,7 +538,7 @@ func (s *Service) getPopularFallback(ctx context.Context, viewerID uuid.UUID, su
 		item := SuggestionItem{
 			CandidateUserID: id.String(),
 			ReasonCodes:     []string{"POPULAR"},
-			ExplainText:     "Popular on atpost",
+			ExplainText:     "Popular on " + brandName,
 			SourceBucket:    "trending",
 			IsFresh:         true,
 			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),

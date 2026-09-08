@@ -290,7 +290,7 @@ func ScoreFollowCandidate(input FollowScoringInput) FollowScoringOutput {
 	if input.IsNewCreator {
 		score *= 1.2
 		reasons = append(reasons, "NEW_CREATOR")
-		parts = append(parts, "New to atpost")
+		parts = append(parts, "New to "+brandName)
 	}
 
 	// Ignore decay
