@@ -70,9 +70,21 @@ func (s *Service) CreateCrosspost(ctx context.Context, sourcePostID, userID uuid
 		// state. Hardcoding an approved-looking value here would let a
 		// flagged or pending post become searchable by crossposting it.
 		embedReview := source.ReviewStatus
+		// link.CreatedAt is the embed post's own created_at, not an
+		// approximation of it. CreateCrosspostLink inserts the post and the
+		// link in ONE transaction and stamps both with NOW(), which in
+		// Postgres is transaction-start time — so the two values are equal by
+		// construction, and the link is the one of the pair this function has
+		// in hand.
+		//
+		// It matters because PostCreated is the only writer of
+		// analytics.content_ownership, and that row's created_at is what the
+		// creator fund windows earnings by. This call used to let the producer
+		// stamp time.Now() at publish time instead.
+		embedCreatedAt := link.CreatedAt
 		go func() {
 			if err := s.producer.PublishPostCreated(context.Background(), link.TargetPostID, userID,
-				source.Text, "public", embedContentType, embedReview, 0); err != nil {
+				source.Text, "public", embedContentType, embedReview, 0, embedCreatedAt); err != nil {
 				log.Printf("Warning: failed to publish embed post created event: %v", err)
 			}
 		}()

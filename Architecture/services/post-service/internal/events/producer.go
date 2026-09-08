@@ -33,7 +33,30 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 // outbox). Module 2 M2-P0-1: reviewStatus is REQUIRED and must be the
 // canonical persisted value of the row — search treats an empty value as
 // ineligible, so passing "" silently makes the post unsearchable.
-func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid.UUID, text, visibility, contentType, reviewStatus string, durationSeconds int) error {
+//
+// createdAt must be the ROW'S OWN posts.created_at, and is a parameter for
+// exactly that reason: this function used to stamp time.Now() itself, which
+// no caller could override and every caller was silently wrong about.
+//
+// It is not cosmetic. PostCreated is the only thing that writes
+// analytics.content_ownership, whose created_at is read by
+// idx_content_ownership_creator — the index the creator fund's daily
+// settlement and its 90-day eligibility scan both walk. A row dated by
+// publish time instead of creation time misdates every earning derived from
+// it, and nothing downstream can recover the true value because the event is
+// the only record that crosses the service boundary.
+//
+// The outbox paths already did this correctly — buildPostCreatedPayload
+// (schedule.go) and the thread path both read p.CreatedAt — so this was the
+// one path that invented a timestamp, and the backfill tool was more accurate
+// than production as a result.
+func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid.UUID, text, visibility, contentType, reviewStatus string, durationSeconds int, createdAt time.Time) error {
+	// A zero createdAt would serialise as year 1 and quietly park the content
+	// outside every window the fund queries. Refusing is better than a bad
+	// date nothing downstream can detect.
+	if createdAt.IsZero() {
+		return fmt.Errorf("PublishPostCreated: createdAt is required for post %s", postID)
+	}
 	payload := events.PostCreatedPayload{
 		PostID:          postID.String(),
 		AuthorID:        authorID.String(),
@@ -41,7 +64,7 @@ func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid
 		Visibility:      visibility,
 		ContentType:     contentType,
 		DurationSeconds: durationSeconds,
-		CreatedAt:       time.Now(),
+		CreatedAt:       createdAt,
 		ReviewStatus:    reviewStatus,
 		SearchRev:       1,
 	}
