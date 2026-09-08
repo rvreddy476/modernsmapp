@@ -35,4 +35,5 @@ use (
 	./tools/schemacheck
 	./tools/integration
 	./tools/identityrolebackfill
+	./tools/contentownershipbackfill
 )
