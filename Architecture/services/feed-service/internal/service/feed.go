@@ -150,7 +150,61 @@ const (
 	sourceRelatedTopic  = "related_topic"
 )
 
-func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) ([]FeedItem, error) {
+// HomeFeedResult is one page of the home feed plus the reason it is empty,
+// when it is. Three different situations used to reach the client as the
+// same bare `[]`: the viewer follows nobody, the people they follow have
+// posted nothing recently, and the feed failed. The third is now always an
+// error status (the narrowing filters below fail closed), and EmptyReason
+// separates the first two.
+type HomeFeedResult struct {
+	Items []FeedItem
+	// EmptyReason is set ONLY when Items is empty. It is surfaced as the
+	// X-Feed-Empty-Reason response header rather than as a body field:
+	// the shipped Android client decodes the shared `data`/`meta`
+	// envelope, `meta` is the platform-wide struct shared by every
+	// service, and an empty feed must stay a plain `[]` for it. A header
+	// is additive for every existing client and invisible to one that
+	// does not read it.
+	EmptyReason string
+}
+
+// The values of HomeFeedResult.EmptyReason.
+const (
+	// EmptyNoFollows: following_only, and the viewer follows nobody. The
+	// client should offer accounts to follow, not "nothing new".
+	EmptyNoFollows = "no_follows"
+	// EmptyNoConnections: circle_only, and the viewer has no connections.
+	EmptyNoConnections = "no_connections"
+	// EmptyNoRecentPosts: the graph is non-empty (or was not consulted)
+	// and simply produced nothing for this page.
+	EmptyNoRecentPosts = "no_recent_posts"
+)
+
+// coldStartAllowed reports whether the cold-start backfill of recommended
+// public posts may run for this request.
+//
+// It exists as a named predicate because the condition it replaced was
+// spelled inline and silently omitted the narrowing flags: a viewer who
+// follows nobody, asking explicitly for only the people they follow, was
+// served recommended strangers under the Following heading with nothing in
+// the response to reveal the substitution.
+//
+// The backfill itself is deliberately kept — a brand-new account with no
+// follows would otherwise land on an empty front door, and the web client
+// asks for `ranked` for exactly that reason. It is only forbidden when the
+// caller narrowed the request, where an empty page is the honest answer.
+func coldStartAllowed(before *time.Time, feedMode string, candidateCount int, circleOnly, followingOnly bool) bool {
+	if circleOnly || followingOnly {
+		return false // an explicit narrowing is never backfilled
+	}
+	return before == nil && candidateCount == 0 && feedMode == "ranked"
+}
+
+func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) (HomeFeedResult, error) {
+	// Why this page might come back empty, filled in by the narrowing
+	// filters below and reported only if it actually is.
+	emptyReason := ""
+
 	// Refresh the viewer's mutual-follow set if it is missing or stale.
 	// Non-blocking and detached — this request is scored with whatever is
 	// already there. See mutuals.go.
@@ -181,7 +235,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		items, err = s.scyllaStore.GetHomeTimeline(ctx, userID, fetchLimit)
 	}
 	if err != nil {
-		return nil, err
+		return HomeFeedResult{}, err
 	}
 
 	// Convert to FeedItems, optionally filtering out viewer's own original posts.
@@ -211,61 +265,67 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// costs an unavailable feed; the alternative costs a safety guarantee.
 	blockedMuted, bmErr := s.getBlockedAndMuted(ctx, userID)
 	if bmErr != nil {
-		return nil, fmt.Errorf("feed unavailable: block/mute state could not be resolved: %w", bmErr)
+		return HomeFeedResult{}, fmt.Errorf("feed unavailable: block/mute state could not be resolved: %w", bmErr)
 	}
 	blockedSet := blockedSetOf(blockedMuted)
 	candidates = applyBlockFilter(candidates, blockedSet)
 	candidates = s.applyHiddenAuthorFilter(ctx, candidates)
 
-	// Filter to circle-only (friends) if requested
-	if circleOnly && len(candidates) > 0 {
+	// Filter to circle-only (friends) if requested.
+	//
+	// Resolved even when the timeline came back empty, unlike the version
+	// that only ran on a non-empty candidate list: "you have no
+	// connections" and "your connections have posted nothing recently" are
+	// different answers, and the empty reason below is the only place the
+	// client can learn which. Fails CLOSED, like the reels and watch
+	// Following tabs: an unresolved graph is an error, never a page under
+	// a heading that promises friends.
+	if circleOnly {
 		friends, err := s.fetchCircleMembers(ctx, userID)
 		if err != nil {
 			log.Printf("circle_only filter: failed to fetch friends for %s: %v", userID, err)
-		} else if len(friends) > 0 {
-			friendSet := make(map[uuid.UUID]struct{}, len(friends))
-			for _, fid := range friends {
-				friendSet[fid] = struct{}{}
-			}
-			filtered := candidates[:0]
-			for _, c := range candidates {
-				if _, ok := friendSet[c.AuthorID]; ok {
-					c.Source = sourceCircle
-					filtered = append(filtered, c)
-				}
-			}
-			candidates = filtered
-		} else {
-			candidates = nil
+			return HomeFeedResult{}, fmt.Errorf("home circle filter: %w", err)
 		}
+		if len(friends) == 0 {
+			emptyReason = EmptyNoConnections
+		}
+		friendSet := make(map[uuid.UUID]struct{}, len(friends))
+		for _, fid := range friends {
+			friendSet[fid] = struct{}{}
+		}
+		filtered := candidates[:0]
+		for _, c := range candidates {
+			if _, ok := friendSet[c.AuthorID]; ok {
+				c.Source = sourceCircle
+				filtered = append(filtered, c)
+			}
+		}
+		candidates = filtered
 	}
 
 	// Filter to following-only (one-way follow) if requested.
 	// Distinct from circle_only, which is mutual friends. Following matches the
 	// "Following" tab semantics: posts authored by users the viewer follows.
-	if followingOnly && len(candidates) > 0 {
+	// Same two rules as circle_only above: resolved unconditionally, and
+	// failing closed rather than serving the unfiltered timeline.
+	if followingOnly {
 		following, err := s.fetchFollowing(ctx, userID)
 		if err != nil {
 			log.Printf("following_only filter: failed to fetch follows for %s: %v", userID, err)
-		} else if len(following) > 0 {
-			followSet := make(map[uuid.UUID]struct{}, len(following))
-			for _, fid := range following {
-				followSet[fid] = struct{}{}
-			}
-			filtered := candidates[:0]
-			for _, c := range candidates {
-				if _, ok := followSet[c.AuthorID]; ok {
-					filtered = append(filtered, c)
-				}
-			}
-			candidates = filtered
-		} else {
-			candidates = nil
+			return HomeFeedResult{}, fmt.Errorf("home following filter: %w", err)
 		}
+		if len(following) == 0 && emptyReason == "" {
+			emptyReason = EmptyNoFollows
+		}
+		candidates = filterByAuthorSet(candidates, following)
 	}
 
-	// Cold-start fallback: if timeline is empty, fetch recent public posts (only for ranked/discovery feeds)
-	if before == nil && len(candidates) == 0 && feedMode == "ranked" {
+	// Cold-start fallback: if the timeline is empty, fetch recent public
+	// posts. See coldStartAllowed — in particular, an explicit narrowing
+	// (following_only / circle_only) forbids it, because backfilling
+	// strangers under a heading that promises follows is a lie the client
+	// has no way to detect.
+	if coldStartAllowed(before, feedMode, len(candidates), circleOnly, followingOnly) {
 		log.Printf("Cold-start fallback triggered for user %s (empty timeline), fetching from %s", userID, s.postServiceURL)
 		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
 		if err != nil {
@@ -326,7 +386,13 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		candidates = candidates[:limit]
 	}
 
-	return candidates, nil
+	if len(candidates) == 0 {
+		if emptyReason == "" {
+			emptyReason = EmptyNoRecentPosts
+		}
+		return HomeFeedResult{Items: candidates, EmptyReason: emptyReason}, nil
+	}
+	return HomeFeedResult{Items: candidates}, nil
 }
 
 // GetFlickFeed returns the first flick page for backward-compatible callers.
@@ -424,13 +490,20 @@ func filterByAuthorSet(candidates []FeedItem, authors []uuid.UUID) []FeedItem {
 
 // GetLongVideoFeed returns the first long-video page for backward-compatible callers.
 func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, _, err := s.GetLongVideoFeedPage(ctx, userID, limit, "")
+	items, _, err := s.GetLongVideoFeedPage(ctx, userID, limit, "", false)
 	return items, err
 }
 
 // GetLongVideoFeedPage returns a ranked timestamp-keyset page.
-func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string) ([]FeedItem, string, error) {
-	candidates, next, blocked, err := s.videoTimelineWindow(ctx, userID, limit, before, false)
+//
+// followingOnly has the same meaning as everywhere else on this handler:
+// only long videos by authors the viewer follows. /v1/feed/videos used to
+// accept the parameter and silently drop it, so a client that narrowed the
+// request got the whole surface back — including the discovery fill's
+// recommended strangers — with nothing in the response to say the
+// narrowing had been ignored.
+func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
+	candidates, next, blocked, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly)
 	if err != nil {
 		return nil, "", err
 	}
@@ -446,7 +519,12 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 	// timeline rows and fails closed with them: a fill error leaves the
 	// page as the timeline produced it rather than serving unfiltered
 	// strangers. Later pages stay timeline-only, keyed by the cursor.
-	if before == "" && len(candidates) < limit {
+	//
+	// followingOnly forbids it outright, for the same reason the home
+	// feed's cold start is forbidden under a narrowing: a short page is
+	// the honest answer to "only the people I follow", and topping it up
+	// with recommendations is a substitution the client cannot see.
+	if discoveryFillAllowed(followingOnly, before, len(candidates), limit) {
 		fill, err := s.longVideoDiscoveryFill(ctx, userID, blocked, "", limit*2)
 		if err != nil {
 			log.Printf("long video discovery fill failed for %s: %v", userID, err)
@@ -509,6 +587,21 @@ func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, lim
 	}
 	candidates, next := keysetWindow(candidates, limit)
 	return candidates, next, blocked, nil
+}
+
+// discoveryFillAllowed reports whether the Tube first-page discovery fill
+// may top a short page up with recommended public long videos.
+//
+// The sibling of coldStartAllowed, and forbidden for the same reason: a
+// narrowed request ("only the people I follow") is answered with what the
+// narrowing produced, however short, never topped up with strangers. The
+// category surface adds its own condition — the timeline must be exhausted,
+// not merely out of window budget — on top of this one.
+func discoveryFillAllowed(followingOnly bool, before string, have, limit int) bool {
+	if followingOnly {
+		return false // an explicit narrowing is never filled
+	}
+	return before == "" && have < limit
 }
 
 // longVideoDiscoveryFill is the recent-public long-video source behind the

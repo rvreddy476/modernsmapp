@@ -136,11 +136,12 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 		cursor = &parsed
 	}
 
-	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, followingOnly, cursor)
+	result, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, followingOnly, cursor)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
+	feedItems := result.Items
 
 	// Hydrate with full post details from post-service.
 	// On failure: fail loud (502) instead of silently returning the
@@ -174,6 +175,15 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Mode", feedMode)
+	// Why the page is empty, when it is: `no_follows` / `no_connections`
+	// (the viewer's graph is empty, so a narrowed feed has nothing to
+	// draw on) or `no_recent_posts`. A header, not a body field — the
+	// body stays a bare `[]` for the shipped Android client, and `meta`
+	// is the platform-wide envelope shared by every service. The third
+	// kind of empty, a failure, is a 4xx/5xx and never reaches here.
+	if result.EmptyReason != "" {
+		c.Writer.Header().Set("X-Feed-Empty-Reason", result.EmptyReason)
+	}
 	var meta *api.Meta
 	if len(feedItems) >= limit {
 		meta = &api.Meta{NextCursor: feedItems[len(feedItems)-1].CreatedAt.UTC().Format(time.RFC3339Nano)}
@@ -269,6 +279,12 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 
+	// Tube's list is unnarrowed by default, but the parameter is read
+	// rather than ignored: it used to be dropped silently, so a client
+	// that asked for only the people it follows got the whole surface —
+	// discovery fill included — with nothing saying so.
+	followingOnly := c.DefaultQuery("following_only", "") == "true"
+
 	// Tube category filter (2026-09-05): `category=<taxonomy id>` keeps
 	// only long videos in that category. Applied after hydration inside
 	// the service (category lives on the post), which walks further
@@ -280,7 +296,7 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 	if category != "" {
-		hydrated, next, err := h.svc.GetLongVideoCategoryPage(c.Request.Context(), userID, limit, before, category)
+		hydrated, next, err := h.svc.GetLongVideoCategoryPage(c.Request.Context(), userID, limit, before, category, followingOnly)
 		if err != nil {
 			log.Printf("long video feed (category %q) failed: %v", category, err)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
@@ -292,7 +308,7 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 
-	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before)
+	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

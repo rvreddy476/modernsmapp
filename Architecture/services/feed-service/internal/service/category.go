@@ -150,10 +150,12 @@ func filterHydratedByCategory(posts []HydratedPost, category string) []HydratedP
 // GetLongVideoCategoryPage is /v1/feed/videos narrowed to one category:
 // hydrated, filtered, first-page discovery fill (itself category-narrowed
 // at post-service), then ranked as one window.
-func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string) ([]HydratedPost, string, error) {
+// followingOnly narrows every window the category scan pulls, exactly as on
+// the unfiltered surface, and suppresses the discovery fill below.
+func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, followingOnly bool) ([]HydratedPost, string, error) {
 	var blocked map[uuid.UUID]struct{}
 	fetch := func(ctx context.Context, before string, limit int) ([]FeedItem, string, error) {
-		items, next, b, err := s.videoTimelineWindow(ctx, userID, limit, before, false)
+		items, next, b, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly)
 		blocked = b
 		return items, next, err
 	}
@@ -166,7 +168,7 @@ func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID
 	// with one extra condition: the timeline must be EXHAUSTED, not merely
 	// out of window budget. A fill on a page whose cursor still points into
 	// the timeline could resurface the same post on a later page.
-	if before == "" && page.Exhausted && len(page.Posts) < limit {
+	if page.Exhausted && discoveryFillAllowed(followingOnly, before, len(page.Posts), limit) {
 		fill, err := s.longVideoDiscoveryFill(ctx, userID, blocked, category, limit*2)
 		if err != nil {
 			log.Printf("long video discovery fill (category %q) failed for %s: %v", category, userID, err)
