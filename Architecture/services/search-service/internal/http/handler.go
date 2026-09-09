@@ -361,9 +361,15 @@ func (h *Handler) universalSearchMultiEntity(c *gin.Context, query string) {
 		if r.Items == nil {
 			r.Items = []map[string]any{}
 		}
-		if t == search.EntityPosts {
+		switch t {
+		case search.EntityPosts:
 			// Same author / thumbnail hydration as /v1/search/posts.
 			r.Items = h.rankedPostItems(c.Request.Context(), viewerID, r.Items)
+		case search.EntityUsers:
+			// Same avatar hydration as /v1/search/users and the legacy
+			// ?type= branch — the grouped bucket used to be the only
+			// people surface that returned no avatar_url.
+			r.Items = h.rankedUserItems(c.Request.Context(), viewerID, r.Items)
 		}
 		results[t] = r
 		counts[t] = len(r.Items)
@@ -474,6 +480,16 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 		return
 	}
 
+	// Always an array, never null. SearchHashtags returns a nil slice when
+	// the aggregation matches nothing, and a nil []string marshals to JSON
+	// `null` — so an empty result read as {"hashtags":null} rather than
+	// {"hashtags":[]}. Every other list surface in this service emits [],
+	// and a client that maps over the field should not have to special-case
+	// this one. Additive: [] is what a caller handling null already expects
+	// to mean "no matches".
+	if hashtags == nil {
+		hashtags = []string{}
+	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"hashtags": hashtags}, nil)
 }
 

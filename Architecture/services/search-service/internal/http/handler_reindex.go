@@ -36,7 +36,10 @@ func (h *Handler) ReindexUsers(c *gin.Context) {
 				"fetched", res.Fetched, "indexed", res.Indexed)
 			return
 		}
-		slog.Info("admin reindex/users finished", "fetched", res.Fetched, "indexed", res.Indexed)
+		slog.Info("admin reindex/users finished",
+			"fetched", res.Fetched, "indexed", res.Indexed,
+			"usernames_preserved", res.UsernamesPreserved,
+			"usernames_missing", res.UsernamesMissing)
 	}()
 
 	api.JSON(c.Writer, http.StatusAccepted, map[string]string{

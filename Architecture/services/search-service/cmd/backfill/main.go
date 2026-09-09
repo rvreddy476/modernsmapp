@@ -58,6 +58,51 @@ func extractHashtags(text string) []string {
 	return tags
 }
 
+// postHashtags returns the tags a post document should carry.
+//
+// WHY THIS IS NOT JUST extractHashtags(text):
+//
+// posts.hashtags is the authoritative array — it is what post-service
+// persists and what /v1/hashtags/* serves. The composer writes it from a
+// STRUCTURED tag field, so a post can carry tags that never appear as
+// "#tag" anywhere in its body. Deriving the index's tags by regex over the
+// text alone therefore drops every structurally-tagged post on the floor:
+// on the dev rig, 3 of the 7 tagged posts indexed with no hashtags at all,
+// and the tags "momentum", "worker", "test", "my" and "bangaram" existed in
+// Postgres while being unfindable through search.
+//
+// The stored column leads (it is the source of truth and preserves the
+// author's chosen order); inline "#tag" text mentions are unioned in
+// behind it, because a tag typed into the body and never registered in the
+// column is still a tag the author wrote. Both sides are normalized to
+// lowercase, stripped of a leading '#', and de-duplicated, so the terms
+// aggregation in SearchHashtags sees one bucket per tag.
+func postHashtags(stored []string, text string) []string {
+	out := make([]string, 0, len(stored)+4)
+	seen := make(map[string]struct{}, len(stored)+4)
+	add := func(raw string) {
+		t := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "#")))
+		if t == "" {
+			return
+		}
+		if _, ok := seen[t]; ok {
+			return
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	for _, s := range stored {
+		add(s)
+	}
+	for _, s := range extractHashtags(text) {
+		add(s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func main() {
 	var (
 		entity = flag.String("entity", "all", "posts|users|hashtags|products|communities|channels|all")
@@ -205,6 +250,7 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	             (p.deleted_at IS NOT NULL) AS is_deleted,
 	             (p.publish_at IS NOT NULL) AS is_scheduled,
 	             COALESCE(p.title, ''),
+	             COALESCE(p.hashtags, ARRAY[]::text[]),
 	             COALESCE((SELECT pm.media_id::text FROM post_media pm
 	                       WHERE pm.post_id = p.id ORDER BY pm.position LIMIT 1), ''),
 	             COALESCE((SELECT pm.kind FROM post_media pm
@@ -225,16 +271,28 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	defer rows.Close()
 
 	var indexed, removed, skipped int
+	// Hashtag honesty counters, in the spirit of the product reindex's
+	// index_total/orphans: report what the run could NOT repair, not only
+	// what it wrote.
+	//
+	// columnOnly counts eligible posts whose tags exist only in
+	// posts.hashtags and appear nowhere as "#tag" in the body. Those are
+	// exactly the posts the LIVE Kafka path cannot index correctly, because
+	// PostCreatedPayload / PostSearchEligibilityChangedPayload carry no
+	// hashtags field and the consumer can only regex the text. A backfill
+	// repairs them; the next edit through the live path loses them again.
+	var withTags, columnOnly int
 	for rows.Next() {
 		var id, authorID, text, visibility, reviewStatus, contentType string
 		var title, mediaID, mediaKind string
+		var storedHashtags []string
 		var durationMs int
 		var searchRev int64
 		var createdAt time.Time
 		var isDeleted, isScheduled bool
 		if err := rows.Scan(&id, &authorID, &text, &visibility,
 			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted, &isScheduled,
-			&title, &mediaID, &mediaKind, &durationMs); err != nil {
+			&title, &storedHashtags, &mediaID, &mediaKind, &durationMs); err != nil {
 			return indexed, err
 		}
 
@@ -285,6 +343,14 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 			continue
 		}
 
+		tags := postHashtags(storedHashtags, text)
+		if len(tags) > 0 {
+			withTags++
+			if len(extractHashtags(text)) < len(tags) {
+				columnOnly++
+			}
+		}
+
 		if dry {
 			indexed++
 			continue
@@ -325,7 +391,7 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 				SearchRev:    searchRev,
 				PostType:     contentType,
 				ContentType:  contentType,
-				Hashtags:     extractHashtags(text),
+				Hashtags:     tags,
 				CreatedAt:    createdAt,
 				Title:        title,
 				DurationMs:   durationMs,
@@ -339,7 +405,18 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 		indexed++
 	}
 	slog.Info("backfill posts: reconciled",
-		"indexed", indexed, "removed_ineligible", removed, "skipped_dry", skipped)
+		"indexed", indexed, "removed_ineligible", removed, "skipped_dry", skipped,
+		"documents_with_hashtags", withTags,
+		"hashtags_from_column_only", columnOnly)
+	if columnOnly > 0 {
+		slog.Warn("backfill posts: these documents will LOSE their hashtags on the next live update",
+			"count", columnOnly,
+			"why", "their tags live only in posts.hashtags and never appear as #tag in the body; "+
+				"PostCreated / PostSearchEligibilityChanged carry no hashtags field, so the Kafka "+
+				"consumer re-derives tags by regex over text and writes an empty array",
+			"fix", "post-service must publish posts.hashtags on both payloads; until then a backfill "+
+				"is the only path that indexes them and every edit undoes it")
+	}
 	return indexed, rows.Err()
 }
 
@@ -361,7 +438,12 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 	// profile.profiles is the canonical source. We tolerate a couple of
 	// schema variants (column subset) by selecting defensively.
 	args := []any{}
-	q := `SELECT user_id, COALESCE(username,''), COALESCE(display_name,''), COALESCE(bio,''), COALESCE(is_verified, false)
+	// created_at is selected, not just ordered by: BulkIndexUsers is a
+	// full-document replace, so a column left out of this SELECT is a
+	// column erased from every document the run touches. created_at drives
+	// the gauss recency function in the ranked query.
+	q := `SELECT user_id, COALESCE(username,''), COALESCE(display_name,''), COALESCE(bio,''),
+	             COALESCE(is_verified, false), created_at
 	      FROM profile.profiles ORDER BY created_at DESC`
 	if limit > 0 {
 		q += limitClause(limit, 1)
@@ -376,7 +458,22 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 	}
 	defer rows.Close()
 
+	// Usernames do NOT live in profile.profiles — that column is NULL for
+	// every row on every environment checked (50/50 on the dev rig). The
+	// authority is app.users.username, behind user-service. Because
+	// BulkIndexUsers is a full-document replace, indexing the profile row
+	// as-is does not merely fail to add a username: it OVERWRITES the one
+	// that the UserRegistered event delivered, with "". That is why almost
+	// every users_v1 document carries username:"" and handle search
+	// matches nothing.
+	//
+	// So the profile row supplies display_name / bio / verified, and the
+	// username is overlaid from app.users. Missing here means missing
+	// everywhere, and is left empty rather than guessed.
+	handles := loadUsernames(ctx, appDSN)
+
 	count := 0
+	missingUsername := 0
 	docs := make([]search.UserDoc, 0, 500)
 	flush := func() error {
 		if dry || len(docs) == 0 {
@@ -390,8 +487,16 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 	}
 	for rows.Next() {
 		var d search.UserDoc
-		if err := rows.Scan(&d.UserID, &d.Username, &d.DisplayName, &d.Bio, &d.IsVerified); err != nil {
+		var createdAt *time.Time
+		if err := rows.Scan(&d.UserID, &d.Username, &d.DisplayName, &d.Bio, &d.IsVerified, &createdAt); err != nil {
 			return count, err
+		}
+		d.CreatedAt = createdAt
+		if d.Username == "" {
+			d.Username = handles[d.UserID]
+		}
+		if d.Username == "" {
+			missingUsername++
 		}
 		docs = append(docs, d)
 		if len(docs) >= 500 {
@@ -403,11 +508,56 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 	if err := flush(); err != nil {
 		slog.Warn("backfill users: final flush failed", "err", err)
 	}
+	if missingUsername > 0 {
+		slog.Warn("backfill users: indexed documents with no username — these users are unfindable by handle",
+			"count", missingUsername,
+			"why", "neither profile.profiles.username nor app.users.username holds a value for them")
+	}
 	if dry {
 		// In dry-run we never indexed but rows-scanned is the meaningful count.
 		count = -1
 	}
 	return count, rows.Err()
+}
+
+// loadUsernames reads the authoritative user_id -> username map from
+// app.users (user-service's table). Best-effort: an unreachable or
+// differently-shaped app DB yields an empty map, which leaves every
+// username exactly as the profile row had it rather than blanking it.
+func loadUsernames(ctx context.Context, appDSN string) map[string]string {
+	out := map[string]string{}
+	if strings.TrimSpace(appDSN) == "" {
+		slog.Warn("backfill users: POSTGRES_DSN unset — usernames cannot be resolved; " +
+			"documents will index with an empty username")
+		return out
+	}
+	pool, err := connect(ctx, appDSN, "APP DSN (usernames)")
+	if err != nil {
+		slog.Warn("backfill users: app DB unreachable; usernames not overlaid", "err", err)
+		return out
+	}
+	defer pool.Close()
+
+	rows, err := pool.Query(ctx,
+		`SELECT id::text, COALESCE(NULLIF(username, ''), NULLIF(handle, ''), '')
+		 FROM public.users`)
+	if err != nil {
+		slog.Warn("backfill users: username query failed; usernames not overlaid", "err", err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, username string
+		if err := rows.Scan(&id, &username); err != nil {
+			slog.Warn("backfill users: username scan failed", "err", err)
+			return out
+		}
+		if username != "" {
+			out[id] = username
+		}
+	}
+	slog.Info("backfill users: usernames loaded from app.users", "resolved", len(out))
+	return out
 }
 
 // --- hashtags --------------------------------------------------------------

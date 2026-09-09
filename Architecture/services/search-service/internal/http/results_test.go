@@ -76,3 +76,58 @@ func TestContentTypesForKind(t *testing.T) {
 		t.Fatal("unknown kind must be rejected")
 	}
 }
+
+// The grouped `users` bucket used to pass raw _source maps straight
+// through, so it was the only people surface with no avatar_url at all.
+// Hydration must ADD that key without dropping anything the bucket already
+// carried — an earlier attempt round-tripped the map through
+// search.UserDoc and silently deleted created_at, turning an avatar fix
+// into a field removal for the web client.
+func TestRankedUserItemsIsStrictlyAdditive(t *testing.T) {
+	h := &Handler{} // no store, no media client: avatars resolve to null
+	items := []map[string]any{{
+		"user_id":          "u1",
+		"username":         "call.usera",
+		"display_name":     "Call Usera",
+		"bio":              "",
+		"created_at":       "2026-08-29T13:32:03.691611+05:30",
+		"engagement_score": float64(0),
+		"is_verified":      false,
+	}}
+
+	got := h.rankedUserItems(context.Background(), uuid.Nil, items)
+	if len(got) != 1 {
+		t.Fatalf("items = %d", len(got))
+	}
+	row := got[0]
+
+	// avatar_url is present even when nothing could resolve it, so a
+	// client never has to distinguish "absent" from "no avatar".
+	if v, ok := row["avatar_url"]; !ok {
+		t.Errorf("row lacks avatar_url: %#v", row)
+	} else if v != nil {
+		t.Errorf("avatar_url = %#v, want nil with no media client", v)
+	}
+
+	// Nothing the bucket used to carry may disappear.
+	for key, want := range map[string]any{
+		"user_id":      "u1",
+		"username":     "call.usera",
+		"display_name": "Call Usera",
+		"created_at":   "2026-08-29T13:32:03.691611+05:30",
+		"is_verified":  false,
+	} {
+		if row[key] != want {
+			t.Errorf("row[%q] = %#v, want %#v", key, row[key], want)
+		}
+	}
+}
+
+// An empty bucket must stay an empty list, not become null.
+func TestRankedUserItemsEmpty(t *testing.T) {
+	h := &Handler{}
+	got := h.rankedUserItems(context.Background(), uuid.Nil, []map[string]any{})
+	if got == nil || len(got) != 0 {
+		t.Fatalf("got = %#v, want empty non-nil slice", got)
+	}
+}

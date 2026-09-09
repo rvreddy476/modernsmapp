@@ -298,6 +298,19 @@ type UserDoc struct {
 	FollowerCount   int     `json:"follower_count,omitempty"`
 	PostCount       int     `json:"post_count,omitempty"`
 	EngagementScore float64 `json:"engagement_score"`
+	// CreatedAt is the account's creation time. It exists on this struct
+	// for one reason: BulkIndexUsers is a full-document REPLACE, so any
+	// field the struct cannot represent is destroyed by every reindex.
+	// created_at feeds the gauss recency function in
+	// buildFunctionScoreQuery, so losing it silently flattens user
+	// ranking — and it did: a reindex wiped created_at from all 50
+	// documents on the dev rig, 46 of which had one.
+	//
+	// A pointer with omitempty so a document whose creation time is
+	// genuinely unknown writes no field at all, rather than stamping the
+	// zero year 1 date onto it and telling the decay function this
+	// account is two millennia old.
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
 type PostDoc struct {

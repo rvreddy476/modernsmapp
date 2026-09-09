@@ -164,6 +164,62 @@ func (h *Handler) userResults(ctx context.Context, viewerID uuid.UUID, docs []se
 	return rows
 }
 
+// rankedUserItems hydrates the multi-entity `users` items the same way
+// the legacy ?type= branch and /v1/search/users do.
+//
+// The grouped branch previously passed users straight through as raw
+// OpenSearch _source maps, so the `users` bucket carried no avatar_url at
+// all while every other surface returning the same people had one. A
+// client rendering the grouped response got faceless rows.
+//
+// This deliberately reuses userResults rather than introducing a second
+// avatar mechanism: the media id on the user document is resolved through
+// the same media-service batch, choosing the same rendition, and remains
+// best-effort — an unresolved avatar is a null field, never a dropped row.
+//
+// The hydrated fields are MERGED ONTO the original _source map rather than
+// replacing it. Round-tripping the raw map through search.UserDoc and back
+// would silently drop every key the struct has no field for — created_at,
+// among others — turning an avatar fix into a field removal for a client
+// that already reads the grouped shape. Merging keeps the change strictly
+// additive: every key the bucket used to carry is still there, plus
+// avatar_url.
+func (h *Handler) rankedUserItems(ctx context.Context, viewerID uuid.UUID, items []map[string]any) []map[string]any {
+	if len(items) == 0 {
+		return items
+	}
+	docs := make([]search.UserDoc, 0, len(items))
+	for _, it := range items {
+		raw, err := json.Marshal(it)
+		if err != nil {
+			continue
+		}
+		var d search.UserDoc
+		if err := json.Unmarshal(raw, &d); err != nil {
+			continue
+		}
+		docs = append(docs, d)
+	}
+
+	// user_id -> hydrated avatar. A row whose avatar could not be resolved
+	// still gets the key, as an explicit null, so the field's presence does
+	// not depend on media-service being reachable.
+	avatars := make(map[string]*string, len(docs))
+	for _, r := range h.userResults(ctx, viewerID, docs) {
+		avatars[r.UserID] = r.AvatarURL
+	}
+
+	for _, it := range items {
+		id, _ := it["user_id"].(string)
+		if url, ok := avatars[id]; ok && url != nil {
+			it["avatar_url"] = *url
+		} else {
+			it["avatar_url"] = nil
+		}
+	}
+	return items
+}
+
 // rankedPostItems hydrates the multi-entity `posts` items (raw _source
 // maps) into the same row shape, returned as maps so the ranked response
 // keeps its type.
