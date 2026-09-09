@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -13,6 +15,64 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+// ─── Video authoring: shared error mapping and enum validation ────────────────
+
+// writeVideoAuthoringError is the ONE mapping for every ownership /
+// visibility refusal on the authoring endpoints (cards, end screens,
+// chapters, playlists and playlist items).
+//
+// 404 for "no such row", 403 for "not yours". A non-owner therefore learns
+// that the post or playlist exists — a deliberate choice, matching what this
+// service already answers for the identical shape (AddVideoSeriesEpisode,
+// DeletePlaylist, RemoveCrosspost, the product-tag routes) and what the
+// sibling GET routes for cards / chapters / end screens already reveal.
+// Reason it out in one place rather than have each endpoint pick its own.
+//
+// Anything unrecognised is a 500: an unexpected error must never be reported
+// as a successful or merely-forbidden outcome.
+func writeVideoAuthoringError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrPostNotFound),
+		errors.Is(err, service.ErrPlaylistNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrNotPostAuthor),
+		errors.Is(err, service.ErrNotPlaylistOwner),
+		errors.Is(err, service.ErrPlaylistPrivate):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	}
+}
+
+// The two type enums. They are NOT the same list and must not be unified:
+// cards can point at a poll, end screens can offer a channel subscribe.
+// Both mirror the CHECK constraints in migrations/012_posttube_features.sql;
+// validating here turns a constraint violation (500) into a 400 that names
+// the bad value.
+var (
+	videoCardTypeList = []string{"video", "playlist", "poll", "external_link"}
+	endScreenTypeList = []string{"video", "playlist", "channel_subscribe", "external_link"}
+
+	validVideoCardTypes = sliceToSet(videoCardTypeList)
+	validEndScreenTypes = sliceToSet(endScreenTypeList)
+)
+
+func sliceToSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		set[v] = true
+	}
+	return set
+}
+
+func invalidEnumMessage(field string, index int, key, got string, allowed []string) string {
+	return fmt.Sprintf("%s[%d].%s %q is not valid; allowed values are %s",
+		field, index, key, got, strings.Join(allowed, ", "))
+}
 
 // ─── Video Series ─────────────────────────────────────────────────────────────
 
@@ -227,17 +287,7 @@ func (h *Handler) GetPlaylist(c *gin.Context) {
 
 	p, err := h.svc.GetPlaylist(c.Request.Context(), playlistID, callerID)
 	if err != nil {
-		status := http.StatusInternalServerError
-		code := "INTERNAL_ERROR"
-		msg := err.Error()
-		if msg == "playlist not found" {
-			status = http.StatusNotFound
-			code = "NOT_FOUND"
-		} else if msg == "forbidden: playlist is private" {
-			status = http.StatusForbidden
-			code = "FORBIDDEN"
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, msg, nil)
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, p, nil)
@@ -255,17 +305,7 @@ func (h *Handler) DeletePlaylist(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DeletePlaylist(c.Request.Context(), userID, playlistID); err != nil {
-		status := http.StatusInternalServerError
-		code := "INTERNAL_ERROR"
-		msg := err.Error()
-		if msg == "playlist not found" {
-			status = http.StatusNotFound
-			code = "NOT_FOUND"
-		} else if msg == "forbidden: you do not own this playlist" {
-			status = http.StatusForbidden
-			code = "FORBIDDEN"
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, msg, nil)
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
@@ -277,7 +317,7 @@ type addPlaylistItemRequest struct {
 }
 
 func (h *Handler) AddPlaylistItem(c *gin.Context) {
-	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
@@ -297,15 +337,15 @@ func (h *Handler) AddPlaylistItem(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
-	if err := h.svc.AddPlaylistItem(c.Request.Context(), playlistID, postID, req.Position); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	if err := h.svc.AddPlaylistItem(c.Request.Context(), userID, playlistID, postID, req.Position); err != nil {
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, gin.H{"playlist_id": playlistID, "post_id": postID, "position": req.Position}, nil)
 }
 
 func (h *Handler) RemovePlaylistItem(c *gin.Context) {
-	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
@@ -320,8 +360,8 @@ func (h *Handler) RemovePlaylistItem(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
-	if err := h.svc.RemovePlaylistItem(c.Request.Context(), playlistID, postID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	if err := h.svc.RemovePlaylistItem(c.Request.Context(), userID, playlistID, postID); err != nil {
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
@@ -333,9 +373,17 @@ func (h *Handler) GetPlaylistItems(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
 		return
 	}
-	items, err := h.svc.GetPlaylistItems(c.Request.Context(), playlistID)
+	// Same visibility rule as GET /v1/playlists/:playlistId — a private
+	// playlist's contents are its creator's alone.
+	var callerID *uuid.UUID
+	if raw := c.GetHeader("X-User-Id"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			callerID = &id
+		}
+	}
+	items, err := h.svc.GetPlaylistItems(c.Request.Context(), playlistID, callerID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	if items == nil {
@@ -377,7 +425,7 @@ type saveChaptersRequest struct {
 }
 
 func (h *Handler) SaveChapters(c *gin.Context) {
-	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
@@ -405,8 +453,8 @@ func (h *Handler) SaveChapters(c *gin.Context) {
 		}
 	}
 
-	if err := h.svc.SaveChapters(c.Request.Context(), postID, chapters); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	if err := h.svc.SaveChapters(c.Request.Context(), userID, postID, chapters); err != nil {
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(chapters)}, nil)
@@ -446,7 +494,7 @@ type saveEndScreensRequest struct {
 }
 
 func (h *Handler) SaveEndScreens(c *gin.Context) {
-	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
@@ -464,6 +512,16 @@ func (h *Handler) SaveEndScreens(c *gin.Context) {
 
 	screens := make([]postgres.EndScreen, len(req.Screens))
 	for i, sc := range req.Screens {
+		// Validated here, not left to the video_end_screens CHECK: a bad
+		// value used to reach Postgres and come back as a 500 with a
+		// constraint name in it. The list differs from the cards one on
+		// purpose (channel_subscribe here, poll there) — see
+		// migrations/012_posttube_features.sql.
+		if !validEndScreenTypes[sc.Type] {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TYPE",
+				invalidEnumMessage("screens", i, "type", sc.Type, endScreenTypeList), nil)
+			return
+		}
 		screens[i] = postgres.EndScreen{
 			PostID:    postID,
 			Type:      sc.Type,
@@ -480,8 +538,8 @@ func (h *Handler) SaveEndScreens(c *gin.Context) {
 		}
 	}
 
-	if err := h.svc.SaveEndScreens(c.Request.Context(), postID, screens); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	if err := h.svc.SaveEndScreens(c.Request.Context(), userID, postID, screens); err != nil {
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(screens)}, nil)
@@ -520,7 +578,7 @@ type saveVideoCardsRequest struct {
 }
 
 func (h *Handler) SaveVideoCards(c *gin.Context) {
-	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
@@ -538,6 +596,13 @@ func (h *Handler) SaveVideoCards(c *gin.Context) {
 
 	cards := make([]postgres.VideoCard, len(req.Cards))
 	for i, card := range req.Cards {
+		// See SaveEndScreens: same reason, deliberately different list
+		// (cards have poll, end screens have channel_subscribe).
+		if !validVideoCardTypes[card.Type] {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TYPE",
+				invalidEnumMessage("cards", i, "type", card.Type, videoCardTypeList), nil)
+			return
+		}
 		cards[i] = postgres.VideoCard{
 			PostID:     postID,
 			Type:       card.Type,
@@ -553,8 +618,8 @@ func (h *Handler) SaveVideoCards(c *gin.Context) {
 		}
 	}
 
-	if err := h.svc.SaveVideoCards(c.Request.Context(), postID, cards); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	if err := h.svc.SaveVideoCards(c.Request.Context(), userID, postID, cards); err != nil {
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(cards)}, nil)

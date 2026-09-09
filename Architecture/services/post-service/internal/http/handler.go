@@ -2140,7 +2140,15 @@ func (h *Handler) GetVideoDetail(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil)
 		return
 	}
-	vm, err := h.svc.GetVideoDetail(c.Request.Context(), videoID)
+	// storage_video_url is owner-only; GetVideoDetailForCaller redacts it for
+	// everyone else, including the tokenless caller the gateway lets through.
+	var callerID *uuid.UUID
+	if raw := c.GetHeader("X-User-Id"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			callerID = &id
+		}
+	}
+	vm, err := h.svc.GetVideoDetailForCaller(c.Request.Context(), videoID, callerID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Video metadata not found", nil)
 		return

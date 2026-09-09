@@ -128,6 +128,10 @@ type Service struct {
 	// channels is the Tube channel store (channels.go). Nil when there is no
 	// Postgres store; every channel flow then fails closed.
 	channels channelStore
+
+	// Ownership for cards / end screens / chapters / playlist items
+	// (video_authoring_authz.go).
+	videoAuthoringAuthz
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -142,6 +146,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 	if pg != nil {
 		svc.hiddenAuthors = pg
 		svc.channels = pg
+		svc.authoringOwners = pg
 	}
 	if rdb != nil {
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
@@ -2967,9 +2972,45 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 
 // ── Video Creator Tools ────────────────────────────────────────
 
-// GetVideoDetail returns the video metadata for a post.
+// GetVideoDetail returns the video metadata for a post. INTERNAL USE ONLY —
+// it returns storage_video_url, the object-storage path of the source file,
+// which no viewer may see. Handlers must call GetVideoDetailForCaller.
 func (s *Service) GetVideoDetail(ctx context.Context, postID uuid.UUID) (*postgres.VideoMetadata, error) {
 	return s.pgStore.GetVideoMetadata(ctx, postID)
+}
+
+// GetVideoDetailForCaller is the read behind GET /v1/videos/:videoId. It
+// returns the same metadata as GetVideoDetail with the owner-only fields
+// redacted for anyone who is not the post's author.
+//
+// storage_video_url is the internal object-storage location of the source
+// upload — not the CDN playback URL a player needs. The endpoint is
+// unauthenticated at the edge (the gateway forwards tokenless requests and
+// leaves the 401 to us), so before this it handed that path to anyone who
+// could guess or scrape a post id. Redacting rather than 401-ing keeps the
+// duration / dimensions / playback_url that a viewer legitimately reads
+// available, and closes the leak for every caller who is not the owner.
+//
+// Fail closed: a nil caller, a failed author lookup, or an unwired store all
+// redact. The only branch that keeps the field is a positive match between
+// the caller and the post's author.
+func (s *Service) GetVideoDetailForCaller(ctx context.Context, postID uuid.UUID, callerID *uuid.UUID) (*postgres.VideoMetadata, error) {
+	if s.authoringOwners == nil {
+		return nil, ErrAuthoringStoreUnavailable
+	}
+	vm, err := s.authoringOwners.GetVideoMetadata(ctx, postID)
+	if err != nil {
+		return nil, err
+	}
+	if vm == nil {
+		return nil, ErrPostNotFound
+	}
+	if callerID == nil || s.requirePostAuthor(ctx, *callerID, postID) != nil {
+		redacted := *vm
+		redacted.StorageVideoURL = nil
+		return &redacted, nil
+	}
+	return vm, nil
 }
 
 // UpdateVideoTrim updates trim points for a video.
