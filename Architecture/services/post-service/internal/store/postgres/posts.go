@@ -315,6 +315,13 @@ type MediaMetadata struct {
 	// made would otherwise show an unlabelled image until it refetched.
 	AltText       string
 	AltDecorative bool
+	// ProcessingStatus is the live media_assets pipeline state at create
+	// time. Carried so CreatePost can seed video_metadata.upload_status
+	// from what is already true rather than hardcoding "pending": the
+	// only other writer of that column is the MediaTranscodeCompleted
+	// consumer, so an upload that finished transcoding BEFORE its post
+	// was created had no row to join to and stayed "pending" forever.
+	ProcessingStatus string
 }
 
 // BatchGetMediaMetadata fetches file_type + duration_seconds + width
@@ -337,7 +344,8 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 		       COALESCE(width, 0),
 		       COALESCE(height, 0),
 		       COALESCE(alt_text, ''),
-		       COALESCE(alt_decorative, FALSE)
+		       COALESCE(alt_decorative, FALSE),
+		       COALESCE(processing_status, '')
 		FROM media_assets
 		WHERE id = ANY($1)
 	`, ids)
@@ -351,7 +359,7 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 			meta MediaMetadata
 		)
 		if err := rows.Scan(&id, &meta.Kind, &meta.DurationSeconds, &meta.Width, &meta.Height,
-			&meta.AltText, &meta.AltDecorative); err != nil {
+			&meta.AltText, &meta.AltDecorative, &meta.ProcessingStatus); err != nil {
 			return nil, fmt.Errorf("batch media scan: %w", err)
 		}
 		if meta.Kind == "" {

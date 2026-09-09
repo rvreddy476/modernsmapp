@@ -1245,9 +1245,30 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// reclassify. A post created while its media was still processing used
 	// to get no row at all, so it could never be released.
 	if videoMediaID != uuid.Nil {
+		// upload_status starts at "pending" and is flipped to "ready" by
+		// the MediaTranscodeCompleted consumer — which is the ONLY other
+		// writer of the column. That made the ordering load-bearing in a
+		// way no client was told about: a browser that uploaded, waited
+		// for the transcode (the natural thing to do, since you want a
+		// preview and a duration before filling in the details), and only
+		// then created the post, produced a row the completion event had
+		// already flown past. Nothing would ever set it, so
+		// GET /v1/videos/:id reported a fully-transcoded video as
+		// "pending" forever and POST /v1/videos/:id/publish answered 409
+		// NOT_READY for the life of the post.
+		//
+		// The transcode having already finished is not a missed event, it
+		// is a fact we can read: seed the column from the live
+		// media_assets row instead of asserting a state we haven't
+		// checked. A still-processing asset is unchanged — "pending", and
+		// the consumer flips it as before.
+		uploadStatus := "pending"
+		if meta, ok := mediaMeta[videoMediaID]; ok && meta.ProcessingStatus == mediaReady {
+			uploadStatus = mediaReady
+		}
 		vm := &postgres.VideoMetadata{
 			PostID:       p.ID,
-			UploadStatus: "pending",
+			UploadStatus: uploadStatus,
 			MediaAssetID: &videoMediaID,
 		}
 		// final_category is the kind the post *is* — what the author chose,
