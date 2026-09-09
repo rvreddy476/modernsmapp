@@ -1144,11 +1144,49 @@ func (h *Handler) CastVote(c *gin.Context) {
 	}
 
 	if err := h.svc.CastVote(c.Request.Context(), postID, optionID, userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		h.writePollVoteError(c, err)
 		return
 	}
 
+	// The body stays {"status":"voted"} rather than converging on
+	// /poll/vote's {"ok":true}: the behaviour is now shared, but the response
+	// shape is what a shipped client parses.
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "voted"}, nil)
+}
+
+// writePollVoteError is the one place either vote route turns a refusal into
+// a status and a code. Both routes use it, which is the point — they used to
+// disagree, and a caller had to know which URL it had picked to know what a
+// failure would look like.
+//
+// Everything a client can fix is a 400 with its own code, so the codes are
+// the contract and the messages are only for humans. The default case does
+// NOT echo err.Error(): that is how the pgx string, complete with
+// `poll_votes_pkey` and `(SQLSTATE 23505)`, reached the browser. The
+// request_id in the envelope is the handle for finding the real error in the
+// logs.
+func (h *Handler) writePollVoteError(c *gin.Context, err error) {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrPollNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "POLL_NOT_FOUND",
+			"this post has no poll", nil)
+	case errors.Is(err, service.ErrPollEnded):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "POLL_ENDED",
+			"this poll has ended", nil)
+	case errors.Is(err, service.ErrPollOptionInvalid):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "POLL_OPTION_INVALID",
+			"that option does not belong to this poll", nil)
+	case errors.Is(err, service.ErrPollAlreadyVoted):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "POLL_ALREADY_VOTED",
+			"you have already voted on this poll", nil)
+	default:
+		slog.Error("poll vote failed",
+			"post_id", c.Param("postId"),
+			"error", err)
+		api.ErrorWithContext(ctx, c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR",
+			"could not record your vote", nil)
+	}
 }
 
 func (h *Handler) Unreact(c *gin.Context) {
@@ -2270,7 +2308,7 @@ func (h *Handler) CastPollVote(c *gin.Context) {
 		return
 	}
 	if err := h.svc.CastPollVote(c.Request.Context(), postID, req.OptionID, userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "VOTE_ERROR", err.Error(), nil)
+		h.writePollVoteError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)

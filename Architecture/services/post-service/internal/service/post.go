@@ -2013,30 +2013,9 @@ func (s *Service) GetPoll(ctx context.Context, postID uuid.UUID, viewerID *uuid.
 	return poll, nil
 }
 
-// CastVote records a user's vote on a poll option.
-func (s *Service) CastVote(ctx context.Context, postID, optionID, userID uuid.UUID) error {
-	// Check poll exists and hasn't ended
-	poll, err := s.pgStore.GetPoll(ctx, postID)
-	if err != nil {
-		return err
-	}
-	if poll == nil {
-		return fmt.Errorf("poll not found")
-	}
-	if poll.HasEnded {
-		return fmt.Errorf("poll has ended")
-	}
-
-	// If single-choice, check if user already voted
-	if !poll.AllowsMultiple {
-		existing, _ := s.pgStore.GetUserPollVotes(ctx, postID, userID)
-		if len(existing) > 0 {
-			return fmt.Errorf("already voted on this poll")
-		}
-	}
-
-	return s.pgStore.CastVote(ctx, postID, optionID, userID)
-}
+// CastVote and CastPollVote both live in polls.go now — one implementation
+// serving both vote routes, returning the typed errors the handlers map to
+// stable codes.
 
 // ============================================================
 // New Engagement System (dual-write: Redis hot path + async consumers)

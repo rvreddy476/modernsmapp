@@ -1082,10 +1082,22 @@ func (s *Store) GetPoll(ctx context.Context, postID uuid.UUID) (*PollData, error
 		poll.Options = append(poll.Options, opt)
 	}
 
-	// Load vote counts per option
+	// Load vote counts per option.
+	//
+	// The join to poll_options is not decoration. Before migration 045
+	// poll_votes had no foreign key on option_id, so rows naming an option
+	// that does not exist could be inserted — and this query used to count
+	// them, adding each orphan group into TotalVotes while no option ever
+	// claimed it. The percentages below then failed to sum to 100 (observed
+	// live: 50% and 25% on a two-option poll). 045 removes the existing
+	// orphans and stops new ones; the join keeps this read honest on any
+	// database where that has not run yet.
 	countRows, err := s.db.Query(ctx, `
-		SELECT option_id, COUNT(*) FROM poll_votes
-		WHERE post_id = $1 GROUP BY option_id
+		SELECT v.option_id, COUNT(*)
+		FROM poll_votes v
+		JOIN poll_options o ON o.id = v.option_id AND o.post_id = v.post_id
+		WHERE v.post_id = $1
+		GROUP BY v.option_id
 	`, postID)
 	if err != nil {
 		return nil, err
@@ -1115,9 +1127,18 @@ func (s *Store) GetPoll(ctx context.Context, postID uuid.UUID) (*PollData, error
 }
 
 // GetUserPollVotes returns which option IDs a user voted for on a poll.
+//
+// Joined to poll_options for the same reason as the count query in GetPoll:
+// an orphan row must not be echoed back to the client as `viewer_votes`. It
+// was — a fabricated option id came straight back in the viewer's own votes,
+// which is how a client could be told it had voted for something no poll
+// offers.
 func (s *Store) GetUserPollVotes(ctx context.Context, postID, userID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT option_id FROM poll_votes WHERE post_id = $1 AND user_id = $2
+		SELECT v.option_id
+		FROM poll_votes v
+		JOIN poll_options o ON o.id = v.option_id AND o.post_id = v.post_id
+		WHERE v.post_id = $1 AND v.user_id = $2
 	`, postID, userID)
 	if err != nil {
 		return nil, err
@@ -1135,15 +1156,11 @@ func (s *Store) GetUserPollVotes(ctx context.Context, postID, userID uuid.UUID) 
 	return votes, nil
 }
 
-// CastVote records a vote. Uses ON CONFLICT to prevent duplicates.
-func (s *Store) CastVote(ctx context.Context, postID, optionID, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO poll_votes (post_id, option_id, user_id, created_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (post_id, user_id, option_id) DO NOTHING
-	`, postID, optionID, userID)
-	return err
-}
+// Votes are written by InsertPollVote in polls.go — the only writer, so that
+// the option-membership and allows_multiple rules cannot be bypassed by
+// picking the other one. There used to be two: this one, reached by
+// /v1/posts/{id}/vote, and a second in polls.go reached by
+// /v1/posts/{id}/poll/vote, each enforcing a different subset of the rules.
 
 // HasPoll checks if a post has an associated poll.
 func (s *Store) HasPoll(ctx context.Context, postID uuid.UUID) (bool, error) {

@@ -173,8 +173,10 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		// Carousel/media references (no FK to posts).
 		`DELETE FROM post_media WHERE post_id IN (SELECT id FROM _purge_posts)`,
 
-		// Polls: poll_votes has no FK at all; poll_options FKs polls(post_id)
-		// with no cascade, so it must go before polls.
+		// Polls: since migration 045 poll_votes FKs poll_options with ON
+		// DELETE CASCADE, so this order was already required and is now also
+		// enforced. poll_options FKs polls(post_id) with no cascade, so it
+		// must still go before polls.
 		`DELETE FROM poll_votes WHERE user_id = $1 OR post_id IN (SELECT id FROM _purge_posts)`,
 		`DELETE FROM poll_options WHERE post_id IN (SELECT id FROM _purge_posts)`,
 		`DELETE FROM polls WHERE post_id IN (SELECT id FROM _purge_posts)`,
