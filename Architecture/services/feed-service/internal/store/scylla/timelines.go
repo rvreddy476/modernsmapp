@@ -2,6 +2,7 @@ package scylla
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -50,6 +51,21 @@ func toGocql(id uuid.UUID) gocql.UUID {
 
 // AddToHomeTimeline (Push). Also writes the HF4 reverse-index row so
 // UpdatePostContentType can find this row by post_id without scanning.
+//
+// `ts` is the row's ONLY clustering key, and gocql.UUIDFromTime derives
+// it from createdAt plus a per-process clock sequence and node id — not
+// from post_id. Two consequences, both observable in production data:
+//
+//   - It is not an upsert. Re-running a backfill for the same post
+//     produces a DIFFERENT ts and therefore a SECOND row. The unfollow
+//     purge relies on this only to the extent that it deletes each
+//     duplicate by its own ts; the duplication itself is a separate
+//     defect (7 copies per post were live for the SSO test account on
+//     2026-09-09) and is not fixed here.
+//   - A ts collision inside one partition is a silent overwrite: the
+//     newer post replaces the older one outright. That is what makes
+//     DELETE ... WHERE user_id/bucket/ts unambiguous, and it is also a
+//     latent (astronomically unlikely) way to lose a timeline row.
 func (s *TimelineStore) AddToHomeTimeline(ctx context.Context, userID uuid.UUID, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error {
 	b := bucket(createdAt)
 	ts := gocql.UUIDFromTime(createdAt)
@@ -426,55 +442,130 @@ func (s *TimelineStore) GetAuthorTimeline(ctx context.Context, authorID uuid.UUI
 // immediate: the followee's previously-fanned-out (and previously-
 // backfilled) posts disappear from the follower's feed on next read.
 //
-// home_timeline_by_user is keyed (user_id, bucket) PARTITION, (ts,
-// post_id) CLUSTERING — there's no secondary index on author_id, so
-// we scan the user's buckets and delete by their full primary key.
-// Scoped to the last `bucketLookback` months (default 3) to bound the
-// scan; older entries age out naturally.
-func (s *TimelineStore) DeleteHomeTimelineEntriesByAuthorForUser(ctx context.Context, userID, authorID uuid.UUID, bucketLookback int) error {
+// # THE PRIMARY KEY, AND WHY post_id IS NOT IN THE WHERE CLAUSE
+//
+// home_timeline_by_user is keyed ((user_id, bucket) PARTITION, ts
+// CLUSTERING). `ts` is the WHOLE clustering key; post_id is a plain
+// regular column. This doc comment used to claim the clustering key was
+// (ts, post_id) and the DELETE below matched that claim:
+//
+//	DELETE FROM home_timeline_by_user
+//	WHERE user_id = ? AND bucket = ? AND ts = ? AND post_id = ?
+//
+// Naming a non-key column in a DELETE's WHERE clause makes it a
+// filtering query, which Scylla refuses outright:
+//
+//	Cannot execute this query as it might involve data filtering and
+//	thus may have unpredictable performance … use ALLOW FILTERING
+//
+// So this function purged NOTHING from the day it was written until
+// 2026-09-09; every unfollow logged that error and the followee's rows
+// stayed in the ex-follower's home/reels/flicks/videos/watch feeds.
+//
+// Deleting on (user_id, bucket, ts) alone is exact, not approximate:
+// because ts is the full clustering key, at most one row can exist at a
+// given ts in a partition (a second write to the same ts overwrites the
+// first — see the write-collision note on AddToHomeTimeline), so the row
+// this DELETE removes is necessarily the one the scan above just read
+// the author_id off. Re-adding `AND post_id = ?` "to be safe" would
+// restore the outage; TestHomeTimelineStatementsOnlyMatchOnPrimaryKey in
+// this package fails if anyone does.
+//
+// # SCOPE
+//
+// There is no secondary index on author_id, so we scan the user's
+// buckets (cheap — each is a single partition) and filter author_id
+// client-side. Scoped to the last `bucketLookback` months (default 3,
+// hard-capped at maxTimelineBucketLookback) to bound the work; older
+// entries age out naturally.
+//
+// # PARTIAL FAILURE
+//
+// events.Consumer.Start auto-commits the Kafka offset and merely LOGS a
+// returned error — an unfollow is never redelivered. A purge that gave
+// up on its first Scylla error would therefore strand every row behind
+// it forever. Every bucket and every row is attempted; failures are
+// counted and the first error is returned at the end, so the consumer
+// log names what was left behind. Returns the number of rows deleted.
+func (s *TimelineStore) DeleteHomeTimelineEntriesByAuthorForUser(ctx context.Context, userID, authorID uuid.UUID, bucketLookback int) (int, error) {
 	if bucketLookback <= 0 {
 		bucketLookback = 3
+	}
+	if bucketLookback > maxTimelineBucketLookback {
+		bucketLookback = maxTimelineBucketLookback
 	}
 	now := time.Now().UTC()
 	gAuthor := toGocql(authorID)
 	gUser := toGocql(userID)
 
+	var deleted, failed int
+	var firstErr error
+	fail := func(err error) {
+		failed++
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	for i := 0; i < bucketLookback; i++ {
 		b := bucket(now.AddDate(0, -i, 0))
 
-		// Find every (ts, post_id) the followee authored in this bucket
-		// for this user. We scan the partition (cheap — keyed by
-		// user_id+bucket) and filter author_id client-side.
+		// Find every ts the followee authored in this bucket for this
+		// user. post_id comes along only so the matching HF4 reverse-index
+		// row can be retired with it — see below.
 		iter := s.session.Query(`
 			SELECT ts, post_id, author_id FROM home_timeline_by_user
 			WHERE user_id = ? AND bucket = ?
 		`, gUser, b).WithContext(ctx).Iter()
 
-		type pk struct {
+		type doomedRow struct {
 			ts     gocql.UUID
 			postID gocql.UUID
 		}
-		var doomed []pk
+		var doomed []doomedRow
 		var ts, pid, aid gocql.UUID
 		for iter.Scan(&ts, &pid, &aid) {
 			if aid == gAuthor {
-				doomed = append(doomed, pk{ts: ts, postID: pid})
+				doomed = append(doomed, doomedRow{ts: ts, postID: pid})
 			}
 		}
 		if err := iter.Close(); err != nil {
-			return err
+			// Nothing to delete from this bucket, but the next one may
+			// still be readable — keep going rather than stranding it.
+			fail(fmt.Errorf("scan bucket %d: %w", b, err))
+			continue
 		}
 
 		for _, d := range doomed {
 			if err := s.session.Query(`
 				DELETE FROM home_timeline_by_user
-				WHERE user_id = ? AND bucket = ? AND ts = ? AND post_id = ?
-			`, gUser, b, d.ts, d.postID).WithContext(ctx).Exec(); err != nil {
-				return err
+				WHERE user_id = ? AND bucket = ? AND ts = ?
+			`, gUser, b, d.ts).WithContext(ctx).Exec(); err != nil {
+				fail(fmt.Errorf("delete bucket %d ts %s: %w", b, d.ts, err))
+				continue
+			}
+			deleted++
+
+			// Retire the HF4 reverse-index row for the copy we just
+			// removed. This is not tidiness: UpdatePostContentType drives
+			// off that index and issues UPDATE ... WHERE user_id/bucket/ts,
+			// and an UPDATE in Scylla CREATES the row when it is absent. A
+			// stale index row would therefore resurrect this purged entry
+			// as a ghost — content_type set, post_id/author_id/created_at
+			// null — the next time the post was reclassified.
+			if err := s.session.Query(`
+				DELETE FROM timeline_index_by_post
+				WHERE post_id = ? AND timeline_kind = 'home' AND owner_id = ? AND bucket = ? AND ts = ?
+			`, d.postID, gUser, b, d.ts).WithContext(ctx).Exec(); err != nil {
+				fail(fmt.Errorf("delete index post %s ts %s: %w", d.postID, d.ts, err))
 			}
 		}
 	}
-	return nil
+
+	if firstErr != nil {
+		return deleted, fmt.Errorf("purged %d row(s), %d operation(s) failed, first: %w", deleted, failed, firstErr)
+	}
+	return deleted, nil
 }
 
 // GetAuthorTimelineMultiBucket pulls recent author-timeline entries

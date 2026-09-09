@@ -306,6 +306,13 @@ func (s *Service) resolveFollowReasons(ctx context.Context, posts []HydratedPost
 type viewerRelationship struct {
 	Follows      bool `json:"follows"`
 	IsConnection bool `json:"is_connection"`
+	// ViewerIsCloseFriendOfTarget: the TARGET has the viewer on the
+	// TARGET's close-friends list — the audience direction, not the
+	// viewer's own list (graph-service store.Relationship documents why
+	// the two are not interchangeable). No reason line uses it; the
+	// unfollow purge does, because "trusted" posts are fanned out to
+	// exactly this set. See unfollow_purge.go.
+	ViewerIsCloseFriendOfTarget bool `json:"viewer_is_close_friend_of_target"`
 }
 
 // maxRelationshipBatch mirrors graph-service's store.MaxRelationshipBatch.

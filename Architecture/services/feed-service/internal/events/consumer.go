@@ -133,9 +133,18 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 //
 // We pull up to backfillLimit rows from author_timeline_by_author
 // across the last bucketLookback months and write each into
-// home_timeline_by_user. Idempotent: AddToHomeTimeline upserts on
-// (user_id, bucket, ts, post_id) so an unfollow → refollow cycle is
-// safe.
+// home_timeline_by_user.
+//
+// NOT idempotent, contrary to what this comment claimed until
+// 2026-09-09. It said "AddToHomeTimeline upserts on (user_id, bucket,
+// ts, post_id) so an unfollow → refollow cycle is safe" — but the row's
+// key is (user_id, bucket) / ts, and ts is generated afresh from
+// gocql.UUIDFromTime on every write, so a second backfill of the same
+// post lands on a NEW ts and becomes a SECOND row. Each follow → unfollow
+// → refollow cycle therefore duplicates the followee's backlog in the
+// follower's timeline; the SSO test account was carrying seven copies of
+// each post on 2026-09-09. Not fixed here (this handler needs a real
+// dedupe key, which is a schema question), but no longer claimed.
 func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil
@@ -198,6 +207,17 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 // reflects immediately in the feed (both the fan-out-on-write rows and
 // the backfilled rows from the matching UserFollowed event go away).
 // Scoped to the last 3 buckets — older entries age out naturally.
+//
+// The purge is gated on service.FanoutClaimAfterUnfollow: FanoutPost
+// targets the author's followers UNION their connections (and, for
+// "trusted" posts, their close friends), so an unfollow alone does not
+// establish that these rows should go. A relationship that cannot be
+// established leaves everything in place — see unfollow_purge.go, FAILING
+// CLOSED. TestUnfollowPurgeIsGuardedByTheClaimCheck pins the gate.
+//
+// No retry exists: Start auto-commits the offset and only logs what comes
+// back from here, so everything this returns is a permanent outcome, not a
+// deferred one.
 func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil
@@ -220,10 +240,26 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.Eve
 		return fmt.Errorf("parse followee_id: %w", err)
 	}
 
-	if err := c.timelineStore.DeleteHomeTimelineEntriesByAuthorForUser(ctx, followerID, followeeID, bucketLookback); err != nil {
+	if c.service == nil {
+		return fmt.Errorf("purge home timeline on unfollow: no service to establish the " +
+			"follower's remaining relationship; nothing purged")
+	}
+	retained, why, err := c.service.FanoutClaimAfterUnfollow(ctx, followerID, followeeID)
+	if err != nil {
+		return fmt.Errorf("purge home timeline on unfollow: relationship for follower=%s "+
+			"followee=%s not established, nothing purged: %w", followerID, followeeID, err)
+	}
+	if retained {
+		log.Printf("[feed] UserUnfollowed: purge skipped — follower=%s %s (followee=%s); "+
+			"the fanout still targets them", followerID, why, followeeID)
+		return nil
+	}
+
+	deleted, err := c.timelineStore.DeleteHomeTimelineEntriesByAuthorForUser(ctx, followerID, followeeID, bucketLookback)
+	if err != nil {
 		return fmt.Errorf("purge home timeline on unfollow: %w", err)
 	}
-	log.Printf("[feed] UserUnfollowed: purged follower=%s entries from followee=%s", followerID, followeeID)
+	log.Printf("[feed] UserUnfollowed: purged %d row(s) follower=%s entries from followee=%s", deleted, followerID, followeeID)
 	return nil
 }
 
