@@ -10,6 +10,14 @@ import (
 // "Why you're seeing this post" — the derivation table. Every row is a
 // (candidate source, post shape, velocity) the feed can actually produce
 // today; the tokens are the client contract.
+//
+// The fanout rows changed on 2026-09-09. They used to assert
+// ReasonFollowing here, which was a default rather than a derivation:
+// deriveReason is pure, has no graph client, and a home-timeline row is
+// written by fanout to followers UNION connections and never retracted on
+// unfollow — so it cannot support the claim. Those rows now derive nothing
+// and resolveFollowReasons settles them against graph-service; see
+// reason_following_test.go.
 func TestDeriveReason(t *testing.T) {
 	viewer, other := uuid.New(), uuid.New()
 
@@ -21,15 +29,15 @@ func TestDeriveReason(t *testing.T) {
 		reason   string
 		text     string
 	}{
-		{"timeline row from a followed author", sourceTimeline, HydratedPost{AuthorID: other}, 0,
-			ReasonFollowing, "From someone you follow"},
-		{"empty source is a timeline row", "", HydratedPost{AuthorID: other}, 0,
-			ReasonFollowing, "From someone you follow"},
-		{"repost by a followed user", sourceTimeline, HydratedPost{AuthorID: other, IsRepost: true}, 0,
-			ReasonFollowing, "Reposted by someone you follow"},
+		{"a timeline row proves no follow and derives nothing", sourceTimeline,
+			HydratedPost{AuthorID: other}, 0, "", ""},
+		{"empty source is a timeline row and derives nothing", "",
+			HydratedPost{AuthorID: other}, 0, "", ""},
+		{"a repost derives nothing either — the reposter must be looked up", sourceTimeline,
+			HydratedPost{AuthorID: other, IsRepost: true}, 0, "", ""},
 		{"viewer's own post carries nothing", sourceTimeline, HydratedPost{AuthorID: viewer}, 0, "", ""},
-		{"viewer's own post reposted by a followed user is still a reason", sourceTimeline,
-			HydratedPost{AuthorID: viewer, IsRepost: true}, 0, ReasonFollowing, "Reposted by someone you follow"},
+		{"a repost of the viewer's own post is still about the reposter", sourceTimeline,
+			HydratedPost{AuthorID: viewer, IsRepost: true}, 0, "", ""},
 		{"circle_only view", sourceCircle, HydratedPost{AuthorID: other}, 0,
 			ReasonConnection, "From your circle"},
 		{"close-friends post", sourceTimeline, HydratedPost{AuthorID: other, Visibility: "trusted"}, 0,

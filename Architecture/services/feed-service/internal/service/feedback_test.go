@@ -272,8 +272,15 @@ func TestHydratePosts_NotInterestedDroppedOnCacheOnlyPath(t *testing.T) {
 	if len(out) != 1 || out[0].ID != keep.ID {
 		t.Fatalf("not_interested post must be gone from the page, got %+v", out)
 	}
-	if out[0].Reason != ReasonFollowing || out[0].ReasonText != "From someone you follow" {
-		t.Fatalf("a timeline row is 'following', got %q / %q", out[0].Reason, out[0].ReasonText)
+	// This fixture stands up no graph-service, so nothing establishes a
+	// follow and the surviving row is served with no reason at all. It used
+	// to assert ReasonFollowing here — which was the defect: a timeline row
+	// is written by fanout to followers UNION the author's connections and
+	// is never retracted on unfollow, so it is not evidence of anything.
+	// See reason_following_test.go.
+	if out[0].Reason != "" || out[0].ReasonText != "" {
+		t.Fatalf("with no graph to ask, a timeline row must carry no reason, got %q / %q",
+			out[0].Reason, out[0].ReasonText)
 	}
 }
 

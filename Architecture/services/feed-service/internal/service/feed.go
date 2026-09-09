@@ -135,6 +135,12 @@ type FeedItem struct {
 	// sourceColdStart: post-service's recent-public fallback. sourceCircle:
 	// the circle_only view. Not serialized: `reason` on the hydrated post
 	// is the client-facing form.
+	//
+	// A fanout row (empty / sourceTimeline) says only that some fanout once
+	// targeted this viewer — NOT that they follow the author. FanoutPost
+	// writes to the author's connections as well as their followers, and
+	// nothing retracts a row on unfollow. reason.go therefore asks the
+	// graph rather than reading a follow off this field.
 	Source string `json:"-"`
 }
 

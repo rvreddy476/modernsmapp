@@ -126,8 +126,15 @@ type HydratedPost struct {
 	// "Why you're seeing this post" (post "more" sheet, 2026-09-04). Reason
 	// is a stable token ("following", "connection", "trending",
 	// "category:<id>", "recommended", "hashtag:<tag>"); ReasonText is a
-	// sentence to show verbatim. Both omitted on the viewer's own posts.
-	// Derived at merge time from the candidate's source — see reason.go.
+	// sentence to show verbatim.
+	//
+	// Both are OPTIONAL and often absent: on the viewer's own posts, and on
+	// any row whose reason could not be established — a fanout row whose
+	// follow edge the graph did not confirm, or did not answer for at all.
+	// Absence means "we cannot say", never "no relationship"; the client
+	// simply does not offer the row. Merge time derives what the candidate
+	// itself proves; resolveFollowReasons settles the rest against the
+	// graph. See reason.go.
 	Reason     string `json:"reason,omitempty"`
 	ReasonText string `json:"reason_text,omitempty"`
 	// source is the FeedItem.Source that produced this row, kept only so
@@ -282,6 +289,10 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		}
 		s.enrichViewCounts(ctx, merged)
 		s.enrichReasons(ctx, merged, viewerID)
+		// Settle the fanout path's reason against the real follow graph.
+		// Runs after enrichReasons so the recommendation rows are already
+		// spoken for and cost no graph traffic. See reason.go.
+		s.resolveFollowReasons(ctx, merged, viewerID)
 		if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
 			return nil, err
 		}
@@ -365,6 +376,9 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	}
 	s.enrichViewCounts(ctx, merged)
 	s.enrichReasons(ctx, merged, viewerID)
+	// See the cache-only path above: the fanout rows carry no reason
+	// until the graph has been asked.
+	s.resolveFollowReasons(ctx, merged, viewerID)
 	if err := s.enrichRenderData(ctx, merged, viewerID); err != nil {
 		return nil, err
 	}
