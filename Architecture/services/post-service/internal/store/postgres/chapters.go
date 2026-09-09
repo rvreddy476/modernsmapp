@@ -9,8 +9,15 @@ import (
 )
 
 // MediaChapter represents a chapter marker within a video post.
+//
+// There is deliberately no ID field. media_chapters is keyed by
+// (post_id, chapter_index) — see 012_posttube_features.sql — and has no
+// surrogate `id` column. The struct used to declare one and GetChapters
+// used to SELECT it, so every read of a post's chapters failed with
+// `column "id" does not exist` while the write path (which never named
+// the column) happily returned 200. Chapters could be saved and never
+// read back. chapter_index is the stable identifier a client should use.
 type MediaChapter struct {
-	ID           uuid.UUID `json:"id"`
 	PostID       uuid.UUID `json:"post_id"`
 	ChapterIndex int       `json:"chapter_index"`
 	Title        string    `json:"title"`
@@ -79,7 +86,7 @@ func (s *Store) SaveChapters(ctx context.Context, postID uuid.UUID, chapters []M
 // GetChapters retrieves all chapters for a post ordered by chapter_index.
 func (s *Store) GetChapters(ctx context.Context, postID uuid.UUID) ([]MediaChapter, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, post_id, chapter_index, title, start_ms, thumbnail_url, source, created_at
+		SELECT post_id, chapter_index, title, start_ms, thumbnail_url, source, created_at
 		FROM media_chapters WHERE post_id = $1
 		ORDER BY chapter_index ASC`, postID)
 	if err != nil {
@@ -89,7 +96,7 @@ func (s *Store) GetChapters(ctx context.Context, postID uuid.UUID) ([]MediaChapt
 	var result []MediaChapter
 	for rows.Next() {
 		var ch MediaChapter
-		if err := rows.Scan(&ch.ID, &ch.PostID, &ch.ChapterIndex, &ch.Title, &ch.StartMs, &ch.ThumbnailURL, &ch.Source, &ch.CreatedAt); err != nil {
+		if err := rows.Scan(&ch.PostID, &ch.ChapterIndex, &ch.Title, &ch.StartMs, &ch.ThumbnailURL, &ch.Source, &ch.CreatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, ch)
