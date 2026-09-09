@@ -74,6 +74,55 @@ func invalidEnumMessage(field string, index int, key, got string, allowed []stri
 		field, index, key, got, strings.Join(allowed, ", "))
 }
 
+// media_chapters.source carries the same kind of CHECK the card and
+// end-screen `type` columns do (migrations/012_posttube_features.sql) and had
+// the same hole: an unknown value reached Postgres and came back as a 500
+// with a constraint name in it. Empty is NOT an error — the store defaults it
+// to 'manual' — so it is accepted here too.
+var (
+	chapterSourceList  = []string{"manual", "ai_generated"}
+	validChapterSource = sliceToSet(chapterSourceList)
+)
+
+// ─── Field validation for the authoring rows ─────────────────────────────────
+//
+// Everything below turns a value the watch page cannot render into a 400 that
+// names the field. All of it used to answer 200 {"saved":1}:
+//
+//   - a card with no title, which draws an empty box on the player;
+//   - target_id: "not-a-uuid", which uuid.Parse quietly DROPPED, leaving a
+//     card whose link goes nowhere (the row is not, as it appeared, stored
+//     verbatim — it is silently discarded, which is worse: the creator sees
+//     a save succeed and a broken card);
+//   - a negative appear_at_ms / start_ms, a timestamp that can never arrive;
+//   - an end screen whose window closes before it opens.
+//
+// These are handler-level checks on purpose: they need no database, so a bad
+// request is refused before the store's full REPLACE deletes the creator's
+// existing rows.
+
+// parseOptionalTargetID validates an optional target id. A nil pointer and an
+// empty string both mean "no target" — that is how the composer sends a card
+// that points at a URL instead of an id. Anything else must be a real uuid.
+func parseOptionalTargetID(raw *string) (*uuid.UUID, bool) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil, true
+	}
+	id, err := uuid.Parse(strings.TrimSpace(*raw))
+	if err != nil {
+		return nil, false
+	}
+	return &id, true
+}
+
+func invalidFieldMessage(field string, index int, key, why string) string {
+	return fmt.Sprintf("%s[%d].%s %s", field, index, key, why)
+}
+
+func badRequest(c *gin.Context, code, message string) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, code, message, nil)
+}
+
 // ─── Video Series ─────────────────────────────────────────────────────────────
 
 type createVideoSeriesRequest struct {
@@ -131,15 +180,53 @@ func (h *Handler) CreateVideoSeries(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusCreated, vs, nil)
 }
 
+// writeVideoSeriesError is the ONE mapping for the series refusals, and it
+// follows the same rule writeVideoAuthoringError documents: 404 for "no such
+// row", 403 for "not yours", 409 for a conflict with a row that is already
+// there. Anything unrecognised is a 500 — an unexpected error must never be
+// reported as a merely-forbidden outcome.
+func writeVideoSeriesError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrVideoSeriesNotFound),
+		errors.Is(err, service.ErrVideoSeriesEpisodeNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrNotVideoSeriesOwner),
+		errors.Is(err, service.ErrVideoSeriesPrivate):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	case errors.Is(err, service.ErrEpisodePostDuplicate):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusConflict, "EPISODE_EXISTS", err.Error(), nil)
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	}
+}
+
+// optionalCallerID reads X-User-Id when it is present and parseable. The
+// series reads are open to anonymous callers, so a missing header is not an
+// error — it is simply "not the owner". Same shape GetPlaylist uses.
+func optionalCallerID(c *gin.Context) *uuid.UUID {
+	if raw := c.GetHeader("X-User-Id"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			return &id
+		}
+	}
+	return nil
+}
+
 func (h *Handler) GetVideoSeries(c *gin.Context) {
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
 		return
 	}
-	vs, err := h.svc.GetVideoSeries(c.Request.Context(), seriesID)
+	// is_public was written at create time and never read here: a private
+	// series answered its full body to any caller, token or not.
+	vs, err := h.svc.GetVideoSeries(c.Request.Context(), seriesID, optionalCallerID(c))
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		writeVideoSeriesError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, vs, nil)
@@ -151,15 +238,95 @@ func (h *Handler) GetVideoSeriesEpisodes(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
 		return
 	}
-	eps, err := h.svc.GetVideoSeriesEpisodes(c.Request.Context(), seriesID)
+	// Behind the same gate as the series itself.
+	eps, err := h.svc.GetVideoSeriesEpisodes(c.Request.Context(), seriesID, optionalCallerID(c))
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeVideoSeriesError(c, err)
 		return
 	}
 	if eps == nil {
 		eps = []postgres.VideoSeriesEpisode{}
 	}
 	api.JSON(c.Writer, http.StatusOK, eps, nil)
+}
+
+// DeleteVideoSeries — DELETE /v1/video-series/:seriesId. The creator's own
+// series only; 403 for anyone else, 404 for a series that is not there.
+func (h *Handler) DeleteVideoSeries(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
+		return
+	}
+	if err := h.svc.DeleteVideoSeries(c.Request.Context(), userID, seriesID); err != nil {
+		writeVideoSeriesError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
+}
+
+// DeleteVideoSeriesEpisode — DELETE /v1/video-series/:seriesId/episodes/:episodeRef.
+//
+// One route, two spellings of the reference: an episode NUMBER ("3") or the
+// POST ID of the episode. Gin cannot route on the shape of a path segment, so
+// the choice is made here rather than by registering two conflicting routes —
+// and both are needed, because the creator tools hold post ids while the
+// watch page and the API contract talk in episode numbers.
+//
+// Removing an episode leaves a GAP in the numbering; it does not renumber the
+// episodes after it. That decision is argued in
+// internal/service/video_series.go.
+func (h *Handler) DeleteVideoSeriesEpisode(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
+		return
+	}
+
+	ref := c.Param("episodeRef")
+	ctx := c.Request.Context()
+	switch {
+	case isEpisodeNumber(ref):
+		num, _ := strconv.Atoi(ref)
+		err = h.svc.DeleteVideoSeriesEpisodeByNum(ctx, userID, seriesID, num)
+	default:
+		postID, perr := uuid.Parse(ref)
+		if perr != nil {
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_ID",
+				"episode reference must be an episode number or a post id", nil)
+			return
+		}
+		err = h.svc.DeleteVideoSeriesEpisodeByPost(ctx, userID, seriesID, postID)
+	}
+	if err != nil {
+		writeVideoSeriesError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
+}
+
+// isEpisodeNumber reports whether the path segment is an episode number
+// rather than a post id. Digits only — a uuid never is.
+func isEpisodeNumber(ref string) bool {
+	if ref == "" {
+		return false
+	}
+	for _, r := range ref {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type addVideoSeriesEpisodeRequest struct {
@@ -190,18 +357,18 @@ func (h *Handler) AddVideoSeriesEpisode(c *gin.Context) {
 		return
 	}
 
+	if req.EpisodeNum < 1 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"episode_num must be 1 or greater", nil)
+		return
+	}
+
 	ep, err := h.svc.AddEpisodeToVideoSeries(c.Request.Context(), userID, seriesID, postID, req.EpisodeNum, req.Title)
 	if err != nil {
-		status := http.StatusInternalServerError
-		code := "INTERNAL_ERROR"
-		if err.Error() == "video series not found" {
-			status = http.StatusNotFound
-			code = "NOT_FOUND"
-		} else if err.Error() == "forbidden: you do not own this video series" {
-			status = http.StatusForbidden
-			code = "FORBIDDEN"
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
+		// Was a string comparison on err.Error(); the sentinels carry the
+		// same messages, so the wire contract is unchanged and the duplicate
+		// case (409) now has somewhere to go.
+		writeVideoSeriesError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, ep, nil)
@@ -214,7 +381,10 @@ func (h *Handler) ListCreatorVideoSeries(c *gin.Context) {
 		return
 	}
 	limit, offset := parseLimitOffset(c)
-	series, err := h.svc.ListVideoSeriesByCreator(c.Request.Context(), creatorID, limit, offset)
+	// A stranger's copy of this list omits the creator's private series; the
+	// creator's own copy is complete. See DECISION 2 in
+	// internal/service/video_series.go.
+	series, err := h.svc.ListVideoSeriesByCreator(c.Request.Context(), creatorID, optionalCallerID(c), limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -443,6 +613,14 @@ func (h *Handler) SaveChapters(c *gin.Context) {
 
 	chapters := make([]postgres.MediaChapter, len(req.Chapters))
 	for i, ch := range req.Chapters {
+		// The source enum. Empty means "unset" and the store writes
+		// 'manual'; anything else outside the CHECK is a 400 here rather
+		// than a constraint violation reported as a 500.
+		if ch.Source != "" && !validChapterSource[ch.Source] {
+			badRequest(c, "INVALID_SOURCE",
+				invalidEnumMessage("chapters", i, "source", ch.Source, chapterSourceList))
+			return
+		}
 		chapters[i] = postgres.MediaChapter{
 			PostID:       postID,
 			ChapterIndex: ch.ChapterIndex,
@@ -522,19 +700,34 @@ func (h *Handler) SaveEndScreens(c *gin.Context) {
 				invalidEnumMessage("screens", i, "type", sc.Type, endScreenTypeList), nil)
 			return
 		}
+		targetID, ok := parseOptionalTargetID(sc.TargetID)
+		if !ok {
+			badRequest(c, "INVALID_TARGET_ID",
+				invalidFieldMessage("screens", i, "target_id", "must be a UUID"))
+			return
+		}
+		if sc.StartMs < 0 || sc.EndMs < 0 {
+			badRequest(c, "INVALID_TIMING",
+				invalidFieldMessage("screens", i, "start_ms/end_ms", "must not be negative"))
+			return
+		}
+		// An end screen is a window. One that closes before — or exactly
+		// when — it opens can never be shown, so it is a mistake, not a
+		// preference.
+		if sc.EndMs <= sc.StartMs {
+			badRequest(c, "INVALID_TIMING",
+				invalidFieldMessage("screens", i, "end_ms", "must be greater than start_ms"))
+			return
+		}
 		screens[i] = postgres.EndScreen{
 			PostID:    postID,
 			Type:      sc.Type,
+			TargetID:  targetID,
 			TargetURL: sc.TargetURL,
 			Title:     sc.Title,
 			Position:  sc.Position,
 			StartMs:   sc.StartMs,
 			EndMs:     sc.EndMs,
-		}
-		if sc.TargetID != nil {
-			if id, err := uuid.Parse(*sc.TargetID); err == nil {
-				screens[i].TargetID = &id
-			}
 		}
 	}
 
@@ -603,18 +796,34 @@ func (h *Handler) SaveVideoCards(c *gin.Context) {
 				invalidEnumMessage("cards", i, "type", card.Type, videoCardTypeList), nil)
 			return
 		}
+		// title is NOT NULL in the table but "" satisfies that, so a card
+		// with no title stored an empty string and the player drew an empty
+		// box. A card is a label on a link; without one there is nothing to
+		// render.
+		if strings.TrimSpace(card.Title) == "" {
+			badRequest(c, "INVALID_TITLE",
+				invalidFieldMessage("cards", i, "title", "is required and must not be blank"))
+			return
+		}
+		targetID, ok := parseOptionalTargetID(card.TargetID)
+		if !ok {
+			badRequest(c, "INVALID_TARGET_ID",
+				invalidFieldMessage("cards", i, "target_id", "must be a UUID"))
+			return
+		}
+		if card.AppearAtMs < 0 {
+			badRequest(c, "INVALID_TIMING",
+				invalidFieldMessage("cards", i, "appear_at_ms", "must not be negative"))
+			return
+		}
 		cards[i] = postgres.VideoCard{
 			PostID:     postID,
 			Type:       card.Type,
+			TargetID:   targetID,
 			TargetURL:  card.TargetURL,
 			Title:      card.Title,
 			TeaserText: card.TeaserText,
 			AppearAtMs: card.AppearAtMs,
-		}
-		if card.TargetID != nil {
-			if id, err := uuid.Parse(*card.TargetID); err == nil {
-				cards[i].TargetID = &id
-			}
 		}
 	}
 

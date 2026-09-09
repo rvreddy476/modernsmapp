@@ -132,6 +132,11 @@ type Service struct {
 	// Ownership for cards / end screens / chapters / playlist items
 	// (video_authoring_authz.go).
 	videoAuthoringAuthz
+
+	// videoSeries backs the video-series visibility, ownership and removal
+	// rules (video_series.go). Nil when there is no Postgres store; every
+	// series flow then fails closed.
+	videoSeries videoSeriesStore
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -147,6 +152,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.hiddenAuthors = pg
 		svc.channels = pg
 		svc.authoringOwners = pg
+		svc.videoSeries = pg
 	}
 	if rdb != nil {
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})

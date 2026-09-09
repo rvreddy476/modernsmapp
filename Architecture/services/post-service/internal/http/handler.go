@@ -241,6 +241,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		vseries.GET("/:seriesId", h.GetVideoSeries)
 		vseries.GET("/:seriesId/episodes", h.GetVideoSeriesEpisodes)
 		vseries.POST("/:seriesId/episodes", h.AddVideoSeriesEpisode)
+		// A series has to be able to shrink. Without these two a series
+		// created by mistake was permanent and an episode added by mistake
+		// could only be overwritten — playlists, below, have had both deletes
+		// all along. :episodeRef takes either an episode number or a post id;
+		// see DeleteVideoSeriesEpisode.
+		vseries.DELETE("/:seriesId", h.DeleteVideoSeries)
+		vseries.DELETE("/:seriesId/episodes/:episodeRef", h.DeleteVideoSeriesEpisode)
 	}
 	r.GET("/v1/creators/:creatorId/video-series", h.ListCreatorVideoSeries)
 
