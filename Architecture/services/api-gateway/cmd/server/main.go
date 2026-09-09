@@ -157,6 +157,17 @@ func main() {
 		{"/v1/hashtags", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/comments", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/playlists", env("POST_SERVICE_URL", "http://post-service:8084")},
+		// The two series systems. Both are registered in post-service and
+		// both were unreachable: /v1/creators/:id/video-series listed them
+		// because /v1/creators is proxied, but the collection roots had no
+		// prefix here at all, so POST /v1/video-series and every
+		// /v1/video-series/:id/episodes call 404'd at the edge. A client
+		// could read a series and never create one or add an episode to it
+		// — which is the whole "link one video to the next" feature.
+		// /v1/video-series is the long-video (Tube) system;
+		// /v1/series is the separate flick/reel one.
+		{"/v1/video-series", env("POST_SERVICE_URL", "http://post-service:8084")},
+		{"/v1/series", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/creators", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feedback", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/posts", env("POST_SERVICE_URL", "http://post-service:8084")},
