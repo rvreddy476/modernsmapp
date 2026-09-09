@@ -16,6 +16,23 @@ type profileMediaAccessRequest struct {
 // ProfileMediaAccess is media-service's canonical authorization check for an
 // avatar or cover. It resolves the current profile reference first, then the
 // owner's live privacy policy. Every missing dependency fails closed.
+//
+// THE RESPONSE IS DELIBERATELY NOT THE SHARED ENVELOPE
+//
+//	{"viewer_id":"…"|"", "media_id":"…"}  →  {"allowed":true,"kind":"avatar"}
+//
+// media-service's content authorizer decodes `allowed` at the TOP level, and
+// that is the contract post-service and commerce-service both answer. This
+// handler used api.JSON, which wraps every body in `{"data":{…}}` — so
+// media-service found no `allowed`, decoded the zero value, and read a
+// successful 200 as a RESOLVED DENIAL. The effect was that every avatar in the
+// product returned 404 on `/v1/media/:id/url` and `/v1/media/:id/serve` while
+// both services logged a healthy exchange between them, which is why it
+// survived so long: nothing anywhere reported an error.
+//
+// Errors below still use the shared envelope. Only the affirmative verdict is
+// on media-service's wire contract, and media-service treats any non-2xx as a
+// denial or an outage without reading the body.
 func (h *Handler) ProfileMediaAccess(c *gin.Context) {
 	var body profileMediaAccessRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -41,7 +58,7 @@ func (h *Handler) ProfileMediaAccess(c *gin.Context) {
 		return
 	}
 	if !found {
-		api.JSON(c.Writer, http.StatusOK, gin.H{"allowed": false}, nil)
+		c.JSON(http.StatusOK, gin.H{"allowed": false})
 		return
 	}
 	if h.photos == nil {
@@ -54,8 +71,8 @@ func (h *Handler) ProfileMediaAccess(c *gin.Context) {
 		api.Error(c.Writer, http.StatusServiceUnavailable, "PRIVACY_UNRESOLVED", "Profile privacy authority unavailable", nil, nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"allowed": allowed,
 		"kind":    kind,
-	}, nil)
+	})
 }

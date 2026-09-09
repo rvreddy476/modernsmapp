@@ -779,7 +779,72 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 }
 
 // GetMediaVariantURL returns an authorized delivery URL for one variant.
+// AvatarVariant is the rendition alias a client asks for when it wants "an
+// image the size of a face on a row", without knowing which renditions this
+// particular asset actually has.
+//
+// # WHY AN ALIAS RATHER THAN A VARIANT NAME IN THE URL
+//
+// The image pipeline SKIPS a variant whose target is larger than the original
+// (internal/processing/image.go), so the ladder an asset owns depends on the
+// bytes the user uploaded. A profile payload that hard-coded
+// `…/serve/thumb_150` would therefore 404 for any avatar smaller than 150px —
+// and for any asset whose processing never completed, of which this database
+// already holds one. The caller that renders an avatar does not know, and
+// should not have to fetch the asset's variant list to find out.
+//
+// The alias resolves that server-side against what exists.
+const AvatarVariant = "avatar"
+
+// avatarRenditionLadder is tried in order, smallest adequate first.
+//
+// Falling back to the ORIGINAL last is deliberate: it is the only rendition
+// guaranteed to exist, and a slow full-size avatar is a better failure than a
+// missing one. It is also why the alias exists at all rather than a fallback
+// inside GetMediaVariantURL — a caller that names `thumb_150` explicitly must
+// keep getting `thumb_150` or an error, never a silent 1080px substitute.
+var avatarRenditionLadder = []string{"thumb_150", "small_480", "medium_1080"}
+
+// pickAvatarRendition chooses the key to deliver. Split out from the fetch so
+// the ladder — including the fall through to the original — is a table test
+// rather than something only a live database can demonstrate.
+func pickAvatarRendition(variants []postgres.MediaVariant, originalKey string) string {
+	byName := make(map[string]string, len(variants))
+	for _, v := range variants {
+		byName[v.Name] = v.ObjectKey
+	}
+	for _, name := range avatarRenditionLadder {
+		if key, ok := byName[name]; ok {
+			return key
+		}
+	}
+	return originalKey
+}
+
+// resolveAvatarRendition returns the object key to deliver for AvatarVariant.
+func (s *Service) resolveAvatarRendition(ctx context.Context, mediaID uuid.UUID) (string, error) {
+	variants, err := s.pgStore.GetVariants(ctx, mediaID)
+	if err != nil {
+		return "", err
+	}
+	// GetMedia is needed for the fallback key, and it is also the only check
+	// that the asset exists at all: an id with no renditions and no row must
+	// be a not-found, not a delivery URL for an empty key.
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return "", err
+	}
+	return pickAvatarRendition(variants, media.StorageKey), nil
+}
+
 func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid.UUID, variant string) (string, error) {
+	if variant == AvatarVariant {
+		key, err := s.resolveAvatarRendition(ctx, mediaID)
+		if err != nil {
+			return "", err
+		}
+		return s.deliveryURL(ctx, viewerID, mediaID, key)
+	}
 	if variant == "original" {
 		media, err := s.pgStore.GetMedia(ctx, mediaID)
 		if err != nil {

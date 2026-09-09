@@ -41,6 +41,69 @@ var ErrDeliveryUnresolved = errors.New("delivery: authorization unresolved")
 
 var errBatchUnsupported = errors.New("delivery: batch authorization unsupported")
 
+// mediaAccessAnswer decodes a content authority's verdict in either wire shape.
+//
+// WHY TWO SHAPES ARE TOLERATED
+//
+// This decoder is the single consumer of three separate authorities, and they
+// do not agree on an envelope. post-service and commerce-service answer with a
+// bare `{"allowed":true}`; identity's profile-service answers through the
+// shared `api.JSON` helper, which wraps every body in `{"data":{…}}`.
+//
+// Decoding only the bare shape does not fail loudly against the enveloped one.
+// It finds no top-level `allowed`, decodes the zero value, and reports a
+// resolved DENIAL — so every avatar in the product 404'd on the byte path
+// while both services logged a successful 200 to each other. commerce-service
+// hit this and worked around it in its own handler (see the comment on
+// `MediaAccess` there); profile-service did not, and nothing detected it.
+//
+// A missing `allowed` in BOTH shapes is still false. Tolerating the envelope
+// widens what counts as a well-formed yes; it does not weaken fail-closed.
+type mediaAccessAnswer struct {
+	Allowed *bool `json:"allowed"`
+	Data    *struct {
+		Allowed *bool `json:"allowed"`
+	} `json:"data"`
+}
+
+func (a mediaAccessAnswer) allowed() bool {
+	if a.Allowed != nil {
+		return *a.Allowed
+	}
+	if a.Data != nil && a.Data.Allowed != nil {
+		return *a.Data.Allowed
+	}
+	return false
+}
+
+// mediaAccessBatchAnswer is the same tolerance for the page-sized contract.
+// Only post-service can reach the batch path today, but a second authority
+// growing a `/batch` route must not reintroduce the silent-denial bug.
+type mediaAccessBatchAnswer struct {
+	Allowed   map[string]bool   `json:"allowed"`
+	Decisions map[string]string `json:"decisions,omitempty"`
+	Reasons   map[string]string `json:"reasons,omitempty"`
+	Data      *struct {
+		Allowed   map[string]bool   `json:"allowed"`
+		Decisions map[string]string `json:"decisions,omitempty"`
+		Reasons   map[string]string `json:"reasons,omitempty"`
+	} `json:"data"`
+}
+
+// resolve returns the verdict map and its annotations from whichever shape
+// carried them. A nil map means the authority answered 200 without saying
+// anything, which the caller treats as unresolved rather than as "none
+// allowed" — an empty verdict during a deploy must not blank a feed page.
+func (a mediaAccessBatchAnswer) resolve() (map[string]bool, map[string]string, map[string]string) {
+	if a.Allowed != nil {
+		return a.Allowed, a.Decisions, a.Reasons
+	}
+	if a.Data != nil && a.Data.Allowed != nil {
+		return a.Data.Allowed, a.Data.Decisions, a.Data.Reasons
+	}
+	return nil, nil, nil
+}
+
 // ContentAuthorizer answers whether a viewer may receive an asset's bytes.
 type ContentAuthorizer interface {
 	// Authorize returns nil when the viewer may receive mediaID.
@@ -136,13 +199,11 @@ func (a *HTTPContentAuthorizer) Authorize(ctx context.Context, viewerID, mediaID
 		// A 200 still has to SAY yes. An empty or malformed body decoding to
 		// the zero value would otherwise read as allowed=false anyway, but
 		// being explicit keeps a future field rename from flipping the default.
-		var out struct {
-			Allowed bool `json:"allowed"`
-		}
+		var out mediaAccessAnswer
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 			return fmt.Errorf("%w: decode response: %v", ErrDeliveryUnresolved, err)
 		}
-		if !out.Allowed {
+		if !out.allowed() {
 			return ErrDeliveryDenied
 		}
 		return nil
@@ -185,20 +246,17 @@ func (a *HTTPContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID str
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: content authority batch returned %d", ErrDeliveryUnresolved, resp.StatusCode)
 	}
-	var out struct {
-		Allowed   map[string]bool   `json:"allowed"`
-		Decisions map[string]string `json:"decisions,omitempty"`
-		Reasons   map[string]string `json:"reasons,omitempty"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	var answer mediaAccessBatchAnswer
+	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
 		return nil, fmt.Errorf("%w: decode batch response: %v", ErrDeliveryUnresolved, err)
 	}
-	if out.Allowed == nil {
+	verdicts, decisions, reasons := answer.resolve()
+	if verdicts == nil {
 		return nil, fmt.Errorf("%w: batch response omitted allowed map", ErrDeliveryUnresolved)
 	}
-	for id, allowed := range out.Allowed {
-		decision := out.Decisions[id]
-		reason := out.Reasons[id]
+	for id, allowed := range verdicts {
+		decision := decisions[id]
+		reason := reasons[id]
 		if !allowed {
 			slog.InfoContext(ctx, "content authority denied asset",
 				"viewer_id", viewerID,
@@ -212,7 +270,7 @@ func (a *HTTPContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID str
 				"reason", reason)
 		}
 	}
-	return out.Allowed, nil
+	return verdicts, nil
 }
 
 // AnyContentAuthorizer permits an asset when any canonical owning surface

@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -402,7 +403,36 @@ func (h *Handler) ServeMedia(c *gin.Context) {
 		return
 	}
 
-	c.Redirect(http.StatusTemporaryRedirect, imgURL)
+	writeDeliveryRedirect(c, imgURL)
+}
+
+// redirectCacheTTL is how long a browser may reuse this redirect.
+//
+// # WHY IT IS SHORTER THAN THE SIGNATURE, AND WHY IT IS NOT ZERO
+//
+// The signed URL this redirect points at lives for delivery.MaxProtectedTTL
+// (5 minutes) and cannot be revoked before it expires. Letting the browser
+// cache the REDIRECT for longer than that would hand it a memo pointing at a
+// dead link — the exact "avatar goes blank a few minutes into an open feed"
+// failure that a signed URL embedded directly in a payload produces.
+//
+// Zero would be worse in the other direction: a feed page with twenty authors
+// re-asks the profile privacy authority on every scroll and every remount.
+// One minute keeps a page's worth of renders on one authorization, stays well
+// inside the signature's life, and bounds how long a revoked photo (a block, a
+// switch to private, a takedown) can still render to one minute.
+//
+// `private` is not optional. A shared cache keyed only on the URL would serve
+// one viewer's authorized redirect to another viewer, which is the whole
+// audience decision undone at the edge.
+const redirectCacheTTL = 60
+
+func writeDeliveryRedirect(c *gin.Context, url string) {
+	c.Header("Cache-Control", fmt.Sprintf("private, max-age=%d", redirectCacheTTL))
+	// The decision depends on the viewer the edge resolved, so the redirect is
+	// only reusable for that same viewer.
+	c.Header("Vary", "Cookie, Authorization, X-User-Id")
+	c.Redirect(http.StatusTemporaryRedirect, url)
 }
 
 // ServeMediaVariant redirects to the presigned URL of a specific variant.
@@ -424,7 +454,7 @@ func (h *Handler) ServeMediaVariant(c *gin.Context) {
 		return
 	}
 
-	c.Redirect(http.StatusTemporaryRedirect, imgURL)
+	writeDeliveryRedirect(c, imgURL)
 }
 
 // ServeHLSPlaylist returns a small authorized playlist through the API. The

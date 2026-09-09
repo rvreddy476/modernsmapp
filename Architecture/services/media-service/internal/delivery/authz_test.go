@@ -430,3 +430,52 @@ func TestAnyContentAuthorizerBatchFailsWhenAllAuthorizersUnresolved(t *testing.T
 		t.Fatalf("got %v, want ErrDeliveryUnresolved", err)
 	}
 }
+
+// The three content authorities do not agree on a response envelope, and the
+// disagreement was invisible: profile-service answered 200 with its verdict
+// inside the shared `{"data":{…}}` wrapper, the decoder read no top-level
+// `allowed`, and every avatar byte fetch in the product became a resolved 404
+// while both services logged a successful exchange.
+func TestAuthorizerAcceptsAYesInEitherEnvelope(t *testing.T) {
+	for name, body := range map[string]string{
+		"bare":      `{"allowed":true}`,
+		"enveloped": `{"data":{"allowed":true,"kind":"avatar"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			authorizer := NewHTTPProfileAuthorizer(server.URL, "internal", server.Client())
+			if err := authorizer.Authorize(context.Background(), "viewer", "media"); err != nil {
+				t.Fatalf("an affirmative %s answer was read as a denial: %v", name, err)
+			}
+		})
+	}
+}
+
+// Tolerating the envelope must not turn any 200 into a yes.
+func TestAuthorizerStillDeniesWithoutAnAffirmativeAnswer(t *testing.T) {
+	for name, body := range map[string]string{
+		"bare no":        `{"allowed":false}`,
+		"enveloped no":   `{"data":{"allowed":false}}`,
+		"silent 200":     `{}`,
+		"empty envelope": `{"data":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			authorizer := NewHTTPProfileAuthorizer(server.URL, "internal", server.Client())
+			err := authorizer.Authorize(context.Background(), "viewer", "media")
+			if !errors.Is(err, ErrDeliveryDenied) {
+				t.Fatalf("%s should be a resolved denial, got %v", name, err)
+			}
+		})
+	}
+}

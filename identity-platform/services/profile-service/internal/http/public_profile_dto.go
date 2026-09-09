@@ -1,6 +1,8 @@
 package http
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/atpost/identity-profile-service/internal/store"
@@ -153,6 +155,76 @@ func ToPublicProfile(p *store.Profile) *PublicProfile {
 
 		CreatedAt: p.CreatedAt,
 	}
+}
+
+// ---------------------------------------------------------------
+// Rendered media URLs
+// ---------------------------------------------------------------
+//
+// # THE GAP THIS CLOSES
+//
+// A profile published `avatar_media_id` and nothing else, so every client had
+// to know how media-service turns an id into bytes before it could draw a
+// face. The web client did not, and rendered initials for everyone.
+//
+// # WHY A STABLE PATH AND NOT A SIGNED URL
+//
+// The obvious fix — resolve each avatar at media-service and inline the signed
+// URL — is wrong twice over. media-service signs profile media for
+// delivery.MaxProtectedTTL (5 minutes), because that TTL IS the revocation
+// window for a photo whose owner blocks you or goes private. Inlining it puts
+// a five-minute fuse on every avatar in a feed page: the reader who leaves a
+// tab open comes back to broken images. And it costs a signing round trip per
+// author on every profile read, which is exactly the N+1 a feed page cannot
+// afford.
+//
+// This path is derived from an id the payload already carries, so it costs no
+// lookup at all — not one per author, not one per page. Each render re-asks
+// the privacy authority through media-service and gets a URL signed at that
+// moment, which also means a revoked photo stops rendering on the next load
+// instead of at the end of somebody's cached signature.
+//
+// The path is gateway-relative for the same reason `hls_url` and
+// `playback_url` are: the caller knows its own gateway origin, and this
+// service does not need one configured to answer.
+//
+// `avatar` is a rendition ALIAS, resolved server-side against the renditions
+// the asset actually owns (media-service: service.AvatarVariant). A hard-coded
+// `thumb_150` here would 404 for any avatar the image pipeline skipped a
+// rendition for.
+const profileMediaPathFormat = "/v1/media/%s/serve/avatar"
+
+func profileMediaURL(mediaID *uuid.UUID) *string {
+	if mediaID == nil || *mediaID == uuid.Nil {
+		return nil
+	}
+	u := fmt.Sprintf(profileMediaPathFormat, *mediaID)
+	return &u
+}
+
+// MarshalJSON publishes avatar_url / cover_url alongside the ids they are
+// derived from.
+//
+// # COMPUTED AT THE WIRE, NOT STORED ON THE STRUCT
+//
+// The photo-privacy gate redacts a profile by nil-ing AvatarMedia and
+// CoverMedia (profile_photo_gate.go). A URL held in its own field would be a
+// second place that redaction has to remember, and forgetting it would publish
+// a working link to the photo the gate just withheld. Deriving the URL here
+// makes that unrepresentable: no id on the wire, no URL on the wire.
+func (p PublicProfile) MarshalJSON() ([]byte, error) {
+	// The alias sheds this method, so the embedded value marshals as a plain
+	// struct instead of recursing into MarshalJSON forever.
+	type alias PublicProfile
+	return json.Marshal(struct {
+		alias
+		AvatarURL *string `json:"avatar_url,omitempty"`
+		CoverURL  *string `json:"cover_url,omitempty"`
+	}{
+		alias:     alias(p),
+		AvatarURL: profileMediaURL(p.AvatarMedia),
+		CoverURL:  profileMediaURL(p.CoverMedia),
+	})
 }
 
 // ToPublicProfiles converts a list, preserving order.

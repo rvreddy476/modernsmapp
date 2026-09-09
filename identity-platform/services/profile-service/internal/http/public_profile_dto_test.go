@@ -320,3 +320,73 @@ func TestGeneralProfileUpdateCannotChangeTheUsername(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------
+// Rendered media URLs
+// ---------------------------------------------------------------
+
+// A profile that carries an avatar id must also carry a URL a browser can
+// load. Publishing the id alone is what left every avatar on the web rendered
+// as initials: no client can turn an id into bytes without knowing
+// media-service's route layout.
+func TestPublicProfilePublishesALoadableAvatarURL(t *testing.T) {
+	avatar := uuid.MustParse("e13c1582-7950-46e9-8519-f0709e982cd9")
+	cover := uuid.MustParse("cccccccc-3333-4333-8333-cccccccccccc")
+	profile := &PublicProfile{UserID: testTargetID, AvatarMedia: &avatar, CoverMedia: &cover}
+
+	var out map[string]any
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got := out["avatar_url"]; got != "/v1/media/"+avatar.String()+"/serve/avatar" {
+		t.Errorf("avatar_url = %v", got)
+	}
+	if got := out["cover_url"]; got != "/v1/media/"+cover.String()+"/serve/avatar" {
+		t.Errorf("cover_url = %v", got)
+	}
+	// The ids stay, additively: the shipped Android client reads them.
+	if out["avatar_media_id"] != avatar.String() {
+		t.Errorf("avatar_media_id was dropped: %v", out["avatar_media_id"])
+	}
+
+	// A signed URL would carry an expiry and a signature, and would go stale in
+	// an open feed. This one is a stable path that re-authorizes on every load.
+	for _, forbidden := range []string{"Expires", "Signature", "X-Amz-"} {
+		if strings.Contains(raw2s(raw), forbidden) {
+			t.Errorf("avatar URL looks presigned (%s); it must be a stable path", forbidden)
+		}
+	}
+}
+
+// The photo-privacy gate redacts by clearing the media ids. The URL is derived
+// from those ids at marshal time precisely so it cannot survive the redaction
+// and hand out a working link to the photo the gate just withheld.
+func TestRedactedProfilePublishesNoMediaURL(t *testing.T) {
+	avatar := uuid.MustParse("e13c1582-7950-46e9-8519-f0709e982cd9")
+	profile := &PublicProfile{UserID: testTargetID, AvatarMedia: &avatar}
+
+	h := &Handler{}
+	h.redactProfileMedia(profile)
+
+	var out map[string]any
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := out["avatar_url"]; present {
+		t.Fatalf("a redacted profile published a working avatar URL: %v", out["avatar_url"])
+	}
+	if _, present := out["avatar_media_id"]; present {
+		t.Fatalf("a redacted profile published the avatar id: %v", out["avatar_media_id"])
+	}
+}
+
+func raw2s(b []byte) string { return string(b) }
