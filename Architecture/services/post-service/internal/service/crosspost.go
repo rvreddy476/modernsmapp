@@ -78,9 +78,16 @@ func (s *Service) CreateCrosspost(ctx context.Context, sourcePostID, userID uuid
 		// in hand.
 		//
 		// It matters because PostCreated is the only writer of
-		// analytics.content_ownership, and that row's created_at is what the
-		// creator fund windows earnings by. This call used to let the producer
-		// stamp time.Now() at publish time instead.
+		// analytics.content_ownership, and that row's created_at is the only
+		// record of the post's creation date that crosses the service
+		// boundary. It is NOT what earnings are dated by: the creator fund
+		// reads analytics.content_daily_summary and windows on day_bucket,
+		// the day the views happened, and its 90-day eligibility scan reads
+		// the same table. But anything that walks content_ownership by
+		// creator and created_at (idx_content_ownership_creator exists for
+		// that) sees this value, and nothing downstream can correct a
+		// fabricated one. This call used to let the producer stamp
+		// time.Now() at publish time instead.
 		embedCreatedAt := link.CreatedAt
 		go func() {
 			if err := s.producer.PublishPostCreated(context.Background(), link.TargetPostID, userID,

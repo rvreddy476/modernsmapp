@@ -108,9 +108,9 @@ const (
 // key, exactly like auth.user_roles in identityrolebackfill, and this stack
 // carries hundreds of posts minted by integration tests wrongly pointed at
 // the live database. Projecting them would fill
-// idx_content_ownership_creator — the index the creator fund's daily
-// settlement and the 90-day eligibility scan both walk — with accounts that
-// exist nowhere. -include-unknown-authors overrides it.
+// idx_content_ownership_creator — the index anything walking
+// content_ownership by creator and created_at uses; the creator fund itself
+// reads content_daily_summary — with accounts that exist nowhere. -include-unknown-authors overrides it.
 //
 // # ORDERING
 //

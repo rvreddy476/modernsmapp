@@ -13,11 +13,11 @@ import (
 // The parameter exists because this function used to stamp time.Now() itself,
 // which no caller could override and every caller was silently wrong about:
 // PostCreated is the ONLY writer of analytics.content_ownership, and that
-// row's created_at is read by idx_content_ownership_creator — the index the
-// creator fund's daily settlement and its 90-day eligibility scan walk. A
-// misdated row misdates every earning derived from it, and nothing downstream
-// can recover the true value, because the event is the only record that
-// crosses the service boundary.
+// row's created_at is the only record of the creation date that crosses
+// the service boundary; nothing downstream can recover the true value if
+// the event carries a fabricated one. Earnings are not dated by it — the
+// creator fund windows on content_daily_summary.day_bucket — but anything
+// that walks content_ownership by creator and created_at sees it.
 //
 // A zero time is the failure mode a refactor actually produces: someone adds
 // a caller, forgets the argument, and Go hands them the zero value happily. It

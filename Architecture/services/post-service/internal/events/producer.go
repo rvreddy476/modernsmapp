@@ -39,12 +39,15 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 // no caller could override and every caller was silently wrong about.
 //
 // It is not cosmetic. PostCreated is the only thing that writes
-// analytics.content_ownership, whose created_at is read by
-// idx_content_ownership_creator — the index the creator fund's daily
-// settlement and its 90-day eligibility scan both walk. A row dated by
-// publish time instead of creation time misdates every earning derived from
-// it, and nothing downstream can recover the true value because the event is
-// the only record that crosses the service boundary.
+// analytics.content_ownership, and that row's created_at is the only record
+// of the post's creation date that crosses the service boundary; nothing
+// downstream can recover the true value if the event carries a fabricated
+// one. It is not, however, what earnings are dated by: the creator fund
+// reads analytics.content_daily_summary and windows on day_bucket — the day
+// the views happened — and its 90-day eligibility scan reads the same table,
+// so a misdated ownership row moves no money by itself. What does see it is
+// whatever walks content_ownership by creator and created_at, which is what
+// idx_content_ownership_creator is for.
 //
 // The outbox paths already did this correctly — buildPostCreatedPayload
 // (schedule.go) and the thread path both read p.CreatedAt — so this was the
@@ -52,8 +55,8 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 // than production as a result.
 func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid.UUID, text, visibility, contentType, reviewStatus string, durationSeconds int, createdAt time.Time) error {
 	// A zero createdAt would serialise as year 1 and quietly park the content
-	// outside every window the fund queries. Refusing is better than a bad
-	// date nothing downstream can detect.
+	// outside every window that walks content_ownership by created_at.
+	// Refusing is better than a bad date nothing downstream can detect.
 	if createdAt.IsZero() {
 		return fmt.Errorf("PublishPostCreated: createdAt is required for post %s", postID)
 	}
