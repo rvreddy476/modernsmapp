@@ -5,7 +5,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -22,10 +21,7 @@ import (
 // credited them would pay every tip twice — and the place that would show
 // up is exactly here, on a re-run of a period that already paid.
 func TestLivePeriodSettlementPaysFundOnceAndNeverPaysTipsTwice(t *testing.T) {
-	dsn := os.Getenv("MONETIZATION_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("MONETIZATION_POSTGRES_DSN is required")
-	}
+	dsn := requireTestDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -224,10 +220,7 @@ func TestLivePeriodSettlementPaysFundOnceAndNeverPaysTipsTwice(t *testing.T) {
 // An ineligible creator with no tips accrues nothing, is credited
 // nothing, and does not even get a statement row.
 func TestLivePeriodSettlementPaysAnIneligibleCreatorNothing(t *testing.T) {
-	dsn := os.Getenv("MONETIZATION_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("MONETIZATION_POSTGRES_DSN is required")
-	}
+	dsn := requireTestDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {

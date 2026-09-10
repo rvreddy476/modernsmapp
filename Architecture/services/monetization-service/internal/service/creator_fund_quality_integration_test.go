@@ -5,7 +5,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -19,10 +18,7 @@ import (
 // asserts the money actually differs — end to end, through the real
 // analytics tables, the real rate sheet and the real quality band.
 func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
-	dsn := os.Getenv("MONETIZATION_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("MONETIZATION_POSTGRES_DSN is required")
-	}
+	dsn := requireTestDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -180,10 +176,7 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 // A creator whose day recorded views but no impressions must be paid the
 // plain amount, not zero and not a crash.
 func TestLiveSettlementOfAZeroImpressionDayPaysTheNeutralAmount(t *testing.T) {
-	dsn := os.Getenv("MONETIZATION_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("MONETIZATION_POSTGRES_DSN is required")
-	}
+	dsn := requireTestDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {

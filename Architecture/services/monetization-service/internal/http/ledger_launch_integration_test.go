@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -21,10 +20,7 @@ import (
 )
 
 func TestLiveRecordedLedgerExactPaiseAndWritesDisabled(t *testing.T) {
-	dsn := os.Getenv("MONETIZATION_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("MONETIZATION_POSTGRES_DSN is required")
-	}
+	dsn := requireTestDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {

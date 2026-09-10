@@ -4,7 +4,6 @@ package service
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -33,10 +32,7 @@ import (
 // back repeatedly. Before the fix it passes or fails on physical row order,
 // which is the point; after it, the most recently written row wins always.
 func TestActiveQualityBandIsDeterministicWhenTwoRowsShareAnEffectiveFrom(t *testing.T) {
-	dsn := os.Getenv("MONETIZATION_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("MONETIZATION_POSTGRES_DSN is required")
-	}
+	dsn := requireTestDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
