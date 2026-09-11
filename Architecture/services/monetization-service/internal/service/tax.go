@@ -107,21 +107,32 @@ func (s *Service) deductTDSTx(ctx context.Context, db postgres.DBTX, creatorID u
 		return 0, 0, fmt.Errorf("get yearly gross total: %w", err)
 	}
 
-	tdsPaise := ComputeTDS(grossAmountPaise, yearlyGross)
-	netPaise := grossAmountPaise - tdsPaise
+	// The calculation always happens and is always recorded: the ledger
+	// row carries the gross (so the yearly threshold accumulates) and
+	// the COMPUTED amount (so the number is on record for the later
+	// tax module), whether or not it is deducted today.
+	computedPaise := ComputeTDS(grossAmountPaise, yearlyGross)
 
 	if err := s.store.InsertTDSEntryTx(ctx, db, &postgres.TDSEntry{
 		CreatorID:        creatorID,
 		FinancialYear:    fy,
 		GrossAmountPaise: grossAmountPaise,
-		TDSAmountPaise:   tdsPaise,
+		TDSAmountPaise:   computedPaise,
 		Section:          s.TDSSection(),
 		ReferenceID:      referenceID,
 	}); err != nil {
 		return 0, 0, fmt.Errorf("insert TDS entry: %w", err)
 	}
 
-	return netPaise, tdsPaise, nil
+	// Founder decision, 12 Sep 2026 (MONETIZATION_TDS_APPLY=false, the
+	// default): "just transfer what the amount is; keep that calculation
+	// ready; we'll deduct later per the user's tax eligibility via
+	// government APIs, as the last module." Nothing is withheld: the
+	// creator is paid the gross.
+	if !s.tdsApply {
+		return grossAmountPaise, 0, nil
+	}
+	return grossAmountPaise - computedPaise, computedPaise, nil
 }
 
 // GetTDSSummary returns a creator's TDS entries for the financial year,

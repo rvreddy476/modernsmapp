@@ -263,3 +263,27 @@ func (s *Store) ListInvoices(ctx context.Context, userID uuid.UUID, limit, offse
 	}
 	return invoices, rows.Err()
 }
+
+// GetTDSEntryByReferenceTx returns the tds_ledger row a payout request
+// wrote when it was priced (positive gross), or nil. The failed/reversed
+// convergence mirrors it so the record for that request nets to zero.
+func (s *Store) GetTDSEntryByReferenceTx(ctx context.Context, db DBTX, referenceID uuid.UUID) (*TDSEntry, error) {
+	var e TDSEntry
+	err := db.QueryRow(ctx, `
+		SELECT id, creator_id, financial_year, gross_amount_paise, tds_amount_paise, section, reference_id, deducted_at
+		FROM tds_ledger
+		WHERE reference_id = $1 AND gross_amount_paise > 0
+		ORDER BY deducted_at ASC
+		LIMIT 1
+	`, referenceID).Scan(
+		&e.ID, &e.CreatorID, &e.FinancialYear, &e.GrossAmountPaise, &e.TDSAmountPaise,
+		&e.Section, &e.ReferenceID, &e.DeductedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &e, nil
+}

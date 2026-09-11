@@ -42,6 +42,13 @@ env:
   # refuses to boot with payouts on and writes off. Off in beta: earnings
   # are estimates, RequestPayout answers 503 PAYOUTS_NOT_ENABLED.
   MONETIZATION_PAYOUTS_ENABLED: "false"
+  # Maintenance mode: admin routes only (internal key + admin scope), no
+  # worker, no Kafka client, every other financial write 503 MAINTENANCE.
+  # Only ever true for a supervised correction run on one environment.
+  MONETIZATION_MAINTENANCE: "false"
+  # TDS at payout: computed and recorded, NOT deducted (founder decision
+  # 12 Sep 2026) until the per-user tax module. true withholds.
+  MONETIZATION_TDS_APPLY: "false"
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 

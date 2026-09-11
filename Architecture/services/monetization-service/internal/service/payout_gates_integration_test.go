@@ -313,7 +313,10 @@ func TestRequestPayoutRefusals(t *testing.T) {
 func TestTDSThresholdSumsGross(t *testing.T) {
 	ctx, pool := openTestPool(t)
 	store := postgres.New(pool)
-	svc := enabledPayoutService(store)
+	// With deduction ON (MONETIZATION_TDS_APPLY=true). The default is
+	// off — see TestTDSNotAppliedWhenFlagOff — and this test is about
+	// the threshold arithmetic, which is the same either way.
+	svc := enabledPayoutService(store).WithTDSApply(true)
 
 	creator, _ := seedPayoutCreator(ctx, t, pool, healthyPayoutFixture(0))
 	// Rs 30,000 already paid out this year with no TDS taken: the next

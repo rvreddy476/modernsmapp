@@ -1204,6 +1204,20 @@ services:
       # Withdrawals (plan Phase 3C). Off by default; needs writes on too,
       # or the container refuses to boot.
       MONETIZATION_PAYOUTS_ENABLED: ${MONETIZATION_PAYOUTS_ENABLED:-false}
+      # Maintenance mode (January remediation, reviewer correction B):
+      # admin routes only, behind the internal key AND the admin scope;
+      # every other financial write answers 503 MAINTENANCE; no worker
+      # and no Kafka client starts. Refuses to boot with payouts on or
+      # with INTERNAL_SERVICE_KEY empty.
+      MONETIZATION_MAINTENANCE: ${MONETIZATION_MAINTENANCE:-false}
+      # TDS at payout (founder decision 12 Sep 2026): computed and
+      # recorded in tds_ledger on every payout, but NOT deducted from the
+      # transfer until the later per-user tax module. true withholds.
+      MONETIZATION_TDS_APPLY: ${MONETIZATION_TDS_APPLY:-false}
+      # The gateway stamps X-Internal-Service-Key on every proxied
+      # request and the direct callers (commerce, post, food) send it;
+      # maintenance mode requires it on every admin route.
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       # The payout rail (plan Phase 4B): RazorpayX contacts, fund accounts
       # and payouts. The client is built only when payouts are enabled AND
       # all four are set; otherwise the rail stays off and says so once.
@@ -1225,7 +1239,10 @@ services:
       # or semimonthly (1st-15th, 16th-end).
       CF_SETTLEMENT_CADENCE: ${CF_SETTLEMENT_CADENCE:-monthly}
     ports:
-      - "8099:8099"
+      # Loopback only: the admin routes trust X-Scopes/X-User-Id from
+      # whoever reaches the port, so the port must not be reachable from
+      # the LAN. Other containers still reach it by service name.
+      - "127.0.0.1:8099:8099"
     depends_on:
       postgres:
         condition: service_healthy

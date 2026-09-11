@@ -39,6 +39,13 @@ type Service struct {
 	// tdsSection is what a tds_ledger row is recorded under
 	// (MONETIZATION_TDS_SECTION, default 194-O).
 	tdsSection string
+	// tdsApply mirrors MONETIZATION_TDS_APPLY (default false). Founder
+	// decision, 12 Sep 2026: TDS is COMPUTED and RECORDED on every payout
+	// (tds_ledger keeps the gross and the computed amount, so the yearly
+	// threshold keeps accumulating) but is NOT DEDUCTED from the transfer
+	// until a later tax module decides per user. Off: the request carries
+	// tds_paise 0 and net = gross. On: the computed amount is withheld.
+	tdsApply bool
 
 	// The payout rail (plan Phase 4B/4C). payoutClient is nil unless
 	// payouts are enabled AND all four RazorpayX credentials are set, in
@@ -72,6 +79,16 @@ func (s *Service) WithTDSSection(section string) *Service {
 	}
 	return s
 }
+
+// WithTDSApply turns deduction at payout on or off. The calculation and
+// the ledger record happen either way. Defaults to off.
+func (s *Service) WithTDSApply(apply bool) *Service {
+	s.tdsApply = apply
+	return s
+}
+
+// TDSApply reports whether TDS is deducted from a payout.
+func (s *Service) TDSApply() bool { return s.tdsApply }
 
 // TDSSection is the configured TDS section (default 194-O).
 func (s *Service) TDSSection() string {

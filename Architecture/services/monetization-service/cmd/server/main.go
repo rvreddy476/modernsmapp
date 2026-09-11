@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/monetization-service/internal/client/razorpayx"
 	"github.com/atpost/monetization-service/internal/events"
 	"github.com/atpost/monetization-service/internal/http"
+	"github.com/atpost/monetization-service/internal/runmode"
 	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/monetization-service/internal/workers"
@@ -37,27 +38,34 @@ func main() {
 	redisAddr := os.Getenv("REDIS_ADDR")
 	environment := strings.ToLower(strings.TrimSpace(env("ENV", "development")))
 	internalKey := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY"))
-	writesEnabled, err := strconv.ParseBool(env("MONETIZATION_WRITES_ENABLED", "false"))
+	// The four boot flags, resolved together (internal/runmode): the
+	// launch boundary, withdrawals (plan Phase 3C; needs writes),
+	// maintenance mode (admin routes only, nothing in the background;
+	// needs payouts off and the internal key), and whether TDS is
+	// deducted at payout (founder decision 12 Sep 2026: computed and
+	// recorded, not deducted, until the tax module).
+	mode, err := runmode.Resolve(runmode.Config{
+		Environment:    environment,
+		InternalKey:    internalKey,
+		WritesEnabled:  envBool("MONETIZATION_WRITES_ENABLED"),
+		PayoutsEnabled: envBool("MONETIZATION_PAYOUTS_ENABLED"),
+		Maintenance:    envBool("MONETIZATION_MAINTENANCE"),
+		TDSApply:       envBool("MONETIZATION_TDS_APPLY"),
+	})
 	if err != nil {
-		slog.Error("invalid MONETIZATION_WRITES_ENABLED", "error", err)
+		slog.Error("refusing to start", "error", err)
 		os.Exit(1)
 	}
-	// The withdrawal path (plan Phase 3C). Off by default, and it cannot be
-	// on while writes are off: a payout is a write, and a configuration
-	// that says otherwise is a mistake the process refuses to run under.
-	payoutsEnabled, err := strconv.ParseBool(env("MONETIZATION_PAYOUTS_ENABLED", "false"))
-	if err != nil {
-		slog.Error("invalid MONETIZATION_PAYOUTS_ENABLED", "error", err)
-		os.Exit(1)
-	}
-	if payoutsEnabled && !writesEnabled {
-		slog.Error("refusing to start: MONETIZATION_PAYOUTS_ENABLED=true requires MONETIZATION_WRITES_ENABLED=true")
-		os.Exit(1)
-	}
+	writesEnabled, payoutsEnabled := mode.WritesEnabled, mode.PayoutsEnabled
 	tdsSection := strings.TrimSpace(env("MONETIZATION_TDS_SECTION", service.DefaultTDSSection))
-	if (environment == "prod" || environment == "production" || environment == "staging") && internalKey == "" {
-		slog.Error("INTERNAL_SERVICE_KEY is required outside development")
-		os.Exit(1)
+	slog.Warn(mode.BootLine())
+	if mode.Maintenance {
+		slog.Warn("MAINTENANCE MODE: admin routes only (internal key + admin scope); every other financial write answers 503 MAINTENANCE; no worker and no Kafka client started")
+	}
+	if mode.TDSApply {
+		slog.Warn("TDS at payout: APPLIED — the computed amount is withheld from every transfer")
+	} else {
+		slog.Warn("TDS at payout: NOT APPLIED — computed and recorded in tds_ledger, transfers pay the gross (founder decision 12 Sep 2026; deduction is the later tax module)")
 	}
 
 	// 3. Database
@@ -106,7 +114,7 @@ func main() {
 	// The Module 6 read-only creator ledger remains available during a Redis or
 	// Kafka outage because PostgreSQL is its sole authority.
 	var rdb *redis.Client
-	if writesEnabled {
+	if mode.RequireRedis {
 		rdb, err = transport.NewRedisClientFromEnv(redisAddr)
 		if err != nil {
 			slog.Error("failed to configure redis client", "error", err)
@@ -146,7 +154,8 @@ func main() {
 	monetizationSvc := service.New(monetizationStore, rdb).
 		WithCreatorFundConfig(loadCreatorFundConfig()).
 		WithPayoutsEnabled(payoutsEnabled).
-		WithTDSSection(tdsSection)
+		WithTDSSection(tdsSection).
+		WithTDSApply(mode.TDSApply)
 
 	// 7b. The payout rail (plan Phase 4B). The RazorpayX client is
 	// constructed only when payouts are enabled AND all four credentials
@@ -183,10 +192,13 @@ func main() {
 	monetizationHandler := http.New(monetizationSvc).
 		WithInternalKey(internalKey).
 		WithWritesEnabled(writesEnabled).
-		WithPayoutsEnabled(payoutsEnabled)
+		WithPayoutsEnabled(payoutsEnabled).
+		WithMaintenance(mode.Maintenance)
 
-	// 7a. Kafka producer + background workers
-	if writesEnabled {
+	// 7a. Kafka producer + background workers. Neither in maintenance
+	// mode: the point of that mode is that nothing but the operator's
+	// own admin calls can touch the ledger while it is on.
+	if mode.StartWorkers {
 		kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
 		kafkaTopic := env("KAFKA_MONETIZATION_TOPIC", events.TopicMonetization)
 		kafkaDialer, err := transport.KafkaDialerFromEnv()
@@ -199,6 +211,8 @@ func main() {
 		monetizationSvc.WithEntitlementPublisher(monetizationProducer)
 		go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc, payoutsEnabled)
 		slog.Warn("financial mutation workers enabled", "payouts_enabled", payoutsEnabled)
+	} else if mode.Maintenance {
+		slog.Warn("maintenance mode: zero workers started, no Kafka producer opened")
 	} else {
 		slog.Info("financial mutation workers disabled for beta")
 	}
@@ -242,6 +256,17 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool parses a boolean flag that defaults to false. An unparseable
+// value is a configuration error, not "false": the process exits.
+func envBool(key string) bool {
+	v, err := strconv.ParseBool(env(key, "false"))
+	if err != nil {
+		slog.Error("invalid boolean flag", "key", key, "error", err)
+		os.Exit(1)
+	}
+	return v
 }
 
 // loadCreatorFundConfig assembles the creator-fund knob set from CF_*

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -22,6 +23,12 @@ type Handler struct {
 	internalKey    string
 	writesEnabled  bool
 	payoutsEnabled bool
+	// maintenance mirrors MONETIZATION_MAINTENANCE (reviewer correction
+	// B, 12 Sep 2026): the admin routes are the only open writes, every
+	// other financial write answers 503 MAINTENANCE, and every admin
+	// route must carry the internal service key as well as the scope
+	// header. It wins over writesEnabled.
+	maintenance bool
 }
 
 func New(svc *service.Service) *Handler {
@@ -48,6 +55,14 @@ func (h *Handler) WithWritesEnabled(enabled bool) *Handler {
 // or merely stored. The refusal of a withdrawal itself is the service's.
 func (h *Handler) WithPayoutsEnabled(enabled bool) *Handler {
 	h.payoutsEnabled = enabled
+	return h
+}
+
+// WithMaintenance puts the boundary into maintenance mode: admin routes
+// only (key + scope), reads as in beta, everything else 503 MAINTENANCE.
+// See runmode.Resolve for what the process does with the flag.
+func (h *Handler) WithMaintenance(on bool) *Handler {
+	h.maintenance = on
 	return h
 }
 
@@ -257,11 +272,64 @@ func betaRuleAllows(method, pattern string) bool {
 	return false
 }
 
+// adminRoutePrefix is the registered-pattern prefix of every admin route.
+// Matched on c.FullPath(), never on the request URL.
+const adminRoutePrefix = "/v1/monetization/admin/"
+
+// isAdminPattern reports whether a registered route pattern is an admin
+// route. An empty pattern (no route matched) is never one.
+func isAdminPattern(pattern string) bool {
+	return pattern != "" && strings.HasPrefix(pattern, adminRoutePrefix)
+}
+
 // launchBoundary fails closed while financial products are not launched.
 // The rule list is intentionally exact: adding a new GET does not
 // accidentally publish admin, tax, entitlement, or settlement data.
+//
+// Maintenance mode (checked first, so it wins over writesEnabled): the
+// beta reads stay open; an admin route is let through only when the
+// request carries the internal service key — the scope header is an
+// operator identity claim recorded for audit, not authentication, and
+// a container that merely reaches the port must not be able to call a
+// correction; everything else answers 503 MAINTENANCE.
 func (h *Handler) launchBoundary() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if h.maintenance {
+			pattern := c.FullPath()
+			switch {
+			case isAdminPattern(pattern):
+				if h.internalKey == "" {
+					// runmode refuses to boot this way; fail closed anyway.
+					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+						"error": gin.H{
+							"code":    "MAINTENANCE_KEY_UNSET",
+							"message": "Maintenance mode requires INTERNAL_SERVICE_KEY; admin routes are closed.",
+						},
+					})
+					return
+				}
+				if !hmac.Equal([]byte(c.GetHeader("X-Internal-Service-Key")), []byte(h.internalKey)) {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+						"error": gin.H{
+							"code":    "UNAUTHORIZED",
+							"message": "internal service key required on admin routes in maintenance mode",
+						},
+					})
+					return
+				}
+				c.Next()
+			case betaRuleAllows(c.Request.Method, pattern):
+				c.Next()
+			default:
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{
+						"code":    "MAINTENANCE",
+						"message": "Monetization is in maintenance: only admin corrections are being served.",
+					},
+				})
+			}
+			return
+		}
 		if h.writesEnabled {
 			c.Next()
 			return

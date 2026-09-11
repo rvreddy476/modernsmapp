@@ -708,14 +708,31 @@ func (s *Service) reversalAfterPaidTx(ctx context.Context, tx pgxTx, row *postgr
 
 // tdsCounterEntryTx posts the negative twin of the request's TDS row: the
 // gross that was counted toward the yearly threshold is uncounted, and
-// whatever was withheld is released.
+// the amount the priced row recorded is negated so the record for this
+// request nets to zero.
+//
+// It mirrors the ledger row the request wrote when it was priced, not
+// the request's tds_paise: with MONETIZATION_TDS_APPLY=false the ledger
+// row carries the COMPUTED amount while the request carries 0 (nothing
+// was deducted), and the counter-entry must cancel what was recorded,
+// not what was withheld. Nothing is "released" to the creator in that
+// mode because nothing was taken: the money coming back is the gross,
+// which the caller has already returned to the balance. If no priced
+// row exists (a request created before the ledger row existed) the
+// request's own figures are used.
 func (s *Service) tdsCounterEntryTx(ctx context.Context, tx pgxTx, row *postgres.PayoutRequestRow) error {
 	refID := row.ID
+	gross, tds := row.AmountPaise, row.TDSPaise
+	if priced, err := s.store.GetTDSEntryByReferenceTx(ctx, tx, row.ID); err != nil {
+		return fmt.Errorf("tds counter-entry: read priced row: %w", err)
+	} else if priced != nil {
+		gross, tds = priced.GrossAmountPaise, priced.TDSAmountPaise
+	}
 	return s.store.InsertTDSEntryTx(ctx, tx, &postgres.TDSEntry{
 		CreatorID:        row.UserID,
 		FinancialYear:    GetFinancialYear(),
-		GrossAmountPaise: -row.AmountPaise,
-		TDSAmountPaise:   -row.TDSPaise,
+		GrossAmountPaise: -gross,
+		TDSAmountPaise:   -tds,
 		Section:          s.TDSSection(),
 		ReferenceID:      &refID,
 	})
