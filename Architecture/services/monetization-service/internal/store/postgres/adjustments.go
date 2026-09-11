@@ -202,6 +202,30 @@ func (s *Store) PostFeeReversalLegTx(ctx context.Context, tx pgx.Tx, in FeeLegIn
 	return true, nil
 }
 
+// FundFeeLegKey is the idempotency key the per-day credit path (retired in
+// 23d26a7d) wrote an earning's platform-fee leg under. Rows credited
+// before the period claim existed carry this key — or, when the fee leg
+// was never written, nothing at all.
+func FundFeeLegKey(earningID uuid.UUID, contentType string) string {
+	return "cf_fee:" + earningID.String() + ":" + contentType
+}
+
+// OriginalFeeLegExistsTx reports whether a platform-fee posting backs this
+// earning. Two shapes count: the per-day leg keyed cf_fee:<earning>:<type>,
+// or the period claim's aggregate leg (cfp_fee:<claim>) that references
+// the earning's settlement. A fee that was never posted has nothing to
+// reverse, and the caller must not post a reversal of it.
+func (s *Store) OriginalFeeLegExistsTx(ctx context.Context, tx pgx.Tx, earningID uuid.UUID, contentType string, settlementID *uuid.UUID) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM ledger_entries WHERE idempotency_key = $1)
+		    OR ($2::uuid IS NOT NULL AND EXISTS (
+		        SELECT 1 FROM ledger_entries
+		        WHERE reference_id = $2 AND idempotency_key LIKE 'cfp_fee:%'))`,
+		FundFeeLegKey(earningID, contentType), settlementID).Scan(&exists)
+	return exists, err
+}
+
 // FreezeLedgerTx sets is_frozen on the creator's ledger row. Used when a
 // reversal drives the balance below zero: the money is already gone and a
 // human has to decide what happens next.

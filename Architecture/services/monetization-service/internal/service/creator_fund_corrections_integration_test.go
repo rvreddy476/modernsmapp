@@ -332,6 +332,191 @@ func TestReverseFundEarningDropsFromStatement(t *testing.T) {
 	}
 }
 
+// seedPerDayCreditedEarning writes what a row credited by the retired
+// per-day path looks like: settled, credited, a completed credit
+// transaction, a cf_net leg into the wallet, and — only when withFeeLeg —
+// the cf_fee leg into platform_revenue_fees. Gross/fee/net mirror one of
+// the live January rows (42,645 / 12,793 / 29,852). Two of the nineteen
+// live rows were credited before their fee leg was written; withFeeLeg=false
+// is that shape.
+func seedPerDayCreditedEarning(ctx context.Context, t *testing.T, pool *pgxpool.Pool, store *postgres.Store, creator uuid.UUID, withFeeLeg bool) (earning uuid.UUID, gross, fee, net int64) {
+	t.Helper()
+	gross, fee, net = 42_645, 12_793, 29_852
+	earning = uuid.New()
+	day := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	creditedAt := time.Date(2026, 9, 6, 19, 43, 58, 0, time.UTC)
+
+	platformRev, err := store.EnsureAccount(ctx, platformOwnerID, platformRevenueAccountType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platformFees, err := store.EnsureAccount(ctx, platformOwnerID, platformFeeAccountType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wallet, err := store.EnsureAccount(ctx, creator, creatorWalletAccountType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO creator_fund_earnings (
+			id, creator_id, day_bucket, content_type, region_code,
+			view_count, watch_time_ms, rpm_paise, gross_paise, platform_fee_paise, net_paise,
+			status, settled_at, base_gross_paise, quality_multiplier_bps, credited, credited_at, settlement_id)
+		VALUES ($1, $2, $3, 'long_video', 'IN',
+			8529, 255870000, 5000, $4, $5, $6,
+			'settled', $7, $4, 10000, TRUE, $7, NULL)`,
+		earning, creator, day, gross, fee, net, creditedAt); err != nil {
+		t.Fatalf("seed earning: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO creator_ledger (user_id, balance, lifetime_earnings, pending_payout, currency, is_frozen, created_at, updated_at)
+		VALUES ($1, $2, $2, 0, 'INR', false, $3, $3)`, creator, net, creditedAt); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, idempotency_key, created_at)
+		VALUES ($1, $2, 'creator_fund_earning', $3, 'INR', 'completed', 'creator_fund_earning', $4, 'Creator fund earning (seeded look-alike)', NULL, $5)`,
+		uuid.New(), creator, net, earning.String(), creditedAt); err != nil {
+		t.Fatalf("seed transaction: %v", err)
+	}
+	leg := func(debit, credit uuid.UUID, amount int64, key string) {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO ledger_entries (id, debit_account_id, credit_account_id, amount_paise, currency, reference_type, reference_id, idempotency_key, description, created_at)
+			VALUES ($1, $2, $3, $4, 'INR', 'creator_fund', $5, $6, 'seeded look-alike', $7)`,
+			uuid.New(), debit, credit, amount, earning, key, creditedAt); err != nil {
+			t.Fatalf("seed leg %s: %v", key, err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM ledger_entries WHERE idempotency_key = $1`, key) })
+	}
+	leg(platformRev.ID, wallet.ID, net, "cf_net:"+earning.String()+":long_video")
+	if withFeeLeg {
+		leg(platformRev.ID, platformFees.ID, fee, postgres.FundFeeLegKey(earning, "long_video"))
+	}
+	// The adj_fee leg, if one is posted, runs between platform accounts
+	// only, so the per-creator cleanup never reaches it.
+	feeKey := "adj_fee:creator_fund_earning_reversal:" + earning.String()
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM ledger_entries WHERE idempotency_key = $1`, feeKey) })
+	return earning, gross, fee, net
+}
+
+// A credited row whose platform fee was never posted (credit transaction
+// and cf_net leg exist, cf_fee leg does not) gives the net back and stops
+// there. Reviewer memo rule: do not reverse a fee where no corresponding
+// original posting exists. The result says so — fee_reversed_paise 0 and
+// fee_leg_absent true — rather than silently skipping, and no adj_fee leg
+// is written between the platform accounts.
+func TestReverseCreditedEarningWithoutFeeLegReversesNetOnly(t *testing.T) {
+	ctx, pool := openTestPool(t)
+	store := postgres.New(pool)
+	svc := New(store, nil)
+
+	creator := uuid.New()
+	cleanupCreatorMoney(ctx, t, pool, creator)
+	earning, _, fee, net := seedPerDayCreditedEarning(ctx, t, pool, store, creator, false)
+	if fee <= 0 {
+		t.Fatalf("fixture fee = %d; the row must carry a fee for the guard to have anything to refuse", fee)
+	}
+	feeKey := "adj_fee:creator_fund_earning_reversal:" + earning.String()
+	netKey := "adj:creator_fund_earning_reversal:" + earning.String()
+
+	res, err := svc.ReverseFundEarning(ctx, earning, "no original fee posting; net only")
+	if err != nil {
+		t.Fatalf("reverse: %v", err)
+	}
+	if res.AlreadyReversed {
+		t.Fatal("first reversal reported already_reversed")
+	}
+	// The net side is unchanged by the guard.
+	if !res.MoneyMoved || res.Adjustment == nil || res.Adjustment.AmountPaise != -net || res.NetReversedPaise != net {
+		t.Fatalf("net reversal must still post -net through an adjustment: %+v", res)
+	}
+	if got := walletBalance(ctx, t, pool, creator); got != 0 {
+		t.Fatalf("wallet after reversal = %d, want 0 (net credited then taken back)", got)
+	}
+	if res.BalanceAfter != 0 || res.LedgerFrozen {
+		t.Fatalf("balance_after=%d ledger_frozen=%v, want 0 / false", res.BalanceAfter, res.LedgerFrozen)
+	}
+	if n := countRows(ctx, t, pool, `SELECT count(*) FROM ledger_entries WHERE idempotency_key = $1`, netKey); n != 1 {
+		t.Fatalf("%d net adjustment legs, want 1", n)
+	}
+	// The fee side: nothing posted in the ledger, and the result says why.
+	if n := countRows(ctx, t, pool, `SELECT count(*) FROM ledger_entries WHERE idempotency_key = $1`, feeKey); n != 0 {
+		var amt int64
+		_ = pool.QueryRow(ctx, `SELECT amount_paise FROM ledger_entries WHERE idempotency_key = $1`, feeKey).Scan(&amt)
+		t.Fatalf("%d adj_fee leg(s) under %s (amount %d) reverse a fee that was never posted; want 0", n, feeKey, amt)
+	}
+	if res.FeeReversedPaise != 0 {
+		t.Fatalf("fee_reversed_paise = %d, want 0: there is no original fee leg to reverse", res.FeeReversedPaise)
+	}
+	if !res.FeeLegAbsent {
+		t.Fatal("fee_leg_absent = false, want true so the statement shows the fee was never posted")
+	}
+	if n := countRows(ctx, t, pool, `SELECT count(*) FROM ledger_entries WHERE reference_id = $1`, earning); n != 2 {
+		t.Fatalf("%d ledger legs reference the row, want exactly 2: the seeded cf_net and the adj net", n)
+	}
+	var status string
+	var reversalTx *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT status, reversal_transaction_id FROM creator_fund_earnings WHERE id = $1`, earning).Scan(&status, &reversalTx); err != nil {
+		t.Fatal(err)
+	}
+	if status != "reversed" || reversalTx == nil || *reversalTx != res.Adjustment.ID {
+		t.Fatalf("row after reversal: status=%q reversal_transaction_id=%v, want reversed / %s", status, reversalTx, res.Adjustment.ID)
+	}
+
+	// Idempotent on the cause: a second call is already_reversed and
+	// posts nothing on either side.
+	again, err := svc.ReverseFundEarning(ctx, earning, "second attempt")
+	if err != nil {
+		t.Fatalf("second reversal: %v", err)
+	}
+	if !again.AlreadyReversed || again.MoneyMoved || again.FeeReversedPaise != 0 {
+		t.Fatalf("second reversal: %+v", again)
+	}
+	if n := countRows(ctx, t, pool, `SELECT count(*) FROM ledger_entries WHERE idempotency_key IN ($1, $2)`, netKey, feeKey); n != 1 {
+		t.Fatalf("after the second call %d reversal legs exist, want still 1 (net only)", n)
+	}
+	if got := walletBalance(ctx, t, pool, creator); got != 0 {
+		t.Fatalf("second reversal moved the wallet to %d", got)
+	}
+	t.Logf("OBSERVED fee-leg guard: net_reversed_paise=%d fee_reversed_paise=%d fee_leg_absent=%v adj_fee legs=0",
+		res.NetReversedPaise, res.FeeReversedPaise, res.FeeLegAbsent)
+}
+
+// The guard is evidence, not a blanket skip: the same per-day shape WITH
+// its cf_fee leg still gets the fee mirrored back. (The period-claim
+// shape, cfp_fee referenced by settlement_id, is covered by
+// TestReverseFundEarningDropsFromStatement.)
+func TestReverseCreditedEarningWithPerDayFeeLegReversesFee(t *testing.T) {
+	ctx, pool := openTestPool(t)
+	store := postgres.New(pool)
+	svc := New(store, nil)
+
+	creator := uuid.New()
+	cleanupCreatorMoney(ctx, t, pool, creator)
+	earning, _, fee, net := seedPerDayCreditedEarning(ctx, t, pool, store, creator, true)
+	feeKey := "adj_fee:creator_fund_earning_reversal:" + earning.String()
+
+	res, err := svc.ReverseFundEarning(ctx, earning, "original fee leg present; both halves unwound")
+	if err != nil {
+		t.Fatalf("reverse: %v", err)
+	}
+	if res.FeeLegAbsent {
+		t.Fatal("fee_leg_absent = true on a row whose cf_fee leg exists")
+	}
+	if res.FeeReversedPaise != fee || res.NetReversedPaise != net {
+		t.Fatalf("reversal result reports fee %d / net %d, want %d / %d", res.FeeReversedPaise, res.NetReversedPaise, fee, net)
+	}
+	var legs int
+	var amount int64
+	if err := pool.QueryRow(ctx, `SELECT count(*), COALESCE(MAX(amount_paise), 0) FROM ledger_entries WHERE idempotency_key = $1`, feeKey).Scan(&legs, &amount); err != nil {
+		t.Fatal(err)
+	}
+	if legs != 1 || amount != fee {
+		t.Fatalf("%d adj_fee leg(s) totalling %d under %s, want 1 of %d", legs, amount, feeKey, fee)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 2C — budget cap, prospective stop
 // ---------------------------------------------------------------------------

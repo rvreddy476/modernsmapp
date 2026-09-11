@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -73,6 +74,13 @@ type ReversalResult struct {
 	// adj_fee:<cause>). Both zero when the row had never been credited.
 	NetReversedPaise int64 `json:"net_reversed_paise"`
 	FeeReversedPaise int64 `json:"fee_reversed_paise"`
+	// FeeLegAbsent is set when the row carries a platform_fee_paise but no
+	// original fee posting exists in the ledger (per-day cf_fee leg or the
+	// period claim's cfp_fee leg): the fee was never taken, so there is
+	// nothing to give back and no adj_fee leg is posted. The net reversal
+	// is unaffected. The statement carries the flag so a reader can tell
+	// "fee never posted" from "fee reversed".
+	FeeLegAbsent bool `json:"fee_leg_absent"`
 	// LedgerFrozen is set when the reversal drove the balance below zero:
 	// the creator has already withdrawn money that is now owed back, and
 	// a human has to decide what happens next.
@@ -199,10 +207,23 @@ func (s *Service) ReverseFundEarning(ctx context.Context, earningID uuid.UUID, r
 			out.NetReversedPaise = e.NetPaise
 			// The platform's share of the same income goes back out of the
 			// fee account too, mirrored and keyed on the same cause. Gross
-			// was net + fee; both halves of it are now unwound.
+			// was net + fee; both halves of it are now unwound — but only
+			// if the fee half was ever posted. A reversal reverses a
+			// posting; where no original fee leg exists (the rows credited
+			// before their fee leg was written) an adj_fee leg would move
+			// platform money that was never taken. So: evidence first.
 			if e.PlatformFeePaise > 0 {
 				earningID := e.ID
-				if _, err := s.store.PostFeeReversalLegTx(ctx, tx, postgres.FeeLegInput{
+				backed, err := s.store.OriginalFeeLegExistsTx(ctx, tx, e.ID, e.ContentType, e.SettlementID)
+				if err != nil {
+					return fmt.Errorf("look up original fee leg: %w", err)
+				}
+				if !backed {
+					out.FeeLegAbsent = true
+					slog.WarnContext(ctx, "creator-fund reversal: no original platform-fee leg for this earning; net reversed, fee NOT reversed",
+						"earning_id", e.ID, "content_type", e.ContentType, "platform_fee_paise", e.PlatformFeePaise,
+						"settlement_id", e.SettlementID, "expected_key", postgres.FundFeeLegKey(e.ID, e.ContentType))
+				} else if _, err := s.store.PostFeeReversalLegTx(ctx, tx, postgres.FeeLegInput{
 					AmountPaise:         e.PlatformFeePaise,
 					Currency:            defaultEarningsCurrency,
 					IdempotencyKey:      cause.FeeKey(),
@@ -213,8 +234,9 @@ func (s *Service) ReverseFundEarning(ctx context.Context, earningID uuid.UUID, r
 					Description:         "Platform fee mirrored back: " + description,
 				}); err != nil {
 					return fmt.Errorf("post fee reversal leg: %w", err)
+				} else {
+					out.FeeReversedPaise = e.PlatformFeePaise
 				}
-				out.FeeReversedPaise = e.PlatformFeePaise
 			}
 			if r.BalanceAfter < 0 {
 				// The money has already left. Nothing more can be
