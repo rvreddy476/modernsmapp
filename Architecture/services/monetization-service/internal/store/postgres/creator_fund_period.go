@@ -78,6 +78,9 @@ type FundAccrualTotals struct {
 	GrossPaise       int64
 	PlatformFeePaise int64
 	NetPaise         int64
+	// RuleVersions is every distinct rule_version on the summed rows, sorted.
+	// One is the normal case; the statement lists whatever it finds.
+	RuleVersions     []string
 }
 
 // PeriodClaim is the input to ClaimAndCreditPeriodAccruals. The three
@@ -117,14 +120,15 @@ func (s *Store) SumCreatorFundAccruals(ctx context.Context, creatorID uuid.UUID,
 		       COALESCE(SUM(watch_time_ms), 0)::BIGINT,
 		       COALESCE(SUM(gross_paise), 0)::BIGINT,
 		       COALESCE(SUM(platform_fee_paise), 0)::BIGINT,
-		       COALESCE(SUM(net_paise), 0)::BIGINT
+		       COALESCE(SUM(net_paise), 0)::BIGINT,
+		       COALESCE(array_agg(DISTINCT rule_version ORDER BY rule_version), '{}'::text[])
 		FROM creator_fund_earnings
 		WHERE creator_id = $1
 		  AND day_bucket >= $2 AND day_bucket < $3
 		  AND region_code = $4
 		  AND status = 'settled'
 	`, creatorID, start, end, regionCode).Scan(
-		&t.Rows, &t.Views, &t.WatchTimeMs, &t.GrossPaise, &t.PlatformFeePaise, &t.NetPaise,
+		&t.Rows, &t.Views, &t.WatchTimeMs, &t.GrossPaise, &t.PlatformFeePaise, &t.NetPaise, &t.RuleVersions,
 	)
 	return t, err
 }

@@ -24,10 +24,10 @@ const (
 	maxClockSkew      = 5 * time.Minute
 	maxVideoDuration  = 12 * time.Hour
 
-	// A single heartbeat covers at most this much wall-clock playback.
-	// Reels beat every 2s and long video every 5s; ten minutes is a
-	// generous ceiling that still rejects a client trying to claim an
-	// hour of watch time in one message.
+	// A single heartbeat covers at most this much media time. Clients beat
+	// every 5s of wall clock and report the playhead delta (so up to 20s
+	// at 4x); ten minutes is a generous ceiling that still rejects a
+	// client trying to claim an hour of watch time in one message.
 	maxHeartbeatIncrementMS = 10 * 60 * 1000
 	// An impression is a viewport-visibility measurement, not playback.
 	maxImpressionVisibleMS = 10 * 60 * 1000

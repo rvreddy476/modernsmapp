@@ -90,7 +90,7 @@ func main() {
 	// the historical fallback path intact until the migrations file set
 	// covers every object ensureSchema creates.
 	ensureSchema(ctx, dbPool)
-	slog.Info("analytics schema ready")
+	slog.Info("analytics schema ready", "build_sha", buildinfo.SHA)
 
 	// 4. Redis
 	rdb, err := transport.NewRedisClientFromEnv(redisAddr)

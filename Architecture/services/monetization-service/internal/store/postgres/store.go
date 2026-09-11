@@ -845,13 +845,13 @@ func (s *Store) WriteAuditLog(ctx context.Context, entry *AuditLogEntry) error {
 // Analytics (cross-schema query)
 // ---------------------------------------------------------------------------
 
-// QueryViewScoreTotal returns the sum of view_score_total from analytics.content_daily_summary
+// QueryViewScoreTotal returns the sum of view_score_total from analytics.v_creator_daily_metrics_v1
 // for the given creator within the date range.
 func (s *Store) QueryViewScoreTotal(ctx context.Context, creatorID uuid.UUID, since, until time.Time) (float64, error) {
 	var total float64
 	err := s.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(view_score_total), 0)
-		FROM analytics.content_daily_summary
+		FROM analytics.v_creator_daily_metrics_v1
 		WHERE creator_id = $1 AND day_bucket >= $2 AND day_bucket <= $3`,
 		creatorID, since, until,
 	).Scan(&total)

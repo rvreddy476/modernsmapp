@@ -36,7 +36,7 @@ type SessionUpdate struct {
 	WatchedMS         int64 // clamped running total
 	WatchedMSReported int64 // the client's figure, audit only
 	PlayheadMS        int64 // heartbeat
-	IncrementMS       int64 // heartbeat: wall-clock playback this beat covered
+	IncrementMS       int64 // heartbeat: media time this beat covered (playhead delta, already speed-scaled by the client)
 	PlaybackSpeed     float64
 	SeekIncrement     int
 	LoopCount         int
@@ -194,12 +194,12 @@ func applySessionUpdate(ctx context.Context, tx pgx.Tx, event Event) error {
 	}
 
 	if u.Kind == model.EventWatchHeartbeat && u.IncrementMS > 0 {
-		speed := u.PlaybackSpeed
-		if speed <= 0 {
-			speed = 1
-		}
-		mediaMS := int64(math.Round(float64(u.IncrementMS) * speed))
-		row.Coverage = markCoverage(row.Coverage, row.ContentDurationMS, u.PlayheadMS-mediaMS, u.PlayheadMS)
+		// The increment is MEDIA time: both clients accumulate it from the
+		// playhead delta, so at 2x a five-second beat already says 10000.
+		// Scaling it by playback_speed again marked twice the media and,
+		// when that overshot the start, wrote the tail of the video as a
+		// loop wrap (playback contract fixture speed_2x, plan 5A).
+		row.Coverage = markCoverage(row.Coverage, row.ContentDurationMS, u.PlayheadMS-u.IncrementMS, u.PlayheadMS)
 	}
 	deriveSessionMeasures(row)
 

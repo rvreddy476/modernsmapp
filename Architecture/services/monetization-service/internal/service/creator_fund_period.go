@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -317,6 +318,14 @@ type PeriodStatement struct {
 
 	Explanation   string                            `json:"explanation,omitempty"`
 	FundBreakdown []postgres.EarningsDailyBreakdown `json:"fund_breakdown,omitempty"`
+
+	// RuleVersions lists every accrual formula (creator_fund_earnings
+	// .rule_version) found on the fund rows behind this statement, sorted.
+	// One entry is the normal case. Two or more means the period was
+	// priced by different rules on different days — allowed, but never
+	// silent: CheckStatementArithmetic refuses a statement whose fund rows
+	// mix versions this field does not list.
+	RuleVersions []string `json:"rule_versions,omitempty"`
 }
 
 // CheckStatementArithmetic re-derives every total from the three stream
@@ -379,6 +388,13 @@ func CheckStatementArithmetic(s *PeriodStatement) error {
 	}
 	if s.BudgetCapPaise != nil && s.Fund.GrossPaise > *s.BudgetCapPaise {
 		return fmt.Errorf("STATEMENT_ARITHMETIC: fund gross %d exceeds the period cap %d", s.Fund.GrossPaise, *s.BudgetCapPaise)
+	}
+	// One accrual rule per period is the normal case. Fund rows priced by
+	// more than one rule_version are allowed — a rule change lands
+	// mid-period, or pre-019 cf-0 rows sit beside cf-1 ones — but never
+	// silently: the statement must list every version its rows carry.
+	if err := checkRuleVersionsExplained(s); err != nil {
+		return err
 	}
 	return nil
 }
@@ -917,4 +933,46 @@ func fromSettlementRow(r *postgres.PeriodSettlement) *PeriodStatement {
 	}
 	st.Explanation = ExplainStatement(st)
 	return st
+}
+
+// fundRuleVersions is the sorted set of distinct rule_version values on
+// the statement's fund breakdown rows.
+func fundRuleVersions(rows []postgres.EarningsDailyBreakdown) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range rows {
+		if r.RuleVersion == "" || seen[r.RuleVersion] {
+			continue
+		}
+		seen[r.RuleVersion] = true
+		out = append(out, r.RuleVersion)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkRuleVersionsExplained refuses a statement whose fund rows carry
+// more than one rule_version unless RuleVersions lists each of them. A
+// single version needs no explanation; a version listed that no row
+// carries is harmless.
+func checkRuleVersionsExplained(s *PeriodStatement) error {
+	present := fundRuleVersions(s.FundBreakdown)
+	if len(present) <= 1 {
+		return nil
+	}
+	listed := make(map[string]bool, len(s.RuleVersions))
+	for _, v := range s.RuleVersions {
+		listed[v] = true
+	}
+	var unexplained []string
+	for _, v := range present {
+		if !listed[v] {
+			unexplained = append(unexplained, v)
+		}
+	}
+	if len(unexplained) > 0 {
+		return fmt.Errorf("STATEMENT_MIXED_RULE_VERSIONS: fund rows were priced by %d rules (%s) but rule_versions lists %v; a mix must be stated on the statement",
+			len(present), strings.Join(present, ", "), s.RuleVersions)
+	}
+	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atpost/monetization-service/internal/buildinfo"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/shared/postclassify"
 	"github.com/google/uuid"
@@ -461,6 +462,7 @@ func (s *Service) AccrueCreatorFundDay(ctx context.Context, creatorID uuid.UUID,
 			RateID:               &rateID,
 			BandID:               bandID,
 			RuleVersion:          RuleVersion,
+			BuildSHA:             buildinfo.SHA,
 			InputRevision:        g.Revision,
 			GrossMicroPaise:      grossMicro,
 		}

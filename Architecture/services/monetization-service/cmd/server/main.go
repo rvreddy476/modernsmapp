@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/atpost/monetization-service/database"
+	"github.com/atpost/monetization-service/internal/buildinfo"
 	"github.com/atpost/monetization-service/internal/client/razorpayx"
 	"github.com/atpost/monetization-service/internal/events"
 	"github.com/atpost/monetization-service/internal/http"
@@ -88,6 +89,18 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("monetization schema ready")
+
+	// The analytics boundary has a name (plan Phase 5C, audit M-15): every
+	// creator-fund read goes through analytics.v_creator_daily_metrics_v1,
+	// owned by analytics-service. Refuse to serve without it, and log the
+	// column list so a reshaped view is visible in the boot line rather
+	// than at the first settlement.
+	contractColumns, err := postgres.New(dbPool).CheckAnalyticsContract(ctx)
+	if err != nil {
+		slog.Error("refusing to start: analytics contract view is missing or reshaped", "error", err, "build_sha", buildinfo.SHA)
+		os.Exit(1)
+	}
+	slog.Info("analytics contract view ready", "view", "analytics."+postgres.AnalyticsContractView, "columns", strings.Join(contractColumns, ","), "build_sha", buildinfo.SHA)
 
 	// 4. Redis is required only when financial mutations/workers are enabled.
 	// The Module 6 read-only creator ledger remains available during a Redis or
@@ -203,7 +216,7 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
 
-	checker.RegisterRoutes(r)
+	buildinfo.RegisterHealthRoutes(r, checker)
 	r.GET("/metrics", metrics.Handler())
 	monetizationHandler.RegisterRoutes(r)
 

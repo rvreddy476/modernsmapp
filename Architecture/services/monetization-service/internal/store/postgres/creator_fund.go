@@ -95,9 +95,13 @@ type CreatorFundEarning struct {
 	CarryInMicroPaise  int64      `json:"carry_in_micro_paise"`
 	CarryOutMicroPaise int64      `json:"carry_out_micro_paise"`
 	SkipReason         string     `json:"skip_reason,omitempty"`
+	// BuildSHA (migration 023) is the monetization-service build that wrote
+	// the row, from internal/buildinfo. Empty on rows from before the column
+	// existed; "unknown" on a binary built outside the release path.
+	BuildSHA string `json:"build_sha,omitempty"`
 }
 
-// DailyInputRow is one analytics.content_daily_summary row as the accrual
+// DailyInputRow is one analytics.v_creator_daily_metrics_v1 row as the accrual
 // reads it: the measurement a day is priced from, with the row's
 // updated_at so the input revision changes whenever the rollup rewrites
 // the row.
@@ -162,6 +166,10 @@ type EarningsDailyBreakdown struct {
 	CarryInMicroPaise    int64   `json:"carry_in_micro_paise"`
 	CarryOutMicroPaise   int64   `json:"carry_out_micro_paise"`
 	SkipReason           string  `json:"skip_reason,omitempty"`
+	// RuleVersion is the accrual formula that priced this day (migration
+	// 019). Carried per row so a statement can see when its days were not
+	// all priced the same way.
+	RuleVersion          string  `json:"rule_version"`
 	Explanation          string  `json:"explanation,omitempty"`
 }
 
@@ -329,7 +337,7 @@ func (s *Store) ListCreatorsForEligibilitySweep(ctx context.Context, olderThan t
 		)
 		UNION
 		(
-			SELECT DISTINCT creator_id FROM analytics.content_daily_summary
+			SELECT DISTINCT creator_id FROM analytics.v_creator_daily_metrics_v1
 			WHERE day_bucket >= (CURRENT_DATE - INTERVAL '90 days')
 			  AND creator_id NOT IN (SELECT creator_id FROM creator_fund_eligibility)
 			LIMIT $2
@@ -462,7 +470,7 @@ func (s *Store) SetRpmRate(ctx context.Context, contentType, regionCode string, 
 // Daily metrics + earnings
 // ---------------------------------------------------------------------------
 
-// QueryCreatorDailyInputs returns the analytics.content_daily_summary
+// QueryCreatorDailyInputs returns the analytics.v_creator_daily_metrics_v1
 // rows for one creator on one day, in a fixed order, exactly as the
 // accrual prices and hashes them. Aggregation to content type happens in
 // the service (AggregateDailyInputs) from the same rows the revision is
@@ -475,7 +483,7 @@ func (s *Store) QueryCreatorDailyInputs(ctx context.Context, creatorID uuid.UUID
 		       COALESCE(impressions, 0)::BIGINT,
 		       COALESCE(content_quality_score, 0)::DOUBLE PRECISION,
 		       updated_at
-		FROM analytics.content_daily_summary
+		FROM analytics.v_creator_daily_metrics_v1
 		WHERE creator_id = $1 AND day_bucket = $2
 		ORDER BY content_type, content_id
 	`, creatorID, day)
@@ -505,7 +513,7 @@ func (s *Store) QueryCreator90DayStats(ctx context.Context, creatorID uuid.UUID,
 			COALESCE(SUM(view_score_total), 0)::DOUBLE PRECISION,
 			COALESCE(SUM(watch_time_total_ms), 0)::BIGINT,
 			COUNT(DISTINCT content_id)::INTEGER
-		FROM analytics.content_daily_summary
+		FROM analytics.v_creator_daily_metrics_v1
 		WHERE creator_id = $1
 		  AND day_bucket >= $2
 		  AND views_display > 0
@@ -556,10 +564,10 @@ func insertCreatorFundEarning(ctx context.Context, q DBTX, e *CreatorFundEarning
 			base_gross_paise, quality_cqs, quality_effective_cqs,
 			quality_impressions, quality_multiplier_bps,
 			rate_id, band_id, rule_version, input_revision,
-			gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, skip_reason
+			gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, skip_reason, build_sha
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
 		          $14, $15, $16, $17, $18,
-		          $19, $20, $21, $22, $23, $24, $25, $26)
+		          $19, $20, $21, $22, $23, $24, $25, $26, $27)
 		ON CONFLICT (creator_id, day_bucket, content_type, region_code) DO NOTHING
 	`,
 		e.ID, e.CreatorID, e.DayBucket, e.ContentType, e.RegionCode,
@@ -568,7 +576,7 @@ func insertCreatorFundEarning(ctx context.Context, q DBTX, e *CreatorFundEarning
 		e.BaseGrossPaise, e.QualityCQS, e.QualityEffectiveCQS,
 		e.QualityImpressions, e.QualityMultiplierBps,
 		e.RateID, e.BandID, e.RuleVersion, nullableString(e.InputRevision),
-		e.GrossMicroPaise, e.CarryInMicroPaise, e.CarryOutMicroPaise, nullableString(e.SkipReason),
+		e.GrossMicroPaise, e.CarryInMicroPaise, e.CarryOutMicroPaise, nullableString(e.SkipReason), nullableString(e.BuildSHA),
 	)
 	if err != nil {
 		return false, err
@@ -585,7 +593,8 @@ const creatorFundEarningSelect = `
 	       credited, credited_at, settlement_id,
 	       reversed_at, COALESCE(reversal_reason, ''), reversal_transaction_id,
 	       rate_id, band_id, rule_version, COALESCE(input_revision, ''),
-	       gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, '')
+	       gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, ''),
+	       COALESCE(build_sha, '')
 	FROM creator_fund_earnings`
 
 func scanCreatorFundEarning(r rowScanner) (*CreatorFundEarning, error) {
@@ -599,7 +608,7 @@ func scanCreatorFundEarning(r rowScanner) (*CreatorFundEarning, error) {
 		&e.Credited, &e.CreditedAt, &e.SettlementID,
 		&e.ReversedAt, &e.ReversalReason, &e.ReversalTransactionID,
 		&e.RateID, &e.BandID, &e.RuleVersion, &e.InputRevision,
-		&e.GrossMicroPaise, &e.CarryInMicroPaise, &e.CarryOutMicroPaise, &e.SkipReason,
+		&e.GrossMicroPaise, &e.CarryInMicroPaise, &e.CarryOutMicroPaise, &e.SkipReason, &e.BuildSHA,
 	); err != nil {
 		return nil, err
 	}
@@ -737,7 +746,7 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 		SELECT day_bucket, content_type, view_count, gross_paise, net_paise,
 		       rpm_paise, base_gross_paise, quality_cqs, quality_effective_cqs,
 		       quality_impressions, quality_multiplier_bps,
-		       carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, '')
+		       carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, ''), rule_version
 		FROM creator_fund_earnings
 		WHERE creator_id = $1
 		  AND day_bucket >= $2
@@ -755,7 +764,7 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 			&b.GrossPaise, &b.NetPaise, &b.RpmPaise, &b.BaseGrossPaise,
 			&b.QualityCQS, &b.QualityEffectiveCQS, &b.QualityImpressions,
 			&b.QualityMultiplierBps, &b.CarryInMicroPaise, &b.CarryOutMicroPaise,
-			&b.SkipReason); err != nil {
+			&b.SkipReason, &b.RuleVersion); err != nil {
 			return nil, err
 		}
 		summary.Breakdown = append(summary.Breakdown, b)
