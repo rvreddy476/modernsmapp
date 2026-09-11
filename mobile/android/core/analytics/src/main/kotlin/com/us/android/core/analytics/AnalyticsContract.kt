@@ -57,13 +57,15 @@ object AnalyticsEventType {
 /**
  * Where the content was being watched.
  *
- * The server's `normalizeSurface` accepts exactly these five and turns anything
+ * The server's `normalizeSurface` accepts exactly these six and turns anything
  * else into `"other"`, so an unmapped surface is not an error — it is a lost
  * dimension. Hence an enum: a surface that has no server-side counterpart has
  * to be a deliberate decision at the call site, not a string literal typo.
  */
 enum class AnalyticsSurface(val wire: String) {
     FEED("feed"),
+    /** The vertical pager. Reported as `feed` until 12 Sep 2026 (audit M-22), which hid the surface. */
+    REELS("reels"),
     POSTTUBE("posttube"),
     PROFILE("profile"),
     SEARCH("search"),

@@ -2,6 +2,7 @@ package com.us.android.core.analytics
 
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Test
 import java.util.UUID
 
@@ -125,15 +126,19 @@ class AnalyticsContractTest {
     }
 
     @Test
-    fun `a play_end claiming more than ten times the duration is refused`() {
+    fun `a play_end far past ten times the duration is kept, only the twelve-hour ceiling refuses`() {
+        // A 5 s flick left looping for 130 s (twenty-five passes). The server
+        // clamps the total to duration x (loop_count + 1) and keeps the
+        // reported figure for audit; it no longer refuses it, and neither does
+        // this client. The old "ten playthroughs" drop threw away the
+        // most-watched reels' most engaged sessions (audit M-09).
         assertThat(
-            AnalyticsEvents.playEnd(session(durationMs = 10_000), PlayEndReason.ENDED, 100_001, 0, 0, NOW),
-        ).isNull()
-        // Exactly ten times is the server's ceiling and is allowed — that
-        // headroom is what lets a looping reel report honestly.
-        assertThat(
-            AnalyticsEvents.playEnd(session(durationMs = 10_000), PlayEndReason.ENDED, 100_000, 0, 20, NOW),
+            AnalyticsEvents.playEnd(session(durationMs = 5_000), PlayEndReason.SWIPE_NEXT, 130_000, 130_000, 20, NOW),
         ).isNotNull()
+        // Twelve hours is still the ceiling; a millisecond over is malformed.
+        assertThat(
+            AnalyticsEvents.playEnd(session(durationMs = 5_000), PlayEndReason.ENDED, TWELVE_HOURS_MS + 1, 0, 20, NOW),
+        ).isNull()
     }
 
     @Test
@@ -143,19 +148,40 @@ class AnalyticsContractTest {
 
     @Test
     fun `a heartbeat whose increment exceeds its running total is refused`() {
-        val event = AnalyticsEvents.heartbeat(
-            session = session(),
-            sequence = 1,
-            watchedMsIncrement = 6_000,
-            watchedMsTotal = 5_000,
-            playheadPositionMs = 5_000,
-            bufferingMsIncrement = 0,
-            seekCountIncrement = 0,
-            playbackSpeed = 1f,
-            timestampMillis = NOW,
-        )
+        val event = heartbeat(watchedMsIncrement = 6_000, watchedMsTotal = 5_000)
         assertThat(event).isNull()
     }
+
+    @Test
+    fun `a heartbeat carries its loop count and duration, and refuses a bad one`() {
+        // Every beat says how many loops came before it and how long the
+        // content is (M-29): a session the server closes by inactivity is
+        // clamped to duration x (loop_count + 1) from these alone.
+        val event = heartbeat(loopCount = 3, contentDurationMs = 5_000)!!
+        assertThat(event.payload["loop_count"]!!.jsonPrimitive.long).isEqualTo(3)
+        assertThat(event.payload["content_duration_ms"]!!.jsonPrimitive.long).isEqualTo(5_000)
+        assertThat(heartbeat(loopCount = 21)).isNull()
+        assertThat(heartbeat(contentDurationMs = 0)).isNull()
+    }
+
+    private fun heartbeat(
+        watchedMsIncrement: Long = 1_000,
+        watchedMsTotal: Long = 5_000,
+        loopCount: Int = 0,
+        contentDurationMs: Long = 30_000,
+    ) = AnalyticsEvents.heartbeat(
+        session = session(),
+        sequence = 1,
+        watchedMsIncrement = watchedMsIncrement,
+        watchedMsTotal = watchedMsTotal,
+        playheadPositionMs = 5_000,
+        bufferingMsIncrement = 0,
+        seekCountIncrement = 0,
+        playbackSpeed = 1f,
+        loopCount = loopCount,
+        contentDurationMs = contentDurationMs,
+        timestampMillis = NOW,
+    )
 
     @Test
     fun `an unknown milestone name is refused`() {
@@ -206,13 +232,14 @@ class AnalyticsContractTest {
     }
 
     @Test
-    fun `a surface always reaches the wire as one of the five the server keeps`() {
-        val accepted = setOf("feed", "posttube", "profile", "search", "channel")
+    fun `a surface always reaches the wire as one of the six the server keeps`() {
+        val accepted = setOf("feed", "reels", "posttube", "profile", "search", "channel")
         assertThat(AnalyticsSurface.entries.map { it.wire }).containsExactlyElementsIn(accepted)
     }
 
     private companion object {
         const val NOW = 1_757_000_000_000L
+        const val TWELVE_HOURS_MS = 12L * 60 * 60 * 1000
         val CONTENT_ID: String = UUID.randomUUID().toString()
 
         fun session(

@@ -523,7 +523,7 @@ class ReelsViewModel @Inject constructor(
         watchSession = watchTracker.startView(
             contentId = item.id,
             creatorId = item.author.id,
-            surface = AnalyticsSurface.FEED,
+            surface = AnalyticsSurface.REELS,
             // Reels take the LONGEST of the row's media: the same rule
             // `belongsInReels` already uses to decide the reel is a reel.
             contentDurationMs = item.media.maxOfOrNull { it.durationMs } ?: 0L,

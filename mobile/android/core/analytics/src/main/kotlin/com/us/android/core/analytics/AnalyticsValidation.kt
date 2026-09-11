@@ -37,7 +37,6 @@ object AnalyticsValidation {
     private const val MAX_LOOP_COUNT = 20
     private const val MIN_PLAYBACK_SPEED = 0.25f
     private const val MAX_PLAYBACK_SPEED = 4.0f
-    private const val WATCHED_TOTAL_DURATION_MULTIPLE = 10
 
     private val UUID_REGEX =
         Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -157,6 +156,9 @@ object AnalyticsValidation {
         if (playhead !in 0..MAX_VIDEO_DURATION_MS) return false
         if (buffering !in 0..MAX_INCREMENT_MS) return false
         if (seeks !in 0..MAX_SEEK_COUNT.toLong()) return false
+        if (!isValidDuration(payload.long("content_duration_ms"))) return false
+        val loops = payload.long("loop_count") ?: return false
+        if (loops !in 0..MAX_LOOP_COUNT.toLong()) return false
         return speed in MIN_PLAYBACK_SPEED..MAX_PLAYBACK_SPEED
     }
 
@@ -167,10 +169,12 @@ object AnalyticsValidation {
         val watched = payload.long("watched_ms_total") ?: return false
         val loops = payload.long("loop_count") ?: return false
         val maxContinuous = payload.long("max_continuous_watch_ms") ?: return false
-        // Ten times the content length is the server's ceiling — it allows for
-        // looping, which is why loop_count exists, and rejects a claim of an
-        // hour spent on a thirty-second reel.
-        if (watched < 0 || watched > duration!! * WATCHED_TOTAL_DURATION_MULTIPLE) return false
+        // The only ceiling is the twelve-hour one. The server clamps a looped
+        // total to duration x (loop_count + 1) and keeps the reported figure
+        // for audit; it no longer rejects it, so neither does this client. The
+        // old "ten playthroughs" drop threw away the most-watched reels' most
+        // engaged sessions (audit M-09).
+        if (watched !in 0..MAX_VIDEO_DURATION_MS) return false
         if (loops !in 0..MAX_LOOP_COUNT.toLong()) return false
         // A single unbroken stretch cannot exceed the total watched.
         return maxContinuous in 0..watched

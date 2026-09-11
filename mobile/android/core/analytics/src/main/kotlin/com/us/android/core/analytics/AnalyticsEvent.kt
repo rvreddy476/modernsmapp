@@ -208,6 +208,8 @@ object AnalyticsEvents {
         bufferingMsIncrement: Long,
         seekCountIncrement: Int,
         playbackSpeed: Float,
+        loopCount: Int,
+        contentDurationMs: Long,
         timestampMillis: Long,
     ): AnalyticsEvent? = event(
         type = AnalyticsEventType.WATCH_HEARTBEAT,
@@ -225,6 +227,11 @@ object AnalyticsEvents {
             put("buffering_ms_increment", bufferingMsIncrement)
             put("seek_count_increment", seekCountIncrement)
             put("playback_speed", playbackSpeed)
+            // Loops so far and the duration, on every beat (M-29): a view whose
+            // play_end never leaves the device is finalised server-side from its
+            // heartbeats, and the clamp there is duration x (loop_count + 1).
+            put("loop_count", loopCount)
+            put("content_duration_ms", contentDurationMs)
         },
     )
 

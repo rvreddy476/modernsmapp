@@ -62,6 +62,33 @@ data class WatchProbe(
  * taken when the view ends. The heartbeat only decides how often the running
  * total is *reported*.
  *
+ * ## THE TICK IS MEASURED, NOT ASSUMED
+ *
+ * `delay(1s)` is not promised a second. The main thread this tracker reads the
+ * player on is the same thread a scrolling pager, a decoder hand-off and a
+ * Compose frame all contend for, and a 2–3 s tick during perfectly continuous
+ * playback is routine. Every rule that compares a playhead delta to "what one
+ * tick could allow" — the seek ceiling above all — uses the time that actually
+ * passed between two samples, floored at the nominal interval so a fast tick
+ * cannot shrink the ceiling either. Sizing the ceiling from the nominal
+ * interval charged a late tick as a seek, threw the watch time away and sent a
+ * false seek count (audit M-27; the web tracker made the same change first and
+ * `slow_tick_continuous_watch` in the shared playback fixtures pins it).
+ *
+ * ## BACKGROUND IS A PAUSE, NOT AN END
+ *
+ * Going behind used to end every view with `play_end(backgrounded)`, and the
+ * next surface callback opened a fresh session for the same content: two
+ * views, two `play_start`s, for one person watching one reel with a phone call
+ * in the middle (audit M-12). The server now keeps a session per view and
+ * closes one by inactivity when its final event never arrives, so the reason
+ * for ending early — losing the view if the process is reclaimed — is gone.
+ * [pauseAll] stops the tickers and puts the running total on disk as a
+ * heartbeat; [resumeAll] restarts them on the same session, and the first
+ * sample after a pause only re-establishes the playhead baseline, so the time
+ * away is never credited. This is the web tracker's behaviour and the
+ * `backgrounded_then_resumed` fixture's expectation: one session, one view.
+ *
  * ## WHY THE TRACKER OWNS THE TICK
  *
  * Every surface already polls the player for its progress bar, at three
@@ -71,11 +98,23 @@ data class WatchProbe(
  * and the feed gets counted like everything else.
  */
 @Singleton
-class VideoWatchTracker @Inject constructor(
+class VideoWatchTracker internal constructor(
     private val analytics: AnalyticsRecorder,
-    @ApplicationScope private val scope: CoroutineScope,
-    @Dispatcher(UsDispatcher.Main) private val main: CoroutineDispatcher,
+    private val scope: CoroutineScope,
+    private val main: CoroutineDispatcher,
+    /**
+     * Wall-clock milliseconds. Injected so a test can drive a late tick with
+     * virtual time; production reads the system clock.
+     */
+    private val clock: () -> Long,
 ) {
+
+    @Inject
+    constructor(
+        analytics: AnalyticsRecorder,
+        @ApplicationScope scope: CoroutineScope,
+        @Dispatcher(UsDispatcher.Main) main: CoroutineDispatcher,
+    ) : this(analytics, scope, main, System::currentTimeMillis)
 
     private val active = ConcurrentHashMap<String, TrackedView>()
 
@@ -103,6 +142,9 @@ class VideoWatchTracker @Inject constructor(
          * credits nothing, which is the safe direction.
          */
         var lastPlayhead = 0L
+
+        /** When the last sample was taken, for the measured tick. */
+        var lastSampleAtMillis = startedAtMillis
         var watchedMs = 0L
         var bufferingMs = 0L
         var bufferingBeforeFirstFrameMs = 0L
@@ -116,6 +158,7 @@ class VideoWatchTracker @Inject constructor(
         var bufferingAtLastHeartbeat = 0L
         var seeksAtLastHeartbeat = 0
         var msSinceHeartbeat = 0L
+        var paused = false
         var ended = false
         val milestonesSent = mutableSetOf<String>()
     }
@@ -127,6 +170,10 @@ class VideoWatchTracker @Inject constructor(
      * view that produced them, or null when the content cannot be reported —
      * an id that is not a uuid, or an unknown duration. A null is not an error;
      * it means this content will not be counted, and the caller carries on.
+     *
+     * The same content asked for again while its view is PAUSED (the app came
+     * back from the background and the surface re-announced what it is
+     * showing) resumes that view and returns its session: one view, not two.
      */
     @Suppress("LongParameterList") // Each argument is a distinct wire field on play_start.
     fun startView(
@@ -145,6 +192,13 @@ class VideoWatchTracker @Inject constructor(
         // percent-viewed calculation server-side, so the view is skipped.
         if (contentDurationMs <= 0L) return null
 
+        active[contentId]?.let { existing ->
+            if (existing.paused && !existing.ended) {
+                resume(existing)
+                return existing.session
+            }
+        }
+
         val session = WatchSession.start(
             contentId = contentId,
             creatorId = creatorId,
@@ -154,7 +208,7 @@ class VideoWatchTracker @Inject constructor(
         )
         // A content id that is not a uuid would fail the whole batch it
         // travelled in. Catch it here, once, rather than in the uploader.
-        if (AnalyticsEvents.playEnd(session, PlayEndReason.ENDED, 0, 0, 0, System.currentTimeMillis()) == null) {
+        if (AnalyticsEvents.playEnd(session, PlayEndReason.ENDED, 0, 0, 0, clock()) == null) {
             return null
         }
 
@@ -165,23 +219,40 @@ class VideoWatchTracker @Inject constructor(
         val tracked = TrackedView(
             session = session,
             probe = probe,
-            startedAtMillis = System.currentTimeMillis(),
+            startedAtMillis = clock(),
             isAutoplay = isAutoplay,
             isMuted = isMuted,
             startMethod = startMethod,
         )
         active[contentId] = tracked
+        launchTicker(tracked)
+        return session
+    }
+
+    private fun launchTicker(tracked: TrackedView) {
+        tracked.lastSampleAtMillis = clock()
         tracked.job = scope.launch {
-            while (isActive && !tracked.ended) {
+            while (isActive && !tracked.ended && !tracked.paused) {
                 delay(SAMPLE_INTERVAL_MS)
                 // ExoPlayer state is only safe to read on the application
                 // thread. One read per second is a fraction of what the reels
                 // progress bar already does at 250ms.
                 val probed = runCatching { withContext(main) { tracked.probe() } }.getOrNull() ?: continue
-                onSample(tracked, probed)
+                onSample(tracked, probed, elapsedSinceLastSample(tracked))
             }
         }
-        return session
+    }
+
+    /**
+     * The measured tick: how long it has really been since the last sample,
+     * never less than the nominal interval. A failed probe leaves the last
+     * sample where it was, so the next successful one sees the whole gap.
+     */
+    private fun elapsedSinceLastSample(tracked: TrackedView): Long {
+        val now = clock()
+        val elapsed = max(now - tracked.lastSampleAtMillis, SAMPLE_INTERVAL_MS)
+        tracked.lastSampleAtMillis = now
+        return elapsed
     }
 
     /**
@@ -193,7 +264,7 @@ class VideoWatchTracker @Inject constructor(
      */
     fun recordImpression(session: WatchSession, visibleMs: Long, isAutoplay: Boolean) {
         analytics.record(
-            AnalyticsEvents.impression(session, visibleMs, isAutoplay, System.currentTimeMillis()),
+            AnalyticsEvents.impression(session, visibleMs, isAutoplay, clock()),
         )
     }
 
@@ -232,13 +303,13 @@ class VideoWatchTracker @Inject constructor(
             // are not lost — at a 1s cadence that is up to a second per view,
             // which across a scrolling session is a real amount of watch time.
             runCatching { withContext(main) { tracked.probe() } }.getOrNull()
-                ?.let { onSample(tracked, it, emitHeartbeat = false) }
+                ?.let { onSample(tracked, it, elapsedSinceLastSample(tracked), emitHeartbeat = false) }
             emitPlayEnd(tracked, reason)
         }
     }
 
     /**
-     * Ends every open view — app going to background, or signing out.
+     * Ends every open view — signing out, where the queue is about to be wiped.
      *
      * Suspends until each `play_end` is on disk. Sign-out drains immediately
      * afterwards and then wipes the queue, so a merely-scheduled write would be
@@ -246,6 +317,53 @@ class VideoWatchTracker @Inject constructor(
      */
     suspend fun endAll(reason: PlayEndReason) {
         active.keys.toList().mapNotNull { endView(it, reason) }.joinAll()
+    }
+
+    /**
+     * The app went behind: stop measuring, keep every view.
+     *
+     * Each open view takes one last sample, puts its running total on disk as
+     * a heartbeat — written, not merely queued, because the process may be
+     * reclaimed the moment this returns — and forgets its playhead baseline so
+     * that whatever position the player reports when the app comes back is
+     * never credited as watch time. No `play_end` is written: the view is not
+     * over. If the app never comes back, the server closes the session by
+     * inactivity from the heartbeats and milestones it already has, which is
+     * exactly what the same tab-closed case does on the web.
+     */
+    suspend fun pauseAll() {
+        active.values
+            .filter { !it.paused && !it.ended }
+            .map { tracked ->
+                tracked.paused = true
+                tracked.job?.cancel()
+                scope.launch {
+                    val probed = runCatching { withContext(main) { tracked.probe() } }.getOrNull()
+                    if (probed != null) {
+                        onSample(tracked, probed, elapsedSinceLastSample(tracked), emitHeartbeat = false)
+                        if (tracked.startEmitted && tracked.watchedMs > 0) {
+                            analytics.recordNow(heartbeat(tracked, probed, clock()))
+                        }
+                    }
+                    tracked.lastPlayhead = UNKNOWN_PLAYHEAD
+                    tracked.continuousMs = 0
+                }
+            }
+            .joinAll()
+    }
+
+    /** The app is back in front: every paused view picks up its own session. */
+    fun resumeAll() {
+        active.values.filter { it.paused && !it.ended }.forEach { resume(it) }
+    }
+
+    private fun resume(tracked: TrackedView) {
+        tracked.paused = false
+        // The baseline stays unknown from the pause, so the first sample only
+        // re-establishes it; the continuous run restarts from zero.
+        tracked.lastPlayhead = UNKNOWN_PLAYHEAD
+        tracked.continuousMs = 0
+        launchTicker(tracked)
     }
 
     private suspend fun emitPlayEnd(tracked: TrackedView, reason: PlayEndReason) {
@@ -260,18 +378,18 @@ class VideoWatchTracker @Inject constructor(
                 // means a rounding edge cannot fail the batch it rides in.
                 maxContinuousWatchMs = min(max(tracked.maxContinuousMs, tracked.continuousMs), watched),
                 loopCount = min(tracked.loopCount, MAX_LOOP_COUNT),
-                timestampMillis = System.currentTimeMillis(),
+                timestampMillis = clock(),
             ),
         )
     }
 
     @Suppress("CyclomaticComplexMethod") // One pass over one tick; splitting it would hide the ordering.
-    private fun onSample(tracked: TrackedView, probe: WatchProbe, emitHeartbeat: Boolean = true) {
-        val now = System.currentTimeMillis()
+    private fun onSample(tracked: TrackedView, probe: WatchProbe, elapsedMs: Long, emitHeartbeat: Boolean = true) {
+        val now = clock()
 
         if (probe.isBuffering) {
-            tracked.bufferingMs += SAMPLE_INTERVAL_MS
-            if (!tracked.startEmitted) tracked.bufferingBeforeFirstFrameMs += SAMPLE_INTERVAL_MS
+            tracked.bufferingMs += elapsedMs
+            if (!tracked.startEmitted) tracked.bufferingBeforeFirstFrameMs += elapsedMs
             tracked.continuousMs = 0
         }
 
@@ -294,13 +412,13 @@ class VideoWatchTracker @Inject constructor(
             )
         }
 
-        accumulateWatched(tracked, probe)
+        accumulateWatched(tracked, probe, elapsedMs)
 
         if (tracked.startEmitted) emitMilestones(tracked, now)
 
-        tracked.msSinceHeartbeat += SAMPLE_INTERVAL_MS
+        tracked.msSinceHeartbeat += elapsedMs
         if (emitHeartbeat && tracked.msSinceHeartbeat >= HEARTBEAT_INTERVAL_MS && tracked.watchedMs > 0) {
-            emitHeartbeat(tracked, probe, now)
+            analytics.record(heartbeat(tracked, probe, now))
         }
     }
 
@@ -310,7 +428,7 @@ class VideoWatchTracker @Inject constructor(
      * Uses the PLAYHEAD delta rather than wall-clock, so a stall, a pause or a
      * background does not silently accrue watch time the person never saw.
      */
-    private fun accumulateWatched(tracked: TrackedView, probe: WatchProbe) {
+    private fun accumulateWatched(tracked: TrackedView, probe: WatchProbe, elapsedMs: Long) {
         val previous = tracked.lastPlayhead
         tracked.lastPlayhead = probe.playheadMs
 
@@ -321,34 +439,45 @@ class VideoWatchTracker @Inject constructor(
         if (previous == UNKNOWN_PLAYHEAD) return
 
         val duration = tracked.session.contentDurationMs
-        var delta = probe.playheadMs - previous
+        val delta = probe.playheadMs - previous
         if (delta < 0) {
             // Either the reel looped or the viewer scrubbed backwards. A loop
             // restarts near zero from near the end; anything else is a seek and
             // contributes no watch time.
             val looped = previous >= duration - LOOP_TOLERANCE_MS && probe.playheadMs <= LOOP_TOLERANCE_MS
             if (looped) {
-                tracked.loopCount++
-                delta = (duration - previous) + probe.playheadMs
+                if (tracked.loopCount < MAX_LOOP_COUNT) tracked.loopCount++
+                // The frames from the old position to the end and from the
+                // start to the new position were all shown. This is credited
+                // WITHOUT the forward-jump ceiling below: a wrap's tail plus
+                // head can exceed two ticks on a late sample, and running it
+                // through the ceiling counted the loop AND discarded its watch
+                // time as a seek (audit M-12, divergence 2).
+                credit(tracked, (duration - previous) + probe.playheadMs)
             } else {
                 tracked.seekCount++
                 tracked.continuousMs = 0
-                return
             }
+            return
         }
 
         // A forward jump larger than the tick could allow is a seek, not watch
-        // time. Bound by the sample interval scaled by playback speed, with one
-        // extra interval of slack for a late tick.
-        val ceiling = ((SAMPLE_INTERVAL_MS * 2) * max(probe.speed, 1f)).toLong()
+        // time. Bound by the MEASURED tick scaled by playback speed, with one
+        // extra tick of slack for a late sample; see the class comment.
+        val ceiling = (elapsedMs * 2 * max(probe.speed, 1f)).toLong()
         if (delta > ceiling) {
             tracked.seekCount++
             tracked.continuousMs = 0
             return
         }
 
-        tracked.watchedMs += delta
-        tracked.continuousMs += delta
+        credit(tracked, delta)
+    }
+
+    private fun credit(tracked: TrackedView, ms: Long) {
+        if (ms <= 0) return
+        tracked.watchedMs += ms
+        tracked.continuousMs += ms
         tracked.maxContinuousMs = max(tracked.maxContinuousMs, tracked.continuousMs)
     }
 
@@ -379,7 +508,16 @@ class VideoWatchTracker @Inject constructor(
         analytics.record(AnalyticsEvents.milestone(tracked.session, milestone, watchedMs, now))
     }
 
-    private fun emitHeartbeat(tracked: TrackedView, probe: WatchProbe, now: Long) {
+    /**
+     * Builds the next heartbeat and advances the at-last-heartbeat counters.
+     *
+     * Carries the loop count and the duration on every beat (M-29): a view
+     * whose `play_end` never leaves the device — the process reclaimed while
+     * paused — is closed server-side from its heartbeats, and the clamp there
+     * is duration x (loop_count + 1). Without the loop count a reel looped
+     * three times before the phone rang was credited a single pass.
+     */
+    private fun heartbeat(tracked: TrackedView, probe: WatchProbe, now: Long): AnalyticsEvent? {
         val watchedIncrement = tracked.watchedMs - tracked.watchedAtLastHeartbeat
         val bufferingIncrement = tracked.bufferingMs - tracked.bufferingAtLastHeartbeat
         val seekIncrement = tracked.seekCount - tracked.seeksAtLastHeartbeat
@@ -389,18 +527,18 @@ class VideoWatchTracker @Inject constructor(
         tracked.msSinceHeartbeat = 0
         tracked.heartbeatSequence++
 
-        analytics.record(
-            AnalyticsEvents.heartbeat(
-                session = tracked.session,
-                sequence = tracked.heartbeatSequence,
-                watchedMsIncrement = watchedIncrement.coerceIn(0, tracked.watchedMs),
-                watchedMsTotal = tracked.watchedMs,
-                playheadPositionMs = probe.playheadMs.coerceAtLeast(0),
-                bufferingMsIncrement = bufferingIncrement.coerceIn(0, MAX_INCREMENT_MS),
-                seekCountIncrement = seekIncrement.coerceIn(0, MAX_SEEKS),
-                playbackSpeed = probe.speed.coerceIn(MIN_SPEED, MAX_SPEED),
-                timestampMillis = now,
-            ),
+        return AnalyticsEvents.heartbeat(
+            session = tracked.session,
+            sequence = tracked.heartbeatSequence,
+            watchedMsIncrement = watchedIncrement.coerceIn(0, tracked.watchedMs),
+            watchedMsTotal = tracked.watchedMs,
+            playheadPositionMs = probe.playheadMs.coerceAtLeast(0),
+            bufferingMsIncrement = bufferingIncrement.coerceIn(0, MAX_INCREMENT_MS),
+            seekCountIncrement = seekIncrement.coerceIn(0, MAX_SEEKS),
+            playbackSpeed = probe.speed.coerceIn(MIN_SPEED, MAX_SPEED),
+            loopCount = min(tracked.loopCount, MAX_LOOP_COUNT),
+            contentDurationMs = tracked.session.contentDurationMs,
+            timestampMillis = now,
         )
     }
 
@@ -424,7 +562,8 @@ class VideoWatchTracker @Inject constructor(
         const val HEARTBEAT_INTERVAL_MS = 5_000L
 
         /**
-         * How often the playhead is READ.
+         * How often the playhead is nominally READ; the floor of the measured
+         * tick. See the class comment.
          *
          * One second matches the finest thing anything downstream cares about
          * — `VIEW_1S`, and the 3-second display-view bar — while costing a
@@ -432,7 +571,7 @@ class VideoWatchTracker @Inject constructor(
          */
         const val SAMPLE_INTERVAL_MS = 1_000L
 
-        /** Baseline lost to a seek: the next sample re-establishes it, crediting nothing. */
+        /** Baseline lost to a seek or a pause: the next sample re-establishes it, crediting nothing. */
         private const val UNKNOWN_PLAYHEAD = -1L
 
         /** A playhead this close to either end counts a wrap as a loop, not a seek. */
