@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/analytics-service/database"
 	"github.com/atpost/analytics-service/internal/aggregation"
+	"github.com/atpost/analytics-service/internal/buildinfo"
 	"github.com/atpost/analytics-service/internal/consumers"
 	httpHandler "github.com/atpost/analytics-service/internal/http"
 	"github.com/atpost/analytics-service/internal/personalization"
@@ -267,7 +268,7 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
 
-	checker.RegisterRoutes(r)
+	buildinfo.RegisterHealthRoutes(r, checker)
 	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
 	dashHandler.RegisterRoutes(r.Group("/v1/analytics"))

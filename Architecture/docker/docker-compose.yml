@@ -1226,6 +1226,7 @@ services:
       REDIS_ADDR: redis:6379
       SCYLLA_HOSTS: scylla
       KAFKA_BROKERS: redpanda:9092
+      ANALYTICS_VIEW_SOURCE: ${ANALYTICS_VIEW_SOURCE:-sessions}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:

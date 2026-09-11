@@ -17,7 +17,8 @@ COPY shared /shared
 COPY services /services
 
 # Build the application
-RUN go build -mod=vendor -o /server ./services/analytics-service/cmd/server/main.go
+ARG BUILD_SHA=unknown
+RUN go build -mod=vendor -ldflags "-X github.com/atpost/analytics-service/internal/buildinfo.SHA=${BUILD_SHA}" -o /server ./services/analytics-service/cmd/server/main.go
 
 FROM alpine:3.19
 WORKDIR /
