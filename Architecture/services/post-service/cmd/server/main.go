@@ -154,6 +154,10 @@ func main() {
 	// Never wired before 2026-09-05, so mentions silently resolved to nobody.
 	postSvc.SetUserServiceURL(env("APP_USER_SERVICE_URL", "http://user-service:8082"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
+	// The visible view count on a post is analytics-service's display
+	// view, read in batches from /v1/analytics/internal/content-views
+	// (plan 5B, issue M-13). Fail-open: unreachable means 0 and a warning.
+	postSvc.SetAnalyticsServiceURL(env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094"))
 	// Tube channel avatars resolve through media-service's delivery gate.
 	postSvc.SetMediaServiceURL(env("MEDIA_SERVICE_URL", "http://media-service:8087"))
 	// Community review is parked at launch; an explicit URL is required to

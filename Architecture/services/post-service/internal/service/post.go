@@ -13,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atpost/post-service/internal/engagement"
@@ -82,6 +83,11 @@ type Service struct {
 	monetizationServiceURL string
 	reviewerServiceURL     string
 	trustSafetyURL         string
+	// analyticsServiceURL serves the visible view count on a post
+	// (view_counts.go). Empty means every count is 0, with a warning.
+	analyticsServiceURL string
+	viewCountMu         sync.Mutex
+	viewCountCache      map[uuid.UUID]viewCountEntry
 	// requireStandingCheck makes an unreachable trust-safety service block
 	// scheduled publication instead of letting it through (Codex P2-1).
 	requireStandingCheck bool
@@ -1331,20 +1337,6 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, err
 	}
 	return p, nil
-}
-
-// getViewCount reads the display view counter analytics-service maintains
-// in shared Redis (post:views:{id} hash, "display" field). Best-effort:
-// returns 0 on any miss / Redis error.
-func (s *Service) getViewCount(ctx context.Context, postID uuid.UUID) int64 {
-	if s.rdb == nil {
-		return 0
-	}
-	n, err := s.rdb.HGet(ctx, "post:views:"+postID.String(), "display").Int64()
-	if err != nil {
-		return 0
-	}
-	return n
 }
 
 // isVideoContentType reports whether a post content_type carries video

@@ -673,6 +673,9 @@ services:
       # USER_SERVICE_URL=identity-user, which post-service never read and
       # which 401/404s on by-username anyway (fixed 2026-09-05).
       APP_USER_SERVICE_URL: http://user-service:8082
+      # The visible view count on a post (plan 5B, M-13): analytics-service's
+      # display view, batch-read from /v1/analytics/internal/content-views.
+      ANALYTICS_SERVICE_URL: http://analytics-service:8094
       REVIEWER_SERVICE_URL: http://reviewer-service:8120
       # Local media uses the non-production stub scanner and has no human
       # reviewer deployment. Production AWS manifests may opt into review-all;
@@ -755,6 +758,9 @@ services:
       USER_SERVICE_URL: http://identity-user:8110
       # Reads the viewer's self-service filter keywords (hidden posts).
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
+      # The visible view count on every hydrated post (plan 5B, M-13):
+      # analytics-service's display view, one batch read per page.
+      ANALYTICS_SERVICE_URL: http://analytics-service:8094
       # Account control (deactivate/delete/purge): standalone identity-topic
       # consumer that hides/unhides authors and, on user.purge_requested,
       # erases their feed rows and acks onto platform.purge-acks.v1.
@@ -1198,6 +1204,23 @@ services:
       # Withdrawals (plan Phase 3C). Off by default; needs writes on too,
       # or the container refuses to boot.
       MONETIZATION_PAYOUTS_ENABLED: ${MONETIZATION_PAYOUTS_ENABLED:-false}
+      # The payout rail (plan Phase 4B): RazorpayX contacts, fund accounts
+      # and payouts. The client is built only when payouts are enabled AND
+      # all four are set; otherwise the rail stays off and says so once.
+      # The key id/secret are the same pair payments-service uses; the
+      # account number and webhook secret are the rail's own. No real
+      # RazorpayX credentials exist yet — leave these empty until the
+      # founder places test keys.
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAYX_ACCOUNT_NUMBER: ${RAZORPAYX_ACCOUNT_NUMBER:-}
+      RAZORPAYX_WEBHOOK_SECRET: ${RAZORPAYX_WEBHOOK_SECRET:-}
+      # Bank account capture (plan Phase 4D): the AES-256 key the full
+      # account number is stored under (32 bytes, hex or base64). Unset
+      # means POST /payout-methods with method_type bank_account answers
+      # 503 BANK_CAPTURE_NOT_CONFIGURED rather than storing the number in
+      # the clear.
+      MONETIZATION_BANK_DETAILS_KEY: ${MONETIZATION_BANK_DETAILS_KEY:-}
       # How often the creator-fund payment run happens: monthly (default)
       # or semimonthly (1st-15th, 16th-end).
       CF_SETTLEMENT_CADENCE: ${CF_SETTLEMENT_CADENCE:-monthly}

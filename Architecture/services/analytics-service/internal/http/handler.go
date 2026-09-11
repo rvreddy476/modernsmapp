@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strconv"
 
 	"github.com/atpost/analytics-service/internal/aggregation"
 	"github.com/atpost/analytics-service/internal/personalization"
@@ -82,6 +81,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		if h.hourlyAgg != nil && h.dailyRollup != nil {
 			v1.POST("/internal/aggregate", h.RunAggregation)
 		}
+
+		// The visible view count post-service and feed-service put on a
+		// post, in one batch read per page. See content_views.go.
+		if h.aggStore != nil {
+			v1.POST("/internal/content-views", h.ContentViewsBatch)
+		}
 	}
 }
 
@@ -158,8 +163,13 @@ func (h *Handler) IngestEvents(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusAccepted, result, nil)
 }
 
-// GetContentViews returns real-time view counts for a specific content item.
-// Reads from Redis post:views:{contentId} hash.
+// GetContentViews returns the view-bucket counters for one content item
+// from content_hourly_agg, rebuilt from the ingested milestone and
+// play_end events. It used to consult a Redis post:views:{contentId}
+// hash first; that hash was written only by the Kafka VideoViewConsumer,
+// which subscribed to events nothing produced, so it was always empty
+// (plan 5B, issue M-13). The aggregate is the only source now. Response
+// shape is unchanged — the same six fields.
 func (h *Handler) GetContentViews(c *gin.Context) {
 	contentID := c.Param("contentId")
 	if contentID == "" {
@@ -167,25 +177,8 @@ func (h *Handler) GetContentViews(c *gin.Context) {
 		return
 	}
 
-	result, err := h.rdb.HGetAll(c.Request.Context(), "post:views:"+contentID).Result()
-	if err != nil {
-		log.Printf("Redis error fetching views for %s: %v", contentID, err)
-		result = nil
-	}
-
 	counts := make(map[string]int64)
-	for k, v := range result {
-		n, _ := strconv.ParseInt(v, 10, 64)
-		counts[k] = n
-	}
-
-	// Redis is a real-time cache: it expires, it is empty after a
-	// restart, and nothing populates it on the HTTP ingest path. The
-	// recorded truth is content_hourly_agg, rebuilt from the ingested
-	// milestone and play_end events, so fall back to it whenever the
-	// cache has nothing to say about this content. Response shape is
-	// unchanged — the same six fields, just no longer always zero.
-	if len(counts) == 0 && h.aggStore != nil {
+	if h.aggStore != nil {
 		if parsed, err := uuid.Parse(contentID); err == nil {
 			buckets, bErr := h.aggStore.GetContentViewBuckets(c.Request.Context(), parsed)
 			if bErr != nil {

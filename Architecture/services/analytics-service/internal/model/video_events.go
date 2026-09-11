@@ -66,10 +66,10 @@ type VideoEventCommon struct {
 	CreatorID    string `json:"creator_id"`
 	ViewerUserID string `json:"viewer_user_id"`
 	SessionID    string `json:"session_id"`
-	Surface      string `json:"surface"`       // reels_feed, home_feed, search_results, profile, share_link, recommended_next
+	Surface      string `json:"surface"`        // feed, reels, posttube, profile, search, channel — anything else is stored as "other" (normalizeSurface, internal/service/ingest.go)
 	Position     int    `json:"position"`       // rank position in feed
 	Country      string `json:"country"`        // ISO 3166-1 alpha-2
-	Language     string `json:"language"`        // BCP-47
+	Language     string `json:"language"`       // BCP-47
 	DeviceIDHash string `json:"device_id_hash"` // privacy-safe hash
 	AppVersion   string `json:"app_version"`
 	OS           string `json:"os"`
@@ -87,12 +87,12 @@ type ImpressionEvent struct {
 // PlayStartEvent — video playback began.
 type PlayStartEvent struct {
 	VideoEventCommon
-	ContentDurationMS   int64  `json:"content_duration_ms"`
-	ContentType         string `json:"content_type"` // server-authoritative; "flick" or "long_video"
-	StartMethod         string `json:"start_method"` // autoplay, tap, resume
-	IsMuted             bool   `json:"is_muted"`
-	TimeToFirstFrameMS  int64  `json:"time_to_first_frame_ms"`
-	InitialBufferMS     int64  `json:"initial_buffer_ms"`
+	ContentDurationMS  int64  `json:"content_duration_ms"`
+	ContentType        string `json:"content_type"` // server-authoritative; "flick" or "long_video"
+	StartMethod        string `json:"start_method"` // autoplay, tap, resume
+	IsMuted            bool   `json:"is_muted"`
+	TimeToFirstFrameMS int64  `json:"time_to_first_frame_ms"`
+	InitialBufferMS    int64  `json:"initial_buffer_ms"`
 }
 
 // WatchHeartbeatEvent — periodic progress update.
@@ -117,7 +117,7 @@ type MilestoneEvent struct {
 // PlayEndEvent — playback ended.
 type PlayEndEvent struct {
 	VideoEventCommon
-	EndReason            string  `json:"end_reason"` // swipe_next, back, ended, background, error
+	EndReason            string  `json:"end_reason"` // ended, swipe_next, paused, backgrounded, error — anything else is stored as "other" (normalizeEndReason, internal/service/ingest.go)
 	WatchedMSTotal       int64   `json:"watched_ms_total"`
 	MaxContinuousWatchMS int64   `json:"max_continuous_watch_ms"`
 	ContentDurationMS    int64   `json:"content_duration_ms"`

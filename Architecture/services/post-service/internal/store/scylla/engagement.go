@@ -3,7 +3,6 @@ package scylla
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"strconv"
 	"time"
 
@@ -225,24 +224,15 @@ func (s *InteractionStore) ListSavedReels(ctx context.Context, userID uuid.UUID,
 	return reelIDs, nil
 }
 
-// ─── Reel Views (sharded for viral reels) ───────────────────────────
-
-// RecordReelView records a view event for analytics and dedup.
-// Partition: (reel_id, view_date, shard) to handle viral reels.
-func (s *InteractionStore) RecordReelView(ctx context.Context, reelID, viewerID uuid.UUID) error {
-	rid := reelID.String()
-	viewDate := time.Now().UTC().Format("2006-01-02")
-	shard := rand.Intn(8) // 8 shards for views
-
-	if err := s.session.Query(`
-		INSERT INTO reel_views (reel_id, view_date, shard, ts, viewer_id)
-		VALUES (?, ?, ?, now(), ?)
-	`, rid, viewDate, shard, viewerID.String()).Exec(); err != nil {
-		return err
-	}
-
-	return s.session.Query(`UPDATE reel_counts SET view_count = view_count + 1 WHERE reel_id = ?`, rid).Exec()
-}
+// ─── Reel Views ─────────────────────────────────────────────────────
+//
+// RecordReelView is gone (plan 5B, issue M-13). It inserted a reel_views
+// row and ran `UPDATE reel_counts SET view_count = view_count + 1` with
+// no dedup and no rule, so reel_counts.view_count is whatever callers
+// chose to make it. The reel_views table and the view_count column stay
+// in the schema (nothing writes them now); the visible view count comes
+// from analytics-service. GetReelCounts still returns the historical
+// column as `views`.
 
 // ─── Reel Counts (aggregator-managed) ───────────────────────────────
 

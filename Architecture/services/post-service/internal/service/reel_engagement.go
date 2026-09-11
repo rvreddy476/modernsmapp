@@ -71,20 +71,9 @@ func (s *Service) ListSavedReels(ctx context.Context, userID uuid.UUID, limit in
 	return s.scyllaStore.ListSavedReels(ctx, userID, limit)
 }
 
-// RecordReelView records a view and emits event.
-func (s *Service) RecordReelView(ctx context.Context, reelID, viewerID uuid.UUID, sessionID string, watchedMs int64, surface string) error {
-	if err := s.scyllaStore.RecordReelView(ctx, reelID, viewerID); err != nil {
-		return err
-	}
-	s.EmitReelViewed(ctx, ReelViewedPayload{
-		ReelID:    reelID.String(),
-		ViewerID:  viewerID.String(),
-		SessionID: sessionID,
-		WatchedMs: watchedMs,
-		Surface:   surface,
-	})
-	return nil
-}
+// RecordReelView is gone (plan 5B, issue M-13): it was an unguarded +1
+// on reel_counts.view_count. Views are analytics-service's to decide;
+// see view_counts.go for how the visible number is read back.
 
 // GetReelCounts returns engagement counts for a reel.
 func (s *Service) GetReelCounts(ctx context.Context, reelID uuid.UUID) (*scylla.ReelCounts, error) {

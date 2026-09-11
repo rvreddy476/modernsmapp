@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/atpost/analytics-service/internal/model"
 	"github.com/atpost/analytics-service/internal/store/postgres"
 	"github.com/atpost/analytics-service/internal/store/scylla"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -588,13 +591,53 @@ func validMilestone(milestone string) bool {
 	return false
 }
 
-func normalizeSurface(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "feed", "posttube", "profile", "search", "channel":
-		return strings.ToLower(strings.TrimSpace(value))
-	default:
-		return "other"
+// surfaceRejected counts every event whose surface collapsed to "other",
+// by the string the client actually sent (plan 5D, issue M-22). The
+// normaliser never fails a request over a surface, which is right — a
+// typo must not lose a paid view — but until this counter existed the
+// only evidence of a wrong string was a dimension that was 99.8% "other".
+// Alert on a non-zero rate per raw value; each one is a client bug.
+var surfaceRejected = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "analytics_surface_rejected_total",
+	Help: `Events whose surface was not one normalizeSurface accepts and was stored as "other", by the raw string sent (lower-cased, trimmed, bounded to 32 characters; empty is "(empty)").`,
+}, []string{"raw"})
+
+// maxSurfaceLabelLen bounds the raw label so a client cannot mint
+// unbounded Prometheus series with garbage surfaces.
+const maxSurfaceLabelLen = 32
+
+// surfaceRejectionLabel is the raw surface as a safe metric label.
+func surfaceRejectionLabel(raw string) string {
+	s := strings.ToValidUTF8(strings.ToLower(strings.TrimSpace(raw)), "?")
+	if s == "" {
+		return "(empty)"
 	}
+	if len(s) > maxSurfaceLabelLen {
+		cut := maxSurfaceLabelLen
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
+	}
+	return s
+}
+
+// normalizeSurface is the closed set of surfaces the analytics tables
+// keep as a dimension. "reels" is the short-form vertical feed on both
+// clients; "feed" is the home feed. Anything else is stored as "other"
+// and counted on analytics_surface_rejected_total{raw}. The client
+// mirrors of this list are packages/analytics/src/contract.ts
+// (AnalyticsSurface) on the web and AnalyticsContract.kt
+// (AnalyticsSurface) on Android; VideoEventCommon in model/video_events.go
+// documents it too.
+func normalizeSurface(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "feed", "reels", "posttube", "profile", "search", "channel":
+		return normalized
+	}
+	surfaceRejected.WithLabelValues(surfaceRejectionLabel(value)).Inc()
+	return "other"
 }
 
 func normalizeEndReason(value string) string {

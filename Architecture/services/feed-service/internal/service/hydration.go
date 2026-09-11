@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -46,9 +45,11 @@ type HydratedPost struct {
 	UpdatedAt      string          `json:"updated_at"`
 	Media          []HydratedMedia `json:"media,omitempty"`
 	Counts         json.RawMessage `json:"counts,omitempty"`
-	// ViewCount is the display view count from analytics-service's
-	// Redis counter (post:views:{id} → display). Enriched at hydration
-	// time; `counts` carries likes/comments/shares only.
+	// ViewCount is analytics-service's display view count — capped,
+	// self-view-excluded, the number the creator is paid on — read in one
+	// batch per page from /v1/analytics/internal/content-views (see
+	// view_counts.go). Enriched at hydration time; `counts` carries
+	// likes/comments/shares only.
 	ViewCount       int64           `json:"view_count"`
 	ViewerReaction  *string         `json:"viewer_reaction,omitempty"`
 	HasReacted      bool            `json:"has_reacted"`
@@ -622,32 +623,8 @@ func (s *Service) fetchMediaDeliveries(ctx context.Context, viewerID uuid.UUID, 
 	return result, nil
 }
 
-// enrichViewCounts fills HydratedPost.ViewCount from the shared Redis
-// view counter (post:views:{id} hash, "display" field) that
-// analytics-service maintains. One pipelined round trip for the whole
-// page; best-effort — on any Redis error the counts stay 0 rather than
-// failing the feed. View counts intentionally aren't part of the
-// hydration cache blob, so this always reflects the live counter.
-func (s *Service) enrichViewCounts(ctx context.Context, posts []HydratedPost) {
-	if s.rdb == nil || len(posts) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancel()
-	pipe := s.rdb.Pipeline()
-	cmds := make([]*redis.StringCmd, len(posts))
-	for i, p := range posts {
-		cmds[i] = pipe.HGet(ctx, "post:views:"+p.ID.String(), "display")
-	}
-	// Exec returns redis.Nil when any key/field is missing — expected for
-	// posts with no views yet. Per-command parsing below handles it.
-	_, _ = pipe.Exec(ctx)
-	for i := range posts {
-		if n, err := cmds[i].Int64(); err == nil {
-			posts[i].ViewCount = n
-		}
-	}
-}
+// enrichViewCounts lives in view_counts.go: it reads analytics-service's
+// display view count in one batch per page, fail-open to zero.
 
 // mergeHydratedItems flattens (feed item × hydrated post) into the
 // ordered response. Reposts of an already-seen original are kept (a

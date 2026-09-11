@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -133,28 +132,11 @@ func (s *Service) EmitReelDeleted(ctx context.Context, reelID, authorID uuid.UUI
 	}
 }
 
-// ─── Reel Viewed (for analytics) ───────────────────────────────────
-
-// ReelViewedPayload is the event payload for reel view tracking.
-type ReelViewedPayload struct {
-	ReelID    string `json:"reel_id"`
-	ViewerID  string `json:"viewer_id"`
-	SessionID string `json:"session_id"`
-	WatchedMs int64  `json:"watched_ms"`
-	Surface   string `json:"surface"`
-}
-
-// EmitReelViewed publishes a reel view event directly (not outbox — high volume).
-func (s *Service) EmitReelViewed(ctx context.Context, payload ReelViewedPayload) {
-	if s.producer == nil {
-		return
-	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	envelope := events.NewEnvelope(ctx, events.ReelViewed, &payload.ViewerID, payloadBytes)
-	if err := s.producer.PublishRaw(ctx, envelope); err != nil {
-		slog.Error("emit ReelViewed failed", "reel_id", payload.ReelID, "error", err)
-	}
-}
+// ─── Reel Viewed ────────────────────────────────────────────────────
+//
+// EmitReelViewed went with POST /v1/reels/:reelId/view (plan 5B, issue
+// M-13): its only caller was that route. Nothing in post-service
+// produces events.ReelViewed now; the consumers that subscribe to it
+// (internal/engagement/consumers/reel_analytics.go here, and
+// analytics-service's creator_analytics consumer) are left in place and
+// simply see no such events.

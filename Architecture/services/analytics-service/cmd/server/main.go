@@ -13,7 +13,6 @@ import (
 	"github.com/atpost/analytics-service/internal/consumers"
 	httpHandler "github.com/atpost/analytics-service/internal/http"
 	"github.com/atpost/analytics-service/internal/personalization"
-	"github.com/atpost/analytics-service/internal/reconcile"
 	"github.com/atpost/analytics-service/internal/scoring"
 	"github.com/atpost/analytics-service/internal/service"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
@@ -196,12 +195,13 @@ func main() {
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	defer workerCancel()
 
-	// 10. Start Kafka consumer for real-time video view counting
-	if kafkaBrokers != "" && watchStore != nil {
-		videoConsumer := consumers.NewVideoViewConsumer(watchStore, rdb)
-		go videoConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
-		slog.Info("video view consumer started")
-	}
+	// 10. There is no Kafka video-view consumer any more. The
+	// VideoViewConsumer subscribed to VideoPlayStart/Heartbeat/Milestone/
+	// PlayEnd, which no service ever produced, and wrote the Redis
+	// post:views:* hash that post-service and feed-service read — so every
+	// visible view count was structurally zero (plan 5B, issue M-13).
+	// Views arrive over HTTP ingest; the visible count is served from the
+	// aggregates by POST /v1/analytics/internal/content-views.
 
 	// 10b. Start engagement consumer for CQS recalculation on likes/comments
 	if kafkaBrokers != "" {
@@ -253,12 +253,8 @@ func main() {
 	go personalizationWarmer.Start(workerCtx)
 	slog.Info("personalization warmer started")
 
-	// 14. Start view reconciler (5-min interval)
-	if scyllaSession != nil {
-		viewReconciler := reconcile.NewViewReconciler(rdb, scyllaSession)
-		go viewReconciler.Start(workerCtx)
-		slog.Info("view reconciler started")
-	}
+	// 14. The Redis-vs-Scylla view reconciler went with the consumer above:
+	// it corrected a counter nothing wrote from a table nothing filled.
 
 	// 15. HTTP Server
 	gin.SetMode(gin.ReleaseMode)

@@ -25,7 +25,9 @@ func (h *Handler) RegisterReelEngagementRoutes(r *gin.Engine) {
 		reels.POST("/:reelId/save", h.SaveReel)
 		reels.DELETE("/:reelId/save", h.UnsaveReel)
 		reels.GET("/:reelId/saved", h.IsReelSaved)
-		reels.POST("/:reelId/view", h.RecordReelView)
+		// Retired 2026-09-11 (plan 5B, issue M-13): answers 410 Gone. See
+		// ReelViewGone.
+		reels.POST("/:reelId/view", h.ReelViewGone)
 		reels.GET("/:reelId/counts", h.GetReelCounts)
 		reels.POST("/batch/counts", h.BatchGetReelCounts)
 		reels.GET("/saved", h.ListSavedReels)
@@ -45,12 +47,6 @@ type addReelCommentRequest struct {
 
 type shareReelRequest struct {
 	ShareType string `json:"share_type"`
-}
-
-type recordReelViewRequest struct {
-	SessionID string `json:"session_id"`
-	WatchedMs int64  `json:"watched_ms"`
-	Surface   string `json:"surface"`
 }
 
 type batchReelCountsRequest struct {
@@ -289,28 +285,20 @@ func (h *Handler) IsReelSaved(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"saved": saved}, nil)
 }
 
-func (h *Handler) RecordReelView(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	var req recordReelViewRequest
-	_ = c.ShouldBindJSON(&req)
-
-	if err := h.svc.RecordReelView(c.Request.Context(), reelID, userID, req.SessionID, req.WatchedMs, req.Surface); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+// ReelViewGone answers the retired POST /v1/reels/:reelId/view.
+//
+// The route was a bare `view_count = view_count + 1` in Scylla with no
+// dedup, no watch-time rule and no self-view exclusion: any caller could
+// spin a reel's counter as fast as it could POST (plan 5B, issue M-13).
+// A view is now what analytics-service decides from a play_start /
+// watch_heartbeat / play_end session on POST /v1/analytics/events, and
+// the number on the post comes from that. The route stays registered so
+// an old client gets a deliberate 410 with the replacement named, not a
+// 404 it might retry.
+func (h *Handler) ReelViewGone(c *gin.Context) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, "ROUTE_RETIRED",
+		"POST /v1/reels/{reelId}/view has been retired; views are measured from play_start/watch_heartbeat/play_end events sent to POST /v1/analytics/events",
+		map[string]string{"replacement": "POST /v1/analytics/events"})
 }
 
 func (h *Handler) GetReelCounts(c *gin.Context) {

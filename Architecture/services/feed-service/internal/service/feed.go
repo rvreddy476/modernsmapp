@@ -32,7 +32,10 @@ type Service struct {
 	mediaServiceURL   string
 	userServiceURL    string
 	trustSafetyURL    string
-	ranker            *ranking.Ranker
+	// analyticsServiceURL serves the visible view count on every hydrated
+	// post (view_counts.go). Fail-open: unreachable means 0 and a warning.
+	analyticsServiceURL string
+	ranker              *ranking.Ranker
 	// Per-upstream HTTP clients with timeouts + circuit breakers. One
 	// breaker per remote service so a slow graph-service doesn't open
 	// the breaker on post-service calls (H1 risk in arch review plan).
@@ -42,6 +45,11 @@ type Service struct {
 	mediaClient   *http.Client
 	userClient    *http.Client
 	trustClient   *http.Client
+	// analyticsClient reads view counts; vcCache is the 60 s in-process
+	// cache in front of it — see view_counts.go.
+	analyticsClient *http.Client
+	vcMu            sync.Mutex
+	vcCache         map[uuid.UUID]viewCountEntry
 	// Viewer keyword-filter cache (60s TTL) — see keywordfilter.go.
 	kwMu    sync.Mutex
 	kwCache map[uuid.UUID]keywordCacheEntry
@@ -83,6 +91,10 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	if trustSafetyURL == "" {
 		trustSafetyURL = "http://trust-safety-service:8091"
 	}
+	analyticsServiceURL := os.Getenv("ANALYTICS_SERVICE_URL")
+	if analyticsServiceURL == "" {
+		analyticsServiceURL = "http://analytics-service:8094"
+	}
 	svc := &Service{
 		scyllaStore:       scylla,
 		pgStore:           pg,
@@ -93,14 +105,19 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		mediaServiceURL:   mediaServiceURL,
 		userServiceURL:    userServiceURL,
 		trustSafetyURL:    trustSafetyURL,
-		graphClient:       httpclient.NewWithBreaker(5*time.Second, "feed->graph"),
-		postClient:        httpclient.NewWithBreaker(5*time.Second, "feed->post"),
-		profileClient:     httpclient.NewWithBreaker(5*time.Second, "feed->profile"),
-		mediaClient:       httpclient.NewWithBreaker(5*time.Second, "feed->media"),
-		userClient:        httpclient.NewWithBreaker(5*time.Second, "feed->user"),
-		trustClient:       httpclient.NewWithBreaker(5*time.Second, "feed->trust-safety"),
-		kwCache:           make(map[uuid.UUID]keywordCacheEntry),
-		lvTiers:           loadLVTiers(),
+		// The view count is decoration on a page, not the page: a short
+		// timeout and its own breaker, so a slow analytics-service costs
+		// the feed nothing but zeros.
+		analyticsServiceURL: analyticsServiceURL,
+		analyticsClient:     httpclient.NewWithBreaker(2*time.Second, "feed->analytics"),
+		graphClient:         httpclient.NewWithBreaker(5*time.Second, "feed->graph"),
+		postClient:          httpclient.NewWithBreaker(5*time.Second, "feed->post"),
+		profileClient:       httpclient.NewWithBreaker(5*time.Second, "feed->profile"),
+		mediaClient:         httpclient.NewWithBreaker(5*time.Second, "feed->media"),
+		userClient:          httpclient.NewWithBreaker(5*time.Second, "feed->user"),
+		trustClient:         httpclient.NewWithBreaker(5*time.Second, "feed->trust-safety"),
+		kwCache:             make(map[uuid.UUID]keywordCacheEntry),
+		lvTiers:             loadLVTiers(),
 	}
 	// A typed-nil *MetaStore must not become a non-nil interface, or every
 	// hydration would fail closed on a nil pool instead of on a real error.

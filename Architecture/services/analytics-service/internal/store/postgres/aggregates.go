@@ -309,3 +309,76 @@ func (s *AggregateStore) GetContentViewBuckets(ctx context.Context, contentID uu
 	}
 	return &b, nil
 }
+
+// ContentViewsBatch returns the visible display-view count for each
+// requested content id — the number post-service and feed-service put on
+// a post (plan 5B, issue M-13). Every requested id is present in the
+// result; unknown content is 0.
+//
+// The count is the same foundation the creator is paid from:
+//
+//   - content_daily_summary summed over every rolled-up day: capped at
+//     one view per viewer per content per UTC day, self-views excluded,
+//     eligibility applied. The rollup re-rolls open days every 15 minutes
+//     for 48 hours, then the day is frozen.
+//   - plus content_hourly_agg for hours from today's UTC midnight
+//     onward: today is never in the daily table (the rollup walks up to
+//     yesterday), so its hours are the only "open" buckets. They are
+//     rebuilt every five minutes, self-views excluded, but NOT capped —
+//     a viewer looping a flick today counts every finalised session
+//     until midnight's rollup folds the day to the capped figure.
+//
+// An hourly row for a day that already has a daily row is the rollup's
+// input, not a second count, so it is deliberately not summed; and an
+// hourly row for a past day with no daily row is not summed either —
+// that day was decided (ineligible, or before the rollup existed) and
+// the daily table's silence is the answer.
+//
+// asOf is the wall-clock time the query ran; the caller reports it so a
+// reader knows how stale a cached figure is.
+func (s *AggregateStore) ContentViewsBatch(ctx context.Context, contentIDs []uuid.UUID) (map[uuid.UUID]int64, time.Time, error) {
+	asOf := time.Now().UTC()
+	out := make(map[uuid.UUID]int64, len(contentIDs))
+	for _, id := range contentIDs {
+		out[id] = 0
+	}
+	if len(contentIDs) == 0 {
+		return out, asOf, nil
+	}
+	openFrom := asOf.Truncate(24 * time.Hour)
+	rows, err := s.db.Query(ctx, `
+		WITH ids AS (SELECT DISTINCT unnest($1::uuid[]) AS content_id),
+		daily AS (
+			SELECT content_id, SUM(views_display) AS views
+			FROM analytics.content_daily_summary
+			WHERE content_id = ANY($1::uuid[])
+			GROUP BY content_id
+		),
+		open_hours AS (
+			SELECT content_id, SUM(views_display) AS views
+			FROM analytics.content_hourly_agg
+			WHERE content_id = ANY($1::uuid[]) AND hour_bucket >= $2
+			GROUP BY content_id
+		)
+		SELECT i.content_id, COALESCE(d.views, 0) + COALESCE(h.views, 0)
+		FROM ids i
+		LEFT JOIN daily d USING (content_id)
+		LEFT JOIN open_hours h USING (content_id)`,
+		contentIDs, openFrom)
+	if err != nil {
+		return nil, asOf, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var views int64
+		if err := rows.Scan(&id, &views); err != nil {
+			return nil, asOf, err
+		}
+		out[id] = views
+	}
+	if err := rows.Err(); err != nil {
+		return nil, asOf, err
+	}
+	return out, asOf, nil
+}
