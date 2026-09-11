@@ -15,9 +15,53 @@ import (
 
 	"github.com/atpost/analytics-service/database"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// RequireTestDSN returns ANALYTICS_POSTGRES_DSN, skipping the test when
+// it is unset, and refusing to proceed unless the database it names is
+// a scratch database: the name must end in "_test" and must never be
+// "app", the database the running stack serves every service from.
+//
+// This is the guard monetization-service gained in Phase 0 (issue M-23
+// in the plan): before commit 8d525471 this suite opened the DSN
+// directly and TRUNCATEd the live content_hourly_agg and
+// content_ownership tables, and the oldest surviving rows in the dev
+// database date from that run. Pool below now creates a private
+// analytics_it_<pkg> database beside the one the DSN names and never
+// writes to the named one — but the guard stays, so that a DSN pointed
+// at the live database is refused before a single connection is opened,
+// whatever a future test does with it.
+//
+// It runs BEFORE any connection is opened. Nothing is touched when it
+// fires. Keep it as the first statement of every test that reads the
+// DSN; Pool calls it too, so every test that goes through Pool is
+// covered even if it forgets. The DSN's database must exist (it is the
+// maintenance connection CREATE DATABASE runs on); analytics_it_test
+// is the conventional name.
+func RequireTestDSN(t *testing.T) string {
+	t.Helper()
+	dsn := strings.TrimSpace(os.Getenv("ANALYTICS_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip(ErrNoDSN.Error())
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ANALYTICS_POSTGRES_DSN does not parse: %v", err)
+	}
+	db := cfg.Database
+	switch {
+	case db == "":
+		t.Fatalf("refusing to run integration tests: ANALYTICS_POSTGRES_DSN names no database; use a scratch database whose name ends in _test (e.g. analytics_it_test)")
+	case db == "app":
+		t.Fatalf("refusing to run integration tests against the live database %q; use a scratch database whose name ends in _test (e.g. analytics_it_test)", db)
+	case !strings.HasSuffix(db, "_test"):
+		t.Fatalf("refusing to run integration tests against database %q: the name must end in _test (e.g. analytics_it_test)", db)
+	}
+	return dsn
+}
 
 // Why this exists.
 //
@@ -76,10 +120,8 @@ var (
 func Pool(t *testing.T, pkg string) *pgxpool.Pool {
 	t.Helper()
 
-	dsn := strings.TrimSpace(os.Getenv("ANALYTICS_POSTGRES_DSN"))
-	if dsn == "" {
-		t.Skip(ErrNoDSN.Error())
-	}
+	// The live-database guard runs before anything else; see RequireTestDSN.
+	dsn := RequireTestDSN(t)
 	if !dbNameSuffix.MatchString(pkg) {
 		t.Fatalf("testsupport.Pool: %q is not a usable database-name suffix", pkg)
 	}

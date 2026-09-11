@@ -27,6 +27,10 @@ type Event struct {
 	Payload    []byte // jsonb
 	Timestamp  time.Time
 	ReceivedAt time.Time
+	// Session is this event's contribution to analytics.playback_sessions,
+	// applied in the same transaction as the receipt. nil for the
+	// engagement types and for anything the Kafka consumers write.
+	Session *SessionUpdate
 }
 
 type ContentOwnership struct {
@@ -37,6 +41,15 @@ type ContentOwnership struct {
 }
 
 var ErrContentNotProjected = errors.New("content ownership is not projected")
+
+// LikeDedupeKey is the receipt key for a like from either write path. A
+// like is state, not an event — a viewer has either liked a piece of
+// content or not — so it collapses on (actor, nil session, content)
+// with this key regardless of how many sessions or clients reported
+// it. The HTTP ingest path and the Kafka engagement consumer both use
+// it, which is what lets the partial unique index on ingest_receipts
+// fold the two copies of one like onto one row (audit M-05).
+const LikeDedupeKey = "content"
 
 type Store struct {
 	db *pgxpool.Pool
@@ -141,6 +154,12 @@ func (s *Store) GetContentOwnership(ctx context.Context, contentID uuid.UUID) (C
 // analytics row. A duplicate receipt is a successful no-op. No 2xx caller can
 // therefore depend on an in-memory queue that disappears on restart.
 //
+// A playback event (one carrying a Session) is also folded into its
+// analytics.playback_sessions row in the same transaction, so the
+// durability contract behind the 202 covers the session too. Duplicates
+// are skipped before that step: the receipt already proved the event
+// was applied once, and the session totals are GREATEST-merged anyway.
+//
 // Returns the events that were actually written (not the duplicates), so
 // the caller can fan those — and only those — out to the downstream
 // accelerators without double-counting a replay.
@@ -180,6 +199,11 @@ func (s *Store) InsertAcceptedBatch(ctx context.Context, events []Event) ([]Even
 			event.Timestamp, event.ReceivedAt,
 		); err != nil {
 			return nil, err
+		}
+		if event.Session != nil {
+			if err := applySessionUpdate(ctx, tx, event); err != nil {
+				return nil, err
+			}
 		}
 		inserted = append(inserted, event)
 	}

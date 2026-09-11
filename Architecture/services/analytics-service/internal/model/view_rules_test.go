@@ -55,9 +55,16 @@ func TestDisplayViewBars(t *testing.T) {
 		{"flick under 3s but 25% viewed", ContentTypeFlick, shortFlick, 2_000, 25.0, 0, true},
 		{"legacy 'reel' label gets the same bar", ContentTypeReel, shortFlick, 3_000, 10, 0, true},
 		{"legacy 'short' label gets the same bar", "short", shortFlick, 3_000, 10, 0, true},
-		{"sub-3s flick needs a full loop", ContentTypeFlick, 2_000, 900, 45, 0, true},
+		// Under three seconds the 25% rule does not apply: 0.9s of a 2s
+		// clip is not a view. Only a full loop or the whole duration is.
+		{"sub-3s flick, 45% watched, no loop", ContentTypeFlick, 2_000, 900, 45, 0, false},
 		{"sub-3s flick, one loop, tiny watch", ContentTypeFlick, 2_000, 400, 20, 1, true},
 		{"sub-3s flick, no loop, tiny watch", ContentTypeFlick, 2_000, 400, 20, 0, false},
+		{"sub-3s flick, whole duration, no loop", ContentTypeFlick, 2_000, 2_000, 100, 0, true},
+		{"sub-3s flick, 99% watched, no loop", ContentTypeFlick, 2_000, 1_980, 99, 0, false},
+		{"sub-3s flick, 25% exactly, no loop", ContentTypeFlick, 2_000, 500, 25, 0, false},
+		{"2.999s flick, 25% exactly, no loop", ContentTypeFlick, 2_999, 750, 25.01, 0, false},
+		{"3s flick, 25% exactly, no loop", ContentTypeFlick, 3_000, 750, 25, 0, true},
 
 		// Exactly on the bar is still short form.
 		{"flick exactly 90s", ContentTypeFlick, ShortFormViewRuleMaxDurationMS, 3_000, 3.4, 0, true},

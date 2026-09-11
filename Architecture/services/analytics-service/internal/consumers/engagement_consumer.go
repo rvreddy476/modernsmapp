@@ -3,33 +3,67 @@ package consumers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
+	"github.com/atpost/analytics-service/internal/model"
 	"github.com/atpost/analytics-service/internal/scoring"
+	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
+// engagementStore is the slice of the PostgreSQL store the consumer
+// writes through. The same InsertAcceptedBatch the HTTP ingest path
+// uses, so a like has exactly one write path whichever door it came in.
+type engagementStore interface {
+	GetContentOwnership(ctx context.Context, contentID uuid.UUID) (pgstore.ContentOwnership, error)
+	InsertAcceptedBatch(ctx context.Context, events []pgstore.Event) ([]pgstore.Event, error)
+}
+
 // EngagementConsumer processes social engagement events (likes, comments)
-// from Kafka. It writes normalized events into analytics.events_raw for
-// the hourly aggregator and maintains near-real-time CQS updates in Redis.
+// from Kafka into analytics.events_raw for the hourly aggregator, and
+// keeps the near-real-time CQS estimate in Redis warm.
+//
+// Before plan Phase 1B it wrote likes with a bare INSERT — a fresh uuid,
+// no receipt, no session — while the HTTP ingest path wrote the same
+// like with its own receipt. Every web like was counted twice (audit
+// M-05). Now both paths go through InsertAcceptedBatch with the same
+// receipt shape: (actor, nil session, content, 'like', 'content'), and
+// the partial unique index on ingest_receipts folds them onto one row.
+// The receipt's event id is "kafka:" + the envelope's event id, which
+// is the outbox id and stable across redelivery, so a redelivered
+// PostReacted is a duplicate at the database and needs no Redis to say
+// so.
 type EngagementConsumer struct {
-	pg   *pgxpool.Pool
-	rdb  *redis.Client
-	base *BaseConsumer
+	pg    *pgxpool.Pool
+	store engagementStore
+	rdb   *redis.Client
+	now   func() time.Time
 }
 
 func NewEngagementConsumer(pg *pgxpool.Pool, rdb *redis.Client) *EngagementConsumer {
-	return &EngagementConsumer{
-		pg:   pg,
-		rdb:  rdb,
-		base: NewBaseConsumer(rdb, "analytics-engagement"),
+	c := &EngagementConsumer{pg: pg, rdb: rdb, now: time.Now}
+	if pg != nil {
+		c.store = pgstore.New(pg)
 	}
+	return c
 }
+
+// retryableEngagementError marks a failure that a later attempt can
+// clear: the reaction beat PostCreated to us, so the ownership row (and
+// the receipt's foreign key target) is not there yet. The record stays
+// in flight and is retried, never committed and dropped.
+type retryableEngagementError struct{ err error }
+
+func (e retryableEngagementError) Error() string { return e.err.Error() }
+func (e retryableEngagementError) Unwrap() error { return e.err }
 
 // Start launches the Kafka consumer loop. Blocks until ctx is cancelled.
 func (c *EngagementConsumer) Start(ctx context.Context, brokers []string, topic string, dialer *kafka.Dialer) {
@@ -43,7 +77,7 @@ func (c *EngagementConsumer) Start(ctx context.Context, brokers []string, topic 
 	})
 	defer reader.Close()
 
-	log.Println("[EngagementConsumer] started")
+	log.Println("[EngagementConsumer] started (writes through ingest receipts)")
 
 	for {
 		msg, err := reader.FetchMessage(ctx)
@@ -67,14 +101,23 @@ func (c *EngagementConsumer) Start(ctx context.Context, brokers []string, topic 
 			continue
 		}
 
-		// Dedup
-		if c.base.IsDuplicate(ctx, envelope.EventID) {
-			_ = reader.CommitMessages(ctx, msg)
-			continue
-		}
-
-		if err := c.processEvent(ctx, &envelope); err != nil {
-			log.Printf("[EngagementConsumer] process error for %s: %v", envelope.EventType, err)
+		for {
+			err := c.processEvent(ctx, &envelope)
+			var retryable retryableEngagementError
+			if err != nil && errors.As(err, &retryable) {
+				log.Printf("[EngagementConsumer] %s %s not yet applicable; retrying same record: %v",
+					envelope.EventType, envelope.EventID, err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(250 * time.Millisecond):
+				}
+				continue
+			}
+			if err != nil {
+				log.Printf("[EngagementConsumer] process error for %s: %v", envelope.EventType, err)
+			}
+			break
 		}
 
 		_ = reader.CommitMessages(ctx, msg)
@@ -123,13 +166,14 @@ func (c *EngagementConsumer) handlePostReacted(ctx context.Context, env *events.
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return err
 	}
-
-	// 1. Insert into events_raw for hourly aggregator
-	if err := c.insertRawEvent(ctx, p.ReactorID, "like", p.PostID, p.PostAuthorID, env.OccurredAt); err != nil {
-		log.Printf("[EngagementConsumer] insert raw event error: %v", err)
+	key := pgstore.LikeDedupeKey
+	inserted, err := c.writeEngagement(ctx, env, model.EventLike, p.ReactorID, p.PostID, &key)
+	if err != nil {
+		return err
 	}
-
-	// 2. Bump real-time CQS
+	if !inserted {
+		return nil // a redelivery, or the HTTP path got there first
+	}
 	return c.bumpCQS(ctx, p.PostID, "likes")
 }
 
@@ -138,37 +182,116 @@ func (c *EngagementConsumer) handleCommentCreated(ctx context.Context, env *even
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return err
 	}
-
-	// 1. Insert into events_raw for hourly aggregator
-	if err := c.insertRawEvent(ctx, p.AuthorID, "comment_create", p.PostID, p.PostAuthorID, env.OccurredAt); err != nil {
-		log.Printf("[EngagementConsumer] insert raw event error: %v", err)
+	// Comments are genuinely repeatable, so no dedupe key beyond the
+	// event id itself.
+	inserted, err := c.writeEngagement(ctx, env, model.EventCommentCreate, p.AuthorID, p.PostID, nil)
+	if err != nil {
+		return err
 	}
-
-	// 2. Bump real-time CQS
+	if !inserted {
+		return nil
+	}
 	return c.bumpCQS(ctx, p.PostID, "comments")
 }
 
-// insertRawEvent writes the engagement event into analytics.events_raw
-// so that the hourly aggregator picks it up for content_hourly_agg.
-func (c *EngagementConsumer) insertRawEvent(ctx context.Context, userID, eventType, contentID, creatorID string, ts time.Time) error {
-	payload := map[string]string{
-		"content_id": contentID,
-		"creator_id": creatorID,
+// writeEngagement is the one write path. Attribution comes from the
+// ownership projection, exactly as it does for an HTTP client; the
+// payload's post_author_id is not trusted for the same reason a client's
+// creator_id is not. Returns whether a row was written (false for a
+// duplicate).
+func (c *EngagementConsumer) writeEngagement(ctx context.Context, env *events.EventEnvelope, eventType, actor, content string, dedupeKey *string) (bool, error) {
+	if c.store == nil {
+		return false, errors.New("engagement consumer has no store")
 	}
-	payloadJSON, _ := json.Marshal(payload)
+	actorID, err := uuid.Parse(actor)
+	if err != nil || actorID == uuid.Nil {
+		return false, fmt.Errorf("%s has invalid actor id %q", env.EventType, actor)
+	}
+	contentID, err := uuid.Parse(content)
+	if err != nil || contentID == uuid.Nil {
+		return false, fmt.Errorf("%s has invalid post id %q", env.EventType, content)
+	}
+	clientEventID, err := kafkaEventID(env.EventID)
+	if err != nil {
+		return false, err
+	}
 
-	_, err := c.pg.Exec(ctx, `
-		INSERT INTO analytics.events_raw (id, user_id, type, payload, ts)
-		VALUES (gen_random_uuid(), $1::uuid, $2, $3::jsonb, $4)`,
-		userID, eventType, payloadJSON, ts,
-	)
-	return err
+	ownership, err := c.store.GetContentOwnership(ctx, contentID)
+	if errors.Is(err, pgstore.ErrContentNotProjected) {
+		return false, retryableEngagementError{fmt.Errorf("content %s: %w", contentID, err)}
+	}
+	if err != nil {
+		return false, err
+	}
+
+	now := c.now().UTC()
+	occurredAt := env.OccurredAt.UTC()
+	if occurredAt.IsZero() {
+		occurredAt = now
+	}
+	payload, err := json.Marshal(map[string]any{
+		"content_id":   ownership.ContentID.String(),
+		"creator_id":   ownership.CreatorID.String(),
+		"content_type": ownership.ContentType,
+		"session_id":   uuid.Nil.String(),
+		"surface":      "other",
+		"event_name":   eventType,
+		"is_self_view": actorID == ownership.CreatorID,
+		"source":       "kafka",
+	})
+	if err != nil {
+		return false, err
+	}
+
+	inserted, err := c.store.InsertAcceptedBatch(ctx, []pgstore.Event{{
+		ID:            uuid.New(),
+		ClientEventID: clientEventID,
+		UserID:        actorID,
+		SessionID:     uuid.Nil,
+		ContentID:     ownership.ContentID,
+		Type:          eventType,
+		DedupeKey:     dedupeKey,
+		Payload:       payload,
+		Timestamp:     occurredAt,
+		ReceivedAt:    now,
+	}})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
+			// The ownership row vanished between the lookup and the
+			// receipt, or was never there on this replica yet.
+			return false, retryableEngagementError{err}
+		}
+		return false, err
+	}
+	return len(inserted) > 0, nil
+}
+
+// kafkaEventID derives the receipt id from the envelope's event id. The
+// outbox id is stable across redelivery, which is the whole point; an
+// envelope without one cannot be made idempotent and is refused rather
+// than written under a fresh id every time it is redelivered.
+func kafkaEventID(envelopeID string) (string, error) {
+	const prefix = "kafka:"
+	if envelopeID == "" {
+		return "", errors.New("engagement envelope has no event_id; cannot be written idempotently")
+	}
+	id := prefix + envelopeID
+	// ingest_receipts.event_id is CHECKed to 16..128 characters.
+	if len(id) < 16 || len(id) > 128 {
+		return "", fmt.Errorf("engagement envelope event_id %q is not a usable receipt id", envelopeID)
+	}
+	return id, nil
 }
 
 // bumpCQS incrementally updates the cached CQS for a post. Every 10
 // engagement events it reads the latest aggregate from Postgres, recomputes
-// CQS, and caches the result in Redis.
+// CQS, and caches the result in Redis. Without Redis the durable write
+// above has already happened; the estimate is simply not warmed.
 func (c *EngagementConsumer) bumpCQS(ctx context.Context, postID, counterType string) error {
+	if c.rdb == nil {
+		return nil
+	}
 	// Increment real-time engagement counter
 	counterKey := fmt.Sprintf("post:rt_engagement:%s:%s", postID, counterType)
 	c.rdb.Incr(ctx, counterKey)

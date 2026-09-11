@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/analytics-service/internal/service"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/analytics-service/internal/store/scylla"
+	"github.com/atpost/analytics-service/internal/viewsource"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -46,6 +47,20 @@ func main() {
 		slog.Error("INTERNAL_SERVICE_KEY is required outside development")
 		os.Exit(1)
 	}
+	// Where the aggregators read views from during the sessions cutover
+	// (plan Phase 1, deploy sequence). Defaults to play_end: shipping the
+	// sessions table changes nothing money reads until the backfill has
+	// run and the two aggregations reconcile to zero. Installed
+	// process-wide so the aggregation package can consult
+	// viewsource.Current() per bucket; the *Resolver also satisfies its
+	// ViewSourceResolver interface for constructor injection.
+	viewSource, err := viewsource.FromEnv()
+	if err != nil {
+		slog.Error("invalid view source", "error", err)
+		os.Exit(1)
+	}
+	viewsource.Install(viewSource)
+	slog.Info("analytics view source", "source", viewSource.Source(), "env", viewsource.EnvVar)
 
 	ctx := context.Background()
 
@@ -204,14 +219,25 @@ func main() {
 	slog.Info("trust factor worker started")
 
 	// 12. Start hourly aggregator
-	hourlyAgg := aggregation.NewHourlyAggregator(dbPool, rdb)
+	// Both aggregators are handed the view-source resolver read above,
+	// so the play_end -> sessions cutover is one environment variable.
+	hourlyAgg := aggregation.NewHourlyAggregator(dbPool, rdb).WithViewSource(viewSource)
 	go hourlyAgg.Start(workerCtx)
-	slog.Info("hourly aggregator started")
+	slog.Info("hourly aggregator started", "view_source", viewSource.Source())
 
 	// 13. Start daily rollup
-	dailyRollup := aggregation.NewDailyRollup(dbPool, rdb)
+	dailyRollup := aggregation.NewDailyRollup(dbPool, rdb).WithViewSource(viewSource)
 	go dailyRollup.Start(workerCtx)
 	slog.Info("daily rollup started")
+
+	// 13c. Start the playback-session finaliser: closes sessions that
+	// stopped reporting without a play_end, so a lost final event no
+	// longer loses the view (plan 1A, audit M-08). 60s tick, 10 minutes
+	// of silence. Runs whatever ANALYTICS_VIEW_SOURCE says, so sessions
+	// are complete by the time the aggregators are switched to them.
+	sessionFinalizer := aggregation.NewSessionFinalizer(store)
+	go sessionFinalizer.Start(workerCtx)
+	slog.Info("session finalizer started", "tick", "60s", "inactivity", "10m")
 
 	// 13a. Expose both aggregators for on-demand runs. Registered before
 	// RegisterRoutes below, so POST /v1/analytics/internal/aggregate

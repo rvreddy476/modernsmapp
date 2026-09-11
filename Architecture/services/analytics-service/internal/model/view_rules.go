@@ -55,9 +55,15 @@ func usesShortFormViewRules(contentType string, durationMS int64) bool {
 // "display view" per the PRD Section 4 rules.
 //
 //	Short form (a flick of <= ShortFormViewRuleMaxDurationMS):
-//	  - Watched >= 3 seconds, OR
-//	  - Watched >= 25% of its length, OR
-//	  - If length < 3s: watched >= 1 full loop
+//	  - If length < 3s: watched >= 1 full loop, OR watched the whole
+//	    length. Nothing else qualifies — see below.
+//	  - Otherwise: watched >= 3 seconds, OR watched >= 25% of its length
+//
+// The sub-3-second branch is its own bar, not an extra OR. Under the
+// old rule the 25% clause still applied, so a quarter of a 2s clip —
+// half a second — counted as a display view, and a viewer flicking past
+// a very short reel was paid for as if they had watched it (audit M-18).
+// A clip that short is only watched if it was watched to the end.
 //
 //	Everything else (long_video, and any flick longer than the
 //	short-form view bar):
@@ -69,16 +75,18 @@ func usesShortFormViewRules(contentType string, durationMS int64) bool {
 // IngestService rebuilds it from the projection before this is called.
 func IsDisplayView(contentType string, durationMS, watchedMS int64, percentViewed float64, loopCount int) bool {
 	if usesShortFormViewRules(contentType, durationMS) {
+		// Very short reel (< 3s): a full loop or the whole length, and
+		// nothing less. The 3s and 25% clauses below must not be reached
+		// for this branch; 25% of a 2s clip is half a second.
+		if durationMS > 0 && durationMS < 3000 {
+			return loopCount >= 1 || watchedMS >= durationMS
+		}
 		// Watched >= 3 seconds
 		if watchedMS >= 3000 {
 			return true
 		}
 		// Watched >= 25% of its length
 		if percentViewed >= 25.0 {
-			return true
-		}
-		// Very short reel (< 3s): at least one full loop
-		if durationMS > 0 && durationMS < 3000 && loopCount >= 1 {
 			return true
 		}
 		return false

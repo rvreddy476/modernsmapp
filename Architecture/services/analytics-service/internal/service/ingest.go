@@ -28,6 +28,14 @@ const (
 	maxHeartbeatIncrementMS = 10 * 60 * 1000
 	// An impression is a viewport-visibility measurement, not playback.
 	maxImpressionVisibleMS = 10 * 60 * 1000
+
+	// maxLoopCount caps, rather than rejects, the loops a play_end may
+	// claim. A reel left looping for an hour used to be dropped whole
+	// (audit M-09): the view was lost along with the abuse it guarded
+	// against. Twenty loops of a flick is as much as any one session is
+	// ever credited with; watched_ms_total is clamped to what those
+	// loops can account for and the reported figure is kept for audit.
+	maxLoopCount = 20
 )
 
 type EventDTO struct {
@@ -138,6 +146,15 @@ type normalizedEvent struct {
 	SessionID  uuid.UUID
 	DedupeKey  *string
 	Attributes map[string]any
+	// IsSelfView is the gateway actor watching their own content. Stamped
+	// from the ownership projection, never from anything the client sent.
+	// Raw rows keep it as a payload attribute so dashboards still see the
+	// creator's own plays; the aggregators exclude it from paid views.
+	IsSelfView bool
+	// Session is the contribution this event makes to the server-side
+	// playback session (analytics.playback_sessions); nil for the
+	// engagement and negative-signal types, which are not playback.
+	Session *postgres.SessionUpdate
 }
 
 // IngestEvents accepts the full video analytics event model — all
@@ -193,7 +210,7 @@ func (s *IngestService) IngestEvents(ctx context.Context, userID string, dtos []
 			ownerships[contentID] = ownership
 		}
 
-		norm, err := normalizeEvent(dto.Type, &raw, ownership)
+		norm, err := normalizeEvent(actorID, dto.Type, &raw, ownership)
 		if err != nil {
 			return IngestResult{}, err
 		}
@@ -217,6 +234,7 @@ func (s *IngestService) IngestEvents(ctx context.Context, userID string, dtos []
 			Payload:       sanitized,
 			Timestamp:     when,
 			ReceivedAt:    now,
+			Session:       norm.Session,
 		})
 	}
 
@@ -322,7 +340,11 @@ var oncePerSession = map[string]bool{
 // normalizeEvent validates one decoded client event against its type's
 // rules and returns the sanitized row to persist. Pure: no I/O, so the
 // twelve-type acceptance matrix is unit-testable.
-func normalizeEvent(eventType string, raw *clientEvent, ownership postgres.ContentOwnership) (*normalizedEvent, error) {
+//
+// actorID is the gateway-authenticated viewer. It is compared with the
+// ownership projection's creator to stamp is_self_view; a creator
+// replaying their own upload is measured but never paid for it.
+func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, ownership postgres.ContentOwnership) (*normalizedEvent, error) {
 	sessionID := uuid.Nil
 	if trimmed := strings.TrimSpace(raw.SessionID); trimmed != "" {
 		parsed, err := uuid.Parse(trimmed)
@@ -334,6 +356,14 @@ func normalizeEvent(eventType string, raw *clientEvent, ownership postgres.Conte
 	if requiresSession[eventType] && sessionID == uuid.Nil {
 		return nil, fmt.Errorf("%s requires a session_id", eventType)
 	}
+	if eventType == model.EventLike {
+		// Old clients still send a like inside a playback session. The
+		// session is irrelevant to whether the like stuck, so it is
+		// dropped here and the like dedupes on content alone.
+		sessionID = uuid.Nil
+	}
+
+	isSelfView := actorID != uuid.Nil && actorID == ownership.CreatorID
 
 	attrs := map[string]any{
 		"content_id":   ownership.ContentID.String(),
@@ -342,6 +372,7 @@ func normalizeEvent(eventType string, raw *clientEvent, ownership postgres.Conte
 		"session_id":   sessionID.String(),
 		"surface":      normalizeSurface(raw.Surface),
 		"event_name":   eventType,
+		"is_self_view": isSelfView,
 	}
 	if raw.Position > 0 && raw.Position <= 10_000 {
 		attrs["position"] = raw.Position
@@ -352,10 +383,22 @@ func normalizeEvent(eventType string, raw *clientEvent, ownership postgres.Conte
 		ContentID:  ownership.ContentID,
 		SessionID:  sessionID,
 		Attributes: attrs,
+		IsSelfView: isSelfView,
 	}
 	if oncePerSession[eventType] {
 		key := "session"
+		if eventType == model.EventLike {
+			key = postgres.LikeDedupeKey
+		}
 		norm.DedupeKey = &key
+	}
+	// The playback types contribute to the server-side session; the
+	// per-type validators below fill in what each one carries.
+	session := &postgres.SessionUpdate{
+		Kind:        eventType,
+		CreatorID:   ownership.CreatorID,
+		ContentType: ownership.ContentType,
+		IsSelfView:  isSelfView,
 	}
 
 	switch eventType {
@@ -382,6 +425,8 @@ func normalizeEvent(eventType string, raw *clientEvent, ownership postgres.Conte
 		attrs["is_autoplay"] = raw.IsAutoplay
 		attrs["time_to_first_frame_ms"] = raw.TimeToFirstFrameMS
 		attrs["initial_buffer_ms"] = raw.InitialBufferMS
+		session.ContentDurationMS = raw.ContentDurationMS
+		norm.Session = session
 
 	case model.EventWatchHeartbeat:
 		if raw.WatchedMSIncrement < 0 || raw.WatchedMSIncrement > maxHeartbeatIncrementMS {
@@ -415,6 +460,13 @@ func normalizeEvent(eventType string, raw *clientEvent, ownership postgres.Conte
 		attrs["buffering_ms_increment"] = raw.BufferingMSIncrement
 		attrs["seek_count_increment"] = raw.SeekCountIncrement
 		attrs["playback_speed"] = speed
+		session.WatchedMS = raw.WatchedMSTotal
+		session.WatchedMSReported = raw.WatchedMSTotal
+		session.PlayheadMS = raw.PlayheadPositionMS
+		session.IncrementMS = raw.WatchedMSIncrement
+		session.PlaybackSpeed = speed
+		session.SeekIncrement = raw.SeekCountIncrement
+		norm.Session = session
 
 	case model.EventMilestone:
 		milestone := strings.ToUpper(strings.TrimSpace(raw.MilestoneType))
@@ -433,38 +485,67 @@ func normalizeEvent(eventType string, raw *clientEvent, ownership postgres.Conte
 		// re-crosses PCT_50 is a loop, not a second milestone.
 		key := milestone
 		norm.DedupeKey = &key
+		// A milestone carries a running total, which the session takes
+		// under GREATEST like any other; it is one more chance to keep
+		// watch time when a heartbeat was lost.
+		session.WatchedMS = raw.WatchedMS
+		session.WatchedMSReported = raw.WatchedMS
+		norm.Session = session
 
 	case model.EventPlayEnd:
 		if err := validDuration(raw.ContentDurationMS); err != nil {
 			return nil, err
 		}
-		if raw.WatchedMSTotal < 0 || raw.WatchedMSTotal > raw.ContentDurationMS*10 {
+		if raw.WatchedMSTotal < 0 || time.Duration(raw.WatchedMSTotal)*time.Millisecond > maxVideoDuration {
 			return nil, errors.New("invalid watched duration")
 		}
-		if raw.LoopCount < 0 || raw.LoopCount > 20 {
+		if raw.LoopCount < 0 {
 			return nil, errors.New("invalid loop count")
 		}
 		if raw.MaxContinuousWatchMS < 0 || raw.MaxContinuousWatchMS > raw.WatchedMSTotal {
 			return nil, errors.New("invalid max_continuous_watch_ms")
 		}
-		percentViewed := float64(raw.WatchedMSTotal) / float64(raw.ContentDurationMS) * 100
+		// Clamp, never drop. The reported total is kept beside the
+		// clamped one so the audit trail shows what the client claimed.
+		loopCount := raw.LoopCount
+		if loopCount > maxLoopCount {
+			loopCount = maxLoopCount
+		}
+		watchedMS := raw.WatchedMSTotal
+		if ceiling := raw.ContentDurationMS * int64(loopCount+1); watchedMS > ceiling {
+			watchedMS = ceiling
+		}
+		maxContinuousMS := raw.MaxContinuousWatchMS
+		if maxContinuousMS > watchedMS {
+			maxContinuousMS = watchedMS
+		}
+		percentViewed := float64(watchedMS) / float64(raw.ContentDurationMS) * 100
 		if percentViewed > 100 {
 			percentViewed = 100
 		}
 		isDisplayView := model.IsDisplayView(
 			ownership.ContentType,
 			raw.ContentDurationMS,
-			raw.WatchedMSTotal,
+			watchedMS,
 			percentViewed,
-			raw.LoopCount,
+			loopCount,
 		)
-		attrs["watched_ms_total"] = raw.WatchedMSTotal
-		attrs["max_continuous_watch_ms"] = raw.MaxContinuousWatchMS
+		attrs["watched_ms_total"] = watchedMS
+		attrs["watched_ms_reported"] = raw.WatchedMSTotal
+		attrs["max_continuous_watch_ms"] = maxContinuousMS
 		attrs["content_duration_ms"] = raw.ContentDurationMS
 		attrs["percent_viewed"] = percentViewed
-		attrs["loop_count"] = raw.LoopCount
+		attrs["loop_count"] = loopCount
 		attrs["end_reason"] = normalizeEndReason(raw.EndReason)
 		attrs["is_display_view"] = isDisplayView
+		session.ContentDurationMS = raw.ContentDurationMS
+		session.WatchedMS = watchedMS
+		session.WatchedMSReported = raw.WatchedMSTotal
+		session.MaxContinuousMS = maxContinuousMS
+		session.LoopCount = loopCount
+		session.PercentViewed = percentViewed
+		session.EndReason = normalizeEndReason(raw.EndReason)
+		norm.Session = session
 
 	case model.EventLike,
 		model.EventCommentCreate,
