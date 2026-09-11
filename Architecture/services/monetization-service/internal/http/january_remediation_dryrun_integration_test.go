@@ -442,27 +442,27 @@ func TestJanuaryRemediationDryRun(t *testing.T) {
 		    AND effective_from <= e.day_bucket AND (effective_to IS NULL OR effective_to > e.day_bucket)
 		  ORDER BY effective_from DESC, created_at DESC, id DESC LIMIT 1) b ON true
 		WHERE e.status <> 'reversed'
-		  AND (r.notes = 'integration test window' OR b.notes = 'integration test window')`)
+		  AND (r.id = $1 OR b.id = $2)`, rateID, bandID)
 	t.Logf("OBSERVED step 5 proof query: %d rows (must be 0)", proof)
 	if proof != 0 {
 		t.Fatalf("proof query returned %d", proof)
 	}
 
 	// ---- step 6: delete the fixture rows --------------------------------
-	ratesBefore := count(`SELECT count(*) FROM monetization_rpm_rates WHERE notes = 'integration test window'`)
-	bandsBefore := count(`SELECT count(*) FROM monetization_quality_bands WHERE notes = 'integration test window'`)
+	ratesBefore := count(`SELECT count(*) FROM monetization_rpm_rates WHERE id = $1`, rateID)
+	bandsBefore := count(`SELECT count(*) FROM monetization_quality_bands WHERE id = $1`, bandID)
 	tx, err = pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dr, _ := tx.Exec(ctx, `DELETE FROM monetization_rpm_rates WHERE notes = 'integration test window'`)
-	db, _ := tx.Exec(ctx, `DELETE FROM monetization_quality_bands WHERE notes = 'integration test window'`)
+	dr, _ := tx.Exec(ctx, `DELETE FROM monetization_rpm_rates WHERE id = $1`, rateID)
+	db, _ := tx.Exec(ctx, `DELETE FROM monetization_quality_bands WHERE id = $1`, bandID)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("OBSERVED step 6: rates before=%d DELETE %d after=%d; bands before=%d DELETE %d after=%d",
-		ratesBefore, dr.RowsAffected(), count(`SELECT count(*) FROM monetization_rpm_rates WHERE notes = 'integration test window'`),
-		bandsBefore, db.RowsAffected(), count(`SELECT count(*) FROM monetization_quality_bands WHERE notes = 'integration test window'`))
+		ratesBefore, dr.RowsAffected(), count(`SELECT count(*) FROM monetization_rpm_rates WHERE id = $1`, rateID),
+		bandsBefore, db.RowsAffected(), count(`SELECT count(*) FROM monetization_quality_bands WHERE id = $1`, bandID))
 
 	// ---- step 7: post-check --------------------------------------------
 	t.Logf("OBSERVED step 7: creators with balance<>0: %d; frozen: %d; reversed rows: %d; audit 'reverse' rows by admin: %d; adjustment txns: %d (sum %d); adj_fee legs: %d (sum %d)",
