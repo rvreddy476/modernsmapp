@@ -73,6 +73,7 @@ jobs:
       PGUSER: postgres
       ANALYTICS_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m6analytics_test?sslmode=disable
       MONETIZATION_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m6money_test?sslmode=disable
+      ATPOST_WEB_READ_TOKEN: ${{ secrets.ATPOST_WEB_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -90,9 +91,52 @@ jobs:
       - name: Analytics durable attribution, aggregation and owner privacy
         working-directory: Architecture/services/analytics-service
         run: go test -tags integration ./internal/aggregation ./internal/service ./internal/http -count=1 -v
-      - name: Recorded ledger precision and disabled mutations
+      # The monetization suites bootstrap their own schema (BootstrapSchema is
+      # idempotent) but read analytics.content_daily_summary and the
+      # analytics.v_creator_daily_metrics_v1 contract view, which belong to
+      # analytics-service. Apply that schema to the money scratch database
+      # first, in the order a deploy would: setup.sql, then migrations sorted.
+      - name: Analytics schema into the money scratch database
+        working-directory: Architecture/services/analytics-service
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -d m6money_test -v ON_ERROR_STOP=1 -q -f database/setup.sql
+          for f in $(ls database/migrations/*.sql | sort); do
+            psql -d m6money_test -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      # Every monetization integration test, not one: the correction
+      # primitives, the carry, the budget cap, the withdrawal gates, the
+      # payout state machine and rail, the January remediation dry run. Each
+      # suite refuses any DSN whose database is not a *_test scratch database,
+      # which is the release-acceptance line "test fixtures cannot target the
+      # live ledger or rate tables" made executable.
+      - name: Correctable ledger, gated withdrawals, payout rail and remediation dry run
         working-directory: Architecture/services/monetization-service
-        run: go test -tags integration ./internal/http -run LiveRecordedLedger -count=1 -v
+        run: go test -tags integration ./internal/http ./internal/service -count=1 -v
+      # The playback fixtures are the one measurement contract both clients
+      # and the server are held to; they live in atpost-web. Replayed here
+      # when a read token for that repository is configured; skipped, loudly,
+      # when it is not.
+      - name: Check out the playback fixtures (atpost-web)
+        if: ${{ env.ATPOST_WEB_READ_TOKEN != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: rvreddy476/atpost-web
+          token: ${{ secrets.ATPOST_WEB_READ_TOKEN }}
+          path: atpost-web
+          sparse-checkout: packages/analytics/fixtures/playback
+      - name: Replay the playback fixtures through the server
+        working-directory: Architecture/services/analytics-service
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ATPOST_WEB_READ_TOKEN}" ]; then
+            echo "::warning::ATPOST_WEB_READ_TOKEN is not set; the playback fixtures were not replayed"
+            exit 0
+          fi
+          export PLAYBACK_FIXTURES_DIR="$GITHUB_WORKSPACE/atpost-web/packages/analytics/fixtures/playback"
+          go test -tags integration ./internal/service -run TestPlaybackContractFixtures -count=1 -v
       - name: Negative control - trusting the claimed creator must fail
         working-directory: Architecture/services/analytics-service
         shell: bash

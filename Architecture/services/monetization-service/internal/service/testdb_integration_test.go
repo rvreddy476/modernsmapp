@@ -3,12 +3,30 @@
 package service
 
 import (
+	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/atpost/monetization-service/database"
+	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// bootstrapOnce applies the monetization schema to the scratch database the
+// first time a test in this package asks for the DSN, the same way the
+// http package's tests and the server itself do (BootstrapSchema: setup.sql,
+// then the migrations not yet recorded in schema_migrations). Until 12 Sep
+// 2026 this package assumed the schema was already there, which was true of
+// the developer's long-lived scratch database and false of every fresh one —
+// CI included, where these suites had never run.
+//
+// The analytics schema (content_daily_summary, the v1 contract view) is NOT
+// applied here: it belongs to analytics-service and is applied by whoever
+// prepares the database, exactly as in a deploy.
+var bootstrapOnce sync.Once
 
 // requireTestDSN returns MONETIZATION_POSTGRES_DSN, skipping the test when
 // it is unset, and refusing to proceed unless the database it names is a
@@ -45,5 +63,16 @@ func requireTestDSN(t *testing.T) string {
 	case !strings.HasSuffix(db, "_test"):
 		t.Fatalf("refusing to run integration tests against database %q: the name must end in _test (e.g. monetization_it_test)", db)
 	}
+	bootstrapOnce.Do(func() {
+		ctx := context.Background()
+		pool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			t.Fatalf("bootstrap: connect to the scratch database: %v", err)
+		}
+		defer pool.Close()
+		if err := postgres.BootstrapSchema(ctx, pool, database.SetupSQL, database.Migrations); err != nil {
+			t.Fatalf("bootstrap: apply the monetization schema to the scratch database: %v", err)
+		}
+	})
 	return dsn
 }
