@@ -482,10 +482,18 @@ func (h *Handler) InternalChargeAndCredit(c *gin.Context) {
 // Payout Methods
 // ---------------------------------------------------------------------------
 
+// AddPayoutMethodRequest is either a bank account (plan Phase 4D:
+// holder_name, account_number, ifsc; the number is validated, encrypted
+// and registered with the provider) or one of the legacy opaque types
+// (details_encrypted as the client supplied it).
 type AddPayoutMethodRequest struct {
 	MethodType       string `json:"method_type" binding:"required"`
-	DetailsEncrypted string `json:"details_encrypted" binding:"required"`
+	DetailsEncrypted string `json:"details_encrypted"`
 	IsDefault        bool   `json:"is_default"`
+
+	HolderName    string `json:"holder_name"`
+	AccountNumber string `json:"account_number"`
+	IFSC          string `json:"ifsc"`
 }
 
 func (h *Handler) AddPayoutMethod(c *gin.Context) {
@@ -500,18 +508,51 @@ func (h *Handler) AddPayoutMethod(c *gin.Context) {
 		return
 	}
 
+	if req.MethodType == service.PayoutMethodTypeBankAccount {
+		m, err := h.svc.AddBankPayoutMethod(c.Request.Context(), userID, service.BankPayoutMethodInput{
+			HolderName:    req.HolderName,
+			AccountNumber: req.AccountNumber,
+			IFSC:          req.IFSC,
+			IsDefault:     req.IsDefault,
+		})
+		if err != nil {
+			reply := func(status int, code, msg string) {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, msg, nil)
+			}
+			switch {
+			case errors.Is(err, service.ErrInvalidIFSC):
+				reply(http.StatusBadRequest, "INVALID_IFSC", "IFSC must be four letters, a zero and six alphanumerics")
+			case errors.Is(err, service.ErrInvalidBankAccount):
+				reply(http.StatusBadRequest, "INVALID_BANK_ACCOUNT", "Account number must be 9 to 18 digits")
+			case errors.Is(err, service.ErrInvalidHolderName):
+				reply(http.StatusBadRequest, "INVALID_HOLDER_NAME", "Account holder name is required")
+			case errors.Is(err, service.ErrBankDetailsRejected):
+				reply(http.StatusUnprocessableEntity, "BANK_DETAILS_REJECTED", "The payout provider refused these bank details")
+			case errors.Is(err, service.ErrBankCaptureNotConfigured):
+				reply(http.StatusServiceUnavailable, "BANK_CAPTURE_NOT_CONFIGURED", "Bank accounts cannot be stored on this deployment yet")
+			default:
+				reply(http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+			}
+			return
+		}
+		api.JSON(c.Writer, http.StatusCreated, m, nil)
+		return
+	}
+
+	if req.DetailsEncrypted == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "details_encrypted is required for this method type", nil)
+		return
+	}
 	m := &postgres.PayoutMethod{
 		UserID:           userID,
 		MethodType:       req.MethodType,
 		DetailsEncrypted: req.DetailsEncrypted,
 		IsDefault:        req.IsDefault,
 	}
-
 	if err := h.svc.AddPayoutMethod(c.Request.Context(), m); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-
 	api.JSON(c.Writer, http.StatusCreated, m, nil)
 }
 

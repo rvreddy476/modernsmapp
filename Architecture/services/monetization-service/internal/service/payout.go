@@ -69,11 +69,10 @@ const (
 	HoldReasonNewCreator = "new_creator_hold"
 	HoldReasonVelocity   = "velocity"
 
-	// PayoutStatusRequested is the state a withdrawal starts in once it
-	// has passed every gate; PayoutStatusHeld is a withdrawal recorded
-	// for review before any money moved.
-	PayoutStatusRequested = "requested"
-	PayoutStatusHeld      = "held"
+	// PayoutStatusRequested (the state a withdrawal starts in once it has
+	// passed every gate) and PayoutStatusHeld (recorded for review before
+	// any money moved) are defined with the rest of the state machine in
+	// payout_state.go.
 )
 
 // The refusals, one sentinel each, so the HTTP layer maps them by
@@ -387,42 +386,18 @@ func derefInt64(p *int64) int64 {
 // ---------------------------------------------------------------------------
 // Provider webhook
 // ---------------------------------------------------------------------------
-
-// HandlePayoutWebhook processes a callback from the payment provider about a payout.
-func (s *Service) HandlePayoutWebhook(ctx context.Context, providerRef, status, failureReason string) error {
-	req, err := s.store.GetPayoutRequestByProviderRef(ctx, providerRef)
-	if err != nil {
-		return fmt.Errorf("get payout by provider ref: %w", err)
-	}
-	if req == nil {
-		return fmt.Errorf("PAYOUT_NOT_FOUND")
-	}
-
-	switch status {
-	case "settled":
-		if err := s.store.SetPayoutRequestPaid(ctx, req.ID); err != nil {
-			return fmt.Errorf("mark settled: %w", err)
-		}
-		slog.Info("payout settled via webhook", "request_id", req.ID, "provider_ref", providerRef)
-	case "failed", "returned":
-		if err := s.store.SetPayoutRequestFailure(ctx, req.ID, failureReason); err != nil {
-			return fmt.Errorf("mark failed: %w", err)
-		}
-		slog.Warn("payout failed via webhook", "request_id", req.ID, "provider_ref", providerRef, "reason", failureReason)
-	default:
-		slog.Info("payout webhook received with unhandled status", "status", status, "provider_ref", providerRef)
-	}
-
-	return nil
-}
+//
+// The verified, deduplicated, converging webhook is HandleProviderWebhook
+// in payout_rail.go (plan Phase 4C). The unsigned status-string handler
+// that used to live here was removed with it.
 
 // StorePayoutWebhookEvent records a provider callback that arrived while
-// payouts were disabled (Phase 3C): nothing is acted on, the event is
-// kept in the audit log so Phase 4's reconciler can find it.
-func (s *Service) StorePayoutWebhookEvent(ctx context.Context, rawBody []byte, remoteAddr string) error {
+// payouts were disabled (Phase 3C) or the rail was not configured:
+// nothing is acted on, the event is kept in the audit log.
+func (s *Service) StorePayoutWebhookEvent(ctx context.Context, rawBody []byte, remoteAddr, reason string) error {
 	return s.store.WriteAuditLog(ctx, &postgres.AuditLogEntry{
 		TableName: "payout_requests",
-		Operation: "webhook_stored_payouts_disabled",
+		Operation: "webhook_stored_" + reason,
 		NewData:   rawBody,
 		IPAddress: remoteAddr,
 	})

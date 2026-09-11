@@ -2,10 +2,12 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
+	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
@@ -16,55 +18,62 @@ import (
 // creator-facing record now.
 
 // ---------------------------------------------------------------------------
-// Payout Webhook
+// Payout Webhook (plan Phase 4C)
 // ---------------------------------------------------------------------------
 
-type PayoutWebhookRequest struct {
-	ProviderReference string `json:"provider_reference" binding:"required"`
-	Status            string `json:"status" binding:"required"`
-	FailureReason     string `json:"failure_reason"`
-}
-
-// HandlePayoutWebhook takes the provider's callback about a payout.
+// HandlePayoutWebhook takes RazorpayX's callback about a payout.
 //
-// While payouts are disabled (plan Phase 3C) the event is stored and
-// answered 202: nothing is acted on, nothing is lost, and Phase 4's
-// reconciler can find it in the audit log. Signature verification is
-// Phase 4C's, with the RazorpayX client.
+// While payouts are disabled (Phase 3C), or enabled but the rail is not
+// configured (no client), the raw event is stored in the audit log and
+// answered 202: nothing is acted on, nothing is lost. Otherwise the
+// service verifies the raw-body signature, deduplicates on the event id,
+// and converges the request row; the reply says which of those happened.
+// A bad signature is 401, a missing event id 400; the provider retries
+// neither, which is right — a retry would carry the same defect.
 func (h *Handler) HandlePayoutWebhook(c *gin.Context) {
 	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "unreadable body", nil)
 		return
 	}
-	if !h.payoutsEnabled {
+	store := func(reason string) {
 		if !json.Valid(raw) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "body is not JSON", nil)
 			return
 		}
-		if err := h.svc.StorePayoutWebhookEvent(c.Request.Context(), raw, c.ClientIP()); err != nil {
+		if err := h.svc.StorePayoutWebhookEvent(c.Request.Context(), raw, c.ClientIP(), reason); err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 			return
 		}
-		slog.Warn("payout webhook stored, not processed: payouts are disabled", "bytes", len(raw))
-		api.JSON(c.Writer, http.StatusAccepted, map[string]string{"status": "stored", "reason": "PAYOUTS_NOT_ENABLED"}, nil)
+		slog.Warn("payout webhook stored, not processed", "reason", reason, "bytes", len(raw))
+		api.JSON(c.Writer, http.StatusAccepted, map[string]string{"status": "stored", "reason": reason}, nil)
+	}
+	if !h.payoutsEnabled {
+		store("payouts_disabled")
+		return
+	}
+	if !h.svc.PayoutRailEnabled() {
+		store("rail_not_configured")
 		return
 	}
 
-	var req PayoutWebhookRequest
-	if err := json.Unmarshal(raw, &req); err != nil || req.ProviderReference == "" || req.Status == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "provider_reference and status are required", nil)
-		return
-	}
-
-	if err := h.svc.HandlePayoutWebhook(c.Request.Context(), req.ProviderReference, req.Status, req.FailureReason); err != nil {
-		if err.Error() == "PAYOUT_NOT_FOUND" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout not found for provider reference", nil)
-			return
+	res, err := h.svc.HandleProviderWebhook(c.Request.Context(), c.Request.Header, raw)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrWebhookSignature):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "WEBHOOK_SIGNATURE_INVALID", "signature does not verify", nil)
+		case errors.Is(err, service.ErrWebhookEventID):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WEBHOOK_EVENT_ID_MISSING", "X-Razorpay-Event-Id is required", nil)
+		case errors.Is(err, service.ErrPayoutRailNotConfigured):
+			store("rail_not_configured")
+		default:
+			// A processing failure: the event is stored and unconsumed; a
+			// 5xx makes the provider redeliver, which lands as a replay,
+			// so the operator has to act on the stored event. Say so.
+			slog.Error("payout webhook processing failed", "event_id", res.EventID, "error", err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "event stored; processing failed", nil)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "processed"}, nil)
+	api.JSON(c.Writer, http.StatusOK, res, nil)
 }

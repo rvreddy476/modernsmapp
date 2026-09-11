@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/atpost/monetization-service/database"
+	"github.com/atpost/monetization-service/internal/client/razorpayx"
 	"github.com/atpost/monetization-service/internal/events"
 	"github.com/atpost/monetization-service/internal/http"
 	"github.com/atpost/monetization-service/internal/service"
@@ -133,6 +134,30 @@ func main() {
 		WithCreatorFundConfig(loadCreatorFundConfig()).
 		WithPayoutsEnabled(payoutsEnabled).
 		WithTDSSection(tdsSection)
+
+	// 7b. The payout rail (plan Phase 4B). The RazorpayX client is
+	// constructed only when payouts are enabled AND all four credentials
+	// are set; otherwise the service logs once and the rail stays off:
+	// the submitter and reconciler do not start and the webhook stores
+	// its event unprocessed. Bank capture (Phase 4D) needs its own key.
+	if payoutsEnabled {
+		if cfg, missing := razorpayx.ConfigFromEnv(os.Getenv); len(missing) == 0 {
+			monetizationSvc.WithPayoutRail(razorpayx.New(cfg), cfg.WebhookSecret)
+			slog.Warn("payout rail ON: RazorpayX client configured", "key_id", cfg.KeyID)
+		} else {
+			slog.Warn("payout rail OFF: payouts are enabled but RazorpayX credentials are incomplete; the submitter and reconciler will not start", "missing", missing)
+		}
+	}
+	if raw := os.Getenv("MONETIZATION_BANK_DETAILS_KEY"); raw != "" {
+		key, err := service.ParseBankDetailsKey(raw)
+		if err != nil {
+			slog.Error("invalid MONETIZATION_BANK_DETAILS_KEY", "error", err)
+			os.Exit(1)
+		}
+		monetizationSvc.WithBankDetailsKey(key)
+	} else {
+		slog.Info("MONETIZATION_BANK_DETAILS_KEY unset: bank account capture answers 503 BANK_CAPTURE_NOT_CONFIGURED")
+	}
 	// A settlement cadence change renames every period; refuse to boot
 	// under a cadence that does not match a period already holding
 	// accrued fund money (plan Phase 2C). Fail closed: the accrual worker

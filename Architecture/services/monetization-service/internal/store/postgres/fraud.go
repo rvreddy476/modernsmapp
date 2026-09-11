@@ -340,33 +340,9 @@ func (s *Store) GetStuckTransactions(ctx context.Context, olderThan time.Time) (
 	return txns, rows.Err()
 }
 
-// GetStalePayouts returns payout requests with status 'in_flight' processed before olderThan.
-func (s *Store) GetStalePayouts(ctx context.Context, olderThan time.Time) ([]PayoutRequest, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, transaction_id, amount, currency, status, payout_method_id, requested_at
-		FROM payout_requests
-		WHERE status = 'in_flight' AND processed_at < $1
-		ORDER BY requested_at ASC
-		LIMIT 500
-	`, olderThan)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var requests []PayoutRequest
-	for rows.Next() {
-		var r PayoutRequest
-		if err := rows.Scan(
-			&r.ID, &r.UserID, &r.TransactionID, &r.AmountPaise, &r.Currency, &r.Status,
-			&r.payoutMethodID, &r.RequestedAt,
-		); err != nil {
-			return nil, err
-		}
-		requests = append(requests, r)
-	}
-	return requests, rows.Err()
-}
+// GetStalePayouts (status 'in_flight', a value that no longer exists)
+// was removed in plan Phase 4C: the reconciler converges submitted and
+// processing rows against the provider instead of logging them.
 
 // GetTransactionByID returns a single transaction by ID.
 func (s *Store) GetTransactionByID(ctx context.Context, txnID uuid.UUID) (*Transaction, error) {

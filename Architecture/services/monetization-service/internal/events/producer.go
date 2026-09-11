@@ -19,8 +19,6 @@ const (
 	EventSubscriptionCancelled = "subscription.cancelled"
 	EventSubscriptionRenewed  = "subscription.renewed"
 	EventSubscriptionExpired  = "subscription.expired"
-	EventPayoutRequested      = "payout.requested"
-	EventPayoutProcessed      = "payout.processed"
 	EventDonationReceived     = "donation.received"
 	EventAffiliateConversion  = "affiliate.conversion"
 	// EventCreatorLedgerCredited is the canonical event name for a
@@ -162,53 +160,10 @@ func (p *Producer) PublishSubscriptionExpired(ctx context.Context, subscriptionI
 	return p.publish(ctx, EventSubscriptionExpired, &s, payload)
 }
 
-// ---------------------------------------------------------------------------
-// Payout events
-// ---------------------------------------------------------------------------
-
-type PayoutRequestedPayload struct {
-	TransactionID  string    `json:"transaction_id"`
-	UserID         string    `json:"user_id"`
-	AmountPaise    int64     `json:"amount_paise"`
-	Currency       string    `json:"currency"`
-	PayoutMethodID string    `json:"payout_method_id"`
-	RequestedAt    time.Time `json:"requested_at"`
-}
-
-type PayoutProcessedPayload struct {
-	TransactionID string    `json:"transaction_id"`
-	UserID        string    `json:"user_id"`
-	AmountPaise   int64     `json:"amount_paise"`
-	Currency      string    `json:"currency"`
-	ProcessedAt   time.Time `json:"processed_at"`
-}
-
-// PublishPayoutRequested publishes a payout.requested event.
-func (p *Producer) PublishPayoutRequested(ctx context.Context, transactionID, userID uuid.UUID, amountPaise int64, currency, payoutMethodID string) error {
-	payload := PayoutRequestedPayload{
-		TransactionID:  transactionID.String(),
-		UserID:         userID.String(),
-		AmountPaise:    amountPaise,
-		Currency:       currency,
-		PayoutMethodID: payoutMethodID,
-		RequestedAt:    time.Now(),
-	}
-	s := userID.String()
-	return p.publish(ctx, EventPayoutRequested, &s, payload)
-}
-
-// PublishPayoutProcessed publishes a payout.processed event.
-func (p *Producer) PublishPayoutProcessed(ctx context.Context, transactionID, userID uuid.UUID, amountPaise int64, currency string) error {
-	payload := PayoutProcessedPayload{
-		TransactionID: transactionID.String(),
-		UserID:        userID.String(),
-		AmountPaise:   amountPaise,
-		Currency:      currency,
-		ProcessedAt:   time.Now(),
-	}
-	s := userID.String()
-	return p.publish(ctx, EventPayoutProcessed, &s, payload)
-}
+// The payout.requested and payout.processed events that used to be
+// published here had no consumer anywhere in the platform and were
+// dropped in plan Phase 4C. The record of a payout is payout_requests
+// and the ledger, converged from the provider.
 
 // ---------------------------------------------------------------------------
 // Donation event

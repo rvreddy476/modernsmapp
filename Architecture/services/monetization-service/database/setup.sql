@@ -87,14 +87,26 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions (wallet_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions (wallet_id, type, created_at DESC);
 
+-- payout_methods: a way to pay a creator. A bank_account row (plan Phase
+-- 4D) keeps the holder name, IFSC and last four digits in the clear and
+-- the full account number encrypted in details_encrypted; the other
+-- types keep an opaque client-supplied blob there. Migration 021 adds
+-- the same columns to installs that predate this shape, and is_default,
+-- which the store always selected and no migration had ever added.
 CREATE TABLE IF NOT EXISTS payout_methods (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id          UUID NOT NULL,
-    method_type      TEXT NOT NULL CHECK (method_type IN ('upi', 'bank_transfer', 'paypal')),
+    method_type      TEXT NOT NULL CHECK (method_type IN ('upi', 'bank_transfer', 'bank_account', 'paypal')),
     details_encrypted TEXT NOT NULL,
+    is_default       BOOLEAN NOT NULL DEFAULT FALSE,
     is_verified      BOOLEAN NOT NULL DEFAULT FALSE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    rzp_fund_account_id TEXT,
+    ifsc             TEXT,
+    account_last4    TEXT,
+    holder_name      TEXT,
+    verified_at      TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_payout_methods_user ON payout_methods (user_id);

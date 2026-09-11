@@ -36,16 +36,29 @@ type PayoutRequestRow struct {
 	TDSPaise       int64      `json:"tds_paise"`
 	NetPaise       *int64     `json:"net_paise,omitempty"`
 	IdempotencyKey *string    `json:"idempotency_key,omitempty"`
+
+	// The rail's columns (plan Phase 4A). ProviderReference is the
+	// provider's payout id once the request has reached it; UTR is the
+	// bank's reference, captured on paid.
+	ProviderReference *string    `json:"provider_reference,omitempty"`
+	ProviderStatus    *string    `json:"provider_status,omitempty"`
+	SubmittedAt       *time.Time `json:"submitted_at,omitempty"`
+	LastReconciledAt  *time.Time `json:"last_reconciled_at,omitempty"`
+	UTR               *string    `json:"utr,omitempty"`
+	FailureReason     *string    `json:"failure_reason,omitempty"`
+	RetryCount        int        `json:"retry_count"`
 }
 
 const payoutRequestColumns = `id, user_id, transaction_id, amount, currency, status, payout_method_id,
-	requested_at, processed_at, notes, tds_paise, net_paise, idempotency_key`
+	requested_at, processed_at, notes, tds_paise, net_paise, idempotency_key,
+	provider_reference, provider_status, submitted_at, last_reconciled_at, utr, failure_reason, retry_count`
 
 func scanPayoutRequestRow(row pgx.Row) (*PayoutRequestRow, error) {
 	var r PayoutRequestRow
 	if err := row.Scan(
 		&r.ID, &r.UserID, &r.TransactionID, &r.AmountPaise, &r.Currency, &r.Status, &r.PayoutMethodID,
 		&r.RequestedAt, &r.ProcessedAt, &r.Notes, &r.TDSPaise, &r.NetPaise, &r.IdempotencyKey,
+		&r.ProviderReference, &r.ProviderStatus, &r.SubmittedAt, &r.LastReconciledAt, &r.UTR, &r.FailureReason, &r.RetryCount,
 	); err != nil {
 		return nil, err
 	}
@@ -149,19 +162,15 @@ func (s *Store) LockLedgerTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (
 // to userID; nil otherwise. A method that exists but is someone else's is
 // indistinguishable from one that does not exist, on purpose.
 func (s *Store) GetPayoutMethodTx(ctx context.Context, db DBTX, userID, methodID uuid.UUID) (*PayoutMethod, error) {
-	var m PayoutMethod
-	err := db.QueryRow(ctx, `
-		SELECT id, user_id, method_type, details_encrypted, is_verified, created_at, updated_at
-		FROM payout_methods
-		WHERE id = $1 AND user_id = $2
-	`, methodID, userID).Scan(&m.ID, &m.UserID, &m.MethodType, &m.DetailsEncrypted, &m.IsVerified, &m.CreatedAt, &m.UpdatedAt)
+	m, err := scanPayoutMethod(db.QueryRow(ctx,
+		`SELECT `+payoutMethodColumns+` FROM payout_methods WHERE id = $1 AND user_id = $2`, methodID, userID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &m, nil
+	return m, nil
 }
 
 // MoveBalanceToPendingPayoutTx is the ledger move of a withdrawal:

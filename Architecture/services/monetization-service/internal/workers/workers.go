@@ -14,10 +14,6 @@ import (
 // autoRenewThreshold is how far in advance to attempt renewal (1 day).
 const autoRenewThreshold = 24 * time.Hour
 
-// payoutAutoApproveLimit is the maximum amount (in paise) that
-// is auto-approved without manual review. 10000 INR = 1_000_000 paise.
-const payoutAutoApproveLimit int64 = 1_000_000
-
 // holdAgeLimit is the age after which unreleased balance holds are cleaned up.
 const holdAgeLimit = 30 * 24 * time.Hour
 
@@ -27,10 +23,12 @@ const holdAgeLimit = 30 * 24 * time.Hour
 // some bootstrap test setups that don't construct the service layer).
 //
 // payoutsEnabled mirrors MONETIZATION_PAYOUTS_ENABLED (plan Phase 3C):
-// while it is false the payout processor and the stale-payout detector
-// do not start, so nothing touches a payout_requests row in the
-// background. Everything else — renewals, holds, fundraisers, the fund's
-// accrual and settlement — is unaffected by it.
+// while it is false the payout submitter and reconciler do not start, so
+// nothing touches a payout_requests row in the background. They also do
+// not start when payouts are enabled but the RazorpayX client is not
+// configured (svc.PayoutRailEnabled false): the rail is off and says so.
+// Everything else — renewals, holds, fundraisers, the fund's accrual and
+// settlement — is unaffected by it.
 func StartAll(ctx context.Context, store *postgres.Store, producer *events.Producer, svc *service.Service, payoutsEnabled bool) {
 	slog.Info("starting monetization background workers", "payouts_enabled", payoutsEnabled)
 
@@ -41,11 +39,14 @@ func StartAll(ctx context.Context, store *postgres.Store, producer *events.Produ
 	go runPauseResume(ctx, store, producer)
 	go runLedgerReconciliation(ctx, store)
 	go runStuckTransactionDetector(ctx, store)
-	if payoutsEnabled {
-		go runPayoutProcessor(ctx, store, producer)
-		go runStalePayoutDetector(ctx, store)
-	} else {
+	switch {
+	case !payoutsEnabled:
 		slog.Info("payout workers not started: MONETIZATION_PAYOUTS_ENABLED is false")
+	case svc == nil || !svc.PayoutRailEnabled():
+		slog.Warn("payout workers not started: payouts are enabled but the RazorpayX client is not configured (rail off)")
+	default:
+		go runPayoutSubmitter(ctx, svc)
+		go runPayoutReconciler(ctx, svc)
 	}
 	if svc != nil {
 		// Capture is continuous, payment is periodic. The accrual worker
@@ -136,72 +137,10 @@ func extendPeriod(oldEnd time.Time, billingPeriod string) time.Time {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// PayoutProcessor — runs every 30 minutes
-// ---------------------------------------------------------------------------
-
-func runPayoutProcessor(ctx context.Context, store *postgres.Store, producer *events.Producer) {
-	ticker := time.NewTicker(30 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			processPayouts(ctx, store, producer)
-		}
-	}
-}
-
-func processPayouts(ctx context.Context, store *postgres.Store, producer *events.Producer) {
-	// Find pending payout requests older than 24 hours.
-	reviewCutoff := time.Now().Add(-24 * time.Hour)
-	requests, err := store.GetPendingPayoutRequests(ctx, reviewCutoff)
-	if err != nil {
-		slog.Error("payout processor: query failed", "error", err)
-		return
-	}
-
-	for _, req := range requests {
-		if req.AmountPaise > payoutAutoApproveLimit {
-			// Hold for manual review.
-			slog.Info("payout held for manual review", "request_id", req.ID, "amount_paise", req.AmountPaise)
-			if updateErr := store.SetPayoutRequestStatus(ctx, req.ID, "held"); updateErr != nil {
-				slog.Error("payout processor: set held status", "request_id", req.ID, "error", updateErr)
-			}
-			continue
-		}
-
-		// Auto-approve: set to processing.
-		if updateErr := store.SetPayoutRequestStatus(ctx, req.ID, "processing"); updateErr != nil {
-			slog.Error("payout processor: set processing status", "request_id", req.ID, "error", updateErr)
-			continue
-		}
-
-		if pubErr := producer.PublishPayoutRequested(ctx, req.TransactionID, req.UserID, req.AmountPaise, req.Currency, req.PayoutMethodID()); pubErr != nil {
-			slog.Warn("payout processor: publish payout.requested", "error", pubErr)
-		}
-
-		// Mock payment gateway delay (2 seconds in a background routine per request).
-		go func(r postgres.PayoutRequest) {
-			time.Sleep(2 * time.Second)
-			finalizePayout(ctx, store, producer, r)
-		}(req)
-	}
-}
-
-func finalizePayout(ctx context.Context, store *postgres.Store, producer *events.Producer, req postgres.PayoutRequest) {
-	if updateErr := store.SetPayoutRequestPaid(ctx, req.ID); updateErr != nil {
-		slog.Error("payout finalize: set paid status", "request_id", req.ID, "error", updateErr)
-		return
-	}
-
-	if pubErr := producer.PublishPayoutProcessed(ctx, req.TransactionID, req.UserID, req.AmountPaise, req.Currency); pubErr != nil {
-		slog.Warn("payout finalize: publish payout.processed", "error", pubErr)
-	}
-	slog.Info("payout processed", "request_id", req.ID, "amount_paise", req.AmountPaise)
-}
+// The PayoutProcessor that used to live here — set 'processing', sleep two
+// seconds, set 'paid', publish a Kafka event nothing consumed — was
+// replaced in plan Phase 4C by the submitter and reconciler in
+// payout_rail.go, which move money through a real provider.
 
 // ---------------------------------------------------------------------------
 // StaleHoldCleanup — runs every 6 hours

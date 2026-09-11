@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/monetization-service/internal/client/razorpayx"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -38,6 +39,15 @@ type Service struct {
 	// tdsSection is what a tds_ledger row is recorded under
 	// (MONETIZATION_TDS_SECTION, default 194-O).
 	tdsSection string
+
+	// The payout rail (plan Phase 4B/4C). payoutClient is nil unless
+	// payouts are enabled AND all four RazorpayX credentials are set, in
+	// which case main wires it with the webhook secret. bankKey is the
+	// AES-256 key bank account numbers are stored under (Phase 4D); empty
+	// means bank capture is refused.
+	payoutClient  razorpayx.API
+	webhookSecret string
+	bankKey       []byte
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {

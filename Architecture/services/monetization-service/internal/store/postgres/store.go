@@ -60,15 +60,56 @@ type Transaction struct {
 }
 
 // PayoutMethod represents a user's payout method.
+//
+// DetailsEncrypted is never serialised: for a bank_account method it is
+// the AES-GCM ciphertext of the full account number (plan Phase 4D), and
+// nothing a client is shown should carry it. What a creator sees of a
+// bank account is the last four digits, the IFSC and the holder name.
 type PayoutMethod struct {
 	ID               uuid.UUID `json:"id"`
 	UserID           uuid.UUID `json:"user_id"`
-	MethodType       string    `json:"method_type"` // upi, bank_transfer, paypal
-	DetailsEncrypted string    `json:"details_encrypted"`
+	MethodType       string    `json:"method_type"` // upi, bank_transfer, bank_account, paypal
+	DetailsEncrypted string    `json:"-"`
 	IsDefault        bool      `json:"is_default"`
 	IsVerified       bool      `json:"is_verified"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+
+	// Bank capture (Phase 4D). RzpFundAccountID is the provider's fund
+	// account once one exists; VerifiedAt is set when the provider's
+	// fund-account validation (penny drop) reported the account active.
+	RzpFundAccountID *string    `json:"-"`
+	IFSC             string     `json:"ifsc,omitempty"`
+	AccountLast4     string     `json:"account_last4,omitempty"`
+	HolderName       string     `json:"holder_name,omitempty"`
+	VerifiedAt       *time.Time `json:"verified_at,omitempty"`
+}
+
+const payoutMethodColumns = `id, user_id, method_type, details_encrypted, is_default, is_verified, created_at, updated_at,
+	rzp_fund_account_id, ifsc, account_last4, holder_name, verified_at`
+
+func scanPayoutMethod(row pgx.Row) (*PayoutMethod, error) {
+	var (
+		m                          PayoutMethod
+		ifsc, last4, holder, faID *string
+	)
+	if err := row.Scan(
+		&m.ID, &m.UserID, &m.MethodType, &m.DetailsEncrypted, &m.IsDefault, &m.IsVerified, &m.CreatedAt, &m.UpdatedAt,
+		&faID, &ifsc, &last4, &holder, &m.VerifiedAt,
+	); err != nil {
+		return nil, err
+	}
+	m.RzpFundAccountID = faID
+	if ifsc != nil {
+		m.IFSC = *ifsc
+	}
+	if last4 != nil {
+		m.AccountLast4 = *last4
+	}
+	if holder != nil {
+		m.HolderName = *holder
+	}
+	return &m, nil
 }
 
 // Subscription represents a subscription between a subscriber and a creator.
@@ -317,7 +358,7 @@ func (s *Store) CreateTransaction(ctx context.Context, t *Transaction) error {
 // GetPayoutMethods returns all payout methods for a user.
 func (s *Store) GetPayoutMethods(ctx context.Context, userID uuid.UUID) ([]PayoutMethod, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, method_type, details_encrypted, is_default, is_verified, created_at, updated_at
+		SELECT `+payoutMethodColumns+`
 		FROM payout_methods
 		WHERE user_id = $1
 		ORDER BY is_default DESC, created_at DESC
@@ -329,14 +370,11 @@ func (s *Store) GetPayoutMethods(ctx context.Context, userID uuid.UUID) ([]Payou
 
 	var methods []PayoutMethod
 	for rows.Next() {
-		var m PayoutMethod
-		if err := rows.Scan(
-			&m.ID, &m.UserID, &m.MethodType, &m.DetailsEncrypted,
-			&m.IsDefault, &m.IsVerified, &m.CreatedAt, &m.UpdatedAt,
-		); err != nil {
+		m, err := scanPayoutMethod(rows)
+		if err != nil {
 			return nil, err
 		}
-		methods = append(methods, m)
+		methods = append(methods, *m)
 	}
 	return methods, rows.Err()
 }
@@ -349,10 +387,23 @@ func (s *Store) AddPayoutMethod(ctx context.Context, m *PayoutMethod) error {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
 	}
+	var ifsc, last4, holder *string
+	if m.IFSC != "" {
+		ifsc = &m.IFSC
+	}
+	if m.AccountLast4 != "" {
+		last4 = &m.AccountLast4
+	}
+	if m.HolderName != "" {
+		holder = &m.HolderName
+	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO payout_methods (id, user_id, method_type, details_encrypted, is_default, is_verified, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, m.ID, m.UserID, m.MethodType, m.DetailsEncrypted, m.IsDefault, m.IsVerified, m.CreatedAt, m.UpdatedAt)
+		INSERT INTO payout_methods
+			(id, user_id, method_type, details_encrypted, is_default, is_verified, created_at, updated_at,
+			 rzp_fund_account_id, ifsc, account_last4, holder_name, verified_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, m.ID, m.UserID, m.MethodType, m.DetailsEncrypted, m.IsDefault, m.IsVerified, m.CreatedAt, m.UpdatedAt,
+		m.RzpFundAccountID, ifsc, last4, holder, m.VerifiedAt)
 	return err
 }
 

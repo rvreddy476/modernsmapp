@@ -115,76 +115,11 @@ func (s *Store) GetCreatorTierWithBillingPeriod(ctx context.Context, tierID uuid
 	return tier, nil
 }
 
-// ---------------------------------------------------------------------------
-// Payout request worker queries
-// ---------------------------------------------------------------------------
-
-// PayoutRequest is used by the payout worker.
-type PayoutRequest struct {
-	ID             uuid.UUID
-	UserID         uuid.UUID
-	TransactionID  uuid.UUID
-	AmountPaise    int64
-	Currency       string
-	Status         string
-	payoutMethodID *uuid.UUID
-	RequestedAt    time.Time
-}
-
-// PayoutMethodID returns the payout method ID as string, or empty string if nil.
-func (r PayoutRequest) PayoutMethodID() string {
-	if r.payoutMethodID == nil {
-		return ""
-	}
-	return r.payoutMethodID.String()
-}
-
-// GetPendingPayoutRequests returns payout requests in pending status that were
-// requested before `before` (i.e., have passed the review window).
-func (s *Store) GetPendingPayoutRequests(ctx context.Context, before time.Time) ([]PayoutRequest, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, transaction_id, amount, currency, status, payout_method_id, requested_at
-		FROM payout_requests
-		WHERE status = 'pending' AND requested_at < $1
-		ORDER BY requested_at ASC
-		LIMIT 100
-	`, before)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var requests []PayoutRequest
-	for rows.Next() {
-		var r PayoutRequest
-		if err := rows.Scan(
-			&r.ID, &r.UserID, &r.TransactionID, &r.AmountPaise, &r.Currency, &r.Status,
-			&r.payoutMethodID, &r.RequestedAt,
-		); err != nil {
-			return nil, err
-		}
-		requests = append(requests, r)
-	}
-	return requests, rows.Err()
-}
-
-// SetPayoutRequestStatus sets a payout_request row to the given status.
-func (s *Store) SetPayoutRequestStatus(ctx context.Context, requestID uuid.UUID, status string) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE payout_requests SET status = $2 WHERE id = $1
-	`, requestID, status)
-	return err
-}
-
-// SetPayoutRequestPaid marks a payout_request as paid and records processed_at.
-func (s *Store) SetPayoutRequestPaid(ctx context.Context, requestID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE payout_requests
-		SET status = 'paid', processed_at = NOW()
-		WHERE id = $1
-	`, requestID)
-	return err
-}
+// The payout worker's queries (GetPendingPayoutRequests,
+// SetPayoutRequestStatus, SetPayoutRequestPaid) were removed in plan
+// Phase 4A: the submitter and reconciler read through
+// ListPayoutRequestsByStatus / ListPayoutRequestsToReconcile and write
+// only through TransitionPayoutRequest, in payout_rail.go.
 
 // ---------------------------------------------------------------------------
 // Stale hold cleanup
