@@ -74,6 +74,81 @@ func TestLoopedPlayEndIsClampedNotDropped(t *testing.T) {
 	}
 }
 
+// The clamp that binds the play_end figure binds every heartbeat's
+// running total too (M-26): watched <= duration x (loops + 1), the
+// client's figure kept in watched_ms_reported. A heartbeat that carries
+// a duration is clamped here; one that carries none (the web contract)
+// passes through and meets the clamp against the session's snapshot in
+// the upsert, which the playback contract fixtures pin.
+func TestHeartbeatTotalIsClampedLikePlayEnd(t *testing.T) {
+	norm, err := normalizeEvent(testViewer, model.EventWatchHeartbeat, decode(t, map[string]any{
+		"content_id": testContent.String(), "session_id": testSession.String(),
+		"content_duration_ms": 5_000, "watched_ms_total": 130_000, "watched_ms_increment": 5_000,
+		"playhead_position_ms": 5_000, "loop_count": 25,
+	}), testOwnership("flick"))
+	if err != nil {
+		t.Fatalf("a looped heartbeat carrying its duration was rejected: %v", err)
+	}
+	// 5s x (20 capped loops + 1) = 105s is the most those loops can account for.
+	if got := norm.Attributes["watched_ms_total"]; got != int64(105_000) {
+		t.Fatalf("watched_ms_total=%v want clamped to 105000", got)
+	}
+	if got := norm.Attributes["watched_ms_reported"]; got != int64(130_000) {
+		t.Fatalf("watched_ms_reported=%v want the client's 130000 kept for audit", got)
+	}
+	if norm.Session.WatchedMS != 105_000 || norm.Session.WatchedMSReported != 130_000 {
+		t.Fatalf("session update carries %d/%d, want 105000/130000", norm.Session.WatchedMS, norm.Session.WatchedMSReported)
+	}
+	if norm.Session.LoopCount != 20 || norm.Session.ContentDurationMS != 5_000 {
+		t.Fatalf("session update loops=%d duration=%d, want 20 and 5000 so the row's GREATEST sees them", norm.Session.LoopCount, norm.Session.ContentDurationMS)
+	}
+
+	// No loop count on the heartbeat: one pass is the ceiling.
+	norm, err = normalizeEvent(testViewer, model.EventWatchHeartbeat, decode(t, map[string]any{
+		"content_id": testContent.String(), "session_id": testSession.String(),
+		"content_duration_ms": 30_000, "watched_ms_total": 40_000, "watched_ms_increment": 5_000,
+		"playhead_position_ms": 30_000,
+	}), testOwnership("flick"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if norm.Attributes["watched_ms_total"] != int64(30_000) || norm.Attributes["watched_ms_reported"] != int64(40_000) {
+		t.Fatalf("rewatch heartbeat: %v / %v, want 30000 / 40000", norm.Attributes["watched_ms_total"], norm.Attributes["watched_ms_reported"])
+	}
+
+	// No duration on the heartbeat (the web contract): nothing to clamp
+	// against here, the total passes through unchanged and the session
+	// upsert applies the clamp against the row's snapshotted duration.
+	norm, err = normalizeEvent(testViewer, model.EventWatchHeartbeat, decode(t, map[string]any{
+		"content_id": testContent.String(), "session_id": testSession.String(),
+		"watched_ms_total": 130_000, "watched_ms_increment": 5_000, "playhead_position_ms": 5_000,
+	}), testOwnership("flick"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if norm.Attributes["watched_ms_total"] != int64(130_000) || norm.Attributes["watched_ms_reported"] != int64(130_000) {
+		t.Fatalf("duration-less heartbeat changed: %v / %v", norm.Attributes["watched_ms_total"], norm.Attributes["watched_ms_reported"])
+	}
+	if norm.Session.ContentDurationMS != 0 {
+		t.Fatalf("a duration-less heartbeat must not invent a duration, got %d", norm.Session.ContentDurationMS)
+	}
+
+	// A heartbeat that does carry a duration is held to the same
+	// validity as play_start, and a negative loop count is malformed.
+	if _, err := normalizeEvent(testViewer, model.EventWatchHeartbeat, decode(t, map[string]any{
+		"content_id": testContent.String(), "session_id": testSession.String(),
+		"content_duration_ms": -5, "watched_ms_total": 1_000, "watched_ms_increment": 1_000,
+	}), testOwnership("flick")); err == nil {
+		t.Fatal("negative content_duration_ms on a heartbeat was accepted")
+	}
+	if _, err := normalizeEvent(testViewer, model.EventWatchHeartbeat, decode(t, map[string]any{
+		"content_id": testContent.String(), "session_id": testSession.String(),
+		"watched_ms_total": 1_000, "watched_ms_increment": 1_000, "loop_count": -1,
+	}), testOwnership("flick")); err == nil {
+		t.Fatal("negative loop_count on a heartbeat was accepted")
+	}
+}
+
 // A creator watching their own upload is measured but never paid for
 // it (audit M-06). The stamp is made here, from the gateway actor and
 // the ownership projection — never from anything the client sent — and

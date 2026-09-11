@@ -457,14 +457,40 @@ func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, owner
 		if speed < 0.25 || speed > 4 {
 			return nil, errors.New("invalid playback_speed")
 		}
+		// The one clamp (M-26) binds a heartbeat's running total exactly as
+		// it binds the play_end figure: watched <= duration x (loops + 1),
+		// with the client's figure kept in watched_ms_reported. On the web
+		// contract a heartbeat carries neither a duration nor a loop count,
+		// so the definitive clamp runs against the session's own snapshot
+		// when the row is upserted (postgres.applySessionUpdate, the same
+		// function). A client that does send them is clamped here too, so
+		// the raw row and the session agree, and its values reach the
+		// session under GREATEST like any other.
+		if raw.LoopCount < 0 {
+			return nil, errors.New("invalid loop count")
+		}
+		loopCount := raw.LoopCount
+		if loopCount > maxLoopCount {
+			loopCount = maxLoopCount
+		}
+		watchedMS := raw.WatchedMSTotal
+		if raw.ContentDurationMS != 0 {
+			if err := validDuration(raw.ContentDurationMS); err != nil {
+				return nil, err
+			}
+			watchedMS, _ = model.ClampWatched(raw.WatchedMSTotal, raw.ContentDurationMS, int64(loopCount))
+			session.ContentDurationMS = raw.ContentDurationMS
+		}
 		attrs["watched_ms_increment"] = raw.WatchedMSIncrement
-		attrs["watched_ms_total"] = raw.WatchedMSTotal
+		attrs["watched_ms_total"] = watchedMS
+		attrs["watched_ms_reported"] = raw.WatchedMSTotal
 		attrs["playhead_position_ms"] = raw.PlayheadPositionMS
 		attrs["buffering_ms_increment"] = raw.BufferingMSIncrement
 		attrs["seek_count_increment"] = raw.SeekCountIncrement
 		attrs["playback_speed"] = speed
-		session.WatchedMS = raw.WatchedMSTotal
+		session.WatchedMS = watchedMS
 		session.WatchedMSReported = raw.WatchedMSTotal
+		session.LoopCount = loopCount
 		session.PlayheadMS = raw.PlayheadPositionMS
 		session.IncrementMS = raw.WatchedMSIncrement
 		session.PlaybackSpeed = speed
@@ -510,14 +536,12 @@ func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, owner
 		}
 		// Clamp, never drop. The reported total is kept beside the
 		// clamped one so the audit trail shows what the client claimed.
+		// The same clamp binds every heartbeat's running total (M-26).
 		loopCount := raw.LoopCount
 		if loopCount > maxLoopCount {
 			loopCount = maxLoopCount
 		}
-		watchedMS := raw.WatchedMSTotal
-		if ceiling := raw.ContentDurationMS * int64(loopCount+1); watchedMS > ceiling {
-			watchedMS = ceiling
-		}
+		watchedMS, _ := model.ClampWatched(raw.WatchedMSTotal, raw.ContentDurationMS, int64(loopCount))
 		maxContinuousMS := raw.MaxContinuousWatchMS
 		if maxContinuousMS > watchedMS {
 			maxContinuousMS = watchedMS

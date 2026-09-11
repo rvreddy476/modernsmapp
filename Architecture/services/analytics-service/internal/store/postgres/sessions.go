@@ -33,7 +33,7 @@ type SessionUpdate struct {
 	IsSelfView  bool
 
 	ContentDurationMS int64
-	WatchedMS         int64 // clamped running total
+	WatchedMS         int64 // running total; clamped again against the row's snapshot on upsert (M-26)
 	WatchedMSReported int64 // the client's figure, audit only
 	PlayheadMS        int64 // heartbeat
 	IncrementMS       int64 // heartbeat: media time this beat covered (playhead delta, already speed-scaled by the client)
@@ -201,6 +201,14 @@ func applySessionUpdate(ctx context.Context, tx pgx.Tx, event Event) error {
 		// loop wrap (playback contract fixture speed_2x, plan 5A).
 		row.Coverage = markCoverage(row.Coverage, row.ContentDurationMS, u.PlayheadMS-u.IncrementMS, u.PlayheadMS)
 	}
+	// The one clamp (M-26), applied to the GREATEST'd total against the
+	// session's own snapshot: watched <= duration x (loops + 1). A
+	// heartbeat carries neither a duration nor a loop count, so this is
+	// where its running total meets the play_start's duration and the
+	// greater of the event's and the row's loop count. GREATEST stays as
+	// it is; the ceiling only grows, so the clamped total is still
+	// monotonic. watched_ms_reported keeps the client's figure.
+	row.WatchedMS, _ = model.ClampWatched(row.WatchedMS, row.ContentDurationMS, int64(row.LoopCount))
 	deriveSessionMeasures(row)
 
 	finalize := u.Kind == model.EventPlayEnd || row.FinalizedAt != nil
@@ -219,13 +227,15 @@ func applySessionUpdate(ctx context.Context, tx pgx.Tx, event Event) error {
 			coverage = $4, covered_ms = $5,
 			percent_viewed = $6, percent_covered = $7,
 			finalized_at = $8, finalize_reason = $9,
-			is_display_view = $10, view_score = $11
+			is_display_view = $10, view_score = $11,
+			watched_ms = $12
 		WHERE actor_id = $1 AND session_id = $2 AND content_id = $3`,
 		event.UserID, event.SessionID, event.ContentID,
 		row.Coverage, row.CoveredMS,
 		row.PercentViewed, row.PercentCovered,
 		row.FinalizedAt, row.FinalizeReason,
 		row.IsDisplayView, row.ViewScore,
+		row.WatchedMS,
 	); err != nil {
 		return fmt.Errorf("derive playback session: %w", err)
 	}
