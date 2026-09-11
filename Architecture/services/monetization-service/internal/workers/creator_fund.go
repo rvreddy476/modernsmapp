@@ -43,25 +43,29 @@ func accrueCreatorFundYesterday(ctx context.Context, svc *service.Service) {
 
 	slog.Info("creator-fund accrual: starting", "day", day.Format("2006-01-02"))
 
-	logRow := func(creatorID uuid.UUID, accrued int, err error) {
+	logRow := func(creatorID uuid.UUID, res service.DayAccrual, err error) {
 		if err != nil {
+			// ErrInputRevisionChanged lands here: an accrued day whose
+			// analytics rows moved. It is not retried; it is the trigger
+			// for a correction through the admin reversal route.
 			slog.Warn("creator-fund accrual: creator failed",
 				"creator_id", creatorID, "error", err)
 			return
 		}
-		if accrued > 0 {
+		if res.Accrued > 0 || len(res.Skipped) > 0 {
 			slog.Info("creator-fund accrual: recorded",
-				"creator_id", creatorID, "rows_accrued", accrued)
+				"creator_id", creatorID, "rows_accrued", res.Accrued, "skipped", res.Skipped)
 		}
 	}
 
-	total, err := svc.AccrueCreatorFundDayForAllEligible(ctx, day, logRow)
+	batch, err := svc.AccrueCreatorFundDayForAllEligible(ctx, day, logRow)
 	if err != nil {
 		slog.Error("creator-fund accrual: batch failed", "error", err)
 		return
 	}
 	slog.Info("creator-fund accrual: completed",
-		"day", day.Format("2006-01-02"), "rows_accrued", total)
+		"day", day.Format("2006-01-02"), "rows_accrued", batch.Accrued,
+		"creators", batch.Creators, "failed", batch.Failed, "skipped", batch.Skipped)
 }
 
 // runCreatorFundPeriodSettlement is the payment run — the thing the

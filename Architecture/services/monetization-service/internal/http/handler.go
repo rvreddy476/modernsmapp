@@ -175,6 +175,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			// The payment run. Same call the scheduled worker makes.
 			admin.POST("/settle-period", h.SettleCreatorFundPeriod)
 			admin.POST("/:userId/settle-period", h.SettleCreatorFundPeriodForCreator)
+			// Corrections (Phase 2A): reverse one accrual row; if it was
+			// credited the net comes back through a keyed adjustment.
+			// Behind hasAdminScope, and — like every admin route — behind
+			// the beta boundary until MONETIZATION_WRITES_ENABLED=true.
+			admin.POST("/earnings/:id/reverse", h.ReverseCreatorFundEarning)
+			admin.GET("/earnings/:id", h.GetCreatorFundEarningAdmin)
+			// The fund cap per settlement period (Phase 2C). Lowering below
+			// what has accrued is refused; nothing already earned is reduced.
+			admin.GET("/budgets", h.ListCreatorFundBudgets)
+			admin.PUT("/budgets", h.SetCreatorFundBudget)
 		}
 	}
 }

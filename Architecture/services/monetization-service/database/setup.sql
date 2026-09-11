@@ -3,11 +3,18 @@
 -- creator_ledger (renamed from `wallets` 2026-04-30, Phase 2 §D4).
 -- Holds creator earnings: lifetime_earnings, pending_payout, balance.
 -- NOT a consumer wallet — that lives in wallet-service.
+--
+-- Money columns are BIGINT paise. They were declared DECIMAL(12,2) here
+-- until 2026-09-11 while migration 005 only converted them when `wallets`
+-- was still a base table, so every install made after migration 012 got
+-- NUMERIC columns that the Go code wrote int64 paise into. Migration 018
+-- converts those in place (a cast, not a scaling); this declaration is
+-- what a fresh install gets.
 CREATE TABLE IF NOT EXISTS creator_ledger (
     user_id       UUID PRIMARY KEY,
-    balance       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-    lifetime_earnings DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-    pending_payout DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    balance       BIGINT NOT NULL DEFAULT 0,
+    lifetime_earnings BIGINT NOT NULL DEFAULT 0,
+    pending_payout BIGINT NOT NULL DEFAULT 0,
     currency      TEXT NOT NULL DEFAULT 'INR',
     is_frozen     BOOLEAN NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

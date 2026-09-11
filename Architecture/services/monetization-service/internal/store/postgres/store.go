@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -165,6 +166,33 @@ type Store struct {
 
 func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
+}
+
+// DBTX is the query surface shared by the pool and a transaction, so a
+// store function can run either autocommit or inside a caller's
+// transaction without two copies of its SQL. *pgxpool.Pool and pgx.Tx
+// both satisfy it.
+type DBTX interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// WithTx runs fn inside one transaction: committed when fn returns nil,
+// rolled back when it returns an error or panics. The *Tx store methods
+// are meant to be composed under it — a budget debit, a carry update and
+// an earnings insert, or a reversal and the adjustment that gives the
+// money back, must commit or vanish together.
+func (s *Store) WithTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ---------------------------------------------------------------------------

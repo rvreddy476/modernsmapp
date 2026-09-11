@@ -118,6 +118,15 @@ func main() {
 	monetizationStore := postgres.New(dbPool)
 	monetizationSvc := service.New(monetizationStore, rdb).
 		WithCreatorFundConfig(loadCreatorFundConfig())
+	// A settlement cadence change renames every period; refuse to boot
+	// under a cadence that does not match a period already holding
+	// accrued fund money (plan Phase 2C). Fail closed: the accrual worker
+	// would otherwise count the rest of the month against a period nobody
+	// set a cap for.
+	if err := monetizationSvc.CheckSettlementCadence(ctx); err != nil {
+		slog.Error("refusing to start: settlement cadence conflicts with accrued budgets", "error", err)
+		os.Exit(1)
+	}
 	monetizationHandler := http.New(monetizationSvc).
 		WithInternalKey(internalKey).
 		WithWritesEnabled(writesEnabled)

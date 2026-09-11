@@ -158,7 +158,54 @@ func healthyStatement() *PeriodStatement {
 	st.CreditedPaise = st.Fund.NetPaise
 	st.NewlyCreditedPaise = st.Fund.NetPaise
 	st.AlreadyCreditedPaise = st.Tips.NetPaise + st.Subs.NetPaise
+	// Nothing was reversed or adjusted, so the wallet moved by exactly the
+	// fund credit.
+	st.WalletMovementPaise = st.CreditedPaise + st.AdjustmentsPaise
 	return st
+}
+
+// The memo lines have their own arithmetic: a reversal memo cannot be
+// negative or rowless, an adjustment shows up in the wallet movement, and
+// the fund line can never exceed the period's cap.
+func TestStatementArithmeticCoversReversalsAdjustmentsAndTheCap(t *testing.T) {
+	st := healthyStatement()
+	st.AdjustmentsPaise, st.AdjustmentsCount = -5_000, 1
+	if err := CheckStatementArithmetic(st); err == nil {
+		t.Error("an adjustment that is not reflected in the wallet movement was accepted")
+	}
+	st.WalletMovementPaise = st.CreditedPaise + st.AdjustmentsPaise
+	if err := CheckStatementArithmetic(st); err != nil {
+		t.Fatalf("adjustment reflected in wallet movement was rejected: %v", err)
+	}
+
+	st = healthyStatement()
+	st.ReversedPaise = 7_000
+	if err := CheckStatementArithmetic(st); err == nil {
+		t.Error("reversed paise with no reversed rows was accepted")
+	}
+	st.FundReversedRows = 1
+	if err := CheckStatementArithmetic(st); err != nil {
+		t.Fatalf("a reversal memo with its row count was rejected: %v", err)
+	}
+	st.ReversedPaise = -1
+	if err := CheckStatementArithmetic(st); err == nil {
+		t.Error("a negative reversal memo was accepted")
+	}
+
+	st = healthyStatement()
+	cap := st.Fund.GrossPaise - 1
+	st.BudgetCapPaise = &cap
+	if err := CheckStatementArithmetic(st); err == nil {
+		t.Error("a fund line above the period cap was accepted")
+	}
+	cap = st.Fund.GrossPaise
+	if err := CheckStatementArithmetic(st); err != nil {
+		t.Fatalf("a fund line exactly at the cap was rejected: %v", err)
+	}
+	st.FundRowsSkipped = st.Fund.Count + 1
+	if err := CheckStatementArithmetic(st); err == nil {
+		t.Error("more skipped rows than fund rows was accepted")
+	}
 }
 
 func TestStatementArithmeticAcceptsAConsistentStatement(t *testing.T) {
@@ -209,6 +256,7 @@ func TestStatementForAPeriodWhoseFundDaysWerePaidElsewhere(t *testing.T) {
 	st.CreditedPaise = 0
 	st.NewlyCreditedPaise = 0
 	st.AlreadyCreditedPaise = st.Tips.NetPaise + st.Subs.NetPaise + st.Fund.NetPaise
+	st.WalletMovementPaise = st.CreditedPaise + st.AdjustmentsPaise
 	if err := CheckStatementArithmetic(st); err != nil {
 		t.Fatalf("overlapping-period statement rejected: %v", err)
 	}
@@ -224,6 +272,7 @@ func TestStatementReportsPendingRatherThanLosingIt(t *testing.T) {
 	st.CreditedPaise = 0
 	st.NewlyCreditedPaise = 0
 	st.PendingPaise = st.Fund.NetPaise
+	st.WalletMovementPaise = st.CreditedPaise + st.AdjustmentsPaise
 	if err := CheckStatementArithmetic(st); err != nil {
 		t.Fatalf("statement with pending money rejected: %v", err)
 	}

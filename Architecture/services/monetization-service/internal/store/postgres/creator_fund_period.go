@@ -49,6 +49,20 @@ type PeriodSettlement struct {
 	AlreadyCreditedPaise int64 `json:"already_credited_paise"`
 	PendingPaise         int64 `json:"pending_paise"`
 
+	// Memo lines (migration 018). ReversedPaise is the net of fund rows in
+	// this period that were later reversed; they are off the fund line, so
+	// the totals above already exclude them. AdjustmentsPaise is the signed
+	// sum of adjustments that LANDED in this period.
+	ReversedPaise    int64 `json:"reversed_paise"`
+	FundReversedRows int64 `json:"fund_reversed_rows"`
+	AdjustmentsPaise int64 `json:"adjustments_paise"`
+	AdjustmentsCount int64 `json:"adjustments_count"`
+
+	// Budget (migration 019). Nil cap means the period was uncapped.
+	BudgetCapPaise       *int64     `json:"budget_cap_paise,omitempty"`
+	BudgetExhaustedOnDay *time.Time `json:"budget_exhausted_on_day,omitempty"`
+	FundRowsSkipped      int64      `json:"fund_rows_skipped"`
+
 	Status    string    `json:"status"`
 	SettledAt time.Time `json:"settled_at"`
 }
@@ -113,6 +127,39 @@ func (s *Store) SumCreatorFundAccruals(ctx context.Context, creatorID uuid.UUID,
 		&t.Rows, &t.Views, &t.WatchTimeMs, &t.GrossPaise, &t.PlatformFeePaise, &t.NetPaise,
 	)
 	return t, err
+}
+
+// SumReversedFundAccruals totals the REVERSED fund rows in [start, end)
+// for one creator and region: the memo line under the fund total. These
+// rows are excluded from SumCreatorFundAccruals, so this is additive
+// information, not a term in the statement's arithmetic.
+func (s *Store) SumReversedFundAccruals(ctx context.Context, creatorID uuid.UUID, start, end time.Time, regionCode string) (rows int64, netPaise int64, err error) {
+	err = s.db.QueryRow(ctx, `
+		SELECT COUNT(*)::BIGINT, COALESCE(SUM(net_paise), 0)::BIGINT
+		FROM creator_fund_earnings
+		WHERE creator_id = $1
+		  AND day_bucket >= $2 AND day_bucket < $3
+		  AND region_code = $4
+		  AND status = 'reversed'
+	`, creatorID, start, end, regionCode).Scan(&rows, &netPaise)
+	return
+}
+
+// CountSkippedFundAccruals counts the zero rows the budget cap produced
+// in [start, end): days that were measured and paid nothing because the
+// period's fund was already spent.
+func (s *Store) CountSkippedFundAccruals(ctx context.Context, creatorID uuid.UUID, start, end time.Time, regionCode string) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*)::BIGINT
+		FROM creator_fund_earnings
+		WHERE creator_id = $1
+		  AND day_bucket >= $2 AND day_bucket < $3
+		  AND region_code = $4
+		  AND status = 'settled'
+		  AND skip_reason = 'budget_exhausted'
+	`, creatorID, start, end, regionCode).Scan(&n)
+	return n, err
 }
 
 // FundCreditSplit says where a period's fund money currently stands
@@ -333,14 +380,17 @@ func (s *Store) UpsertPeriodSettlement(ctx context.Context, p *PeriodSettlement)
 			subs_count, subs_gross_paise, subs_platform_fee_paise, subs_net_paise, subs_platform_fee_bps,
 			gross_paise, platform_fee_paise, net_paise,
 			credited_paise, already_credited_paise, pending_paise,
-			status, settled_at, updated_at
+			status, settled_at, updated_at,
+			reversed_paise, fund_reversed_rows, adjustments_paise, adjustments_count,
+			budget_cap_paise, budget_exhausted_on_day, fund_rows_skipped
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,
 		          $8,$9,$10,$11,$12,$13,$14,
 		          $15,$16,$17,$18,$19,
 		          $20,$21,$22,$23,$24,
 		          $25,$26,$27,
 		          $28,$29,$30,
-		          $31, NOW(), NOW())
+		          $31, NOW(), NOW(),
+		          $32, $33, $34, $35, $36, $37, $38)
 		ON CONFLICT (creator_id, period_key, region_code) DO NOTHING
 	`,
 		p.ID, p.CreatorID, p.PeriodKey, p.PeriodStart, p.PeriodEnd, p.RegionCode, p.Currency,
@@ -351,6 +401,8 @@ func (s *Store) UpsertPeriodSettlement(ctx context.Context, p *PeriodSettlement)
 		p.GrossPaise, p.PlatformFeePaise, p.NetPaise,
 		p.CreditedPaise, p.AlreadyCreditedPaise, p.PendingPaise,
 		p.Status,
+		p.ReversedPaise, p.FundReversedRows, p.AdjustmentsPaise, p.AdjustmentsCount,
+		p.BudgetCapPaise, p.BudgetExhaustedOnDay, p.FundRowsSkipped,
 	)
 	if err != nil {
 		return nil, false, err
@@ -377,6 +429,8 @@ func (s *Store) RefreshPeriodSettlement(ctx context.Context, id uuid.UUID, p *Pe
 			subs_count = $12, subs_gross_paise = $13, subs_platform_fee_paise = $14, subs_net_paise = $15,
 			gross_paise = $16, platform_fee_paise = $17, net_paise = $18,
 			credited_paise = $19, already_credited_paise = $20, pending_paise = $21,
+			reversed_paise = $22, fund_reversed_rows = $23, adjustments_paise = $24, adjustments_count = $25,
+			budget_cap_paise = $26, budget_exhausted_on_day = $27, fund_rows_skipped = $28,
 			updated_at = NOW()
 		WHERE id = $1
 	`, id,
@@ -386,6 +440,8 @@ func (s *Store) RefreshPeriodSettlement(ctx context.Context, id uuid.UUID, p *Pe
 		p.SubsCount, p.SubsGrossPaise, p.SubsPlatformFeePaise, p.SubsNetPaise,
 		p.GrossPaise, p.PlatformFeePaise, p.NetPaise,
 		p.CreditedPaise, p.AlreadyCreditedPaise, p.PendingPaise,
+		p.ReversedPaise, p.FundReversedRows, p.AdjustmentsPaise, p.AdjustmentsCount,
+		p.BudgetCapPaise, p.BudgetExhaustedOnDay, p.FundRowsSkipped,
 	)
 	return err
 }
@@ -469,6 +525,11 @@ func (s *Store) ListCreatorsWithPeriodActivity(ctx context.Context, from, to tim
 		SELECT wallet_id FROM transactions
 		 WHERE type = 'earning' AND reference_type = 'subscription'
 		   AND status = 'completed' AND created_at >= $1 AND created_at < $2
+		UNION
+		SELECT wallet_id FROM transactions
+		 WHERE type = 'adjustment'
+		   AND status = 'completed' AND created_at >= $1 AND created_at < $2
+		ORDER BY 1
 	`, from, to)
 	if err != nil {
 		return nil, err
@@ -522,6 +583,8 @@ const periodSettlementSelect = `
 	       tips_count, tips_gross_paise, tips_platform_fee_paise, tips_net_paise, tips_platform_fee_bps,
 	       subs_count, subs_gross_paise, subs_platform_fee_paise, subs_net_paise, subs_platform_fee_bps,
 	       gross_paise, platform_fee_paise, net_paise, credited_paise, already_credited_paise, pending_paise,
+	       reversed_paise, fund_reversed_rows, adjustments_paise, adjustments_count,
+	       budget_cap_paise, budget_exhausted_on_day, fund_rows_skipped,
 	       status, settled_at
 	FROM creator_fund_period_settlements
 `
@@ -539,6 +602,8 @@ func scanPeriodSettlement(r rowScanner) (*PeriodSettlement, error) {
 		&p.TipsCount, &p.TipsGrossPaise, &p.TipsPlatformFeePaise, &p.TipsNetPaise, &p.TipsPlatformFeeBps,
 		&p.SubsCount, &p.SubsGrossPaise, &p.SubsPlatformFeePaise, &p.SubsNetPaise, &p.SubsPlatformFeeBps,
 		&p.GrossPaise, &p.PlatformFeePaise, &p.NetPaise, &p.CreditedPaise, &p.AlreadyCreditedPaise, &p.PendingPaise,
+		&p.ReversedPaise, &p.FundReversedRows, &p.AdjustmentsPaise, &p.AdjustmentsCount,
+		&p.BudgetCapPaise, &p.BudgetExhaustedOnDay, &p.FundRowsSkipped,
 		&p.Status, &p.SettledAt,
 	)
 	if err != nil {

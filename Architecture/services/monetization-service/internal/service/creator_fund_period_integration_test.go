@@ -54,6 +54,7 @@ func TestLivePeriodSettlementPaysFundOnceAndNeverPaysTipsTwice(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM tips WHERE recipient_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_period_settlements WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_earnings WHERE creator_id = $1`, creator)
+		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_carry WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_eligibility WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM analytics.content_daily_summary WHERE creator_id = $1`, creator)
 	})
@@ -241,6 +242,7 @@ func TestLivePeriodSettlementPaysAnIneligibleCreatorNothing(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_period_settlements WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_earnings WHERE creator_id = $1`, creator)
+		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_carry WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_eligibility WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM analytics.content_daily_summary WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM transactions WHERE wallet_id = $1`, creator)

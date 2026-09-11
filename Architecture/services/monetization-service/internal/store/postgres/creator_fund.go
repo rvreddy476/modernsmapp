@@ -67,6 +67,49 @@ type CreatorFundEarning struct {
 	QualityEffectiveCQS  float64 `json:"quality_effective_cqs"`
 	QualityImpressions   int64   `json:"quality_impressions"`
 	QualityMultiplierBps int64   `json:"quality_multiplier_bps"`
+
+	// Payment state (migration 017): flipped by the period settlement
+	// inside the same transaction as the wallet credit.
+	Credited     bool       `json:"credited"`
+	CreditedAt   *time.Time `json:"credited_at,omitempty"`
+	SettlementID *uuid.UUID `json:"settlement_id,omitempty"`
+
+	// Reversal (migration 018). A reversed row keeps its UNIQUE slot and
+	// its money columns; ReversalTransactionID names the adjustment that
+	// gave the net back, nil when the row had never been credited.
+	ReversedAt            *time.Time `json:"reversed_at,omitempty"`
+	ReversalReason        string     `json:"reversal_reason,omitempty"`
+	ReversalTransactionID *uuid.UUID `json:"reversal_transaction_id,omitempty"`
+
+	// Versioning and rounding (migration 019). RateID and BandID name the
+	// exact rows that priced the day; RuleVersion the formula;
+	// InputRevision the sha256 of the analytics rows measured. Money is
+	// computed in micro-paise and truncated once, at the carry boundary:
+	// GrossMicroPaise + CarryIn = GrossPaise x 1e6 + CarryOut, except on a
+	// budget-capped or exhausted day, where SkipReason says why not.
+	RateID             *uuid.UUID `json:"rate_id,omitempty"`
+	BandID             *uuid.UUID `json:"band_id,omitempty"`
+	RuleVersion        string     `json:"rule_version"`
+	InputRevision      string     `json:"input_revision,omitempty"`
+	GrossMicroPaise    int64      `json:"gross_micro_paise"`
+	CarryInMicroPaise  int64      `json:"carry_in_micro_paise"`
+	CarryOutMicroPaise int64      `json:"carry_out_micro_paise"`
+	SkipReason         string     `json:"skip_reason,omitempty"`
+}
+
+// DailyInputRow is one analytics.content_daily_summary row as the accrual
+// reads it: the measurement a day is priced from, with the row's
+// updated_at so the input revision changes whenever the rollup rewrites
+// the row.
+type DailyInputRow struct {
+	ContentID    uuid.UUID
+	DayBucket    time.Time
+	ContentType  string
+	ViewsDisplay int64
+	WatchTimeMs  int64
+	Impressions  int64
+	CQS          float64
+	UpdatedAt    time.Time
 }
 
 // QualityBandRow is one versioned payout-multiplier band, the quality
@@ -116,6 +159,9 @@ type EarningsDailyBreakdown struct {
 	QualityEffectiveCQS  float64 `json:"quality_effective_cqs"`
 	QualityImpressions   int64   `json:"quality_impressions"`
 	QualityMultiplierBps int64   `json:"quality_multiplier_bps"`
+	CarryInMicroPaise    int64   `json:"carry_in_micro_paise"`
+	CarryOutMicroPaise   int64   `json:"carry_out_micro_paise"`
+	SkipReason           string  `json:"skip_reason,omitempty"`
 	Explanation          string  `json:"explanation,omitempty"`
 }
 
@@ -241,9 +287,12 @@ func (s *Store) ClearCreatorFundSuspension(ctx context.Context, creatorID uuid.U
 
 // ListEligibleCreators returns every creator currently in 'eligible'
 // status — these are the rows the daily settlement worker iterates over.
+// Ordered by creator_id so that, under a budget cap, which creator's day
+// reaches the cap is the same on every run.
 func (s *Store) ListEligibleCreators(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT creator_id FROM creator_fund_eligibility WHERE status = 'eligible'
+		ORDER BY creator_id
 	`)
 	if err != nil {
 		return nil, err
@@ -407,39 +456,35 @@ func (s *Store) SetRpmRate(ctx context.Context, contentType, regionCode string, 
 // Daily metrics + earnings
 // ---------------------------------------------------------------------------
 
-// QueryCreatorDailyMetrics rolls analytics.content_daily_summary up to
-// (content_type) for one creator on one day. Returns one row per content
-// type the creator published views for that day.
-func (s *Store) QueryCreatorDailyMetrics(ctx context.Context, creatorID uuid.UUID, day time.Time) ([]DailyContentMetric, error) {
+// QueryCreatorDailyInputs returns the analytics.content_daily_summary
+// rows for one creator on one day, in a fixed order, exactly as the
+// accrual prices and hashes them. Aggregation to content type happens in
+// the service (AggregateDailyInputs) from the same rows the revision is
+// computed over, so the number and its fingerprint cannot drift apart.
+func (s *Store) QueryCreatorDailyInputs(ctx context.Context, creatorID uuid.UUID, day time.Time) ([]DailyInputRow, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT content_type,
-		       COALESCE(SUM(views_display), 0)::BIGINT,
-		       COALESCE(SUM(watch_time_total_ms), 0)::BIGINT,
-		       COALESCE(SUM(impressions), 0)::BIGINT,
-		       -- Weight each content item's score by the views it earned,
-		       -- so one obscure clip cannot drag down a day carried by a
-		       -- video that actually reached people. NULLIF keeps a
-		       -- zero-view day from dividing by zero.
-		       COALESCE(
-		           SUM(content_quality_score * GREATEST(views_display, 0))
-		           / NULLIF(SUM(GREATEST(views_display, 0)), 0),
-		           0
-		       )::DOUBLE PRECISION
+		SELECT content_id, day_bucket, content_type,
+		       COALESCE(views_display, 0)::BIGINT,
+		       COALESCE(watch_time_total_ms, 0)::BIGINT,
+		       COALESCE(impressions, 0)::BIGINT,
+		       COALESCE(content_quality_score, 0)::DOUBLE PRECISION,
+		       updated_at
 		FROM analytics.content_daily_summary
 		WHERE creator_id = $1 AND day_bucket = $2
-		GROUP BY content_type
+		ORDER BY content_type, content_id
 	`, creatorID, day)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []DailyContentMetric
+	var out []DailyInputRow
 	for rows.Next() {
-		var m DailyContentMetric
-		if err := rows.Scan(&m.ContentType, &m.ViewCount, &m.WatchTimeMs, &m.Impressions, &m.AvgCQS); err != nil {
+		var r DailyInputRow
+		if err := rows.Scan(&r.ContentID, &r.DayBucket, &r.ContentType, &r.ViewsDisplay, &r.WatchTimeMs,
+			&r.Impressions, &r.CQS, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
@@ -478,25 +523,37 @@ func (s *Store) HasCreatorFundEarning(ctx context.Context, creatorID uuid.UUID, 
 	return exists, err
 }
 
-// InsertCreatorFundEarning records the settlement row. ON CONFLICT DO
+// InsertCreatorFundEarning records the accrual row. ON CONFLICT DO
 // NOTHING enforces (creator, day, content_type, region) uniqueness so a
-// re-run after a partial failure does not double-credit.
+// re-run after a partial failure does not double-credit. Production
+// accruals go through AccrueDayTx, which calls the same insert inside
+// its transaction; this autocommit form remains for fixtures and tools.
 func (s *Store) InsertCreatorFundEarning(ctx context.Context, e *CreatorFundEarning) (bool, error) {
+	return insertCreatorFundEarning(ctx, s.db, e)
+}
+
+func insertCreatorFundEarning(ctx context.Context, q DBTX, e *CreatorFundEarning) (bool, error) {
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
 	if e.SettledAt.IsZero() {
 		e.SettledAt = time.Now()
 	}
-	tag, err := s.db.Exec(ctx, `
+	if e.RuleVersion == "" {
+		e.RuleVersion = "cf-1"
+	}
+	tag, err := q.Exec(ctx, `
 		INSERT INTO creator_fund_earnings (
 			id, creator_id, day_bucket, content_type, region_code,
 			view_count, watch_time_ms, rpm_paise, gross_paise,
 			platform_fee_paise, net_paise, status, settled_at,
 			base_gross_paise, quality_cqs, quality_effective_cqs,
-			quality_impressions, quality_multiplier_bps
+			quality_impressions, quality_multiplier_bps,
+			rate_id, band_id, rule_version, input_revision,
+			gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, skip_reason
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-		          $14, $15, $16, $17, $18)
+		          $14, $15, $16, $17, $18,
+		          $19, $20, $21, $22, $23, $24, $25, $26)
 		ON CONFLICT (creator_id, day_bucket, content_type, region_code) DO NOTHING
 	`,
 		e.ID, e.CreatorID, e.DayBucket, e.ContentType, e.RegionCode,
@@ -504,7 +561,107 @@ func (s *Store) InsertCreatorFundEarning(ctx context.Context, e *CreatorFundEarn
 		e.PlatformFeePaise, e.NetPaise, e.Status, e.SettledAt,
 		e.BaseGrossPaise, e.QualityCQS, e.QualityEffectiveCQS,
 		e.QualityImpressions, e.QualityMultiplierBps,
+		e.RateID, e.BandID, e.RuleVersion, nullableString(e.InputRevision),
+		e.GrossMicroPaise, e.CarryInMicroPaise, e.CarryOutMicroPaise, nullableString(e.SkipReason),
 	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+const creatorFundEarningSelect = `
+	SELECT id, creator_id, day_bucket, content_type, region_code,
+	       view_count, watch_time_ms, rpm_paise, gross_paise,
+	       platform_fee_paise, net_paise, status, settled_at,
+	       base_gross_paise, quality_cqs, quality_effective_cqs,
+	       quality_impressions, quality_multiplier_bps,
+	       credited, credited_at, settlement_id,
+	       reversed_at, COALESCE(reversal_reason, ''), reversal_transaction_id,
+	       rate_id, band_id, rule_version, COALESCE(input_revision, ''),
+	       gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, '')
+	FROM creator_fund_earnings`
+
+func scanCreatorFundEarning(r rowScanner) (*CreatorFundEarning, error) {
+	var e CreatorFundEarning
+	if err := r.Scan(
+		&e.ID, &e.CreatorID, &e.DayBucket, &e.ContentType, &e.RegionCode,
+		&e.ViewCount, &e.WatchTimeMs, &e.RpmPaise, &e.GrossPaise,
+		&e.PlatformFeePaise, &e.NetPaise, &e.Status, &e.SettledAt,
+		&e.BaseGrossPaise, &e.QualityCQS, &e.QualityEffectiveCQS,
+		&e.QualityImpressions, &e.QualityMultiplierBps,
+		&e.Credited, &e.CreditedAt, &e.SettlementID,
+		&e.ReversedAt, &e.ReversalReason, &e.ReversalTransactionID,
+		&e.RateID, &e.BandID, &e.RuleVersion, &e.InputRevision,
+		&e.GrossMicroPaise, &e.CarryInMicroPaise, &e.CarryOutMicroPaise, &e.SkipReason,
+	); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// findCreatorFundEarningSlot returns whatever row occupies the
+// (creator, day, content_type, region) slot — settled or reversed — or nil.
+func findCreatorFundEarningSlot(ctx context.Context, q DBTX, creatorID uuid.UUID, day time.Time, contentType, regionCode string) (*CreatorFundEarning, error) {
+	row := q.QueryRow(ctx, creatorFundEarningSelect+`
+		WHERE creator_id = $1 AND day_bucket = $2 AND content_type = $3 AND region_code = $4
+	`, creatorID, day, contentType, regionCode)
+	e, err := scanCreatorFundEarning(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return e, nil
+}
+
+// FindCreatorFundEarningSlot is the autocommit form of the slot check,
+// used by the accrual as a cheap pre-check before it takes any lock.
+func (s *Store) FindCreatorFundEarningSlot(ctx context.Context, creatorID uuid.UUID, day time.Time, contentType, regionCode string) (*CreatorFundEarning, error) {
+	return findCreatorFundEarningSlot(ctx, s.db, creatorID, day, contentType, regionCode)
+}
+
+// GetCreatorFundEarning returns one accrual row by id, or nil.
+func (s *Store) GetCreatorFundEarning(ctx context.Context, id uuid.UUID) (*CreatorFundEarning, error) {
+	row := s.db.QueryRow(ctx, creatorFundEarningSelect+` WHERE id = $1`, id)
+	e, err := scanCreatorFundEarning(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return e, nil
+}
+
+// GetCreatorFundEarningForUpdateTx locks one accrual row for the rest of
+// the transaction, or returns nil if it does not exist.
+func (s *Store) GetCreatorFundEarningForUpdateTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*CreatorFundEarning, error) {
+	row := tx.QueryRow(ctx, creatorFundEarningSelect+` WHERE id = $1 FOR UPDATE`, id)
+	e, err := scanCreatorFundEarning(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return e, nil
+}
+
+// MarkCreatorFundEarningReversedTx flips a settled row to reversed and
+// records when, why and which adjustment (if any) gave the money back.
+// The money columns are untouched: a reversed row still says what it was
+// settled at. Zero rows affected means the row was not settled.
+func (s *Store) MarkCreatorFundEarningReversedTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, reason string, reversalTransactionID *uuid.UUID, at time.Time) (bool, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE creator_fund_earnings
+		SET status = 'reversed',
+		    reversed_at = $3,
+		    reversal_reason = $4,
+		    reversal_transaction_id = $5
+		WHERE id = $1 AND status = $2
+	`, id, "settled", at, reason, reversalTransactionID)
 	if err != nil {
 		return false, err
 	}
@@ -573,7 +730,8 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 	rows, err := s.db.Query(ctx, `
 		SELECT day_bucket, content_type, view_count, gross_paise, net_paise,
 		       rpm_paise, base_gross_paise, quality_cqs, quality_effective_cqs,
-		       quality_impressions, quality_multiplier_bps
+		       quality_impressions, quality_multiplier_bps,
+		       carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, '')
 		FROM creator_fund_earnings
 		WHERE creator_id = $1
 		  AND day_bucket >= $2
@@ -590,7 +748,8 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 		if err := rows.Scan(&b.DayBucket, &b.ContentType, &b.ViewCount,
 			&b.GrossPaise, &b.NetPaise, &b.RpmPaise, &b.BaseGrossPaise,
 			&b.QualityCQS, &b.QualityEffectiveCQS, &b.QualityImpressions,
-			&b.QualityMultiplierBps); err != nil {
+			&b.QualityMultiplierBps, &b.CarryInMicroPaise, &b.CarryOutMicroPaise,
+			&b.SkipReason); err != nil {
 			return nil, err
 		}
 		summary.Breakdown = append(summary.Breakdown, b)

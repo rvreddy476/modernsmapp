@@ -276,6 +276,26 @@ type PeriodStatement struct {
 	// arithmetic error.
 	PendingPaise int64 `json:"pending_paise"`
 
+	// Memo lines. ReversedPaise is the net of fund rows in this period that
+	// were later reversed: they are OFF the fund line above, so the totals
+	// already exclude them and this line only says how much was taken off.
+	// AdjustmentsPaise is the signed sum of adjustments that landed in
+	// this period — a January reversal posted in September is September's
+	// adjustment. WalletMovementPaise = CreditedPaise + AdjustmentsPaise is
+	// what the wallet actually moved by on account of this period, and is
+	// asserted by CheckStatementArithmetic.
+	ReversedPaise       int64 `json:"reversed_paise"`
+	FundReversedRows    int64 `json:"fund_reversed_rows"`
+	AdjustmentsPaise    int64 `json:"adjustments_paise"`
+	AdjustmentsCount    int64 `json:"adjustments_count"`
+	WalletMovementPaise int64 `json:"wallet_movement_paise"`
+
+	// Budget. Nil cap means the period was uncapped. FundRowsSkipped counts
+	// the days recorded at zero because the cap had been reached.
+	BudgetCapPaise       *int64     `json:"budget_cap_paise,omitempty"`
+	BudgetExhaustedOnDay *time.Time `json:"budget_exhausted_on_day,omitempty"`
+	FundRowsSkipped      int64      `json:"fund_rows_skipped"`
+
 	Status    string    `json:"status"`
 	SettledAt time.Time `json:"settled_at"`
 
@@ -332,6 +352,28 @@ func CheckStatementArithmetic(s *PeriodStatement) error {
 		return fmt.Errorf("STATEMENT_ARITHMETIC: this run credited %d but the settlement total is %d",
 			s.NewlyCreditedPaise, s.CreditedPaise)
 	}
+	// Reversals are a memo of money taken OFF the fund line, so they can
+	// only be non-negative, and cannot be reported without the rows.
+	if s.ReversedPaise < 0 || s.FundReversedRows < 0 {
+		return fmt.Errorf("STATEMENT_ARITHMETIC: reversed memo %d paise / %d rows cannot be negative",
+			s.ReversedPaise, s.FundReversedRows)
+	}
+	if s.ReversedPaise > 0 && s.FundReversedRows == 0 {
+		return fmt.Errorf("STATEMENT_ARITHMETIC: %d paise reversed but no reversed rows", s.ReversedPaise)
+	}
+	// What the wallet moved by on account of this period: the fund credit
+	// plus every adjustment that landed in it. Anything else on the wallet
+	// is a tip or a subscription, which were already counted above.
+	if s.CreditedPaise+s.AdjustmentsPaise != s.WalletMovementPaise {
+		return fmt.Errorf("STATEMENT_ARITHMETIC: credited %d + adjustments %d != wallet movement %d",
+			s.CreditedPaise, s.AdjustmentsPaise, s.WalletMovementPaise)
+	}
+	if s.FundRowsSkipped < 0 || s.FundRowsSkipped > s.Fund.Count {
+		return fmt.Errorf("STATEMENT_ARITHMETIC: %d fund rows skipped of %d", s.FundRowsSkipped, s.Fund.Count)
+	}
+	if s.BudgetCapPaise != nil && s.Fund.GrossPaise > *s.BudgetCapPaise {
+		return fmt.Errorf("STATEMENT_ARITHMETIC: fund gross %d exceeds the period cap %d", s.Fund.GrossPaise, *s.BudgetCapPaise)
+	}
 	return nil
 }
 
@@ -357,132 +399,42 @@ func ExplainStatement(s *PeriodStatement) string {
 	if s.PendingPaise > 0 {
 		fmt.Fprintf(&b, " %s is still pending and will be paid by the next run.", rupees(s.PendingPaise))
 	}
+	if s.FundReversedRows > 0 {
+		fmt.Fprintf(&b, " %d fund day(s) worth %s were reversed after settlement and are not counted above.",
+			s.FundReversedRows, rupees(s.ReversedPaise))
+	}
+	if s.AdjustmentsCount > 0 {
+		fmt.Fprintf(&b, " %d adjustment(s) totalling %s landed on your wallet in this period.",
+			s.AdjustmentsCount, signedRupees(s.AdjustmentsPaise))
+	}
+	if s.BudgetCapPaise != nil {
+		fmt.Fprintf(&b, " The creator fund for %s was capped at %s in total across all creators", s.PeriodLabel, rupees(*s.BudgetCapPaise))
+		if s.BudgetExhaustedOnDay != nil {
+			fmt.Fprintf(&b, "; the cap was reached on %s and no fund earnings accrued after that day",
+				s.BudgetExhaustedOnDay.Format("2 January 2006"))
+			if s.FundRowsSkipped > 0 {
+				fmt.Fprintf(&b, " (%d of your day(s) recorded at zero)", s.FundRowsSkipped)
+			}
+		}
+		b.WriteString(".")
+	}
 	return b.String()
+}
+
+func signedRupees(paise int64) string {
+	if paise < 0 {
+		return "-" + rupees(-paise)
+	}
+	return "+" + rupees(paise)
 }
 
 // ---------------------------------------------------------------------------
 // Accrual — daily, no money moves
 // ---------------------------------------------------------------------------
-
-// AccrueCreatorFundDay measures one creator's fund earnings for one UTC
-// day and records them, WITHOUT crediting anything. This is the former
-// SettleCreatorFundDay with the wallet credit and the ledger entries
-// removed; the pricing (RPM as of the day, quality band as of the day,
-// platform split) is byte-for-byte what it was, so a day accrues to the
-// same number it used to be paid.
 //
-// Returns the number of accrual rows written (0 when the day was already
-// accrued, the creator has no qualifying views, or no rate is configured).
-func (s *Service) AccrueCreatorFundDay(ctx context.Context, creatorID uuid.UUID, day time.Time) (int, error) {
-	day = utcDay(day)
-
-	row, err := s.store.GetCreatorFundEligibility(ctx, creatorID)
-	if err != nil {
-		return 0, err
-	}
-	// The eligibility gate is still the gate. An ineligible or suspended
-	// creator accrues nothing, so a period settlement finds nothing to
-	// pay them from the fund. Their tips and subscriptions are still
-	// reported on the statement, because those are theirs regardless.
-	if row == nil || row.Status != "eligible" {
-		return 0, nil
-	}
-
-	metrics, err := s.store.QueryCreatorDailyMetrics(ctx, creatorID, day)
-	if err != nil {
-		return 0, fmt.Errorf("query daily metrics: %w", err)
-	}
-	if len(metrics) == 0 {
-		return 0, nil
-	}
-
-	cfg := s.creatorFundCfg
-	accrued := 0
-	for _, m := range metrics {
-		if m.ViewCount <= 0 {
-			continue
-		}
-		if m.ContentType != "long_video" && m.ContentType != "flick" {
-			continue
-		}
-		exists, err := s.store.HasCreatorFundEarning(ctx, creatorID, day, m.ContentType, defaultRegionCode)
-		if err != nil {
-			return accrued, fmt.Errorf("idempotency check: %w", err)
-		}
-		if exists {
-			continue
-		}
-		rate, err := s.store.GetActiveRpmRate(ctx, m.ContentType, defaultRegionCode, day)
-		if err != nil {
-			return accrued, fmt.Errorf("fetch rpm rate: %w", err)
-		}
-		if rate == nil || rate.RpmPaise <= 0 {
-			continue
-		}
-		band, err := s.ResolveQualityBand(ctx, m.ContentType, defaultRegionCode, day)
-		if err != nil {
-			return accrued, fmt.Errorf("fetch quality band: %w", err)
-		}
-
-		gross, baseGross, multiplierBps := ComputeQualityAdjustedGrossPaise(
-			m.ViewCount, rate.RpmPaise, m.AvgCQS, m.Impressions, band)
-		if gross <= 0 {
-			continue
-		}
-		net, fee := SplitEarnings(gross, cfg.PlatformFeeBps)
-
-		earning := &postgres.CreatorFundEarning{
-			CreatorID:            creatorID,
-			DayBucket:            day,
-			ContentType:          m.ContentType,
-			RegionCode:           defaultRegionCode,
-			ViewCount:            m.ViewCount,
-			WatchTimeMs:          m.WatchTimeMs,
-			RpmPaise:             rate.RpmPaise,
-			GrossPaise:           gross,
-			PlatformFeePaise:     fee,
-			NetPaise:             net,
-			Status:               "settled",
-			SettledAt:            time.Now(),
-			BaseGrossPaise:       baseGross,
-			QualityCQS:           m.AvgCQS,
-			QualityEffectiveCQS:  ShrinkCQS(m.AvgCQS, m.Impressions, band),
-			QualityImpressions:   m.Impressions,
-			QualityMultiplierBps: multiplierBps,
-		}
-		inserted, err := s.store.InsertCreatorFundEarning(ctx, earning)
-		if err != nil {
-			return accrued, fmt.Errorf("insert earning: %w", err)
-		}
-		if !inserted {
-			// Lost the race with a parallel accrual; the row exists.
-			continue
-		}
-		accrued++
-	}
-	return accrued, nil
-}
-
-// AccrueCreatorFundDayForAllEligible walks every eligible creator and
-// accrues `day`. Per-creator errors are logged and skipped.
-func (s *Service) AccrueCreatorFundDayForAllEligible(ctx context.Context, day time.Time, log func(creatorID uuid.UUID, accrued int, err error)) (int, error) {
-	creators, err := s.store.ListEligibleCreators(ctx)
-	if err != nil {
-		return 0, err
-	}
-	total := 0
-	for _, id := range creators {
-		n, err := s.AccrueCreatorFundDay(ctx, id, day)
-		if log != nil {
-			log(id, n, err)
-		}
-		if err != nil {
-			continue
-		}
-		total += n
-	}
-	return total, nil
-}
+// AccrueCreatorFundDay and AccrueCreatorFundDayForAllEligible live in
+// creator_fund_accrual.go since Phase 2B/2C: micro-paise carry, versioned
+// rows, budget cap, named skips. The settlement below calls them.
 
 // ---------------------------------------------------------------------------
 // Settlement — periodic, money moves here and only here
@@ -536,19 +488,47 @@ func (s *Service) SettleCreatorFundPeriod(ctx context.Context, creatorID uuid.UU
 	if err != nil {
 		return nil, fmt.Errorf("sum subscription earnings: %w", err)
 	}
+	// The memo lines: what was reversed off this period's fund line, what
+	// adjustments landed in it, how many days the cap zeroed, and the cap.
+	reversedRows, reversedNet, err := s.store.SumReversedFundAccruals(ctx, creatorID, period.Start, period.End, defaultRegionCode)
+	if err != nil {
+		return nil, fmt.Errorf("sum reversed accruals: %w", err)
+	}
+	adjCount, adjSum, err := s.store.SumAdjustmentsBetween(ctx, creatorID, period.Start, period.End)
+	if err != nil {
+		return nil, fmt.Errorf("sum adjustments: %w", err)
+	}
+	skipped, err := s.store.CountSkippedFundAccruals(ctx, creatorID, period.Start, period.End, defaultRegionCode)
+	if err != nil {
+		return nil, fmt.Errorf("count skipped accruals: %w", err)
+	}
+	budget, err := s.store.GetCreatorFundBudget(ctx, period.Key, defaultRegionCode)
+	if err != nil {
+		return nil, fmt.Errorf("get budget: %w", err)
+	}
 
 	st := &PeriodStatement{
-		CreatorID:       creatorID,
-		PeriodKey:       period.Key,
-		PeriodLabel:     period.Label(),
-		PeriodStart:     period.Start,
-		PeriodEnd:       period.End,
-		Cadence:         period.Cadence,
-		RegionCode:      defaultRegionCode,
-		Currency:        defaultEarningsCurrency,
-		FundViews:       fund.Views,
-		FundWatchTimeMs: fund.WatchTimeMs,
-		Status:          "settled",
+		CreatorID:        creatorID,
+		PeriodKey:        period.Key,
+		PeriodLabel:      period.Label(),
+		PeriodStart:      period.Start,
+		PeriodEnd:        period.End,
+		Cadence:          period.Cadence,
+		RegionCode:       defaultRegionCode,
+		Currency:         defaultEarningsCurrency,
+		FundViews:        fund.Views,
+		FundWatchTimeMs:  fund.WatchTimeMs,
+		ReversedPaise:    reversedNet,
+		FundReversedRows: reversedRows,
+		AdjustmentsPaise: adjSum,
+		AdjustmentsCount: adjCount,
+		FundRowsSkipped:  skipped,
+		Status:           "settled",
+	}
+	if budget != nil {
+		cap := budget.CapPaise
+		st.BudgetCapPaise = &cap
+		st.BudgetExhaustedOnDay = budget.ExhaustedOnDay
 	}
 	st.Fund = StreamLine{
 		Stream:            "creator_fund",
@@ -588,10 +568,13 @@ func (s *Service) SettleCreatorFundPeriod(ctx context.Context, creatorID uuid.UU
 
 	// A period that produced nothing at all is not worth a row. This is
 	// also the shape an ineligible creator with no tips ends in: no
-	// settlement row, nothing credited, provably paid nothing.
-	if st.GrossPaise == 0 && fund.Rows == 0 {
+	// settlement row, nothing credited, provably paid nothing. A period
+	// that only carries a reversal or an adjustment IS activity: money
+	// moved, and the statement is where that is explained.
+	if st.GrossPaise == 0 && fund.Rows == 0 && reversedRows == 0 && adjCount == 0 {
 		st.Status = "no_activity"
 		st.CreditedPaise = 0
+		st.WalletMovementPaise = st.CreditedPaise + st.AdjustmentsPaise
 		st.Explanation = ExplainStatement(st)
 		if err := CheckStatementArithmetic(st); err != nil {
 			return nil, err
@@ -669,6 +652,7 @@ func (s *Service) SettleCreatorFundPeriod(ctx context.Context, creatorID uuid.UU
 	// tip is.
 	st.AlreadyCreditedPaise += split.CreditedElsewhere
 	st.PendingPaise = split.Uncredited
+	st.WalletMovementPaise = st.CreditedPaise + st.AdjustmentsPaise
 
 	// 6. Write the final figures back. On a re-run of a settled period
 	//    the claim returned zero rows, credited_paise is unchanged, and
@@ -719,6 +703,13 @@ func toSettlementRow(id uuid.UUID, st *PeriodStatement) *postgres.PeriodSettleme
 		CreditedPaise:        st.CreditedPaise,
 		AlreadyCreditedPaise: st.AlreadyCreditedPaise,
 		PendingPaise:         st.PendingPaise,
+		ReversedPaise:        st.ReversedPaise,
+		FundReversedRows:     st.FundReversedRows,
+		AdjustmentsPaise:     st.AdjustmentsPaise,
+		AdjustmentsCount:     st.AdjustmentsCount,
+		BudgetCapPaise:       st.BudgetCapPaise,
+		BudgetExhaustedOnDay: st.BudgetExhaustedOnDay,
+		FundRowsSkipped:      st.FundRowsSkipped,
 		Status:               "settled",
 	}
 }
@@ -727,9 +718,23 @@ func toSettlementRow(id uuid.UUID, st *PeriodStatement) *postgres.PeriodSettleme
 // trigger both call. The candidate set is deliberately wider than "every
 // eligible creator": a creator who received tips but published nothing
 // still has a period statement, and must still get one.
+//
+// Accrual runs day by day across every eligible creator FIRST, in
+// creator_id order within each day — the same order the nightly worker
+// uses — so that under a budget cap the days that reach it are the same
+// whether the period was accrued nightly or back-filled here. The
+// per-creator settlement then finds every day already accrued and only
+// pays. A creator whose inputs moved surfaces ErrInputRevisionChanged
+// from their own settlement, which is where it is logged.
 func (s *Service) SettleCreatorFundPeriodForAll(ctx context.Context, period SettlementPeriod, log func(creatorID uuid.UUID, st *PeriodStatement, err error)) (PeriodBatchResult, error) {
 	var res PeriodBatchResult
 	res.Period = period
+
+	for _, day := range period.Days() {
+		if _, err := s.AccrueCreatorFundDayForAllEligible(ctx, day, nil); err != nil {
+			return res, fmt.Errorf("accrue %s: %w", day.Format("2006-01-02"), err)
+		}
+	}
 
 	creators, err := s.store.ListCreatorsWithPeriodActivity(ctx, period.Start, period.End)
 	if err != nil {
@@ -873,6 +878,14 @@ func fromSettlementRow(r *postgres.PeriodSettlement) *PeriodStatement {
 		CreditedPaise:        r.CreditedPaise,
 		AlreadyCreditedPaise: r.AlreadyCreditedPaise,
 		PendingPaise:         r.PendingPaise,
+		ReversedPaise:        r.ReversedPaise,
+		FundReversedRows:     r.FundReversedRows,
+		AdjustmentsPaise:     r.AdjustmentsPaise,
+		AdjustmentsCount:     r.AdjustmentsCount,
+		WalletMovementPaise:  r.CreditedPaise + r.AdjustmentsPaise,
+		BudgetCapPaise:       r.BudgetCapPaise,
+		BudgetExhaustedOnDay: r.BudgetExhaustedOnDay,
+		FundRowsSkipped:      r.FundRowsSkipped,
 		Status:               r.Status,
 		SettledAt:            r.SettledAt,
 		Persisted:            true,

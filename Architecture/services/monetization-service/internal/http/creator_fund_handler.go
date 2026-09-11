@@ -1,8 +1,12 @@
 package http
 
 import (
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/monetization-service/internal/service"
@@ -201,16 +205,165 @@ func (h *Handler) ForceAccrueCreatorFundDay(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "day must be YYYY-MM-DD", nil)
 		return
 	}
-	rows, err := h.svc.AccrueCreatorFundDayForAllEligible(c.Request.Context(), day, nil)
+	batch, err := h.svc.AccrueCreatorFundDayForAllEligible(c.Request.Context(), day, nil)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"day":          dayStr,
-		"rows_accrued": rows,
+		"rows_accrued": batch.Accrued,
+		"creators":     batch.Creators,
+		"failed":       batch.Failed,
+		"skipped":      batch.Skipped,
 		"note":         "accrual only — no money moved. Run POST /admin/creator-fund/settle-period to pay.",
 	}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Corrections (Phase 2A)
+// ---------------------------------------------------------------------------
+
+// GetCreatorFundEarningAdmin returns one accrual row with its full audit
+// trail — rate, band, rule version, input revision, carry, reversal —
+// so an operator can read a row before deciding to reverse it.
+func (h *Handler) GetCreatorFundEarningAdmin(c *gin.Context) {
+	if _, ok := getAdminID(c); !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid earning ID", nil)
+		return
+	}
+	e, err := h.svc.GetCreatorFundEarning(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, service.ErrEarningNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "EARNING_NOT_FOUND", "No accrual row with that id", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, e, nil)
+}
+
+// ReverseCreatorFundEarning marks one accrual row reversed. If the row
+// had been credited, the net is taken back through an adjustment keyed
+// on the row (cause creator_fund_earning_reversal:<id>), in the same
+// transaction — so a retry of this call cannot take it back twice. The
+// response says whether money moved, the balance after, and whether the
+// ledger was frozen because the balance went below zero.
+//
+// Body: {"reason": "..."} — required; it is written on the row and on
+// the adjustment, and into the audit log with the admin's id.
+func (h *Handler) ReverseCreatorFundEarning(c *gin.Context) {
+	adminID, ok := getAdminID(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid earning ID", nil)
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Reason) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REASON_REQUIRED", "a non-empty reason is required", nil)
+		return
+	}
+	res, err := h.svc.ReverseFundEarning(c.Request.Context(), id, req.Reason)
+	if err != nil {
+		if errors.Is(err, service.ErrEarningNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "EARNING_NOT_FOUND", "No accrual row with that id", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if !res.AlreadyReversed {
+		newData, _ := json.Marshal(res)
+		if aerr := h.svc.WriteAuditLog(c.Request.Context(), &pgstore.AuditLogEntry{
+			TableName:   "creator_fund_earnings",
+			Operation:   "reverse",
+			NewData:     newData,
+			PerformerID: adminID,
+			IPAddress:   c.ClientIP(),
+		}); aerr != nil {
+			slog.WarnContext(c.Request.Context(), "creator-fund reversal: audit log write failed",
+				"earning_id", id, "admin_id", adminID, "error", aerr)
+		}
+	}
+	api.JSON(c.Writer, http.StatusOK, res, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Budget cap (Phase 2C)
+// ---------------------------------------------------------------------------
+
+// ListCreatorFundBudgets returns every period's cap and how much of it
+// has accrued, newest period first.
+func (h *Handler) ListCreatorFundBudgets(c *gin.Context) {
+	if _, ok := getAdminID(c); !ok {
+		return
+	}
+	budgets, err := h.svc.ListCreatorFundBudgets(c.Request.Context())
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if budgets == nil {
+		budgets = []pgstore.CreatorFundBudget{}
+	}
+	cfg := h.svc.CreatorFundConfigSnapshot()
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"cadence": service.NormalizeCadence(cfg.SettlementCadence),
+		"budgets": budgets,
+	}, nil)
+}
+
+// SetCreatorFundBudget creates or changes a period's cap.
+//
+// Body: {"period_key": "2026-09", "region_code": "IN", "cap_paise": N,
+// "notes": "..."}. The period key must be of the configured cadence
+// (409 CADENCE_MISMATCH otherwise). Lowering cap_paise below what has
+// already accrued is refused with 409 BUDGET_BELOW_ACCRUED. Raising it
+// re-opens an exhausted period only if accrued is below the new cap.
+func (h *Handler) SetCreatorFundBudget(c *gin.Context) {
+	adminID, ok := getAdminID(c)
+	if !ok {
+		return
+	}
+	var req service.BudgetInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	if strings.TrimSpace(req.PeriodKey) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "period_key is required", nil)
+		return
+	}
+	if req.CapPaise < 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BUDGET", "cap_paise must be >= 0", nil)
+		return
+	}
+	b, err := h.svc.UpsertCreatorFundBudget(c.Request.Context(), req, &adminID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrBudgetBelowAccrued):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "BUDGET_BELOW_ACCRUED", err.Error(), nil)
+		case errors.Is(err, service.ErrCadenceMismatch):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "CADENCE_MISMATCH", err.Error(), nil)
+		case strings.HasPrefix(err.Error(), "INVALID_PERIOD"), strings.HasPrefix(err.Error(), "INVALID_BUDGET"):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, b, nil)
 }
 
 // SettleCreatorFundPeriod is the payment run, fired by hand. Same call

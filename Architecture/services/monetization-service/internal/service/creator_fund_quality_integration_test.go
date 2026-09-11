@@ -59,6 +59,7 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 		content := uuid.New()
 		t.Cleanup(func() {
 			_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_earnings WHERE creator_id = $1`, creator)
+			_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_carry WHERE creator_id = $1`, creator)
 			_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_eligibility WHERE creator_id = $1`, creator)
 			_, _ = pool.Exec(ctx, `DELETE FROM analytics.content_daily_summary WHERE creator_id = $1`, creator)
 			_, _ = pool.Exec(ctx, `DELETE FROM transactions WHERE wallet_id = $1`, creator)
@@ -92,8 +93,8 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: accrual failed: %v", tc.name, err)
 		}
-		if accrued != 1 {
-			t.Fatalf("%s: accrued %d rows, want 1", tc.name, accrued)
+		if accrued.Accrued != 1 {
+			t.Fatalf("%s: accrued %d rows, want 1", tc.name, accrued.Accrued)
 		}
 
 		var e postgres.CreatorFundEarning
@@ -136,8 +137,8 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 
 		// Re-accruing the same day must not measure it twice.
 		again, err := svc.AccrueCreatorFundDay(ctx, creator, day)
-		if err != nil || again != 0 {
-			t.Errorf("%s: re-accrual wrote %d rows (err=%v), want 0", tc.name, again, err)
+		if err != nil || again.Accrued != 0 {
+			t.Errorf("%s: re-accrual wrote %d rows (err=%v), want 0", tc.name, again.Accrued, err)
 		}
 	}
 
@@ -194,6 +195,7 @@ func TestLiveSettlementOfAZeroImpressionDayPaysTheNeutralAmount(t *testing.T) {
 	creator, content := uuid.New(), uuid.New()
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_earnings WHERE creator_id = $1`, creator)
+		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_carry WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_eligibility WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM analytics.content_daily_summary WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM transactions WHERE wallet_id = $1`, creator)
