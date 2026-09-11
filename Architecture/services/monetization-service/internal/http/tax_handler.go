@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 
+	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -77,7 +78,7 @@ func (h *Handler) GetTDSSummary(c *gin.Context) {
 		return
 	}
 
-	entries, totalPaise, err := h.svc.GetTDSSummary(c.Request.Context(), userID, year)
+	entries, totalTDSPaise, totalGrossPaise, err := h.svc.GetTDSSummary(c.Request.Context(), userID, year)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -86,10 +87,17 @@ func (h *Handler) GetTDSSummary(c *gin.Context) {
 		entries = []postgres.TDSEntry{}
 	}
 
+	// total_gross_paise is what the threshold is measured against; the
+	// section is configuration (plan Phase 3A flags 194-O vs 194J for
+	// tax counsel), not a fact this handler asserts.
 	result := map[string]interface{}{
-		"financial_year":  year,
-		"entries":         entries,
-		"total_tds_paise": totalPaise,
+		"financial_year":    year,
+		"entries":           entries,
+		"total_tds_paise":   totalTDSPaise,
+		"total_gross_paise": totalGrossPaise,
+		"threshold_paise":   service.TDSThresholdPaise,
+		"threshold_crossed": totalGrossPaise > service.TDSThresholdPaise,
+		"section":           h.svc.TDSSection(),
 	}
 
 	api.JSON(c.Writer, http.StatusOK, result, nil)

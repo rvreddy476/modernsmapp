@@ -253,6 +253,12 @@ type PeriodStatement struct {
 	RegionCode  string    `json:"region_code"`
 	Currency    string    `json:"currency"`
 
+	// The beta label (plan Phase 3C): while payouts are off the statement
+	// is an ESTIMATE and none of it is withdrawable. Stamped by the HTTP
+	// layer, which knows the flag; never persisted.
+	Estimate     bool `json:"estimate"`
+	Withdrawable bool `json:"withdrawable"`
+
 	Fund StreamLine `json:"fund"`
 	Tips StreamLine `json:"tips"`
 	Subs StreamLine `json:"subscriptions"`

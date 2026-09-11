@@ -38,6 +38,10 @@ externalSecret:
 env:
   ENV: staging
   MONETIZATION_WRITES_ENABLED: "false"
+  # Withdrawals. Requires MONETIZATION_WRITES_ENABLED=true; the process
+  # refuses to boot with payouts on and writes off. Off in beta: earnings
+  # are estimates, RequestPayout answers 503 PAYOUTS_NOT_ENABLED.
+  MONETIZATION_PAYOUTS_ENABLED: "false"
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # Add per-service inter-service URLs here. Common ones:

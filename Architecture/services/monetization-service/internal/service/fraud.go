@@ -10,6 +10,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// Removed in plan Phase 3B: FraudRiskScore and computeRiskScore (a score
+// computed from Redis keys nothing wrote), enforceMinimumPayout (a second
+// copy of EnforceMinimumPayout in payout.go) and calculateTDS (a second
+// copy of the TDS rule, with a different threshold comparison from the
+// one DeductTDS used). The live rules are EnforceMinimumPayout and
+// ComputeTDS; the holds a withdrawal can land in are written by
+// RequestPayout itself.
+
 // ---------------------------------------------------------------------------
 // Self-subscription block
 // ---------------------------------------------------------------------------
@@ -49,72 +57,6 @@ func (s *Service) CheckSubscriptionVelocity(ctx context.Context, subscriberID uu
 }
 
 // ---------------------------------------------------------------------------
-// Fraud risk score
-// ---------------------------------------------------------------------------
-
-// computeRiskScore calculates a fraud risk score (0-100) based on:
-// - Account age in days (< 30 days = +30)
-// - Transaction count in period (high volume with new account = +20)
-// - Verification status (unverified = +20)
-// This is a package-level function for testability.
-func computeRiskScore(accountAgeDays int, transactionCount int, isVerified bool) int {
-	score := 0
-
-	// New account risk
-	if accountAgeDays < 30 {
-		score += 30
-	} else if accountAgeDays < 90 {
-		score += 10
-	}
-
-	// High volume risk (especially for new accounts)
-	if transactionCount > 50 && accountAgeDays < 30 {
-		score += 20
-	} else if transactionCount > 100 && accountAgeDays < 90 {
-		score += 15
-	}
-
-	// Unverified account risk
-	if !isVerified {
-		score += 20
-	}
-
-	// Cap at 100
-	if score > 100 {
-		score = 100
-	}
-
-	return score
-}
-
-// FraudRiskScore computes a risk score for a creator. In a real implementation,
-// this would query account metadata. For now, it uses Redis-cached metadata.
-func (s *Service) FraudRiskScore(ctx context.Context, creatorID uuid.UUID) int {
-	// Check account age from Redis cache
-	ageKey := fmt.Sprintf("account_age_days:%s", creatorID.String())
-	ageDays := 365 // default: assume established
-	if val, err := s.rdb.Get(ctx, ageKey).Int(); err == nil {
-		ageDays = val
-	}
-
-	// Check transaction count
-	txCountKey := fmt.Sprintf("tx_count_30d:%s", creatorID.String())
-	txCount := 0
-	if val, err := s.rdb.Get(ctx, txCountKey).Int(); err == nil {
-		txCount = val
-	}
-
-	// Check verification
-	verifiedKey := fmt.Sprintf("verified:%s", creatorID.String())
-	isVerified := true
-	if val, err := s.rdb.Get(ctx, verifiedKey).Result(); err == nil && val == "0" {
-		isVerified = false
-	}
-
-	return computeRiskScore(ageDays, txCount, isVerified)
-}
-
-// ---------------------------------------------------------------------------
 // Fraud review creation
 // ---------------------------------------------------------------------------
 
@@ -135,6 +77,10 @@ func (s *Service) CreateFraudReview(ctx context.Context, creatorID uuid.UUID, re
 
 // DelayedEarningsCheck returns true if a creator account is less than 30 days old,
 // meaning earnings should be held for 7 days before becoming available.
+//
+// Left as found: it reads a Redis key nothing writes, so it always answers
+// false, and nothing calls it. The withdrawal hold that replaced it reads
+// creator_ledger.created_at (payout.go).
 func (s *Service) DelayedEarningsCheck(ctx context.Context, creatorID uuid.UUID) bool {
 	ageKey := fmt.Sprintf("account_age_days:%s", creatorID.String())
 	ageDays := 365 // default: assume established
@@ -142,38 +88,4 @@ func (s *Service) DelayedEarningsCheck(ctx context.Context, creatorID uuid.UUID)
 		ageDays = val
 	}
 	return ageDays < 30
-}
-
-// ---------------------------------------------------------------------------
-// Minimum payout enforcement
-// ---------------------------------------------------------------------------
-
-// enforceMinimumPayout returns an error if amountPaise is below the minimum
-// payout threshold of 10000 paise (INR 100).
-func enforceMinimumPayout(amountPaise int64) error {
-	const minPayoutPaise int64 = 10000 // INR 100
-	if amountPaise < minPayoutPaise {
-		return fmt.Errorf("minimum payout is %d paise (INR 100), requested %d", minPayoutPaise, amountPaise)
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
-// TDS calculation
-// ---------------------------------------------------------------------------
-
-// calculateTDS computes the net amount and TDS deduction for a payout.
-// TDS of 10% is applied if yearly earnings exceed 3,000,000 paise (INR 30,000).
-// All amounts are in paise (int64).
-func calculateTDS(grossPaise int64, yearlyEarningsSoFarPaise int64) (netPaise, tdsPaise int64) {
-	const tdsThresholdPaise int64 = 3_000_000 // INR 30,000
-	const tdsRateBps int64 = 1000             // 10% = 1000 bps
-
-	if yearlyEarningsSoFarPaise < tdsThresholdPaise {
-		return grossPaise, 0
-	}
-
-	tdsPaise = grossPaise * tdsRateBps / 10000
-	netPaise = grossPaise - tdsPaise
-	return netPaise, tdsPaise
 }

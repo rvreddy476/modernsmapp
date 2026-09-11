@@ -1195,6 +1195,9 @@ services:
       # worker starts. Set MONETIZATION_WRITES_ENABLED=true in the shell
       # to open it for a local settlement run.
       MONETIZATION_WRITES_ENABLED: ${MONETIZATION_WRITES_ENABLED:-false}
+      # Withdrawals (plan Phase 3C). Off by default; needs writes on too,
+      # or the container refuses to boot.
+      MONETIZATION_PAYOUTS_ENABLED: ${MONETIZATION_PAYOUTS_ENABLED:-false}
       # How often the creator-fund payment run happens: monthly (default)
       # or semimonthly (1st-15th, 16th-end).
       CF_SETTLEMENT_CADENCE: ${CF_SETTLEMENT_CADENCE:-monthly}

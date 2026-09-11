@@ -58,12 +58,18 @@ type Refund struct {
 
 // CreateFraudReview inserts a new fraud review.
 func (s *Store) CreateFraudReview(ctx context.Context, review *FraudReview) (*FraudReview, error) {
+	return s.CreateFraudReviewTx(ctx, s.db, review)
+}
+
+// CreateFraudReviewTx inserts a fraud review on the caller's transaction,
+// so the review that explains a held withdrawal commits with the hold.
+func (s *Store) CreateFraudReviewTx(ctx context.Context, db DBTX, review *FraudReview) (*FraudReview, error) {
 	if review.ID == uuid.Nil {
 		review.ID = uuid.New()
 	}
 	review.CreatedAt = time.Now()
 
-	_, err := s.db.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO fraud_reviews (id, creator_id, review_type, risk_score, status, notes, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, review.ID, review.CreatorID, review.ReviewType, review.RiskScore, review.Status, review.Notes, review.CreatedAt)

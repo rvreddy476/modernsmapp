@@ -78,7 +78,19 @@ func (h *Handler) GetCreatorFundEarnings(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
+	if summary == nil {
+		summary = &pgstore.EarningsSummary{Breakdown: []pgstore.EarningsDailyBreakdown{}}
+	}
+	summary.Estimate, summary.Withdrawable = h.estimateFlags()
 	api.JSON(c.Writer, http.StatusOK, summary, nil)
+}
+
+// estimateFlags is the beta label on every earnings figure (plan Phase
+// 3C): while payouts are off the number is an estimate and none of it is
+// withdrawable. Both flags flip together when MONETIZATION_PAYOUTS_ENABLED
+// is set, so a client can key off either.
+func (h *Handler) estimateFlags() (estimate, withdrawable bool) {
+	return !h.payoutsEnabled, h.payoutsEnabled
 }
 
 // ListCreatorFundRates is unauthenticated-but-public-ish: any creator
@@ -463,10 +475,19 @@ func (h *Handler) ListCreatorFundStatements(c *gin.Context) {
 	}
 	cfg := h.svc.CreatorFundConfigSnapshot()
 	current := service.PeriodContaining(time.Now().UTC(), cfg.SettlementCadence)
+	estimate, withdrawable := h.estimateFlags()
+	if statements == nil {
+		statements = []service.PeriodStatement{}
+	}
+	for i := range statements {
+		statements[i].Estimate, statements[i].Withdrawable = estimate, withdrawable
+	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"cadence":        service.NormalizeCadence(cfg.SettlementCadence),
 		"current_period": gin.H{"key": current.Key, "label": current.Label(), "start": current.Start, "end": current.End},
 		"statements":     statements,
+		"estimate":       estimate,
+		"withdrawable":   withdrawable,
 	}, nil)
 }
 
@@ -486,6 +507,7 @@ func (h *Handler) GetCreatorFundStatement(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "STATEMENT_NOT_FOUND", "No settlement for that period", nil)
 		return
 	}
+	st.Estimate, st.Withdrawable = h.estimateFlags()
 	api.JSON(c.Writer, http.StatusOK, st, nil)
 }
 

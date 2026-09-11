@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -17,9 +18,10 @@ import (
 )
 
 type Handler struct {
-	svc           *service.Service
-	internalKey   string
-	writesEnabled bool
+	svc            *service.Service
+	internalKey    string
+	writesEnabled  bool
+	payoutsEnabled bool
 }
 
 func New(svc *service.Service) *Handler {
@@ -37,6 +39,15 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 // checkpoint.
 func (h *Handler) WithWritesEnabled(enabled bool) *Handler {
 	h.writesEnabled = enabled
+	return h
+}
+
+// WithPayoutsEnabled mirrors MONETIZATION_PAYOUTS_ENABLED (plan Phase 3C)
+// for the two things the HTTP layer decides on it: the estimate label on
+// earnings and statements, and whether a provider webhook is processed
+// or merely stored. The refusal of a withdrawal itself is the service's.
+func (h *Handler) WithPayoutsEnabled(enabled bool) *Handler {
+	h.payoutsEnabled = enabled
 	return h
 }
 
@@ -133,10 +144,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/tds-summary/:year", h.GetTDSSummary)
 		v1.GET("/invoices", h.ListInvoices)
 
-		// Payout statements
-		v1.GET("/payout-statements", h.ListPayoutStatements)
-		v1.GET("/payout-statements/:id", h.GetPayoutStatement)
-
 		// Payout webhooks (no auth — signature verified externally)
 		v1.POST("/webhooks/payout", h.HandlePayoutWebhook)
 
@@ -189,36 +196,69 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 }
 
-// The beta reads, and the line they are drawn on: the RULES of payment are
-// open, the AMOUNTS are not.
+// The beta reads, and the line they are drawn on (plan Phase 3C): the
+// RULES of payment are open, the ESTIMATES are open and labelled as such,
+// and everything that moves money or exposes admin, tax or entitlement
+// state is closed.
 //
-// A creator is entitled to know what a thousand views is worth and what curve
-// their score is scaled by before they decide what to publish — those are the
-// same for everyone, they are what the founder authors in the admin console,
-// and publishing them costs nothing. Hence rates, quality-bands and status.
+// A creator is entitled to know what a thousand views is worth and what
+// curve their score is scaled by before they decide what to publish —
+// those are the same for everyone and publishing them costs nothing.
+// Hence rates, quality-bands and status.
 //
-// earnings and statements stay closed, deliberately. They are rupee figures
-// computed from a rate card that is still being argued about: flick RPM is ₹3
-// against long-form ₹50, and the platform's take across all three streams came
-// out at 0.38% on the first real settlement. The first number a creator sees is
-// the number they believe they are owed, so showing one that is about to move
-// is worse than showing none. They open when the rate card is settled.
-var betaReadOnlyPaths = map[string]struct{}{
-	"/v1/monetization/creator-ledger": {},
-	"/v1/monetization/wallet":         {}, // deprecated read-only alias
-	"/v1/monetization/transactions":   {},
-	"/v1/monetization/payouts":        {},
+// earnings and statements open with this phase, on one condition: while
+// payouts are off every such response carries "estimate": true and
+// "withdrawable": false (see stampEstimate), because the first number a
+// creator sees is the number they believe they are owed, and a figure
+// that may still move must say so on its face.
+//
+// Rules are method plus gin route PATTERN, matched on c.FullPath() —
+// the registered pattern, parameters and all — never on the request URL,
+// so `/creator-fund/statements/:periodKey` can be opened without also
+// opening whatever else happens to start with that prefix. A request
+// that matches no registered route has an empty FullPath and is refused.
+type betaRule struct {
+	method  string
+	pattern string
+}
+
+var betaReadOnlyRules = []betaRule{
+	// The creator's own recorded ledger and its history.
+	{http.MethodGet, "/v1/monetization/creator-ledger"},
+	{http.MethodGet, "/v1/monetization/wallet"}, // deprecated read-only alias
+	{http.MethodGet, "/v1/monetization/transactions"},
+	{http.MethodGet, "/v1/monetization/payouts"},
 
 	// The pay rules. Public, identical for every creator, no amounts.
-	"/v1/monetization/creator-fund/rates":         {},
-	"/v1/monetization/creator-fund/quality-bands": {},
+	{http.MethodGet, "/v1/monetization/creator-fund/rates"},
+	{http.MethodGet, "/v1/monetization/creator-fund/quality-bands"},
 	// Whether the caller is in the programme at all. Per-caller, but it
 	// carries eligibility, not money.
-	"/v1/monetization/creator-fund/status": {},
+	{http.MethodGet, "/v1/monetization/creator-fund/status"},
+
+	// The estimates. Labelled while payouts are off.
+	{http.MethodGet, "/v1/monetization/creator-fund/earnings"},
+	{http.MethodGet, "/v1/monetization/creator-fund/statements"},
+	{http.MethodGet, "/v1/monetization/creator-fund/statements/:periodKey"},
+}
+
+// betaRuleAllows reports whether a method and registered route pattern
+// are open in beta. An empty pattern (no route matched) is never open.
+func betaRuleAllows(method, pattern string) bool {
+	if pattern == "" {
+		return false
+	}
+	pattern = strings.TrimSuffix(pattern, "/")
+	for _, r := range betaReadOnlyRules {
+		if r.method == method && r.pattern == pattern {
+			return true
+		}
+	}
+	return false
 }
 
 // launchBoundary fails closed while financial products are not launched.
-// The allowlist is intentionally exact: adding a new GET does not
+// The rule list is intentionally exact: adding a new GET does not
 // accidentally publish admin, tax, entitlement, or settlement data.
 func (h *Handler) launchBoundary() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -226,9 +266,7 @@ func (h *Handler) launchBoundary() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		path := strings.TrimSuffix(c.Request.URL.Path, "/")
-		_, allowed := betaReadOnlyPaths[path]
-		if c.Request.Method != http.MethodGet || !allowed {
+		if !betaRuleAllows(c.Request.Method, c.FullPath()) {
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
 				"error": gin.H{
 					"code":    "MONETIZATION_NOT_LAUNCHED",
@@ -546,24 +584,52 @@ func (h *Handler) RequestPayout(c *gin.Context) {
 		return
 	}
 
-	txn, err := h.svc.RequestPayout(c.Request.Context(), userID, req.AmountPaise, payoutMethodID)
+	// The gate pipeline (plan Phase 3A). Every refusal names its gate, so
+	// a creator is told what to fix rather than that something failed.
+	outcome, err := h.svc.RequestPayoutWithKey(c.Request.Context(), userID, req.AmountPaise, payoutMethodID, c.GetHeader("X-Idempotency-Key"))
 	if err != nil {
-		switch err.Error() {
-		case "INVALID_AMOUNT":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_AMOUNT", "Amount must be greater than zero", nil)
-		case "WALLET_NOT_FOUND":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "WALLET_NOT_FOUND", "Wallet not found", nil)
-		case "WALLET_FROZEN":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "WALLET_FROZEN", "Wallet is frozen", nil)
-		case "INSUFFICIENT_BALANCE":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for payout", nil)
+		reply := func(status int, code, message string) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, message, nil)
+		}
+		switch {
+		case errors.Is(err, service.ErrPayoutsNotEnabled):
+			reply(http.StatusServiceUnavailable, "PAYOUTS_NOT_ENABLED", "Withdrawals are not available in this beta. Your earnings are estimates until they are.")
+		case errors.Is(err, service.ErrInvalidAmount):
+			reply(http.StatusBadRequest, "INVALID_AMOUNT", "Amount must be greater than zero and within the payout limit")
+		case errors.Is(err, service.ErrMinimumPayoutNotMet):
+			reply(http.StatusBadRequest, "MINIMUM_PAYOUT_NOT_MET", "The minimum withdrawal is Rs 100")
+		case errors.Is(err, service.ErrKYCNotVerified):
+			reply(http.StatusForbidden, "KYC_NOT_VERIFIED", "Your tax profile has not been verified")
+		case errors.Is(err, service.ErrPayoutMethodNotFound):
+			reply(http.StatusNotFound, "PAYOUT_METHOD_NOT_FOUND", "Payout method not found")
+		case errors.Is(err, service.ErrPayoutMethodNotVerified):
+			reply(http.StatusForbidden, "PAYOUT_METHOD_NOT_VERIFIED", "Payout method has not been verified")
+		case errors.Is(err, service.ErrWalletNotFound):
+			reply(http.StatusNotFound, "WALLET_NOT_FOUND", "Wallet not found")
+		case errors.Is(err, service.ErrWalletFrozen):
+			reply(http.StatusForbidden, "WALLET_FROZEN", "Wallet is frozen")
+		case errors.Is(err, service.ErrInsufficientBalance):
+			reply(http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for payout")
 		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			reply(http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		}
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusCreated, txn, nil)
+	if outcome.Held {
+		// Not an error: the request is recorded and a reviewer will see
+		// it. No money moved. 202 rather than 201, so a client can tell
+		// "held for review" from "on its way" without parsing the body.
+		api.JSON(c.Writer, http.StatusAccepted, gin.H{
+			"code":        "PAYOUT_HELD",
+			"message":     "Your withdrawal has been held for review. No money has moved.",
+			"hold_reason": outcome.HoldReason,
+			"request":     outcome.Request,
+			"replayed":    outcome.Replayed,
+		}, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, outcome, nil)
 }
 
 func (h *Handler) GetPayouts(c *gin.Context) {

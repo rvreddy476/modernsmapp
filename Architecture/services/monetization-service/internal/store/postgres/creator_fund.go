@@ -173,6 +173,12 @@ type EarningsSummary struct {
 	TotalNetPaise   int64                    `json:"total_net_paise"`
 	TotalViews      int64                    `json:"total_views"`
 	Breakdown       []EarningsDailyBreakdown `json:"breakdown"`
+
+	// The beta label (plan Phase 3C). While payouts are off every figure
+	// above is an ESTIMATE and none of it is withdrawable; the handler
+	// stamps both so the label travels with the number.
+	Estimate     bool `json:"estimate"`
+	Withdrawable bool `json:"withdrawable"`
 }
 
 // ---------------------------------------------------------------------------

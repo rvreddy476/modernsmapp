@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,8 +11,83 @@ import (
 	"github.com/google/uuid"
 )
 
-// minimumPayoutPaise is the minimum payout amount (Rs 100 = 10000 paise).
-const minimumPayoutPaise int64 = 10_000
+// ---------------------------------------------------------------------------
+// The withdrawal path (plan Phase 3A, M-04)
+// ---------------------------------------------------------------------------
+//
+// Until this phase every control on a payout — the minimum, KYC, the
+// new-account hold, fraud review, TDS — was implemented and unreachable:
+// RequestPayout locked the ledger, moved balance to pending_payout, wrote
+// one transactions row and returned. Nothing ever inserted into
+// payout_requests.
+//
+// RequestPayout is now a pipeline, in this order and no other, with
+// everything from the payout-method check onward inside ONE transaction:
+//
+//   1. payouts enabled (Phase 3C)         else PAYOUTS_NOT_ENABLED
+//   2. minimum payout (Rs 100)            else MINIMUM_PAYOUT_NOT_MET
+//   3. KYC: creator_tax_profiles.verified_at
+//                                         else KYC_NOT_VERIFIED
+//   4. payout method exists, is verified, belongs to the caller
+//   5. ledger row locked; not frozen; balance >= amount
+//   6. new-account hold: ledger under 7 days old
+//                                         -> payout_requests(held) +
+//                                            fraud_reviews(new_creator_hold)
+//   7. velocity: more than 3 requests in 24 h
+//                                         -> held + fraud_reviews(velocity)
+//   8. TDS on cumulative gross for the financial year -> tds_ledger
+//   9. balance -= gross, pending_payout += gross; transactions(payout,
+//      pending) keyed payout:<id>; ledger leg user_wallet -> payout_hold
+//      keyed payout_hold:<id>; payout_requests(requested, amount=gross,
+//      tds_paise, net_paise)
+//
+// A hold (6, 7) is recorded before any money moves: the request row and
+// the review exist, the balance does not change, and the caller gets a
+// 202 rather than an error. What happens to a held request next is
+// Phase 4's state machine.
+
+const (
+	// minimumPayoutPaise is the minimum payout amount (Rs 100 = 10000 paise).
+	minimumPayoutPaise int64 = 10_000
+	// newCreatorHoldAge is how old a creator's ledger must be before a
+	// withdrawal is not held for review. Re-based on creator_ledger.created_at
+	// rather than the Redis account-age keys, which nothing wrote.
+	newCreatorHoldAge = 7 * 24 * time.Hour
+	// velocityWindow and velocityMaxRequests: more than this many requests
+	// in the window holds the next one.
+	velocityWindow      = 24 * time.Hour
+	velocityMaxRequests = 3
+	// holdRiskScore is recorded on the fraud review a hold creates. The
+	// score is a queue-ordering hint for the reviewer, not a decision.
+	holdRiskScore = 50
+
+	payoutRequestReferenceType = "payout_request"
+	payoutHoldAccountType      = "payout_hold"
+
+	// HoldReasonNewCreator and HoldReasonVelocity are the review_type
+	// values a hold writes (both are in fraud_reviews' CHECK).
+	HoldReasonNewCreator = "new_creator_hold"
+	HoldReasonVelocity   = "velocity"
+
+	// PayoutStatusRequested is the state a withdrawal starts in once it
+	// has passed every gate; PayoutStatusHeld is a withdrawal recorded
+	// for review before any money moved.
+	PayoutStatusRequested = "requested"
+	PayoutStatusHeld      = "held"
+)
+
+// The refusals, one sentinel each, so the HTTP layer maps them by
+// identity rather than by string.
+var (
+	ErrPayoutsNotEnabled       = errors.New("PAYOUTS_NOT_ENABLED")
+	ErrMinimumPayoutNotMet     = errors.New("MINIMUM_PAYOUT_NOT_MET")
+	ErrKYCNotVerified          = errors.New("KYC_NOT_VERIFIED")
+	ErrPayoutMethodNotFound    = errors.New("PAYOUT_METHOD_NOT_FOUND")
+	ErrPayoutMethodNotVerified = errors.New("PAYOUT_METHOD_NOT_VERIFIED")
+	ErrWalletNotFound          = errors.New("WALLET_NOT_FOUND")
+	ErrWalletFrozen            = errors.New("WALLET_FROZEN")
+	ErrInsufficientBalance     = errors.New("INSUFFICIENT_BALANCE")
+)
 
 // CheckKYCGate verifies that the user has a verified creator_tax_profiles entry.
 func (s *Service) CheckKYCGate(ctx context.Context, userID uuid.UUID) error {
@@ -20,103 +96,297 @@ func (s *Service) CheckKYCGate(ctx context.Context, userID uuid.UUID) error {
 		return fmt.Errorf("check KYC: %w", err)
 	}
 	if !verified {
-		return fmt.Errorf("KYC_NOT_VERIFIED")
+		return ErrKYCNotVerified
 	}
 	return nil
 }
 
-// EnforceMinimumPayout returns an error if the amount is below the minimum threshold.
+// EnforceMinimumPayout returns ErrMinimumPayoutNotMet if the amount is
+// below Rs 100.
 func (s *Service) EnforceMinimumPayout(amountPaise int64) error {
 	if amountPaise < minimumPayoutPaise {
-		return fmt.Errorf("MINIMUM_PAYOUT_NOT_MET")
+		return ErrMinimumPayoutNotMet
 	}
 	return nil
 }
 
-// InitiatePayoutEnhanced performs KYC check, minimum check, then creates a payout request
-// through the kyc_check -> approved pipeline.
-func (s *Service) InitiatePayoutEnhanced(ctx context.Context, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID) (*postgres.Transaction, error) {
-	// Enforce minimum payout
+// PayoutOutcome is what a withdrawal request produced. Exactly one of
+// two shapes: a REQUESTED payout (Transaction set, money moved into
+// pending_payout, TDS priced) or a HELD one (Held true, HoldReason and
+// FraudReview set, no money moved, NetPaise zero).
+type PayoutOutcome struct {
+	Request     *postgres.PayoutRequestRow `json:"request"`
+	Transaction *postgres.Transaction      `json:"transaction,omitempty"`
+	Held        bool                       `json:"held"`
+	HoldReason  string                     `json:"hold_reason,omitempty"`
+	FraudReview *postgres.FraudReview      `json:"fraud_review,omitempty"`
+	GrossPaise  int64                      `json:"gross_paise"`
+	TDSPaise    int64                      `json:"tds_paise"`
+	NetPaise    int64                      `json:"net_paise"`
+	// Replayed is true when the client's idempotency key had already
+	// been used: Request is the original row and nothing happened.
+	Replayed bool `json:"replayed"`
+}
+
+// RequestPayout runs the withdrawal pipeline with no client idempotency
+// key. See the file comment for the order of gates.
+func (s *Service) RequestPayout(ctx context.Context, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID) (*PayoutOutcome, error) {
+	return s.RequestPayoutWithKey(ctx, userID, amountPaise, payoutMethodID, "")
+}
+
+// RequestPayoutWithKey is RequestPayout with an optional client
+// idempotency key (the X-Idempotency-Key header). A repeated key returns
+// the request it first produced and moves nothing.
+func (s *Service) RequestPayoutWithKey(ctx context.Context, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID, clientKey string) (*PayoutOutcome, error) {
+	// 1. The beta boundary, at the service layer so it holds for every
+	//    caller and not just the HTTP route.
+	if !s.payoutsEnabled {
+		return nil, ErrPayoutsNotEnabled
+	}
+	if userID == uuid.Nil || payoutMethodID == uuid.Nil {
+		return nil, fmt.Errorf("INVALID_ID: user and payout method are required")
+	}
+	if amountPaise <= 0 || amountPaise > maxAmountPaise {
+		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
+	}
+	// 2.
 	if err := s.EnforceMinimumPayout(amountPaise); err != nil {
 		return nil, err
 	}
-
-	// KYC gate check
+	// 3.
 	if err := s.CheckKYCGate(ctx, userID); err != nil {
 		return nil, err
 	}
+	// 4-9, together or not at all.
+	var out *PayoutOutcome
+	err := s.store.WithTx(ctx, func(tx pgxTx) error {
+		o, err := s.requestPayoutTx(ctx, tx, userID, amountPaise, payoutMethodID, clientKey)
+		out = o
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.Held {
+		slog.Warn("payout held for review",
+			"user_id", userID, "request_id", out.Request.ID, "amount_paise", amountPaise, "reason", out.HoldReason)
+	} else if !out.Replayed {
+		slog.Info("payout requested",
+			"user_id", userID, "request_id", out.Request.ID,
+			"gross_paise", out.GrossPaise, "tds_paise", out.TDSPaise, "net_paise", out.NetPaise)
+	}
+	return out, nil
+}
 
-	// Create the payout request via the existing store method
-	txn, err := s.store.RequestPayout(ctx, userID, amountPaise, payoutMethodID)
+// requestPayoutTx is gates 4-9 inside the caller's transaction.
+func (s *Service) requestPayoutTx(ctx context.Context, tx pgxTx, userID uuid.UUID, grossPaise int64, payoutMethodID uuid.UUID, clientKey string) (*PayoutOutcome, error) {
+	var keyPtr *string
+	if clientKey != "" {
+		key := "payout:" + userID.String() + ":" + clientKey
+		existing, err := s.store.GetPayoutRequestByIdempotencyKeyTx(ctx, tx, key)
+		if err != nil {
+			return nil, fmt.Errorf("idempotency lookup: %w", err)
+		}
+		if existing != nil {
+			return &PayoutOutcome{
+				Request:    existing,
+				Held:       existing.Status == PayoutStatusHeld,
+				HoldReason: heldReasonFromNotes(existing),
+				GrossPaise: existing.AmountPaise,
+				TDSPaise:   existing.TDSPaise,
+				NetPaise:   derefInt64(existing.NetPaise),
+				Replayed:   true,
+			}, nil
+		}
+		keyPtr = &key
+	}
+
+	// 4. The method exists, is verified, and is the caller's own.
+	method, err := s.store.GetPayoutMethodTx(ctx, tx, userID, payoutMethodID)
+	if err != nil {
+		return nil, fmt.Errorf("payout method: %w", err)
+	}
+	if method == nil {
+		return nil, ErrPayoutMethodNotFound
+	}
+	if !method.IsVerified {
+		return nil, ErrPayoutMethodNotVerified
+	}
+
+	// 5. Lock the ledger row for the rest of the transaction.
+	ledger, err := s.store.LockLedgerTx(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if ledger == nil {
+		return nil, ErrWalletNotFound
+	}
+	if ledger.IsFrozen {
+		return nil, ErrWalletFrozen
+	}
+	if ledger.BalancePaise < grossPaise {
+		return nil, ErrInsufficientBalance
+	}
+
+	now := time.Now()
+	requestID := uuid.New()
+
+	// 6. New-account hold, on the age of the ledger row itself.
+	if now.Sub(ledger.CreatedAt) < newCreatorHoldAge {
+		return s.holdPayoutTx(ctx, tx, requestID, userID, grossPaise, payoutMethodID, keyPtr, now,
+			HoldReasonNewCreator,
+			fmt.Sprintf("ledger is %s old; withdrawals are held for the first %s",
+				now.Sub(ledger.CreatedAt).Round(time.Hour), newCreatorHoldAge))
+	}
+
+	// 7. Velocity: this request would be the (n+1)th in the window.
+	recent, err := s.store.CountPayoutRequestsSinceTx(ctx, tx, userID, now.Add(-velocityWindow))
+	if err != nil {
+		return nil, fmt.Errorf("count recent payout requests: %w", err)
+	}
+	if recent >= velocityMaxRequests {
+		return s.holdPayoutTx(ctx, tx, requestID, userID, grossPaise, payoutMethodID, keyPtr, now,
+			HoldReasonVelocity,
+			fmt.Sprintf("%d requests in the last %s; the limit is %d", recent, velocityWindow, velocityMaxRequests))
+	}
+
+	// 8. TDS, on cumulative gross for the year, keyed to this request.
+	netPaise, tdsPaise, err := s.deductTDSTx(ctx, tx, userID, grossPaise, &requestID)
 	if err != nil {
 		return nil, err
 	}
 
-	// The payout request was created with status 'pending'. Transition to kyc_check, then approved.
-	// In a production system this would be async. Here we auto-approve after KYC passes.
-	slog.Info("payout request created with KYC cleared",
-		"user_id", userID, "amount_paise", amountPaise, "transaction_id", txn.ID)
+	// 9. The money move and the records that explain it.
+	txn := &postgres.Transaction{
+		ID:            uuid.New(),
+		WalletID:      userID,
+		Type:          "payout",
+		AmountPaise:   grossPaise,
+		Currency:      "INR",
+		Status:        "pending",
+		ReferenceType: payoutRequestReferenceType,
+		ReferenceID:   requestID.String(),
+		Description:   fmt.Sprintf("Payout requested: gross %d paise, TDS %d paise, net %d paise", grossPaise, tdsPaise, netPaise),
+		CreatedAt:     now,
+	}
+	if err := s.store.InsertPayoutTransactionTx(ctx, tx, txn, "payout:"+requestID.String()); err != nil {
+		return nil, err
+	}
+	if err := s.store.MoveBalanceToPendingPayoutTx(ctx, tx, userID, grossPaise); err != nil {
+		if errors.Is(err, postgres.ErrInsufficientFunds) {
+			return nil, ErrInsufficientBalance
+		}
+		return nil, err
+	}
+	walletAcct, err := s.store.EnsureAccountTx(ctx, tx, userID, creatorWalletAccountType)
+	if err != nil {
+		return nil, fmt.Errorf("ensure wallet account: %w", err)
+	}
+	holdAcct, err := s.store.EnsureAccountTx(ctx, tx, userID, payoutHoldAccountType)
+	if err != nil {
+		return nil, fmt.Errorf("ensure payout_hold account: %w", err)
+	}
+	refID := requestID
+	if err := s.store.InsertLedgerEntryTx(ctx, tx, &postgres.LedgerEntry{
+		DebitAccountID:  walletAcct.ID,
+		CreditAccountID: holdAcct.ID,
+		AmountPaise:     grossPaise,
+		Currency:        "INR",
+		ReferenceType:   payoutRequestReferenceType,
+		ReferenceID:     &refID,
+		IdempotencyKey:  "payout_hold:" + requestID.String(),
+		Description:     "Payout requested: balance reserved pending transfer",
+	}); err != nil {
+		return nil, fmt.Errorf("ledger leg: %w", err)
+	}
 
-	return txn, nil
+	row := &postgres.PayoutRequestRow{
+		ID:             requestID,
+		UserID:         userID,
+		TransactionID:  &txn.ID,
+		AmountPaise:    grossPaise,
+		Currency:       "INR",
+		Status:         PayoutStatusRequested,
+		PayoutMethodID: &payoutMethodID,
+		RequestedAt:    now,
+		TDSPaise:       tdsPaise,
+		NetPaise:       &netPaise,
+		IdempotencyKey: keyPtr,
+	}
+	if err := s.store.InsertPayoutRequestTx(ctx, tx, row); err != nil {
+		return nil, err
+	}
+	return &PayoutOutcome{
+		Request:     row,
+		Transaction: txn,
+		GrossPaise:  grossPaise,
+		TDSPaise:    tdsPaise,
+		NetPaise:    netPaise,
+	}, nil
 }
 
-// BatchPayouts groups approved payout requests into a batch.
-func (s *Service) BatchPayouts(ctx context.Context) (*postgres.PayoutBatch, error) {
-	requests, err := s.store.GetPayoutsForBatching(ctx, 100)
+// holdPayoutTx records a withdrawal for review: the request row in
+// status 'held' and the fraud review that says why. No money moves; the
+// balance is exactly as the lock found it.
+func (s *Service) holdPayoutTx(ctx context.Context, tx pgxTx, requestID, userID uuid.UUID, grossPaise int64, payoutMethodID uuid.UUID, keyPtr *string, now time.Time, reason, why string) (*PayoutOutcome, error) {
+	row := &postgres.PayoutRequestRow{
+		ID:             requestID,
+		UserID:         userID,
+		AmountPaise:    grossPaise,
+		Currency:       "INR",
+		Status:         PayoutStatusHeld,
+		PayoutMethodID: &payoutMethodID,
+		RequestedAt:    now,
+		Notes:          reason + ": " + why,
+		IdempotencyKey: keyPtr,
+	}
+	if err := s.store.InsertPayoutRequestTx(ctx, tx, row); err != nil {
+		return nil, err
+	}
+	notes := fmt.Sprintf("payout request %s for %d paise held: %s", requestID, grossPaise, why)
+	review, err := s.store.CreateFraudReviewTx(ctx, tx, &postgres.FraudReview{
+		CreatorID:  userID,
+		ReviewType: reason,
+		RiskScore:  holdRiskScore,
+		Status:     "pending",
+		Notes:      &notes,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("get payouts for batching: %w", err)
+		return nil, fmt.Errorf("create fraud review: %w", err)
 	}
-	if len(requests) == 0 {
-		return nil, nil
-	}
+	return &PayoutOutcome{
+		Request:     row,
+		Held:        true,
+		HoldReason:  reason,
+		FraudReview: review,
+		GrossPaise:  grossPaise,
+	}, nil
+}
 
-	var totalPaise int64
-	for _, r := range requests {
-		totalPaise += int64(r.AmountPaise)
+// heldReasonFromNotes recovers the hold reason a held row was written
+// with (the notes start with it) for a replayed outcome.
+func heldReasonFromNotes(r *postgres.PayoutRequestRow) string {
+	if r.Status != PayoutStatusHeld {
+		return ""
 	}
-
-	batch := &postgres.PayoutBatch{
-		Status:      "pending",
-		TotalPaise:  totalPaise,
-		PayoutCount: len(requests),
-	}
-	batch, err = s.store.CreatePayoutBatch(ctx, batch)
-	if err != nil {
-		return nil, fmt.Errorf("create payout batch: %w", err)
-	}
-
-	for _, r := range requests {
-		if err := s.store.AddPayoutToBatch(ctx, r.ID, batch.ID); err != nil {
-			slog.Error("failed to add payout to batch", "request_id", r.ID, "batch_id", batch.ID, "error", err)
+	for _, reason := range []string{HoldReasonNewCreator, HoldReasonVelocity} {
+		if len(r.Notes) >= len(reason) && r.Notes[:len(reason)] == reason {
+			return reason
 		}
 	}
-
-	slog.Info("payout batch created", "batch_id", batch.ID, "count", len(requests), "total_paise", totalPaise)
-	return batch, nil
+	return ""
 }
 
-// ProcessPayoutBatch simulates sending a batch to the payment provider.
-func (s *Service) ProcessPayoutBatch(ctx context.Context, batchID uuid.UUID) error {
-	batch, err := s.store.GetPayoutBatch(ctx, batchID)
-	if err != nil {
-		return fmt.Errorf("get batch: %w", err)
+func derefInt64(p *int64) int64 {
+	if p == nil {
+		return 0
 	}
-	if batch == nil {
-		return fmt.Errorf("BATCH_NOT_FOUND")
-	}
-	if batch.Status != "pending" {
-		return fmt.Errorf("BATCH_NOT_PENDING")
-	}
-
-	// Mock: mark as processing, then settled
-	// In production this would call the payment provider API
-	if err := s.store.SettlePayoutBatch(ctx, batchID); err != nil {
-		return fmt.Errorf("settle batch: %w", err)
-	}
-
-	slog.Info("payout batch settled", "batch_id", batchID)
-	return nil
+	return *p
 }
+
+// ---------------------------------------------------------------------------
+// Provider webhook
+// ---------------------------------------------------------------------------
 
 // HandlePayoutWebhook processes a callback from the payment provider about a payout.
 func (s *Service) HandlePayoutWebhook(ctx context.Context, providerRef, status, failureReason string) error {
@@ -146,54 +416,14 @@ func (s *Service) HandlePayoutWebhook(ctx context.Context, providerRef, status, 
 	return nil
 }
 
-// GeneratePayoutStatement computes a payout statement for the given user and period.
-func (s *Service) GeneratePayoutStatement(ctx context.Context, userID uuid.UUID, periodStart, periodEnd time.Time) (*postgres.PayoutStatement, error) {
-	earnings, err := s.store.SumEarnings(ctx, userID, periodStart, periodEnd)
-	if err != nil {
-		return nil, fmt.Errorf("sum earnings: %w", err)
-	}
-
-	deductions, err := s.store.SumDeductions(ctx, userID, periodStart, periodEnd)
-	if err != nil {
-		return nil, fmt.Errorf("sum deductions: %w", err)
-	}
-
-	netPayout := earnings - deductions
-	if netPayout < 0 {
-		netPayout = 0
-	}
-
-	stmt := &postgres.PayoutStatement{
-		UserID:               userID,
-		PeriodStart:          periodStart,
-		PeriodEnd:            periodEnd,
-		TotalEarningsPaise:   earnings,
-		TotalDeductionsPaise: deductions,
-		TotalPayoutPaise:     netPayout,
-	}
-
-	stmt, err = s.store.CreatePayoutStatement(ctx, stmt)
-	if err != nil {
-		return nil, fmt.Errorf("create payout statement: %w", err)
-	}
-
-	slog.Info("payout statement generated",
-		"user_id", userID,
-		"period_start", periodStart,
-		"period_end", periodEnd,
-		"earnings", earnings,
-		"deductions", deductions,
-		"net", netPayout,
-	)
-	return stmt, nil
-}
-
-// ListPayoutStatements returns paginated payout statements for a user.
-func (s *Service) ListPayoutStatements(ctx context.Context, userID uuid.UUID, limit, offset int) ([]postgres.PayoutStatement, error) {
-	return s.store.ListPayoutStatements(ctx, userID, limit, offset)
-}
-
-// GetPayoutStatement returns a single payout statement.
-func (s *Service) GetPayoutStatement(ctx context.Context, stmtID uuid.UUID) (*postgres.PayoutStatement, error) {
-	return s.store.GetPayoutStatement(ctx, stmtID)
+// StorePayoutWebhookEvent records a provider callback that arrived while
+// payouts were disabled (Phase 3C): nothing is acted on, the event is
+// kept in the audit log so Phase 4's reconciler can find it.
+func (s *Service) StorePayoutWebhookEvent(ctx context.Context, rawBody []byte, remoteAddr string) error {
+	return s.store.WriteAuditLog(ctx, &postgres.AuditLogEntry{
+		TableName: "payout_requests",
+		Operation: "webhook_stored_payouts_disabled",
+		NewData:   rawBody,
+		IPAddress: remoteAddr,
+	})
 }

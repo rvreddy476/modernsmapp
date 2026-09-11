@@ -40,6 +40,19 @@ func main() {
 		slog.Error("invalid MONETIZATION_WRITES_ENABLED", "error", err)
 		os.Exit(1)
 	}
+	// The withdrawal path (plan Phase 3C). Off by default, and it cannot be
+	// on while writes are off: a payout is a write, and a configuration
+	// that says otherwise is a mistake the process refuses to run under.
+	payoutsEnabled, err := strconv.ParseBool(env("MONETIZATION_PAYOUTS_ENABLED", "false"))
+	if err != nil {
+		slog.Error("invalid MONETIZATION_PAYOUTS_ENABLED", "error", err)
+		os.Exit(1)
+	}
+	if payoutsEnabled && !writesEnabled {
+		slog.Error("refusing to start: MONETIZATION_PAYOUTS_ENABLED=true requires MONETIZATION_WRITES_ENABLED=true")
+		os.Exit(1)
+	}
+	tdsSection := strings.TrimSpace(env("MONETIZATION_TDS_SECTION", service.DefaultTDSSection))
 	if (environment == "prod" || environment == "production" || environment == "staging") && internalKey == "" {
 		slog.Error("INTERNAL_SERVICE_KEY is required outside development")
 		os.Exit(1)
@@ -117,7 +130,9 @@ func main() {
 	// 7. Dependencies
 	monetizationStore := postgres.New(dbPool)
 	monetizationSvc := service.New(monetizationStore, rdb).
-		WithCreatorFundConfig(loadCreatorFundConfig())
+		WithCreatorFundConfig(loadCreatorFundConfig()).
+		WithPayoutsEnabled(payoutsEnabled).
+		WithTDSSection(tdsSection)
 	// A settlement cadence change renames every period; refuse to boot
 	// under a cadence that does not match a period already holding
 	// accrued fund money (plan Phase 2C). Fail closed: the accrual worker
@@ -129,7 +144,8 @@ func main() {
 	}
 	monetizationHandler := http.New(monetizationSvc).
 		WithInternalKey(internalKey).
-		WithWritesEnabled(writesEnabled)
+		WithWritesEnabled(writesEnabled).
+		WithPayoutsEnabled(payoutsEnabled)
 
 	// 7a. Kafka producer + background workers
 	if writesEnabled {
@@ -143,10 +159,15 @@ func main() {
 		monetizationProducer := events.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
 		defer monetizationProducer.Close()
 		monetizationSvc.WithEntitlementPublisher(monetizationProducer)
-		go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc)
-		slog.Warn("financial mutation workers enabled")
+		go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc, payoutsEnabled)
+		slog.Warn("financial mutation workers enabled", "payouts_enabled", payoutsEnabled)
 	} else {
 		slog.Info("financial mutation workers disabled for beta")
+	}
+	if payoutsEnabled {
+		slog.Warn("withdrawals ENABLED: RequestPayout runs the full gate pipeline and accrual refuses periods with no budget")
+	} else {
+		slog.Info("withdrawals disabled for beta: earnings are estimates, RequestPayout answers 503 PAYOUTS_NOT_ENABLED")
 	}
 
 	// 8. Gin with middleware stack

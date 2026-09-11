@@ -384,6 +384,28 @@ func (s *Service) AccrueCreatorFundDay(ctx context.Context, creatorID uuid.UUID,
 	cfg := s.creatorFundCfg
 	period := PeriodContaining(day, cfg.SettlementCadence)
 
+	// With payouts on, an accrual is a claim on real money, and a claim
+	// against a fund nobody has sized is refused outright — before any
+	// row is written, so the day is provably NOT measured rather than
+	// measured uncapped. With payouts off the loop below warns once per
+	// period and accrues uncapped (Phase 2C), because an estimate that
+	// is too high is corrected by a cap later and an estimate that is
+	// missing is a blank creators cannot plan against.
+	if s.payoutsEnabled {
+		budget, err := s.store.GetCreatorFundBudget(ctx, period.Key, defaultRegionCode)
+		if err != nil {
+			return res, fmt.Errorf("check budget: %w", err)
+		}
+		if budget == nil {
+			slog.Error("creator-fund accrual: refusing to accrue against a period with no budget row while payouts are enabled",
+				"creator_id", creatorID, "day", day.Format("2006-01-02"),
+				"period", period.Key, "region", defaultRegionCode,
+				"fix", "PUT /v1/monetization/admin/creator-fund/budgets")
+			return res, fmt.Errorf("%w: period %s region %s has no budget row and payouts are enabled",
+				ErrNoBudget, period.Key, defaultRegionCode)
+		}
+	}
+
 	for _, g := range groups {
 		m := g.Metric
 		if m.ViewCount <= 0 {

@@ -26,10 +26,49 @@ type Service struct {
 	rdb            *redis.Client
 	creatorFundCfg CreatorFundConfig
 	entitlementPub EntitlementPublisher
+
+	// payoutsEnabled is the beta boundary at the service layer (plan
+	// Phase 3C, MONETIZATION_PAYOUTS_ENABLED). Off: RequestPayout refuses
+	// with PAYOUTS_NOT_ENABLED before any gate, and accrual against a
+	// period with no budget row is tolerated (uncapped, warned once). On:
+	// withdrawals run the full pipeline and a period with no budget row
+	// refuses to accrue (ErrNoBudget), because an accrual is then a claim
+	// on real money.
+	payoutsEnabled bool
+	// tdsSection is what a tds_ledger row is recorded under
+	// (MONETIZATION_TDS_SECTION, default 194-O).
+	tdsSection string
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb, creatorFundCfg: DefaultCreatorFundConfig()}
+	return &Service{store: s, rdb: rdb, creatorFundCfg: DefaultCreatorFundConfig(), tdsSection: DefaultTDSSection}
+}
+
+// WithPayoutsEnabled opens or closes the withdrawal path. Defaults to
+// closed. Returns the same Service for chaining.
+func (s *Service) WithPayoutsEnabled(enabled bool) *Service {
+	s.payoutsEnabled = enabled
+	return s
+}
+
+// PayoutsEnabled reports whether the withdrawal path is open.
+func (s *Service) PayoutsEnabled() bool { return s.payoutsEnabled }
+
+// WithTDSSection sets the section TDS entries are recorded under. An
+// empty value keeps the default.
+func (s *Service) WithTDSSection(section string) *Service {
+	if section != "" {
+		s.tdsSection = section
+	}
+	return s
+}
+
+// TDSSection is the configured TDS section (default 194-O).
+func (s *Service) TDSSection() string {
+	if s.tdsSection == "" {
+		return DefaultTDSSection
+	}
+	return s.tdsSection
 }
 
 // WithCreatorFundConfig overrides the default creator-fund config (env-driven
@@ -148,31 +187,9 @@ func (s *Service) RemovePayoutMethod(ctx context.Context, userID, methodID uuid.
 // ---------------------------------------------------------------------------
 // Payouts
 // ---------------------------------------------------------------------------
-
-// RequestPayout validates the request and creates a payout transaction.
-// Validates: wallet exists, not frozen, sufficient balance.
-func (s *Service) RequestPayout(ctx context.Context, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID) (*postgres.Transaction, error) {
-	if amountPaise <= 0 || amountPaise > maxAmountPaise {
-		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
-	}
-
-	// Ensure wallet exists
-	wallet, err := s.store.GetWallet(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if wallet == nil {
-		return nil, fmt.Errorf("WALLET_NOT_FOUND")
-	}
-	if wallet.IsFrozen {
-		return nil, fmt.Errorf("WALLET_FROZEN")
-	}
-	if wallet.BalancePaise < amountPaise {
-		return nil, fmt.Errorf("INSUFFICIENT_BALANCE")
-	}
-
-	return s.store.RequestPayout(ctx, userID, amountPaise, payoutMethodID)
-}
+//
+// RequestPayout lives in payout.go (plan Phase 3A): the gated pipeline
+// that ends in the payout_requests insert.
 
 // ---------------------------------------------------------------------------
 // Creator Tiers

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -26,108 +27,66 @@ func TestSelfSubscription_DifferentUsers_OK(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimum payout tests
+// Minimum payout — the one rule, the one the withdrawal path calls
 // ---------------------------------------------------------------------------
 
-func TestMinimumPayout_BelowThreshold(t *testing.T) {
-	err := enforceMinimumPayout(5000) // INR 50 = 5000 paise
-	if err == nil {
-		t.Fatal("expected error for amount below INR 100")
+func TestMinimumPayout(t *testing.T) {
+	var svc Service
+	cases := []struct {
+		name   string
+		amount int64
+		want   error
+	}{
+		{"one paise under Rs 100", 9_999, ErrMinimumPayoutNotMet},
+		{"Rs 50", 5_000, ErrMinimumPayoutNotMet},
+		{"exactly Rs 100", 10_000, nil},
+		{"Rs 500", 50_000, nil},
 	}
-}
-
-func TestMinimumPayout_AtThreshold(t *testing.T) {
-	err := enforceMinimumPayout(10000) // INR 100 = 10000 paise
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestMinimumPayout_AboveThreshold(t *testing.T) {
-	err := enforceMinimumPayout(50000) // INR 500 = 50000 paise
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TDS calculation tests
-// ---------------------------------------------------------------------------
-
-func TestTDSDeduction_BelowThreshold(t *testing.T) {
-	// Yearly earnings < INR 30,000 (3000000 paise) -> no TDS
-	net, tds := calculateTDS(100000, 0) // INR 1000 gross, 0 yearly so far
-	if tds != 0 {
-		t.Fatalf("expected no TDS, got %d", tds)
-	}
-	if net != 100000 {
-		t.Fatalf("expected net=100000, got %d", net)
-	}
-}
-
-func TestTDSDeduction_AboveThreshold(t *testing.T) {
-	// Yearly earnings > INR 30,000 -> 10% TDS
-	net, tds := calculateTDS(500000, 3000000) // INR 5000 gross, INR 30000 yearly
-	if tds != 50000 {                         // 10% of 500000
-		t.Fatalf("expected TDS=50000, got %d", tds)
-	}
-	if net != 450000 {
-		t.Fatalf("expected net=450000, got %d", net)
-	}
-}
-
-func TestTDSDeduction_ExactThreshold(t *testing.T) {
-	// Yearly earnings exactly at threshold -> no TDS (must exceed)
-	net, tds := calculateTDS(100000, 2900000) // yearly so far = 2900000, below 3000000
-	if tds != 0 {
-		t.Fatalf("expected no TDS at exact threshold boundary, got %d", tds)
-	}
-	if net != 100000 {
-		t.Fatalf("expected net=100000, got %d", net)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := svc.EnforceMinimumPayout(tc.amount)
+			if !errors.Is(got, tc.want) {
+				t.Fatalf("EnforceMinimumPayout(%d) = %v, want %v", tc.amount, got, tc.want)
+			}
+		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Fraud risk score tests
+// TDS — pure rule, extracted from DeductTDS
 // ---------------------------------------------------------------------------
+//
+// Section 194-O: 10% once cumulative GROSS for the financial year,
+// including the payout being priced, exceeds Rs 30,000. The comparison is
+// on gross including this payout, so the payout that crosses the line is
+// the first one taxed, in full.
 
-func TestFraudRiskScore_NewAccount(t *testing.T) {
-	// New account (< 30 days) should have elevated risk
-	score := computeRiskScore(15, 5, false) // 15 days old, 5 transactions, not verified
-	if score < 30 {
-		t.Fatalf("expected risk >= 30 for new account, got %d", score)
+func TestComputeTDS(t *testing.T) {
+	cases := []struct {
+		name        string
+		gross       int64
+		yearlyGross int64
+		want        int64
+	}{
+		{"first payout of the year", 100_000, 0, 0},
+		{"lands exactly on the threshold", 100_000, 2_900_000, 0},
+		{"one paise over the threshold", 100_001, 2_900_000, 10_000},
+		{"already over the threshold", 500_000, 3_000_000, 50_000},
+		{"far over the threshold", 12_345, 10_000_000, 1_234},
+		{"zero gross", 0, 10_000_000, 0},
+		{"negative gross", -1, 10_000_000, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ComputeTDS(tc.gross, tc.yearlyGross); got != tc.want {
+				t.Fatalf("ComputeTDS(%d, %d) = %d, want %d", tc.gross, tc.yearlyGross, got, tc.want)
+			}
+		})
 	}
 }
 
-func TestFraudRiskScore_Established(t *testing.T) {
-	score := computeRiskScore(365, 100, true) // 1 year old, 100 txns, verified
-	if score > 20 {
-		t.Fatalf("expected low risk for established account, got %d", score)
-	}
-}
-
-func TestFraudRiskScore_NewAccountHighVolume(t *testing.T) {
-	// New account with high volume should get maximum risk
-	score := computeRiskScore(10, 60, false) // 10 days, 60 txns, unverified
-	// 30 (new) + 20 (high vol) + 20 (unverified) = 70
-	if score < 60 {
-		t.Fatalf("expected high risk for new high-volume unverified account, got %d", score)
-	}
-}
-
-func TestFraudRiskScore_VerifiedNewAccount(t *testing.T) {
-	// Verified but new account
-	score := computeRiskScore(20, 3, true) // 20 days, 3 txns, verified
-	// 30 (new) + 0 (low vol) + 0 (verified) = 30
-	if score != 30 {
-		t.Fatalf("expected score=30 for new verified low-volume account, got %d", score)
-	}
-}
-
-func TestFraudRiskScore_ZeroDays(t *testing.T) {
-	score := computeRiskScore(0, 0, false) // brand new, no txns, unverified
-	// 30 (new) + 0 (no txns) + 20 (unverified) = 50
-	if score != 50 {
-		t.Fatalf("expected score=50 for brand new unverified account, got %d", score)
+func TestComputeTDSThresholdIsThirtyThousandRupees(t *testing.T) {
+	if TDSThresholdPaise != 3_000_000 {
+		t.Fatalf("TDSThresholdPaise = %d, want 3,000,000 (Rs 30,000)", TDSThresholdPaise)
 	}
 }

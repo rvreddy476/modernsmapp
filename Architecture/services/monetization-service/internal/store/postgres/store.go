@@ -371,78 +371,13 @@ func (s *Store) RemovePayoutMethod(ctx context.Context, userID, methodID uuid.UU
 }
 
 // ---------------------------------------------------------------------------
-// Payouts (RequestPayout)
+// Payouts
 // ---------------------------------------------------------------------------
-
-// RequestPayout creates a payout transaction and deducts from the wallet's pending_payout.
-// This is done within a DB transaction for atomicity.
-func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID) (*Transaction, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	// Lock the wallet row
-	var balance, pending int64
-	var frozen bool
-	err = tx.QueryRow(ctx, `
-		SELECT balance, pending_payout, is_frozen
-		FROM creator_ledger
-		WHERE user_id = $1
-		FOR UPDATE
-	`, userID).Scan(&balance, &pending, &frozen)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.New("WALLET_NOT_FOUND")
-		}
-		return nil, err
-	}
-	if frozen {
-		return nil, errors.New("WALLET_FROZEN")
-	}
-	if balance < amountPaise {
-		return nil, errors.New("INSUFFICIENT_BALANCE")
-	}
-
-	// Deduct from balance and add to pending_payout
-	_, err = tx.Exec(ctx, `
-		UPDATE creator_ledger
-		SET balance = balance - $2, pending_payout = pending_payout + $2, updated_at = NOW()
-		WHERE user_id = $1
-	`, userID, amountPaise)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create payout transaction
-	now := time.Now()
-	t := &Transaction{
-		ID:            uuid.New(),
-		WalletID:      userID,
-		Type:          "payout",
-		AmountPaise:   amountPaise,
-		Currency:      "INR",
-		Status:        "pending",
-		ReferenceType: "payout_method",
-		ReferenceID:   payoutMethodID.String(),
-		Description:   "Payout requested",
-		CreatedAt:     now,
-	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, t.ID, t.WalletID, t.Type, t.AmountPaise, t.Currency, t.Status,
-		t.ReferenceType, t.ReferenceID, t.Description, t.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return t, nil
-}
+//
+// The withdrawal path lives in payout_requests.go as *Tx functions that
+// Service.RequestPayout composes under one transaction (plan Phase 3A).
+// The old Store.RequestPayout — lock, move, one transactions row, no
+// payout_requests row, no gates — was removed with it.
 
 // ---------------------------------------------------------------------------
 // Creator Tiers
@@ -878,8 +813,15 @@ func (s *Store) QueryViewScoreTotal(ctx context.Context, creatorID uuid.UUID, si
 
 // EnsureAccount creates an account for the given owner and type if one does not exist, then returns it.
 func (s *Store) EnsureAccount(ctx context.Context, ownerID uuid.UUID, accountType string) (*Account, error) {
+	return s.EnsureAccountTx(ctx, s.db, ownerID, accountType)
+}
+
+// EnsureAccountTx is EnsureAccount on the caller's transaction, so an
+// account created for a ledger leg vanishes with the leg if the
+// transaction rolls back.
+func (s *Store) EnsureAccountTx(ctx context.Context, db DBTX, ownerID uuid.UUID, accountType string) (*Account, error) {
 	now := time.Now()
-	_, err := s.db.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO accounts (owner_id, account_type, balance_paise, currency, created_at)
 		VALUES ($1, $2, 0, 'INR', $3)
 		ON CONFLICT (owner_id, account_type) DO NOTHING
@@ -887,13 +829,18 @@ func (s *Store) EnsureAccount(ctx context.Context, ownerID uuid.UUID, accountTyp
 	if err != nil {
 		return nil, err
 	}
-	return s.GetAccount(ctx, ownerID, accountType)
+	return s.GetAccountTx(ctx, db, ownerID, accountType)
 }
 
 // GetAccount returns the account for the given owner and type, or nil if not found.
 func (s *Store) GetAccount(ctx context.Context, ownerID uuid.UUID, accountType string) (*Account, error) {
+	return s.GetAccountTx(ctx, s.db, ownerID, accountType)
+}
+
+// GetAccountTx is GetAccount on the caller's transaction.
+func (s *Store) GetAccountTx(ctx context.Context, db DBTX, ownerID uuid.UUID, accountType string) (*Account, error) {
 	var a Account
-	err := s.db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT id, owner_id, account_type, balance_paise, currency, created_at
 		FROM accounts
 		WHERE owner_id = $1 AND account_type = $2
@@ -911,19 +858,22 @@ func (s *Store) GetAccount(ctx context.Context, ownerID uuid.UUID, accountType s
 
 // InsertLedgerEntry inserts an immutable ledger entry and atomically updates the debit and credit account balances.
 func (s *Store) InsertLedgerEntry(ctx context.Context, entry *LedgerEntry) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		return s.InsertLedgerEntryTx(ctx, tx, entry)
+	})
+}
 
+// InsertLedgerEntryTx is InsertLedgerEntry on the caller's transaction:
+// the leg and both balance moves commit with whatever the caller is
+// recording alongside them.
+func (s *Store) InsertLedgerEntryTx(ctx context.Context, db DBTX, entry *LedgerEntry) error {
 	now := time.Now()
 	entry.CreatedAt = now
 	if entry.ID == uuid.Nil {
 		entry.ID = uuid.New()
 	}
 
-	_, err = tx.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO ledger_entries (id, debit_account_id, credit_account_id, amount_paise, currency, reference_type, reference_id, idempotency_key, description, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, entry.ID, entry.DebitAccountID, entry.CreditAccountID, entry.AmountPaise, entry.Currency,
@@ -933,7 +883,7 @@ func (s *Store) InsertLedgerEntry(ctx context.Context, entry *LedgerEntry) error
 	}
 
 	// Debit account: decrease balance
-	_, err = tx.Exec(ctx, `
+	_, err = db.Exec(ctx, `
 		UPDATE accounts SET balance_paise = balance_paise - $2 WHERE id = $1
 	`, entry.DebitAccountID, entry.AmountPaise)
 	if err != nil {
@@ -941,14 +891,10 @@ func (s *Store) InsertLedgerEntry(ctx context.Context, entry *LedgerEntry) error
 	}
 
 	// Credit account: increase balance
-	_, err = tx.Exec(ctx, `
+	_, err = db.Exec(ctx, `
 		UPDATE accounts SET balance_paise = balance_paise + $2 WHERE id = $1
 	`, entry.CreditAccountID, entry.AmountPaise)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return err
 }
 
 // GetLedgerEntries returns ledger entries for a given account (debit or credit side), ordered by created_at DESC.

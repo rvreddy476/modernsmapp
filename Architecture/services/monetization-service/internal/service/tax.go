@@ -36,25 +36,65 @@ func (s *Service) GetCreatorTaxProfile(ctx context.Context, userID uuid.UUID) (*
 // TDS (Tax Deducted at Source)
 // ---------------------------------------------------------------------------
 
-// tdsThresholdPaise is the yearly earnings threshold above which TDS is deducted.
+// TDSThresholdPaise is the yearly GROSS above which TDS is deducted.
 // Rs 30,000 = 3,000,000 paise.
-const tdsThresholdPaise int64 = 3_000_000
+const TDSThresholdPaise int64 = 3_000_000
 
 // tdsRateBPS is the TDS rate in basis points (10% = 1000 bps).
 const tdsRateBPS int64 = 1000
 
-// DeductTDS calculates and records TDS for a creator on a gross amount.
-// TDS is deducted at 10% only if the creator's yearly earnings exceed Rs 30,000 (3,000,000 paise).
-// Returns (netPaise, tdsPaise).
+// DefaultTDSSection is the section a TDS entry is recorded under when
+// MONETIZATION_TDS_SECTION is unset. Flagged for tax counsel in the plan:
+// 194-O applicability to a creator fund versus 194J for tips and
+// subscriptions is not a question this code answers, which is why the
+// value is configuration.
+const DefaultTDSSection = "194-O"
+
+// ComputeTDS is the pure rule: the paise to withhold from grossPaise
+// given what the creator has already been paid this financial year.
+// Nothing is withheld until cumulative gross — INCLUDING this payout —
+// exceeds the threshold; the payout that crosses it is taxed in full.
+func ComputeTDS(grossPaise, yearlyGrossSoFarPaise int64) int64 {
+	if grossPaise <= 0 {
+		return 0
+	}
+	if yearlyGrossSoFarPaise+grossPaise <= TDSThresholdPaise {
+		return 0
+	}
+	return grossPaise * tdsRateBPS / 10000
+}
+
+// DeductTDS prices and records TDS for a creator on a gross amount, in
+// its own transaction. Returns (netPaise, tdsPaise). The withdrawal path
+// uses deductTDSTx under its own transaction instead.
 func (s *Service) DeductTDS(ctx context.Context, creatorID uuid.UUID, grossAmountPaise int64) (int64, int64, error) {
+	var net, tds int64
+	err := s.store.WithTx(ctx, func(tx pgxTx) error {
+		n, t, err := s.deductTDSTx(ctx, tx, creatorID, grossAmountPaise, nil)
+		net, tds = n, t
+		return err
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return net, tds, nil
+}
+
+// deductTDSTx computes TDS on the caller's transaction and writes the
+// tds_ledger row that records it — one row per payout, withheld or not,
+// because the threshold is on cumulative gross and the ledger is where
+// that gross is summed from. referenceID is the payout request the row
+// belongs to, nil when called outside the withdrawal path.
+func (s *Service) deductTDSTx(ctx context.Context, db postgres.DBTX, creatorID uuid.UUID, grossAmountPaise int64, referenceID *uuid.UUID) (int64, int64, error) {
 	if grossAmountPaise <= 0 {
 		return 0, 0, fmt.Errorf("gross amount must be positive: %w", ErrInvalidAmount)
 	}
 
 	fy := GetFinancialYear()
 
-	// Check if creator is TDS exempt
-	profile, err := s.store.GetCreatorTaxProfile(ctx, creatorID)
+	// A creator holding a valid exemption certificate has nothing withheld
+	// and nothing tracked against the threshold.
+	profile, err := s.store.GetCreatorTaxProfileTx(ctx, db, creatorID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("get tax profile: %w", err)
 	}
@@ -62,49 +102,45 @@ func (s *Service) DeductTDS(ctx context.Context, creatorID uuid.UUID, grossAmoun
 		return grossAmountPaise, 0, nil
 	}
 
-	// Get yearly TDS total to check threshold
-	yearlyTotal, err := s.store.GetYearlyTDSTotal(ctx, creatorID, fy)
+	yearlyGross, err := s.store.GetYearlyTDSGrossTotalTx(ctx, db, creatorID, fy)
 	if err != nil {
-		return 0, 0, fmt.Errorf("get yearly TDS total: %w", err)
+		return 0, 0, fmt.Errorf("get yearly gross total: %w", err)
 	}
 
-	// Only deduct TDS if yearly earnings exceed threshold
-	if yearlyTotal+grossAmountPaise <= tdsThresholdPaise {
-		return grossAmountPaise, 0, nil
-	}
-
-	// Calculate TDS: 10% of gross amount
-	tdsPaise := grossAmountPaise * tdsRateBPS / 10000
+	tdsPaise := ComputeTDS(grossAmountPaise, yearlyGross)
 	netPaise := grossAmountPaise - tdsPaise
 
-	// Record TDS entry
-	entry := &postgres.TDSEntry{
+	if err := s.store.InsertTDSEntryTx(ctx, db, &postgres.TDSEntry{
 		CreatorID:        creatorID,
 		FinancialYear:    fy,
 		GrossAmountPaise: grossAmountPaise,
 		TDSAmountPaise:   tdsPaise,
-		Section:          "194-O",
-	}
-	if err := s.store.InsertTDSEntry(ctx, entry); err != nil {
+		Section:          s.TDSSection(),
+		ReferenceID:      referenceID,
+	}); err != nil {
 		return 0, 0, fmt.Errorf("insert TDS entry: %w", err)
 	}
 
 	return netPaise, tdsPaise, nil
 }
 
-// GetTDSSummary returns all TDS entries for a creator in the given financial year.
-func (s *Service) GetTDSSummary(ctx context.Context, creatorID uuid.UUID, financialYear string) ([]postgres.TDSEntry, int64, error) {
-	entries, err := s.store.GetTDSByCreatorAndYear(ctx, creatorID, financialYear)
+// GetTDSSummary returns a creator's TDS entries for the financial year,
+// the total withheld, and the total gross paid out — the figure the
+// threshold is measured against.
+func (s *Service) GetTDSSummary(ctx context.Context, creatorID uuid.UUID, financialYear string) (entries []postgres.TDSEntry, totalTDSPaise, totalGrossPaise int64, err error) {
+	entries, err = s.store.GetTDSByCreatorAndYear(ctx, creatorID, financialYear)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-
-	total, err := s.store.GetYearlyTDSTotal(ctx, creatorID, financialYear)
+	totalTDSPaise, err = s.store.GetYearlyTDSTotal(ctx, creatorID, financialYear)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-
-	return entries, total, nil
+	totalGrossPaise, err = s.store.GetYearlyTDSGrossTotal(ctx, creatorID, financialYear)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return entries, totalTDSPaise, totalGrossPaise, nil
 }
 
 // ---------------------------------------------------------------------------

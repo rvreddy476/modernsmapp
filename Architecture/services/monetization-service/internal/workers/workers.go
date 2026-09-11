@@ -22,21 +22,31 @@ const payoutAutoApproveLimit int64 = 1_000_000
 const holdAgeLimit = 30 * 24 * time.Hour
 
 // StartAll launches all background workers and blocks until ctx is cancelled.
-// Call this in a goroutine: go workers.StartAll(ctx, store, producer, svc).
+// Call this in a goroutine: go workers.StartAll(ctx, store, producer, svc, payoutsEnabled).
 // svc may be nil; if it is, the creator-fund workers are skipped (used in
 // some bootstrap test setups that don't construct the service layer).
-func StartAll(ctx context.Context, store *postgres.Store, producer *events.Producer, svc *service.Service) {
-	slog.Info("starting monetization background workers")
+//
+// payoutsEnabled mirrors MONETIZATION_PAYOUTS_ENABLED (plan Phase 3C):
+// while it is false the payout processor and the stale-payout detector
+// do not start, so nothing touches a payout_requests row in the
+// background. Everything else — renewals, holds, fundraisers, the fund's
+// accrual and settlement — is unaffected by it.
+func StartAll(ctx context.Context, store *postgres.Store, producer *events.Producer, svc *service.Service, payoutsEnabled bool) {
+	slog.Info("starting monetization background workers", "payouts_enabled", payoutsEnabled)
 
 	go runSubscriptionRenewal(ctx, store, producer)
-	go runPayoutProcessor(ctx, store, producer)
 	go runStaleHoldCleanup(ctx, store)
 	go runFundraiserExpiry(ctx, store, producer)
 	go runGracePeriodExpiry(ctx, store, producer)
 	go runPauseResume(ctx, store, producer)
 	go runLedgerReconciliation(ctx, store)
 	go runStuckTransactionDetector(ctx, store)
-	go runStalePayoutDetector(ctx, store)
+	if payoutsEnabled {
+		go runPayoutProcessor(ctx, store, producer)
+		go runStalePayoutDetector(ctx, store)
+	} else {
+		slog.Info("payout workers not started: MONETIZATION_PAYOUTS_ENABLED is false")
+	}
 	if svc != nil {
 		// Capture is continuous, payment is periodic. The accrual worker
 		// measures each day and moves nothing; the settlement worker is

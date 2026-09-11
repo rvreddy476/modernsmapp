@@ -37,6 +37,8 @@ externalSecret:
   secretStoreName: azure-key-vault
 env:
   ENV: prod
+  MONETIZATION_WRITES_ENABLED: "false"
+  MONETIZATION_PAYOUTS_ENABLED: "false"
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 ingress:

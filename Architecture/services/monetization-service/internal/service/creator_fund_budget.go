@@ -33,6 +33,14 @@ var ErrBudgetBelowAccrued = postgres.ErrBudgetBelowAccrued
 // refused while any period holds accrued money.
 var ErrCadenceMismatch = errors.New("CADENCE_MISMATCH")
 
+// ErrNoBudget is returned by AccrueCreatorFundDay when payouts are
+// enabled and the day's period has no budget row (plan Phase 3C). The
+// plan's context asks the mechanism to refuse to accrue against a period
+// with no cap; Phase 2C shipped "no row = uncapped, warn once" because in
+// beta the figures are estimates. Both hold: the warning while payouts
+// are off, the refusal once an accrual is a claim on real money.
+var ErrNoBudget = errors.New("NO_BUDGET")
+
 // BudgetInput is the admin's request.
 type BudgetInput struct {
 	PeriodKey  string `json:"period_key"`

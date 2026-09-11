@@ -85,8 +85,15 @@ func (s *Store) SaveCreatorTaxProfile(ctx context.Context, p *CreatorTaxProfile)
 
 // GetCreatorTaxProfile returns a creator's tax profile, or nil if not found.
 func (s *Store) GetCreatorTaxProfile(ctx context.Context, userID uuid.UUID) (*CreatorTaxProfile, error) {
+	return s.GetCreatorTaxProfileTx(ctx, s.db, userID)
+}
+
+// GetCreatorTaxProfileTx is GetCreatorTaxProfile on the caller's
+// transaction, so the TDS exemption a withdrawal reads is the one that
+// commits with it.
+func (s *Store) GetCreatorTaxProfileTx(ctx context.Context, db DBTX, userID uuid.UUID) (*CreatorTaxProfile, error) {
 	var p CreatorTaxProfile
-	err := s.db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT user_id, pan_encrypted, gstin, tax_residency, tds_exempt, verified_at, created_at, updated_at
 		FROM creator_tax_profiles
 		WHERE user_id = $1
@@ -107,13 +114,22 @@ func (s *Store) GetCreatorTaxProfile(ctx context.Context, userID uuid.UUID) (*Cr
 // TDS Ledger
 // ---------------------------------------------------------------------------
 
-// InsertTDSEntry inserts a TDS deduction record.
+// InsertTDSEntry inserts a TDS ledger record.
 func (s *Store) InsertTDSEntry(ctx context.Context, e *TDSEntry) error {
+	return s.InsertTDSEntryTx(ctx, s.db, e)
+}
+
+// InsertTDSEntryTx inserts a TDS ledger record on the caller's
+// transaction. One row is written per payout whether or not anything was
+// withheld: the yearly threshold is on cumulative GROSS, so the gross of
+// a zero-TDS payout has to be on the ledger for the threshold to ever be
+// crossed.
+func (s *Store) InsertTDSEntryTx(ctx context.Context, db DBTX, e *TDSEntry) error {
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
 	e.DeductedAt = time.Now()
-	_, err := s.db.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO tds_ledger (id, creator_id, financial_year, gross_amount_paise, tds_amount_paise, section, reference_id, deducted_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, e.ID, e.CreatorID, e.FinancialYear, e.GrossAmountPaise, e.TDSAmountPaise,
@@ -148,11 +164,35 @@ func (s *Store) GetTDSByCreatorAndYear(ctx context.Context, creatorID uuid.UUID,
 	return entries, rows.Err()
 }
 
-// GetYearlyTDSTotal returns the sum of tds_amount_paise for a creator in a given financial year.
+// GetYearlyTDSTotal returns the sum of tds_amount_paise for a creator in
+// a given financial year — what has been WITHHELD. It is what the TDS
+// summary reports; it is not the threshold input.
 func (s *Store) GetYearlyTDSTotal(ctx context.Context, creatorID uuid.UUID, financialYear string) (int64, error) {
 	var total int64
 	err := s.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(tds_amount_paise), 0)
+		FROM tds_ledger
+		WHERE creator_id = $1 AND financial_year = $2
+	`, creatorID, financialYear).Scan(&total)
+	return total, err
+}
+
+// GetYearlyTDSGrossTotal returns the sum of gross_amount_paise for a
+// creator in a given financial year — what has been PAID OUT. This is the
+// threshold input: section 194-O's Rs 30,000 is a limit on gross, and
+// summing the TDS column instead (as DeductTDS did before Phase 3A) meant
+// the threshold could never be reached, because nothing was withheld
+// until it was.
+func (s *Store) GetYearlyTDSGrossTotal(ctx context.Context, creatorID uuid.UUID, financialYear string) (int64, error) {
+	return s.GetYearlyTDSGrossTotalTx(ctx, s.db, creatorID, financialYear)
+}
+
+// GetYearlyTDSGrossTotalTx is GetYearlyTDSGrossTotal on the caller's
+// transaction.
+func (s *Store) GetYearlyTDSGrossTotalTx(ctx context.Context, db DBTX, creatorID uuid.UUID, financialYear string) (int64, error) {
+	var total int64
+	err := db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(gross_amount_paise), 0)
 		FROM tds_ledger
 		WHERE creator_id = $1 AND financial_year = $2
 	`, creatorID, financialYear).Scan(&total)
