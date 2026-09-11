@@ -13,43 +13,152 @@ import (
 	"github.com/google/uuid"
 )
 
-// The one that matters: a viewer who loops a video all day is a real
-// viewer, and their loops are real views — but only the first few are
-// paid views. Uncapped, a single phone mints unlimited creator-fund
-// revenue on its owner's own content.
-func TestLiveDailyRollupCapsDisplayViewsPerViewerPerDay(t *testing.T) {
+// The one that matters: one viewer earns one paid view of one video per
+// day, however many times they loop it. Sessions are the unit, self-views
+// are excluded, and the cap keeps each viewer's best session — while
+// watch time and unique viewers still count every non-self session, so
+// replay analytics survive.
+//
+// Three finalised sessions for viewer A across three hours with
+// different scores, one from viewer B, one self-view by the creator.
+// Expected: views_display = 2 (A's best plus B's), view_score_total =
+// A's best score plus B's, watch time = all four non-self sessions.
+func TestLiveDailyRollupCapsOneDisplayViewPerViewerPerDay(t *testing.T) {
 	ctx := context.Background()
-	// Own database, own truncates: see internal/testsupport.
 	pool := testsupport.Pool(t, "aggregation")
-	if _, err := pool.Exec(ctx, `TRUNCATE analytics.content_hourly_agg, analytics.content_daily_summary,
-		analytics.ingest_receipts, analytics.events_raw, analytics.content_ownership CASCADE`); err != nil {
+	ensurePlaybackSessions(t, pool)
+	truncateAggregation(t, pool)
+
+	content, creator := uuid.New(), uuid.New()
+	viewerA, viewerB := uuid.New(), uuid.New()
+	day := dayAgo(2) // inside the 48-hour window, safely closed
+
+	session := func(actor uuid.UUID, hour int, percent float64, self bool) sessionFixture {
+		return sessionFixture{
+			Actor: actor, Content: content, Creator: creator, ContentType: "flick",
+			FirstSeen:  day.Add(time.Duration(hour) * time.Hour).Add(5 * time.Minute),
+			DurationMS: 10_000, WatchedMS: int64(percent * 100), CoveredMS: int64(percent * 100),
+			PercentViewed: percent, PercentCovered: percent,
+			IsSelfView: self, IsDisplayView: true, ViewScore: percent / 100,
+		}
+	}
+	// Viewer A: 40%, 90% and 60% in hours 1, 5 and 9. The best is the
+	// middle one, so "first" and "best" disagree.
+	insertSession(t, pool, session(viewerA, 1, 40, false))
+	insertSession(t, pool, session(viewerA, 5, 90, false))
+	insertSession(t, pool, session(viewerA, 9, 60, false))
+	// Viewer B once.
+	insertSession(t, pool, session(viewerB, 3, 70, false))
+	// The creator watching their own upload.
+	insertSession(t, pool, session(creator, 7, 100, true))
+
+	sessions := fixedSource(ViewSourceSessions)
+	hourly := NewHourlyAggregator(pool, nil).WithViewSource(sessions)
+	for hr := day; hr.Before(day.AddDate(0, 0, 1)); hr = hr.Add(time.Hour) {
+		hourly.AggregateHour(ctx, hr)
+	}
+
+	// Hourly is the real-time surface: uncapped, but never self-views.
+	var hourlyViews, hourlyWatch, hourlyUnique int64
+	var hourlyScore float64
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(views_display),0), COALESCE(SUM(view_score_total),0),
+		       COALESCE(SUM(watch_time_total_ms),0), COALESCE(SUM(unique_viewers),0)
+		FROM analytics.content_hourly_agg
+		WHERE content_id = $1 AND hour_bucket >= $2 AND hour_bucket < $3`,
+		content, day, day.AddDate(0, 0, 1)).Scan(&hourlyViews, &hourlyScore, &hourlyWatch, &hourlyUnique); err != nil {
+		t.Fatal(err)
+	}
+	if hourlyViews != 4 {
+		t.Fatalf("hourly views_display = %d, want 4 (uncapped, self-view excluded)", hourlyViews)
+	}
+	if math.Abs(hourlyScore-(0.4+0.9+0.6+0.7)) > 1e-6 {
+		t.Fatalf("hourly view_score_total = %.6f, want 2.6", hourlyScore)
+	}
+	if hourlyWatch != 4_000+9_000+6_000+7_000 {
+		t.Fatalf("hourly watch_time_total_ms = %d, want 26000", hourlyWatch)
+	}
+
+	rollup := NewDailyRollup(pool, nil).WithViewSource(sessions)
+	if rollup.ViewCap() != 1 {
+		t.Fatalf("default view cap = %d, want 1", rollup.ViewCap())
+	}
+	if err := rollup.RollupDay(ctx, day); err != nil {
 		t.Fatal(err)
 	}
 
+	rows, views, score, watch := summaryViews(t, pool, content, day)
+	if rows != 1 {
+		t.Fatalf("summary rows = %d, want 1", rows)
+	}
+	if views != 2 {
+		t.Fatalf("views_display = %d, want 2 (one per viewer; the self-view never counts)", views)
+	}
+	if math.Abs(score-(0.9+0.7)) > 1e-6 {
+		t.Fatalf("view_score_total = %.6f, want 1.6 (A's best 0.9 plus B's 0.7)", score)
+	}
+	if watch != 26_000 {
+		t.Fatalf("watch_time_total_ms = %d, want 26000 (all four non-self sessions)", watch)
+	}
+	var unique int64
+	if err := pool.QueryRow(ctx, `
+		SELECT unique_viewers FROM analytics.content_daily_summary
+		WHERE content_id = $1 AND day_bucket = $2`, content, day).Scan(&unique); err != nil {
+		t.Fatal(err)
+	}
+	if unique != 4 {
+		// unique_viewers is the sum of per-hour distinct viewers, as it
+		// always was: four hours each had one non-self viewer.
+		t.Fatalf("unique_viewers = %d, want 4", unique)
+	}
+
+	// An open (unfinalised) session is not a view yet, and a session
+	// finalised later lands in the bucket of its first_seen, so it is
+	// picked up by a rebuild of that hour, not of the hour it closed in.
+	insertSession(t, pool, sessionFixture{
+		Actor: uuid.New(), Content: content, Creator: creator, ContentType: "flick",
+		FirstSeen: day.Add(2 * time.Hour), DurationMS: 10_000, WatchedMS: 8_000,
+		PercentViewed: 80, PercentCovered: 80, IsDisplayView: true, ViewScore: 0.8, Open: true,
+	})
+	hourly.AggregateHour(ctx, day.Add(2*time.Hour))
+	if err := rollup.RollupDay(ctx, day); err != nil {
+		t.Fatal(err)
+	}
+	if _, views, _, _ = summaryViews(t, pool, content, day); views != 2 {
+		t.Fatalf("an open session counted as a view: views_display = %d, want 2", views)
+	}
+
+	// The escape hatch still exists: cap <= 0 reproduces the uncapped
+	// per-session numbers, self-views still excluded.
+	if err := NewDailyRollup(pool, nil).WithViewSource(sessions).WithViewCap(0).RollupDay(ctx, day); err != nil {
+		t.Fatal(err)
+	}
+	if _, views, score, _ = summaryViews(t, pool, content, day); views != 4 || math.Abs(score-2.6) > 1e-6 {
+		t.Fatalf("uncapped views_display = %d score = %.6f, want 4 / 2.6", views, score)
+	}
+}
+
+// The pre-cutover path — play_end rows in events_raw — stays intact for
+// buckets the resolver still routes there, with the same three rules:
+// one paid view per viewer per day, best session kept, self-views out.
+func TestLiveLegacyPlayEndPathCapsAtOneAndExcludesSelfViews(t *testing.T) {
+	ctx := context.Background()
+	pool := testsupport.Pool(t, "aggregation")
+	ensurePlaybackSessions(t, pool)
+	truncateAggregation(t, pool)
+
 	content, creator := uuid.New(), uuid.New()
-	viewerA, viewerB, viewerC := uuid.New(), uuid.New(), uuid.New()
+	viewerA, viewerB := uuid.New(), uuid.New()
+	day := dayAgo(1)
 
-	// A day that is safely closed, so nothing else can be writing to it.
-	day := time.Now().UTC().AddDate(0, 0, -2).Truncate(24 * time.Hour)
-
-	// percentFor gives each of a viewer's sessions a different watched
-	// fraction, ascending, so "highest N" and "first N" would disagree
-	// if the rollup ever took the wrong ones.
-	percentFor := func(i int) float64 { return float64(10 + i*5) }
-
-	insertPlayEnd := func(viewer uuid.UUID, at time.Time, percent float64) {
+	insertPlayEnd := func(viewer uuid.UUID, at time.Time, percent float64, self bool) {
 		t.Helper()
 		payload, err := json.Marshal(map[string]any{
-			"content_id":          content.String(),
-			"creator_id":          creator.String(),
-			"content_type":        "reel",
-			"surface":             "feed",
-			"watched_ms_total":    int64(percent * 100),
-			"content_duration_ms": 10_000,
-			"percent_viewed":      percent,
-			"is_display_view":     true,
-			"end_reason":          "ended",
-			"loop_count":          1,
+			"content_id": content.String(), "creator_id": creator.String(),
+			"content_type": "flick", "surface": "feed",
+			"watched_ms_total": int64(percent * 100), "content_duration_ms": 10_000,
+			"percent_viewed": percent, "is_display_view": true, "is_self_view": self,
+			"end_reason": "ended", "loop_count": 1,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -62,137 +171,56 @@ func TestLiveDailyRollupCapsDisplayViewsPerViewerPerDay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	insertPlayEnd(viewerA, day.Add(1*time.Hour), 40, false)
+	insertPlayEnd(viewerA, day.Add(5*time.Hour), 90, false)
+	insertPlayEnd(viewerA, day.Add(9*time.Hour), 60, false)
+	insertPlayEnd(viewerB, day.Add(3*time.Hour), 70, false)
+	insertPlayEnd(creator, day.Add(7*time.Hour), 100, true)
 
-	// Viewer A loops it 12 times, viewer B watches twice, viewer C five
-	// times. Deliberately spread across several hours of the day: the cap
-	// is per day, and an hourly aggregate cannot express that.
-	type viewerPlan struct {
-		id uuid.UUID
-		n  int
-	}
-	plans := []viewerPlan{{viewerA, 12}, {viewerB, 2}, {viewerC, 5}}
-	uncappedScore := 0.0
-	for _, plan := range plans {
-		for i := 0; i < plan.n; i++ {
-			at := day.Add(time.Duration(i%20) * time.Hour).Add(time.Duration(i) * time.Minute)
-			insertPlayEnd(plan.id, at, percentFor(i))
-			uncappedScore += percentFor(i) / 100
-		}
-	}
-
-	// The hourly pass has to have run first: it is what supplies every
-	// other column, and the rollup only writes content that has hourly
-	// rows.
+	// No resolver at all means play_end everywhere: the pre-cutover
+	// default the service ships with.
 	hourly := NewHourlyAggregator(pool, nil)
 	for hr := day; hr.Before(day.AddDate(0, 0, 1)); hr = hr.Add(time.Hour) {
 		hourly.AggregateHour(ctx, hr)
 	}
-
-	// Hourly is the real-time surface, not the money surface: it still
-	// carries every loop, uncapped. This assertion is the guard that the
-	// cap did not leak backwards into it.
-	var hourlyViews int64
-	var hourlyScore float64
+	var hourlyViews, hourlyWatch int64
 	if err := pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(views_display),0), COALESCE(SUM(view_score_total),0)
+		SELECT COALESCE(SUM(views_display),0), COALESCE(SUM(watch_time_total_ms),0)
 		FROM analytics.content_hourly_agg
 		WHERE content_id = $1 AND hour_bucket >= $2 AND hour_bucket < $3`,
-		content, day, day.AddDate(0, 0, 1)).Scan(&hourlyViews, &hourlyScore); err != nil {
+		content, day, day.AddDate(0, 0, 1)).Scan(&hourlyViews, &hourlyWatch); err != nil {
 		t.Fatal(err)
 	}
-	if hourlyViews != 19 {
-		t.Fatalf("hourly views_display = %d, want 19 (the hourly table stays uncapped)", hourlyViews)
-	}
-	if math.Abs(hourlyScore-uncappedScore) > 1e-6 {
-		t.Fatalf("hourly view_score_total = %.6f, want %.6f (uncapped)", hourlyScore, uncappedScore)
+	if hourlyViews != 4 || hourlyWatch != 26_000 {
+		t.Fatalf("hourly views=%d watch=%d, want 4 / 26000 (self-view excluded, uncapped)", hourlyViews, hourlyWatch)
 	}
 
-	// Capped at 5: 5 (of A's 12) + 2 (B) + 5 (C) = 12 paid views, not 19.
-	if err := NewDailyRollup(pool, nil).WithViewCap(5).RollupDay(ctx, day); err != nil {
+	if err := NewDailyRollup(pool, nil).RollupDay(ctx, day); err != nil {
 		t.Fatal(err)
 	}
-
-	var dailyViews int64
-	var dailyScore float64
-	if err := pool.QueryRow(ctx, `
-		SELECT views_display, view_score_total
-		FROM analytics.content_daily_summary
-		WHERE content_id = $1 AND day_bucket = $2`,
-		content, day).Scan(&dailyViews, &dailyScore); err != nil {
-		t.Fatal(err)
-	}
-	if dailyViews != 12 {
-		t.Fatalf("capped views_display = %d, want 12 (5+2+5), not 19", dailyViews)
-	}
-
-	// The same cap on the quality-weighted count, taking each viewer's
-	// five best watches. A: sessions 8..12 (percent 45,50,55,60,65);
-	// B: both (10,15); C: all five (10,15,20,25,30).
-	wantScore := 0.0
-	for _, plan := range plans {
-		scores := make([]float64, 0, plan.n)
-		for i := 0; i < plan.n; i++ {
-			scores = append(scores, percentFor(i)/100)
-		}
-		// percentFor ascends, so the best N are the last N.
-		keep := 5
-		if len(scores) < keep {
-			keep = len(scores)
-		}
-		for _, s := range scores[len(scores)-keep:] {
-			wantScore += s
-		}
-	}
-	if math.Abs(dailyScore-wantScore) > 1e-6 {
-		t.Fatalf("capped view_score_total = %.6f, want %.6f (each viewer's best 5)", dailyScore, wantScore)
-	}
-	if dailyScore >= uncappedScore {
-		t.Fatalf("capped view_score_total %.6f is not below the uncapped %.6f", dailyScore, uncappedScore)
-	}
-
-	// The escape hatch: cap <= 0 disables it and must reproduce the
-	// uncapped numbers exactly — the same 19 the hourly rows sum to.
-	if err := NewDailyRollup(pool, nil).WithViewCap(0).RollupDay(ctx, day); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `
-		SELECT views_display, view_score_total
-		FROM analytics.content_daily_summary
-		WHERE content_id = $1 AND day_bucket = $2`,
-		content, day).Scan(&dailyViews, &dailyScore); err != nil {
-		t.Fatal(err)
-	}
-	if dailyViews != 19 {
-		t.Fatalf("uncapped views_display = %d, want 19", dailyViews)
-	}
-	if dailyViews != hourlyViews {
-		t.Fatalf("uncapped daily views_display %d disagrees with the hourly sum %d", dailyViews, hourlyViews)
-	}
-	if math.Abs(dailyScore-uncappedScore) > 1e-6 {
-		t.Fatalf("uncapped view_score_total = %.6f, want %.6f", dailyScore, uncappedScore)
+	rows, views, score, watch := summaryViews(t, pool, content, day)
+	if rows != 1 || views != 2 || math.Abs(score-1.6) > 1e-6 || watch != 26_000 {
+		t.Fatalf("rows=%d views=%d score=%.6f watch=%d, want 1 / 2 / 1.6 / 26000", rows, views, score, watch)
 	}
 }
 
 // Rolling the same day up twice must converge, not accumulate — the
-// operator endpoint and the midnight timer both re-run days, and the
-// creator-fund settlement reads whatever is there afterwards.
+// timer and the operator route both re-run days inside the window, and
+// the creator-fund settlement reads whatever is there afterwards.
 func TestLiveDailyRollupIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	// Own database, own truncates: see internal/testsupport.
 	pool := testsupport.Pool(t, "aggregation")
-	if _, err := pool.Exec(ctx, `TRUNCATE analytics.content_hourly_agg, analytics.content_daily_summary,
-		analytics.ingest_receipts, analytics.events_raw, analytics.content_ownership CASCADE`); err != nil {
-		t.Fatal(err)
-	}
+	ensurePlaybackSessions(t, pool)
+	truncateAggregation(t, pool)
 
 	content, creator, viewer := uuid.New(), uuid.New(), uuid.New()
-	day := time.Now().UTC().AddDate(0, 0, -3).Truncate(24 * time.Hour)
+	day := dayAgo(2)
 
 	insert := func(eventType string, at time.Time, extra map[string]any) {
 		t.Helper()
 		payload := map[string]any{
 			"content_id": content.String(), "creator_id": creator.String(),
-			"content_type": "reel", "surface": "feed",
+			"content_type": "flick", "surface": "feed",
 		}
 		for k, v := range extra {
 			payload[k] = v
@@ -227,7 +255,7 @@ func TestLiveDailyRollupIsIdempotent(t *testing.T) {
 		hourly.AggregateHour(ctx, hr)
 	}
 
-	rollup := NewDailyRollup(pool, nil).WithViewCap(5)
+	rollup := NewDailyRollup(pool, nil)
 	read := func() (rows, impressions, views int64, score float64) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, `
@@ -245,8 +273,8 @@ func TestLiveDailyRollupIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows1, impressions1, views1, score1 := read()
-	if rows1 != 1 || impressions1 != 6 || views1 != 3 {
-		t.Fatalf("first run: rows=%d impressions=%d views=%d, want 1/6/3", rows1, impressions1, views1)
+	if rows1 != 1 || impressions1 != 6 || views1 != 1 {
+		t.Fatalf("first run: rows=%d impressions=%d views=%d, want 1/6/1 (one viewer, cap 1)", rows1, impressions1, views1)
 	}
 
 	for range 2 {

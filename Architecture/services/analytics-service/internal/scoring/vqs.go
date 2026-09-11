@@ -1,5 +1,7 @@
 package scoring
 
+import "github.com/atpost/shared/postclassify"
+
 // SessionEngagement holds per-session engagement flags.
 type SessionEngagement struct {
 	Liked         bool
@@ -15,9 +17,13 @@ type SessionEngagement struct {
 // ComputeVQS calculates the View Quality Score for a single viewing session.
 // PRD Section 10.1.
 func ComputeVQS(contentType string, durationMS, watchedMS int64, percentViewed float64, engagement *SessionEngagement, trustFactor float64) float64 {
-	// Threshold start
-	thresholdMS := int64(3000) // Reels: 3s
-	if contentType == "long_video" {
+	// Threshold start. The kind is resolved through the one canonical
+	// mapping, so a legacy "video" row is long-form (10 s) and a legacy
+	// "reel" is short-form (3 s); comparing the raw literal here used to
+	// hand "video" the reel threshold. A kind that is neither gets the
+	// short-form bar, as it always did.
+	thresholdMS := int64(3000) // Flicks: 3s
+	if kind, ok := postclassify.CanonicalMonetizationType(contentType); ok && kind == postclassify.LongVideo {
 		thresholdMS = 10000 // Long Video: 10s
 	}
 

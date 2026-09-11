@@ -69,3 +69,36 @@ func TestIsLongForm(t *testing.T) {
 		}
 	}
 }
+
+// CanonicalMonetizationType is the one mapping every money-adjacent
+// caller uses: the ownership projection, the VQS threshold, the RPM
+// rate lookup. Legacy synonyms collapse onto the two canonical kinds;
+// anything else is not a monetizable kind and says so, rather than
+// being passed through as a label nothing downstream recognises.
+func TestCanonicalMonetizationType(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"flick", Flick, true},
+		{"reel", Flick, true},
+		{"short", Flick, true},
+		{"long_video", LongVideo, true},
+		{"video", LongVideo, true},
+		// Whitespace and case are transport noise, not a new kind.
+		{"  Reel ", Flick, true},
+		{"VIDEO", LongVideo, true},
+		// Not monetizable kinds: no canonical answer, and never "post".
+		{"post", "", false},
+		{"poll", "", false},
+		{"image", "", false},
+		{"unknown", "", false},
+		{"", "", false},
+	} {
+		got, ok := CanonicalMonetizationType(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("CanonicalMonetizationType(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

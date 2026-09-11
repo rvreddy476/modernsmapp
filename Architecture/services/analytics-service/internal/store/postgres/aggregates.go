@@ -243,8 +243,8 @@ type CreatorAggStats struct {
 	// creator off the back of a specific video. This is the number that
 	// backs the dashboard's follower_growth / followers_gained field,
 	// which read a hard-coded zero before the video events were ingested.
-	TotalFollows    int64
-	TotalSaves      int64
+	TotalFollows     int64
+	TotalSaves       int64
 	TotalWatchTimeMS int64
 }
 
@@ -272,33 +272,11 @@ func (s *AggregateStore) GetCreatorAggStats(ctx context.Context, creatorID uuid.
 	return stats, nil
 }
 
-// UpsertDailySummary upserts a daily summary row.
-func (s *AggregateStore) UpsertDailySummary(ctx context.Context, contentID, creatorID uuid.UUID, dayBucket time.Time, contentType string,
-	impressions, plays, viewsDisplay, uniqueViewers, watchTimeMS, likes, comments, shares, saves int64,
-	avgPercentViewed, completionRate, viewScoreTotal, cqs float64) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO analytics.content_daily_summary (
-			content_id, day_bucket, creator_id, content_type,
-			impressions, plays, views_display, unique_viewers, watch_time_total_ms,
-			avg_percent_viewed, completion_rate, likes, comments, shares, saves,
-			view_score_total, content_quality_score, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
-		ON CONFLICT (content_id, day_bucket)
-		DO UPDATE SET
-			impressions = EXCLUDED.impressions, plays = EXCLUDED.plays,
-			views_display = EXCLUDED.views_display, unique_viewers = EXCLUDED.unique_viewers,
-			watch_time_total_ms = EXCLUDED.watch_time_total_ms,
-			avg_percent_viewed = EXCLUDED.avg_percent_viewed, completion_rate = EXCLUDED.completion_rate,
-			likes = EXCLUDED.likes, comments = EXCLUDED.comments, shares = EXCLUDED.shares, saves = EXCLUDED.saves,
-			view_score_total = EXCLUDED.view_score_total, content_quality_score = EXCLUDED.content_quality_score,
-			updated_at = NOW()`,
-		contentID, dayBucket, creatorID, contentType,
-		impressions, plays, viewsDisplay, uniqueViewers, watchTimeMS,
-		avgPercentViewed, completionRate, likes, comments, shares, saves,
-		viewScoreTotal, cqs,
-	)
-	return err
-}
+// The daily summary has exactly one writer: aggregation.DailyRollup,
+// which rebuilds a whole day inside one transaction (delete, then
+// insert). There is deliberately no per-row upsert here — a second path
+// that could write a summary row is how a hand-written row survived
+// every rollup and was settled as money.
 
 // ContentViewBuckets is the lifetime view-counter set for one content
 // item, in the exact field names GET /v1/analytics/content/:id/views

@@ -12,6 +12,8 @@
 // "Reel" / "short" are legacy synonyms that map to "flick".
 package postclassify
 
+import "strings"
+
 // FlickMaxDurationSeconds is the upper bound on flick duration.
 // 300s = 5 minutes (founder: shorts max 3–5 min; 5 chosen, 2026-09-05).
 // Sits above YouTube Shorts / Instagram Reels (3 min).
@@ -71,4 +73,31 @@ func IsLongForm(contentType string) bool {
 		return true
 	}
 	return false
+}
+
+// CanonicalMonetizationType maps a content_type string, from any
+// producer and any era, onto the one of the two kinds the creator fund
+// prices — Flick or LongVideo — and reports whether it is one at all.
+//
+// Every money-adjacent caller goes through here: the analytics
+// ownership projection (which stores the result, and quarantines the
+// raw value when ok is false), the view-quality threshold, and
+// monetization's rate lookup. Before it existed each of those compared
+// its own literals, so a "reel"-labelled view earned nothing silently
+// and a legacy "video" was scored against the short-form bar.
+//
+// Whitespace and case are transport noise, not a new kind. Anything
+// that is not a video kind — "post", "poll", "image", the empty string
+// — has no canonical answer and must never be passed through as a
+// label: ok is false and the caller decides what "unknown" means for
+// it.
+func CanonicalMonetizationType(contentType string) (canonical string, ok bool) {
+	normalized := strings.ToLower(strings.TrimSpace(contentType))
+	switch {
+	case IsShortForm(normalized):
+		return Flick, true
+	case IsLongForm(normalized):
+		return LongVideo, true
+	}
+	return "", false
 }
