@@ -22,6 +22,11 @@ type FanoutJob struct {
 	Cursor        uuid.UUID
 	Delivered     int64
 	Attempts      int
+	// Title and ChannelName (migration 006) render the push text at
+	// delivery without a per-recipient lookup. Either may be empty for
+	// jobs enqueued from events that predate the fields.
+	Title       string
+	ChannelName string
 }
 
 // EnqueueFanoutJob records a fan-out durably. Idempotent on post_id: a
@@ -30,11 +35,11 @@ func (s *Store) EnqueueFanoutJob(ctx context.Context, j *FanoutJob) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO subscriber_fanout_jobs
 			(post_id, channel_id, author_id, content_type, deep_link,
-			 notif_type, visibility, post_created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			 notif_type, visibility, post_created_at, title, channel_name)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (post_id) DO NOTHING`,
 		j.PostID, j.ChannelID, j.AuthorID, j.ContentType, j.DeepLink,
-		j.NotifType, j.Visibility, j.PostCreatedAt)
+		j.NotifType, j.Visibility, j.PostCreatedAt, j.Title, j.ChannelName)
 	return err
 }
 
@@ -58,7 +63,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		FROM claimable WHERE j.post_id = claimable.post_id
 		RETURNING j.post_id, j.channel_id, j.author_id, j.content_type,
 		          j.deep_link, j.notif_type, j.visibility, j.post_created_at,
-		          j.cursor, j.delivered, j.attempts`,
+		          j.cursor, j.delivered, j.attempts, j.title, j.channel_name`,
 		time.Now().Add(-staleAfter), limit)
 	if err != nil {
 		return nil, err
@@ -70,7 +75,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		var j FanoutJob
 		if err := rows.Scan(&j.PostID, &j.ChannelID, &j.AuthorID, &j.ContentType,
 			&j.DeepLink, &j.NotifType, &j.Visibility, &j.PostCreatedAt,
-			&j.Cursor, &j.Delivered, &j.Attempts); err != nil {
+			&j.Cursor, &j.Delivered, &j.Attempts, &j.Title, &j.ChannelName); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, j)

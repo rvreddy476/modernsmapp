@@ -45,6 +45,12 @@ func GetCollapseKey(eventType, targetID, recipientID string) string {
 	case "channel.update.published":
 		return fmt.Sprintf("channel:%s:update", targetID)
 
+	// Creator uploads collapse per channel: a batch of uploads from one
+	// channel replaces itself on the device instead of stacking. targetID
+	// is the CHANNEL id here, not the post (see renderUpload).
+	case "creator_uploaded_video", "creator_uploaded_flick":
+		return fmt.Sprintf("channel:%s:upload", targetID)
+
 	// Urgent channel alerts NEVER collapse (always show individually).
 	case "channel.urgent.info", "channel.urgent.warning", "channel.urgent.critical":
 		return "" // no collapse

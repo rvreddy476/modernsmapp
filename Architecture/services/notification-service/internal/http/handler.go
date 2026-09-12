@@ -462,6 +462,7 @@ type UpdateNotifPreferencesRequest struct {
 	PushReposts           *bool `json:"push_reposts"`
 	PushLive              *bool `json:"push_live"`
 	PushMessages          *bool `json:"push_messages"`
+	PushNewVideos         *bool `json:"push_new_videos"`
 
 	InappLikes             *bool `json:"inapp_likes"`
 	InappSuperLikes        *bool `json:"inapp_super_likes"`
@@ -481,6 +482,7 @@ type UpdateNotifPreferencesRequest struct {
 	InappReposts           *bool `json:"inapp_reposts"`
 	InappLive              *bool `json:"inapp_live"`
 	InappMessages          *bool `json:"inapp_messages"`
+	InappNewVideos         *bool `json:"inapp_new_videos"`
 
 	EmailDigest *string `json:"email_digest"`
 }
@@ -523,6 +525,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.PushReposts, req.PushReposts)
 	setBool(&current.PushLive, req.PushLive)
 	setBool(&current.PushMessages, req.PushMessages)
+	setBool(&current.PushNewVideos, req.PushNewVideos)
 
 	setBool(&current.InappLikes, req.InappLikes)
 	setBool(&current.InappSuperLikes, req.InappSuperLikes)
@@ -542,6 +545,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.InappReposts, req.InappReposts)
 	setBool(&current.InappLive, req.InappLive)
 	setBool(&current.InappMessages, req.InappMessages)
+	setBool(&current.InappNewVideos, req.InappNewVideos)
 
 	if req.EmailDigest != nil {
 		current.EmailDigest = *req.EmailDigest

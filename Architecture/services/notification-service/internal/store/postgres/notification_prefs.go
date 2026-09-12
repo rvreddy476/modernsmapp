@@ -46,6 +46,7 @@ type NotificationPreferences struct {
 	PushReposts           bool `json:"push_reposts"`
 	PushLive              bool `json:"push_live"`
 	PushMessages          bool `json:"push_messages"`
+	PushNewVideos         bool `json:"push_new_videos"`
 
 	InappLikes             bool `json:"inapp_likes"`
 	InappSuperLikes        bool `json:"inapp_super_likes"`
@@ -65,6 +66,7 @@ type NotificationPreferences struct {
 	InappReposts           bool `json:"inapp_reposts"`
 	InappLive              bool `json:"inapp_live"`
 	InappMessages          bool `json:"inapp_messages"`
+	InappNewVideos         bool `json:"inapp_new_videos"`
 
 	EmailDigest string    `json:"email_digest"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -81,14 +83,14 @@ const notifPrefsColumns = `user_id, push_enabled, email_enabled, quiet_hours_ena
 	push_channel_updates, push_channel_urgent,
 	push_community_posts, push_community_mentions,
 	push_event_reminders, push_system,
-	push_reposts, push_live, push_messages,
+	push_reposts, push_live, push_messages, push_new_videos,
 	inapp_likes, inapp_super_likes, inapp_comments, inapp_replies,
 	inapp_mentions, inapp_follows, inapp_friend_requests,
 	inapp_group_posts, inapp_group_mentions,
 	inapp_channel_updates, inapp_channel_urgent,
 	inapp_community_posts, inapp_community_mentions,
 	inapp_event_reminders, inapp_system,
-	inapp_reposts, inapp_live, inapp_messages,
+	inapp_reposts, inapp_live, inapp_messages, inapp_new_videos,
 	email_digest, updated_at`
 
 // scanNotifPrefs returns scan destinations in notifPrefsColumns order.
@@ -102,14 +104,14 @@ func scanNotifPrefs(p *NotificationPreferences) []any {
 		&p.PushChannelUpdates, &p.PushChannelUrgent,
 		&p.PushCommunityPosts, &p.PushCommunityMentions,
 		&p.PushEventReminders, &p.PushSystem,
-		&p.PushReposts, &p.PushLive, &p.PushMessages,
+		&p.PushReposts, &p.PushLive, &p.PushMessages, &p.PushNewVideos,
 		&p.InappLikes, &p.InappSuperLikes, &p.InappComments, &p.InappReplies,
 		&p.InappMentions, &p.InappFollows, &p.InappFriendRequests,
 		&p.InappGroupPosts, &p.InappGroupMentions,
 		&p.InappChannelUpdates, &p.InappChannelUrgent,
 		&p.InappCommunityPosts, &p.InappCommunityMentions,
 		&p.InappEventReminders, &p.InappSystem,
-		&p.InappReposts, &p.InappLive, &p.InappMessages,
+		&p.InappReposts, &p.InappLive, &p.InappMessages, &p.InappNewVideos,
 		&p.EmailDigest, &p.UpdatedAt,
 	}
 }
@@ -125,14 +127,14 @@ func notifPrefsValues(p *NotificationPreferences) []any {
 		p.PushChannelUpdates, p.PushChannelUrgent,
 		p.PushCommunityPosts, p.PushCommunityMentions,
 		p.PushEventReminders, p.PushSystem,
-		p.PushReposts, p.PushLive, p.PushMessages,
+		p.PushReposts, p.PushLive, p.PushMessages, p.PushNewVideos,
 		p.InappLikes, p.InappSuperLikes, p.InappComments, p.InappReplies,
 		p.InappMentions, p.InappFollows, p.InappFriendRequests,
 		p.InappGroupPosts, p.InappGroupMentions,
 		p.InappChannelUpdates, p.InappChannelUrgent,
 		p.InappCommunityPosts, p.InappCommunityMentions,
 		p.InappEventReminders, p.InappSystem,
-		p.InappReposts, p.InappLive, p.InappMessages,
+		p.InappReposts, p.InappLive, p.InappMessages, p.InappNewVideos,
 		p.EmailDigest, p.UpdatedAt,
 	}
 }
@@ -191,8 +193,9 @@ func (s *Store) UpdateNotificationPreferences(ctx context.Context, p *Notificati
 }
 
 // DefaultNotificationPreferences mirrors the column defaults in migrations
-// 003 + 005: everything on except community-posts push; like pushes are ON
-// (TikTok parity, 005); ALL in-app toggles default on.
+// 003 + 005 + 006: everything on except community-posts push; like pushes are ON
+// (TikTok parity, 005); ALL in-app toggles default on; new_videos on for both
+// halves (006, Tube launch: every subscriber hears about every upload).
 func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 	return &NotificationPreferences{
 		UserID:            userID,
@@ -218,6 +221,7 @@ func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 		PushReposts:           true,
 		PushLive:              true,
 		PushMessages:          true,
+		PushNewVideos:         true,
 
 		InappLikes:             true,
 		InappSuperLikes:        true,
@@ -237,6 +241,7 @@ func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 		InappReposts:           true,
 		InappLive:              true,
 		InappMessages:          true,
+		InappNewVideos:         true,
 
 		EmailDigest: "weekly",
 		UpdatedAt:   time.Now(),

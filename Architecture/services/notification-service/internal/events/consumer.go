@@ -49,7 +49,7 @@ type Consumer struct {
 	service *service.Service
 	graph   *graph.Client // optional — follower fan-out for live-started
 	// fanout is the durable subscriber upload pipeline (Module 1 P0-3).
-	fanout *service.SubscriberFanout
+	fanout subscriberFanout
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry

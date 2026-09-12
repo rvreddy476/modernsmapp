@@ -138,8 +138,8 @@ func masterPushAllowed(p *postgres.NotificationPreferences) (allowed, deferred b
 type prefCategory int
 
 const (
-	catDefault prefCategory = iota // no toggle for this type — always delivered
-	catAlwaysOn                    // time-critical: never category-gated (calls)
+	catDefault  prefCategory = iota // no toggle for this type — always delivered
+	catAlwaysOn                     // time-critical: never category-gated (calls)
 	catLikes
 	catSuperLikes
 	catComments
@@ -158,6 +158,7 @@ const (
 	catReposts
 	catLive
 	catMessages
+	catNewVideos // creator uploads on subscribed channels (Tube long video, flicks)
 )
 
 // categoryForEvent maps every event type this service delivers — both the
@@ -207,6 +208,10 @@ func categoryForEvent(eventType string) prefCategory {
 	// Messages: DMs and message requests share one toggle (TikTok parity).
 	case "dm", "message_request":
 		return catMessages
+	// Creator uploads: one toggle for Tube long video and flicks alike, so a
+	// subscriber who mutes uploads mutes all of them. Defaults on (Tube launch).
+	case "creator_uploaded_video", "creator_uploaded_flick":
+		return catNewVideos
 	// Calls are time-critical: a missed-call notice the user asked the app
 	// not to show would hide that a human tried to reach them. Only the
 	// master push toggle and quiet hours apply — never a category toggle.
@@ -259,6 +264,8 @@ func pushCategoryAllowed(p *postgres.NotificationPreferences, eventType string) 
 		return p.PushLive
 	case catMessages:
 		return p.PushMessages
+	case catNewVideos:
+		return p.PushNewVideos
 	default: // catDefault, catAlwaysOn
 		return true
 	}
@@ -304,6 +311,8 @@ func inappCategoryAllowed(p *postgres.NotificationPreferences, eventType string)
 		return p.InappLive
 	case catMessages:
 		return p.InappMessages
+	case catNewVideos:
+		return p.InappNewVideos
 	default: // catDefault, catAlwaysOn
 		return true
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -195,6 +196,74 @@ func (f *SubscriberFanout) postStateFor(ctx context.Context, job *postgres.Fanou
 	f.stateCache, f.stateCachePost, f.stateCacheAt = st, job.PostID, time.Now()
 	f.stateMu.Unlock()
 	return st, nil
+}
+
+// channelNameTTL bounds how long a resolved channel name is reused
+// across retries of the same job. Names change rarely and a stale one
+// only affects push copy, so this is generous next to the 30s post-state
+// window.
+const channelNameTTL = 10 * time.Minute
+
+// channelNameFor resolves the display name for a job whose event did not
+// carry channel_name (a producer older than the Tube launch). One call
+// per job: the result is cached beside the post-state cache so a retry
+// does not repeat it.
+//
+// Failure policy differs from eligible() on purpose: the name is copy,
+// not a safety decision. A lookup that fails logs and returns "", and
+// renderUpload falls back to neutral wording. Blocking a whole page of
+// recipients (and burning one of five attempts) over a display name
+// would be the wrong trade.
+func (f *SubscriberFanout) channelNameFor(ctx context.Context, job *postgres.FanoutJob) string {
+	if f.elig == nil || f.elig.postURL == "" {
+		return ""
+	}
+
+	f.stateMu.Lock()
+	if f.nameCacheAuthor == job.AuthorID && f.nameCacheAuthor != uuid.Nil &&
+		time.Since(f.nameCacheAt) < channelNameTTL {
+		name := f.nameCache
+		f.stateMu.Unlock()
+		return name
+	}
+	f.stateMu.Unlock()
+
+	// post-service resolves /v1/channels/{ref} by handle or by owner user
+	// id; the author id is the stable handle-independent key.
+	url := fmt.Sprintf("%s/v1/channels/%s", f.elig.postURL, job.AuthorID)
+	body, status, err := f.elig.get(ctx, url)
+	if err != nil {
+		slog.Warn("fanout: channel name lookup failed; using neutral copy",
+			"author_id", job.AuthorID, "post_id", job.PostID, "error", err)
+		return ""
+	}
+	name := ""
+	switch status {
+	case http.StatusOK:
+		var env struct {
+			Data struct {
+				Name string `json:"name"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &env); err != nil {
+			slog.Warn("fanout: channel name decode failed; using neutral copy",
+				"author_id", job.AuthorID, "error", err)
+			return ""
+		}
+		name = env.Data.Name
+	case http.StatusNotFound:
+		// A channel deleted between enqueue and delivery: cache the
+		// empty answer too so the page does not re-ask.
+	default:
+		slog.Warn("fanout: channel name lookup returned non-200; using neutral copy",
+			"author_id", job.AuthorID, "status", status)
+		return ""
+	}
+
+	f.stateMu.Lock()
+	f.nameCacheAuthor, f.nameCache, f.nameCacheAt = job.AuthorID, name, time.Now()
+	f.stateMu.Unlock()
+	return name
 }
 
 func (d *eligibilityDeps) get(ctx context.Context, url string) ([]byte, int, error) {

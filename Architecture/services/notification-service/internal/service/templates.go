@@ -186,6 +186,24 @@ var Templates = map[string]NotificationTemplate{
 		Icon: "event", Priority: "high", PushEligible: true, CanAggregate: false,
 	},
 
+	// === Tube / Reels uploads ===
+	// Subscriber fan-out on a creator upload (events/subscriber_fanout.go).
+	// Rendered from inputs carried on the job, never a per-recipient lookup.
+	// Same aggregate window as channel updates: a creator posting a batch of
+	// videos folds into "{count} new uploads from {channel}".
+	"creator_uploaded_video": {
+		EventType: "creator_uploaded_video", TitleTemplate: "{channel} uploaded: {title}",
+		BodyTemplate: "{title}", AggregateTitle: "{count} new uploads from {channel}",
+		Icon: "video", Priority: "medium", PushEligible: true,
+		CanAggregate: true, AggregateWindow: 30 * time.Minute,
+	},
+	"creator_uploaded_flick": {
+		EventType: "creator_uploaded_flick", TitleTemplate: "{channel} uploaded: {title}",
+		BodyTemplate: "{title}", AggregateTitle: "{count} new uploads from {channel}",
+		Icon: "video", Priority: "medium", PushEligible: true,
+		CanAggregate: true, AggregateWindow: 30 * time.Minute,
+	},
+
 	// === Community ===
 	"community.post.published": {
 		EventType: "community.post.published", TitleTemplate: "{actor} posted in {space} · {community}",

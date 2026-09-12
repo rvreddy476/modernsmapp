@@ -117,6 +117,102 @@ func (s *Service) CreateNotificationIdempotent(ctx context.Context, userID, acto
 	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity, false)
 }
 
+// RenderOverride carries pre-rendered push text and a caller-chosen
+// collapse key into deliverWithDecision. The zero value keeps the legacy
+// behaviour: generic notifTitleBody copy and a collapse key derived from
+// the entity. Only the upload path sets it today, because that is the one
+// notification whose copy names a channel and a title.
+type RenderOverride struct {
+	Title       string
+	Body        string
+	CollapseKey string
+}
+
+// UploadNotification is one subscriber's copy of a creator upload, as
+// handed over by the fan-out worker. Everything needed to render is on
+// the struct so delivery never looks anything up per recipient.
+type UploadNotification struct {
+	RecipientID uuid.UUID
+	AuthorID    uuid.UUID
+	NotifType   string // creator_uploaded_video | creator_uploaded_flick
+	PostID      uuid.UUID
+	ChannelID   uuid.UUID
+	ChannelName string
+	Title       string
+	DeepLink    string
+	CreatedAt   time.Time
+	// Identity is the stable "<post>:<user>:<type>" key for the
+	// idempotent inbox write.
+	Identity string
+}
+
+// renderUpload turns the job inputs into push copy and the per-channel
+// collapse key. The registry template is the source of truth for the
+// happy path; the fallbacks exist because older producers omit the
+// channel name or title, and "uploaded: My video" with a dangling
+// separator is not acceptable copy.
+func renderUpload(n UploadNotification) RenderOverride {
+	noun := "video"
+	if n.NotifType == "creator_uploaded_flick" {
+		noun = "flick"
+	}
+	var title string
+	switch {
+	case n.ChannelName != "" && n.Title != "":
+		title = RenderTitle(GetTemplate(n.NotifType).TitleTemplate,
+			map[string]string{"channel": n.ChannelName, "title": n.Title})
+	case n.ChannelName != "":
+		title = n.ChannelName + " uploaded a new " + noun
+	case n.Title != "":
+		title = "New upload: " + n.Title
+	default:
+		title = "New " + noun + " from a channel you subscribe to"
+	}
+	body := n.Title
+	if body == "" {
+		body = "Tap to watch"
+	}
+	return RenderOverride{
+		Title: title,
+		Body:  body,
+		// Per CHANNEL, not per post: a creator publishing a batch replaces
+		// its own earlier push on the device instead of stacking five.
+		CollapseKey: GetCollapseKey(n.NotifType, n.ChannelID.String(), n.RecipientID.String()),
+	}
+}
+
+// CreateUploadNotification is the delivery call for subscriber fan-out.
+// It resolves suppression, preferences and quiet hours exactly as
+// createNotification does, then delivers with the rendered copy and the
+// channel collapse key instead of the generic per-type text. Entity stays
+// post/{postID} so inbox rows, deletes on post removal and client deep
+// links are unchanged.
+func (s *Service) CreateUploadNotification(ctx context.Context, n UploadNotification) error {
+	if s.recipientSuppressed(ctx, n.RecipientID, n.NotifType) {
+		return nil
+	}
+	decision := s.resolveGeneralDelivery(ctx, n.RecipientID, n.NotifType)
+	return s.deliverWithDecision(ctx, decision, n.RecipientID, n.AuthorID, n.NotifType,
+		"post", n.PostID, n.DeepLink, n.CreatedAt, n.Identity, renderUpload(n))
+}
+
+// recipientSuppressed is the account-control gate shared by every
+// delivery entry point: a deactivated or deletion-scheduled recipient gets
+// nothing at all (no inbox row, no realtime, no push). Fails closed on a
+// lookup error, because a notification that should have been suppressed
+// is worse than one delivered late after the account comes back.
+func (s *Service) recipientSuppressed(ctx context.Context, userID uuid.UUID, notifType string) bool {
+	if s.pgStore == nil {
+		return false
+	}
+	suppressed, err := s.pgStore.IsSuppressed(ctx, userID)
+	if err != nil {
+		slog.Warn("notification suppression lookup failed; dropping", "user_id", userID, "type", notifType, "err", err)
+		return true
+	}
+	return suppressed
+}
+
 // resolveGeneralDelivery consults the user's channel preferences (in-app vs
 // push, per category, master toggle, quiet hours) for one notification.
 // Without a Postgres store there are no preferences to consult, so every
@@ -129,19 +225,8 @@ func (s *Service) resolveGeneralDelivery(ctx context.Context, userID uuid.UUID, 
 }
 
 func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string, suppressPush bool) error {
-	// Account control: a deactivated or deletion-scheduled recipient gets
-	// nothing at all (no inbox row, no realtime, no push). Fail closed on a
-	// lookup error — a notification that should have been suppressed is
-	// worse than one delivered late after the account comes back.
-	if s.pgStore != nil {
-		suppressed, err := s.pgStore.IsSuppressed(ctx, userID)
-		if err != nil {
-			slog.Warn("notification suppression lookup failed; dropping", "user_id", userID, "type", notifType, "err", err)
-			return nil
-		}
-		if suppressed {
-			return nil
-		}
+	if s.recipientSuppressed(ctx, userID, notifType) {
+		return nil
 	}
 
 	// 0. Preferences FIRST. Previously this path stored + published
@@ -154,13 +239,14 @@ func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.U
 		decision.SendPush = false
 		decision.DeferPush = false
 	}
-	return s.deliverWithDecision(ctx, decision, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity)
+	return s.deliverWithDecision(ctx, decision, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity, RenderOverride{})
 }
 
 // deliverWithDecision applies an already-resolved DeliveryDecision. Split
 // from createNotification so the channel gating is unit-testable without
-// live stores.
-func (s *Service) deliverWithDecision(ctx context.Context, decision DeliveryDecision, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string) error {
+// live stores. `render` overrides the push copy and collapse key; its zero
+// value keeps the generic per-type text.
+func (s *Service) deliverWithDecision(ctx context.Context, decision DeliveryDecision, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string, render RenderOverride) error {
 	if !decision.CreateInbox && !decision.SendWebSocket && !decision.SendPush {
 		return nil
 	}

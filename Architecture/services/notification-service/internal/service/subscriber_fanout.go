@@ -22,8 +22,15 @@ import (
 //     resumes from the stored cursor instead of losing recipients.
 //   - No 5,000-recipient cap: keyset pagination runs to exhaustion.
 //   - Respects creator notify_subscribers (checked before enqueue),
-//     subscriber notify_on (filtered in SQL by user-service), viewer push
-//     preferences, self-exclusion, and per-(post,user) dedup.
+//     subscriber notify_on (filtered in SQL by the subscriber source),
+//     viewer push preferences, self-exclusion, and per-(post,user) dedup.
+//
+// Tube launch (2026-09-12): every subscriber is notified on a new upload
+// by default. The per-channel bell (notify_on all|none) is the opt-out
+// and is applied by the subscriber source; the creator's per-upload
+// notify_subscribers switch is applied at enqueue. The push reads
+// "{channel} uploaded: {title}", rendered from inputs carried on the job
+// so delivery needs no per-recipient lookup.
 
 const (
 	fanoutPageSize     = 500
@@ -33,11 +40,39 @@ const (
 	fanoutJobBatchSize = 10
 )
 
+// subscriberSource pages notify-eligible subscriber ids and resolves an
+// author to their channel. Served by post-service since the Tube channel
+// model moved there; the wire contract is unchanged from user-service.
+type subscriberSource interface {
+	SubscriberIDs(ctx context.Context, channelID, after uuid.UUID, limit int) (*subscribers.Page, error)
+	ChannelByOwner(ctx context.Context, ownerID uuid.UUID) (uuid.UUID, error)
+}
+
+// fanoutStore is the slice of the Postgres store the pipeline touches:
+// the job table and the per-recipient dedup markers.
+type fanoutStore interface {
+	EnqueueFanoutJob(ctx context.Context, j *postgres.FanoutJob) error
+	ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, limit int) ([]postgres.FanoutJob, error)
+	AdvanceFanoutCursor(ctx context.Context, postID, cursor uuid.UUID, deliveredDelta int64) error
+	CompleteFanoutJob(ctx context.Context, postID uuid.UUID) error
+	ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
+	FailFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
+	AlreadyDelivered(ctx context.Context, postID, userID uuid.UUID) (bool, error)
+	MarkDelivered(ctx context.Context, postID, userID uuid.UUID) (bool, error)
+	CleanupFanoutRecords(ctx context.Context, retention time.Duration) (int64, error)
+}
+
+// uploadNotifier is the one delivery call the pipeline makes per
+// recipient. The Service implements it; tests substitute a recorder.
+type uploadNotifier interface {
+	CreateUploadNotification(ctx context.Context, n UploadNotification) error
+}
+
 // SubscriberFanout owns the durable upload-notification pipeline.
 type SubscriberFanout struct {
-	svc  *Service
-	pg   *postgres.Store
-	subs *subscribers.Client
+	svc  uploadNotifier
+	pg   fanoutStore
+	subs subscriberSource
 
 	// Per-recipient eligibility (Codex P1-8) and its short-lived
 	// per-job post-state cache.
@@ -46,9 +81,36 @@ type SubscriberFanout struct {
 	stateCache     *postState
 	stateCachePost uuid.UUID
 	stateCacheAt   time.Time
+
+	// Channel display name for jobs enqueued from events that predate
+	// channel_name on the payload. Resolved once per job, cached beside
+	// the post state so a retried job does not ask again.
+	nameCacheAuthor uuid.UUID
+	nameCache       string
+	nameCacheAt     time.Time
 }
 
+// NewSubscriberFanout wires the production dependencies. A nil pointer
+// must not become a non-nil interface holding nil, or every nil guard
+// below would pass and the first call would panic; hence the per-field
+// assignment.
 func NewSubscriberFanout(svc *Service, pg *postgres.Store, subs *subscribers.Client) *SubscriberFanout {
+	f := &SubscriberFanout{}
+	if svc != nil {
+		f.svc = svc
+	}
+	if pg != nil {
+		f.pg = pg
+	}
+	if subs != nil {
+		f.subs = subs
+	}
+	return f
+}
+
+// newSubscriberFanoutWith is the test seam: fakes for every dependency
+// drive the pipeline without Postgres, Scylla or a subscriber service.
+func newSubscriberFanoutWith(svc uploadNotifier, pg fanoutStore, subs subscriberSource) *SubscriberFanout {
 	return &SubscriberFanout{svc: svc, pg: pg, subs: subs}
 }
 
@@ -62,6 +124,11 @@ type EnqueueParams struct {
 	DeepLink    string
 	NotifType   string
 	CreatedAt   time.Time
+	// Title and ChannelName render the push text. Either may be empty on
+	// events from older producers; delivery then resolves the channel
+	// name once per job and falls back to neutral copy for the title.
+	Title       string
+	ChannelName string
 }
 
 // Enqueue records the fan-out durably. Called synchronously from the
@@ -79,6 +146,8 @@ func (f *SubscriberFanout) Enqueue(ctx context.Context, p EnqueueParams) error {
 		NotifType:     p.NotifType,
 		Visibility:    p.Visibility,
 		PostCreatedAt: p.CreatedAt,
+		Title:         p.Title,
+		ChannelName:   p.ChannelName,
 	})
 }
 
@@ -99,7 +168,7 @@ func (f *SubscriberFanout) ResolveChannel(ctx context.Context, authorID uuid.UUI
 // StartWorker runs the claim/drain loop until ctx is cancelled. Safe to
 // run in every replica: jobs are claimed with FOR UPDATE SKIP LOCKED.
 func (f *SubscriberFanout) StartWorker(ctx context.Context) {
-	if f == nil || f.pg == nil || f.subs == nil {
+	if f == nil || f.pg == nil || f.subs == nil || f.svc == nil {
 		slog.Info("fanout: worker not started (missing dependencies)")
 		return
 	}
@@ -153,6 +222,12 @@ func (f *SubscriberFanout) drainOnce(ctx context.Context) error {
 // processJob pages subscribers from the cursor to exhaustion, delivering
 // notifications and advancing the cursor after each page.
 func (f *SubscriberFanout) processJob(ctx context.Context, job *postgres.FanoutJob) error {
+	// Render input missing from the event (older producer): one lookup
+	// for the whole job, never one per recipient.
+	if job.ChannelName == "" {
+		job.ChannelName = f.channelNameFor(ctx, job)
+	}
+
 	after := job.Cursor
 	for {
 		select {
@@ -256,9 +331,19 @@ func (f *SubscriberFanout) deliverPage(ctx context.Context, job *postgres.Fanout
 				// (post, user, type), so a retry after a partial failure
 				// upserts the same row instead of adding a second one.
 				identity := fmt.Sprintf("%s:%s:%s", job.PostID, uid, job.NotifType)
-				if err := f.svc.CreateNotificationIdempotent(ctx, uid, job.AuthorID,
-					job.NotifType, "post", job.PostID, job.DeepLink,
-					job.PostCreatedAt, identity); err != nil {
+				err = f.svc.CreateUploadNotification(ctx, UploadNotification{
+					RecipientID: uid,
+					AuthorID:    job.AuthorID,
+					NotifType:   job.NotifType,
+					PostID:      job.PostID,
+					ChannelID:   job.ChannelID,
+					ChannelName: job.ChannelName,
+					Title:       job.Title,
+					DeepLink:    job.DeepLink,
+					CreatedAt:   job.PostCreatedAt,
+					Identity:    identity,
+				})
+				if err != nil {
 					// No marker is written, so this recipient is retried.
 					slog.Warn("fanout: notify failed",
 						"user_id", uid, "post_id", job.PostID, "error", err)

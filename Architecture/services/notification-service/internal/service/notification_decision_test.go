@@ -14,7 +14,7 @@ func bareService() *Service { return &Service{} }
 
 func TestDeliverWithDecision_NothingWhenAllChannelsOff(t *testing.T) {
 	err := bareService().deliverWithDecision(context.Background(), DeliveryDecision{},
-		uuid.New(), uuid.New(), "comment", "post", uuid.New(), "/p/1", time.Now(), "")
+		uuid.New(), uuid.New(), "comment", "post", uuid.New(), "/p/1", time.Now(), "", RenderOverride{})
 	if err != nil {
 		t.Fatalf("expected silent skip, got %v", err)
 	}
@@ -25,7 +25,7 @@ func TestDeliverWithDecision_SkipsInboxAndRealtimeWhenInappOff(t *testing.T) {
 	// configured the push leg is a no-op, so this must return cleanly.
 	d := DeliveryDecision{CreateInbox: false, SendWebSocket: false, SendPush: true}
 	err := bareService().deliverWithDecision(context.Background(), d,
-		uuid.New(), uuid.New(), "reaction", "post", uuid.New(), "/p/1", time.Now(), "id-1")
+		uuid.New(), uuid.New(), "reaction", "post", uuid.New(), "/p/1", time.Now(), "id-1", RenderOverride{})
 	if err != nil {
 		t.Fatalf("expected inbox/realtime skipped, got %v", err)
 	}

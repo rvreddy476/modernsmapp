@@ -248,23 +248,26 @@ func main() {
 	slog.Info("graph client attached", "graph_url", graphURL)
 
 	// Module 1 P0-3: durable subscriber fan-out for uploads. Requires the
-	// Postgres store (job + dedup tables) and the internal user-service
-	// subscriber contract. Without both, upload notifications are skipped
-	// entirely — there is deliberately no follower fallback.
-	userURL := env("USER_SERVICE_URL", "http://user-service:8082")
+	// Postgres store (job + dedup tables) and the internal subscriber
+	// contract. Without both, upload notifications are skipped entirely;
+	// there is deliberately no follower fallback.
+	//
+	// Tube launch: channel subscriptions live in post-service now, so the
+	// subscriber source defaults to POST_SERVICE_URL. The client paths and
+	// JSON are unchanged from the user-service days; only the host moved.
+	// SUBSCRIBERS_SERVICE_URL overrides if the two are ever split again.
+	postURL := env("POST_SERVICE_URL", "http://post-service:8084")
+	subsURL := env("SUBSCRIBERS_SERVICE_URL", postURL)
 	fanout := service.NewSubscriberFanout(
-		notifSvc, pgStore, subscribers.New(userURL, internalKey),
+		notifSvc, pgStore, subscribers.New(subsURL, internalKey),
 	)
 	// Per-recipient eligibility re-checked at delivery time (P1-8):
-	// blocks, followers-only access, deletion, and moderation state.
-	fanout.SetEligibilityDeps(
-		graphURL,
-		env("POST_SERVICE_URL", "http://post-service:8084"),
-		internalKey,
-	)
+	// blocks, followers-only access, deletion, and moderation state. The
+	// same post-service base URL also serves the channel-name fallback.
+	fanout.SetEligibilityDeps(graphURL, postURL, internalKey)
 	consumer.WithSubscriberFanout(fanout)
 	fanout.StartWorker(ctx)
-	slog.Info("subscriber fan-out worker started", "user_service_url", userURL)
+	slog.Info("subscriber fan-out worker started", "subscribers_service_url", subsURL)
 
 	go consumer.Start(ctx)
 	slog.Info("kafka consumer started", "topic", "social.events.v1")

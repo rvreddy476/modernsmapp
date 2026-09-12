@@ -1,5 +1,6 @@
-// Package subscribers is the internal client for user-service's
-// channel-subscriber contract (Module 1 P0-3).
+// Package subscribers is the internal client for the channel-subscriber
+// contract (Module 1 P0-3). post-service serves it since the Tube channel
+// model moved there; the paths and JSON predate the move and are unchanged.
 //
 // Subscriber identities are only ever fetched over the internal route
 // (X-Internal-Service-Key), never a public API, and only for the purpose
@@ -105,7 +106,7 @@ func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("user-service returned %d for %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("subscriber source returned %d for %s", resp.StatusCode, url)
 	}
 	// Bounded read: a page is at most 1000 ids, so 4 MB is generous.
 	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
