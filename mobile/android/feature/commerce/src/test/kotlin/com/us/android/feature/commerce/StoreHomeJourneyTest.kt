@@ -3,9 +3,11 @@ package com.us.android.feature.commerce
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.commerce.model.BannerTarget
 import com.us.android.core.commerce.model.Paise
+import com.us.android.core.commerce.network.AddFavouriteRequest
 import com.us.android.core.commerce.network.CartDto
 import com.us.android.core.commerce.network.CartLineDto
 import com.us.android.core.commerce.network.CategoryDto
+import com.us.android.core.commerce.network.FavouriteDto
 import com.us.android.core.commerce.network.HomeBannerDto
 import com.us.android.core.commerce.network.HomeDto
 import com.us.android.core.commerce.network.HomeSectionDto
@@ -102,9 +104,13 @@ class StoreHomeJourneyTest {
         override suspend fun getCart(): Response<ApiEnvelope<CartDto>> =
             envelope(CartDto(items = cartLines, itemCount = cartLines.size))
 
-        override suspend fun addFavourite(productId: String): Response<ApiEnvelope<Unit>> {
-            favouriteAdds += productId
-            return if (favouriteWritesFail) unused() else envelope(Unit)
+        override suspend fun addFavourite(body: AddFavouriteRequest): Response<ApiEnvelope<FavouriteDto>> {
+            favouriteAdds += body.productId
+            return if (favouriteWritesFail) {
+                unused()
+            } else {
+                envelope(FavouriteDto(productId = body.productId, isFavourite = true))
+            }
         }
 
         override suspend fun removeFavourite(productId: String): Response<ApiEnvelope<Unit>> {

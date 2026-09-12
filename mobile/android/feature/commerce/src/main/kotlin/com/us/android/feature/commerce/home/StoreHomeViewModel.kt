@@ -90,6 +90,20 @@ fun filledSections(sections: List<HomeSection>): List<HomeSection> =
 /** Banners are drawn only when there are some; there is no house banner. */
 fun showsBanners(banners: List<HomeBanner>): Boolean = banners.isNotEmpty()
 
+/**
+ * The line under a category tile: "12 products", "1 product", or nothing.
+ *
+ * Null at zero rather than "0 products" because the dimmed tile already says
+ * it; a number that repeats the greying is noise, and "No products" under a
+ * tile the buyer can still tap reads as a dead control. A negative count is a
+ * server bug and is treated as zero rather than drawn.
+ */
+fun categoryCountLabel(productCount: Int): String? = when {
+    productCount <= 0 -> null
+    productCount == 1 -> "1 product"
+    else -> "$productCount products"
+}
+
 @HiltViewModel
 class StoreHomeViewModel @Inject constructor(
     private val repo: CommerceRepository,

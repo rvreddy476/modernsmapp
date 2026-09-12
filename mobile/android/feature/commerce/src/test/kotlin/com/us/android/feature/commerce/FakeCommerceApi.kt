@@ -1,5 +1,6 @@
 package com.us.android.feature.commerce
 
+import com.us.android.core.commerce.network.AddFavouriteRequest
 import com.us.android.core.commerce.network.AddToCartRequest
 import com.us.android.core.commerce.network.AddressDto
 import com.us.android.core.commerce.network.AdjustStockRequest
@@ -12,6 +13,7 @@ import com.us.android.core.commerce.network.CheckoutRequest
 import com.us.android.core.commerce.network.CheckoutResultDto
 import com.us.android.core.commerce.network.CommerceApi
 import com.us.android.core.commerce.network.CreateProductRequest
+import com.us.android.core.commerce.network.FavouriteDto
 import com.us.android.core.commerce.network.HomeDto
 import com.us.android.core.commerce.network.OrderDto
 import com.us.android.core.commerce.network.OrderListDto
@@ -71,7 +73,7 @@ open class FakeCommerceApi : CommerceApi {
 
     override suspend fun favourites(): Response<ApiEnvelope<ProductListDto>> = unused()
 
-    override suspend fun addFavourite(productId: String): Response<ApiEnvelope<Unit>> = unused()
+    override suspend fun addFavourite(body: AddFavouriteRequest): Response<ApiEnvelope<FavouriteDto>> = unused()
 
     override suspend fun removeFavourite(productId: String): Response<ApiEnvelope<Unit>> = unused()
 

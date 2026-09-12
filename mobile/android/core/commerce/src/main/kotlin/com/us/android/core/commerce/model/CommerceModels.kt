@@ -109,9 +109,19 @@ data class Category(
     val parentId: String?,
     val imageUrl: String?,
     val featured: Boolean,
+    /**
+     * Live published products in this category's subtree. Zero means the
+     * tile opens onto nothing, so the strip dims it rather than inviting a
+     * tap into an empty list. Defaulted because the field is additive and
+     * the fakes and fixtures that build categories predate it.
+     */
+    val productCount: Int = 0,
 ) {
     /** A top-level category — the strip and the "Shop by category" grid show these. */
     val isTopLevel: Boolean get() = parentId == null
+
+    /** Nothing to browse behind this tile. Still tappable: the browse page's own empty state explains. */
+    val isEmpty: Boolean get() = productCount <= 0
 }
 
 /**

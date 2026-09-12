@@ -36,6 +36,7 @@ import com.us.android.core.commerce.model.TaxClass
 import com.us.android.core.commerce.model.Variant
 import com.us.android.core.commerce.model.VariantOption
 import com.us.android.core.commerce.model.discountPercent
+import com.us.android.core.commerce.network.AddFavouriteRequest
 import com.us.android.core.commerce.network.AddToCartRequest
 import com.us.android.core.commerce.network.AddressDto
 import com.us.android.core.commerce.network.AdjustStockRequest
@@ -148,6 +149,7 @@ class CommerceRepository @Inject constructor(
                     parentId = c.parentId,
                     imageUrl = c.imageUrl,
                     featured = c.isFeatured,
+                    productCount = c.productCount,
                 )
             }
         }
@@ -191,7 +193,7 @@ class CommerceRepository @Inject constructor(
         call { api.favourites() }.map { dto -> dto.items.map(::toSummary) }
 
     suspend fun addFavourite(productId: String): CommerceResult<Unit> =
-        call { api.addFavourite(productId) }.map { }
+        call { api.addFavourite(AddFavouriteRequest(productId)) }.map { }
 
     suspend fun removeFavourite(productId: String): CommerceResult<Unit> =
         call { api.removeFavourite(productId) }.map { }

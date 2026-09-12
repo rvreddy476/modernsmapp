@@ -77,10 +77,22 @@ interface CommerceApi {
     @GET("v1/commerce/favourites")
     suspend fun favourites(): Response<ApiEnvelope<ProductListDto>>
 
-    @POST("v1/commerce/favourites/{productId}")
+    /**
+     * Saves a product. The id travels in the BODY, not the path.
+     *
+     * This used to be `POST /favourites/{productId}`, a route commerce-service
+     * never had, so every tap on the heart was a 404 that the optimistic UI
+     * flipped back a moment later. The server's contract is
+     * `POST /v1/commerce/favourites` with `{"product_id":"..."}`; the remove
+     * stays path-addressed because that IS how the server declares it.
+     *
+     * Idempotent on the server: a second add is 200, not 409, so a double-tap
+     * or a retried request never shows a failure for a state it reached.
+     */
+    @POST("v1/commerce/favourites")
     suspend fun addFavourite(
-        @Path("productId") productId: String,
-    ): Response<ApiEnvelope<Unit>>
+        @Body body: AddFavouriteRequest,
+    ): Response<ApiEnvelope<FavouriteDto>>
 
     @DELETE("v1/commerce/favourites/{productId}")
     suspend fun removeFavourite(
@@ -374,12 +386,38 @@ data class ProductSummaryDto(
     @SerialName("is_favourite") val isFavourite: Boolean = false,
 )
 
+/** `POST /v1/commerce/favourites`: the product to save, by id. */
+@Serializable
+data class AddFavouriteRequest(
+    @SerialName("product_id") val productId: String,
+)
+
+/**
+ * The server's answer to a favourite write: the id it acted on and the
+ * state it now holds. The repository does not need either today (the heart
+ * is already optimistic), but decoding the real shape rather than `Unit`
+ * means a future "server says it is NOT saved" can be honoured without a
+ * wire change.
+ */
+@Serializable
+data class FavouriteDto(
+    @SerialName("product_id") val productId: String = "",
+    @SerialName("is_favourite") val isFavourite: Boolean = false,
+)
+
 /**
  * One node of the shop's taxonomy.
  *
  * `image_url` is optional because the seeded taxonomy predates category
  * artwork; the strip draws a Lucide glyph when there is none rather than a
  * broken frame.
+ *
+ * `product_count` is the live number of published products in the subtree.
+ * It was added so the strip can dim a category that would open onto nothing,
+ * which is what made the category filter look broken when every seeded
+ * category was empty. It defaults to 0 so a server that predates the field
+ * still decodes; that server's tiles will read as empty, which is the honest
+ * fallback for a count nobody sent.
  */
 @Serializable
 data class CategoryDto(
@@ -390,6 +428,7 @@ data class CategoryDto(
     @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("display_order") val displayOrder: Int = 0,
     @SerialName("is_featured") val isFeatured: Boolean = false,
+    @SerialName("product_count") val productCount: Int = 0,
 )
 
 /** The landing page: the banner rail, then the named shelves. */

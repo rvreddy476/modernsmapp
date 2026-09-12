@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -295,17 +296,28 @@ private fun CategoryGrid(categories: List<Category>, onOpen: (String, String) ->
  * picture when the server has one and a Lucide tag glyph when it does not —
  * so an unillustrated taxonomy still reads as a strip of categories rather
  * than a row of broken frames.
+ *
+ * An empty category is drawn dimmed but stays tappable. Dimmed, because a
+ * strip of bright tiles that all open onto nothing is what made the filter
+ * look broken; tappable, because the browse page has its own "no products
+ * here yet" copy and a tile that ignores a tap reads as a hung screen.
  */
 @Composable
 private fun CategoryTile(category: Category, onClick: () -> Unit) {
+    val countLabel = categoryCountLabel(category.productCount)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(CATEGORY_TILE)
             .pressScale(onClick)
+            .alpha(if (category.isEmpty) EMPTY_CATEGORY_ALPHA else 1f)
             .semantics {
                 role = Role.Button
-                contentDescription = "Browse ${category.name}"
+                contentDescription = when {
+                    category.isEmpty -> "Browse ${category.name}, no products yet"
+                    countLabel != null -> "Browse ${category.name}, $countLabel"
+                    else -> "Browse ${category.name}"
+                }
             }
             .testTag("mstore_category:${category.id}"),
     ) {
@@ -340,6 +352,17 @@ private fun CategoryTile(category: Category, onClick: () -> Unit) {
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+        // Hidden at zero: the dimming already says it, see categoryCountLabel.
+        if (countLabel != null) {
+            Text(
+                text = countLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("mstore_category_count:${category.id}"),
+            )
+        }
     }
 }
 
@@ -481,6 +504,9 @@ private const val PREFETCH_DISTANCE = 4
 private const val TILE_CORNER_DIVISOR = 3
 private val CATEGORY_TILE = 64.dp
 private val CATEGORY_GLYPH = 26.dp
+
+/** Dim enough to read as "nothing here", bright enough to still read as a control. */
+private const val EMPTY_CATEGORY_ALPHA = 0.45f
 private val BANNER_WIDTH = 300.dp
 private val BANNER_HEIGHT = 150.dp
 
