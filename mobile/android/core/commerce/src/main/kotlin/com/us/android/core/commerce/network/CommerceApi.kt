@@ -339,7 +339,112 @@ interface CommerceApi {
     suspend fun saveSellerAddress(
         @Body body: SellerAddressRequest,
     ): Response<ApiEnvelope<Unit>>
+
+    // Seller orders, fulfilment, returns and earnings.
+    //
+    // The DTOs live in SellerFulfilmentDtos.kt. Two of the shapes below are
+    // unusual and worth knowing before reading them: the order list is a BARE
+    // array of order rows paged by offset (commerce-service's
+    // ListMySellerOrders writes the slice itself, and has no cursor), and the
+    // shipment inside the detail card is keyed by Go field names because the
+    // server's Shipment struct carries no json tags.
+
+    /**
+     * The seller's orders, newest first.
+     *
+     * Offset-paged: `GET /v1/commerce/seller/orders` reads `limit` and
+     * `offset` and answers a bare array, with no `next_cursor`. A full page
+     * is the only signal that another may exist.
+     */
+    @GET("v1/commerce/seller/orders")
+    suspend fun sellerOrders(
+        @Query("limit") limit: Int = SELLER_PAGE_SIZE,
+        @Query("offset") offset: Int = 0,
+    ): Response<ApiEnvelope<List<SellerOrderDto>>>
+
+    /** One order from the seller's side: their lines, their shipment, the buyer's address. */
+    @GET("v1/commerce/seller/orders/{orderId}")
+    suspend fun sellerOrder(
+        @Path("orderId") orderId: String,
+    ): Response<ApiEnvelope<SellerOrderCardDto>>
+
+    /**
+     * The fulfilment actions.
+     *
+     * Declared against `/v1/commerce/seller/orders/{id}/...` because that is
+     * where the seller's other order reads live, and each maps to one row of
+     * the D6 matrix the server enforces (migration 010,
+     * `order_status_transitions`, actor `seller`). commerce-service does not
+     * register these three routes yet: its only seller write on an order is
+     * `POST /orders/{id}/shipment`, which books through the courier adapter
+     * and takes no courier or tracking number, and `POST /orders/{id}/cancel`
+     * acts as the CUSTOMER. Until the server catches up every one of these
+     * answers a bare 404, which the repository renders as "not available in
+     * this version" rather than as a fault.
+     */
+    @POST("v1/commerce/seller/orders/{orderId}/pack")
+    suspend fun packOrder(
+        @Path("orderId") orderId: String,
+    ): Response<ApiEnvelope<Unit>>
+
+    @POST("v1/commerce/seller/orders/{orderId}/ship")
+    suspend fun shipOrder(
+        @Path("orderId") orderId: String,
+        @Body body: ShipOrderRequest,
+    ): Response<ApiEnvelope<Unit>>
+
+    @POST("v1/commerce/seller/orders/{orderId}/cancel")
+    suspend fun sellerCancelOrder(
+        @Path("orderId") orderId: String,
+        @Body body: SellerCancelOrderRequest,
+    ): Response<ApiEnvelope<Unit>>
+
+    /**
+     * The returns inbox. `status` narrows to requested, approved, rejected
+     * or refunded; absent means everything.
+     */
+    @GET("v1/commerce/seller/returns")
+    suspend fun sellerReturns(
+        @Query("status") status: String? = null,
+        @Query("limit") limit: Int = SELLER_PAGE_SIZE,
+        @Query("offset") offset: Int = 0,
+    ): Response<ApiEnvelope<SellerReturnsDto>>
+
+    /**
+     * Approve and reject are NOT under `/seller/`: they are
+     * `/v1/commerce/returns/{id}/approve|reject`, and the server checks that
+     * the caller is the seller of the returned item. Approving books the
+     * reverse pickup and queues the refund; rejecting needs a reason the
+     * buyer will read.
+     */
+    @POST("v1/commerce/returns/{returnId}/approve")
+    suspend fun approveReturn(
+        @Path("returnId") returnId: String,
+    ): Response<ApiEnvelope<ReturnRequestDto>>
+
+    @POST("v1/commerce/returns/{returnId}/reject")
+    suspend fun rejectReturn(
+        @Path("returnId") returnId: String,
+        @Body body: RejectReturnRequest,
+    ): Response<ApiEnvelope<ReturnRequestDto>>
+
+    /**
+     * Delivered prepaid lines with the gross, commission, fee, TDS and net
+     * broken out. COD money is settled through a separate remittance ledger
+     * and is not in this list. Offset-paged, default 50 on the server.
+     */
+    @GET("v1/commerce/seller/earnings")
+    suspend fun sellerEarnings(
+        @Query("limit") limit: Int = EARNINGS_PAGE_SIZE,
+        @Query("offset") offset: Int = 0,
+    ): Response<ApiEnvelope<SellerEarningsDto>>
 }
+
+/** The server's own default for its seller lists. */
+const val SELLER_PAGE_SIZE = 20
+
+/** The earnings route defaults to 50; asking for the same keeps one page one screen. */
+const val EARNINGS_PAGE_SIZE = 50
 
 // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Wire DTOs ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 //

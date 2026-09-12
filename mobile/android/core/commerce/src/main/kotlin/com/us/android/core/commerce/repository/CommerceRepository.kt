@@ -23,10 +23,14 @@ import com.us.android.core.commerce.model.ProductPage
 import com.us.android.core.commerce.model.ProductSummary
 import com.us.android.core.commerce.model.SellerAddress
 import com.us.android.core.commerce.model.SellerDocument
+import com.us.android.core.commerce.model.SellerEarning
+import com.us.android.core.commerce.model.SellerOrder
+import com.us.android.core.commerce.model.SellerOrderSummary
 import com.us.android.core.commerce.model.SellerProduct
 import com.us.android.core.commerce.model.SellerProfile
 import com.us.android.core.commerce.model.SellerReadiness
 import com.us.android.core.commerce.model.SellerRequirement
+import com.us.android.core.commerce.model.SellerReturn
 import com.us.android.core.commerce.model.SellerStatus
 import com.us.android.core.commerce.model.SellerVariant
 import com.us.android.core.commerce.model.StockLevel
@@ -54,9 +58,18 @@ import com.us.android.core.commerce.network.PayoutRequest
 import com.us.android.core.commerce.network.ProductMediaDto
 import com.us.android.core.commerce.network.ProductMediaListDto
 import com.us.android.core.commerce.network.ProductSummaryDto
+import com.us.android.core.commerce.network.EARNINGS_PAGE_SIZE
 import com.us.android.core.commerce.network.QuoteRequest
+import com.us.android.core.commerce.network.RejectReturnRequest
+import com.us.android.core.commerce.network.SELLER_PAGE_SIZE
 import com.us.android.core.commerce.network.SaveDocumentsRequest
 import com.us.android.core.commerce.network.SellerAddressRequest
+import com.us.android.core.commerce.network.SellerCancelOrderRequest
+import com.us.android.core.commerce.network.SellerEarningDto
+import com.us.android.core.commerce.network.SellerOrderCardDto
+import com.us.android.core.commerce.network.SellerOrderDto
+import com.us.android.core.commerce.network.SellerReturnCardDto
+import com.us.android.core.commerce.network.ShipOrderRequest
 import com.us.android.core.commerce.network.StartSellingRequest
 import com.us.android.core.commerce.network.StockDto
 import com.us.android.core.commerce.network.UpdateCartItemRequest
@@ -724,6 +737,62 @@ class CommerceRepository @Inject constructor(
                 ),
             )
         }.map { }
+
+    // ─── Seller orders, fulfilment, returns, earnings ────────────────
+    //
+    // The mapping lives in SellerFulfilmentMapping.kt. The server resolves
+    // the seller from the caller on every one of these, so, as above, nothing
+    // here names a shop.
+
+    /**
+     * A page of the seller's orders.
+     *
+     * Offset-paged, because that is what the route reads; there is no cursor.
+     * The caller passes the count it already holds as [offset] and treats a
+     * page shorter than [SELLER_PAGE_SIZE] as the last one.
+     */
+    suspend fun sellerOrders(offset: Int = 0): CommerceResult<List<SellerOrderSummary>> =
+        call { api.sellerOrders(limit = SELLER_PAGE_SIZE, offset = offset) }
+            .map { rows -> rows.map(SellerOrderDto::toSummary) }
+
+    suspend fun sellerOrder(orderId: String): CommerceResult<SellerOrder> =
+        call { api.sellerOrder(orderId) }.map(SellerOrderCardDto::toSellerOrder)
+
+    /**
+     * The fulfilment actions, one call per row of the seller's transition
+     * table (`sellerActionsFor`). Each returns Unit and the screen RE-READS
+     * the order afterwards rather than assuming the new status: a cancel on
+     * a paid order lands in refund_pending, not cancelled, and the
+     * difference is what the seller needs to tell the buyer.
+     */
+    suspend fun packOrder(orderId: String): CommerceResult<Unit> =
+        call { api.packOrder(orderId) }.map { }
+
+    suspend fun shipOrder(orderId: String, courier: String, trackingNumber: String): CommerceResult<Unit> =
+        call {
+            api.shipOrder(
+                orderId,
+                ShipOrderRequest(courier = courier.trim(), trackingNumber = trackingNumber.trim()),
+            )
+        }.map { }
+
+    suspend fun sellerCancelOrder(orderId: String, reason: String): CommerceResult<Unit> =
+        call { api.sellerCancelOrder(orderId, SellerCancelOrderRequest(reason.trim())) }.map { }
+
+    /** The returns inbox. [status] is a wire value, or null for everything. */
+    suspend fun sellerReturns(status: String? = null, offset: Int = 0): CommerceResult<List<SellerReturn>> =
+        call { api.sellerReturns(status = status, limit = SELLER_PAGE_SIZE, offset = offset) }
+            .map { dto -> dto.returns.map(SellerReturnCardDto::toSellerReturn) }
+
+    suspend fun approveReturn(returnId: String): CommerceResult<Unit> =
+        call { api.approveReturn(returnId) }.map { }
+
+    suspend fun rejectReturn(returnId: String, reason: String): CommerceResult<Unit> =
+        call { api.rejectReturn(returnId, RejectReturnRequest(reason.trim())) }.map { }
+
+    suspend fun sellerEarnings(offset: Int = 0): CommerceResult<List<SellerEarning>> =
+        call { api.sellerEarnings(limit = EARNINGS_PAGE_SIZE, offset = offset) }
+            .map { dto -> dto.earnings.map(SellerEarningDto::toEarning) }
 
     /**
      * A catalogue row.

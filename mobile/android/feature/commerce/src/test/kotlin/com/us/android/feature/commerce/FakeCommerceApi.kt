@@ -26,12 +26,20 @@ import com.us.android.core.commerce.network.ProductMediaListDto
 import com.us.android.core.commerce.network.QuoteDto
 import com.us.android.core.commerce.network.QuoteRequest
 import com.us.android.core.commerce.network.ReadinessDto
+import com.us.android.core.commerce.network.RejectReturnRequest
+import com.us.android.core.commerce.network.ReturnRequestDto
 import com.us.android.core.commerce.network.SaveDocumentsRequest
 import com.us.android.core.commerce.network.SellerAddressRequest
+import com.us.android.core.commerce.network.SellerCancelOrderRequest
+import com.us.android.core.commerce.network.SellerEarningsDto
+import com.us.android.core.commerce.network.SellerOrderCardDto
+import com.us.android.core.commerce.network.SellerOrderDto
 import com.us.android.core.commerce.network.SellerProductDto
 import com.us.android.core.commerce.network.SellerProductsDto
 import com.us.android.core.commerce.network.SellerProfileDto
+import com.us.android.core.commerce.network.SellerReturnsDto
 import com.us.android.core.commerce.network.SellerVariantDto
+import com.us.android.core.commerce.network.ShipOrderRequest
 import com.us.android.core.commerce.network.StartSellingRequest
 import com.us.android.core.commerce.network.StockDto
 import com.us.android.core.commerce.network.TaxClassListDto
@@ -163,7 +171,45 @@ open class FakeCommerceApi : CommerceApi {
     override suspend fun submitSellerApplication(): Response<ApiEnvelope<Unit>> = unused()
 
     override suspend fun saveSellerAddress(body: SellerAddressRequest): Response<ApiEnvelope<Unit>> = unused()
+
+    override suspend fun sellerOrders(limit: Int, offset: Int): Response<ApiEnvelope<List<SellerOrderDto>>> =
+        unused()
+
+    override suspend fun sellerOrder(orderId: String): Response<ApiEnvelope<SellerOrderCardDto>> = unused()
+
+    override suspend fun packOrder(orderId: String): Response<ApiEnvelope<Unit>> = unused()
+
+    override suspend fun shipOrder(orderId: String, body: ShipOrderRequest): Response<ApiEnvelope<Unit>> =
+        unused()
+
+    override suspend fun sellerCancelOrder(
+        orderId: String,
+        body: SellerCancelOrderRequest,
+    ): Response<ApiEnvelope<Unit>> = unused()
+
+    override suspend fun sellerReturns(
+        status: String?,
+        limit: Int,
+        offset: Int,
+    ): Response<ApiEnvelope<SellerReturnsDto>> = unused()
+
+    override suspend fun approveReturn(returnId: String): Response<ApiEnvelope<ReturnRequestDto>> = unused()
+
+    override suspend fun rejectReturn(
+        returnId: String,
+        body: RejectReturnRequest,
+    ): Response<ApiEnvelope<ReturnRequestDto>> = unused()
+
+    override suspend fun sellerEarnings(limit: Int, offset: Int): Response<ApiEnvelope<SellerEarningsDto>> =
+        unused()
 }
+
+/** A 400 carrying a typed commerce error code, the way a refused transition arrives. */
+fun <T> refused(code: String, message: String = ""): Response<ApiEnvelope<T>> =
+    Response.error(
+        400,
+        """{"error":{"code":"$code","message":"$message"}}""".toResponseBody("application/json".toMediaType()),
+    )
 
 /**
  * A 500, not an exception.

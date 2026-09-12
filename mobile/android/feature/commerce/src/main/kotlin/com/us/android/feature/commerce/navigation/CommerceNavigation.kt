@@ -41,7 +41,11 @@ import com.us.android.feature.commerce.seller.NewProductScreen
 import com.us.android.feature.commerce.seller.PayoutScreen
 import com.us.android.feature.commerce.seller.PickupAddressScreen
 import com.us.android.feature.commerce.seller.ProductImagesScreen
+import com.us.android.feature.commerce.seller.SellerEarningsScreen
 import com.us.android.feature.commerce.seller.SellerHubActions
+import com.us.android.feature.commerce.seller.SellerOrderDetailScreen
+import com.us.android.feature.commerce.seller.SellerOrdersScreen
+import com.us.android.feature.commerce.seller.SellerReturnsScreen
 import com.us.android.feature.commerce.seller.SellerScreen
 import com.us.android.feature.commerce.seller.StartSellingScreen
 import com.us.android.feature.commerce.seller.StockScreen
@@ -189,6 +193,22 @@ data object StartSellingRoute
 /** Where the seller is paid. */
 @Serializable
 data object SellerPayoutRoute
+
+/** The seller's orders: what to pack and ship. */
+@Serializable
+data object SellerOrdersRoute
+
+/** One order from the seller's side. The screen reads it fresh; nothing but the id travels. */
+@Serializable
+data class SellerOrderDetailRoute(val orderId: String)
+
+/** The returns inbox. */
+@Serializable
+data object SellerReturnsRoute
+
+/** What has been earned on delivered orders. */
+@Serializable
+data object SellerEarningsRoute
 
 /** Sending the shop for review. */
 @Serializable
@@ -434,8 +454,38 @@ fun NavGraphBuilder.mSellerScreens(navController: NavController) {
                     listProduct = { navController.navigate(NewProductRoute) },
                     submitShop = { navController.navigate(SubmitShopRoute) },
                     submitProduct = { productId -> submitter.submit(productId) { } },
+                    openOrders = { navController.navigate(SellerOrdersRoute) },
+                    openReturns = { navController.navigate(SellerReturnsRoute) },
+                    openEarnings = { navController.navigate(SellerEarningsRoute) },
                 ),
                 onStartSelling = { navController.navigate(StartSellingRoute) },
+            )
+        }
+
+        composable<SellerOrdersRoute> {
+            SellerOrdersScreen(
+                onBack = navController::popBackStack,
+                onOpenOrder = { navController.navigate(SellerOrderDetailRoute(it)) },
+            )
+        }
+
+        composable<SellerOrderDetailRoute> {
+            SellerOrderDetailScreen(onBack = navController::popBackStack)
+        }
+
+        composable<SellerReturnsRoute> {
+            SellerReturnsScreen(
+                onBack = navController::popBackStack,
+                // The seller's view of the order, not the buyer's: a return
+                // is decided against what was packed and shipped.
+                onOpenOrder = { navController.navigate(SellerOrderDetailRoute(it)) },
+            )
+        }
+
+        composable<SellerEarningsRoute> {
+            SellerEarningsScreen(
+                onBack = navController::popBackStack,
+                onOpenOrder = { navController.navigate(SellerOrderDetailRoute(it)) },
             )
         }
 

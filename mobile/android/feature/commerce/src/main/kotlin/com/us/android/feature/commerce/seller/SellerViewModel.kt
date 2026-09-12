@@ -326,4 +326,13 @@ data class SellerHubActions(
     val listProduct: () -> Unit,
     val submitShop: () -> Unit,
     val submitProduct: (productId: String) -> Unit,
+    /**
+     * The order surface: what to pack and ship, what came back, what was
+     * earned. MSeller had catalogue, stock, price and payout and no way to
+     * see an order, so a shop could be approved and sell and its owner
+     * could not ship what sold.
+     */
+    val openOrders: () -> Unit,
+    val openReturns: () -> Unit,
+    val openEarnings: () -> Unit,
 )

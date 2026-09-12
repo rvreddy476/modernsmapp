@@ -231,10 +231,21 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
         }
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "RazorpayLauncher"
         const val PROVIDER_RAZORPAY = "razorpay"
-        const val MERCHANT_NAME = "atPost"
+
+        /**
+         * The name on the Razorpay sheet's header.
+         *
+         * "Momentum Merchant" is the business name registered on the founder's
+         * Razorpay account (decision, 12 Sep 2026). The sheet has to show the
+         * name the buyer's bank statement will carry: the old value, "atPost",
+         * outlived the product rename, and a sheet naming a merchant the
+         * statement does not is exactly the mismatch a buyer reads as fraud.
+         * Internal so a test can pin it.
+         */
+        const val MERCHANT_NAME = "Momentum Merchant"
         const val DEFAULT_CURRENCY = "INR"
 
         /**

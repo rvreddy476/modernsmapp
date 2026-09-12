@@ -2,6 +2,7 @@ package com.us.android.feature.commerce.seller
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -150,6 +151,28 @@ private fun SellerContent(
             )
         }
 
+        // The order surface, above the catalogue: on any day the shop is
+        // open, what to pack matters before what is listed. Shown whatever
+        // the shop's status, because a shop suspended today still has
+        // yesterday's orders to ship.
+        item {
+            Text(
+                text = "Orders",
+                style = MaterialTheme.typography.titleSmall,
+                color = UsTheme.extended.textPrimary,
+            )
+        }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            ) {
+                HubTile(text = "Orders", onClick = actions.openOrders, modifier = Modifier.weight(1f))
+                HubTile(text = "Returns", onClick = actions.openReturns, modifier = Modifier.weight(1f))
+                HubTile(text = "Earnings", onClick = actions.openEarnings, modifier = Modifier.weight(1f))
+            }
+        }
+
         item {
             Text(
                 text = "Products",
@@ -257,6 +280,25 @@ private fun SellerProductRow(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+}
+
+/** One of the three order tiles: a card that reads as a place to go, not a form control. */
+@Composable
+private fun HubTile(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.bgCard)
+            .pressScale(onClick = onClick)
+            .padding(vertical = UsTheme.spacing.l, horizontal = UsTheme.spacing.s),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = UsTheme.extended.textPrimary,
+        )
     }
 }
 
