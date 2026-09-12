@@ -279,11 +279,14 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 
-	// Tube's list is unnarrowed by default, but the parameter is read
-	// rather than ignored: it used to be dropped silently, so a client
-	// that asked for only the people it follows got the whole surface —
-	// discovery fill included — with nothing saying so.
-	followingOnly := c.DefaultQuery("following_only", "") == "true"
+	// Tube's list is unnarrowed by default, but the parameters are read
+	// rather than ignored: following_only used to be dropped silently, so
+	// a client that asked for only the people it follows got the whole
+	// surface, discovery fill included, with nothing saying so.
+	followingOnly, subscribedOnly, ok := tubeNarrowing(c)
+	if !ok {
+		return
+	}
 
 	// Tube category filter (2026-09-05): `category=<taxonomy id>` keeps
 	// only long videos in that category. Applied after hydration inside
@@ -296,7 +299,7 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 	if category != "" {
-		hydrated, next, err := h.svc.GetLongVideoCategoryPage(c.Request.Context(), userID, limit, before, category, followingOnly)
+		hydrated, next, err := h.svc.GetLongVideoCategoryPage(c.Request.Context(), userID, limit, before, category, followingOnly, subscribedOnly)
 		if err != nil {
 			log.Printf("long video feed (category %q) failed: %v", category, err)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
@@ -308,7 +311,7 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 
-	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
+	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -342,7 +345,10 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 		return
 	}
 
-	followingOnly := c.DefaultQuery("following_only", "") == "true"
+	followingOnly, subscribedOnly, ok := tubeNarrowing(c)
+	if !ok {
+		return
+	}
 
 	// Tube category filter (2026-09-05) — same contract as /feed/videos.
 	category, ok := service.NormalizeCategoryFilter(c.Query("category"))
@@ -352,7 +358,7 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 		return
 	}
 	if category != "" {
-		hydrated, next, err := h.svc.GetVideoFeedCategoryPage(c.Request.Context(), userID, limit, before, followingOnly, category)
+		hydrated, next, err := h.svc.GetVideoFeedCategoryPage(c.Request.Context(), userID, limit, before, followingOnly, subscribedOnly, category)
 		if err != nil {
 			log.Printf("watch feed (category %q) failed: %v", category, err)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
@@ -364,7 +370,7 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 		return
 	}
 
-	feedItems, next, err := h.svc.GetVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
+	feedItems, next, err := h.svc.GetVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -386,6 +392,26 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 
 	c.Writer.Header().Set("X-Feed-Surface", "watch")
 	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+}
+
+// tubeNarrowing reads the two Tube narrowings, `following_only` (authors the
+// viewer follows, the social graph, the meaning it has on every surface,
+// reels included) and `subscribed_only` (channel owners the viewer
+// subscribes to, the Subscriptions tab). They are different sets with
+// different sources and different orderings (the Subscriptions tab is
+// chronological and never ranked), so a request carrying both has no
+// single honest answer: it is refused as 400 INVALID_REQUEST before the
+// service is touched, and ok is false. The tests build the handler with a
+// nil service to pin exactly that.
+func tubeNarrowing(c *gin.Context) (followingOnly, subscribedOnly, ok bool) {
+	followingOnly = c.DefaultQuery("following_only", "") == "true"
+	subscribedOnly = c.DefaultQuery("subscribed_only", "") == "true"
+	if followingOnly && subscribedOnly {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"following_only and subscribed_only cannot be combined", nil)
+		return false, false, false
+	}
+	return followingOnly, subscribedOnly, true
 }
 
 // Ranked-surface cursors are opaque base64 tokens containing the exact Scylla

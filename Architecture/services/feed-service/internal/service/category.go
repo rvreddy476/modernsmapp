@@ -152,10 +152,13 @@ func filterHydratedByCategory(posts []HydratedPost, category string) []HydratedP
 // at post-service), then ranked as one window.
 // followingOnly narrows every window the category scan pulls, exactly as on
 // the unfiltered surface, and suppresses the discovery fill below.
-func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, followingOnly bool) ([]HydratedPost, string, error) {
+// subscribedOnly (the Subscriptions tab, subscriptions.go) narrows the same
+// way, suppresses the fill the same way, and additionally leaves the page
+// in timeline order: that tab promises newest first, never a ranking.
+func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, followingOnly, subscribedOnly bool) ([]HydratedPost, string, error) {
 	var blocked map[uuid.UUID]struct{}
 	fetch := func(ctx context.Context, before string, limit int) ([]FeedItem, string, error) {
-		items, next, b, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly)
+		items, next, b, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly, subscribedOnly)
 		blocked = b
 		return items, next, err
 	}
@@ -168,7 +171,7 @@ func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID
 	// with one extra condition: the timeline must be EXHAUSTED, not merely
 	// out of window budget. A fill on a page whose cursor still points into
 	// the timeline could resurface the same post on a later page.
-	if page.Exhausted && discoveryFillAllowed(followingOnly, before, len(page.Posts), limit) {
+	if page.Exhausted && discoveryFillAllowed(followingOnly || subscribedOnly, before, len(page.Posts), limit) {
 		fill, err := s.longVideoDiscoveryFill(ctx, userID, blocked, category, limit*2)
 		if err != nil {
 			log.Printf("long video discovery fill (category %q) failed for %s: %v", category, userID, err)
@@ -201,24 +204,42 @@ func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID
 		}
 	}
 
+	if subscribedOnly {
+		return chronologicalHydratedPage(page), page.Next, nil
+	}
 	return s.rankHydratedPage(ctx, userID, page, limit, "Long video feed (category)"), page.Next, nil
 }
 
 // GetVideoFeedCategoryPage is /v1/feed/watch narrowed to one category.
 // followingOnly keeps its meaning from GetVideoFeedPage (authors the viewer
 // follows, per graph-service, fail closed — every window the category scan
-// pulls is narrowed the same way). No discovery fill: the watch surface
-// never had one.
-func (s *Service) GetVideoFeedCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool, category string) ([]HydratedPost, string, error) {
+// pulls is narrowed the same way). subscribedOnly is the Subscriptions tab,
+// narrowed the same way and left in timeline order. No discovery fill: the
+// watch surface never had one.
+func (s *Service) GetVideoFeedCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly, subscribedOnly bool, category string) ([]HydratedPost, string, error) {
 	fetch := func(ctx context.Context, before string, limit int) ([]FeedItem, string, error) {
-		items, next, _, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly)
+		items, next, _, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly, subscribedOnly)
 		return items, next, err
 	}
 	page, err := s.collectHydratedCategoryPage(ctx, userID, limit, before, category, fetch)
 	if err != nil {
 		return nil, "", err
 	}
+	if subscribedOnly {
+		return chronologicalHydratedPage(page), page.Next, nil
+	}
 	return s.rankHydratedPage(ctx, userID, page, limit, "Video feed (category)"), page.Next, nil
+}
+
+// chronologicalHydratedPage is the Subscriptions tab's answer: the page as
+// the timeline produced it, no ranker. Split out so the two category
+// surfaces cannot drift on the one thing the tab promises (newest first)
+// and so an empty page is the same JSON [] every other surface returns.
+func chronologicalHydratedPage(page categoryPage) []HydratedPost {
+	if len(page.Posts) == 0 {
+		return []HydratedPost{}
+	}
+	return page.Posts
 }
 
 func (s *Service) collectHydratedCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, fetch windowFetcher) (categoryPage, error) {

@@ -120,6 +120,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.UserUnfollowed:
 		return c.handleUserUnfollowed(ctx, envelope)
 
+	// Tube channel subscriptions: the viewer's cached subscribed-owner
+	// set is stale the moment either lands. See subscriptions.go.
+	case events.TubeChannelSubscribed, events.TubeChannelUnsubscribed:
+		return c.handleChannelSubscriptionChanged(ctx, envelope)
+
 	default:
 		return nil
 	}
@@ -389,8 +394,48 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 		return fmt.Errorf("record distribution for %s: %w", event.PostID, err)
 	}
 
+	// The author's canonical Tube channel, when post-service stamped one.
+	// It keys the subscriber leg of the fan-out (long videos only); a
+	// missing or malformed id skips that leg rather than failing the
+	// message, because the followers' and circle's rows above must still
+	// land even when the channel side of the event is broken.
+	channelID := uuid.Nil
+	if event.ChannelID != "" {
+		parsed, err := uuid.Parse(event.ChannelID)
+		if err != nil {
+			log.Printf("PostCreated %s: ignoring malformed channel_id %q: %v", event.PostID, event.ChannelID, err)
+		} else {
+			channelID = parsed
+		}
+	}
+
 	fmt.Printf("Processing PostCreated: %s by %s type=%s\n", event.PostID, event.AuthorID, contentType)
-	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType, event.Visibility)
+	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType, event.Visibility, channelID)
+}
+
+// handleChannelSubscriptionChanged drops the subscriber's cached
+// subscribed-owner set on tube.channel.subscribed / unsubscribed, so the
+// next Subscriptions page (and the ranker's boost one page after it)
+// rebuilds the set from post-service rather than serving up to six hours
+// of the old answer. A DEL rather than a targeted SADD / SREM: the event
+// carries one owner but the set was built from a paged read, and a set
+// edited in place cannot tell a partial rebuild from a complete one. The
+// "looked" marker goes with it, or an emptied set would read as "looked
+// and found none" and never be refetched.
+func (c *Consumer) handleChannelSubscriptionChanged(ctx context.Context, envelope events.EventEnvelope) error {
+	if c.service == nil {
+		return nil
+	}
+	var event events.ChannelSubscriptionPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	subscriberID, err := uuid.Parse(event.SubscriberID)
+	if err != nil {
+		return fmt.Errorf("%s: bad subscriber_id %q: %w", envelope.EventType, event.SubscriberID, err)
+	}
+	return c.service.InvalidateSubscribedOwners(ctx, subscriberID)
 }
 
 // handlePostDistributionUpdated applies a post-creation policy change.

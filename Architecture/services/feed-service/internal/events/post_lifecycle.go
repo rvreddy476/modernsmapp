@@ -118,7 +118,12 @@ func (c *Consumer) handlePostRestored(ctx context.Context, envelope events.Event
 	// Same fan-out as creation: author's own timelines, then followers /
 	// circle (or pull model for celebs). AddTo* upserts on the primary key,
 	// so a row that somehow survived the delete is not duplicated.
-	if err := c.service.FanoutPost(ctx, postID, authorID, createdAt, contentType, event.Visibility); err != nil {
+	//
+	// No channel id: PostRestoredPayload does not carry one, so a restored
+	// long video reaches the author's followers and circle but not the
+	// channel subscribers who are neither. The subscriber leg is skipped
+	// on uuid.Nil rather than guessed at; see FanoutPost.
+	if err := c.service.FanoutPost(ctx, postID, authorID, createdAt, contentType, event.Visibility, uuid.Nil); err != nil {
 		return fmt.Errorf("PostRestored: fan-out %s: %w", postID, err)
 	}
 	log.Printf("Processing PostRestored: post=%s author=%s type=%s", event.PostID, event.AuthorID, contentType)

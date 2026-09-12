@@ -64,6 +64,23 @@ type Service struct {
 	// feedback is the per-viewer Interested / Not-interested store — the
 	// Postgres MetaStore in production, swapped by tests. See feedback.go.
 	feedback feedbackStore
+	// timelines and celebs are what FanoutPost writes to and asks: the
+	// Scylla TimelineStore and the Postgres MetaStore in production,
+	// swapped by tests so the fan-out legs can be exercised without a
+	// live cluster. Every other path still reads the concrete stores.
+	timelines timelineWriter
+	celebs    celebStore
+}
+
+// timelineWriter is the slice of the Scylla store FanoutPost needs.
+type timelineWriter interface {
+	AddToAuthorTimeline(ctx context.Context, authorID uuid.UUID, postID uuid.UUID, createdAt time.Time, contentType string) error
+	AddToHomeTimeline(ctx context.Context, userID uuid.UUID, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error
+}
+
+// celebStore answers the pull-model question FanoutPost gates on.
+type celebStore interface {
+	IsCeleb(ctx context.Context, authorID uuid.UUID) (bool, error)
 }
 
 func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client) *Service {
@@ -123,6 +140,10 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	// hydration would fail closed on a nil pool instead of on a real error.
 	if pg != nil {
 		svc.feedback = pg
+		svc.celebs = pg
+	}
+	if scylla != nil {
+		svc.timelines = scylla
 	}
 	return svc
 }
@@ -513,7 +534,7 @@ func filterByAuthorSet(candidates []FeedItem, authors []uuid.UUID) []FeedItem {
 
 // GetLongVideoFeed returns the first long-video page for backward-compatible callers.
 func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, _, err := s.GetLongVideoFeedPage(ctx, userID, limit, "", false)
+	items, _, err := s.GetLongVideoFeedPage(ctx, userID, limit, "", false, false)
 	return items, err
 }
 
@@ -525,8 +546,13 @@ func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit 
 // request got the whole surface back — including the discovery fill's
 // recommended strangers — with nothing in the response to say the
 // narrowing had been ignored.
-func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
-	candidates, next, blocked, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly)
+//
+// subscribedOnly is the Tube Subscriptions tab: only long videos by
+// channel owners the viewer subscribes to (post-service, subscriptions.go),
+// newest first with no ranker and no discovery fill. The two flags are
+// distinct narrowings and the handler refuses both at once.
+func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly, subscribedOnly bool) ([]FeedItem, string, error) {
+	candidates, next, blocked, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
 		return nil, "", err
 	}
@@ -547,7 +573,8 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 	// feed's cold start is forbidden under a narrowing: a short page is
 	// the honest answer to "only the people I follow", and topping it up
 	// with recommendations is a substitution the client cannot see.
-	if discoveryFillAllowed(followingOnly, before, len(candidates), limit) {
+	// subscribedOnly is a narrowing in exactly the same sense.
+	if discoveryFillAllowed(followingOnly || subscribedOnly, before, len(candidates), limit) {
 		fill, err := s.longVideoDiscoveryFill(ctx, userID, blocked, "", limit*2)
 		if err != nil {
 			log.Printf("long video discovery fill failed for %s: %v", userID, err)
@@ -556,6 +583,12 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 		}
 	}
 
+	// The Subscriptions tab is chronological by decision: the window is
+	// already newest first, and reordering it would turn "what my channels
+	// posted, in order" into another ranked surface.
+	if subscribedOnly {
+		return candidates, next, nil
+	}
 	return s.rankVideoWindow(ctx, userID, candidates, limit, "Long video feed"), next, nil
 }
 
@@ -568,7 +601,10 @@ func (s *Service) GetLongVideoFeedPage(ctx context.Context, userID uuid.UUID, li
 // callers' business, so the category path (category.go) can pull several
 // windows and rank once. The resolved block set is returned so a caller's
 // fill can pass the same filter without a second graph round trip.
-func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, map[uuid.UUID]struct{}, error) {
+// subscribedOnly narrows to channel owners the viewer subscribes to
+// (post-service, cached in Redis; subscriptions.go), with the same
+// fail-closed rule as followingOnly.
+func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly, subscribedOnly bool) ([]FeedItem, string, map[uuid.UUID]struct{}, error) {
 	s.warmViewerSignals(ctx, userID) // see mutuals.go
 	target := limit + 1
 	items, err := s.scyllaStore.GetHomeTimelineByContentTypesBefore(ctx, userID, []string{"long_video", "video"}, before, target*3)
@@ -604,6 +640,18 @@ func (s *Service) videoTimelineWindow(ctx context.Context, userID uuid.UUID, lim
 	// page of strangers.
 	if followingOnly {
 		candidates, err = s.applyFollowingFilter(ctx, userID, candidates, "watch")
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
+
+	// Tube "Subscriptions" tab: channel owners the viewer subscribes to,
+	// per post-service. Same rules as the Following tab: an empty
+	// subscription list is an empty tab, and an unresolved one is an
+	// error, never a page of strangers under a heading that promises
+	// subscribed channels.
+	if subscribedOnly {
+		candidates, err = s.applySubscribedFilter(ctx, userID, candidates, "watch")
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -669,17 +717,22 @@ func (s *Service) GetReelFeedPage(ctx context.Context, userID uuid.UUID, limit i
 // GetVideoFeed returns the user's long-video-only timeline.
 // Aliases to GetLongVideoFeed (backward compat).
 func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int, followingOnly bool) ([]FeedItem, error) {
-	items, _, err := s.GetVideoFeedPage(ctx, userID, limit, "", followingOnly)
+	items, _, err := s.GetVideoFeedPage(ctx, userID, limit, "", followingOnly, false)
 	return items, err
 }
 
 // GetVideoFeedPage is the paginated watch surface. followingOnly is the
 // watch "Following" tab: only long videos by authors the viewer follows
 // (graph-service), resolved exactly as the reels Following tab is.
-func (s *Service) GetVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly bool) ([]FeedItem, string, error) {
-	candidates, next, _, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly)
+// subscribedOnly is the "Subscriptions" tab: channel owners the viewer
+// subscribes to, newest first, no ranker (see GetLongVideoFeedPage).
+func (s *Service) GetVideoFeedPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly, subscribedOnly bool) ([]FeedItem, string, error) {
+	candidates, next, _, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly, subscribedOnly)
 	if err != nil {
 		return nil, "", err
+	}
+	if subscribedOnly {
+		return candidates, next, nil // chronological by decision
 	}
 	// Long-video feed uses the main ranker with full signals
 	return s.rankVideoWindow(ctx, userID, candidates, limit, "Video feed"), next, nil
@@ -791,14 +844,33 @@ func (s *Service) DebugFeed(ctx context.Context, userID uuid.UUID) (interface{},
 	}, nil
 }
 
-func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType, visibility string) error {
+// FanoutPost writes a new post into the timelines that should show it.
+//
+// Who receives a row: the author (own timeline and home), then for a
+// "trusted" post the author's close friends only, otherwise the author's
+// FOLLOWERS UNION CONNECTIONS unless the author is a celeb (pull model:
+// nothing pushed, the read path fetches the author timeline). Long videos
+// add one more leg: the SUBSCRIBERS of the post's Tube channel
+// (channelID, from PostCreatedPayload.ChannelID; uuid.Nil skips the leg).
+// That leg runs even for a celeb, deliberately: the celeb short-circuit
+// exists because a million followers is too many rows to push, but a
+// subscription is an explicit "show me every upload" that the
+// Subscriptions tab reads straight off the home timeline, so a subscriber
+// must hold the row whatever the pull model does for followers. A
+// subscriber who is also a follower or connection gets one row, not two.
+//
+// unfollow_purge.go describes which of these rows an unfollow may delete;
+// a subscriber's row carries no provenance either, and post-service makes
+// a subscribe a follow edge as well, so an unsubscribe reaches this
+// service as an unfollow.
+func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType, visibility string, channelID uuid.UUID) error {
 	// 1. Always add to Author Timeline
-	if err := s.scyllaStore.AddToAuthorTimeline(ctx, authorID, postID, createdAt, contentType); err != nil {
+	if err := s.timelines.AddToAuthorTimeline(ctx, authorID, postID, createdAt, contentType); err != nil {
 		return err
 	}
 
 	// 2. Also add to Author's own Home Timeline (so they see their own posts)
-	if err := s.scyllaStore.AddToHomeTimeline(ctx, authorID, postID, authorID, createdAt, contentType); err != nil {
+	if err := s.timelines.AddToHomeTimeline(ctx, authorID, postID, authorID, createdAt, contentType); err != nil {
 		log.Printf("Failed to push to author's own home timeline: %v", err)
 	}
 
@@ -821,7 +893,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			if recipientID == authorID {
 				continue // already pushed above
 			}
-			if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
+			if err := s.timelines.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
 				log.Printf("Failed to push trusted post to timeline for user %s: %v", recipientID, err)
 			}
 		}
@@ -829,14 +901,9 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	}
 
 	// 3. Check Celeb Status
-	isCeleb, err := s.pgStore.IsCeleb(ctx, authorID)
+	isCeleb, err := s.celebs.IsCeleb(ctx, authorID)
 	if err != nil {
 		return err
-	}
-
-	if isCeleb {
-		// Stop here (Pull model for celebs)
-		return nil
 	}
 
 	// 4. Collect unique recipient IDs from followers + circle members.
@@ -847,30 +914,34 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	// a non-celeb author with 5k followers + 200 friends, the wall
 	// clock used to be ~50 graph pages + ~1 profile call back-to-back;
 	// now those overlap.
+	//
+	// Skipped entirely for a celeb (pull model): the set stays empty and
+	// only the subscriber leg below can add anyone.
 	recipientSet := make(map[uuid.UUID]struct{})
-
-	type fetchResult struct {
-		ids []uuid.UUID
-		err error
-		tag string
-	}
-	results := make(chan fetchResult, 2)
-	go func() {
-		ids, err := s.fetchFollowers(ctx, authorID)
-		results <- fetchResult{ids: ids, err: err, tag: "followers"}
-	}()
-	go func() {
-		ids, err := s.fetchCircleMembers(ctx, authorID)
-		results <- fetchResult{ids: ids, err: err, tag: "circle"}
-	}()
-	for i := 0; i < 2; i++ {
-		r := <-results
-		if r.err != nil {
-			log.Printf("Failed to fetch %s for fanout: %v", r.tag, r.err)
-			continue
+	if !isCeleb {
+		type fetchResult struct {
+			ids []uuid.UUID
+			err error
+			tag string
 		}
-		for _, id := range r.ids {
-			recipientSet[id] = struct{}{}
+		results := make(chan fetchResult, 2)
+		go func() {
+			ids, err := s.fetchFollowers(ctx, authorID)
+			results <- fetchResult{ids: ids, err: err, tag: "followers"}
+		}()
+		go func() {
+			ids, err := s.fetchCircleMembers(ctx, authorID)
+			results <- fetchResult{ids: ids, err: err, tag: "circle"}
+		}()
+		for i := 0; i < 2; i++ {
+			r := <-results
+			if r.err != nil {
+				log.Printf("Failed to fetch %s for fanout: %v", r.tag, r.err)
+				continue
+			}
+			for _, id := range r.ids {
+				recipientSet[id] = struct{}{}
+			}
 		}
 	}
 
@@ -891,7 +962,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 		go func() {
 			defer fanoutWG.Done()
 			for recipientID := range recipientCh {
-				if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
+				if err := s.timelines.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
 					log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
 				}
 			}
@@ -903,9 +974,43 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 		}
 		recipientCh <- recipientID
 	}
+
+	// 6. Subscriber leg (long videos with a channel): the channel's
+	// subscribers, through the same bounded pool, skipping anyone the
+	// follower/circle set already covered. The pages stream straight into
+	// the pool rather than being collected first, so a channel with many
+	// subscribers costs memory proportional to one page, not to the
+	// channel. A post-service failure here is logged, not returned: the
+	// follower rows are already in flight and Kafka redelivery would
+	// duplicate them (AddToHomeTimeline is not idempotent; see
+	// scylla/timelines.go), which is worse than a subscriber missing
+	// one upload from the tab.
+	if channelID != uuid.Nil && isLongVideoContentType(contentType) {
+		err := s.eachChannelSubscriber(ctx, channelID, func(subscriberID uuid.UUID) {
+			if subscriberID == authorID {
+				return
+			}
+			if _, covered := recipientSet[subscriberID]; covered {
+				return
+			}
+			recipientSet[subscriberID] = struct{}{} // a subscriber listed twice is still one row
+			recipientCh <- subscriberID
+		})
+		if err != nil {
+			log.Printf("Subscriber fanout for channel %s (post %s) incomplete: %v", channelID, postID, err)
+		}
+	}
+
 	close(recipientCh)
 	fanoutWG.Wait()
 	return nil
+}
+
+// isLongVideoContentType names the two spellings the catalogue uses for
+// a Tube upload (post-service normalises "video" to "long_video" on write;
+// older rows and producers still say "video").
+func isLongVideoContentType(contentType string) bool {
+	return contentType == "long_video" || contentType == "video"
 }
 
 // resolveBlockedSet fetches the viewer's suppression set and FAILS CLOSED

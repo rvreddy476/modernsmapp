@@ -95,11 +95,24 @@ func mutualWarmedKey(viewerID uuid.UUID) string {
 // non-blocking and best-effort by construction: nothing it does can fail
 // a feed request, and everything it warms has a defined absent-value that
 // the ranker already handles.
+//
+// Two sets are warmed: the mutual-follow set below, and the subscribed
+// channel owners the ranker's subscription boost reads
+// (subscriptions.go). The second is the same set the Subscriptions tab
+// is served from, so a viewer who opens that tab has already paid for it
+// and the warm is a no-op; this call exists for the viewer who never
+// does, so their home ranker still learns who they subscribe to.
 func (s *Service) warmViewerSignals(ctx context.Context, viewerID uuid.UUID) {
 	if s.rdb == nil || viewerID == uuid.Nil {
 		return
 	}
+	s.warmMutualFollows(ctx, viewerID)
+	s.warmSubscribedOwners(ctx, viewerID)
+}
 
+// warmMutualFollows refreshes the viewer's mutual-follow set if it is
+// missing or stale, detached from the request. See the file comment.
+func (s *Service) warmMutualFollows(ctx context.Context, viewerID uuid.UUID) {
 	exists, err := s.rdb.Exists(ctx, mutualWarmedKey(viewerID)).Result()
 	if err != nil {
 		// A Redis error here is the caller's problem elsewhere; here it

@@ -19,7 +19,15 @@ type ViewerSignals struct {
 	Velocities       map[string]float64 // post_id -> velocity
 	Interactions     map[string]bool    // post_id -> already interacted
 	MutualFollows    map[string]bool    // author_id -> mutual follow
-	ContentQuality   map[string]float64 // post_id -> CQS (Content Quality Score)
+	// Subscribed is the set of candidate authors whose Tube channel the
+	// viewer subscribes to, read from user:subscribed_owners:{viewerID}
+	// (SubscribedOwnersKey). feed-service writes that set itself, on
+	// demand, for the Subscriptions tab (service/subscriptions.go); the
+	// ranker reads the same key so the two surfaces cannot disagree about
+	// who is subscribed. An absent author is simply not subscribed, which
+	// is what a viewer with no subscriptions gets for everyone.
+	Subscribed     map[string]bool    // author_id -> subscribed to their channel
+	ContentQuality map[string]float64 // post_id -> CQS (Content Quality Score)
 	// AuthorFeedback is the viewer's net "Interested" (+1) / "Not
 	// interested" (-1) answers per author, mirrored from feed_feedback by
 	// service.RecordFeedback into feed:author_feedback:{viewerID}. Absent
@@ -106,6 +114,15 @@ func ParseTopics(raw string) []string {
 	return out
 }
 
+// SubscribedOwnersKey is the Redis set of channel-owner user ids the
+// viewer subscribes to, written by feed-service's own subscription cache
+// (service/subscriptions.go) and read here for the subscription boost. One
+// key, named once, so the Subscriptions tab and the ranker read the same
+// answer.
+func SubscribedOwnersKey(viewerID uuid.UUID) string {
+	return fmt.Sprintf("user:subscribed_owners:%s", viewerID.String())
+}
+
 // AuthorFeedbackKey is the Redis hash (author_id -> net feedback) the
 // scorer reads for a viewer. Written by feed-service's feedback path.
 func AuthorFeedbackKey(viewerID uuid.UUID) string {
@@ -142,6 +159,7 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		Velocities:       make(map[string]float64, len(candidates)),
 		Interactions:     make(map[string]bool, len(candidates)),
 		MutualFollows:    make(map[string]bool),
+		Subscribed:       make(map[string]bool),
 		ContentQuality:   make(map[string]float64, len(candidates)),
 		AuthorFeedback:   make(map[string]float64, len(candidates)),
 		TopicAffinity:    make(map[string]float64),
@@ -206,6 +224,13 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 	// --- 5. Mutual follows: SMEMBERS user:mutual_follows:{viewerID}
 	mutualKey := fmt.Sprintf("user:mutual_follows:%s", viewerID.String())
 	mutualCmd := pipe.SMembers(ctx, mutualKey)
+
+	// --- 5b. Subscribed channel owners: SMEMBERS user:subscribed_owners:{viewerID}
+	// The whole set rather than SMISMEMBER of the candidate authors: it is
+	// the same shape as the mutual set above, small (a viewer subscribes
+	// to tens of channels, not thousands), and one more command in a
+	// pipeline that already carries a dozen.
+	subscribedCmd := pipe.SMembers(ctx, SubscribedOwnersKey(viewerID))
 
 	// --- 6. Content Quality Scores: MGET of N per-post keys (one
 	// command instead of N pipelined GETs — audit HF2).
@@ -354,6 +379,21 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		}
 	} else {
 		log.Printf("ranking/signals: mutual follows fetch error: %v", err)
+	}
+
+	// --- Harvest 5b: subscribed owners (intersect with candidate authors)
+	if members, err := subscribedCmd.Result(); err == nil {
+		subSet := make(map[string]bool, len(members))
+		for _, m := range members {
+			subSet[m] = true
+		}
+		for aid := range authorSet {
+			if subSet[aid] {
+				vs.Subscribed[aid] = true
+			}
+		}
+	} else {
+		log.Printf("ranking/signals: subscribed owners fetch error: %v", err)
 	}
 
 	// --- Harvest 6: content quality scores (MGET — []any aligned with input)

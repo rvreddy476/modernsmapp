@@ -52,11 +52,25 @@ func NetWithMute(postNet float64, muted bool) float64 {
 	return math.Min(postNet, 0) + MutedAuthorNet
 }
 
+// SubscriptionWeight is the flat boost a candidate gets when the viewer
+// subscribes to its author's Tube channel (the subscriptionBoost term).
+//
+// Why 0.15. A subscription is a stronger statement than a follow: the
+// viewer asked to be told when this channel uploads. So it has to be worth
+// more than the 0.1 a mutual follow adds on top of the proximity baseline,
+// or subscribing would count for less than following back. It also has to
+// stay below the 0.25 a perfect quality score can earn, so a subscribed
+// channel's weak upload still ranks under an unsubscribed channel's
+// excellent one rather than pinning the home ranker to the subscription
+// list. The Subscriptions tab is where "everything they posted, in order"
+// lives; here the boost only tilts.
+const SubscriptionWeight = 0.15
+
 // ScoreCandidates computes a ranking score for each candidate using the
 // v2.0 spec Appendix A formula:
 //
 //	score = (interest * recency * mediaBoost) + momentum + socialProximity
-//	        + qualityBoost + topicBoost + seedBoost
+//	        + qualityBoost + topicBoost + seedBoost + subscriptionBoost
 //	        - authorPenalty - interactionPenalty
 //
 // penalty_same_author is deferred to the diversity placement pass.
@@ -173,8 +187,18 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 		// which is why the ordinary feeds are unaffected by its existence.
 		seedBoost := SeedWeight * SeedRelatedness(signals.Seed, aid, topics)
 
+		// 11. subscription_boost (0.0 or SubscriptionWeight): the viewer
+		// subscribes to this author's Tube channel. Read from the same
+		// Redis set the Subscriptions tab is served from, so a channel
+		// the tab shows is a channel the home ranker favours, one page
+		// after the set is first warmed. See SubscriptionWeight.
+		subscriptionBoost := 0.0
+		if signals.Subscribed[aid] {
+			subscriptionBoost = SubscriptionWeight
+		}
+
 		c.Score = (interest * recency * mediaBoost) + momentum + socialProximity + qualityBoost +
-			topicBoost + seedBoost - authorPenalty - interactionPenalty
+			topicBoost + seedBoost + subscriptionBoost - authorPenalty - interactionPenalty
 	}
 
 	return scored
