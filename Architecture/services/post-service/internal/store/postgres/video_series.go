@@ -97,6 +97,21 @@ func (s *Store) ListVideoSeriesByCreator(ctx context.Context, creatorID uuid.UUI
 // number it already holds is still an update, not a conflict.
 var ErrEpisodePostAlreadyInSeries = errors.New("post is already an episode of this series")
 
+// MaxSeriesEpisodes is the server's bound on how many episodes one series
+// holds. It is a safety limit, not the product's: the founder's editor lets a
+// creator add 3 episodes, and that number lives on the client where it can
+// change without a deploy. 50 exists because the episode list is unpaginated
+// (GetVideoSeriesEpisodes returns every row and the watch page renders all
+// of them), so a series that grew without bound would eventually be a
+// response nobody can load. The number is well above anything the editor
+// produces and well below anything that hurts.
+const MaxSeriesEpisodes = 50
+
+// ErrVideoSeriesFull is returned when an add would grow the series past
+// MaxSeriesEpisodes. Overwriting an occupied episode number is not growth
+// and is never refused on this ground.
+var ErrVideoSeriesFull = errors.New("video series is full")
+
 // AddEpisodeToVideoSeries inserts a new episode and recomputes the series
 // episode_count in a single tx.
 //
@@ -105,12 +120,38 @@ var ErrEpisodePostAlreadyInSeries = errors.New("post is already an episode of th
 // read-then-write: a service-level pre-check alone would leave a window where
 // two concurrent adds both pass. Returns ErrEpisodePostAlreadyInSeries when
 // the guard fires.
+//
+// The MaxSeriesEpisodes cap is a count, and a count cannot be folded into
+// the insert's WHERE the way the duplicate guard is without racing: two
+// concurrent adds to a series of 49 would each count 49 and both insert. So
+// the series row is locked first (SELECT ... FOR UPDATE), which serialises
+// every add to one series behind that lock; the count taken afterwards is
+// then exact. The lock is on video_series, which the episode_count
+// recompute at the end updates anyway, so no extra row is contended.
 func (s *Store) AddEpisodeToVideoSeries(ctx context.Context, seriesID, postID uuid.UUID, episodeNum int, title *string) (*VideoSeriesEpisode, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var locked uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM video_series WHERE id = $1 FOR UPDATE`, seriesID).Scan(&locked); err != nil {
+		// The service has already answered "no such series" by the time we
+		// are here; ErrNoRows would mean it vanished between the two reads.
+		return nil, err
+	}
+	var count int
+	var occupied bool
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*), COALESCE(bool_or(episode_num = $2), FALSE)
+		FROM video_series_episodes WHERE series_id = $1`, seriesID, episodeNum,
+	).Scan(&count, &occupied); err != nil {
+		return nil, err
+	}
+	if count >= MaxSeriesEpisodes && !occupied {
+		return nil, ErrVideoSeriesFull
+	}
 
 	ep := &VideoSeriesEpisode{}
 	err = tx.QueryRow(ctx, `
@@ -211,16 +252,67 @@ func (s *Store) deleteVideoSeriesEpisode(ctx context.Context, seriesID uuid.UUID
 	return true, tx.Commit(ctx)
 }
 
-// GetVideoSeriesEpisodes returns all episodes for a series ordered by episode_num.
-func (s *Store) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID) ([]VideoSeriesEpisode, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT series_id, post_id, episode_num, title, added_at
-		FROM video_series_episodes WHERE series_id = $1
-		ORDER BY episode_num ASC`, seriesID)
+// GetVideoSeriesEpisodes returns the episodes of a series ordered by
+// episode_num.
+//
+// An episode row is a link to a post, and the post can be in a state the
+// audience must not see: soft-deleted (posts.deleted_at, migration 007) or
+// scheduled and not yet live (posts.publish_at IS NOT NULL, the contract
+// migration 042 fixed: the schedule worker clears it at publish time, so a
+// non-null value means "not live" whether or not the moment has passed;
+// every other live-post read in this store uses the same two predicates).
+// Without the filter the watch page's next-episode control would step onto a
+// video the viewer then cannot load.
+//
+// includeUnpublished=true is the creator's view: they need to see the
+// scheduled episode they just placed and the deleted one they can restore.
+// The join is a LEFT JOIN rather than an INNER one so an episode whose post
+// row is missing still lists for the owner (the FK cascades on hard delete,
+// so in practice there is none, but the read must not silently shrink if
+// that ever changes).
+func (s *Store) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID, includeUnpublished bool) ([]VideoSeriesEpisode, error) {
+	q := `
+		SELECT e.series_id, e.post_id, e.episode_num, e.title, e.added_at
+		FROM video_series_episodes e
+		WHERE e.series_id = $1
+		ORDER BY e.episode_num ASC`
+	if !includeUnpublished {
+		q = `
+		SELECT e.series_id, e.post_id, e.episode_num, e.title, e.added_at
+		FROM video_series_episodes e
+		LEFT JOIN posts p ON p.id = e.post_id
+		WHERE e.series_id = $1
+		  AND p.deleted_at IS NULL
+		  AND p.publish_at IS NULL
+		ORDER BY e.episode_num ASC`
+	}
+	rows, err := s.db.Query(ctx, q, seriesID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanVideoSeriesEpisodes(rows)
+}
+
+// FindSeriesMembershipsByPost returns every episode row that points at
+// postID, newest membership first. A post can be an episode of more than one
+// series (nothing in the schema forbids it, and a creator may legitimately
+// file one video under two collections); the watch page shows one, and the
+// one the creator added most recently is the best guess at the one they
+// mean. Uses idx_video_series_episodes_post.
+func (s *Store) FindSeriesMembershipsByPost(ctx context.Context, postID uuid.UUID) ([]VideoSeriesEpisode, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT series_id, post_id, episode_num, title, added_at
+		FROM video_series_episodes WHERE post_id = $1
+		ORDER BY added_at DESC, series_id ASC`, postID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVideoSeriesEpisodes(rows)
+}
+
+func scanVideoSeriesEpisodes(rows pgx.Rows) ([]VideoSeriesEpisode, error) {
 	var eps []VideoSeriesEpisode
 	for rows.Next() {
 		var ep VideoSeriesEpisode
@@ -230,4 +322,51 @@ func (s *Store) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID) 
 		eps = append(eps, ep)
 	}
 	return eps, rows.Err()
+}
+
+// VideoSeriesPatch is a partial update: a nil field is "leave it alone".
+// The nullable references (channel, cover, trailer) can therefore be set
+// but not cleared through this shape; clearing would need an explicit
+// "set to null" signal the wire contract does not carry yet.
+type VideoSeriesPatch struct {
+	Title         *string
+	Description   *string
+	IsComplete    *bool
+	IsPublic      *bool
+	CoverMediaID  *uuid.UUID
+	TrailerPostID *uuid.UUID
+	ChannelID     *uuid.UUID
+}
+
+// UpdateVideoSeries applies the non-nil fields of patch and returns the row
+// as it now stands. Returns nil, nil when there is no such series. COALESCE
+// per column keeps this one statement for any subset of fields; the
+// alternative, building SQL from whichever fields are set, is where
+// injection bugs and off-by-one placeholders come from.
+func (s *Store) UpdateVideoSeries(ctx context.Context, id uuid.UUID, patch VideoSeriesPatch) (*VideoSeries, error) {
+	vs := &VideoSeries{}
+	err := s.db.QueryRow(ctx, `
+		UPDATE video_series SET
+			title           = COALESCE($2, title),
+			description     = COALESCE($3, description),
+			is_complete     = COALESCE($4, is_complete),
+			is_public       = COALESCE($5, is_public),
+			cover_media_id  = COALESCE($6, cover_media_id),
+			trailer_post_id = COALESCE($7, trailer_post_id),
+			channel_id      = COALESCE($8, channel_id),
+			updated_at      = NOW()
+		WHERE id = $1
+		RETURNING id, creator_id, channel_id, title, description, cover_media_id, trailer_post_id,
+		          episode_count, is_complete, is_public, created_at, updated_at`,
+		id, patch.Title, patch.Description, patch.IsComplete, patch.IsPublic,
+		patch.CoverMediaID, patch.TrailerPostID, patch.ChannelID,
+	).Scan(
+		&vs.ID, &vs.CreatorID, &vs.ChannelID, &vs.Title, &vs.Description,
+		&vs.CoverMediaID, &vs.TrailerPostID, &vs.EpisodeCount, &vs.IsComplete,
+		&vs.IsPublic, &vs.CreatedAt, &vs.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return vs, err
 }

@@ -122,6 +122,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Threads (Module 1 P0-8).
 		v1.POST("/thread", h.CreateThread)
 		v1.GET("/:postId/thread", h.GetThread)
+
+		// The watch page's series strip: which series is this post in, and
+		// what are its neighbours. Registered here rather than under
+		// /v1/video-series because the caller holds a post id, not a series
+		// id. See GetPostSeries for the 404-not-403 rule that follows.
+		v1.GET("/:postId/series", h.GetPostSeries)
 	}
 
 	// Internal: reviewer-service ML pre-filter auto-resolves flagged content.
@@ -241,6 +247,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		vseries.GET("/:seriesId", h.GetVideoSeries)
 		vseries.GET("/:seriesId/episodes", h.GetVideoSeriesEpisodes)
 		vseries.POST("/:seriesId/episodes", h.AddVideoSeriesEpisode)
+		// Retitle, describe, mark complete, make public: a series was
+		// create-only before, so a typo in the title was permanent.
+		vseries.PATCH("/:seriesId", h.UpdateVideoSeries)
 		// A series has to be able to shrink. Without these two a series
 		// created by mistake was permanent and an episode added by mistake
 		// could only be overwritten — playlists, below, have had both deletes

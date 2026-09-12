@@ -38,6 +38,15 @@ type fakeVideoSeriesStore struct {
 	deletedByPost   []uuid.UUID
 	episodesFetched int
 	addCalls        int
+
+	// memberships is what FindSeriesMembershipsByPost answers, already in
+	// the store's order (newest added_at first).
+	memberships []postgres.VideoSeriesEpisode
+	// includeUnpublishedSeen records the flag each episode read carried, so
+	// a test can prove a stranger's read asked for the filtered list.
+	includeUnpublishedSeen []bool
+	// patches records every UpdateVideoSeries that reached the store.
+	patches []postgres.VideoSeriesPatch
 }
 
 func (f *fakeVideoSeriesStore) GetVideoSeries(_ context.Context, id uuid.UUID) (*postgres.VideoSeries, error) {
@@ -51,9 +60,35 @@ func (f *fakeVideoSeriesStore) ListVideoSeriesByCreator(_ context.Context, _ uui
 	return f.list, nil
 }
 
-func (f *fakeVideoSeriesStore) GetVideoSeriesEpisodes(_ context.Context, _ uuid.UUID) ([]postgres.VideoSeriesEpisode, error) {
+func (f *fakeVideoSeriesStore) GetVideoSeriesEpisodes(_ context.Context, _ uuid.UUID, includeUnpublished bool) ([]postgres.VideoSeriesEpisode, error) {
 	f.episodesFetched++
+	f.includeUnpublishedSeen = append(f.includeUnpublishedSeen, includeUnpublished)
 	return f.episodes, nil
+}
+
+func (f *fakeVideoSeriesStore) FindSeriesMembershipsByPost(_ context.Context, postID uuid.UUID) ([]postgres.VideoSeriesEpisode, error) {
+	var out []postgres.VideoSeriesEpisode
+	for _, m := range f.memberships {
+		if m.PostID == postID {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeVideoSeriesStore) UpdateVideoSeries(_ context.Context, id uuid.UUID, patch postgres.VideoSeriesPatch) (*postgres.VideoSeries, error) {
+	f.patches = append(f.patches, patch)
+	vs := f.series[id]
+	if vs == nil {
+		return nil, nil
+	}
+	if patch.Title != nil {
+		vs.Title = *patch.Title
+	}
+	if patch.IsPublic != nil {
+		vs.IsPublic = *patch.IsPublic
+	}
+	return vs, nil
 }
 
 func (f *fakeVideoSeriesStore) AddEpisodeToVideoSeries(_ context.Context, seriesID, postID uuid.UUID, episodeNum int, title *string) (*postgres.VideoSeriesEpisode, error) {
@@ -66,6 +101,17 @@ func (f *fakeVideoSeriesStore) AddEpisodeToVideoSeries(_ context.Context, series
 		}
 	}
 	ep := postgres.VideoSeriesEpisode{SeriesID: seriesID, PostID: postID, EpisodeNum: episodeNum, Title: title}
+	for i := range f.episodes {
+		if f.episodes[i].EpisodeNum == episodeNum {
+			// ON CONFLICT (series_id, episode_num) DO UPDATE: an overwrite,
+			// so the cap below does not apply.
+			f.episodes[i] = ep
+			return &ep, nil
+		}
+	}
+	if len(f.episodes) >= postgres.MaxSeriesEpisodes {
+		return nil, postgres.ErrVideoSeriesFull
+	}
 	f.episodes = append(f.episodes, ep)
 	return &ep, nil
 }

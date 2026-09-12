@@ -124,3 +124,95 @@ func performVideoSeriesRequest(t *testing.T, method, path string, headers map[st
 	r.ServeHTTP(w, req)
 	return w
 }
+
+// ── Watch-page navigation and series editing (2026-09-12) ───────────────────
+//
+// Two more gaps the watch page found: a post could not say which series it
+// belongs to (the client had to fetch every series of the creator and scan),
+// and a series, once created, could not be retitled or made public. Both
+// routes are read from the REAL router for the same reason as above.
+
+func registeredRoutesWithPrefix(t *testing.T, prefix string) map[string]bool {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := &Handler{}
+	h.RegisterRoutes(r)
+
+	out := map[string]bool{}
+	for _, info := range r.Routes() {
+		if strings.HasPrefix(info.Path, prefix) {
+			out[info.Method+" "+info.Path] = true
+		}
+	}
+	return out
+}
+
+func TestVideoSeriesHasWatchAndEditRoutes(t *testing.T) {
+	cases := []struct{ prefix, want string }{
+		{"/v1/video-series", "PATCH /v1/video-series/:seriesId"},
+		{"/v1/posts", "GET /v1/posts/:postId/series"},
+	}
+	for _, tc := range cases {
+		routes := registeredRoutesWithPrefix(t, tc.prefix)
+		if !routes[tc.want] {
+			t.Errorf("%s is not registered. Registered routes under %s: %v", tc.want, tc.prefix, keysOf(routes))
+		}
+	}
+}
+
+// Editing is owner-scoped, so an anonymous PATCH must be refused at the
+// handler, before anything reaches the (nil) service.
+func TestUpdateVideoSeriesRequiresIdentity(t *testing.T) {
+	path := "/v1/video-series/" + uuid.NewString()
+	w := performVideoSeriesRequestWithBody(t, http.MethodPatch, path, nil, `{"title":"x"}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("PATCH %s with no X-User-Id: status=%d want 401 (body %s)", path, w.Code, w.Body.String())
+	}
+}
+
+// Create silently drops an unparseable id; a PATCH must not, because the
+// caller asked for a specific change and a silent no-op would look like
+// success.
+func TestUpdateVideoSeriesRejectsInvalidIDs(t *testing.T) {
+	headers := map[string]string{"X-User-Id": uuid.NewString()}
+	path := "/v1/video-series/" + uuid.NewString()
+	for _, field := range []string{"cover_media_id", "trailer_post_id", "channel_id"} {
+		t.Run(field, func(t *testing.T) {
+			w := performVideoSeriesRequestWithBody(t, http.MethodPatch, path, headers, `{"`+field+`":"not-a-uuid"}`)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("PATCH with %s=not-a-uuid: status=%d want 400 (body %s)", field, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// The episode number is a label rendered as "Episode N"; 999 is the largest
+// the product will ever show. Anything above it is a typo, refused before
+// the service is reached.
+func TestAddVideoSeriesEpisodeRejectsEpisodeNumberAboveCap(t *testing.T) {
+	headers := map[string]string{"X-User-Id": uuid.NewString()}
+	path := "/v1/video-series/" + uuid.NewString() + "/episodes"
+	body := `{"post_id":"` + uuid.NewString() + `","episode_num":1000}`
+	w := performVideoSeriesRequestWithBody(t, http.MethodPost, path, headers, body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("episode_num 1000: status=%d want 400 (body %s)", w.Code, w.Body.String())
+	}
+}
+
+func performVideoSeriesRequestWithBody(t *testing.T, method, path string, headers map[string]string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := &Handler{}
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}

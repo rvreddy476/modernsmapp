@@ -188,7 +188,11 @@ func (h *Handler) CreateVideoSeries(c *gin.Context) {
 func writeVideoSeriesError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrVideoSeriesNotFound),
-		errors.Is(err, service.ErrVideoSeriesEpisodeNotFound):
+		errors.Is(err, service.ErrVideoSeriesEpisodeNotFound),
+		// ErrPostNotInSeries covers "in a private series too": from a post
+		// id, a 403 would confirm the private series exists. See
+		// service.GetPostSeries.
+		errors.Is(err, service.ErrPostNotInSeries):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, service.ErrNotVideoSeriesOwner),
@@ -198,10 +202,111 @@ func writeVideoSeriesError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrEpisodePostDuplicate):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusConflict, "EPISODE_EXISTS", err.Error(), nil)
+	case errors.Is(err, service.ErrVideoSeriesFull):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusConflict, "SERIES_FULL", err.Error(), nil)
+	case errors.Is(err, service.ErrVideoSeriesTitleRequired):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}
+}
+
+// MaxEpisodeNum is the largest episode number a creator can assign. The
+// number is a label rendered as "Episode N", and three digits is as wide as
+// the product's layouts allow; anything larger is a typo (a year, a
+// timestamp) rather than intent. It is a shape check on the input, so it
+// belongs here with the other 400s, unlike postgres.MaxSeriesEpisodes, which
+// is a count and has to be read inside the store's transaction.
+const MaxEpisodeNum = 999
+
+// GetPostSeries is GET /v1/posts/:postId/series: the watch page's "which
+// series is this, and what comes before and after" in one read. Open to
+// anonymous callers like the other series reads; the caller identity only
+// decides whether private series and unpublished episodes are visible.
+func (h *Handler) GetPostSeries(c *gin.Context) {
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	view, err := h.svc.GetPostSeries(c.Request.Context(), postID, optionalCallerID(c))
+	if err != nil {
+		writeVideoSeriesError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, view, nil)
+}
+
+type updateVideoSeriesRequest struct {
+	Title         *string `json:"title"`
+	Description   *string `json:"description"`
+	IsComplete    *bool   `json:"is_complete"`
+	IsPublic      *bool   `json:"is_public"`
+	CoverMediaID  *string `json:"cover_media_id"`
+	TrailerPostID *string `json:"trailer_post_id"`
+	ChannelID     *string `json:"channel_id"`
+}
+
+// UpdateVideoSeries is PATCH /v1/video-series/:seriesId. Any subset of the
+// fields; a field left out is left alone.
+//
+// Unlike CreateVideoSeries, which drops an unparseable id on the floor and
+// creates the series without it, an unparseable id here is a 400. On create
+// the id is an optional extra; on a patch it is the whole request, and a
+// silent drop would answer 200 to an edit that did not happen.
+func (h *Handler) UpdateVideoSeries(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
+		return
+	}
+	var req updateVideoSeriesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+
+	patch := postgres.VideoSeriesPatch{
+		Title:       req.Title,
+		Description: req.Description,
+		IsComplete:  req.IsComplete,
+		IsPublic:    req.IsPublic,
+	}
+	for _, f := range []struct {
+		name string
+		raw  *string
+		dst  **uuid.UUID
+	}{
+		{"cover_media_id", req.CoverMediaID, &patch.CoverMediaID},
+		{"trailer_post_id", req.TrailerPostID, &patch.TrailerPostID},
+		{"channel_id", req.ChannelID, &patch.ChannelID},
+	} {
+		if f.raw == nil {
+			continue
+		}
+		id, err := uuid.Parse(*f.raw)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID",
+				f.name+" must be a UUID", nil)
+			return
+		}
+		*f.dst = &id
+	}
+
+	vs, err := h.svc.UpdateVideoSeries(c.Request.Context(), userID, seriesID, patch)
+	if err != nil {
+		writeVideoSeriesError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, vs, nil)
 }
 
 // optionalCallerID reads X-User-Id when it is present and parseable. The
@@ -357,9 +462,9 @@ func (h *Handler) AddVideoSeriesEpisode(c *gin.Context) {
 		return
 	}
 
-	if req.EpisodeNum < 1 {
+	if req.EpisodeNum < 1 || req.EpisodeNum > MaxEpisodeNum {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
-			"episode_num must be 1 or greater", nil)
+			fmt.Sprintf("episode_num must be between 1 and %d", MaxEpisodeNum), nil)
 		return
 	}
 
