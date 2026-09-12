@@ -42,6 +42,7 @@ var Allowed = map[string]bool{
 	"trust-safety-service": true, // enforcement actions (auto-block on abuse)
 	"user-service":         true, // account lifecycle (deactivate → sever edges)
 	"dating-service":       true, // propagates a dating block into the canonical graph
+	"post-service":         true, // creates the follow edge when a viewer subscribes to a Tube channel (subscribe = follow + notify)
 }
 
 // IsMutation reports whether a method changes graph state.

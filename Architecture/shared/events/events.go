@@ -163,6 +163,14 @@ const (
 	// broadcast channel-service events, whose payload is a different shape.
 	TubeChannelCreated = "tube.channel.created" // payload: ChannelPayload
 	TubeChannelUpdated = "tube.channel.updated" // payload: ChannelPayload
+
+	// Tube channel subscriptions (Phase B0). A subscribe is a follow edge
+	// in graph-service plus a per-channel notify preference in post-service;
+	// these events carry the preference side so the notification fan-out can
+	// decide who gets the "{channel} uploaded" push without reading either
+	// service back.
+	TubeChannelSubscribed   = "tube.channel.subscribed"   // payload: ChannelSubscriptionPayload
+	TubeChannelUnsubscribed = "tube.channel.unsubscribed" // payload: ChannelSubscriptionPayload
 )
 
 // v2.1 new event types
@@ -538,6 +546,12 @@ type PostCreatedPayload struct {
 	// ChannelID is the author's canonical broadcast channel when one
 	// exists — the subscriber fan-out key for PostTube uploads.
 	ChannelID string `json:"channel_id,omitempty"`
+	// ChannelName / ChannelHandle let the notification fan-out render
+	// "{channel} uploaded: {title}" straight from the event, so a push does
+	// not need a channel lookup per recipient. Optional: older producers
+	// omit them and the payload still validates.
+	ChannelName   string `json:"channel_name,omitempty"`
+	ChannelHandle string `json:"channel_handle,omitempty"`
 
 	// ReviewStatus is the CANONICAL persisted moderation state of the post
 	// row at publish time (Module 2 M2-P0-1).
@@ -733,6 +747,20 @@ type ChannelPayload struct {
 	AvatarMediaID *string   `json:"avatar_media_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// ChannelSubscriptionPayload is the wire shape of tube.channel.subscribed /
+// tube.channel.unsubscribed. ChannelID is the channel row; OwnerID is the
+// account behind it, carried so a consumer can key on the follow edge
+// (subscriber -> owner) without resolving the channel. NotifyOn is the
+// subscriber's push preference for uploads ("all" or "none")
+// and is empty on an unsubscribe.
+type ChannelSubscriptionPayload struct {
+	ChannelID    string    `json:"channel_id"`
+	OwnerID      string    `json:"owner_id"`
+	SubscriberID string    `json:"subscriber_id"`
+	NotifyOn     string    `json:"notify_on,omitempty"`
+	OccurredAt   time.Time `json:"occurred_at"`
 }
 
 type PostRestoredPayload struct {
