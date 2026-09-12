@@ -94,6 +94,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/products/:productId/media", h.AddProductMedia)
 	v1.GET("/products/:productId/attributes", h.GetProductAttributes)
 	v1.PUT("/products/:productId/attributes", h.SetProductAttributes)
+	// Try-on is published by the product's own seller; the read rides the
+	// product detail body rather than a route of its own.
+	v1.PUT("/products/:productId/try-on", h.SetProductTryOn)
+	v1.DELETE("/products/:productId/try-on", h.ClearProductTryOn)
 	// Variant CRUD for existing products (commerce TODO H#5). The
 	// initial variant set is created with the product; this lets a
 	// seller add/edit/archive variants after launch.
@@ -351,10 +355,33 @@ func (h *Handler) GetProduct(c *gin.Context) {
 		handleErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{
+	// The try-on descriptor, when this product has one.
+	//
+	// In the detail body rather than behind its own request because the
+	// "Try on" action sits beside the buy strip and must be drawn in the
+	// first paint: a second call means the button appears a moment after the
+	// price, which reads as a glitch on the one control the viewer is being
+	// invited to trust with their camera.
+	//
+	// Absent for every product without a descriptor, which is nearly all of
+	// them, so the field's presence is itself the capability signal and a
+	// client that has never heard of try-on is unaffected. A read failure is
+	// soft for the same reason the gallery's is: a product page that will
+	// not load because the AR metadata is unavailable is worse than a page
+	// with no try-on button.
+	tryOn, tryOnErr := h.svc.ProductTryOn(c.Request.Context(), id)
+	if tryOnErr != nil {
+		logTryOnReadFailure(c.Request.Context(), id, tryOnErr)
+		tryOn = nil
+	}
+	body := gin.H{
 		"product": p, "variants": variants, "media": gallery,
 		"attributes": attributes,
-	}, nil)
+	}
+	if tryOn != nil {
+		body["try_on"] = tryOn
+	}
+	api.JSON(c.Writer, http.StatusOK, body, nil)
 }
 
 type createProductReq struct {
