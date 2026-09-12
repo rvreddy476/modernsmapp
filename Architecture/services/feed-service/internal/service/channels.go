@@ -13,21 +13,19 @@ import (
 )
 
 // Tube channels (2026-09-05). post-service owns channels (one per account);
-// the feed attaches the card-sized channel to every long_video post whose
-// author has one, resolved in ONE call per page alongside authors and media.
+// the feed attaches the card-sized channel to every post whose author has
+// one, resolved in ONE call per page alongside authors and media. Until
+// 2026-09-12 only long_video rows carried it; the gate went so the reels
+// overlay can offer Subscribe on a channel owner's flick (see
+// HydratedPost.Channel).
 
-// ChannelRef is the channel card carried by a long_video feed item.
+// ChannelRef is the channel card carried by a feed item whose author has a
+// channel.
 type ChannelRef struct {
 	UserID    uuid.UUID `json:"user_id"`
 	Name      string    `json:"name"`
 	Handle    string    `json:"handle"`
 	AvatarURL *string   `json:"avatar_url"`
-}
-
-// isLongVideoPost: the post kinds a channel card belongs to (legacy "video"
-// rows included).
-func isLongVideoPost(contentType string) bool {
-	return contentType == "long_video" || contentType == "video"
 }
 
 // fetchChannels asks post-service for the channels of a page of authors:
@@ -57,7 +55,15 @@ func (s *Service) fetchChannels(ctx context.Context, viewerID uuid.UUID, ids []u
 		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 			req.Header.Set("X-Internal-Service-Key", key)
 		}
-		resp, err := s.postClient.Do(req)
+		// Every page reaches here now (not only pages with a long video),
+		// so a Service built without a post client, as the unit tests do,
+		// must degrade to the best-effort path rather than nil-deref.
+		// Same fallback as the graph client in privacyfilter.go.
+		client := s.postClient
+		if client == nil {
+			client = http.DefaultClient
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, err
 		}

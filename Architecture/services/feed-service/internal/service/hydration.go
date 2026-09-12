@@ -119,9 +119,13 @@ type HydratedPost struct {
 	FeedContentType string     `json:"feed_content_type,omitempty"` // "post", "repost", "reel", etc.
 	Author          Author     `json:"author"`
 
-	// Channel is the author's Tube channel, attached to long_video posts
-	// whose author has one (channels.go); omitted otherwise. Resolved at
-	// render time, never cached, so a rename shows on the next page.
+	// Channel is the author's Tube channel, attached to ANY post whose
+	// author has one (channels.go); omitted otherwise. Not gated on the
+	// post kind since 2026-09-12: the reels overlay offers Subscribe
+	// (follow + notify) instead of Follow when a row carries a channel, and
+	// a channel owner's flick deserves that as much as their long video.
+	// Resolved at render time, never cached, so a rename shows on the next
+	// page.
 	Channel *ChannelRef `json:"channel,omitempty"`
 
 	// "Why you're seeing this post" (post "more" sheet, 2026-09-04). Reason
@@ -422,17 +426,10 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 	mediaIDs := make([]uuid.UUID, 0, len(posts))
 	seenAuthors := make(map[uuid.UUID]bool, len(posts))
 	seenMedia := make(map[uuid.UUID]bool, len(posts))
-	// Tube: authors of long videos, whose channels are resolved per page.
-	var channelAuthorIDs []uuid.UUID
-	seenChannelAuthors := make(map[uuid.UUID]bool)
 	for _, post := range posts {
 		if !seenAuthors[post.AuthorID] {
 			seenAuthors[post.AuthorID] = true
 			authorIDs = append(authorIDs, post.AuthorID)
-		}
-		if isLongVideoPost(post.ContentType) && !seenChannelAuthors[post.AuthorID] {
-			seenChannelAuthors[post.AuthorID] = true
-			channelAuthorIDs = append(channelAuthorIDs, post.AuthorID)
 		}
 		for _, media := range post.Media {
 			if !seenMedia[media.MediaID] {
@@ -460,13 +457,15 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 			deliveries, mediaErr = s.fetchMediaDeliveries(ctx, viewerID, mediaIDs)
 		}()
 	}
-	if len(channelAuthorIDs) > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			channels, channelErr = s.fetchChannels(ctx, viewerID, channelAuthorIDs)
-		}()
-	}
+	// Tube: the channels of every author on the page, in the same batch
+	// shape as profiles. Every author is asked for (not only long-video
+	// authors) because the card now rides on any row; post-service simply
+	// omits authors without a channel, so the map stays sparse.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		channels, channelErr = s.fetchChannels(ctx, viewerID, authorIDs)
+	}()
 	wg.Wait()
 	if profileErr != nil {
 		return fmt.Errorf("profile hydration failed: %w", profileErr)
@@ -489,11 +488,12 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 			posts[i].Author.Username = profile.Username
 			posts[i].Author.AvatarMediaID = profile.AvatarMediaID
 		}
+		// Reset before attaching: a row that arrived from the hydration
+		// cache must never keep a stale card, and a nil map lookup (channel
+		// outage) leaves it absent rather than failing the page.
 		posts[i].Channel = nil
-		if isLongVideoPost(posts[i].ContentType) {
-			if ref, ok := channels[posts[i].AuthorID]; ok {
-				posts[i].Channel = ref
-			}
+		if ref, ok := channels[posts[i].AuthorID]; ok {
+			posts[i].Channel = ref
 		}
 		authorizedMedia := make([]HydratedMedia, 0, len(posts[i].Media))
 		for _, m := range posts[i].Media {
