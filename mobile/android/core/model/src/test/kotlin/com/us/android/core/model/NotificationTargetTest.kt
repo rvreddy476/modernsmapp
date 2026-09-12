@@ -112,6 +112,47 @@ class NotificationTargetTest {
             .isEqualTo(NotificationTarget.None)
     }
 
+    // ── Uploads from subscribed channels (2026-09-12) ───────────────────
+
+    @Test
+    fun `a video upload link targets the watch screen`() {
+        assertThat(NotificationTarget.parse("/tube/watch/p1")).isEqualTo(NotificationTarget.Video("p1"))
+    }
+
+    /** Early rows carried `/posttube/watch/{id}`; they are still in inboxes and must still open. */
+    @Test
+    fun `the legacy posttube link targets the watch screen too`() {
+        assertThat(NotificationTarget.parse("/posttube/watch/p1")).isEqualTo(NotificationTarget.Video("p1"))
+    }
+
+    @Test
+    fun `a reel upload link targets the reel`() {
+        assertThat(NotificationTarget.parse("/reels/p2")).isEqualTo(NotificationTarget.Reel("p2"))
+    }
+
+    @Test
+    fun `upload links with a host, or no id, resolve to no target`() {
+        val unroutable = listOf(
+            "https://atpost.app/tube/watch/p1",
+            "https://atpost.app/reels/p2",
+            "/tube/watch/",
+            "/tube/watch",
+            "/reels/",
+            "/reels",
+            "/tube/p1",
+            "tube/watch/p1",
+        )
+        for (link in unroutable) {
+            assertThat(NotificationTarget.parse(link)).isEqualTo(NotificationTarget.None)
+        }
+    }
+
+    @Test
+    fun `the two upload types map to their kinds`() {
+        assertThat(NotificationKind.fromWire("creator_uploaded_video")).isEqualTo(NotificationKind.CreatorUploadedVideo)
+        assertThat(NotificationKind.fromWire("creator_uploaded_flick")).isEqualTo(NotificationKind.CreatorUploadedFlick)
+    }
+
     // ── Kind mapping ────────────────────────────────────────────────────
 
     @Test

@@ -42,6 +42,24 @@ class NotificationPreferenceCodecTest {
         assertThat(decoded.emailDigest).isEqualTo("weekly")
     }
 
+    /** New videos (2026-09-12): `inapp_new_videos` / `push_new_videos`, default on, and part of the full snapshot. */
+    @Test
+    fun `the new videos pair decodes, defaults to on, and round-trips`() {
+        val decoded = NotificationPreferenceCodec.decode(
+            Json.parseToJsonElement("""{"inapp_new_videos":true,"push_new_videos":false}""").jsonObject,
+        )
+        assertThat(decoded.channels(NotificationCategory.NEW_VIDEOS))
+            .isEqualTo(NotificationChannels(inApp = true, push = false))
+
+        val absent = NotificationPreferenceCodec.decode(Json.parseToJsonElement("{}").jsonObject)
+        assertThat(absent.channels(NotificationCategory.NEW_VIDEOS))
+            .isEqualTo(NotificationChannels(inApp = true, push = true))
+
+        val encoded = NotificationPreferenceCodec.encode(decoded)
+        assertThat(encoded.keys).containsAtLeast("inapp_new_videos", "push_new_videos")
+        assertThat(NotificationPreferenceCodec.decode(encoded)).isEqualTo(decoded)
+    }
+
     @Test
     fun `encode then decode round-trips every pair`() {
         val original = NotificationPreferenceCodec.decode(Json.parseToJsonElement("{}").jsonObject)

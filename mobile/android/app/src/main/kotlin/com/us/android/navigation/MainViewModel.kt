@@ -6,6 +6,7 @@ import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.call.CallSessionManager
 import com.us.android.core.call.CallState
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.media.ReelsEntry
 import com.us.android.core.model.SessionState
 import com.us.android.core.profile.data.ModulePreferencesRepository
 import com.us.android.push.PushDestination
@@ -40,6 +41,7 @@ class MainViewModel @Inject constructor(
     private val pushDestinations: PushDestinations,
     callSessionManager: CallSessionManager,
     modulePreferences: ModulePreferencesRepository,
+    private val reelsEntry: ReelsEntry,
 ) : ViewModel() {
     val sessionState: StateFlow<SessionState> = sessionStateProvider.sessionState
 
@@ -57,6 +59,14 @@ class MainViewModel @Inject constructor(
     val callState: StateFlow<CallState> = callSessionManager.state
 
     fun consumePushDestination() = pushDestinations.consume()
+
+    /**
+     * A reel notification was tapped (2026-09-12): leave the post id where
+     * Reels reads it, the way the Home feed and the profile grid do, so the
+     * nav host's tab switch lands on that reel. The shell holds the entry
+     * because `navigateToTopLevel(REELS)` carries no argument.
+     */
+    fun openReel(postId: String) = reelsEntry.open(postId)
 
     init {
         // Bind the shared engagement overlay to whoever is signed in.

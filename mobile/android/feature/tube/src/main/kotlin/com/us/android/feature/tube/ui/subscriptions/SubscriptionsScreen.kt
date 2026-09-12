@@ -33,9 +33,10 @@ import com.us.android.feature.tube.ui.home.appendFooter
 import com.us.android.feature.tube.ui.rememberTubeMoreState
 
 /**
- * Subscriptions (Momentum look, 2026-09-05): videos from the channels the
- * viewer follows, as the same two-column mosaic as home under the same
- * chrome. Empty says what to do about it.
+ * Subscriptions (Momentum look, 2026-09-05; subscriptions proper,
+ * 2026-09-12): videos from the channels the viewer subscribed to, newest
+ * first, as the same two-column mosaic as home under the same chrome.
+ * Empty says what to do about it.
  */
 @Composable
 fun SubscriptionsScreen(
@@ -90,8 +91,8 @@ private fun SubscriptionsBody(
         )
 
         refresh is LoadState.NotLoading && empty -> UsEmptyState(
-            title = "Follow creators to see their videos here",
-            detail = "Videos from the channels you follow show up on this page as they post them.",
+            title = "Subscribe to channels to see their videos here",
+            detail = "Videos from the channels you subscribe to show up on this page as they post them.",
             modifier = Modifier.testTag("tube_subs_empty"),
         )
 

@@ -4,6 +4,8 @@ import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.model.Channel
+import com.us.android.core.model.ChannelSubscription
+import com.us.android.core.model.NotifyOn
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -111,6 +113,22 @@ class ChannelRepository @Inject constructor(
         apiCall(errorMapper) { api.get(key.removePrefix("@")) }.map { it.toDomain() }
 
     /**
+     * The same read, keeping the viewer's subscription edge the server
+     * attaches for a signed-in caller (2026-09-12). Null when the response
+     * carried no `is_subscribed`, which is a public read or an older server;
+     * the caller then asks the subscription endpoint instead of guessing.
+     */
+    suspend fun read(key: String): AppResult<ChannelRead> =
+        apiCall(errorMapper) { api.get(key.removePrefix("@")) }.map { dto ->
+            ChannelRead(
+                channel = dto.toDomain(),
+                subscription = dto.isSubscribed?.let { subscribed ->
+                    ChannelSubscription(subscribed = subscribed, notifyOn = NotifyOn.fromWire(dto.notifyOn))
+                },
+            )
+        }
+
+    /**
      * Whether [handle] is free, and the server's alternative when it is
      * not. Null when the check could not be made — the form then lets the
      * create itself be the check rather than blocking on a blip.
@@ -138,6 +156,7 @@ class ChannelRepository @Inject constructor(
         avatarMediaId = avatarMediaId?.takeIf { it.isNotBlank() },
         avatarUrl = avatarUrl?.takeIf { it.isNotBlank() },
         videoCount = videoCount,
+        subscriberCount = subscriberCount,
         createdAt = createdAt,
         updatedAt = updatedAt,
     )
@@ -189,3 +208,6 @@ class ChannelRepository @Inject constructor(
 }
 
 data class HandleAvailability(val available: Boolean, val suggestion: String?)
+
+/** A channel with the viewer's edge toward it when the server said (signed-in read); null when it did not. */
+data class ChannelRead(val channel: Channel, val subscription: ChannelSubscription?)

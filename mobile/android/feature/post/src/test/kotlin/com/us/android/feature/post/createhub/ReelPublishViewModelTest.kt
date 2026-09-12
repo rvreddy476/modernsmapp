@@ -101,6 +101,28 @@ class ReelPublishViewModelTest {
         override suspend fun get(key: String): ApiEnvelope<ChannelDto> = error("not under test")
         override suspend fun handleAvailable(handle: String): ApiEnvelope<HandleAvailabilityDto> =
             error("not under test")
+
+        // Subscriptions (2026-09-12) are the channel page's, not the publish gate's.
+        override suspend fun subscriptions(
+            limit: Int,
+            cursor: String?,
+        ): ApiEnvelope<List<com.us.android.core.feed.data.SubscriptionRowDto>> = error("not under test")
+
+        override suspend fun subscription(ref: String): ApiEnvelope<com.us.android.core.feed.data.SubscriptionDto> =
+            error("not under test")
+
+        override suspend fun subscribe(
+            ref: String,
+            body: com.us.android.core.feed.data.SubscribeRequest,
+        ): ApiEnvelope<com.us.android.core.feed.data.SubscribeResultDto> = error("not under test")
+
+        override suspend fun unsubscribe(ref: String): ApiEnvelope<com.us.android.core.feed.data.SubscribeResultDto> =
+            error("not under test")
+
+        override suspend fun updateSubscription(
+            ref: String,
+            body: com.us.android.core.feed.data.NotifyOnRequest,
+        ): ApiEnvelope<com.us.android.core.feed.data.SubscriptionDto> = error("not under test")
     }
 
     /** The strip's thumbnails; whether they carry a bitmap decides whether a fallback cover exists. */

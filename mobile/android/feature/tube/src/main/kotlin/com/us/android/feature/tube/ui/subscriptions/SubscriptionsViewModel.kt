@@ -25,10 +25,12 @@ import kotlinx.coroutines.flow.combine
 import javax.inject.Inject
 
 /**
- * The Subscriptions page: `v1/feed/watch?following_only=true` — long
- * videos from authors the viewer follows, as the server orders them. The
- * same cards as home, without the shelves; the same "more" sheet with
- * `suggested = false`, because nothing here was suggested.
+ * The Subscriptions page: `v1/feed/watch?subscribed_only=true`, long
+ * videos from the channels the viewer SUBSCRIBED to, newest first
+ * (2026-09-12). Not the follow feed: a subscribe is a follow plus notify,
+ * and this page shows only the channels the viewer chose with that
+ * button. The same cards as home, without the shelves; the same "more"
+ * sheet with `suggested = false`, because nothing here was suggested.
  */
 @HiltViewModel
 class SubscriptionsViewModel @Inject constructor(
@@ -40,7 +42,7 @@ class SubscriptionsViewModel @Inject constructor(
     hidden: HiddenPosts,
 ) : ViewModel() {
 
-    val items: Flow<PagingData<FeedItem>> = videos.videos(VideoFeedQuery.Following)
+    val items: Flow<PagingData<FeedItem>> = videos.videos(VideoFeedQuery.Subscribed)
         .cachedIn(viewModelScope)
         .combine(hidden.state) { page, set ->
             if (set.isEmpty) page else page.filter { !set.hides(it) }

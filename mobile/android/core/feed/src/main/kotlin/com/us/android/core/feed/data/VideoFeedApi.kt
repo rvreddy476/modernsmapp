@@ -20,12 +20,15 @@ import retrofit2.http.Query
 interface VideoFeedApi {
 
     /**
-     * `/v1/feed/videos` and `/v1/feed/watch`, with the two narrowings Tube
-     * uses: `following_only=true` for Subscriptions and the Following chip,
-     * `category=<slug>` for a category chip (feed-service, 2026-09-05: the
-     * filter is applied after hydration and walks further windows to fill
-     * the page). Both are omitted — null — for the plain surface, so the
-     * request for "All" is byte-identical to what it was before the chips.
+     * `/v1/feed/videos` and `/v1/feed/watch`, with the three narrowings Tube
+     * uses: `following_only=true` for the Following chip,
+     * `subscribed_only=true` for the Subscriptions page and the home
+     * channel strip (2026-09-12: only channels the viewer SUBSCRIBED to,
+     * not everyone they follow), and `category=<slug>` for a category chip
+     * (feed-service, 2026-09-05: the filter is applied after hydration and
+     * walks further windows to fill the page). All are omitted (null) for
+     * the plain surface, so the request for "All" is byte-identical to what
+     * it was before the chips.
      */
     @GET("v1/feed/{surface}")
     suspend fun getFeed(
@@ -33,6 +36,7 @@ interface VideoFeedApi {
         @Query("limit") limit: Int,
         @Query("cursor") cursor: String? = null,
         @Query("following_only") followingOnly: Boolean? = null,
+        @Query("subscribed_only") subscribedOnly: Boolean? = null,
         @Query("category") category: String? = null,
     ): ApiEnvelope<List<FeedItemDto>>
 

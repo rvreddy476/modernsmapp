@@ -54,6 +54,8 @@ enum class NotificationCategory(val key: String, val label: String, val primary:
     MENTIONS("mentions", "Mentions and tags", primary = true),
     REPOSTS("reposts", "Reposts", primary = true),
     LIVE("live", "LIVE", primary = true),
+    /** Uploads from subscribed Tube channels (2026-09-12); `inapp_new_videos` / `push_new_videos`. */
+    NEW_VIDEOS("new_videos", "New videos", primary = true),
     MESSAGES("messages", "Messages", primary = true),
     SUPER_LIKES("super_likes", "Super likes", primary = false),
     REPLIES("replies", "Replies", primary = false),

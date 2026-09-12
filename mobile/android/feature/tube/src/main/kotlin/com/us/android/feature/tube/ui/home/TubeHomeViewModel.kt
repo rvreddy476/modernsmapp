@@ -208,12 +208,14 @@ class TubeHomeViewModel @Inject constructor(
     }
 
     /**
-     * The strip: followed creators with videos, newest first, each with a
-     * face — the channel's own when the row carries one, else the author's
-     * profile photo resolved here (a handful of lookups, once per refresh).
+     * The strip: SUBSCRIBED channels with videos, newest first (2026-09-12:
+     * subscriptions, not follows, because a subscribe is the choice the
+     * strip exists to reward), each with a face: the channel's own when
+     * the row carries one, else the author's profile photo resolved here (a
+     * handful of lookups, once per refresh).
      */
     private suspend fun loadChannels(): List<TubeChannelBubble> {
-        val bubbles = channelBubbles(videos.followingVideos(FOLLOWING_LIMIT), ownUserId)
+        val bubbles = channelBubbles(videos.subscribedVideos(FOLLOWING_LIMIT), ownUserId)
         return coroutineScope {
             bubbles.map { bubble ->
                 async {

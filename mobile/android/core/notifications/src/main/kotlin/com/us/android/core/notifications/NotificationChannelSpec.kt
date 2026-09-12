@@ -53,6 +53,20 @@ enum class NotificationChannelSpec(
         importance = NotificationManager.IMPORTANCE_DEFAULT,
     ),
 
+    /**
+     * Uploads from subscribed channels (Tube subscriptions, 2026-09-12).
+     * Its own channel rather than SOCIAL: a subscriber who wants likes
+     * quiet and uploads loud, or the reverse, can only say so if the two
+     * are separate switches. DEFAULT, like SOCIAL: an upload is worth a
+     * shade entry, not a buzz.
+     */
+    NEW_VIDEOS(
+        id = "new_videos",
+        title = "New videos",
+        description = "Uploads from channels you subscribe to",
+        importance = NotificationManager.IMPORTANCE_DEFAULT,
+    ),
+
     /** Account and security. LOW: important to see, never urgent. */
     ACCOUNT(
         id = "account",
@@ -91,6 +105,10 @@ enum class NotificationChannelSpec(
             // actually sends for chat (notifTitleBody, notification.go);
             // without them chat pushes landed on the muteable SOCIAL channel.
             "message", "chat", "dm", "message_request" -> MESSAGES
+            // The two upload types notification-service emits for a
+            // subscribed channel (2026-09-12). Before this they fell through
+            // to SOCIAL, so muting likes muted uploads too.
+            "creator_uploaded_video", "creator_uploaded_flick" -> NEW_VIDEOS
             "account", "security" -> ACCOUNT
             else -> SOCIAL
         }

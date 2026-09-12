@@ -24,3 +24,16 @@ fun videoMetaLine(authorName: String?, createdAt: String, views: Int, now: Insta
         viewsLabel(views),
         formatRelativeTime(createdAt, now).takeIf { it.isNotBlank() },
     ).joinToString(" · ")
+
+/**
+ * "No subscribers yet", "1 subscriber", "1.2K subscribers" (Tube
+ * subscriptions, 2026-09-12). The same rule as the video count label: zero
+ * is a sentence, not a number, because "0 subscribers" under a new channel
+ * reads as a verdict. Larger counts are compact so the header line never
+ * wraps on a channel that has taken off.
+ */
+fun subscriberCountLabel(count: Int): String = when {
+    count <= 0 -> "No subscribers yet"
+    count == 1 -> "1 subscriber"
+    else -> "${formatCount(count)} subscribers"
+}

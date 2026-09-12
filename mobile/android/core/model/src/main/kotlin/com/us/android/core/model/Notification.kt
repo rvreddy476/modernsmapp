@@ -97,6 +97,16 @@ sealed interface NotificationKind {
     /** The account you asked to follow approved your request. */
     data object FollowRequestAccepted : NotificationKind
 
+    /**
+     * A channel the viewer subscribes to published a long video (Tube
+     * subscriptions, 2026-09-12). `entity_id` is the post; the row opens
+     * the watch screen.
+     */
+    data object CreatorUploadedVideo : NotificationKind
+
+    /** A subscribed channel posted a reel. `entity_id` is the post; the row opens Reels on it. */
+    data object CreatorUploadedFlick : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
@@ -118,6 +128,8 @@ sealed interface NotificationKind {
             "dm" -> DirectMessage
             "follow_request" -> FollowRequest
             "follow_request_accepted" -> FollowRequestAccepted
+            "creator_uploaded_video" -> CreatorUploadedVideo
+            "creator_uploaded_flick" -> CreatorUploadedFlick
             else -> Unknown(raw)
         }
     }
@@ -156,6 +168,17 @@ sealed interface NotificationTarget {
      */
     data class MessageRequest(val conversationId: String, val title: String) : NotificationTarget
 
+    /**
+     * A long video on Tube's watch screen (2026-09-12): `/tube/watch/{id}`.
+     * The legacy `/posttube/watch/{id}` a few early rows carry is read the
+     * same way, because those rows are still in inboxes and a tap on them
+     * must land somewhere rather than nowhere.
+     */
+    data class Video(val postId: String) : NotificationTarget
+
+    /** A reel, opened on the Reels tab: `/reels/{id}`. */
+    data class Reel(val postId: String) : NotificationTarget
+
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget
 
@@ -192,12 +215,23 @@ sealed interface NotificationTarget {
 
                 segments.size == 2 && segments[0] == "u" -> Profile(segments[1])
 
+                // Tube uploads (2026-09-12). Both the current `/tube/watch/{id}`
+                // and the legacy `/posttube/watch/{id}` resolve, because the
+                // legacy rows are already in inboxes.
+                segments.size == 3 && segments[0] in VIDEO_PREFIXES && segments[1] == "watch" ->
+                    Video(segments[2])
+
+                segments.size == 2 && segments[0] == "reels" -> Reel(segments[1])
+
                 else -> None
             }
         }
 
         /** The contract is an absolute path; anything else is not a route. */
         private const val PATH_PREFIX = "/"
+
+        /** The first segment of a watch link: today's `tube`, and the legacy `posttube` still in inboxes. */
+        private val VIDEO_PREFIXES = setOf("tube", "posttube")
 
         private fun queryValue(query: String, key: String): String? = query
             .split('&')

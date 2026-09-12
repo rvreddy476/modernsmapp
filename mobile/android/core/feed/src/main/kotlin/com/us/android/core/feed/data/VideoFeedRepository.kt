@@ -19,15 +19,24 @@ import javax.inject.Singleton
 
 /**
  * One request's worth of Tube: the whole ranked surface, only followed
- * authors, or one category. The three are exclusive — the chip rail is
- * single-select — so this is a small sealed vocabulary, not two flags.
+ * authors, only subscribed channels, or one category. The four are
+ * exclusive (the chip rail is single-select and Subscriptions is its own
+ * page), so this is a small sealed vocabulary, not three flags.
  */
 sealed interface VideoFeedQuery {
     /** `/v1/feed/videos` as the server ranks it — the "All" chip and Tube home. */
     data object All : VideoFeedQuery
 
-    /** `/v1/feed/watch?following_only=true` — the Following chip and the Subscriptions page. */
+    /** `/v1/feed/watch?following_only=true`: the Following chip on Tube home. */
     data object Following : VideoFeedQuery
+
+    /**
+     * `/v1/feed/watch?subscribed_only=true`: the Subscriptions page
+     * (2026-09-12). Distinct from [Following]: a subscribe is a follow plus
+     * notify, so every subscribed channel is followed but not the reverse,
+     * and the Subscriptions page shows only the channels the viewer chose.
+     */
+    data object Subscribed : VideoFeedQuery
 
     /** `/v1/feed/videos?category=<id>` — one category chip. */
     data class Category(val id: String) : VideoFeedQuery
@@ -69,6 +78,7 @@ class VideoFeedRepository @Inject constructor(
             limit = it.limit,
             cursor = it.cursor,
             followingOnly = (query is VideoFeedQuery.Following).takeIf { on -> on },
+            subscribedOnly = (query is VideoFeedQuery.Subscribed).takeIf { on -> on },
             category = (query as? VideoFeedQuery.Category)?.id,
         ).toFeedPage().let { page -> page.copy(items = hydrator.hydrate(page.items)) }
     }
@@ -94,14 +104,17 @@ class VideoFeedRepository @Inject constructor(
     }
 
     /**
-     * The first page of long videos from followed authors, as a list — the
-     * channels strip groups it by author. Empty when nothing is followed or
-     * the read fails: the strip is then the viewer's own bubble alone.
+     * The first page of long videos from SUBSCRIBED channels, as a list;
+     * the channels strip groups it by author (2026-09-12: the strip is the
+     * viewer's subscriptions, not everyone they follow, because a subscribe
+     * is the choice the strip exists to reward). Empty when nothing is
+     * subscribed or the read fails: the strip is then the viewer's own
+     * bubble alone.
      */
-    suspend fun followingVideos(limit: Int): List<FeedItem> =
+    suspend fun subscribedVideos(limit: Int): List<FeedItem> =
         when (
             val result = apiCall(errorMapper) {
-                api.getFeed(FeedSurface.Watch.path, limit, followingOnly = true)
+                api.getFeed(FeedSurface.Watch.path, limit, subscribedOnly = true)
             }
         ) {
             is AppResult.Success ->
@@ -224,8 +237,12 @@ class VideoFeedRepository @Inject constructor(
         return FeedPage(items = emptyList(), nextCursor = cursor)
     }
 
+    /** The narrowings live on `watch`; the ranked list and the categories on `videos`. */
     private val VideoFeedQuery.surface: FeedSurface
-        get() = if (this is VideoFeedQuery.Following) FeedSurface.Watch else FeedSurface.Videos
+        get() = when (this) {
+            VideoFeedQuery.Following, VideoFeedQuery.Subscribed -> FeedSurface.Watch
+            VideoFeedQuery.All, is VideoFeedQuery.Category -> FeedSurface.Videos
+        }
 
     companion object {
         /** Why a reschedule was refused, in words the row can show. */

@@ -58,6 +58,18 @@ class VideoFeedApiRequestTest {
         assertThat(target).doesNotContain("category")
     }
 
+    /** Subscriptions (2026-09-12) is its own narrowing: subscribed channels, not everyone followed. */
+    @Test
+    fun `subscribed asks watch with subscribed_only=true and no following_only`() {
+        enqueue("""{"data":[]}""")
+
+        runBlocking { api.getFeed(surface = "watch", limit = 15, subscribedOnly = true) }
+
+        val target = server.takeRequest().target
+        assertThat(target).isEqualTo("/v1/feed/watch?limit=15&subscribed_only=true")
+        assertThat(target).doesNotContain("following_only")
+    }
+
     @Test
     fun `a category chip sends category=slug and nothing else`() {
         enqueue("""{"data":[]}""")

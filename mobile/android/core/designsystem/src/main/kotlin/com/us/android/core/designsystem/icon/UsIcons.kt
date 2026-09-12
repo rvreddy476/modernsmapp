@@ -60,6 +60,20 @@ object UsIcons {
     )
 
     /**
+     * A struck-through bell, Lucide `bell-off`: a channel whose uploads
+     * are muted (Tube subscriptions, 2026-09-12). The same bell as
+     * [Notifications] with a slash, so the on and off states read as one
+     * control changing rather than two different icons.
+     */
+    val NotificationsOff: ImageVector = lucideStroked(
+        "NotificationsOff",
+        "M10.268 21a2 2 0 0 0 3.464 0",
+        "M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742",
+        "m2 2 20 20",
+        "M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05",
+    )
+
+    /**
      * Two arrows chasing each other.
      *
      * Deliberately not a paper plane: a plane means "send this to someone",

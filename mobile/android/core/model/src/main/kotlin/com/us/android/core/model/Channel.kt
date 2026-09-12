@@ -7,6 +7,10 @@ package com.us.android.core.model
  *
  * [videoCount] is the server's count of the channel's long videos, carried
  * so a channel page and the You page can say it without a second call.
+ * [subscriberCount] is the server's subscriber count (2026-09-12); the
+ * channel page shows it beside the Subscribe control and nudges it by one
+ * for the viewer's own optimistic subscribe, so the number never waits on
+ * a reload to agree with the button.
  */
 data class Channel(
     val userId: String,
@@ -16,6 +20,7 @@ data class Channel(
     val avatarMediaId: String? = null,
     val avatarUrl: String? = null,
     val videoCount: Int = 0,
+    val subscriberCount: Int = 0,
     val createdAt: String = "",
     val updatedAt: String = "",
 ) {

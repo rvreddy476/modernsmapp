@@ -42,6 +42,17 @@ class TubeFormatTest {
         assertThat(videoMetaLine(null, threeHoursAgo, 0, now)).isEqualTo("3h")
     }
 
+    /** The channel header's count (2026-09-12): a sentence at zero, singular at one, compact beyond. */
+    @Test
+    fun `a subscriber count reads as a sentence at zero and compact beyond`() {
+        assertThat(subscriberCountLabel(0)).isEqualTo("No subscribers yet")
+        assertThat(subscriberCountLabel(-1)).isEqualTo("No subscribers yet")
+        assertThat(subscriberCountLabel(1)).isEqualTo("1 subscriber")
+        assertThat(subscriberCountLabel(7)).isEqualTo("7 subscribers")
+        assertThat(subscriberCountLabel(1_200)).isEqualTo("1.2K subscribers")
+        assertThat(subscriberCountLabel(1_500_000)).isEqualTo("1.5M subscribers")
+    }
+
     @Test
     fun `a view count is compact with its noun, and absent rather than zero`() {
         assertThat(viewsLabel(1_200)).isEqualTo("1.2K views")

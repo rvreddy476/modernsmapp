@@ -13,6 +13,8 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridScope
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +22,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -33,13 +37,15 @@ import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsPillButton
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.VideoThumb
-import com.us.android.core.feed.data.offersFollow
+import com.us.android.core.feed.data.offersSubscribe
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.model.Channel
+import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
-import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.NotifyOn
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -51,13 +57,18 @@ import com.us.android.feature.tube.ui.home.GridCard
 import com.us.android.feature.tube.ui.home.TubeGridSkeleton
 import com.us.android.feature.tube.ui.home.appendFooter
 import com.us.android.feature.tube.ui.rememberTubeMoreState
+import com.us.android.feature.tube.ui.subscriberCountLabel
 import com.us.android.feature.tube.ui.you.videoCountLabel
 
 /**
- * A channel's page inside Tube (2026-09-05): a back glyph and the wordmark
- * on top, then a banner-less header — avatar, name, `@handle`, About,
- * Follow, the video count — and the channel's videos as the mosaic. The
- * floating bar stays, with nothing lit: this page is not one of its own.
+ * A channel's page inside Tube (2026-09-05; subscriptions 2026-09-12): a
+ * back glyph and the wordmark on top, then a banner-less header (avatar,
+ * name, `@handle`, the subscriber and video counts, About, Subscribe) and
+ * the channel's videos as the mosaic. Subscribe is the page's one
+ * relationship control (founder): it is follow plus notify in one button,
+ * and once subscribed it becomes "Subscribed" beside a bell that mutes or
+ * unmutes this channel's uploads. The floating bar stays, with nothing
+ * lit: this page is not one of its own.
  */
 @Composable
 fun ChannelScreen(
@@ -66,8 +77,9 @@ fun ChannelScreen(
     more: PostMoreViewModel = hiltViewModel(),
 ) {
     val header by viewModel.header.collectAsStateWithLifecycle()
-    val edges by viewModel.followEdges.collectAsStateWithLifecycle()
-    val followBusy by viewModel.followBusy.collectAsStateWithLifecycle()
+    val subscription by viewModel.subscription.collectAsStateWithLifecycle()
+    val subscriberCount by viewModel.subscriberCount.collectAsStateWithLifecycle()
+    val subscribeBusy by viewModel.subscribeBusy.collectAsStateWithLifecycle()
     val items = viewModel.items.collectAsLazyPagingItems()
     val moreState = rememberTubeMoreState()
 
@@ -89,11 +101,13 @@ fun ChannelScreen(
                 item(key = "header", span = StaggeredGridItemSpan.FullLine) {
                     ChannelHeader(
                         state = header,
-                        edge = edges[viewModel.userId],
-                        offersFollow = offersFollow(viewModel.ownUserId, viewModel.userId, edges[viewModel.userId]),
-                        busy = followBusy,
-                        onFollow = viewModel::follow,
-                        onUnfollow = viewModel::unfollow,
+                        subscription = subscription,
+                        subscriberCount = subscriberCount,
+                        offersSubscribe = offersSubscribe(viewModel.ownUserId, viewModel.userId, subscription),
+                        busy = subscribeBusy,
+                        onSubscribe = viewModel::subscribe,
+                        onUnsubscribe = viewModel::unsubscribe,
+                        onToggleNotify = viewModel::toggleNotify,
                         onRetry = viewModel::load,
                     )
                 }
@@ -119,13 +133,16 @@ fun ChannelScreen(
 }
 
 @Composable
+@Suppress("LongParameterList") // One callback per control on the header; a holder would hide, not help.
 private fun ChannelHeader(
     state: ChannelHeaderState,
-    edge: FollowStatus?,
-    offersFollow: Boolean,
+    subscription: ChannelSubscription?,
+    subscriberCount: Int,
+    offersSubscribe: Boolean,
     busy: Boolean,
-    onFollow: () -> Unit,
-    onUnfollow: () -> Unit,
+    onSubscribe: () -> Unit,
+    onUnsubscribe: () -> Unit,
+    onToggleNotify: () -> Unit,
     onRetry: () -> Unit,
 ) {
     when (state) {
@@ -137,11 +154,13 @@ private fun ChannelHeader(
         )
         is ChannelHeaderState.Loaded -> ChannelCard(
             channel = state.channel,
-            following = edge == FollowStatus.FOLLOWING || edge == FollowStatus.REQUESTED,
-            offersFollow = offersFollow,
+            subscription = subscription,
+            subscriberCount = subscriberCount,
+            offersSubscribe = offersSubscribe,
             busy = busy,
-            onFollow = onFollow,
-            onUnfollow = onUnfollow,
+            onSubscribe = onSubscribe,
+            onUnsubscribe = onUnsubscribe,
+            onToggleNotify = onToggleNotify,
         )
         ChannelHeaderState.Missing -> UsEmptyState(
             title = "No channel here",
@@ -157,13 +176,16 @@ private fun ChannelHeader(
 }
 
 @Composable
+@Suppress("LongParameterList") // The header's controls, one callback each.
 private fun ChannelCard(
     channel: Channel,
-    following: Boolean,
-    offersFollow: Boolean,
+    subscription: ChannelSubscription?,
+    subscriberCount: Int,
+    offersSubscribe: Boolean,
     busy: Boolean,
-    onFollow: () -> Unit,
-    onUnfollow: () -> Unit,
+    onSubscribe: () -> Unit,
+    onUnsubscribe: () -> Unit,
+    onToggleNotify: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -203,9 +225,10 @@ private fun ChannelCard(
                     maxLines = 1,
                 )
                 Text(
-                    text = videoCountLabel(channel.videoCount),
+                    text = "${subscriberCountLabel(subscriberCount)} · ${videoCountLabel(channel.videoCount)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = UsTheme.extended.textSecondary,
+                    modifier = Modifier.testTag("tube_channel_counts"),
                 )
             }
         }
@@ -217,19 +240,60 @@ private fun ChannelCard(
             )
         }
         when {
-            offersFollow -> UsFollowButton(
-                onClick = onFollow,
+            offersSubscribe -> UsFollowButton(
+                text = "Subscribe",
+                onClick = onSubscribe,
                 busy = busy,
-                modifier = Modifier.testTag("tube_channel_follow"),
+                modifier = Modifier.testTag("tube_channel_subscribe"),
             )
-            following -> UsPillButton(
-                text = "Following",
-                onClick = onUnfollow,
-                filled = false,
-                busy = busy,
-                modifier = Modifier.testTag("tube_channel_following"),
-            )
+            subscription?.subscribed == true -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            ) {
+                UsPillButton(
+                    text = "Subscribed",
+                    onClick = onUnsubscribe,
+                    filled = false,
+                    busy = busy,
+                    modifier = Modifier.testTag("tube_channel_subscribed"),
+                )
+                NotifyBell(
+                    channelName = channel.name,
+                    on = subscription.notifyOn == NotifyOn.ALL,
+                    enabled = !busy,
+                    onToggle = onToggleNotify,
+                )
+            }
         }
+    }
+}
+
+/**
+ * The bell beside "Subscribed": on means every upload from this channel
+ * notifies, off means none. The description names the channel and the
+ * state, and the state is also a stateDescription, so a screen reader
+ * says which way the bell is BEFORE the tap flips it.
+ */
+@Composable
+private fun NotifyBell(
+    channelName: String,
+    on: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    val state = if (on) "Notifications on" else "Notifications off"
+    IconButton(
+        onClick = onToggle,
+        enabled = enabled,
+        modifier = Modifier
+            .semantics { stateDescription = state }
+            .testTag("tube_channel_bell"),
+    ) {
+        Icon(
+            imageVector = if (on) UsIcons.Notifications else UsIcons.NotificationsOff,
+            contentDescription = "$state for $channelName",
+            tint = UsTheme.extended.textPrimary,
+        )
     }
 }
 

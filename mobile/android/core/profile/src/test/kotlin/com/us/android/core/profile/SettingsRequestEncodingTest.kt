@@ -119,7 +119,7 @@ class SettingsRequestEncodingTest {
             "show_message_preview", "account_visibility", "allow_comments_from",
         )
         val CATEGORY_KEYS = listOf(
-            "likes", "comments", "follows", "mentions", "reposts", "live", "messages",
+            "likes", "comments", "follows", "mentions", "reposts", "live", "new_videos", "messages",
             "super_likes", "replies", "friend_requests", "group_posts", "group_mentions",
             "channel_updates", "channel_urgent", "community_posts", "community_mentions",
             "event_reminders", "system",

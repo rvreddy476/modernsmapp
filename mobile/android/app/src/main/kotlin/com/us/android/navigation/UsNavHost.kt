@@ -164,6 +164,9 @@ import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
 import com.us.android.feature.tube.navigation.navigateToWatch
 import com.us.android.feature.tube.navigation.tubeScreens
+import com.us.android.push.TYPE_UPLOADED_FLICK
+import com.us.android.push.TYPE_UPLOADED_VIDEO
+import com.us.android.push.pushTargetOf
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -244,6 +247,10 @@ fun UsNavHost(
     pool: PlayerPool,
     pushDestination: com.us.android.push.PushDestination? = null,
     onPushDestinationConsumed: () -> Unit = {},
+    // A reel notification tap (2026-09-12): the shell leaves the post id in
+    // ReelsEntry before the tab switch, because a tab root is restored, not
+    // pushed, and carries no argument. Supplied by UsApp from MainViewModel.
+    onOpenReel: (postId: String) -> Unit = {},
     callState: com.us.android.core.call.CallState = com.us.android.core.call.CallState.Idle,
     // Supplied by MainActivity, which IS the Activity the PSP SDK needs and
     // which holds the coordinator. Passing it down rather than looking up a
@@ -280,7 +287,7 @@ fun UsNavHost(
         val destination = pushDestination ?: return@LaunchedEffect
         if (!sessionState.isAuthenticated) return@LaunchedEffect
         onPushDestinationConsumed()
-        navController.openPushDestination(destination)
+        navController.openPushDestination(destination, onOpenReel)
     }
 
     // The bar lives OUTSIDE the NavHost so it survives destination changes
@@ -364,7 +371,7 @@ fun UsNavHost(
             ) {
                 authDestinations(navController)
                 shellDestinations()
-                tabDestinations(navController, pool, launcher, onOpenPaymentSheet, onAbandonPaymentSheet) {
+                tabDestinations(navController, pool, launcher, onOpenPaymentSheet, onAbandonPaymentSheet, onOpenReel) {
                     createScope = it
                 }
             }
@@ -450,11 +457,18 @@ private fun ShellState.startDestination(): Any = when (this) {
 }
 
 /** Where a notification tap lands, by push type. Unknown types route nowhere. */
-private fun NavHostController.openPushDestination(destination: com.us.android.push.PushDestination) {
+private fun NavHostController.openPushDestination(
+    destination: com.us.android.push.PushDestination,
+    onOpenReel: (postId: String) -> Unit,
+) {
     when (destination.type) {
         "dm" -> if (destination.entityId.isNotBlank()) {
             navigateToChatThread(destination.entityId, title = "")
         }
+        // A subscribed channel's upload (2026-09-12): the same target the
+        // inbox row would resolve, so the shade and the inbox agree.
+        TYPE_UPLOADED_VIDEO, TYPE_UPLOADED_FLICK ->
+            openNotificationTarget(pushTargetOf(destination), onOpenReel)
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
         // destination so it waits through the login like a notification tap.
@@ -535,6 +549,8 @@ private fun NavGraphBuilder.tabDestinations(
     // a lambda inside UsNavHost, so the parameter is not otherwise in scope.
     onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit,
+    /** A reel notification was tapped: the shell parks the id for Reels before the tab switch. */
+    onOpenReel: (postId: String) -> Unit,
     /** A mini-app's "+" was pressed: the shell opens the Create sheet in that scope. */
     onOpenCreate: (CreateScope) -> Unit,
 ) {
@@ -672,7 +688,7 @@ private fun NavGraphBuilder.tabDestinations(
     // follow-up work — the id is carried, nothing yet consumes it.
     notificationsScreen(
         onBack = { navController.popBackStack() },
-        onOpenTarget = { target -> navController.openNotificationTarget(target) },
+        onOpenTarget = { target -> navController.openNotificationTarget(target, onOpenReel) },
         // Preferences are a `:feature:profile` destination. The inbox asks
         // for "settings"; :app decides that means this route.
         onOpenPreferences = { navController.navigate(NotificationSettingsRoute) },
@@ -1035,6 +1051,7 @@ fun UsApp(
         pool = pool,
         pushDestination = pushDestination,
         onPushDestinationConsumed = viewModel::consumePushDestination,
+        onOpenReel = viewModel::openReel,
         callState = callState,
         onOpenPaymentSheet = onOpenPaymentSheet,
         onAbandonPaymentSheet = onAbandonPaymentSheet,
@@ -1063,13 +1080,25 @@ private fun SplashPreview() {
  * has no screen for, or a deep link that did not parse; either way, doing
  * nothing is the only honest option.
  */
-private fun NavHostController.openNotificationTarget(target: NotificationTarget) {
+private fun NavHostController.openNotificationTarget(
+    target: NotificationTarget,
+    onOpenReel: (postId: String) -> Unit,
+) {
     when (target) {
         is NotificationTarget.Post -> navigateToPost(target.postId)
         is NotificationTarget.PostComment -> navigateToPost(target.postId)
         is NotificationTarget.Profile -> navigateToProfile(target.userId)
         is NotificationTarget.Conversation -> navigateToChatThread(target.conversationId, title = "")
         is NotificationTarget.MessageRequest -> navigateToChatRequest(target.conversationId, target.title)
+        // A long video plays on Tube's watch screen, the surface built for it.
+        is NotificationTarget.Video -> navigateToWatch(target.postId)
+        // A reel opens on the Reels tab AT that reel: the id is parked in
+        // ReelsEntry first, the way the Home feed and the profile grid do it,
+        // because the tab switch itself carries no argument.
+        is NotificationTarget.Reel -> {
+            onOpenReel(target.postId)
+            navigateToTopLevel(TopLevelDestination.REELS)
+        }
         NotificationTarget.None -> Unit
     }
 }
