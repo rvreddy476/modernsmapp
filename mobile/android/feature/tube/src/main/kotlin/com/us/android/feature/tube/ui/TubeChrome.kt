@@ -299,7 +299,7 @@ internal fun HeaderGlyph(
 }
 
 /**
- * The chip rail: glass pills, scrolling — "All", "Following", then the
+ * The chip rail: glass pills, scrolling: "All", "Subscriptions", then the
  * categories. The selected one is WHITE with navy text (the bar's rule:
  * selected is white, never the accent). The compass square is gone:
  * Explore is one tap away on the shell's bar.

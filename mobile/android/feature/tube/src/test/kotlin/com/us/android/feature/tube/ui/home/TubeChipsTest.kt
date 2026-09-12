@@ -11,16 +11,16 @@ class TubeChipsTest {
     private val categories = listOf(FeedCategory("comedy", "Comedy"), FeedCategory("music", "Music"))
 
     @Test
-    fun `All and Following lead, then the taxonomy in the server's order`() {
+    fun `All and Subscriptions lead, then the taxonomy in the server's order`() {
         val chips = tubeChips(categories)
 
-        assertThat(chips.map { it.label }).containsExactly("All", "Following", "Comedy", "Music").inOrder()
-        assertThat(chips.map { it.key }).containsExactly("all", "following", "category:comedy", "category:music")
+        assertThat(chips.map { it.label }).containsExactly("All", "Subscriptions", "Comedy", "Music").inOrder()
+        assertThat(chips.map { it.key }).containsExactly("all", "subscriptions", "category:comedy", "category:music")
     }
 
     @Test
     fun `no taxonomy still gives the two fixed chips`() {
-        assertThat(tubeChips(emptyList())).containsExactly(TubeChip.All, TubeChip.Following).inOrder()
+        assertThat(tubeChips(emptyList())).containsExactly(TubeChip.All, TubeChip.Subscriptions).inOrder()
     }
 
     @Test
@@ -28,9 +28,15 @@ class TubeChipsTest {
         assertThat(TubeChip.All.toQuery()).isEqualTo(VideoFeedQuery.All)
     }
 
+    /** Subscribed, not Following: a followed author never subscribed to is not a channel the viewer chose. */
     @Test
-    fun `Following is the watch surface narrowed to followed authors`() {
-        assertThat(TubeChip.Following.toQuery()).isEqualTo(VideoFeedQuery.Following)
+    fun `Subscriptions is the watch surface narrowed to subscribed channels`() {
+        assertThat(TubeChip.Subscriptions.toQuery()).isEqualTo(VideoFeedQuery.Subscribed)
+    }
+
+    @Test
+    fun `no chip on the rail asks for the Following feed`() {
+        assertThat(tubeChips(categories).map { it.toQuery() }).doesNotContain(VideoFeedQuery.Following)
     }
 
     @Test
@@ -39,8 +45,8 @@ class TubeChipsTest {
     }
 
     @Test
-    fun `only Following is not a suggestion`() {
-        assertThat(TubeChip.Following.isSuggested()).isFalse()
+    fun `only Subscriptions is not a suggestion`() {
+        assertThat(TubeChip.Subscriptions.isSuggested()).isFalse()
         assertThat(TubeChip.All.isSuggested()).isTrue()
         assertThat(TubeChip.Category("music", "Music").isSuggested()).isTrue()
     }
@@ -50,8 +56,14 @@ class TubeChipsTest {
         val chips = tubeChips(categories)
 
         assertThat(chips.chipFor("category:music")).isEqualTo(TubeChip.Category("music", "Music"))
-        assertThat(chips.chipFor("following")).isEqualTo(TubeChip.Following)
+        assertThat(chips.chipFor("subscriptions")).isEqualTo(TubeChip.Subscriptions)
         assertThat(chips.chipFor("category:gone")).isEqualTo(TubeChip.All)
         assertThat(chips.chipFor(null)).isEqualTo(TubeChip.All)
+    }
+
+    /** The key a pre-rename build saved. It must land somewhere sane, not on a chip that no longer exists. */
+    @Test
+    fun `the old following key falls back to All`() {
+        assertThat(tubeChips(categories).chipFor("following")).isEqualTo(TubeChip.All)
     }
 }

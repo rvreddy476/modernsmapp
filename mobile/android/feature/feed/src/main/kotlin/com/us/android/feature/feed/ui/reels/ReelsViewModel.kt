@@ -20,6 +20,7 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.SubscriptionGraph
 import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.videoThumb
@@ -31,6 +32,7 @@ import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.media.publish.playsInReels
+import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
@@ -184,6 +186,7 @@ class ReelsViewModel @Inject constructor(
     private val tracker: ReelPublishTracker,
     private val publishActions: ReelPublishActions,
     private val follows: FollowGraph,
+    private val subscriptions: SubscriptionGraph,
     private val reelsEntry: ReelsEntry,
     private val watchTracker: VideoWatchTracker,
     private val analytics: AnalyticsRecorder,
@@ -477,10 +480,18 @@ class ReelsViewModel @Inject constructor(
         shares.recordExternalShare(postId)
     }
 
-    // ── Follow ──────────────────────────────────────────────────────────
+    // ── Follow / Subscribe ──────────────────────────────────────────────
 
     /** Author id → the viewer's edge; the overlay offers Follow only when [offersFollow] says so. */
     val followEdges: StateFlow<Map<String, FollowStatus>> = follows.edges
+
+    /**
+     * Channel id → the viewer's subscription; the overlay offers Subscribe
+     * in place of Follow when the reel carries its author's channel
+     * ([reelRelationship]), because a subscribe is the richer edge (follow
+     * plus notify) and the one Tube rewards.
+     */
+    val subscriptionEdges: StateFlow<Map<String, ChannelSubscription>> = subscriptions.edges
 
     val ownUserId: String get() = follows.ownId
 
@@ -493,13 +504,30 @@ class ReelsViewModel @Inject constructor(
     }
 
     /**
-     * The pager settled on a page: the new reel plays — a pause belongs to
-     * the reel it was made on, not the one swiped to — and its author's edge
-     * is made known.
+     * Subscribe to the reel author's channel. The same analytics event as a
+     * follow: the server makes the follow edge inside the subscribe, and
+     * the ranking model reads a follow earned by content, whichever button
+     * earned it.
+     */
+    fun onSubscribe(channelId: String) = viewModelScope.launch {
+        watchSession?.let { analytics.recordEngagement(AnalyticsEventType.FOLLOW_FROM_CONTENT, it) }
+        subscriptions.subscribe(channelId)
+    }
+
+    /**
+     * The pager settled on a page: the new reel plays (a pause belongs to
+     * the reel it was made on, not the one swiped to) and its author's
+     * edges are made known. The follow always, because the "more" sheet
+     * reads it whatever the pill says; the subscription only when the row
+     * carries a channel, so a reel without one never asks the channel
+     * routes for an answer that would be 404.
      */
     fun onReelShown(item: FeedItem, probe: (suspend () -> WatchProbe)? = null) {
         _paused.value = false
         viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
+        (reelRelationship(item) as? ReelRelationship.Subscribe)?.let { subscribe ->
+            viewModelScope.launch { subscriptions.ensureKnown(listOf(subscribe.ref)) }
+        }
         startWatchAnalytics(item, probe)
     }
 

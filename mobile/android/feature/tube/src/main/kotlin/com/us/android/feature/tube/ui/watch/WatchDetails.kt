@@ -38,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
-import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
@@ -46,11 +45,13 @@ import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.feed.data.VideoThumb
+import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.ui.formatCount
 import com.us.android.feature.tube.data.SeriesEpisode
 import com.us.android.feature.tube.data.SeriesInfo
+import com.us.android.feature.tube.ui.channel.SubscribeControl
 import com.us.android.feature.tube.ui.home.VideoRow
 import com.us.android.feature.tube.ui.pressScale
 import com.us.android.feature.tube.ui.videoMetaLine
@@ -81,7 +82,10 @@ private fun countLabel(count: Int, noun: String): String = if (count > 0) format
 @Suppress("LongParameterList")
 class WatchDetailsActions(
     val onOpenAuthor: (String) -> Unit,
-    val onFollow: (authorId: String) -> Unit,
+    /** Keyed by the channel ref ([subscribeRef]), not the author: the graph is a map of channels. */
+    val onSubscribe: (channelId: String) -> Unit,
+    val onUnsubscribe: (channelId: String) -> Unit,
+    val onToggleNotify: (channelId: String) -> Unit,
     val onReact: (postId: String, serverReacted: Boolean) -> Unit,
     val onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
     val onComment: (postId: String) -> Unit,
@@ -92,24 +96,31 @@ class WatchDetailsActions(
     val onOpenEpisode: (postId: String) -> Unit,
 )
 
+/** The author row's subscription state, as the screen resolved it for this video's channel. */
+data class WatchSubscription(
+    val edge: ChannelSubscription?,
+    val offersSubscribe: Boolean,
+    val busy: Boolean,
+)
+
 /**
  * What sits under the player, top to bottom: the title and its line, the
- * author row with Follow, the action row, the description (three lines,
- * then "more"), the comments row, "In this series" when the video is an
- * episode, and "Up next".
+ * author row with Subscribe (or Subscribed and the bell), the action row,
+ * the description (three lines, then "more"), the comments row, "In this
+ * series" when the video is an episode, and "Up next".
  */
 @Suppress("LongParameterList")
 fun LazyListScope.watchDetails(
     item: FeedItem,
     overlay: EngagementOverlay,
-    offersFollow: Boolean,
+    subscription: WatchSubscription,
     upNext: List<FeedItem>,
     series: SeriesInfo?,
     thumbFor: (FeedItem) -> VideoThumb,
     actions: WatchDetailsActions,
 ) {
     item(key = "title") { TitleBlock(item) }
-    item(key = "author") { AuthorRow(item, offersFollow, actions) }
+    item(key = "author") { AuthorRow(item, subscription, actions) }
     item(key = "actions") { ActionRow(item, overlay, actions) }
     if (item.text.isNotBlank()) item(key = "description") { Description(item) }
     if (!item.controls.noComments) {
@@ -159,8 +170,9 @@ private fun TitleBlock(item: FeedItem) {
 }
 
 @Composable
-private fun AuthorRow(item: FeedItem, offersFollow: Boolean, actions: WatchDetailsActions) {
+private fun AuthorRow(item: FeedItem, subscription: WatchSubscription, actions: WatchDetailsActions) {
     val open = { actions.onOpenAuthor(item.author.id) }
+    val channelId = subscribeRef(item)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -210,9 +222,20 @@ private fun AuthorRow(item: FeedItem, offersFollow: Boolean, actions: WatchDetai
                 )
             }
         }
-        if (offersFollow) {
-            UsFollowButton(onClick = { actions.onFollow(item.author.id) }, modifier = Modifier.testTag("watch_follow"))
-        }
+        // The channel page's control, not a Follow of this row's own: a
+        // subscribe is follow plus notify made by the server, and the watch
+        // screen offering a bare follow beside it would be two edges for one
+        // channel (founder, 2026-09-12).
+        SubscribeControl(
+            channelName = item.creatorName,
+            subscription = subscription.edge,
+            offersSubscribe = subscription.offersSubscribe,
+            busy = subscription.busy,
+            onSubscribe = { actions.onSubscribe(channelId) },
+            onUnsubscribe = { actions.onUnsubscribe(channelId) },
+            onToggleNotify = { actions.onToggleNotify(channelId) },
+            tagPrefix = "watch",
+        )
     }
 }
 

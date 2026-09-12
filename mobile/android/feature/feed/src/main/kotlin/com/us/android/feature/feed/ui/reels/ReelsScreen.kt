@@ -101,7 +101,6 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.engagement.data.reactedOr
-import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
@@ -109,6 +108,7 @@ import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.media.ui.VideoLoadingIndicator
+import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.HideShellBottomBar
@@ -203,6 +203,7 @@ fun ReelsScreen(
     val chrome = mode.chrome()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
+    val subscriptionEdges by viewModel.subscriptionEdges.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
     val items = viewModel.items.collectAsLazyPagingItems()
     val pagerState = rememberReelsPager(viewModel, items, head)
@@ -254,6 +255,7 @@ fun ReelsScreen(
             view = ReelsViewState(muted = muted, paused = paused, chrome = chrome, quality = quality),
             overlays = overlays,
             followEdges = followEdges,
+            subscriptionEdges = subscriptionEdges,
             ownUserId = viewModel.ownUserId,
             playbackFor = viewModel::playback,
             actions = reelActions(
@@ -541,6 +543,8 @@ internal class ReelActions(
     val onComment: (postId: String) -> Unit,
     val onShare: (FeedItem) -> Unit,
     val onFollow: (authorId: String) -> Unit,
+    /** Subscribe to the author's channel, when the reel carries one ([reelRelationship]). */
+    val onSubscribe: (channelId: String) -> Unit,
     /**
      * The pager settled on this reel.
      *
@@ -582,6 +586,7 @@ private fun reelActions(
     onComment = onComment,
     onShare = onShare,
     onFollow = viewModel::onFollow,
+    onSubscribe = viewModel::onSubscribe,
     onShown = viewModel::onReelShown,
     onSettledReel = onSettledReel,
     onSettledPlayer = onSettledPlayer,
@@ -604,6 +609,7 @@ private fun ReelsBody(
     view: ReelsViewState,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
+    subscriptionEdges: Map<String, ChannelSubscription>,
     ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
     actions: ReelActions,
@@ -631,6 +637,7 @@ private fun ReelsBody(
             view = view,
             overlays = overlays,
             followEdges = followEdges,
+            subscriptionEdges = subscriptionEdges,
             ownUserId = ownUserId,
             playbackFor = playbackFor,
             actions = actions,
@@ -648,6 +655,7 @@ private fun ReelsPager(
     view: ReelsViewState,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
+    subscriptionEdges: Map<String, ChannelSubscription>,
     ownUserId: String,
     playbackFor: (FeedItem) -> Playback?,
     actions: ReelActions,
@@ -700,11 +708,13 @@ private fun ReelsPager(
 
             is ReelsPage.Reel -> {
                 val item = content.item
+                val relationship = reelRelationship(item)
                 ReelPage(
                     item = item,
                     playback = playbackFor(item),
                     overlay = overlays[item.id] ?: EngagementOverlay(),
-                    offersFollow = offersFollow(ownUserId, item.author.id, followEdges[item.author.id]),
+                    relationship = relationship,
+                    offersRelationship = offersReelRelationship(relationship, ownUserId, followEdges, subscriptionEdges),
                     pool = pool,
                     page = page,
                     settled = pagerState.settledPage == page,
@@ -876,7 +886,8 @@ private fun ReelPage(
     item: FeedItem,
     playback: Playback?,
     overlay: EngagementOverlay,
-    offersFollow: Boolean,
+    relationship: ReelRelationship,
+    offersRelationship: Boolean,
     pool: PlayerPool,
     page: Int,
     /** The pager has settled on THIS page: it is the one playing, and the one the progress line follows. */
@@ -964,10 +975,16 @@ private fun ReelPage(
         ) {
             ReelOverlay(
                 item = item,
-                offersFollow = offersFollow,
+                relationship = relationship,
+                offersRelationship = offersRelationship,
                 progress = progress,
                 onOpenAuthor = actions.onOpenAuthor,
-                onFollow = { actions.onFollow(item.author.id) },
+                onRelationship = {
+                    when (relationship) {
+                        is ReelRelationship.Follow -> actions.onFollow(relationship.ref)
+                        is ReelRelationship.Subscribe -> actions.onSubscribe(relationship.ref)
+                    }
+                },
             )
         }
 
@@ -1251,9 +1268,11 @@ private fun Modifier.pressScale(onClick: () -> Unit): Modifier {
 
 /**
  * Bottom-left, YouTube Shorts' row (founder, 2026-09-04): a 36dp avatar,
- * "@username" at 15sp, the WHITE Follow pill (only when the viewer is known
- * not to follow, never on the viewer's own reel — [offersFollow]'s rule),
- * then the caption clamped to two lines with "more" that opens it in place.
+ * "@username" at 15sp, the WHITE relationship pill (Follow, or Subscribe
+ * when the reel carries its author's channel; only when the viewer is
+ * known not to have the edge, never on the viewer's own reel, which is
+ * [offersReelRelationship]'s rule), then the caption clamped to two lines
+ * with "more" that opens it in place.
  *
  * No "♪ Original audio" line: a feed row carries no audio metadata today,
  * and printing a label for a fact the server has not stated would be
@@ -1266,11 +1285,12 @@ private fun Modifier.pressScale(onClick: () -> Unit): Modifier {
 @Composable
 private fun ReelOverlay(
     item: FeedItem,
-    offersFollow: Boolean,
+    relationship: ReelRelationship,
+    offersRelationship: Boolean,
     /** 0..1 of the reel played; drawn as the ring around the avatar. */
     progress: Float,
     onOpenAuthor: (String) -> Unit,
-    onFollow: () -> Unit,
+    onRelationship: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
@@ -1316,8 +1336,8 @@ private fun ReelOverlay(
                     ) { onOpenAuthor(item.author.id) }
                     .semantics { role = Role.Button },
             )
-            if (offersFollow) {
-                FollowPill(onClick = onFollow)
+            if (offersRelationship) {
+                FollowPill(label = relationship.label, onClick = onRelationship)
             }
         }
         if (item.text.isNotBlank()) {
@@ -1356,11 +1376,12 @@ private fun ReelOverlay(
  * viewer's feed must never do that.
  */
 @Composable
-private fun FollowPill(onClick: () -> Unit) {
+private fun FollowPill(label: String, onClick: () -> Unit) {
     // The design system's one follow button — ember here as on the post
     // header, so the same action never wears two colours (founder,
-    // 2026-09-04). Solid, so it never sinks into a bright frame.
-    UsFollowButton(onClick = onClick, modifier = Modifier.testTag("reel_follow"))
+    // 2026-09-04). Solid, so it never sinks into a bright frame. The label
+    // is the relationship's: Follow, or Subscribe toward a channel.
+    UsFollowButton(text = label, onClick = onClick, modifier = Modifier.testTag("reel_follow"))
 }
 
 /**

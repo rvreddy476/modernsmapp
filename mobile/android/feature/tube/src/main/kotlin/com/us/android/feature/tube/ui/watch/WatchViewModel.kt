@@ -22,6 +22,7 @@ import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.SubscriptionGraph
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.videoThumb
@@ -29,8 +30,10 @@ import com.us.android.core.media.MediaSources
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlayerFactory
+import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.NotifyOn
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.feature.tube.data.SeriesEpisode
 import com.us.android.feature.tube.data.SeriesInfo
@@ -122,6 +125,7 @@ class WatchViewModel @Inject constructor(
     private val engagement: EngagementStore,
     private val shares: EngagementRepository,
     private val follows: FollowGraph,
+    private val subscriptions: SubscriptionGraph,
     private val watchTracker: VideoWatchTracker,
     private val analytics: AnalyticsRecorder,
     /** Progress reports outlive the screen: the last one is sent as the ViewModel clears. */
@@ -196,6 +200,30 @@ class WatchViewModel @Inject constructor(
     val followEdges: StateFlow<Map<String, FollowStatus>> = follows.edges
     val ownUserId: String get() = follows.ownId
 
+    /**
+     * Channel id → the viewer's subscription toward it. The author row's
+     * control is Subscribe, not Follow (founder, 2026-09-12): the server
+     * makes the follow edge alongside, and the follow graph learns it on
+     * its next read; the "more" sheet still reads [followEdges].
+     */
+    val subscriptionEdges: StateFlow<Map<String, ChannelSubscription>> = subscriptions.edges
+
+    private val _subscribeBusy = MutableStateFlow(false)
+
+    /** A subscribe, unsubscribe or bell change in flight, so the control does not take a second tap. */
+    val subscribeBusy: StateFlow<Boolean> = _subscribeBusy.asStateFlow()
+
+    private val _ended = MutableStateFlow(false)
+
+    /**
+     * The player is on its last frame. Held HERE rather than read off the
+     * player by the screen, because the end screen and the poster under it
+     * have to survive a turn of the phone: the surface is re-created on the
+     * way and the composable that polled the player goes with it, while
+     * this value does not.
+     */
+    val ended: StateFlow<Boolean> = _ended.asStateFlow()
+
     private val listener = object : Player.Listener {
         // Only the END is business here. STATE_BUFFERING is deliberately not
         // handled in this class: buffering is something the SURFACE draws,
@@ -204,6 +232,10 @@ class WatchViewModel @Inject constructor(
         // WatchPlayer). A second reading of the same player here would be a
         // copy that can disagree with the first.
         override fun onPlaybackStateChanged(playbackState: Int) {
+            // Every transition, not only the one INTO ended: Replay seeks to
+            // the top and the player goes through BUFFERING on its way back,
+            // which is when the poster has to come off the surface.
+            _ended.value = playbackState == Player.STATE_ENDED
             if (playbackState == Player.STATE_ENDED) {
                 // Closed as `ended` BEFORE the countdown starts, so the
                 // completed view is attributed to this video rather than being
@@ -323,8 +355,14 @@ class WatchViewModel @Inject constructor(
     private suspend fun fetch(postId: String): FeedItem? =
         (repository.post(postId) as? AppResult.Success)?.data
 
+    /**
+     * Both graphs: the subscription for the author row's Subscribe, the
+     * follow for the "more" sheet. Two reads rather than one because the
+     * edges are not the same edge (a viewer can follow without subscribing).
+     */
     private fun launchKnowAuthor(item: FeedItem) {
         viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
+        viewModelScope.launch { subscriptions.ensureKnown(listOf(subscribeRef(item))) }
     }
 
     /**
@@ -516,13 +554,37 @@ class WatchViewModel @Inject constructor(
         shares.recordExternalShare(postId)
     }
 
-    fun onFollow(authorId: String) = viewModelScope.launch {
-        // follow_from_content, not a bare follow: this button sits on the video
-        // being watched, so the content that earned the follow is known. The
-        // channel page's follow button deliberately does NOT emit this — see
-        // ChannelViewModel.
+    /**
+     * Subscribe to the video's channel (follow plus notify, made by the
+     * server in one call). Still `follow_from_content`, not a bare follow:
+     * the button sits on the video being watched, so the content that
+     * earned the edge is known, and a subscribe IS a follow to the ranking
+     * model. The channel page deliberately does NOT emit this; see
+     * ChannelViewModel.
+     */
+    fun onSubscribe(channelId: String) = relationshipChange {
         recordEngagement(AnalyticsEventType.FOLLOW_FROM_CONTENT)
-        follows.follow(authorId)
+        subscriptions.subscribe(channelId)
+    }
+
+    fun onUnsubscribe(channelId: String) = relationshipChange { subscriptions.unsubscribe(channelId) }
+
+    /** The bell: all to none, none to all. Only meaningful while subscribed. */
+    fun onToggleNotify(channelId: String) {
+        val current = subscriptions.edges.value[channelId] ?: return
+        if (!current.subscribed) return
+        val next = if (current.notifyOn == NotifyOn.ALL) NotifyOn.NONE else NotifyOn.ALL
+        relationshipChange { subscriptions.setNotifyOn(channelId, next) }
+    }
+
+    /** One change at a time: the graph flips optimistically, and a second tap mid-flight would race the first. */
+    private fun relationshipChange(change: suspend () -> AppResult<Unit>) {
+        if (_subscribeBusy.value) return
+        viewModelScope.launch {
+            _subscribeBusy.value = true
+            change()
+            _subscribeBusy.value = false
+        }
     }
 
     private fun recordEngagement(type: String) {

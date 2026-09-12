@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -38,10 +39,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.model.FeedItem
+import com.us.android.feature.tube.ui.BlurHashImage
 import com.us.android.feature.tube.ui.home.Thumbnail
 import com.us.android.feature.tube.ui.home.displayTitle
 import com.us.android.feature.tube.ui.pressScale
@@ -268,6 +271,35 @@ private fun Pill(label: String, icon: ImageVector?, filled: Boolean, onClick: ()
             fontWeight = FontWeight.SemiBold,
             color = Color.White,
         )
+    }
+}
+
+/**
+ * The video's cover over the surface once the video has ended: the wash
+ * first, the still fitted whole over it. Drawn under the countdown and
+ * the end screen so what they dim is always a picture, never the black a
+ * re-created surface shows (see PlayerOrState in WatchScreen). Fit, not
+ * crop, because in fullscreen the box is the whole screen and a cropped
+ * cover would lose its edges to a 20:9 display. Swallows nothing: the
+ * overlays above it already do.
+ */
+@Composable
+fun EndedPoster(thumb: VideoThumb, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .testTag("watch_ended_poster"),
+    ) {
+        BlurHashImage(hash = thumb.blurhash, modifier = Modifier.fillMaxSize())
+        thumb.url?.let { url ->
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
 

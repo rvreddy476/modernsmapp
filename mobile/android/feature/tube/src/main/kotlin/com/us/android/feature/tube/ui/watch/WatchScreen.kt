@@ -37,11 +37,12 @@ import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
-import com.us.android.core.feed.data.offersFollow
+import com.us.android.core.feed.data.offersSubscribe
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.media.PlaybackKind
+import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.HideShellBottomBar
@@ -81,6 +82,9 @@ fun WatchScreen(
     val countdown by viewModel.countdown.collectAsStateWithLifecycle()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
+    val subscriptionEdges by viewModel.subscriptionEdges.collectAsStateWithLifecycle()
+    val subscribeBusy by viewModel.subscribeBusy.collectAsStateWithLifecycle()
+    val ended by viewModel.ended.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     val sheets = remember { WatchSheets() }
@@ -110,7 +114,9 @@ fun WatchScreen(
     val actions = remember(viewModel, onOpenAuthor, onShare) {
         WatchDetailsActions(
             onOpenAuthor = onOpenAuthor,
-            onFollow = viewModel::onFollow,
+            onSubscribe = viewModel::onSubscribe,
+            onUnsubscribe = viewModel::onUnsubscribe,
+            onToggleNotify = viewModel::onToggleNotify,
             onReact = viewModel::onReact,
             onBookmark = viewModel::onBookmark,
             onComment = { sheets.commentsFor = it },
@@ -135,8 +141,10 @@ fun WatchScreen(
             upNext = upNext,
             series = series,
             countdown = countdown,
+            ended = ended,
             overlays = overlays,
-            followEdges = followEdges,
+            subscriptionEdges = subscriptionEdges,
+            subscribeBusy = subscribeBusy,
             viewModel = viewModel,
             actions = actions,
         )
@@ -226,8 +234,10 @@ private fun WatchBody(
     upNext: List<FeedItem>,
     series: SeriesInfo?,
     countdown: Countdown?,
+    ended: Boolean,
     overlays: Map<String, EngagementOverlay>,
-    followEdges: Map<String, FollowStatus>,
+    subscriptionEdges: Map<String, ChannelSubscription>,
+    subscribeBusy: Boolean,
     viewModel: WatchViewModel,
     actions: WatchDetailsActions,
 ) {
@@ -239,6 +249,7 @@ private fun WatchBody(
             transport = transport,
             upNext = upNext,
             countdown = countdown,
+            ended = ended,
             viewModel = viewModel,
             modifier = Modifier.fillMaxSize(),
         )
@@ -252,12 +263,15 @@ private fun WatchBody(
             transport = transport,
             upNext = upNext,
             countdown = countdown,
+            ended = ended,
             viewModel = viewModel,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(LANDSCAPE),
         )
         val item = (content as? WatchContent.Ready)?.item ?: return
+        val channelId = subscribeRef(item)
+        val edge = subscriptionEdges[channelId]
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -266,7 +280,11 @@ private fun WatchBody(
             watchDetails(
                 item = item,
                 overlay = overlays[item.id] ?: EngagementOverlay(),
-                offersFollow = offersFollow(viewModel.ownUserId, item.author.id, followEdges[item.author.id]),
+                subscription = WatchSubscription(
+                    edge = edge,
+                    offersSubscribe = offersSubscribe(viewModel.ownUserId, channelId, edge),
+                    busy = subscribeBusy,
+                ),
                 upNext = upNext,
                 series = series,
                 thumbFor = viewModel::thumb,
@@ -282,6 +300,21 @@ private fun WatchBody(
  * with Back as the way out. Over the player, once the video has ended, the
  * countdown to the next episode or the end screen; the countdown wins when
  * both could show, because it is the one that is about to do something.
+ *
+ * ## THE POSTER UNDER THE END SCREEN (black after rotation, 2026-09-05)
+ *
+ * Between the surface and the overlay sits the video's cover while
+ * [ended]. Turning the phone moves the player between the portrait column
+ * and the fullscreen slot, two different places in the composition, so the
+ * SurfaceView is torn down and a new one attached to the player. ExoPlayer
+ * paints a freshly attached surface from the decoder's next output buffer;
+ * at STATE_ENDED the decoder has drained and there is no buffer, so the
+ * new surface stays black (a paused video survives the same turn because
+ * its next frame is still queued). A seek would repaint it but re-enters
+ * ENDED and restarts the countdown the viewer may have cancelled, so the
+ * cover stands in instead: it is what the end screen dims, whatever the
+ * surface has, and it is keyed on the view model's [ended] rather than
+ * the polled playhead so the turn cannot blink it off.
  */
 @Suppress("LongParameterList")
 @Composable
@@ -292,6 +325,7 @@ private fun PlayerOrState(
     transport: WatchTransport,
     upNext: List<FeedItem>,
     countdown: Countdown?,
+    ended: Boolean,
     viewModel: WatchViewModel,
     modifier: Modifier = Modifier,
 ) {
@@ -313,13 +347,14 @@ private fun PlayerOrState(
                     transport = transport,
                     modifier = Modifier.fillMaxSize(),
                 )
+                if (ended) EndedPoster(thumb = viewModel.thumb(content.item))
                 when {
                     countdown != null -> NextEpisodeCountdown(
                         countdown = countdown,
                         onCancel = viewModel::cancelCountdown,
                         onPlayNow = viewModel::playNextNow,
                     )
-                    playhead.ended -> WatchEndScreen(
+                    ended -> WatchEndScreen(
                         upNext = upNext,
                         thumbFor = viewModel::thumb,
                         onReplay = viewModel::togglePlay,

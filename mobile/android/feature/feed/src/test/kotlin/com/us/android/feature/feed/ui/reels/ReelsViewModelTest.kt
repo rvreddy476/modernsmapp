@@ -24,7 +24,9 @@ import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishPreview
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedAuthor
+import com.us.android.core.model.FeedChannel
 import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
@@ -36,8 +38,10 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.core.ui.UsReelQuality
+import com.us.android.feature.feed.data.RecordingChannelApi
 import com.us.android.feature.feed.data.RecordingGraphApi
 import com.us.android.feature.feed.data.followGraph
+import com.us.android.feature.feed.data.subscriptionGraph
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -167,6 +171,7 @@ class ReelsViewModelTest {
         val tracker: ReelPublishTracker = ReelPublishTracker(),
         val actions: RecordingActions = RecordingActions(),
         val graph: RecordingGraphApi = RecordingGraphApi(),
+        val channels: RecordingChannelApi = RecordingChannelApi(),
         val entry: ReelsEntry = ReelsEntry(),
     )
 
@@ -178,6 +183,7 @@ class ReelsViewModelTest {
         tracker = h.tracker,
         publishActions = h.actions,
         follows = followGraph(h.graph),
+        subscriptions = subscriptionGraph(h.channels),
         reelsEntry = h.entry,
         watchTracker = VideoWatchTracker.disabled(),
         analytics = NoOpAnalyticsRecorder,
@@ -645,6 +651,46 @@ class ReelsViewModelTest {
     }
 
     // ── Follow ──────────────────────────────────────────────────────────
+
+    /**
+     * A reel that carries its author's channel learns the SUBSCRIPTION edge
+     * beside the follow, and its pill subscribes rather than follows: the
+     * server makes the follow inside the subscribe, so no follow request
+     * of the client's own goes out.
+     */
+    @Test
+    fun `a shown reel with a channel learns its subscription and a subscribe is sent`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+        val reel = item().copy(channel = FeedChannel(userId = "chan", name = "Ada's channel", handle = "ada"))
+
+        vm.onReelShown(reel)
+        advanceUntilIdle()
+
+        assertThat(h.channels.subscriptionReads).containsExactly("chan")
+        assertThat(h.graph.relationshipRequests).containsExactly("me" to "a")
+        assertThat(vm.subscriptionEdges.value["chan"]).isEqualTo(ChannelSubscription.NOT_SUBSCRIBED)
+
+        vm.onSubscribe("chan")
+        advanceUntilIdle()
+
+        assertThat(h.channels.subscribeRequests).containsExactly("chan")
+        assertThat(h.graph.followRequests).isEmpty()
+        assertThat(vm.subscriptionEdges.value["chan"]?.subscribed).isTrue()
+    }
+
+    /** A reel without a channel never asks the channel routes: there is nothing there to subscribe to. */
+    @Test
+    fun `a shown reel without a channel leaves the subscription graph alone`() = runTest {
+        val h = Harness()
+        val vm = viewModel(h)
+
+        vm.onReelShown(item())
+        advanceUntilIdle()
+
+        assertThat(h.channels.subscriptionReads).isEmpty()
+        assertThat(vm.subscriptionEdges.value).isEmpty()
+    }
 
     /** Settling on a reel learns its author's edge; a follow goes through the graph. */
     @Test

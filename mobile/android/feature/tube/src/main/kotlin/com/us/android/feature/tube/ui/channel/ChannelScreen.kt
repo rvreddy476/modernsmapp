@@ -13,8 +13,6 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridScope
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,8 +20,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -35,9 +31,6 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
-import com.us.android.core.designsystem.component.UsFollowButton
-import com.us.android.core.designsystem.component.UsPillButton
-import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.offersSubscribe
@@ -45,7 +38,6 @@ import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.model.Channel
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
-import com.us.android.core.model.NotifyOn
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -239,60 +231,17 @@ private fun ChannelCard(
                 color = UsTheme.extended.textSecondary,
             )
         }
-        when {
-            offersSubscribe -> UsFollowButton(
-                text = "Subscribe",
-                onClick = onSubscribe,
-                busy = busy,
-                modifier = Modifier.testTag("tube_channel_subscribe"),
-            )
-            subscription?.subscribed == true -> Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-            ) {
-                UsPillButton(
-                    text = "Subscribed",
-                    onClick = onUnsubscribe,
-                    filled = false,
-                    busy = busy,
-                    modifier = Modifier.testTag("tube_channel_subscribed"),
-                )
-                NotifyBell(
-                    channelName = channel.name,
-                    on = subscription.notifyOn == NotifyOn.ALL,
-                    enabled = !busy,
-                    onToggle = onToggleNotify,
-                )
-            }
-        }
-    }
-}
-
-/**
- * The bell beside "Subscribed": on means every upload from this channel
- * notifies, off means none. The description names the channel and the
- * state, and the state is also a stateDescription, so a screen reader
- * says which way the bell is BEFORE the tap flips it.
- */
-@Composable
-private fun NotifyBell(
-    channelName: String,
-    on: Boolean,
-    enabled: Boolean,
-    onToggle: () -> Unit,
-) {
-    val state = if (on) "Notifications on" else "Notifications off"
-    IconButton(
-        onClick = onToggle,
-        enabled = enabled,
-        modifier = Modifier
-            .semantics { stateDescription = state }
-            .testTag("tube_channel_bell"),
-    ) {
-        Icon(
-            imageVector = if (on) UsIcons.Notifications else UsIcons.NotificationsOff,
-            contentDescription = "$state for $channelName",
-            tint = UsTheme.extended.textPrimary,
+        // The same control the watch screen's author row draws, so the two
+        // surfaces cannot disagree about what a subscription looks like.
+        SubscribeControl(
+            channelName = channel.name,
+            subscription = subscription,
+            offersSubscribe = offersSubscribe,
+            busy = busy,
+            onSubscribe = onSubscribe,
+            onUnsubscribe = onUnsubscribe,
+            onToggleNotify = onToggleNotify,
+            tagPrefix = "tube_channel",
         )
     }
 }

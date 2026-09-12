@@ -93,7 +93,7 @@ class TubeHomeViewModel @Inject constructor(
     hidden: HiddenPosts,
 ) : ViewModel() {
 
-    /** The rail: All and Following at once, the taxonomy once it loads. */
+    /** The rail: All and Subscriptions at once, the taxonomy once it loads. */
     private val _chips = MutableStateFlow(tubeChips(emptyList()))
     val chips: StateFlow<List<TubeChip>> = _chips
 
