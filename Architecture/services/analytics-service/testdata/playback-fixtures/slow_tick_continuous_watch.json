@@ -1,0 +1,34 @@
+{
+  "name": "slow_tick_continuous_watch",
+  "description": "A 30 s flick watched continuously, but the client's one-second sampler ran late once: three seconds of wall clock and three seconds of playhead passed between two samples. That is watching, not a seek. A correct tracker credits the 3000 ms and reports no seek; the resulting stream is a plain watch whose first heartbeat is a second late.",
+  "viewer": [
+    "0-6 s: plays; the sample due at 3 s arrives at 6 s (the tab was busy), with the playhead at 6 s",
+    "6-30 s: plays to the end on a regular tick"
+  ],
+  "content": { "content_type": "flick", "duration_ms": 30000 },
+  "events": [
+    { "type": "play_start", "at_ms": 0, "payload": { "content_duration_ms": 30000, "start_method": "autoplay", "is_muted": false, "is_autoplay": true, "time_to_first_frame_ms": 130, "initial_buffer_ms": 0 } },
+    { "type": "watch_heartbeat", "at_ms": 6000, "payload": { "watched_ms_increment": 6000, "watched_ms_total": 6000, "playhead_position_ms": 6000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "watch_heartbeat", "at_ms": 11000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 11000, "playhead_position_ms": 11000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "watch_heartbeat", "at_ms": 16000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 16000, "playhead_position_ms": 16000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "watch_heartbeat", "at_ms": 21000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 21000, "playhead_position_ms": 21000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "watch_heartbeat", "at_ms": 26000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 26000, "playhead_position_ms": 26000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "watch_heartbeat", "at_ms": 30000, "payload": { "watched_ms_increment": 4000, "watched_ms_total": 30000, "playhead_position_ms": 30000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "play_end", "at_ms": 30000, "payload": { "watched_ms_total": 30000, "max_continuous_watch_ms": 30000, "content_duration_ms": 30000, "loop_count": 0, "end_reason": "ended" } }
+  ],
+  "expected": {
+    "watched_ms": 30000,
+    "watched_ms_reported": 30000,
+    "covered_ms": 30000,
+    "loop_count": 0,
+    "seek_count": 0,
+    "percent_viewed": 100,
+    "percent_covered": 100,
+    "is_display_view": true,
+    "view_score": 1.0,
+    "finalize_reason": "play_end",
+    "end_reason": "ended",
+    "sessions": 1
+  },
+  "notes": "Divergence 3 (M-12, web side closed as M-27): the seek ceiling is sized from the elapsed time actually measured between the two samples, max(elapsed, SAMPLE_INTERVAL_MS) x 2 x speed, never from the nominal interval alone. The web tracker does this: MomentumVideo passes the measured elapsed to sample() and watchTracker.ts sizes the ceiling from it, so this stream is what it emits; the unit test in packages/player/src/watchTracker.test.ts (a slow tick is not a seek) pins it. Android still sizes the ceiling from the constant and has no measured elapsed at all, so against this fixture it reports watched_ms_total 3000 short and seek_count_increment 1 — the remaining target for the next Android session."
+}

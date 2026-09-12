@@ -1,0 +1,30 @@
+{
+  "name": "tab_closed_no_final_event",
+  "description": "A 30 s flick: ten seconds watched, then the tab is closed before any play_end can leave the browser. The heartbeats alone carry the view; the server finaliser closes the session by inactivity and it still counts (audit M-08).",
+  "viewer": [
+    "0-10 s: plays",
+    "10 s: the tab is closed; the queued play_end never flushes",
+    "11 min after the last heartbeat: the server's finaliser runs"
+  ],
+  "content": { "content_type": "flick", "duration_ms": 30000 },
+  "events": [
+    { "type": "play_start", "at_ms": 0, "payload": { "content_duration_ms": 30000, "start_method": "autoplay", "is_muted": false, "is_autoplay": true, "time_to_first_frame_ms": 100, "initial_buffer_ms": 0 } },
+    { "type": "watch_heartbeat", "at_ms": 5000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 5000, "playhead_position_ms": 5000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "watch_heartbeat", "at_ms": 10000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 10000, "playhead_position_ms": 10000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 30000 } },
+    { "type": "server_finalizer_tick", "at_ms": 670000 }
+  ],
+  "expected": {
+    "watched_ms": 10000,
+    "watched_ms_reported": 10000,
+    "covered_ms": 10000,
+    "loop_count": 0,
+    "seek_count": 0,
+    "percent_viewed": 33.33,
+    "percent_covered": 33.33,
+    "is_display_view": true,
+    "view_score": 0.3333,
+    "finalize_reason": "inactivity",
+    "end_reason": null,
+    "sessions": 1
+  }
+}

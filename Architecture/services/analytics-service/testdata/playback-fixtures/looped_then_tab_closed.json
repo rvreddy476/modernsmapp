@@ -1,0 +1,33 @@
+{
+  "name": "looped_then_tab_closed",
+  "description": "A 5 s flick left looping for twenty seconds, then the tab is closed before any play_end can leave the browser. Every heartbeat carries loop_count and content_duration_ms (M-29), so when the server's finaliser closes the session by inactivity it credits the four passes the heartbeats account for — duration x (loop_count + 1) = 20000 — and not a single pass.",
+  "viewer": [
+    "0-20 s: the reel loops three times without the viewer touching it",
+    "20 s: the tab is closed; the queued play_end never flushes",
+    "11 min after the last heartbeat: the server's finaliser runs"
+  ],
+  "content": { "content_type": "flick", "duration_ms": 5000 },
+  "events": [
+    { "type": "play_start", "at_ms": 0, "payload": { "content_duration_ms": 5000, "start_method": "autoplay", "is_muted": true, "is_autoplay": true, "time_to_first_frame_ms": 80, "initial_buffer_ms": 0 } },
+    { "type": "watch_heartbeat", "at_ms": 5000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 5000, "playhead_position_ms": 5000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 0, "content_duration_ms": 5000 } },
+    { "type": "watch_heartbeat", "at_ms": 10000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 10000, "playhead_position_ms": 5000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 1, "content_duration_ms": 5000 } },
+    { "type": "watch_heartbeat", "at_ms": 15000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 15000, "playhead_position_ms": 5000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 2, "content_duration_ms": 5000 } },
+    { "type": "watch_heartbeat", "at_ms": 20000, "payload": { "watched_ms_increment": 5000, "watched_ms_total": 20000, "playhead_position_ms": 5000, "buffering_ms_increment": 0, "seek_count_increment": 0, "playback_speed": 1, "loop_count": 3, "content_duration_ms": 5000 } },
+    { "type": "server_finalizer_tick", "at_ms": 680000 }
+  ],
+  "expected": {
+    "watched_ms": 20000,
+    "watched_ms_reported": 20000,
+    "covered_ms": 5000,
+    "loop_count": 3,
+    "seek_count": 0,
+    "percent_viewed": 100,
+    "percent_covered": 100,
+    "is_display_view": true,
+    "view_score": 1.0,
+    "finalize_reason": "inactivity",
+    "end_reason": null,
+    "sessions": 1
+  },
+  "notes": "Before M-29 a heartbeat carried no loop_count, so the session row's loop_count stayed 0 until the play_end arrived; when it never arrived, the clamp (M-26) bound watched_ms to duration x 1 = 5000 and three genuine passes were lost. The web tracker now sends its capped loop count and the duration on every beat; the server takes both under GREATEST like every other running figure. Android sends both on every heartbeat as of 12 Sep 2026, so the same holds there."
+}

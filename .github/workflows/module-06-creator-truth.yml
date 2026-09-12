@@ -115,9 +115,18 @@ jobs:
         working-directory: Architecture/services/monetization-service
         run: go test -tags integration ./internal/http ./internal/service -count=1 -v
       # The playback fixtures are the one measurement contract both clients
-      # and the server are held to; they live in atpost-web. Replayed here
-      # when a read token for that repository is configured; skipped, loudly,
-      # when it is not.
+      # and the server are held to. The canonical copy lives in atpost-web; a
+      # byte-for-byte copy is vendored under analytics-service/testdata so the
+      # replay always runs here. The live copy is replayed as well when a read
+      # token for that repository is configured; if they ever disagree, the
+      # live one is right and the vendored one needs sync.sh.
+      - name: Replay the vendored playback fixtures through the server
+        working-directory: Architecture/services/analytics-service
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLAYBACK_FIXTURES_DIR="$PWD/testdata/playback-fixtures"
+          go test -tags integration ./internal/service -run TestPlaybackContractFixtures -count=1 -v
       - name: Check out the playback fixtures (atpost-web)
         if: ${{ env.ATPOST_WEB_READ_TOKEN != '' }}
         uses: actions/checkout@v4
