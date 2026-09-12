@@ -61,3 +61,26 @@ All three assert constraints that live in `database/gated/998_contract_triggers_
 which has never been applied to either development database — the third says so
 outright, failing on `constraint "orders_payment_method_prepaid_only" ... does
 not exist`. They fail identically on a clean checkout. Everything else must pass.
+
+## Seeding a demo catalogue
+
+A fresh commerce database has categories (migration 023) and three imageless
+banners (024) but no seller, no products and nothing for the home page's
+rails, the category strip's counts or `discount_pct` to draw. `cmd/seed-demo`
+in commerce-service fills that in idempotently: one approved seller, sixteen
+products across eight categories with variants, stock and placeholder images,
+half of them discounted, and three more banners. It refuses to run without
+`--yes`, and refuses any database whose name neither contains `dev` nor ends
+in `_test` unless that exact name is repeated in `--allow-db`; anything with
+`prod` in the name is refused outright. Run it twice and the second run
+inserts nothing.
+
+```bash
+cd Architecture/services/commerce-service
+POSTGRES_DSN="postgres://postgres:postgres@127.0.0.1:5432/commerce_db?sslmode=disable" \
+  go run ./cmd/seed-demo --yes --allow-db=commerce_db
+```
+
+Every row it writes has an id in the `00000000-0000-4000-8000-0000000de*`
+block, so `DELETE FROM sellers WHERE id LIKE '00000000-0000-4000-8000-0000000de0%'`
+(cascades to the products) plus the same on `commerce_banners` resets it.
