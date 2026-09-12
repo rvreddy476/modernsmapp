@@ -37,6 +37,23 @@ func main() {
 	kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "redpanda:9092"), ",")
 	kafkaTopic := env("KAFKA_TOPIC", "channel-events")
 
+	// Communities launch safety (2026-09-12). The founder's decision:
+	// invite-only pilot, no public discovery directory, internal-only
+	// access until a moderation owner is named. See
+	// docs/runbooks/communities-invite-only-pilot.md.
+	policy, policyWarnings := service.LoadCommunityPolicy(os.Getenv)
+	slog.Info("communities launch policy",
+		"communities_enabled", policy.Enabled,
+		"pilot_mode", policy.PilotMode,
+		"allowed_creators", len(policy.AllowedCreators),
+		"creator_allowlist_configured", policy.CreatorAllowlistConfigured)
+	for _, w := range policyWarnings {
+		slog.Warn("communities launch policy: " + w)
+	}
+	if !policy.Enabled {
+		slog.Warn("channel-service: COMMUNITIES_ENABLED=false — every /v1/broadcast-channels route answers 404 and the fan-out and schedule workers will NOT start. /healthz and the /internal moderation routes keep serving, and so does the GDPR deletion consumer. This is the whole-product emergency disable.")
+	}
+
 	// 3. Database
 	ctx := context.Background()
 	poolCfg, err := pgxpool.ParseConfig(pgDSN)
@@ -106,7 +123,7 @@ func main() {
 
 	// 8. Dependencies
 	channelStore := store.New(dbPool)
-	channelSvc := service.New(channelStore, rdb)
+	channelSvc := service.New(channelStore, rdb).WithCommunityPolicy(policy)
 
 	// 8. Kafka producer
 	producer := channelevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, rdb, kafkaDialer)
@@ -116,19 +133,40 @@ func main() {
 	// 9. Kafka consumer (GDPR)
 	consumer := channelevents.NewConsumerWithDialer(kafkaBrokers, "channel-service-consumer", channelStore, rdb, kafkaDialer)
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
-	go consumer.Start(consumerCtx)
-	slog.Info("kafka consumer started")
-
-	// 10. Schedule worker (legacy — publishes via service producer)
 	workerCtx, cancelWorker := context.WithCancel(ctx)
-	go channelSvc.RunScheduleWorker(workerCtx)
 
-	// 11. Fanout worker + scheduled update publisher
+	// 9. GDPR consumer — ALWAYS started, even with communities disabled.
+	//
+	// This consumer's only subject is EventUserDeletionRequested: it
+	// archives the channels a deleted user solely owned and removes them
+	// from every other channel. Erasing a person's data is not a feature of
+	// the communities product and must not be switchable off with it. An
+	// earlier version of this block gated it behind policy.Enabled, which
+	// meant flipping the emergency switch silently stopped applying
+	// deletion requests to channel data, with the requests consumed
+	// elsewhere and nothing here to show the gap. The failure would have
+	// been invisible: channel-service publishes no purge ack, so nothing
+	// downstream would have waited or complained.
+	go consumer.Start(consumerCtx)
+	slog.Info("kafka consumer started (GDPR deletion; runs regardless of COMMUNITIES_ENABLED)")
+
+	// 10-11. Product workers. COMMUNITIES_ENABLED=false is the
+	// whole-product emergency disable: nothing must keep publishing
+	// updates, notifying subscribers or injecting feed rows while the
+	// product is switched off.
 	fanoutWorker := workers.NewFanoutWorkerWithDialer(dbPool, kafkaBrokers, slog.Default(), kafkaDialer)
 	fanoutCtx, cancelFanout := context.WithCancel(ctx)
-	go fanoutWorker.Start(fanoutCtx)
-	go fanoutWorker.StartScheduler(fanoutCtx)
-	slog.Info("fanout worker and scheduler started")
+	if policy.Enabled {
+		// Schedule worker (legacy — publishes via service producer)
+		go channelSvc.RunScheduleWorker(workerCtx)
+
+		// Fanout worker + scheduled update publisher
+		go fanoutWorker.Start(fanoutCtx)
+		go fanoutWorker.StartScheduler(fanoutCtx)
+		slog.Info("fanout worker and scheduler started")
+	} else {
+		slog.Warn("channel-service: communities disabled — schedule worker and fan-out worker NOT started; the GDPR consumer keeps running")
+	}
 
 	// Sharded-counter flush worker: drains Redis subscriber-count deltas
 	// every 10s and materializes the sum into broadcast_channels.subscriber_count.
@@ -146,7 +184,7 @@ func main() {
 		slog.Info("channel subscriber-count sharded flush worker started")
 	}
 
-	channelHandler := http.New(channelSvc)
+	channelHandler := http.New(channelSvc).WithCommunitiesEnabled(policy.Enabled)
 
 	// Audit CCh5: gate every /v1/channels/* endpoint behind the shared
 	// internal service key. The handler supports the middleware but

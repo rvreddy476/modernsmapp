@@ -36,14 +36,26 @@ type ChannelReport struct {
 // subscriber count then recency, optionally filtered by a case-insensitive
 // substring on name or handle. Returns limit+1 rows so the caller can tell
 // whether a next page exists.
-func (s *Store) DiscoverChannelsFiltered(ctx context.Context, q string, limit, offset int) ([]BroadcastChannel, error) {
-	query := `SELECT id, owner_id, handle, name, description, avatar_media_id, banner_media_id,
+// DiscoverPublicChannelTypes is the public set /discover lists. It is the
+// canonical definition of "publicly visible" for communities: search-service
+// filters channel documents to the same set, and service.IsPublicChannelType
+// is its in-process mirror. Private and paid are deliberately absent.
+var DiscoverPublicChannelTypes = []string{"public", "creator", "brand", "education", "official", "topic"}
+
+// discoverChannelsBaseQuery carries the two gates the directory depends on:
+//
+//	status = 'active'    a suspended or archived community is not listed
+//	channel_type IN (…)  a private or paid community is never listed
+const discoverChannelsBaseQuery = `SELECT id, owner_id, handle, name, description, avatar_media_id, banner_media_id,
 		channel_type, category, language, comment_mode, reaction_mode,
 		forward_allowed, paid_access, subscription_price_cents,
 		post_schedule_enabled, subscriber_count_visible, allow_preview_posts,
 		is_verified, subscriber_count, update_count, status, created_at, updated_at, deleted_at
 		FROM broadcast_channels
 		WHERE status = 'active' AND channel_type IN ('public','creator','brand','education','official','topic')`
+
+func (s *Store) DiscoverChannelsFiltered(ctx context.Context, q string, limit, offset int) ([]BroadcastChannel, error) {
+	query := discoverChannelsBaseQuery
 	args := []any{}
 	if q = strings.TrimSpace(q); q != "" {
 		args = append(args, "%"+strings.ToLower(q)+"%")

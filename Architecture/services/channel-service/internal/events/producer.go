@@ -179,6 +179,24 @@ func (p *Producer) PublishChannelMemberBanned(ctx context.Context, channelID, us
 	return p.publish(ctx, EventChannelMemberBanned, &bannedBy, payload)
 }
 
+// PublishChannelReportFiled emits a trust & safety intake event so a
+// consumer can pick reports up without polling channel_reports. Added with
+// the invite-only pilot (2026-09-12): a reporter used to get 202 and the row
+// was never read by anything but a rate-limit COUNT.
+func (p *Producer) PublishChannelReportFiled(ctx context.Context, reportID, channelID uuid.UUID, updateID *uuid.UUID, reporterID uuid.UUID, reason string) error {
+	payload := ChannelReportFiledPayload{
+		ReportID:   reportID.String(),
+		ChannelID:  channelID.String(),
+		ReporterID: reporterID.String(),
+		Reason:     reason,
+		FiledAt:    time.Now(),
+	}
+	if updateID != nil {
+		payload.UpdateID = updateID.String()
+	}
+	return p.publish(ctx, EventChannelReportFiled, &reporterID, payload)
+}
+
 func (p *Producer) PublishChannelUpdateEchoed(ctx context.Context, channelID, updateID, userID uuid.UUID, echoType string) error {
 	payload := ChannelUpdateEchoedPayload{
 		ChannelID: channelID.String(),
@@ -352,6 +370,7 @@ const (
 	EventChannelUpdatePublished = "channel.update.published"
 	EventChannelUpdateDeleted   = "channel.update.deleted"
 	EventChannelMemberBanned    = "channel.member.banned"
+	EventChannelReportFiled     = "channel.report.filed"
 	EventChannelUpdateEchoed    = "channel.update.echoed"
 	EventChannelCommentCreated  = "channel.comment.created"
 	EventChannelCommentDeleted  = "channel.comment.deleted"
@@ -411,6 +430,15 @@ type ChannelMemberBannedPayload struct {
 	UserID    string    `json:"user_id"`
 	BannedBy  string    `json:"banned_by"`
 	BannedAt  time.Time `json:"banned_at"`
+}
+
+type ChannelReportFiledPayload struct {
+	ReportID   string    `json:"report_id"`
+	ChannelID  string    `json:"channel_id"`
+	UpdateID   string    `json:"update_id,omitempty"`
+	ReporterID string    `json:"reporter_id"`
+	Reason     string    `json:"reason"`
+	FiledAt    time.Time `json:"filed_at"`
 }
 
 type CommentCreatedPayload struct {

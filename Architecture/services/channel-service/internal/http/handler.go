@@ -4,11 +4,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/channel-service/internal/service"
+	"github.com/atpost/channel-service/internal/store"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -18,10 +21,14 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// communitiesEnabled mirrors COMMUNITIES_ENABLED. False = the whole
+	// product answers 404 (emergency disable, level 1). Default true; see
+	// docs/runbooks/communities-invite-only-pilot.md.
+	communitiesEnabled bool
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, communitiesEnabled: true}
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -31,6 +38,35 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 	return h
 }
 
+// WithCommunitiesEnabled sets the whole-product kill switch.
+func (h *Handler) WithCommunitiesEnabled(enabled bool) *Handler {
+	h.communitiesEnabled = enabled
+	return h
+}
+
+// communitiesPrefix is the public prefix the kill switch covers.
+const communitiesPrefix = "/v1/broadcast-channels"
+
+// communitiesDisabledGate answers 404 for every path under
+// communitiesPrefix, including paths that match no route. 404 rather than
+// 503 for the same reason api-gateway's serveDormantProductGate does it: an
+// edge client should not learn that a product exists behind a closed door.
+// The response shape is copied from that gate; the gateway's own dormant
+// prefix list is deliberately NOT touched, because DORMANT_PRODUCTS_ENABLED
+// is all-or-nothing and would couple communities to groups.
+func communitiesDisabledGate() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p := c.Request.URL.Path
+		if p == communitiesPrefix || strings.HasPrefix(p, communitiesPrefix+"/") {
+			c.Header("Content-Type", "application/json")
+			c.String(http.StatusNotFound, `{"error":{"code":"NOT_FOUND","message":"Not found"}}`)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Apply internal service key enforcement to all /v1 routes.
 	// Health and metrics endpoints registered outside this group remain public.
@@ -38,11 +74,29 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
 
+	// Emergency disable, level 1 (whole product). Registered as global
+	// middleware so unmatched paths under the prefix answer 404 too.
+	// /internal/* moderation routes are deliberately still served: a
+	// shutdown is when you most need to read reports and suspend rows.
+	if !h.communitiesEnabled {
+		r.Use(communitiesDisabledGate())
+	}
+
 	v1 := r.Group("/v1/broadcast-channels")
 	{
 		v1.POST("", h.CreateChannel)
 		v1.GET("/my", h.GetMyChannels)
 		v1.GET("/discover", h.DiscoverChannels)
+
+		// Invite links (invite-only pilot, 2026-09-12). The STATIC
+		// `invites` segment MUST be registered before the `/:channelId`
+		// parameterised routes below — the same ordering trap
+		// /v1/channels/subscriptions had in post-service, where a static
+		// path was shadowed by an id parameter and every request 400'd on
+		// "invalid channel ID".
+		v1.GET("/invites/:code", h.PreviewInvite)
+		v1.POST("/invites/:code/join", h.JoinByInvite)
+
 		v1.GET("/:channelId", h.GetChannel)
 		v1.PUT("/:channelId", h.UpdateChannel)
 		v1.DELETE("/:channelId", h.DeleteChannel)
@@ -68,6 +122,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:channelId/report", h.ReportChannel)
 		v1.POST("/:channelId/updates/:updateId/report", h.ReportUpdate)
 
+		// Moderation: invite management + member removal and banning
+		// (invite-only pilot, 2026-09-12). Owner/admin only.
+		v1.POST("/:channelId/invite-link", h.CreateInvite)
+		v1.GET("/:channelId/invite-link", h.GetInvite)
+		v1.DELETE("/:channelId/invite-link", h.RevokeInvite)
+		v1.DELETE("/:channelId/members/:userId", h.RemoveMember)
+		v1.POST("/:channelId/members/:userId/ban", h.BanMember)
+		v1.DELETE("/:channelId/members/:userId/ban", h.UnbanMember)
+
 		// Engagement
 		v1.POST("/:channelId/updates/:updateId/spark", h.SparkUpdate)
 		v1.DELETE("/:channelId/updates/:updateId/spark", h.UnsparkUpdate)
@@ -87,6 +150,32 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:channelId/updates/:updateId/attendees", h.ListAttendees)
 	}
 
+	h.registerInternalRoutes(r)
+}
+
+// registerInternalRoutes wires the trust & safety surface: the reader
+// channel_reports never had, and the per-channel suspend switch.
+//
+// These FAIL CLOSED. This service only authenticates anything at all when
+// INTERNAL_SERVICE_KEY is set (cmd/server/main.go), and moderation routes
+// that can suspend a community or close a report must never be reachable
+// unauthenticated — so when the key is unset the routes are not registered
+// and answer 404, rather than being served in the clear.
+func (h *Handler) registerInternalRoutes(r *gin.Engine) {
+	if h.internalKey == "" {
+		slog.Warn("channel-service: INTERNAL_SERVICE_KEY not set — /internal moderation routes (channel-reports, channel suspend) are NOT registered. Report review and emergency per-channel disable are unavailable until the key is configured.")
+		return
+	}
+	// The engine-level RequireInternalKey above already covers these, but
+	// pin it on the group too so a future refactor of the global gate
+	// cannot silently expose them.
+	internal := r.Group("/internal", sharedmiddleware.RequireInternalKey(h.internalKey))
+	{
+		internal.GET("/channel-reports", h.ListChannelReports)
+		internal.POST("/channel-reports/:reportId/review", h.ReviewChannelReport)
+		internal.POST("/channels/:channelId/suspend", h.SuspendChannel)
+		internal.DELETE("/channels/:channelId/suspend", h.UnsuspendChannel)
+	}
 }
 
 // --- Request structs ---
@@ -166,7 +255,42 @@ func parsePagination(c *gin.Context) (int, int) {
 	return limit, offset
 }
 
+// writePolicyError maps the invite-only pilot and moderation refusals to
+// their stable wire codes. These are sentinel errors, not message
+// substrings, so renaming a message cannot silently turn a 403 into a 500 —
+// which is what the string-matching fallback below would do with them.
+// Returns true when handled.
+func writePolicyError(c *gin.Context, err error) bool {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrPublicCommunityNotAllowed):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "PUBLIC_COMMUNITY_NOT_ALLOWED", err.Error(), nil)
+	case errors.Is(err, service.ErrCreatorNotAllowlisted):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "COMMUNITY_CREATION_RESTRICTED", err.Error(), nil)
+	case errors.Is(err, service.ErrInviteRequired):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "INVITE_REQUIRED", err.Error(), nil)
+	case errors.Is(err, service.ErrInviteNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "INVITE_NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrInviteNotLive):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusGone, "INVITE_NOT_LIVE", err.Error(), nil)
+	case errors.Is(err, service.ErrCannotModerateSelf):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusUnprocessableEntity, "CANNOT_MODERATE_SELF", err.Error(), nil)
+	case errors.Is(err, service.ErrCannotModerateOwner):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "CANNOT_MODERATE_OWNER", err.Error(), nil)
+	case errors.Is(err, service.ErrCannotModeratePeerAdmin):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "CANNOT_MODERATE_ADMIN", err.Error(), nil)
+	case errors.Is(err, service.ErrNotAMember):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	default:
+		return false
+	}
+	return true
+}
+
 func handleServiceError(c *gin.Context, err error) {
+	if writePolicyError(c, err) {
+		return
+	}
 	// Typed auth outcomes first (their messages are "channel auth: <reason>"
 	// and previously fell through to 500).
 	var authErr *service.AuthError
@@ -424,11 +548,18 @@ func (h *Handler) ListSubscribers(c *gin.Context) {
 		return
 	}
 
+	// Every row carries its `role`, and ?role= lets a moderator see who to
+	// remove: omitted = the legacy non-banned roster, `all` = every row
+	// including banned, or one exact role (`banned`, `admin`, ...).
+	// Owner/admin only, unchanged.
 	limit, offset := parsePagination(c)
-	members, err := h.svc.ListSubscribers(c.Request.Context(), channelID, actorID, limit, offset)
+	members, err := h.svc.ListMembers(c.Request.Context(), channelID, actorID, c.Query("role"), limit, offset)
 	if err != nil {
 		handleServiceError(c, err)
 		return
+	}
+	if members == nil {
+		members = []store.ChannelMember{}
 	}
 
 	api.JSON(c.Writer, http.StatusOK, members, nil)

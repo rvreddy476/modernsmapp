@@ -207,10 +207,16 @@ func (s *Service) viewerCanPost(ctx context.Context, ch *store.BroadcastChannel,
 }
 
 // requireOwner loads the channel and asserts the actor owns it.
+//
+// The status gate is here, not at the call sites: a suspended community
+// cannot be administered until it is unsuspended. See requireAdmin.
 func (s *Service) requireOwner(ctx context.Context, channelID, actorID uuid.UUID) (*store.BroadcastChannel, error) {
 	ch, err := s.store.GetChannelByID(ctx, channelID)
 	if err != nil {
 		return nil, err
+	}
+	if !channelIsServable(ch.Status) {
+		return nil, ErrChannelNotFound
 	}
 	if ch.OwnerID != actorID {
 		return nil, fmt.Errorf("forbidden: only the channel owner can manage admins")
@@ -219,10 +225,31 @@ func (s *Service) requireOwner(ctx context.Context, channelID, actorID uuid.UUID
 }
 
 // requireAdmin loads the channel and asserts owner/admin standing.
+//
+// ─── WHY THE STATUS GATE IS IN HERE ─────────────────────────────────────
+//
+// A suspension is the per-community emergency disable, and the first thing
+// it has to stop is PUBLISHING. The read paths were gated on status while
+// this gate was not, so suspending a community for abuse still let its
+// owner or admin post updates to it and edit existing ones: the route
+// answered 201 and told the poster it had worked. The fan-out roster join
+// would have withheld the notifications, which is worse rather than better
+// — the abusive content lands in the community and nobody suspects it was
+// never delivered.
+//
+// Putting the gate in the two shared loaders rather than at each call site
+// covers CreateUpdate, EditUpdate, the invite routes and admin management
+// in one place, and makes a future write path gated by default. Deleting a
+// community is deliberately NOT affected: it has its own owner check, and
+// an owner must still be able to delete something that has been switched
+// off.
 func (s *Service) requireAdmin(ctx context.Context, channelID, actorID uuid.UUID) (*store.BroadcastChannel, error) {
 	ch, err := s.store.GetChannelByID(ctx, channelID)
 	if err != nil {
 		return nil, err
+	}
+	if !channelIsServable(ch.Status) {
+		return nil, ErrChannelNotFound
 	}
 	if ch.OwnerID == actorID {
 		return ch, nil
@@ -449,7 +476,19 @@ func (s *Service) Report(ctx context.Context, channelID uuid.UUID, updateID *uui
 	if n >= reportsPerHour {
 		return nil, fmt.Errorf("rate_limited: too many reports, try again later")
 	}
-	return s.store.CreateReport(ctx, channelID, updateID, reporterID, reason, details)
+	report, err := s.store.CreateReport(ctx, channelID, updateID, reporterID, reason, details)
+	if err != nil {
+		return nil, err
+	}
+	// Invite-only pilot (2026-09-12): tell somebody. The row is now
+	// readable through GET /internal/channel-reports, and this event lets a
+	// trust & safety consumer pick it up without polling.
+	if s.producer != nil {
+		if err := s.producer.PublishChannelReportFiled(ctx, report.ID, channelID, updateID, reporterID, reason); err != nil {
+			slog.Warn("failed to publish channel.report.filed event", "report_id", report.ID, "error", err)
+		}
+	}
+	return report, nil
 }
 
 // --- Notifications: immediate publishes reach the fan-out worker ---

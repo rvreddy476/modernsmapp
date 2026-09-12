@@ -211,3 +211,40 @@ BEGIN
     END IF;
     ALTER TABLE channel_members ALTER COLUMN role SET DEFAULT 'subscriber';
 END $$;
+
+-- ===== Communities invite-only pilot (2026-09-12) =====
+-- The founder's decision: launch as an invite-only pilot with no public
+-- discovery directory. See docs/runbooks/communities-invite-only-pilot.md.
+--
+-- 1. channel_invites — shareable join links. One LIVE link per channel
+--    (partial unique index), so minting a new one rotates the old.
+--    Mirrors chat.group_invite_links in message-service.
+CREATE TABLE IF NOT EXISTS channel_invites (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel_id  UUID NOT NULL REFERENCES broadcast_channels(id) ON DELETE CASCADE,
+    code        TEXT NOT NULL UNIQUE,
+    created_by  UUID NOT NULL,
+    expires_at  TIMESTAMPTZ,
+    max_uses    INT,
+    uses        INT NOT NULL DEFAULT 0,
+    revoked_at  TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_invites_live
+    ON channel_invites(channel_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_channel_invites_channel ON channel_invites(channel_id, created_at DESC);
+
+-- 2. channel_reports review trail. Nothing wrote `status` before, and
+--    nothing recorded who looked. Idempotent ALTERs so existing databases
+--    converge on every BootstrapSchema startup.
+ALTER TABLE channel_reports ADD COLUMN IF NOT EXISTS reviewer_id  UUID;
+ALTER TABLE channel_reports ADD COLUMN IF NOT EXISTS review_note  TEXT;
+ALTER TABLE channel_reports ADD COLUMN IF NOT EXISTS reviewed_at  TIMESTAMPTZ;
+
+-- Moderation queue read path: newest-first keyset pagination over the open
+-- queue (GET /internal/channel-reports?status=open).
+CREATE INDEX IF NOT EXISTS idx_cr_status_created
+    ON channel_reports(status, created_at DESC, id DESC);
+
+-- 3. Member roster by role — the ban/unban and "who is banned" reads.
+CREATE INDEX IF NOT EXISTS idx_cm_channel_role ON channel_members(channel_id, role);

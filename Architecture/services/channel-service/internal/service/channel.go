@@ -83,7 +83,7 @@ func (s *Service) authorizeEngagement(ctx context.Context, channelID, userID uui
 	if err != nil {
 		return err
 	}
-	if ch == nil {
+	if ch == nil || !channelIsServable(ch.Status) {
 		return ErrChannelNotFound
 	}
 	role := s.store.GetMemberRole(ctx, channelID, userID)
@@ -107,7 +107,7 @@ func (s *Service) authorizeViewer(ctx context.Context, channelID uuid.UUID, user
 	if err != nil {
 		return err
 	}
-	if ch == nil {
+	if ch == nil || !channelIsServable(ch.Status) {
 		return ErrChannelNotFound
 	}
 	switch ch.ChannelType {
@@ -134,10 +134,15 @@ type Service struct {
 	// PG UPDATE (the hot-row path). Pattern mirrors community-service's
 	// memberCounter.
 	subscriberCounter *counters.Counter
+	// policy is the communities launch-safety configuration (invite-only
+	// pilot, creator allowlist, kill switch). See policy.go; New() starts
+	// from DefaultCommunityPolicy so a caller that never calls
+	// WithCommunityPolicy still gets the pilot, not the open product.
+	policy CommunityPolicy
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
-	svc := &Service{store: s, rdb: rdb}
+	svc := &Service{store: s, rdb: rdb, policy: DefaultCommunityPolicy()}
 	if rdb != nil {
 		svc.subscriberCounter = counters.New(rdb, counters.Config{
 			EntityKind: "channel_subscriber_count",
@@ -211,18 +216,16 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 	}
 	params.Name, params.Description, params.Handle = name, about, handle
 
-	// Validate channel type; visibility wins when given.
-	ct := params.ChannelType
-	if ct == "" {
-		ct = "public"
+	// Invite-only pilot (2026-09-12): creation is restricted to the
+	// allowlist when one is configured, an omitted visibility defaults to
+	// PRIVATE (it used to default to public), and any publicly visible
+	// channel_type is refused outright.
+	if !s.policy.CreatorAllowed(ownerID) {
+		return nil, ErrCreatorNotAllowlisted
 	}
-	if v, err := channelTypeForVisibility(params.Visibility); err != nil {
+	ct, err := s.policy.ResolveCreateChannelType(params.Visibility, params.ChannelType)
+	if err != nil {
 		return nil, err
-	} else if v != "" {
-		ct = v
-	}
-	if !validChannelTypes[ct] {
-		return nil, fmt.Errorf("invalid: channel_type is not valid")
 	}
 
 	// Communities are broadcast-only: members cannot reply. Comments are
@@ -396,21 +399,17 @@ func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID 
 		return nil, ErrChannelNotFound
 	}
 
-	// Audit CCh3: private/paid channel metadata previously returned to
-	// every caller. Outsiders shouldn't even know the channel exists,
-	// let alone see subscriber counts and bio. Surface as "not found"
-	// to avoid confirming existence to non-subscribers.
-	switch ch.ChannelType {
-	case "private", "paid":
-		if viewerID == nil {
-			return nil, ErrChannelNotFound
-		}
-		if ch.OwnerID != *viewerID {
-			role := s.store.GetMemberRole(ctx, channelID, *viewerID)
-			if role == "" || role == "banned" {
-				return nil, ErrChannelNotFound
-			}
-		}
+	// The whole read decision lives in channelReadable (policy.go): the
+	// suspension gate plus the CCh3 private-metadata gate. Only look the
+	// viewer's role up when the channel is private and the viewer is not
+	// the owner — the same shape as before, one query at most.
+	isOwner := viewerID != nil && ch.OwnerID == *viewerID
+	viewerRole := ""
+	if viewerID != nil && !isOwner && VisibilityOf(ch.ChannelType) == "private" {
+		viewerRole = s.store.GetMemberRole(ctx, channelID, *viewerID)
+	}
+	if err := channelReadable(ch, isOwner, viewerRole); err != nil {
+		return nil, err
 	}
 
 	result := s.withMembership(ctx, ch, viewerID)
@@ -473,6 +472,12 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 	if params.BannerMediaID != nil {
 		ch.BannerMediaID = params.BannerMediaID
 	}
+	// Invite-only pilot (2026-09-12): the create path refuses public
+	// communities, so the update path must refuse the same flip — the
+	// audit found the asymmetry, where a raw `channel_type` on PUT could
+	// take a private community public. Guard the RESOLVED type, so it
+	// closes whether the caller sends `channel_type` or `visibility`.
+	originalType := ch.ChannelType
 	if params.ChannelType != nil {
 		if !validChannelTypes[*params.ChannelType] {
 			return nil, fmt.Errorf("invalid: channel_type is not valid")
@@ -487,6 +492,9 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 		if v != "" {
 			ch.ChannelType = v
 		}
+	}
+	if err := s.policy.GuardVisibilityChange(originalType, ch.ChannelType); err != nil {
+		return nil, err
 	}
 	if params.Category != nil {
 		ch.Category = *params.Category
@@ -567,6 +575,9 @@ func (s *Service) Subscribe(ctx context.Context, channelID, userID uuid.UUID) er
 	if err != nil {
 		return err
 	}
+	if ch == nil || !channelIsServable(ch.Status) {
+		return ErrChannelNotFound
+	}
 
 	// Check if already a member
 	existing, err := s.store.GetMember(ctx, channelID, userID)
@@ -580,8 +591,15 @@ func (s *Service) Subscribe(ctx context.Context, channelID, userID uuid.UUID) er
 		return fmt.Errorf("already subscribed to this channel")
 	}
 
-	// Private channels could require approval, but for now allow direct subscribe
-	_ = ch
+	// Invite-only pilot (2026-09-12): a direct subscribe on a PRIVATE
+	// community is refused — joining goes through POST
+	// /v1/broadcast-channels/invites/{code}/join. This replaces the
+	// "private channels could require approval, but for now allow direct
+	// subscribe" hole, which let anyone with the id join any private
+	// channel. Public (legacy) channels keep working.
+	if err := s.policy.GuardDirectSubscribe(ch.ChannelType); err != nil {
+		return err
+	}
 
 	member := &store.ChannelMember{
 		ChannelID: channelID,
@@ -653,16 +671,12 @@ func (s *Service) MuteChannel(ctx context.Context, channelID, userID uuid.UUID, 
 	return s.store.SetMutedUntil(ctx, channelID, userID, mutedUntil)
 }
 
+// ListSubscribers is the non-banned roster. Superseded by ListMembers
+// (moderation.go), which takes the same owner/admin gate and adds the
+// `role` filter a moderator needs to see who is banned; kept as the
+// unfiltered shorthand.
 func (s *Service) ListSubscribers(ctx context.Context, channelID, actorID uuid.UUID, limit, offset int) ([]store.ChannelMember, error) {
-	member, err := s.store.GetMember(ctx, channelID, actorID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "admin") {
-		return nil, fmt.Errorf("forbidden: only admins and above can list subscribers")
-	}
-
-	return s.store.ListSubscribers(ctx, channelID, limit, offset)
+	return s.ListMembers(ctx, channelID, actorID, "", limit, offset)
 }
 
 // --- Updates ---
@@ -892,6 +906,11 @@ func (s *Service) GetMyChannels(ctx context.Context, userID uuid.UUID, limit, of
 	if err != nil {
 		return nil, err
 	}
+	// Emergency disable (2026-09-12): both reads only exclude 'deleted' in
+	// SQL, so a SUSPENDED community would still be listed here — for its
+	// owner too. A suspension switches a community off for everyone.
+	owned = servableChannels(owned)
+	subscribed = servableChannels(subscribed)
 
 	seen := make(map[uuid.UUID]bool)
 	result := []ChannelWithMembership{}

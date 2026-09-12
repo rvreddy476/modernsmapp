@@ -770,6 +770,28 @@ func publicApprovedFilterAny() []map[string]any {
 		{"term": map[string]any{"review_status": "approved"}},
 	}
 }
+
+// publicChannelTypes is the set channel-service's /discover lists
+// (store.DiscoverPublicChannelTypes and the channel_type IN (…) clause in
+// channel-service/internal/store/community.go). Private and paid are
+// deliberately absent.
+var publicChannelTypes = []string{"public", "creator", "brand", "education", "official", "topic"}
+
+// publicChannelFilterAny keeps a private (or paid) community out of search
+// results. It is the channels analogue of publicApprovedFilterAny, and it is
+// applied in the QUERY BUILDER rather than at index time on purpose: the
+// backfill and the Kafka consumer already indexed private channels with no
+// visibility filter, so a query-side filter stops those documents leaking
+// without waiting on a reindex. channel_type is a keyword in the channels_v1
+// mapping, so a terms filter matches exactly.
+//
+// Without this, GET /v1/search?types=channels&q=<name> returned a private
+// community's name, handle, description and owner_id to any caller.
+func publicChannelFilterAny() []map[string]any {
+	return []map[string]any{
+		{"terms": map[string]any{"channel_type": publicChannelTypes}},
+	}
+}
 func (s *Store) SearchPostsFiltered(ctx context.Context, query string, contentTypes []string, limit int) ([]PostDoc, error) {
 	// A long video is found by its title as much as by its caption, so
 	// the text match spans both (title weighted up), plus the hashtag
@@ -2138,6 +2160,11 @@ func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[str
 				"fields": []string{"name^3", "handle^2", "description", "category^2"},
 			},
 		}
+		// Always exclude non-public channels, the same way EntityPosts
+		// excludes non-public posts above. channel-service's /discover
+		// filters to this set in SQL; search had no filter at all, so a
+		// private community was findable by name.
+		filter = append(filter, publicChannelFilterAny()...)
 		affinityField = "owner_id"
 	default:
 		inner = map[string]any{"match_all": map[string]any{}}

@@ -327,15 +327,27 @@ func newFeedInjectMessage(p UpdatePublishedPayload, recipient uuid.UUID) kafka.M
 	}
 }
 
-// fetchSubscriberBatch returns a page of non-banned subscribers for a channel.
-func (w *FanoutWorker) fetchSubscriberBatch(ctx context.Context, channelID string, limit, offset int) ([]subscriberRow, error) {
-	query := `SELECT user_id, notify_on
-		FROM channel_members
-		WHERE channel_id = $1 AND role != 'banned'
-		ORDER BY subscribed_at
+// subscriberBatchQuery is the fan-out roster read. Two gates, both
+// load-bearing:
+//
+//	cm.role != 'banned'   a removed/banned member stops being notified
+//	bc.status = 'active'  a SUSPENDED channel fans nothing out
+//
+// The status join was added with the invite-only pilot (2026-09-12): the
+// per-channel emergency disable writes broadcast_channels.status =
+// 'suspended', and without this join a suspended community would keep
+// pushing notifications and injecting home-timeline rows.
+const subscriberBatchQuery = `SELECT cm.user_id, cm.notify_on
+		FROM channel_members cm
+		JOIN broadcast_channels bc ON bc.id = cm.channel_id
+		WHERE cm.channel_id = $1 AND cm.role != 'banned' AND bc.status = 'active'
+		ORDER BY cm.subscribed_at
 		LIMIT $2 OFFSET $3`
 
-	rows, err := w.db.Query(ctx, query, channelID, limit, offset)
+// fetchSubscriberBatch returns a page of non-banned subscribers for a
+// channel that is still active.
+func (w *FanoutWorker) fetchSubscriberBatch(ctx context.Context, channelID string, limit, offset int) ([]subscriberRow, error) {
+	rows, err := w.db.Query(ctx, subscriberBatchQuery, channelID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query subscribers: %w", err)
 	}
