@@ -95,9 +95,16 @@ func (s *Service) resolveSeller(seller *postgres.Seller) (email, name string) {
 // Idempotent: a seller already booked for this order is returned as-is rather
 // than re-booking. So calling twice on the same order is safe and produces
 // the same set of shipments.
-func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID) ([]*postgres.Shipment, error) {
+//
+// `booking` names the actor the status transition runs as, and optionally
+// the seller's own courier and tracking number, honoured only under a
+// provider that accepts manual booking (see applyManualBooking).
+func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID, booking ShipmentBooking) ([]*postgres.Shipment, error) {
 	if s.courier == nil {
 		return nil, fmt.Errorf("courier provider not configured")
+	}
+	if booking.ActorType == "" {
+		booking.ActorType = "system"
 	}
 
 	order, err := s.store.GetOrderByID(ctx, orderID)
@@ -254,12 +261,33 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 			ETA:            &resp.EstimatedETA,
 			ShippedAt:      &now,
 		}
+		manual := applyManualBooking(s.courier, booking, sh)
 		if err := s.store.CreateShipment(ctx, sh); err != nil {
+			// A seller's own tracking number colliding with another
+			// shipment's is their mistake to correct, and the answer has
+			// to name it; a swallowed warning here left them with "no
+			// shipments could be booked".
+			if manual && errors.Is(err, postgres.ErrTrackingNumberInUse) {
+				return nil, err
+			}
 			slog.Warn("persist shipment failed", "seller_id", sellerID, "error", err)
 			continue
 		}
+		// The first timeline event. Until now a shipment had no events until
+		// a webhook arrived, so a manually recorded courier had nowhere on
+		// the timeline to appear at all.
+		if err := s.store.AppendShipmentEvent(ctx, sh.ID, "booked", "", bookingRemark(sh, manual), now); err != nil {
+			slog.Warn("append booking event failed", "shipment_id", sh.ID, "error", err)
+		}
 		out = append(out, sh)
 
+		trackingNumber, trackingURL := "", ""
+		if sh.TrackingNumber != nil {
+			trackingNumber = *sh.TrackingNumber
+		}
+		if sh.TrackingURL != nil {
+			trackingURL = *sh.TrackingURL
+		}
 		buyerEmail, buyerName := s.resolveBuyer(ctx, order.CustomerUserID)
 		s.publish(ctx, events.EventCommerceOrderShipped, map[string]any{
 			"order_id":        orderID,
@@ -268,8 +296,8 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 			"user_id":         order.CustomerUserID,
 			"seller_id":       sellerID,
 			"courier":         sh.Courier,
-			"tracking_number": resp.AWBNumber,
-			"tracking_url":    resp.TrackingURL,
+			"tracking_number": trackingNumber,
+			"tracking_url":    trackingURL,
 			"eta":             resp.EstimatedETA,
 			"buyer_email":     buyerEmail,
 			"buyer_name":      buyerName,
@@ -282,15 +310,25 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 
 	// Order status flips to "shipped" once at least one shipment exists.
 	// Per-shipment delivered status updates roll forward as webhooks land.
-	_ = s.store.UpdateOrderStatus(ctx, orderID, "shipped", nil, "system", "shipment booked")
+	//
+	// This used to be an unguarded UPDATE as actor "system", a pair the
+	// D6 matrix does not hold, with the error discarded: on a gated
+	// database the order silently stayed `confirmed` behind a booked
+	// shipment. It now runs as the actor who booked (the matrix admits
+	// packed -> shipped for a seller and, since migration 033, for the
+	// worker), and a refusal is an error the caller sees, because a
+	// shipment whose order does not say shipped is the defect this fixes.
+	if _, err := s.store.MarkOrderShipped(ctx, orderID, booking.ActorID, booking.ActorType, "shipment booked"); err != nil {
+		return out, fmt.Errorf("mark order shipped: %w", err)
+	}
 	return out, nil
 }
 
-// CreateShipmentForOrder is a backward-compatible single-shipment wrapper
-// that returns the first shipment booked. Prefer CreateShipmentsForOrder for
-// new callers that need to surface every shipment in a multi-seller order.
+// CreateShipmentForOrder is the worker's single-shipment wrapper: it books
+// as "system" and returns the first shipment. Prefer CreateShipmentsForOrder
+// for callers that need to surface every shipment in a multi-seller order.
 func (s *Service) CreateShipmentForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.Shipment, error) {
-	shipments, err := s.CreateShipmentsForOrder(ctx, orderID)
+	shipments, err := s.CreateShipmentsForOrder(ctx, orderID, ShipmentBooking{ActorType: "system"})
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/atpost/commerce-service/internal/service"
+	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -69,7 +70,16 @@ func (h *Handler) requireOrderRole(c *gin.Context, orderID uuid.UUID, writeOnly 
 // least one order item. Per-seller filtering (so seller A cannot book
 // seller B's items) is a Phase 4 concern; this gate at minimum blocks
 // random users from triggering courier API calls on arbitrary orders.
+//
+// Body, optional: {"courier": "...", "tracking_number": "..."}. Under a
+// provider that accepts manual booking (the stub) the values are stored on
+// the shipment and its first event; under a carrier-backed provider they are
+// ignored and the adapter's booking wins. See service.applyManualBooking.
 func (h *Handler) CreateShipment(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	orderID, ok := parseUUID(c, "orderId")
 	if !ok {
 		return
@@ -77,12 +87,30 @@ func (h *Handler) CreateShipment(c *gin.Context) {
 	if _, ok := h.requireOrderRole(c, orderID, true); !ok {
 		return
 	}
-	shipments, err := h.svc.CreateShipmentsForOrder(c.Request.Context(), orderID)
+	var req createShipmentReq
+	// The body is optional; an empty or absent one books through the
+	// adapter exactly as before.
+	_ = c.ShouldBindJSON(&req)
+	shipments, err := h.svc.CreateShipmentsForOrder(c.Request.Context(), orderID, service.ShipmentBooking{
+		ActorType:      "seller",
+		ActorID:        &userID,
+		Courier:        req.Courier,
+		TrackingNumber: req.TrackingNumber,
+	})
 	if err != nil {
+		if errors.Is(err, postgres.ErrTransitionNotPermitted) || errors.Is(err, postgres.ErrTrackingNumberInUse) {
+			writeCommerceError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SHIPMENT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, gin.H{"shipments": shipments}, nil)
+}
+
+type createShipmentReq struct {
+	Courier        string `json:"courier"`
+	TrackingNumber string `json:"tracking_number"`
 }
 
 // GetShipment returns the latest shipment + events for the order. Kept for

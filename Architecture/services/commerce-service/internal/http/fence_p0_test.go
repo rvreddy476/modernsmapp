@@ -206,3 +206,45 @@ func TestFencingReturnsLeavesTheOrderLoopReachable(t *testing.T) {
 		}
 	}
 }
+
+// The fence matches an extension spelling of a fenced prefix.
+//
+// `/v1/commerce/seller/earnings` is fenced; `/v1/commerce/seller/earnings.csv`
+// was not, because the match was "equal, or followed by a slash" and ".csv"
+// is neither. The CSV export of the fenced earnings surface was the one route
+// in the family a seller could still reach. Siblings that merely share a
+// spelling stay open: the character after the prefix must be "/" or ".".
+func TestFenceCoversExtensionSpellingsOfAFencedPrefix(t *testing.T) {
+	r := productionEngine(t)
+
+	fenced := []string{
+		"/v1/commerce/seller/earnings",
+		"/v1/commerce/seller/earnings.csv",
+		"/v1/commerce/seller/earnings/anything",
+		"/v1/commerce/seller/cod-remittances.csv",
+	}
+	for _, p := range fenced {
+		if !IsFencedPath(p) {
+			t.Errorf("IsFencedPath(%q) = false; want fenced", p)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
+		if w.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d through the fence; want 404", p, w.Code)
+		}
+	}
+
+	open := []string{
+		"/v1/commerce/seller/orders",
+		"/v1/commerce/seller/orders/8a1f0b3c-0000-4000-8000-000000000001/pack",
+		"/v1/commerce/seller/fulfillment",
+		"/v1/commerce/payouts",   // shares letters with /payout, is not under it
+		"/v1/commerce/returnsx",  // likewise for /returns
+		"/v1/commerce/seller/earningsreport",
+	}
+	for _, p := range open {
+		if IsFencedPath(p) {
+			t.Errorf("IsFencedPath(%q) = true; the fence over-matches a live sibling", p)
+		}
+	}
+}

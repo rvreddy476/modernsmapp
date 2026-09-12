@@ -433,6 +433,25 @@ func (s *Store) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, act
 		return ErrNotOrderOwnerP0
 	}
 
+	// A repeat is a no-op, not a second release, a second outbox event and a
+	// second history line. The trigger lets same-state UPDATEs through, so
+	// without this a client retrying a timed-out cancel republished
+	// commerce.order.cancelled every time.
+	if status == "cancelled" {
+		return nil
+	}
+
+	// The matrix, consulted here as well as in the trigger. The trigger is
+	// attached only by the gated migration, so on a boot-migrated database
+	// this read is the ONLY thing stopping a cancel of a shipped order.
+	allowed, err := transitionAllowedTx(ctx, tx, status, "cancelled", actorType)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrCancelNotPermitted
+	}
+
 	if err := releaseReservationsTx(ctx, tx, orderID, "checkout_release_cancel"); err != nil {
 		return err
 	}
@@ -444,13 +463,22 @@ func (s *Store) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, act
 		}
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE orders SET status = 'cancelled', cancellation_reason = $2, cancelled_by = $3,
-		        updated_at = NOW() WHERE id = $1`,
-		orderID, reason, actorOr(actorType)); err != nil {
-		if isCheckViolation(err) {
+	// The status move goes through the shared helper so the history row is
+	// written on a database without the trigger too; before this the audit
+	// trail of a cancel existed only where the gated migration had run.
+	var cancelActor *uuid.UUID
+	if actorID != uuid.Nil {
+		cancelActor = &actorID
+	}
+	if _, err := transitionOrderStatusTx(ctx, tx, orderID, "cancelled", cancelActor, actorType, reason); err != nil {
+		if errors.Is(err, ErrTransitionNotPermitted) {
 			return ErrCancelNotPermitted
 		}
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE orders SET cancellation_reason = $2, cancelled_by = $3, updated_at = NOW() WHERE id = $1`,
+		orderID, reason, actorOr(actorType)); err != nil {
 		return err
 	}
 

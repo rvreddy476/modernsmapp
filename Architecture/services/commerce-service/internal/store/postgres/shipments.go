@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -78,26 +79,40 @@ func (s *Store) GetInvoiceByOrder(ctx context.Context, orderID uuid.UUID) (*Invo
 
 // ── Shipments ─────────────────────────────────────────────────────────────
 
+// Shipment is one seller's parcel on an order.
+//
+// The json tags are load-bearing. The struct had only db tags, so
+// encoding/json fell back to the Go field names and GET /orders/:id/shipments
+// went out as {"ID":..,"TrackingNumber":..}, the one commerce payload in
+// PascalCase. Nullable columns keep their null on the wire (no omitempty) so
+// a client can tell "no tracking number yet" from a key it does not know.
 type Shipment struct {
-	ID             uuid.UUID  `db:"id"`
-	OrderID        uuid.UUID  `db:"order_id"`
-	SellerID       uuid.UUID  `db:"seller_id"`
-	Courier        string     `db:"courier"`
-	TrackingNumber *string    `db:"tracking_number"`
-	CourierOrderID *string    `db:"courier_order_id"`
-	LabelURL       *string    `db:"label_url"`
-	TrackingURL    *string    `db:"tracking_url"`
-	Status         string     `db:"status"`
-	ETA            *time.Time `db:"eta"`
-	ShippedAt      *time.Time `db:"shipped_at"`
-	DeliveredAt    *time.Time `db:"delivered_at"`
-	LastEventAt    *time.Time `db:"last_event_at"`
-	CreatedAt      time.Time  `db:"created_at"`
-	UpdatedAt      time.Time  `db:"updated_at"`
+	ID             uuid.UUID  `db:"id" json:"id"`
+	OrderID        uuid.UUID  `db:"order_id" json:"order_id"`
+	SellerID       uuid.UUID  `db:"seller_id" json:"seller_id"`
+	Courier        string     `db:"courier" json:"courier"`
+	TrackingNumber *string    `db:"tracking_number" json:"tracking_number"`
+	CourierOrderID *string    `db:"courier_order_id" json:"courier_order_id"`
+	LabelURL       *string    `db:"label_url" json:"label_url"`
+	TrackingURL    *string    `db:"tracking_url" json:"tracking_url"`
+	Status         string     `db:"status" json:"status"`
+	ETA            *time.Time `db:"eta" json:"eta"`
+	ShippedAt      *time.Time `db:"shipped_at" json:"shipped_at"`
+	DeliveredAt    *time.Time `db:"delivered_at" json:"delivered_at"`
+	LastEventAt    *time.Time `db:"last_event_at" json:"last_event_at"`
+	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt      time.Time  `db:"updated_at" json:"updated_at"`
 }
 
+// ErrTrackingNumberInUse: shipments are UNIQUE on (courier, tracking_number),
+// because a courier webhook is matched by that pair. A seller recording an
+// AWB that is already on another shipment must be told so; before this
+// sentinel the unique violation was logged and the request answered "no
+// shipments could be booked", which reads as a courier outage.
+var ErrTrackingNumberInUse = errors.New("that tracking number is already on another shipment with this courier")
+
 func (s *Store) CreateShipment(ctx context.Context, sh *Shipment) error {
-	return s.db.QueryRow(ctx, `
+	err := s.db.QueryRow(ctx, `
 		INSERT INTO shipments
 		  (order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url, status, eta, shipped_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -105,6 +120,10 @@ func (s *Store) CreateShipment(ctx context.Context, sh *Shipment) error {
 	`, sh.OrderID, sh.SellerID, sh.Courier, sh.TrackingNumber, sh.CourierOrderID,
 		sh.LabelURL, sh.TrackingURL, sh.Status, sh.ETA, sh.ShippedAt,
 	).Scan(&sh.ID, &sh.CreatedAt, &sh.UpdatedAt)
+	if isUniqueViolation(err) {
+		return ErrTrackingNumberInUse
+	}
+	return err
 }
 
 func (s *Store) GetShipmentByOrder(ctx context.Context, orderID uuid.UUID) (*Shipment, error) {
@@ -236,12 +255,14 @@ func (s *Store) ListShipmentEvents(ctx context.Context, shipmentID uuid.UUID) ([
 	return out, nil
 }
 
+// ShipmentEvent is one line of a shipment's tracking timeline. Tagged for
+// the same reason Shipment is.
 type ShipmentEvent struct {
-	ID         uuid.UUID `db:"id"`
-	ShipmentID uuid.UUID `db:"shipment_id"`
-	Status     string    `db:"status"`
-	Location   *string   `db:"location"`
-	Remark     *string   `db:"remark"`
-	OccurredAt time.Time `db:"occurred_at"`
-	CreatedAt  time.Time `db:"created_at"`
+	ID         uuid.UUID `db:"id" json:"id"`
+	ShipmentID uuid.UUID `db:"shipment_id" json:"shipment_id"`
+	Status     string    `db:"status" json:"status"`
+	Location   *string   `db:"location" json:"location"`
+	Remark     *string   `db:"remark" json:"remark"`
+	OccurredAt time.Time `db:"occurred_at" json:"occurred_at"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
 }

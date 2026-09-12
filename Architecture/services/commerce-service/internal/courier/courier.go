@@ -207,3 +207,30 @@ func randHex(n int) string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// ── Manual booking ─────────────────────────────────────────────────────────
+
+// ManualBookingProvider is implemented by adapters that do not talk to a
+// carrier and therefore have no courier name or AWB of their own worth
+// keeping. For those, a seller-supplied courier and tracking number are the
+// only real values there are.
+//
+// A carrier-backed adapter must NOT implement this: the AWB it returns is
+// the one the carrier will send webhooks about, and a seller-typed number
+// would leave the shipment untrackable.
+type ManualBookingProvider interface {
+	AcceptsManualBooking() bool
+}
+
+// AcceptsManualBooking reports whether the provider lets a seller record
+// their own courier and tracking number on a shipment. False for anything
+// that does not opt in, so a new carrier adapter is safe by default.
+func AcceptsManualBooking(p Provider) bool {
+	m, ok := p.(ManualBookingProvider)
+	return ok && m.AcceptsManualBooking()
+}
+
+// AcceptsManualBooking: the stub invents an AWB nobody will ever scan, so a
+// seller who hands a parcel to a real courier on the dev stack can record
+// what actually happened.
+func (StubCourier) AcceptsManualBooking() bool { return true }

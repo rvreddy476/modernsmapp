@@ -1458,8 +1458,13 @@ func (s *Store) GetOrdersBySeller(ctx context.Context, sellerID uuid.UUID, limit
 		WHERE oi.seller_id = $1
 	`, sellerID).Scan(&total)
 
+	// The paise total and the payment method ride along. The row used to
+	// carry only `final_amount`, the rupee column migration 007 stopped
+	// maintaining, so every seller list row omitted total_minor and the
+	// dashboard priced every order at nothing.
 	rows, err := s.db.Query(ctx, `
-		SELECT DISTINCT o.id, o.customer_user_id, o.order_number, o.final_amount, o.currency_code,
+		SELECT DISTINCT o.id, o.customer_user_id, o.order_number, o.final_amount,
+			COALESCE(o.final_amount_minor, 0), o.payment_method, o.currency_code,
 			o.payment_status, o.status, o.created_at, o.updated_at
 		FROM orders o
 		JOIN order_items oi ON oi.order_id = o.id
@@ -1475,6 +1480,7 @@ func (s *Store) GetOrdersBySeller(ctx context.Context, sellerID uuid.UUID, limit
 	for rows.Next() {
 		var o Order
 		if err := rows.Scan(&o.ID, &o.CustomerUserID, &o.OrderNumber, &o.FinalAmount,
+			&o.FinalAmountMinor, &o.PaymentMethod,
 			&o.CurrencyCode, &o.PaymentStatus, &o.Status, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, 0, err
 		}

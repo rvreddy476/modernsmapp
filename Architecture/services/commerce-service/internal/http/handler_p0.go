@@ -213,13 +213,11 @@ func FenceMiddleware() gin.HandlerFunc {
 func FenceMiddlewareWithStubSettlement(allowStubSettlement bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
-		for _, f := range FencedPrefixes {
-			if p == f || strings.HasPrefix(p, f+"/") {
-				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
-					"NOT_FOUND", "not found", nil)
-				c.Abort()
-				return
-			}
+		if IsFencedPath(p) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
+				"NOT_FOUND", "not found", nil)
+			c.Abort()
+			return
 		}
 		// B5: the legacy money routes, fenced by exact method+shape because
 		// they sit under prefixes the launch loop still uses.
@@ -238,9 +236,17 @@ func FenceMiddlewareWithStubSettlement(allowStubSettlement bool) gin.HandlerFunc
 // IsFencedPath reports whether a path is outside the P0 loop. Exported so
 // the reachability proof can enumerate the same list the server uses,
 // instead of a copy that could drift.
+//
+// A prefix fences the path itself, everything under it, and any extension
+// spelling of it. The third case is why `/seller/earnings.csv` is fenced by
+// the `/seller/earnings` entry: the match used to be "equal, or followed by
+// a slash", and ".csv" is neither, so the CSV export of a fenced surface
+// stayed reachable while the JSON one was refused. A sibling that merely
+// shares a spelling (`/payouts` against `/payout`) is still not fenced,
+// because the character after the prefix is neither "/" nor ".".
 func IsFencedPath(p string) bool {
 	for _, f := range FencedPrefixes {
-		if p == f || strings.HasPrefix(p, f+"/") {
+		if p == f || strings.HasPrefix(p, f+"/") || strings.HasPrefix(p, f+".") {
 			return true
 		}
 	}
@@ -662,6 +668,15 @@ func writeCommerceError(c *gin.Context, err error) {
 	case errors.Is(err, postgres.ErrCancelNotPermitted):
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "CANCEL_NOT_PERMITTED",
 			"this order can no longer be cancelled", nil)
+	case errors.Is(err, postgres.ErrTransitionNotPermitted):
+		// The D6 matrix refused the move for this actor from this state
+		// (pack from shipped, ship from cancelled). Nothing about the
+		// request is malformed; the order is simply not in a state the
+		// seller can move from, so it is a 409 the client can explain.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "TRANSITION_NOT_PERMITTED",
+			"this order cannot be moved to that state from where it is", nil)
+	case errors.Is(err, postgres.ErrTrackingNumberInUse):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "TRACKING_NUMBER_IN_USE", err.Error(), nil)
 	case errors.Is(err, service.ErrOrderNotPaymentPending):
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "ORDER_NOT_PAYABLE",
 			"this order is not awaiting payment", nil)

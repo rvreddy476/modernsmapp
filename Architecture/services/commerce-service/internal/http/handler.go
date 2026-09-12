@@ -114,6 +114,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/seller/orders", h.ListMySellerOrders)
 	v1.GET("/seller/orders/:orderId", h.GetSellerOrderDetail)
 	v1.GET("/seller/fulfillment", h.ListSellerFulfillment)
+	// The seller's fulfilment writes. The D6 matrix admitted these moves
+	// for a seller since migration 010; no route performed them. See
+	// handler_seller_fulfilment.go.
+	v1.GET("/seller/orders/:orderId/history", h.SellerOrderHistory)
+	v1.POST("/seller/orders/:orderId/pack", h.SellerPackOrder)
+	v1.POST("/seller/orders/:orderId/cancel", h.SellerCancelOrder)
+	v1.POST("/seller/orders/:orderId/ship", h.SellerShipOrder)
 
 	// ── Cart ─────────────────────────────────────────────────
 	v1.GET("/cart", h.GetCart)
@@ -1145,7 +1152,10 @@ func (h *Handler) ListMySellerOrders(c *gin.Context) {
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	orders, err := h.svc.ListSellerOrders(c.Request.Context(), seller.ID, limit, offset)
+	// Each row is the order header plus item_count and
+	// seller_subtotal_minor; the bare header had neither, so the list
+	// could not say how many parcels or how much money a row was.
+	orders, err := h.svc.ListSellerOrderRows(c.Request.Context(), seller.ID, limit, offset)
 	if err != nil {
 		handleErr(c, err)
 		return
