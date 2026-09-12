@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "momentum-web",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--cwd=C:/workspace/atpost-web", "run", "dev"],
+      "port": 3000
+    }
+  ]
+}
