@@ -59,15 +59,55 @@ type notificationMsg struct {
 	SentAt      string `json:"sent_at"`
 }
 
-// feedInjectMsg is produced to the channel feed-inject topic so feeds pick up the update.
-type feedInjectMsg struct {
-	RecipientID string `json:"recipient_id"`
-	ChannelID   string `json:"channel_id"`
-	UpdateID    string `json:"update_id"`
-	UpdateType  string `json:"update_type"`
-	AuthorID    string `json:"author_id"`
-	PublishedAt string `json:"published_at"`
+// feedInjectPayload mirrors feed-service's FeedInjectPayload
+// (feed-service/internal/consumers/channel_updates.go) field for field. It is
+// redeclared here rather than imported because the two services are separate
+// modules and the wire bytes, not a shared Go type, are the contract.
+//
+// feed-service gates on target_user_id and item_id, uuid.Parses source_id as
+// the timeline author, and stores item_type as the content type. It has no
+// slot for author_id or update_type, so those ride in preview_json.
+type feedInjectPayload struct {
+	TargetUserID string          `json:"target_user_id"`
+	ItemType     string          `json:"item_type"`
+	ItemID       string          `json:"item_id"`
+	SourceType   string          `json:"source_type"`
+	SourceID     string          `json:"source_id"`
+	Score        int64           `json:"score"`
+	PublishedAt  string          `json:"published_at"`
+	PreviewJSON  json.RawMessage `json:"preview_json,omitempty"`
 }
+
+// feedInjectPreview is the extra context feed-service does not model but a
+// timeline renderer may want; it is opaque to the consumer.
+type feedInjectPreview struct {
+	ChannelID   string `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+	AuthorID    string `json:"author_id"`
+	UpdateType  string `json:"update_type"`
+	Title       string `json:"title"`
+	ImageURL    string `json:"image_url"`
+	DeepLink    string `json:"deep_link"`
+}
+
+// feedInjectEvent is the envelope feed-service decodes from the
+// atpost.channel.feed-inject topic. A flat object here used to unmarshal
+// cleanly into a zero payload on the consumer side, which then logged
+// "missing target_user_id or item_id" and committed the offset, so no channel
+// update ever reached a home timeline.
+type feedInjectEvent struct {
+	EventType string            `json:"event_type"`
+	Payload   feedInjectPayload `json:"payload"`
+}
+
+// The item and source types are the literal values the consumer documents
+// next to its struct tags. The consumer does not switch on event_type, so the
+// name follows the notification topic's convention for the same event.
+const (
+	feedInjectEventType  = "channel.update.published"
+	feedInjectItemType   = "channel_update"
+	feedInjectSourceType = "channel"
+)
 
 // FanoutWorker consumes channel update events and fans them out to subscribers
 // via notifications, push, and feed injection.
@@ -218,20 +258,7 @@ func (w *FanoutWorker) handleUpdatePublished(ctx context.Context, event UpdatePu
 			}
 
 			if sendFeed {
-				feedPayload := feedInjectMsg{
-					RecipientID: sub.UserID.String(),
-					ChannelID:   p.ChannelID,
-					UpdateID:    p.UpdateID,
-					UpdateType:  p.UpdateType,
-					AuthorID:    p.AuthorID,
-					PublishedAt: p.PublishedAt,
-				}
-				b, _ := json.Marshal(feedPayload)
-				feedMessages = append(feedMessages, kafka.Message{
-					Topic: "atpost.channel.feed-inject",
-					Key:   []byte(sub.UserID.String()),
-					Value: b,
-				})
+				feedMessages = append(feedMessages, newFeedInjectMessage(p, sub.UserID))
 			}
 		}
 
@@ -262,6 +289,42 @@ func (w *FanoutWorker) handleUpdatePublished(ctx context.Context, event UpdatePu
 		"subscribers", totalSubscribers,
 		"notifications", totalNotifications,
 	)
+}
+
+// newFeedInjectMessage builds the Kafka message that asks feed-service to put
+// one channel update on one subscriber's home timeline.
+func newFeedInjectMessage(p UpdatePublishedPayload, recipient uuid.UUID) kafka.Message {
+	// A marshal failure here is impossible for a struct of strings, and the
+	// preview is optional to the consumer anyway, so a nil result is fine.
+	preview, _ := json.Marshal(feedInjectPreview{
+		ChannelID:   p.ChannelID,
+		ChannelName: p.ChannelName,
+		AuthorID:    p.AuthorID,
+		UpdateType:  p.UpdateType,
+		Title:       p.Title,
+		ImageURL:    p.ImageURL,
+		DeepLink:    p.DeepLink,
+	})
+	event := feedInjectEvent{
+		EventType: feedInjectEventType,
+		Payload: feedInjectPayload{
+			TargetUserID: recipient.String(),
+			ItemType:     feedInjectItemType,
+			ItemID:       p.UpdateID,
+			// The consumer stores source_id as the timeline author, so the
+			// channel, not the human author, is what the feed attributes to.
+			SourceType:  feedInjectSourceType,
+			SourceID:    p.ChannelID,
+			PublishedAt: p.PublishedAt,
+			PreviewJSON: preview,
+		},
+	}
+	b, _ := json.Marshal(event)
+	return kafka.Message{
+		Topic: "atpost.channel.feed-inject",
+		Key:   []byte(recipient.String()),
+		Value: b,
+	}
 }
 
 // fetchSubscriberBatch returns a page of non-banned subscribers for a channel.
