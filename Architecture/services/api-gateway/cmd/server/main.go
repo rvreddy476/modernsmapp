@@ -308,6 +308,11 @@ func main() {
 	// counters once we wrap upstream calls.
 	promHandler := promhttp.Handler()
 	reviewerPublicEnabled := strings.EqualFold(env("REVIEWER_PUBLIC_ENABLED", "false"), "true")
+	// Groups and communities are complete server products with no client on
+	// any platform (audit, 12 Sep 2026). Their public prefixes stay closed
+	// until a client exists: unreviewed surface is attack surface. The
+	// services keep running because other services call them internally.
+	dormantProductsEnabled := strings.EqualFold(env("DORMANT_PRODUCTS_ENABLED", "false"), "true")
 
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handleProbe(w, r, len(routes)) {
@@ -319,6 +324,9 @@ func main() {
 			return
 		}
 		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
+			return
+		}
+		if serveDormantProductGate(w, r, dormantProductsEnabled) {
 			return
 		}
 
