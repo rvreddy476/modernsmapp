@@ -96,18 +96,27 @@ func (h *Handler) ClearProductTryOn(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// writeTryOnErr maps the two try-on error classes and defers everything else
-// — ownership, missing seller profile, database faults — to the shared
-// mapper, so this route cannot disagree with the rest of the service about
-// what "not your product" answers.
+// writeTryOnErr maps the try-on error classes and defers the rest to the
+// shared mapper.
+//
+// `ErrNotOrderOwner` is mapped HERE, to 403, rather than left to the shared
+// mapper — which answers 404 for it — because every other route built on
+// assertProductSeller answers 403 "not your product" (see AddProductMedia).
+// Leaving it to fall through made the same condition answer 404 on this
+// route and 403 on its neighbours, which is the kind of difference a client
+// turns into a wrong error message.
 func writeTryOnErr(c *gin.Context, err error) {
+	ctx, w := c.Request.Context(), c.Writer
 	switch {
 	case errors.Is(err, service.ErrTryOnInvalid):
-		api.ErrorWithContext(c.Request.Context(), c.Writer,
-			http.StatusBadRequest, "INVALID_TRY_ON", err.Error(), nil)
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "INVALID_TRY_ON", err.Error(), nil)
 	case errors.Is(err, service.ErrTryOnKindNotAllowed):
-		api.ErrorWithContext(c.Request.Context(), c.Writer,
-			http.StatusUnprocessableEntity, "TRY_ON_KIND_NOT_ALLOWED", err.Error(), nil)
+		api.ErrorWithContext(ctx, w, http.StatusUnprocessableEntity,
+			"TRY_ON_KIND_NOT_ALLOWED", err.Error(), nil)
+	case errors.Is(err, service.ErrNotOrderOwner):
+		api.ErrorWithContext(ctx, w, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
+	case errors.Is(err, service.ErrProductNotFound):
+		api.ErrorWithContext(ctx, w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
 	default:
 		handleErr(c, err)
 	}

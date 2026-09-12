@@ -14,6 +14,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/atpost/commerce-service/internal/service"
+	"github.com/gin-gonic/gin"
 )
 
 const tryOnProductID = "3c9a1f0b-0000-4000-8000-0000000000a1"
@@ -44,6 +47,26 @@ func TestTryOnHasNoReadRouteOfItsOwn(t *testing.T) {
 	for _, ri := range r.Routes() {
 		if ri.Method == http.MethodGet && strings.HasSuffix(ri.Path, "/try-on") {
 			t.Errorf("GET %s is registered; the descriptor is served inside product detail", ri.Path)
+		}
+	}
+}
+
+// "not your product" must answer the same on this route as on every other
+// route built on assertProductSeller. The shared mapper answers 404 for
+// ErrNotOrderOwner; AddProductMedia overrides it to 403 "not your product",
+// and so must this. A first version of writeTryOnErr let it fall through and
+// the same condition answered 404 here and 403 next door.
+func TestTryOnOwnershipRefusalMatchesItsNeighbours(t *testing.T) {
+	for _, err := range []error{service.ErrNotOrderOwner} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPut, "/v1/commerce/products/x/try-on", nil)
+		writeTryOnErr(c, err)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("writeTryOnErr(%v) answered %d; want 403, as AddProductMedia does", err, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "not your product") {
+			t.Errorf("writeTryOnErr(%v) body %q does not say whose product it is", err, w.Body.String())
 		}
 	}
 }
