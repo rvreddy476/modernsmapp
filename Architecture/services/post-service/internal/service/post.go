@@ -830,18 +830,14 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, err
 	}
 
-	// Flick category is a closed taxonomy (categories.go). Only flicks: the
-	// long-video path still carries the free-text category the video
-	// classifier and the category override route write, and changing that
-	// contract is not this pass. Empty stays allowed — a category is a
-	// choice, not a requirement, and neither is a title.
-	category := input.Category
-	if contentType == "flick" {
-		normalized, catErr := NormalizeFlickCategory(category)
-		if catErr != nil {
-			return nil, catErr
-		}
-		category = normalized
+	// Category is stored in its slug form for every content type, and flicks
+	// are additionally held to the closed taxonomy (categories.go). This is
+	// the single write site for posts.category: the create route and all
+	// three draft-publish paths build a CreatePostInput and land here, so
+	// feed-service's exact-match category pages see one spelling.
+	category, catErr := resolveCreateCategory(contentType, input.Category)
+	if catErr != nil {
+		return nil, catErr
 	}
 
 	taggedUsers, tagErr := NormalizeTaggedUsers(input.AuthorID, input.TaggedUserIDs)

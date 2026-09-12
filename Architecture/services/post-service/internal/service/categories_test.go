@@ -96,3 +96,63 @@ func TestNormalizeCategoryFilter(t *testing.T) {
 		}
 	}
 }
+
+// Every write path stores the slug form, because feed-service's category
+// pages match the stored string exactly: "Education" and "education" used to
+// land in different buckets and one of them came up empty (verified on dev,
+// 2026-09-12).
+func TestNormalizeCategory(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"padded label is lowercased and trimmed", "  Education ", "education"},
+		{"upper case", "TECH", "tech"},
+		{"already canonical", "music", "music"},
+		{"empty stays empty", "", ""},
+		{"whitespace only is empty", "  ", ""},
+		{"internal whitespace collapses to one hyphen", "Food   Cooking", "food-cooking"},
+		{"tabs and newlines count as whitespace", "how\tto\nvideos", "how-to-videos"},
+		{"existing hyphens are kept", "science-technology", "science-technology"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeCategory(tc.in); got != tc.want {
+				t.Fatalf("NormalizeCategory(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// The create path resolves the stored category through one function for
+// every content type: a "Music" request stores "music" whether it is a flick
+// or a long video, and only flicks are held to the closed taxonomy.
+func TestResolveCreateCategoryStoresSlug(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		in          string
+		want        string
+		wantErr     error
+	}{
+		{"flick Music stores music", "flick", "Music", "music", nil},
+		{"long video Music stores music", "long_video", "Music", "music", nil},
+		{"post Music stores music", "post", " Music ", "music", nil},
+		{"long video keeps free text, normalised", "long_video", "Cooking", "cooking", nil},
+		{"flick outside taxonomy is refused", "flick", "Cooking", "", ErrInvalidCategory},
+		{"flick empty stays empty", "flick", "", "", nil},
+		{"long video whitespace is empty", "long_video", "   ", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveCreateCategory(tc.contentType, tc.in)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err=%v want %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}

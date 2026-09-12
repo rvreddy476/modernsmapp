@@ -74,7 +74,7 @@ func FlickCategories() []Category {
 // choice from "comedy" — but anything outside the list is refused rather than
 // coerced to "other", because a silent remap would hide a client bug.
 func NormalizeFlickCategory(raw string) (string, error) {
-	id := strings.ToLower(strings.TrimSpace(raw))
+	id := NormalizeCategory(raw)
 	if id == "" {
 		return "", nil
 	}
@@ -82,6 +82,50 @@ func NormalizeFlickCategory(raw string) (string, error) {
 		return "", ErrInvalidCategory
 	}
 	return id, nil
+}
+
+// categoryWhitespaceRe is any run of whitespace inside a category value.
+var categoryWhitespaceRe = regexp.MustCompile(`\s+`)
+
+// NormalizeCategory is the one rule for what posts.category (and
+// reel_drafts.category) may hold: trimmed, lowercased, with any internal run
+// of whitespace collapsed to a single hyphen. Empty in, empty out.
+//
+// Why one rule on every write path (2026-09-12): the column was stored as
+// the client sent it, so dev held "Education" and "education", "Technology"
+// and "tech", as separate values. feed-service's category pages
+// (GET /v1/feed/videos?category=) and post-service's own GetRecentPosts
+// filter match the stored string exactly, so mixed-case uploads fell into
+// separate buckets and some pages came up empty. Lowercasing and trimming
+// costs no intent ("Comedy " is the same choice as "comedy"), and the hyphen
+// is chosen because both services only accept a `[a-z0-9][a-z0-9_-]*` slug
+// as a filter: a stored value with a space inside could never be asked for.
+//
+// Synonyms ("Technology" to "tech") are deliberately NOT mapped. The only
+// list that exists is the flick taxonomy above, which is enforced on flicks
+// by NormalizeFlickCategory; long videos carry free text and a guessed remap
+// there would hide a client bug rather than fix one. Migration 047 applies
+// the same rule to the rows already stored.
+func NormalizeCategory(raw string) string {
+	id := strings.ToLower(strings.TrimSpace(raw))
+	if id == "" {
+		return ""
+	}
+	return categoryWhitespaceRe.ReplaceAllString(id, "-")
+}
+
+// resolveCreateCategory is what CreatePost stores for a client-supplied
+// category. Every content type goes through NormalizeCategory; flicks are
+// additionally held to the closed taxonomy. Long videos keep free text (the
+// video classifier and the category override route write their own values
+// there, and changing that contract is not this pass), so an unknown id is
+// stored as its slug rather than refused. Empty stays allowed: a category is
+// a choice, not a requirement.
+func resolveCreateCategory(contentType, raw string) (string, error) {
+	if contentType == "flick" {
+		return NormalizeFlickCategory(raw)
+	}
+	return NormalizeCategory(raw), nil
 }
 
 // ErrInvalidCategoryFilter is a `category` query value that is not even

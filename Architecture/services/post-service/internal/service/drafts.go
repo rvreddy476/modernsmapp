@@ -127,7 +127,10 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 		updates["topic_id"] = *input.TopicID
 	}
 	if input.Category != nil {
-		updates["category"] = *input.Category
+		// Slug form on the draft too, so the composer reads back exactly
+		// what publication will store (publish goes through CreatePost,
+		// which normalises again; this keeps the two in step).
+		updates["category"] = NormalizeCategory(*input.Category)
 	}
 	if input.Language != nil {
 		updates["language"] = *input.Language
