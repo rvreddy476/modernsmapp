@@ -104,6 +104,8 @@ type fakeChannelStore struct {
 	byUser   map[uuid.UUID]*postgres.Channel
 	byHandle map[string]*postgres.Channel
 	videos   map[uuid.UUID]int
+	// subState is the subscription half (channel_subscriptions_test.go).
+	subState *fakeSubState
 }
 
 func newFakeChannelStore() *fakeChannelStore {

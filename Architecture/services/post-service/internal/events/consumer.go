@@ -21,6 +21,18 @@ type Consumer struct {
 	// lifecycle handles user.deactivated / deletion_scheduled / reactivated /
 	// deletion_cancelled / purge_requested (see internal/purge). Optional.
 	lifecycle *purge.Handler
+	// subscriptions handles UserUnfollowed (graph-service, social.events.v1):
+	// a Tube subscription is a follow plus a bell, so when the follow goes
+	// away through any door the subscription goes with it. Optional.
+	subscriptions subscriptionRemover
+}
+
+// subscriptionRemover is the one store write the UserUnfollowed handler
+// needs, an interface so the consumer test drives it with a fake.
+type subscriptionRemover interface {
+	// DeleteSubscriptionByOwner removes subscriber -> owner's channel and
+	// emits tube.channel.unsubscribed when a row went.
+	DeleteSubscriptionByOwner(ctx context.Context, ownerUserID, subscriberID uuid.UUID) (bool, error)
 }
 
 // WithLifecycleHandler wires the account-control (hide / purge) handler.
@@ -29,15 +41,31 @@ func (c *Consumer) WithLifecycleHandler(h *purge.Handler) *Consumer {
 	return c
 }
 
+// WithSubscriptionStore wires the channel-subscription store so
+// UserUnfollowed drops the matching subscription.
+func (c *Consumer) WithSubscriptionStore(s subscriptionRemover) *Consumer {
+	c.subscriptions = s
+	return c
+}
+
 // NewConsumer builds the identity-events consumer. The group id is distinct
 // from every other post-service consumer group (e.g. the engagement topic's
 // "post-service-group") so this subscription's offsets never collide with
 // an unrelated one on the same broker.
 func NewConsumer(brokers []string, topic string, db *pgxpool.Pool) *Consumer {
+	return NewConsumerWithGroup(brokers, topic, "post-service-identity-group", db)
+}
+
+// NewConsumerWithGroup is NewConsumer with an explicit group id, for a
+// second instance of this loop on another topic (the graph events on
+// social.events.v1 carry UserUnfollowed; identity.events.v1 does not).
+// Sharing a group id across topics would let one topic's commits be
+// mistaken for the other's, so each instance names its own.
+func NewConsumerWithGroup(brokers []string, topic, groupID string, db *pgxpool.Pool) *Consumer {
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: brokers,
 		Topic:   topic,
-		GroupID: "post-service-identity-group",
+		GroupID: groupID,
 	})
 	return &Consumer{reader: r, db: db}
 }
@@ -96,6 +124,18 @@ func (c *Consumer) handleUntilDurable(ctx context.Context, m kafka.Message) bool
 		return true
 	}
 
+	if envelope.EventType == events.UserUnfollowed {
+		if c.subscriptions == nil {
+			return true // this instance is not wired for graph events
+		}
+		// Same hold-the-offset contract as deletion: a subscription that
+		// outlives its follow keeps pushing uploads to someone who left,
+		// so a transient store failure must be retried, never skipped.
+		return c.retryUntilDurable(ctx, events.UserUnfollowed, func() error {
+			return c.handleUserUnfollowed(ctx, envelope.Payload)
+		})
+	}
+
 	if envelope.EventType != events.EventUserDeletionRequested {
 		// Not the legacy (kept-for-compatibility, no longer emitted)
 		// deletion event. If it's one of the account-lifecycle events
@@ -109,18 +149,25 @@ func (c *Consumer) handleUntilDurable(ctx context.Context, m kafka.Message) bool
 		return true // not ours; nothing to do
 	}
 
+	return c.retryUntilDurable(ctx, events.EventUserDeletionRequested, func() error {
+		return c.handleUserDeletionRequested(ctx, envelope.Payload)
+	})
+}
+
+// retryUntilDurable runs handle until it succeeds, backing off from 2s to
+// 60s, holding the offset the whole time. Reports false only on shutdown.
+func (c *Consumer) retryUntilDurable(ctx context.Context, name string, handle func() error) bool {
 	stall := 2 * time.Second
 	const maxStall = 60 * time.Second
 	for {
-		err := c.handleUserDeletionRequested(ctx, envelope.Payload)
+		err := handle()
 		if err == nil {
 			return true
 		}
 		if ctx.Err() != nil {
 			return false
 		}
-		log.Printf("Error handling user.deletion_requested (holding offset, retry in %s): %v\n",
-			stall, err)
+		log.Printf("Error handling %s (holding offset, retry in %s): %v\n", name, stall, err)
 		select {
 		case <-ctx.Done():
 			return false
@@ -133,6 +180,33 @@ func (c *Consumer) handleUntilDurable(ctx context.Context, m kafka.Message) bool
 			}
 		}
 	}
+}
+
+// handleUserUnfollowed drops follower -> followee's channel subscription.
+// A malformed id can never succeed and is reported as an error so the
+// retry loop surfaces it; a missing row or channel is a clean no-op, which
+// makes redelivery of an already-applied event harmless.
+func (c *Consumer) handleUserUnfollowed(ctx context.Context, payload json.RawMessage) error {
+	var p events.UserUnfollowedPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("user unfollowed: decode: %w", err)
+	}
+	followerID, err := uuid.Parse(p.FollowerID)
+	if err != nil {
+		return fmt.Errorf("user unfollowed: bad follower_id %q: %w", p.FollowerID, err)
+	}
+	followeeID, err := uuid.Parse(p.FolloweeID)
+	if err != nil {
+		return fmt.Errorf("user unfollowed: bad followee_id %q: %w", p.FolloweeID, err)
+	}
+	deleted, err := c.subscriptions.DeleteSubscriptionByOwner(ctx, followeeID, followerID)
+	if err != nil {
+		return fmt.Errorf("user unfollowed: drop subscription: %w", err)
+	}
+	if deleted {
+		log.Printf("Dropped channel subscription %s -> %s on unfollow\n", followerID, followeeID)
+	}
+	return nil
 }
 
 func (c *Consumer) handleUserDeletionRequested(ctx context.Context, payload json.RawMessage) error {

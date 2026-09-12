@@ -234,6 +234,17 @@ func main() {
 	defer identityConsumer.Close()
 	slog.Info("account lifecycle (deactivate/delete/purge) consumer started")
 
+	// Tube subscriptions (2026-09-12): a subscription is a follow plus a
+	// bell, so an unfollow that arrives through graph-service (profile
+	// button, block) must drop the subscription too. graph-service publishes
+	// UserUnfollowed on the social topic, not the identity topic above, so
+	// this is a second instance of the same durable loop with its own group.
+	graphConsumer := postEvents.NewConsumerWithGroup(brokers, env("GRAPH_KAFKA_TOPIC", engTopic), "post-service-graph-group", dbPool).
+		WithSubscriptionStore(pgStore)
+	go graphConsumer.Start(consumerCtx)
+	defer graphConsumer.Close()
+	slog.Info("channel subscription (UserUnfollowed) consumer started")
+
 	scyllaConsumer := consumers.NewScyllaLikeConsumer(scyllaSession, rdb)
 	go scyllaConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 

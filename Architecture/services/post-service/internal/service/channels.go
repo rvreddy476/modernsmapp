@@ -133,19 +133,32 @@ type channelStore interface {
 	CountChannelVideos(ctx context.Context, userID uuid.UUID) (int, error)
 	CountChannelVideosBatch(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]int, error)
 	SearchChannels(ctx context.Context, q string, limit int) ([]postgres.ChannelSearchHit, error)
+
+	// Subscriptions (channel_subscriptions.go).
+	Subscribe(ctx context.Context, channelID, userID uuid.UUID, notifyOn string) (bool, error)
+	Unsubscribe(ctx context.Context, channelID, userID uuid.UUID) (bool, error)
+	SetNotifyOn(ctx context.Context, channelID, userID uuid.UUID, notifyOn string) error
+	GetSubscription(ctx context.Context, channelID, userID uuid.UUID) (*postgres.ChannelSubscription, error)
+	ListSubscriberIDsAfter(ctx context.Context, channelID, after uuid.UUID, limit int) ([]uuid.UUID, error)
+	ListSubscribedOwnersAfter(ctx context.Context, userID, after uuid.UUID, limit int) ([]uuid.UUID, error)
+	ListSubscriptionsForUser(ctx context.Context, userID uuid.UUID, cursor *postgres.SubscriptionCursor, limit int) ([]postgres.SubscriptionRow, error)
 }
 
 // ChannelView is the channel JSON: what the owner and the public both see.
+// IsSubscribed / NotifyOn are present only for a signed-in viewer.
 type ChannelView struct {
-	UserID        uuid.UUID  `json:"user_id"`
-	Name          string     `json:"name"`
-	Handle        string     `json:"handle"`
-	About         string     `json:"about"`
-	AvatarMediaID *uuid.UUID `json:"avatar_media_id"`
-	AvatarURL     *string    `json:"avatar_url"`
-	VideoCount    int        `json:"video_count"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	UserID          uuid.UUID  `json:"user_id"`
+	Name            string     `json:"name"`
+	Handle          string     `json:"handle"`
+	About           string     `json:"about"`
+	AvatarMediaID   *uuid.UUID `json:"avatar_media_id"`
+	AvatarURL       *string    `json:"avatar_url"`
+	VideoCount      int        `json:"video_count"`
+	SubscriberCount int        `json:"subscriber_count"`
+	IsSubscribed    *bool      `json:"is_subscribed,omitempty"`
+	NotifyOn        *string    `json:"notify_on,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // ChannelRef is the card-sized channel attached to a long_video post.
@@ -262,27 +275,9 @@ func (s *Service) UpdateMyChannel(ctx context.Context, userID uuid.UUID, in Upda
 // GetChannelByRef resolves a public channel by handle (with or without '@')
 // or by owner user id. viewerID scopes the avatar URL resolution.
 func (s *Service) GetChannelByRef(ctx context.Context, viewerID uuid.UUID, ref string) (*ChannelView, error) {
-	if s.channels == nil {
-		return nil, errors.New("channel store not configured")
-	}
-	var (
-		ch  *postgres.Channel
-		err error
-	)
-	if id, parseErr := uuid.Parse(strings.TrimSpace(ref)); parseErr == nil {
-		ch, err = s.channels.GetChannelByUserID(ctx, id)
-	} else {
-		handle, normErr := NormalizeChannelHandle(ref)
-		if normErr != nil {
-			return nil, ErrChannelNotFound
-		}
-		ch, err = s.channels.GetChannelByHandle(ctx, handle)
-	}
+	ch, err := s.resolveChannelRef(ctx, ref)
 	if err != nil {
 		return nil, err
-	}
-	if ch == nil {
-		return nil, ErrChannelNotFound
 	}
 	return s.channelView(ctx, viewerID, ch), nil
 }
@@ -492,14 +487,15 @@ func (s *Service) SearchChannels(ctx context.Context, viewerID uuid.UUID, q stri
 	for i := range hits {
 		ch := hits[i].Channel
 		view := &ChannelView{
-			UserID:        ch.UserID,
-			Name:          ch.Name,
-			Handle:        ch.Handle,
-			About:         ch.About,
-			AvatarMediaID: ch.AvatarMediaID,
-			VideoCount:    hits[i].VideoCount,
-			CreatedAt:     ch.CreatedAt,
-			UpdatedAt:     ch.UpdatedAt,
+			UserID:          ch.UserID,
+			Name:            ch.Name,
+			Handle:          ch.Handle,
+			About:           ch.About,
+			AvatarMediaID:   ch.AvatarMediaID,
+			VideoCount:      hits[i].VideoCount,
+			SubscriberCount: ch.SubscriberCount,
+			CreatedAt:       ch.CreatedAt,
+			UpdatedAt:       ch.UpdatedAt,
 		}
 		if ch.AvatarMediaID != nil {
 			if u, ok := avatars[*ch.AvatarMediaID]; ok && u != "" {
@@ -587,17 +583,20 @@ func (s *Service) attachChannelRefs(ctx context.Context, viewerID uuid.UUID, det
 	}
 }
 
-// channelView builds the full channel JSON (avatar URL + video count).
+// channelView builds the full channel JSON (avatar URL, video count,
+// subscriber count, and the viewer's own subscription when signed in).
 func (s *Service) channelView(ctx context.Context, viewerID uuid.UUID, ch *postgres.Channel) *ChannelView {
 	view := &ChannelView{
-		UserID:        ch.UserID,
-		Name:          ch.Name,
-		Handle:        ch.Handle,
-		About:         ch.About,
-		AvatarMediaID: ch.AvatarMediaID,
-		CreatedAt:     ch.CreatedAt,
-		UpdatedAt:     ch.UpdatedAt,
+		UserID:          ch.UserID,
+		Name:            ch.Name,
+		Handle:          ch.Handle,
+		About:           ch.About,
+		AvatarMediaID:   ch.AvatarMediaID,
+		SubscriberCount: ch.SubscriberCount,
+		CreatedAt:       ch.CreatedAt,
+		UpdatedAt:       ch.UpdatedAt,
 	}
+	s.attachViewerSubscription(ctx, viewerID, ch, view)
 	if ch.AvatarMediaID != nil {
 		if u, ok := s.resolveAvatarURLs(ctx, viewerID, []uuid.UUID{*ch.AvatarMediaID})[*ch.AvatarMediaID]; ok && u != "" {
 			url := u

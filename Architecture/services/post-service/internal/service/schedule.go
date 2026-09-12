@@ -120,11 +120,11 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		pc.MainFeed = &mf
 		pc.NotifySubscribers = &ns
 	}
-	// Subscriber fan-out key (P0-3): best-effort canonical channel
-	// lookup for video uploads. Empty on failure — the notification
-	// consumer treats a missing channel as "no subscriber fan-out".
+	// Subscriber fan-out key (P0-3): the author's channel, read locally now
+	// that post-service owns it (2026-09-12). Empty when the author has no
+	// channel; the notification consumer treats that as "no fan-out".
 	if isVideoContentType(p.ContentType) {
-		pc.ChannelID = s.lookupChannelIDForUser(ctx, p.AuthorID)
+		s.stampChannel(ctx, &pc, p.AuthorID)
 	}
 	return pc
 }

@@ -11,6 +11,12 @@ import (
 
 // Module 1 P0-3 — internal subscriber fan-out contract.
 //
+// SUPERSEDED 2026-09-12: post-service owns Tube channel subscriptions and
+// serves these three routes with identical JSON
+// (post-service/internal/http/channel_subscriptions_handler.go). This copy
+// stays up until notification-service and feed-service point their base
+// URL at post-service, and is then removed. Do not extend it.
+//
 // These endpoints live under /internal so the gateway blocks them for
 // non-admin callers and RequireInternalKey gates service-to-service
 // access. Subscriber identities are NEVER served through a public route.

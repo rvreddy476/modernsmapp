@@ -29,8 +29,11 @@ type Channel struct {
 	Handle        string
 	About         string
 	AvatarMediaID *uuid.UUID
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// SubscriberCount is channels.subscriber_count, kept in step by the
+	// trigger migration 046 installs (see channel_subscriptions.go).
+	SubscriberCount int
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // ChannelPatch is a partial update. A nil field is "leave as is";
@@ -55,11 +58,11 @@ var (
 	ErrChannelOwnerUnknown = errors.New("channel owner is not a known user")
 )
 
-const channelColumns = `id, user_id, name, handle, description, avatar_media_id, created_at, updated_at`
+const channelColumns = `id, user_id, name, handle, description, avatar_media_id, subscriber_count, created_at, updated_at`
 
 func scanChannel(row pgx.Row) (*Channel, error) {
 	var ch Channel
-	if err := row.Scan(&ch.ID, &ch.UserID, &ch.Name, &ch.Handle, &ch.About, &ch.AvatarMediaID, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+	if err := row.Scan(&ch.ID, &ch.UserID, &ch.Name, &ch.Handle, &ch.About, &ch.AvatarMediaID, &ch.SubscriberCount, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
@@ -200,7 +203,7 @@ func (s *Store) GetChannelsByUserIDs(ctx context.Context, userIDs []uuid.UUID) (
 	defer rows.Close()
 	for rows.Next() {
 		var ch Channel
-		if err := rows.Scan(&ch.ID, &ch.UserID, &ch.Name, &ch.Handle, &ch.About, &ch.AvatarMediaID, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.UserID, &ch.Name, &ch.Handle, &ch.About, &ch.AvatarMediaID, &ch.SubscriberCount, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
 		c := ch
@@ -290,7 +293,7 @@ func (s *Store) SearchChannels(ctx context.Context, q string, limit int) ([]Chan
 	}
 	escaped := EscapeLikePattern(q)
 	rows, err := s.db.Query(ctx, `
-		SELECT c.id, c.user_id, c.name, c.handle, c.description, c.avatar_media_id, c.created_at, c.updated_at,
+		SELECT c.id, c.user_id, c.name, c.handle, c.description, c.avatar_media_id, c.subscriber_count, c.created_at, c.updated_at,
 		       (`+channelVideoCountCorrelated+`) AS video_count,
 		       (c.handle LIKE $1) AS handle_prefix
 		FROM channels c
@@ -306,7 +309,7 @@ func (s *Store) SearchChannels(ctx context.Context, q string, limit int) ([]Chan
 		var hit ChannelSearchHit
 		var handlePrefix bool
 		if err := rows.Scan(&hit.ID, &hit.UserID, &hit.Name, &hit.Handle, &hit.About, &hit.AvatarMediaID,
-			&hit.CreatedAt, &hit.UpdatedAt, &hit.VideoCount, &handlePrefix); err != nil {
+			&hit.SubscriberCount, &hit.CreatedAt, &hit.UpdatedAt, &hit.VideoCount, &handlePrefix); err != nil {
 			return nil, err
 		}
 		out = append(out, hit)

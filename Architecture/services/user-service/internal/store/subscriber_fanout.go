@@ -10,6 +10,13 @@ import (
 
 // Module 1 P0-3 — internal subscriber fan-out contract.
 //
+// SUPERSEDED 2026-09-12: post-service owns the channel_subscriptions table
+// now (its migration 046 adopted this service's 004) and serves the same
+// contract from post-service/internal/store/postgres/channel_subscriptions.go.
+// Note the filter below compares against 'uploads', which the CHECK never
+// allowed; post-service's copy reads notify_on = 'all' only. This file goes
+// once notification-service and feed-service switch their base URL.
+//
 // These queries back an INTERNAL-ONLY endpoint used by
 // notification-service to fan out upload notifications. Subscriber
 // identities are never exposed through a public contract (Codex P0-3);

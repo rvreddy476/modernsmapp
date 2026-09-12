@@ -134,6 +134,10 @@ type Service struct {
 	// channels is the Tube channel store (channels.go). Nil when there is no
 	// Postgres store; every channel flow then fails closed.
 	channels channelStore
+	// graphFollows writes the follow edge behind a channel subscription
+	// (channel_subscriptions.go). Built lazily from graphServiceURL; tests
+	// inject one.
+	graphFollows graphFollowClient
 
 	// Ownership for cards / end screens / chapters / playlist items
 	// (video_authoring_authz.go).
@@ -3270,37 +3274,6 @@ func (s *Service) lookupUserByUsername(ctx context.Context, username string) (st
 		return "", fmt.Errorf("decode user-service by-username: %w", err)
 	}
 	return result.Data.ID, nil
-}
-
-// lookupChannelIDForUser resolves the author's canonical broadcast channel
-// via user-service (internal contract, P0-3). Best-effort: returns "" on
-// any failure or when the user has no channel — consumers treat "" as
-// "no subscriber fan-out possible".
-func (s *Service) lookupChannelIDForUser(ctx context.Context, userID uuid.UUID) string {
-	if s.userServiceURL == "" {
-		return ""
-	}
-	url := fmt.Sprintf("%s/internal/channels/by-owner/%s", s.userServiceURL, userID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return ""
-	}
-	if s.internalServiceKey != "" {
-		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	var result struct {
-		ChannelID string `json:"channel_id"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
-	return result.ChannelID
 }
 
 // UpdateDistribution replaces a post's distribution policy (owner-only).

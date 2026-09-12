@@ -164,6 +164,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal.GET("/projection/health", h.ProjectionHealth)
 	// Module 1 P0-3: subscriber fan-out contract (internal-only —
 	// subscriber identities never reach a public route).
+	// SUPERSEDED 2026-09-12: post-service serves the same three routes with
+	// the same JSON (its internal/http/channel_subscriptions_handler.go).
+	// These stay up only until notification-service and feed-service switch
+	// their base URL; then they go.
 	internal.GET("/channels/by-owner/:userId", h.GetChannelByOwner)
 	internal.GET("/channels/:channelId/subscriber-ids", h.ListSubscriberIDs)
 	internal.GET("/users/:userId/subscribed-owner-ids", h.ListSubscribedOwners)
@@ -221,14 +225,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		channelByID.GET("", h.GetChannel)
 		channelByID.PATCH("", h.UpdateChannel)
 		channelByID.DELETE("", h.DeleteChannel)
-		channelByID.POST("/subscribe", h.SubscribeToChannel)
-		channelByID.DELETE("/subscribe", h.UnsubscribeFromChannel)
-		channelByID.GET("/subscription", h.GetChannelSubscriptionStatus)
-		channelByID.GET("/subscribers", h.ListChannelSubscribers)
+		// RETIRED 2026-09-12: post-service owns Tube subscriptions (follow +
+		// notify behind one button). See retired_subscription_routes.go.
+		channelByID.POST("/subscribe", retiredSubscriptionRoute("POST /v1/channels/{ref}/subscribe"))
+		channelByID.DELETE("/subscribe", retiredSubscriptionRoute("DELETE /v1/channels/{ref}/subscribe"))
+		channelByID.GET("/subscription", retiredSubscriptionRoute("GET /v1/channels/{ref}/subscription"))
+		// Subscriber identities never had a public reader in the Tube
+		// contract; the internal fan-out route is the only reader.
+		channelByID.GET("/subscribers", retiredSubscriptionRoute("GET /internal/channels/{channelId}/subscriber-ids"))
 	}
 
-	// User subscriptions list
-	v1.GET("/:userId/subscriptions", h.ListUserChannelSubscriptions)
+	// User subscriptions list: RETIRED, see above.
+	v1.GET("/:userId/subscriptions", retiredSubscriptionRoute("GET "+canonicalSubscriptionsRoute))
 
 	// Profile extras: pins, portfolio, QR codes, digital wellbeing
 	h.registerProfileExtrasRoutes(r)

@@ -23,7 +23,19 @@ import (
 //	GET   /v1/channels/handle-available   ?handle= -> {available, suggestion}
 //	GET   /v1/channels/batch              ?user_ids=a,b -> {user_id: channel ref} (feed hydration)
 //	GET   /v1/channels/search             ?q=&limit= -> {"data":[channel…]} (Tube search page)
+//	GET   /v1/channels/subscriptions      ?limit&cursor -> the caller's subscriptions, newest first
 //	GET   /v1/channels/:ref               public channel by handle or user id
+//	POST  /v1/channels/:ref/subscribe     {notify_on?} follow + subscribe (one button)
+//	DELETE /v1/channels/:ref/subscribe    unfollow + unsubscribe
+//	GET   /v1/channels/:ref/subscription  {subscribed:false} | {subscribed:true, notify_on, subscribed_at}
+//	PATCH /v1/channels/:ref/subscription  {notify_on} the bell
+//
+// Internal (service-to-service, same JSON user-service served before
+// 2026-09-12; see channel_subscriptions_handler.go):
+//
+//	GET /internal/channels/by-owner/:userId
+//	GET /internal/channels/:channelId/subscriber-ids?after&limit
+//	GET /internal/users/:userId/subscribed-owner-ids?after&limit
 
 const maxChannelBatch = 100
 
@@ -36,8 +48,16 @@ func (h *Handler) registerChannelRoutes(r *gin.Engine) {
 		channels.GET("/handle-available", h.ChannelHandleAvailable)
 		channels.GET("/batch", h.GetChannelsBatch)
 		channels.GET("/search", h.SearchChannels)
+		// Static, registered before /:ref like /me so "subscriptions" is
+		// never read as a handle.
+		channels.GET("/subscriptions", h.ListMySubscriptions)
 		channels.GET("/:ref", h.GetChannelByRef)
+		channels.POST("/:ref/subscribe", h.SubscribeToChannel)
+		channels.DELETE("/:ref/subscribe", h.UnsubscribeFromChannel)
+		channels.GET("/:ref/subscription", h.GetChannelSubscription)
+		channels.PATCH("/:ref/subscription", h.UpdateChannelSubscription)
 	}
+	h.registerInternalSubscriptionRoutes(r)
 }
 
 // SearchChannels handles GET /v1/channels/search?q=&limit=.
