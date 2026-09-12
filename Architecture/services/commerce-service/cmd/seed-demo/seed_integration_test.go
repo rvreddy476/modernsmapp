@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -106,6 +107,46 @@ func TestSeedIsIdempotentAndLandsOnTheStorefront(t *testing.T) {
 		pct := postgres.DiscountPct(got.MinPriceMinor, got.MRPMinor)
 		if want.hasDiscount() != (pct != nil) {
 			t.Errorf("%s discount_pct = %v, want discounted=%v", slug, pct, want.hasDiscount())
+		}
+	}
+
+	// The column being set is not enough on its own. The phone reads
+	// image_url/thumbnail_url and nothing else, so the service's projection
+	// has to copy source_image_url across; it did not, and the whole demo
+	// catalogue was a grid of grey tiles on Android. This reads through the
+	// service with NO media-service configured, which is the demo database's
+	// real shape: none of these products has a media asset.
+	svc := service.New(store, nil, "")
+	sellerID := cat.Seller.ID
+	projected := map[string]*postgres.Product{}
+	for cursor := ""; ; {
+		page, err := svc.ListProductsFiltered(ctx, postgres.ProductFilter{
+			SellerID: &sellerID, Limit: 100, Cursor: cursor,
+		})
+		if err != nil {
+			t.Fatalf("service read: %v", err)
+		}
+		for _, p := range page.Items {
+			projected[p.Slug] = p
+		}
+		if page.NextCursor == "" || len(page.Items) == 0 {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	for slug := range demo {
+		got, ok := projected[slug]
+		if !ok {
+			t.Errorf("%s is missing from the service's product list", slug)
+			continue
+		}
+		if got.ImageURL == "" || got.ThumbnailURL == "" {
+			t.Errorf("%s reaches the client with image_url=%q thumbnail_url=%q; the phone draws a grey tile",
+				slug, got.ImageURL, got.ThumbnailURL)
+			continue
+		}
+		if got.SourceImageURL == nil || got.ImageURL != *got.SourceImageURL {
+			t.Errorf("%s image_url=%q, want the source_image_url %v", slug, got.ImageURL, got.SourceImageURL)
 		}
 	}
 

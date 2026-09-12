@@ -105,19 +105,26 @@ func (s *Service) StockFor(ctx context.Context, actorUserID, variantID uuid.UUID
 // placeholder — see the note in internal/media on why this is the opposite of
 // the write path's fail-closed rule.
 func (s *Service) hydrateProductImages(ctx context.Context, products []*postgres.Product) {
-	if s.media == nil || len(products) == 0 {
+	if len(products) == 0 {
 		return
 	}
-	ids := make([]uuid.UUID, 0, len(products))
-	for _, p := range products {
-		if id := productMediaID(p); id != nil {
-			ids = append(ids, *id)
+	// The projection runs whether or not anything was resolved, because the
+	// source-url fallback inside it has to run too. Returning early from here
+	// when media-service was not configured, or when no product on the page
+	// had a media id, is exactly what left the demo catalogue grey on Android.
+	var resolved map[uuid.UUID]media.Resolved
+	if s.media != nil {
+		ids := make([]uuid.UUID, 0, len(products))
+		for _, p := range products {
+			if id := productMediaID(p); id != nil {
+				ids = append(ids, *id)
+			}
+		}
+		if len(ids) > 0 {
+			resolved = s.media.ResolveURLs(ctx, ids)
 		}
 	}
-	if len(ids) == 0 {
-		return
-	}
-	applyResolvedImages(products, s.media.ResolveURLs(ctx, ids))
+	applyResolvedImages(products, resolved)
 }
 
 // productMediaID is the ONE rule for which asset represents a product.
@@ -146,17 +153,36 @@ func productMediaID(p *postgres.Product) *uuid.UUID {
 	return p.CoverMediaID
 }
 
-// applyResolvedImages writes the resolved URLs back onto the products.
+// applyResolvedImages is the ONE projection from what a product row holds to
+// the image_url/thumbnail_url a client draws. A nil map is allowed and means
+// nothing resolved.
+//
+// A resolved media asset wins. When none resolved, products.source_image_url
+// stands in for BOTH fields. That column is where the demo catalogue and
+// every fakestore import keep their only picture; none of those products has
+// a media-service asset, and Android reads image_url/thumbnail_url and
+// nothing else, so without this arm every one of them was a grey tile on the
+// phone while the web fell back client-side and looked fine. One external
+// URL serves as its own thumbnail because there is no rendition of it to
+// prefer; the client scales it.
+//
+// The column itself is never rewritten here: it is the importer's identity
+// field (see productwrite.go), not a display cache.
 func applyResolvedImages(products []*postgres.Product, resolved map[uuid.UUID]media.Resolved) {
 	for _, p := range products {
-		id := productMediaID(p)
-		if id == nil {
+		if p == nil {
 			continue
 		}
-		if r, ok := resolved[*id]; ok {
-			p.ImageURL = r.URL()
-			p.ThumbnailURL = r.Thumbnail()
-			p.ImageBlurhash = r.Blurhash
+		if id := productMediaID(p); id != nil {
+			if r, ok := resolved[*id]; ok {
+				p.ImageURL = r.URL()
+				p.ThumbnailURL = r.Thumbnail()
+				p.ImageBlurhash = r.Blurhash
+			}
+		}
+		if p.ImageURL == "" && p.SourceImageURL != nil && *p.SourceImageURL != "" {
+			p.ImageURL = *p.SourceImageURL
+			p.ThumbnailURL = *p.SourceImageURL
 		}
 	}
 }

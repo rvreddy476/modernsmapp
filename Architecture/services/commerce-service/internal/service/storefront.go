@@ -456,16 +456,20 @@ func (s *Service) hydrateHome(ctx context.Context, viewerID uuid.UUID, page *Hom
 		}
 	}
 
+	var resolved map[uuid.UUID]media.Resolved
 	if s.media != nil && len(ids) > 0 {
-		resolved := s.media.ResolveURLs(ctx, ids)
-		applyResolvedImages(all, resolved)
-		for _, b := range page.Banners {
-			if b.ImageMediaID == nil {
-				continue
-			}
-			if v, ok := resolved[*b.ImageMediaID]; ok {
-				b.ImageURL = v.URL()
-			}
+		resolved = s.media.ResolveURLs(ctx, ids)
+	}
+	// Always project, even with nothing resolved: the products' source-url
+	// fallback lives inside applyResolvedImages, and a demo database with no
+	// media-service at all is the case the fallback exists for.
+	applyResolvedImages(all, resolved)
+	for _, b := range page.Banners {
+		if b.ImageMediaID == nil {
+			continue
+		}
+		if v, ok := resolved[*b.ImageMediaID]; ok {
+			b.ImageURL = v.URL()
 		}
 	}
 

@@ -411,6 +411,16 @@ func TestTheBrowseGridCarriesImagesAndDiscountsInOneMediaCall(t *testing.T) {
 			Items []galleryItem `json:"items"`
 		}{})
 
+	// The full-price product gets NO gallery, only an external picture in
+	// source_image_url: the shape of every imported and demo product. The
+	// phone reads image_url/thumbnail_url alone, so the grid has to carry
+	// that URL in both fields or the tile is grey.
+	const sourceURL = "https://images.example/sf-full-price.jpg"
+	if _, err := edgePool.Exec(context.Background(),
+		`UPDATE products SET source_image_url = $2 WHERE id = $1`, f.fullPrice, sourceURL); err != nil {
+		t.Fatal(err)
+	}
+
 	*batches = 0
 	var page struct {
 		Items []productJSON `json:"items"`
@@ -422,27 +432,36 @@ func TestTheBrowseGridCarriesImagesAndDiscountsInOneMediaCall(t *testing.T) {
 		t.Fatalf("the browse page made %d media calls; a page must cost exactly one", *batches)
 	}
 
-	var found bool
+	var found, foundFullPrice bool
 	for _, p := range page.Items {
-		if p.ID != f.discounted {
-			continue
-		}
-		found = true
-		if p.ImageURL == "" || p.ThumbnailURL == "" {
-			t.Fatalf("the discounted product has no image on the grid: %+v", p)
-		}
-		if p.ImageURL == p.ThumbnailURL {
-			t.Fatal("the display image and the grid thumbnail are the same URL")
-		}
-		if p.DiscountPct == nil || *p.DiscountPct != 25 {
-			t.Fatalf("discount_pct = %v, want 25 (₹999 → ₹749)", p.DiscountPct)
-		}
-		if p.CategoryName == nil || *p.CategoryName != "SF Primary" {
-			t.Fatalf("category_name = %v", p.CategoryName)
+		switch p.ID {
+		case f.fullPrice:
+			foundFullPrice = true
+			if p.ImageURL != sourceURL || p.ThumbnailURL != sourceURL {
+				t.Fatalf("a product whose only picture is source_image_url reaches the grid as "+
+					"image_url=%q thumbnail_url=%q, want %q in both", p.ImageURL, p.ThumbnailURL, sourceURL)
+			}
+		case f.discounted:
+			found = true
+			if p.ImageURL == "" || p.ThumbnailURL == "" {
+				t.Fatalf("the discounted product has no image on the grid: %+v", p)
+			}
+			if p.ImageURL == p.ThumbnailURL {
+				t.Fatal("the display image and the grid thumbnail are the same URL")
+			}
+			if p.DiscountPct == nil || *p.DiscountPct != 25 {
+				t.Fatalf("discount_pct = %v, want 25 (₹999 → ₹749)", p.DiscountPct)
+			}
+			if p.CategoryName == nil || *p.CategoryName != "SF Primary" {
+				t.Fatalf("category_name = %v", p.CategoryName)
+			}
 		}
 	}
 	if !found {
 		t.Fatal("the discounted product is not in the browse page at all")
+	}
+	if !foundFullPrice {
+		t.Fatal("the full-price product is not in the browse page at all")
 	}
 }
 

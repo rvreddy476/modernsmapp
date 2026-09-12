@@ -197,6 +197,11 @@ type Product struct {
 	// Empty when media-service is unreachable: the read path fails SOFT and
 	// the client shows a placeholder. A catalogue that will not load because
 	// the image service is down is worse than a catalogue of grey boxes.
+	//
+	// When no media asset resolves, both fields carry SourceImageURL instead
+	// (see service.applyResolvedImages): an imported product has its only
+	// picture there, and a client that reads these two fields alone would
+	// otherwise draw a grey tile for the whole demo catalogue.
 	ImageURL         string     `db:"-" json:"image_url,omitempty"`
 	ThumbnailURL     string     `db:"-" json:"thumbnail_url,omitempty"`
 	ImageBlurhash    *string    `db:"-" json:"image_blurhash,omitempty"`

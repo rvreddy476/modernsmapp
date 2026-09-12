@@ -258,6 +258,104 @@ func TestAMediaOutageLeavesTheCatalogueRenderable(t *testing.T) {
 	}
 }
 
+// ─── The external image stands in when there is no media asset ───────────
+
+// The defect this closes: the demo catalogue and every fakestore import carry
+// their picture in products.source_image_url and nothing in media-service.
+// The projection filled image_url/thumbnail_url only from resolved media, and
+// Android reads only those two fields, so every such product was a grey tile
+// on the phone while the web quietly fell back on the client.
+func TestTheSourceImageStandsInWhenNoMediaResolves(t *testing.T) {
+	src := "https://images.example/p.jpg"
+	mediaID := uuid.New()
+	resolved := map[uuid.UUID]media.Resolved{mediaID: {
+		MediaID: mediaID,
+		Variants: map[string]string{
+			"thumb_150":   "https://cdn/t.jpg",
+			"medium_1080": "https://cdn/m.jpg",
+		},
+	}}
+
+	t.Run("resolved media wins over the source url", func(t *testing.T) {
+		p := &postgres.Product{PrimaryImageMediaID: &mediaID, SourceImageURL: &src}
+		applyResolvedImages([]*postgres.Product{p}, resolved)
+		if p.ImageURL != "https://cdn/m.jpg" || p.ThumbnailURL != "https://cdn/t.jpg" {
+			t.Fatalf("image=%q thumb=%q; a seller's own upload must beat the importer's placeholder",
+				p.ImageURL, p.ThumbnailURL)
+		}
+	})
+
+	t.Run("no media and a source url fills both fields", func(t *testing.T) {
+		p := &postgres.Product{SourceImageURL: &src}
+		applyResolvedImages([]*postgres.Product{p}, nil)
+		if p.ImageURL != src || p.ThumbnailURL != src {
+			t.Fatalf("image=%q thumb=%q, want both %q", p.ImageURL, p.ThumbnailURL, src)
+		}
+		// And the column itself is untouched: it is the importer's identity
+		// field, not a display cache.
+		if p.SourceImageURL == nil || *p.SourceImageURL != src {
+			t.Fatalf("source_image_url was rewritten: %v", p.SourceImageURL)
+		}
+	})
+
+	t.Run("neither leaves both fields empty", func(t *testing.T) {
+		empty := ""
+		for name, p := range map[string]*postgres.Product{
+			"nil source":   {},
+			"empty source": {SourceImageURL: &empty},
+		} {
+			applyResolvedImages([]*postgres.Product{p}, nil)
+			if p.ImageURL != "" || p.ThumbnailURL != "" {
+				t.Fatalf("%s: image=%q thumb=%q, want empty", name, p.ImageURL, p.ThumbnailURL)
+			}
+		}
+	})
+
+	t.Run("a nil product is skipped", func(t *testing.T) {
+		applyResolvedImages([]*postgres.Product{nil, {SourceImageURL: &src}}, nil)
+	})
+}
+
+// The fallback has to run on the real read paths too, not only inside the
+// projection helper: hydration used to return early when media-service was
+// not configured or when no product on the page had a media id, and either
+// exit skipped the projection entirely.
+func TestTheSourceImageSurvivesEveryEarlyExitOfHydration(t *testing.T) {
+	src := "https://images.example/p.jpg"
+
+	t.Run("no media client configured", func(t *testing.T) {
+		s := &Service{}
+		p := &postgres.Product{ID: uuid.New(), SourceImageURL: &src}
+		s.hydrateProductImages(context.Background(), []*postgres.Product{p})
+		if p.ImageURL != src || p.ThumbnailURL != src {
+			t.Fatalf("image=%q thumb=%q, want %q", p.ImageURL, p.ThumbnailURL, src)
+		}
+	})
+
+	t.Run("no product on the page has a media id", func(t *testing.T) {
+		var calls int64
+		s := &Service{media: countingMedia(t, &calls)}
+		p := &postgres.Product{ID: uuid.New(), SourceImageURL: &src}
+		s.hydrateProductImages(context.Background(), []*postgres.Product{p})
+		if calls != 0 {
+			t.Fatalf("media-service received %d requests for a page with no media ids; want 0", calls)
+		}
+		if p.ImageURL != src || p.ThumbnailURL != src {
+			t.Fatalf("image=%q thumb=%q, want %q", p.ImageURL, p.ThumbnailURL, src)
+		}
+	})
+
+	t.Run("the home page with nothing to resolve", func(t *testing.T) {
+		s := &Service{}
+		p := &postgres.Product{ID: uuid.New(), SourceImageURL: &src}
+		page := &HomePage{Sections: []HomeSection{{Key: "new_arrivals", Products: []*postgres.Product{p}}}}
+		s.hydrateHome(context.Background(), uuid.Nil, page)
+		if p.ImageURL != src || p.ThumbnailURL != src {
+			t.Fatalf("image=%q thumb=%q, want %q", p.ImageURL, p.ThumbnailURL, src)
+		}
+	})
+}
+
 // ─── Banner validation ──────────────────────────────────────────────────
 
 func TestABannerMustBeOpenable(t *testing.T) {
