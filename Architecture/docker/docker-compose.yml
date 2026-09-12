@@ -916,6 +916,10 @@ services:
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-atPost}
       SMTP_FROM_ADDR: ${SMTP_FROM_ADDR:-no-reply@atpost.local}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Tube channel subscriptions moved to post-service (12 Sep 2026); the
+      # subscriber-ids and by-owner internal routes keep their paths and JSON.
+      POST_SERVICE_URL: http://post-service:8084
+      SUBSCRIBERS_SERVICE_URL: http://post-service:8084
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8088:8088"
