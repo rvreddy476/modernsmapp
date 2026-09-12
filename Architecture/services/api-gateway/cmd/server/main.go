@@ -849,3 +849,27 @@ func env(key, fallback string) string {
 	}
 	return fallback
 }
+
+// dormantProductPrefixes are public prefixes of products that are built and
+// deployed but have no client anywhere. See docs/adr/adr-dormant-products.md.
+var dormantProductPrefixes = []string{"/v1/groups", "/v1/communities"}
+
+// serveDormantProductGate answers 404 for a dormant product's public prefix
+// unless DORMANT_PRODUCTS_ENABLED is true. 404 rather than 503: an edge
+// client should not learn that a product exists behind a closed door, which
+// is the same reasoning as the forbidden-path backstop below the route
+// match. Internal service-to-service calls do not pass through here.
+func serveDormantProductGate(w http.ResponseWriter, r *http.Request, enabled bool) bool {
+	if enabled {
+		return false
+	}
+	for _, p := range dormantProductPrefixes {
+		if r.URL.Path == p || strings.HasPrefix(r.URL.Path, p+"/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))
+			return true
+		}
+	}
+	return false
+}
