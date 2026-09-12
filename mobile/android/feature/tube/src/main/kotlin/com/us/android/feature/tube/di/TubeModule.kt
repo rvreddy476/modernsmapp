@@ -1,5 +1,6 @@
 package com.us.android.feature.tube.di
 
+import com.us.android.feature.tube.data.VideoSeriesApi
 import com.us.android.feature.tube.data.WatchProgressApi
 import dagger.Module
 import dagger.Provides
@@ -16,4 +17,8 @@ object TubeModule {
     @Provides
     @Singleton
     fun provideWatchProgressApi(retrofit: Retrofit): WatchProgressApi = retrofit.create(WatchProgressApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideVideoSeriesApi(retrofit: Retrofit): VideoSeriesApi = retrofit.create(VideoSeriesApi::class.java)
 }

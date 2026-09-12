@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
@@ -29,6 +30,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,6 +49,8 @@ import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.ui.formatCount
+import com.us.android.feature.tube.data.SeriesEpisode
+import com.us.android.feature.tube.data.SeriesInfo
 import com.us.android.feature.tube.ui.home.VideoRow
 import com.us.android.feature.tube.ui.pressScale
 import com.us.android.feature.tube.ui.videoMetaLine
@@ -84,12 +88,15 @@ class WatchDetailsActions(
     val onShare: (FeedItem) -> Unit,
     val onMore: (FeedItem) -> Unit,
     val onOpenVideo: (FeedItem) -> Unit,
+    /** An episode row was tapped: by post id, because an episode is not a row the queue knows. */
+    val onOpenEpisode: (postId: String) -> Unit,
 )
 
 /**
  * What sits under the player, top to bottom: the title and its line, the
  * author row with Follow, the action row, the description (three lines,
- * then "more"), the comments row, and "Up next".
+ * then "more"), the comments row, "In this series" when the video is an
+ * episode, and "Up next".
  */
 @Suppress("LongParameterList")
 fun LazyListScope.watchDetails(
@@ -97,6 +104,7 @@ fun LazyListScope.watchDetails(
     overlay: EngagementOverlay,
     offersFollow: Boolean,
     upNext: List<FeedItem>,
+    series: SeriesInfo?,
     thumbFor: (FeedItem) -> VideoThumb,
     actions: WatchDetailsActions,
 ) {
@@ -106,6 +114,16 @@ fun LazyListScope.watchDetails(
     if (item.text.isNotBlank()) item(key = "description") { Description(item) }
     if (!item.controls.noComments) {
         item(key = "comments") { CommentsRow(count = item.counts.comments, onClick = { actions.onComment(item.id) }) }
+    }
+    if (series != null && series.episodes.isNotEmpty()) {
+        item(key = "series") { SectionTitle(seriesTitle(series)) }
+        items(series.episodes.sortedBy { it.episodeNum }, key = { "episode:${it.postId}" }) { episode ->
+            EpisodeRow(
+                episode = episode,
+                current = episode.postId == item.id,
+                onClick = { actions.onOpenEpisode(episode.postId) },
+            )
+        }
     }
     if (upNext.isNotEmpty()) {
         item(key = "up-next") { SectionTitle("Up next") }
@@ -348,6 +366,57 @@ private fun CommentsRow(count: Int, onClick: () -> Unit) {
     }
 }
 
+/** "In this series", with the series' name after it when it has one. */
+private fun seriesTitle(series: SeriesInfo): String =
+    if (series.title.isBlank()) "In this series" else "In this series · ${series.title}"
+
+/**
+ * One episode: its number, its title, and a play mark on the one playing.
+ * The current row is still a target (the ViewModel ignores a re-open) so
+ * every row reads the same to a screen reader; `selected` says which.
+ */
+@Composable
+private fun EpisodeRow(episode: SeriesEpisode, current: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pressScale(onClick)
+            .semantics {
+                role = Role.Button
+                selected = current
+            }
+            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m)
+            .testTag("watch_episode:${episode.postId}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        Text(
+            text = "${episode.episodeNum}",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = if (current) UsTheme.extended.accentSolid else UsTheme.extended.textMuted,
+            modifier = Modifier.width(EPISODE_NUMBER_WIDTH),
+        )
+        Text(
+            text = episode.title.ifBlank { "Episode ${episode.episodeNum}" },
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (current) UsTheme.extended.textPrimary else UsTheme.extended.textSecondary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (current) {
+            Icon(
+                imageVector = UsIcons.Play,
+                contentDescription = "Now playing",
+                tint = UsTheme.extended.accentSolid,
+                modifier = Modifier.size(CHEVRON),
+            )
+        }
+    }
+}
+
 @Composable
 private fun SectionTitle(text: String) {
     Text(
@@ -362,3 +431,4 @@ private const val DESCRIPTION_LINES = 3
 private val TITLE_SIZE = 18.sp
 private val ACTION_GLYPH = 24.dp
 private val CHEVRON = 18.dp
+private val EPISODE_NUMBER_WIDTH = 24.dp

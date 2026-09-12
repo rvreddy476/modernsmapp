@@ -26,6 +26,8 @@ dependencies {
     // more / comments sheets.
     implementation(projects.core.feed)
     implementation(projects.core.engagement)
+    // The viewer's "Autoplay next episode" switch.
+    implementation(projects.core.datastore)
     // The You page's own name and avatar.
     implementation(projects.core.profile)
 

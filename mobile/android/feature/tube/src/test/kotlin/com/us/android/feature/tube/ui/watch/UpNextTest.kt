@@ -7,7 +7,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedViewerState
 import org.junit.Test
 
-/** The "Up next" rule and the auto-advance it implies. */
+/** The "Up next" rail: what is offered under the player, never what plays on its own. */
 class UpNextTest {
 
     private val items = listOf("a", "b", "c", "d").map(::item)
@@ -19,15 +19,13 @@ class UpNextTest {
     }
 
     @Test
-    fun `the last row has nothing up next and nothing to advance to`() {
+    fun `the last row has nothing up next`() {
         assertThat(upNext(items, "d")).isEmpty()
-        assertThat(nextAfter(items, "d")).isNull()
     }
 
     @Test
     fun `a video outside the list offers the whole list minus itself`() {
         assertThat(upNext(items, "zz").map { it.id }).containsExactly("a", "b", "c", "d").inOrder()
-        assertThat(nextAfter(items, "zz")?.id).isEqualTo("a")
     }
 
     @Test
@@ -35,12 +33,6 @@ class UpNextTest {
         val long = (1..30).map { item("v$it") }
         assertThat(upNext(long, "v1")).hasSize(UP_NEXT_LIMIT)
         assertThat(upNext(long, "v1", limit = 3).map { it.id }).containsExactly("v2", "v3", "v4").inOrder()
-    }
-
-    @Test
-    fun `advance is the first of up next`() {
-        assertThat(nextAfter(items, "a")?.id).isEqualTo("b")
-        assertThat(nextAfter(emptyList(), "a")).isNull()
     }
 
     private fun item(id: String) = FeedItem(

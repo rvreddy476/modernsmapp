@@ -170,6 +170,22 @@ class SettingsDataStore @Inject constructor(
         store.edit { it[KEY_WELLBEING_GUARD_CACHE] = encoded }
     }
 
+    /**
+     * "Autoplay next episode" on the Tube watch screen (founder, 2026-09-12):
+     * when a video in a series ends, the next episode plays after a ten
+     * second countdown. On by default because a series is watched in order
+     * and the countdown itself is the viewer's chance to say no; the switch
+     * is for the viewer who never wants to be moved along. Series-only: a
+     * video outside a series ends on its end screen whatever this says.
+     */
+    val autoplayNextEpisode: Flow<Boolean> = store.data
+        .safe()
+        .map { it[KEY_AUTOPLAY_NEXT_EPISODE] ?: true }
+
+    suspend fun setAutoplayNextEpisode(enabled: Boolean) {
+        store.edit { it[KEY_AUTOPLAY_NEXT_EPISODE] = enabled }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -192,6 +208,7 @@ class SettingsDataStore @Inject constructor(
         val KEY_KEYWORD_FILTERS = stringPreferencesKey("keyword_filters")
         val KEY_USAGE_LEDGER = stringPreferencesKey("usage_ledger")
         val KEY_WELLBEING_GUARD_CACHE = stringPreferencesKey("wellbeing_guard_cache")
+        val KEY_AUTOPLAY_NEXT_EPISODE = booleanPreferencesKey("autoplay_next_episode")
         const val KEYWORD_SEPARATOR = ","
     }
 }

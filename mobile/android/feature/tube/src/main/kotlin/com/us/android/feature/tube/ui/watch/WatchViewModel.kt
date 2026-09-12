@@ -16,6 +16,7 @@ import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
 import com.us.android.core.common.di.ApplicationScope
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.datastore.SettingsDataStore
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
@@ -31,11 +32,15 @@ import com.us.android.core.media.PlayerFactory
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.UsReelQuality
+import com.us.android.feature.tube.data.SeriesEpisode
+import com.us.android.feature.tube.data.SeriesInfo
 import com.us.android.feature.tube.data.TubeQueue
+import com.us.android.feature.tube.data.VideoSeriesRepository
 import com.us.android.feature.tube.data.WatchProgressRepository
 import com.us.android.feature.tube.navigation.WatchRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -57,6 +62,9 @@ sealed interface WatchContent {
     data class Failed(val message: String) : WatchContent
 }
 
+/** The next episode on its way: [secondsLeft] ticks down once a second until it plays. */
+data class Countdown(val next: SeriesEpisode, val secondsLeft: Int)
+
 /**
  * One video, playing (Tube, 2026-09-05).
  *
@@ -67,7 +75,17 @@ sealed interface WatchContent {
  * the ViewModel rather than the composable, because fullscreen is an
  * orientation change and the screen must not lose its playhead (or its
  * decoder) to one. Sound is ON: a long video is watched, not previewed.
- * Not looped: when it ends, the next in the list plays ([advance]).
+ * Not looped: when it ends, the player stops on the last frame and what
+ * happens next is [endOfVideo]'s rule.
+ *
+ * ## THE END OF A VIDEO (founder, 2026-09-12)
+ *
+ * A video in a series counts down ten seconds to the next episode
+ * ([countdown]), with Cancel and Play now on screen; the viewer can switch
+ * the countdown off for good ([autoplayNext]). The last episode, a video in
+ * no series, and a cancelled countdown all end on the end screen: Replay and
+ * the "Up next" recommendations, none of which plays on its own. Nothing
+ * auto-advances along the browse list.
  *
  * ## RESUME AND PROGRESS
  *
@@ -79,12 +97,13 @@ sealed interface WatchContent {
  * the server binds it required — so a video whose length is not yet known
  * is not reported until it is.
  *
- * ## WHAT IT PLAYS THROUGH
+ * ## WHAT IT OFFERS
  *
  * The list Tube home was showing ([TubeQueue]): "Up next" is the rows after
- * this one and the end of the video advances to the first of them. A video
- * opened outside the list — a deep link, or a list refreshed underneath —
- * is fetched by id and plays with the rest of the list after it.
+ * this one, offered under the player and on the end screen. A video opened
+ * outside the list (a deep link, or a list refreshed underneath) is fetched
+ * by id and offers the rest of the list. The video's series, when it has
+ * one ([series]), is fetched beside the resume and never waited on.
  */
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
@@ -97,6 +116,8 @@ class WatchViewModel @Inject constructor(
     playerFactory: PlayerFactory,
     private val sources: MediaSources,
     private val progress: WatchProgressRepository,
+    private val seriesRepository: VideoSeriesRepository,
+    private val settings: SettingsDataStore,
     private val queue: TubeQueue,
     private val engagement: EngagementStore,
     private val shares: EngagementRepository,
@@ -117,9 +138,16 @@ class WatchViewModel @Inject constructor(
      */
     private var watchSession: WatchSession? = null
 
+    /**
+     * How the NEXT view began, consumed by [startWatchAnalytics]. TAP unless
+     * the countdown ran out, because the viewer opens everything else on this
+     * screen by hand, and `autoplay` on the wire means the app chose.
+     */
+    private var pendingStartMethod: PlayStartMethod = PlayStartMethod.TAP
+
     private val _currentId = MutableStateFlow(savedStateHandle.toRoute<WatchRoute>().postId)
 
-    /** The post playing now; changes in place when the viewer picks from "Up next" or the video ends. */
+    /** The post playing now; changes in place when the viewer picks from "Up next" or the next episode plays. */
     val currentId: StateFlow<String> = _currentId.asStateFlow()
 
     private val _content = MutableStateFlow<WatchContent>(WatchContent.Loading)
@@ -128,6 +156,25 @@ class WatchViewModel @Inject constructor(
     /** The rows after the current one in the list the viewer came from. */
     val upNext: StateFlow<List<FeedItem>> = combine(queue.items, _currentId) { items, id -> upNext(items, id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
+
+    private val _series = MutableStateFlow<SeriesInfo?>(null)
+
+    /** The series this video is an episode of, or null: not in one, or not known yet. */
+    val series: StateFlow<SeriesInfo?> = _series.asStateFlow()
+
+    /**
+     * "Autoplay next episode". Eager, not while-subscribed: the value is read
+     * the instant a video ends, and a flow nobody has collected yet would
+     * answer with the default rather than the viewer's choice.
+     */
+    val autoplayNext: StateFlow<Boolean> = settings.autoplayNextEpisode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    private val _countdown = MutableStateFlow<Countdown?>(null)
+
+    /** The countdown to the next episode while one is running; null otherwise. */
+    val countdown: StateFlow<Countdown?> = _countdown.asStateFlow()
+    private var countdownJob: Job? = null
 
     /** The one player. Released with the ViewModel — see the class note. */
     val player: ExoPlayer = playerFactory.create().apply {
@@ -158,11 +205,11 @@ class WatchViewModel @Inject constructor(
         // copy that can disagree with the first.
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
-                // Closed as `ended` BEFORE advancing, so the completed view is
-                // attributed to this video rather than being swept up by the
-                // swipe_next that moves to the following one.
+                // Closed as `ended` BEFORE the countdown starts, so the
+                // completed view is attributed to this video rather than being
+                // swept up by the next episode's open.
                 endWatchAnalytics(PlayEndReason.ENDED)
-                advance()
+                startCountdown()
             }
         }
 
@@ -187,9 +234,13 @@ class WatchViewModel @Inject constructor(
         }
     }
 
-    /** Swaps the video in place — "Up next" was tapped. The screen stays; the player re-prepares. */
+    /**
+     * Swaps the video in place: "Up next" or an episode row was tapped, or
+     * the countdown ran out. The screen stays; the player re-prepares.
+     */
     fun open(postId: String) {
         if (postId == _currentId.value) return
+        cancelCountdown()
         report()
         endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
         _currentId.value = postId
@@ -203,6 +254,7 @@ class WatchViewModel @Inject constructor(
             _content.value = WatchContent.Failed("We couldn't load this video.")
             return
         }
+        launchLoadSeries(postId)
         val playback = urlResolver.playbackFor(item)
         _content.value = WatchContent.Ready(item, playback)
         launchKnowAuthor(item)
@@ -233,17 +285,22 @@ class WatchViewModel @Inject constructor(
      */
     private fun startWatchAnalytics(item: FeedItem) {
         endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
+        // Consumed once: the method describes how THIS playback began, and
+        // the next one is a tap again unless another countdown says otherwise.
+        val startMethod = pendingStartMethod
+        pendingStartMethod = PlayStartMethod.TAP
         watchSession = watchTracker.startView(
             contentId = item.id,
             creatorId = item.author.id,
             surface = AnalyticsSurface.POSTTUBE,
             contentDurationMs = item.durationMs(),
             // Tube plays because the viewer opened this video, not because it
-            // scrolled past. `resume` seeks afterwards; the method describes
-            // how playback BEGAN.
-            startMethod = PlayStartMethod.TAP,
+            // scrolled past, except when the countdown to the next episode
+            // ran out. `resume` seeks afterwards; the method describes how
+            // playback BEGAN.
+            startMethod = startMethod,
             isMuted = player.volume == 0f,
-            isAutoplay = false,
+            isAutoplay = startMethod == PlayStartMethod.AUTOPLAY,
         ) {
             WatchProbe(
                 playheadMs = player.currentPosition.coerceAtLeast(0L),
@@ -284,10 +341,69 @@ class WatchViewModel @Inject constructor(
         if (at > 0L && player.currentPosition < RESUME_GRACE_MILLIS) player.seekTo(at)
     }
 
-    /** The end of the list is the end: the player simply stops on the last frame. */
-    private fun advance() {
-        val next = nextAfter(queue.items.value, _currentId.value) ?: return
-        open(next.id)
+    /**
+     * The series, fetched beside the prepare and never awaited: the first
+     * frame must not wait on a round trip for a list that only matters at
+     * the end. Launched on the ViewModel's scope rather than inside the
+     * collectLatest that called [load], so a pick from "Up next" mid-fetch
+     * does not silently abandon it; the id check keeps a late answer for
+     * the last video from landing on this one. The list is kept while the
+     * new video is in it (the next episode, most often) so "In this series"
+     * does not blink out and back between episodes.
+     */
+    private fun launchLoadSeries(postId: String) {
+        if (_series.value?.episodes?.none { it.postId == postId } != false) _series.value = null
+        viewModelScope.launch {
+            val fetched = seriesRepository.forPost(postId)
+            if (_currentId.value == postId) _series.value = fetched
+        }
+    }
+
+    // ── The end of a video ───────────────────────────────────────────────
+
+    /**
+     * Ten seconds to the next episode, one tick a second so the number on
+     * screen moves; then it plays. Nothing starts when [endOfVideo] says the
+     * end screen: the player stays on its last frame and the screen draws
+     * Replay and the recommendations.
+     */
+    private fun startCountdown() {
+        val end = endOfVideo(_series.value, _currentId.value, autoplayNext.value)
+        val next = (end as? EndOfVideo.Countdown)?.next ?: return
+        countdownJob?.cancel()
+        countdownJob = viewModelScope.launch {
+            var left = end.seconds
+            _countdown.value = Countdown(next, left)
+            while (left > 0) {
+                delay(COUNTDOWN_TICK_MILLIS)
+                left--
+                _countdown.value = Countdown(next, left)
+            }
+            playNext(next, PlayStartMethod.AUTOPLAY)
+        }
+    }
+
+    /** The viewer said no, or did something else with the player: the end screen instead. */
+    fun cancelCountdown() {
+        countdownJob?.cancel()
+        countdownJob = null
+        _countdown.value = null
+    }
+
+    /** "Play now": the next episode without the wait. A tap, so the view is a tap's. */
+    fun playNextNow() {
+        val next = _countdown.value?.next ?: return
+        playNext(next, PlayStartMethod.TAP)
+    }
+
+    private fun playNext(next: SeriesEpisode, startMethod: PlayStartMethod) {
+        cancelCountdown()
+        pendingStartMethod = startMethod
+        open(next.postId)
+    }
+
+    fun setAutoplayNext(enabled: Boolean) {
+        viewModelScope.launch { settings.setAutoplayNextEpisode(enabled) }
     }
 
     /**
@@ -310,19 +426,31 @@ class WatchViewModel @Inject constructor(
 
     // ── Transport ────────────────────────────────────────────────────────
 
+    /**
+     * Play or pause; from the end, Replay. Replay sets `playWhenReady` rather
+     * than toggling it: at STATE_ENDED the player still holds the `true` it
+     * finished with, and a toggle would seek to the top and sit there paused.
+     */
     fun togglePlay() {
-        if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
+        cancelCountdown()
+        if (player.playbackState == Player.STATE_ENDED) {
+            player.seekTo(0L)
+            player.playWhenReady = true
+            return
+        }
         player.playWhenReady = !player.playWhenReady
     }
 
     /** ±10 s from a double-tap; clamped so a skip past the end lands on the end. */
     fun seekBy(deltaMillis: Long) {
+        cancelCountdown()
         val duration = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
         noteSeek()
         player.seekTo((player.currentPosition + deltaMillis).coerceIn(0L, duration))
     }
 
     fun seekTo(positionMillis: Long) {
+        cancelCountdown()
         noteSeek()
         player.seekTo(positionMillis.coerceAtLeast(0L))
     }
@@ -348,8 +476,13 @@ class WatchViewModel @Inject constructor(
         player.setPlaybackSpeed(speed)
     }
 
-    /** The app went behind something: hold the frame, and say where it was. */
+    /**
+     * The app went behind something: hold the frame, and say where it was.
+     * A running countdown is dropped rather than paused: the next episode
+     * must not start playing to a screen nobody is looking at.
+     */
     fun onBackground() {
+        cancelCountdown()
         player.playWhenReady = false
         report()
         // The view is closed rather than paused: the process may not survive
@@ -397,6 +530,7 @@ class WatchViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        cancelCountdown()
         report()
         // Leaving the screen. Not `ended` — the video did not finish — and not
         // `backgrounded`, which is a different signal about the app.
@@ -416,5 +550,8 @@ class WatchViewModel @Inject constructor(
 
         /** A resume that arrives after this much has played is dropped. */
         const val RESUME_GRACE_MILLIS = 5_000L
+
+        /** The countdown moves once a second, as the number on screen does. */
+        const val COUNTDOWN_TICK_MILLIS = 1_000L
     }
 }

@@ -50,12 +50,16 @@ import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
+import com.us.android.feature.tube.data.SeriesInfo
 
 /**
  * The watch screen (Tube, 2026-09-05): the 16:9 player pinned at the top,
  * everything about the video scrolling under it — title, author, actions,
- * description, comments, "Up next". Fullscreen turns the phone sideways and
- * gives the player the whole screen; Back brings it upright.
+ * description, comments, "In this series", "Up next". Fullscreen turns the
+ * phone sideways and gives the player the whole screen; Back brings it
+ * upright. When the video ends the player is covered by the countdown to
+ * the next episode, or by the end screen ([WatchEndScreen]) when there is
+ * nothing to count down to.
  *
  * The shell's bar is asked to go, as Reels' full mode asks: a pushed route
  * has none anyway, and asking makes the intent explicit. Comments and the
@@ -73,6 +77,8 @@ fun WatchScreen(
 ) {
     val content by viewModel.content.collectAsStateWithLifecycle()
     val upNext by viewModel.upNext.collectAsStateWithLifecycle()
+    val series by viewModel.series.collectAsStateWithLifecycle()
+    val countdown by viewModel.countdown.collectAsStateWithLifecycle()
     val overlays by viewModel.overlays.collectAsStateWithLifecycle()
     val followEdges by viewModel.followEdges.collectAsStateWithLifecycle()
     val moreMessage by more.message.collectAsStateWithLifecycle()
@@ -111,6 +117,7 @@ fun WatchScreen(
             onShare = onShare,
             onMore = { sheets.moreFor = it },
             onOpenVideo = { viewModel.open(it.id) },
+            onOpenEpisode = viewModel::open,
         )
     }
 
@@ -126,6 +133,8 @@ fun WatchScreen(
             playhead = playhead,
             transport = transport,
             upNext = upNext,
+            series = series,
+            countdown = countdown,
             overlays = overlays,
             followEdges = followEdges,
             viewModel = viewModel,
@@ -173,6 +182,7 @@ private fun WatchSheetsHost(
 ) {
     val quality by viewModel.quality.collectAsStateWithLifecycle()
     val speed by viewModel.speed.collectAsStateWithLifecycle()
+    val autoplayNext by viewModel.autoplayNext.collectAsStateWithLifecycle()
     val trackHeights = rememberVideoHeights(viewModel.player)
     if (sheets.settingsOpen) {
         val playback = (content as? WatchContent.Ready)?.playback
@@ -180,8 +190,10 @@ private fun WatchSheetsHost(
             qualities = reelQualityOptions(heights = trackHeights, adaptive = playback?.kind == PlaybackKind.Hls),
             selectedQuality = quality,
             speed = speed,
+            autoplayNext = autoplayNext,
             onSelectQuality = viewModel::selectQuality,
             onSelectSpeed = viewModel::selectSpeed,
+            onAutoplayNextChange = viewModel::setAutoplayNext,
             onDismiss = { sheets.settingsOpen = false },
         )
     }
@@ -212,13 +224,24 @@ private fun WatchBody(
     playhead: Playhead,
     transport: WatchTransport,
     upNext: List<FeedItem>,
+    series: SeriesInfo?,
+    countdown: Countdown?,
     overlays: Map<String, EngagementOverlay>,
     followEdges: Map<String, FollowStatus>,
     viewModel: WatchViewModel,
     actions: WatchDetailsActions,
 ) {
     if (fullscreen) {
-        PlayerOrState(content, playhead, fullscreen = true, transport, viewModel, modifier = Modifier.fillMaxSize())
+        PlayerOrState(
+            content = content,
+            playhead = playhead,
+            fullscreen = true,
+            transport = transport,
+            upNext = upNext,
+            countdown = countdown,
+            viewModel = viewModel,
+            modifier = Modifier.fillMaxSize(),
+        )
         return
     }
     Column(modifier = Modifier.fillMaxSize()) {
@@ -227,6 +250,8 @@ private fun WatchBody(
             playhead = playhead,
             fullscreen = false,
             transport = transport,
+            upNext = upNext,
+            countdown = countdown,
             viewModel = viewModel,
             modifier = Modifier
                 .fillMaxWidth()
@@ -243,6 +268,7 @@ private fun WatchBody(
                 overlay = overlays[item.id] ?: EngagementOverlay(),
                 offersFollow = offersFollow(viewModel.ownUserId, item.author.id, followEdges[item.author.id]),
                 upNext = upNext,
+                series = series,
                 thumbFor = viewModel::thumb,
                 actions = actions,
             )
@@ -253,7 +279,9 @@ private fun WatchBody(
 /**
  * The player, or what stands in for it: a loader while the post is fetched,
  * "still processing" for a video with nothing to play yet, the failure
- * with Back as the way out.
+ * with Back as the way out. Over the player, once the video has ended, the
+ * countdown to the next episode or the end screen; the countdown wins when
+ * both could show, because it is the one that is about to do something.
  */
 @Suppress("LongParameterList")
 @Composable
@@ -262,6 +290,8 @@ private fun PlayerOrState(
     playhead: Playhead,
     fullscreen: Boolean,
     transport: WatchTransport,
+    upNext: List<FeedItem>,
+    countdown: Countdown?,
     viewModel: WatchViewModel,
     modifier: Modifier = Modifier,
 ) {
@@ -275,13 +305,28 @@ private fun PlayerOrState(
                 modifier = modifier,
             )
         } else {
-            WatchPlayer(
-                player = viewModel.player,
-                playhead = playhead,
-                fullscreen = fullscreen,
-                transport = transport,
-                modifier = modifier,
-            )
+            Box(modifier = modifier) {
+                WatchPlayer(
+                    player = viewModel.player,
+                    playhead = playhead,
+                    fullscreen = fullscreen,
+                    transport = transport,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                when {
+                    countdown != null -> NextEpisodeCountdown(
+                        countdown = countdown,
+                        onCancel = viewModel::cancelCountdown,
+                        onPlayNow = viewModel::playNextNow,
+                    )
+                    playhead.ended -> WatchEndScreen(
+                        upNext = upNext,
+                        thumbFor = viewModel::thumb,
+                        onReplay = viewModel::togglePlay,
+                        onOpen = { viewModel.open(it.id) },
+                    )
+                }
+            }
         }
     }
 }

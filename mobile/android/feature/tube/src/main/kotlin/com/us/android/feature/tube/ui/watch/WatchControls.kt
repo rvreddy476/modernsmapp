@@ -66,6 +66,8 @@ data class Playhead(
     val bufferedMs: Long = 0L,
     val durationMs: Long = 0L,
     val playing: Boolean = false,
+    /** On the last frame: the end screen or the countdown takes the player. */
+    val ended: Boolean = false,
 ) {
     /** 0..1 of the video played; 0 while the length is unknown. */
     val playedFraction: Float get() = fraction(positionMs)
@@ -96,6 +98,7 @@ fun rememberPlayhead(player: Player, polling: Boolean): Playhead {
                 bufferedMs = player.bufferedPosition.coerceAtLeast(0L),
                 durationMs = player.duration.takeIf { it > 0L } ?: 0L,
                 playing = player.isPlaying,
+                ended = player.playbackState == Player.STATE_ENDED,
             )
             delay(POLL_MILLIS)
         }

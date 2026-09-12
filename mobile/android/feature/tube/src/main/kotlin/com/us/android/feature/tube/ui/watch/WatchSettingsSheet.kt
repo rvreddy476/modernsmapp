@@ -33,24 +33,33 @@ import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsReelQuality
+import com.us.android.core.ui.UsSettingsSwitchRow
 
 /**
- * The gear's sheet: Quality — Auto and the HLS ladder the player reports,
- * tallest first — and Speed, 0.5x to 2x. Two short groups of rows with a
- * check at the chosen one; a pick applies at once and the sheet stays, so
- * two changes are two taps, not four.
+ * The gear's sheet: Quality (Auto and the HLS ladder the player reports,
+ * tallest first), Speed (0.5x to 2x), and Autoplay, one switch. Short groups
+ * of rows with a check at the chosen one; a pick applies at once and the
+ * sheet stays, so two changes are two taps, not four.
  *
  * Quality offers Auto alone for an original MP4, which has no ladder; the
  * group is still drawn so the viewer sees why there is nothing to pick.
+ *
+ * Autoplay lives here rather than in account settings because it is decided
+ * while watching: the viewer who cancels the countdown twice wants the
+ * switch within reach, not three screens away.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+// One parameter per control on the sheet; a bundle would only hide them.
+@Suppress("LongParameterList")
 fun WatchSettingsSheet(
     qualities: List<UsReelQuality>,
     selectedQuality: UsReelQuality,
     speed: Float,
+    autoplayNext: Boolean,
     onSelectQuality: (UsReelQuality) -> Unit,
     onSelectSpeed: (Float) -> Unit,
+    onAutoplayNextChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(
@@ -88,6 +97,15 @@ fun WatchSettingsSheet(
                     tag = "watch_speed:${speedLabel(option)}",
                 )
             }
+            Spacer(Modifier.height(UsTheme.spacing.xl))
+            GroupTitle(icon = UsIcons.ListVideo, text = "Autoplay")
+            UsSettingsSwitchRow(
+                title = "Autoplay next episode",
+                description = "When an episode ends, the next one plays after a ten second countdown.",
+                checked = autoplayNext,
+                onCheckedChange = onAutoplayNextChange,
+                modifier = Modifier.testTag("watch_autoplay_next"),
+            )
         }
     }
 }
