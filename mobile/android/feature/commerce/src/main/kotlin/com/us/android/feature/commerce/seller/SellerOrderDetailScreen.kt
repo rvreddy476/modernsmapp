@@ -179,7 +179,7 @@ private fun SellerOrderBody(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
                 SectionTitle("Timeline")
-                for (entry in order.timeline()) {
+                for (entry in state.timeline) {
                     TimelineRow(entry)
                 }
             }

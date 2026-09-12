@@ -73,21 +73,35 @@ class SellerFulfilmentApiRequestTest {
     }
 
     @Test
-    fun `pack posts to the order with no body`() {
-        enqueue("", code = 204)
+    fun `pack posts to the order with no body and reads the transition result`() {
+        enqueue("""{"data":{"order_id":"o-1","status":"packed","applied":true}}""")
+        // A repeat: 200, applied false. Still a success on this side.
+        enqueue("""{"data":{"order_id":"o-1","status":"packed","applied":false}}""")
 
-        runBlocking { api.packOrder("o-1") }
+        val (first, repeat) = runBlocking { api.packOrder("o-1") to api.packOrder("o-1") }
 
         val request = server.takeRequest()
         assertThat(request.method).isEqualTo("POST")
         assertThat(request.target).isEqualTo("/v1/commerce/seller/orders/o-1/pack")
+        assertThat(first.body()!!.data!!.applied).isTrue()
+        assertThat(first.body()!!.data!!.status).isEqualTo("packed")
+        assertThat(repeat.isSuccessful).isTrue()
+        assertThat(repeat.body()!!.data!!.applied).isFalse()
     }
 
     @Test
-    fun `ship posts the courier and tracking number in snake case`() {
-        enqueue("", code = 204)
+    fun `ship posts the courier and tracking number in snake case and reads the shipments at 201`() {
+        enqueue(
+            """
+            {"data":{"shipments":[{"id":"s-1","order_id":"o-1","seller_id":"sel-1","courier":"delhivery",
+             "tracking_number":"DL123456789","courier_order_id":null,"label_url":null,"tracking_url":null,
+             "status":"created","eta":null,"shipped_at":null,"delivered_at":null,"last_event_at":null,
+             "created_at":"2026-09-12T12:00:00Z","updated_at":"2026-09-12T12:00:00Z"}]}}
+            """.trimIndent(),
+            code = 201,
+        )
 
-        runBlocking {
+        val answer = runBlocking {
             api.shipOrder("o-1", ShipOrderRequest(courier = "delhivery", trackingNumber = "DL123456789"))
         }
 
@@ -96,20 +110,47 @@ class SellerFulfilmentApiRequestTest {
         assertThat(request.target).isEqualTo("/v1/commerce/seller/orders/o-1/ship")
         assertThat(request.body!!.utf8())
             .isEqualTo("""{"courier":"delhivery","tracking_number":"DL123456789"}""")
+        assertThat(answer.code()).isEqualTo(201)
+        val shipment = answer.body()!!.data!!.shipments.single()
+        assertThat(shipment.courier).isEqualTo("delhivery")
+        assertThat(shipment.trackingNumber).isEqualTo("DL123456789")
     }
 
     @Test
-    fun `a seller cancel posts the reason to the seller path`() {
+    fun `a seller cancel posts the reason to the seller path and reads where the order landed`() {
         // Not /orders/{id}/cancel: that route acts as the CUSTOMER and would
         // refuse a seller as not the owner.
-        enqueue("", code = 204)
+        enqueue("""{"data":{"order_id":"o-1","status":"refund_pending","applied":true}}""")
 
-        runBlocking { api.sellerCancelOrder("o-1", SellerCancelOrderRequest("Out of stock")) }
+        val answer = runBlocking { api.sellerCancelOrder("o-1", SellerCancelOrderRequest("Out of stock")) }
 
         val request = server.takeRequest()
         assertThat(request.method).isEqualTo("POST")
         assertThat(request.target).isEqualTo("/v1/commerce/seller/orders/o-1/cancel")
         assertThat(request.body!!.utf8()).isEqualTo("""{"reason":"Out of stock"}""")
+        assertThat(answer.body()!!.data!!.status).isEqualTo("refund_pending")
+    }
+
+    @Test
+    fun `the order history is a get on the seller path`() {
+        enqueue(
+            """
+            {"data":{"order_id":"o-1","history":[
+              {"to_status":"payment_pending","actor_type":"customer","created_at":"2026-09-12T10:15:00Z"},
+              {"from_status":"payment_pending","to_status":"confirmed","actor_type":"system",
+               "created_at":"2026-09-12T10:16:00Z"}]}}
+            """.trimIndent(),
+        )
+
+        val answer = runBlocking { api.sellerOrderHistory("o-1") }
+
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("GET")
+        assertThat(request.target).isEqualTo("/v1/commerce/seller/orders/o-1/history")
+        val history = answer.body()!!.data!!.history
+        assertThat(history).hasSize(2)
+        assertThat(history[0].fromStatus).isNull()
+        assertThat(history[1].toStatus).isEqualTo("confirmed")
     }
 
     @Test

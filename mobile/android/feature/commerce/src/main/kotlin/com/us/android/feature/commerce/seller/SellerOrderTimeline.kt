@@ -3,6 +3,7 @@ package com.us.android.feature.commerce.seller
 import com.us.android.core.commerce.model.OrderStatus
 import com.us.android.core.commerce.model.PaymentStatus
 import com.us.android.core.commerce.model.SellerOrder
+import com.us.android.core.commerce.model.SellerOrderTransition
 
 /** One step of an order's life, and whether it has happened. */
 data class TimelineEntry(
@@ -13,11 +14,67 @@ data class TimelineEntry(
 )
 
 /**
- * The order's life as a list of steps.
+ * The order's life from the server's own record.
  *
- * Derived, because the seller detail carries no status history: the server
- * writes `order_status_history` but does not send it on this route. What it
- * does send is enough for the honest version: the order's own timestamps,
+ * [history] is `order_status_history`, oldest first, from
+ * `GET /seller/orders/{id}/history`: each row is one step, done, at the
+ * moment the server wrote it, so every time shown here is a time something
+ * actually happened. Two things are added around the record. A "Placed"
+ * step is put first when the history does not begin with the order's
+ * creation, timed from the order's own stamp. And for an order still on its
+ * way, the fulfilment steps it has not reached follow as not done, so the
+ * seller sees what is left as well as what happened.
+ *
+ * An empty record falls back to the derived [timeline]: it is what the app
+ * showed before the route existed, and it is still honest.
+ */
+fun SellerOrder.timeline(history: List<SellerOrderTransition>): List<TimelineEntry> {
+    if (history.isEmpty()) return timeline()
+
+    val steps = mutableListOf<TimelineEntry>()
+    if (history.first().to != OrderStatus.PAYMENT_PENDING) {
+        steps += TimelineEntry("Placed", placedAt, done = true)
+    }
+    history.mapTo(steps) { TimelineEntry(it.label(), it.at, done = true) }
+
+    if (!status.isClosed()) {
+        // The record can lag the row by one move (the trigger writes the
+        // history after the update), so the further of the two is the truth.
+        val reached = maxOf(status.fulfilmentRank(), history.maxOf { it.to.fulfilmentRank() })
+        if (reached < RANK_CONFIRMED) steps += TimelineEntry("Confirmed", null, done = false)
+        if (reached < RANK_PACKED) steps += TimelineEntry("Packed", null, done = false)
+        if (reached < RANK_SHIPPED) steps += TimelineEntry("Shipped", null, done = false)
+        if (reached < RANK_DELIVERED) steps += TimelineEntry("Delivered", null, done = false)
+    }
+    return steps
+}
+
+/** What one recorded move reads as. The closing moves say who made them. */
+private fun SellerOrderTransition.label(): String = when (to) {
+    OrderStatus.PAYMENT_PENDING -> "Placed"
+    OrderStatus.PAYMENT_FAILED -> "Payment failed"
+    OrderStatus.CONFIRMED -> "Confirmed"
+    OrderStatus.PACKED -> "Packed"
+    OrderStatus.SHIPPED -> "Shipped"
+    OrderStatus.OUT_FOR_DELIVERY -> "Out for delivery"
+    OrderStatus.DELIVERED -> "Delivered"
+    OrderStatus.CANCELLED, OrderStatus.REFUND_PENDING, OrderStatus.REFUNDED, OrderStatus.EXPIRED ->
+        closingLabel(to, actorType)
+    // A status this build does not know: shown as the server said it, not hidden.
+    OrderStatus.UNKNOWN -> rawTo.replace('_', ' ').replaceFirstChar { it.uppercase() }.ifBlank { "Updated" }
+}
+
+private fun OrderStatus.isClosed(): Boolean = when (this) {
+    OrderStatus.CANCELLED, OrderStatus.REFUND_PENDING, OrderStatus.REFUNDED, OrderStatus.EXPIRED -> true
+    else -> false
+}
+
+/**
+ * The order's life as a list of steps, derived.
+ *
+ * The fallback for a server that does not send `order_status_history` on
+ * the seller route (a bare 404 from the history endpoint). What the detail
+ * does send is enough for an honest version: the order's own timestamps,
  * the payment status, the current status, and the shipment's shipped and
  * delivered stamps. A step is marked done when the status has passed it,
  * with a time only where the server gave one; a done step with no time is
@@ -60,14 +117,19 @@ fun SellerOrder.timeline(): List<TimelineEntry> {
     return steps
 }
 
-private fun closingLabel(status: OrderStatus, cancelledBy: String?): String = when (status) {
+/**
+ * The closing step's words. [who] is the order's `cancelled_by` or a history
+ * row's `actor_type`; the server uses one vocabulary for both.
+ */
+private fun closingLabel(status: OrderStatus, who: String?): String = when (status) {
     OrderStatus.EXPIRED -> "Expired unpaid"
     OrderStatus.REFUND_PENDING -> "Cancelled, refund on the way"
     OrderStatus.REFUNDED -> "Refunded"
-    else -> when (cancelledBy?.lowercase()) {
+    else -> when (who?.lowercase()) {
         "customer" -> "Cancelled by the buyer"
         "seller" -> "Cancelled by you"
         "admin" -> "Cancelled by Momentum"
+        "system" -> "Cancelled automatically"
         else -> "Cancelled"
     }
 }

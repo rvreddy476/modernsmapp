@@ -8,8 +8,10 @@ import com.us.android.core.commerce.model.SellerEarning
 import com.us.android.core.commerce.model.SellerOrder
 import com.us.android.core.commerce.model.SellerOrderLine
 import com.us.android.core.commerce.model.SellerOrderSummary
+import com.us.android.core.commerce.model.SellerOrderTransition
 import com.us.android.core.commerce.model.SellerReturn
 import com.us.android.core.commerce.model.SellerShipment
+import com.us.android.core.commerce.network.OrderStatusHistoryDto
 import com.us.android.core.commerce.network.SellerEarningDto
 import com.us.android.core.commerce.network.SellerOrderCardDto
 import com.us.android.core.commerce.network.SellerOrderDto
@@ -37,7 +39,18 @@ internal fun SellerOrderDto.toSummary() = SellerOrderSummary(
     paymentStatus = PaymentStatus.from(paymentStatus),
     paymentMethod = paymentMethod,
     total = totalMinor,
+    itemCount = itemCount,
+    sellerSubtotal = sellerSubtotalMinor,
     placedAt = createdAt,
+)
+
+internal fun OrderStatusHistoryDto.toTransition() = SellerOrderTransition(
+    from = fromStatus?.takeIf { it.isNotBlank() }?.let(OrderStatus::from),
+    to = OrderStatus.from(toStatus),
+    rawTo = toStatus,
+    actorType = actorType,
+    notes = notes?.takeIf { it.isNotBlank() },
+    at = createdAt,
 )
 
 internal fun SellerOrderCardDto.toSellerOrder() = SellerOrder(

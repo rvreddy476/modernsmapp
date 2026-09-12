@@ -6,22 +6,48 @@ package com.us.android.core.commerce.model
  *
  * Domain types, separate from the wire DTOs for the same reason as the rest
  * of this package: the server's seller structs were written for its web
- * dashboard and carry rupee mirrors, Go-cased shipment keys and a base64
+ * dashboard and carry rupee mirrors, a flattened list row and a base64
  * address, none of which a screen should have to know about.
  */
 
 // Orders
 
-/** One row of the seller's order list. The header only; lines come with the detail. */
+/**
+ * One row of the seller's order list. The header plus the two numbers a
+ * list needs; the lines themselves come with the detail.
+ */
 data class SellerOrderSummary(
     val id: String,
     val orderNumber: String,
     val status: OrderStatus,
     val paymentStatus: PaymentStatus,
     val paymentMethod: String?,
+    /** What the buyer paid for the whole order. */
     val total: Paise,
+    /** How many of THIS seller's lines are on it. Zero from a server that does not say. */
+    val itemCount: Int,
+    /** What this seller is owed for it, over their own lines. Zero from a server that does not say. */
+    val sellerSubtotal: Paise,
     /** RFC 3339, as received. Formatted by the screen; null when the server sent none. */
     val placedAt: String?,
+)
+
+/**
+ * One recorded move of an order's status, from `order_status_history`.
+ *
+ * [from] is null on the row that created the order. [actorType] is the
+ * server's word for who moved it (`customer`, `seller`, `admin`, `system`),
+ * kept raw because the vocabulary is the server's to grow. [rawTo] is the
+ * status word as sent, for a status this build does not know yet.
+ */
+data class SellerOrderTransition(
+    val from: OrderStatus?,
+    val to: OrderStatus,
+    val rawTo: String,
+    val actorType: String,
+    val notes: String?,
+    /** RFC 3339, as received. */
+    val at: String?,
 )
 
 /** One of the seller's lines on an order. */

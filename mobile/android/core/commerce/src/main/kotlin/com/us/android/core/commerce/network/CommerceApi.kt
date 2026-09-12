@@ -342,12 +342,10 @@ interface CommerceApi {
 
     // Seller orders, fulfilment, returns and earnings.
     //
-    // The DTOs live in SellerFulfilmentDtos.kt. Two of the shapes below are
-    // unusual and worth knowing before reading them: the order list is a BARE
-    // array of order rows paged by offset (commerce-service's
-    // ListMySellerOrders writes the slice itself, and has no cursor), and the
-    // shipment inside the detail card is keyed by Go field names because the
-    // server's Shipment struct carries no json tags.
+    // The DTOs live in SellerFulfilmentDtos.kt. One shape below is unusual
+    // and worth knowing before reading it: the order list is a BARE array of
+    // order rows paged by offset (commerce-service's ListMySellerOrders
+    // writes the slice itself, and has no cursor).
 
     /**
      * The seller's orders, newest first.
@@ -369,35 +367,43 @@ interface CommerceApi {
     ): Response<ApiEnvelope<SellerOrderCardDto>>
 
     /**
-     * The fulfilment actions.
+     * The fulfilment actions, under `/v1/commerce/seller/orders/{id}/...`
+     * where the seller's other order reads live. Each maps to one row of the
+     * D6 matrix the server enforces (migration 010,
+     * `order_status_transitions`, actor `seller`); a move the matrix forbids
+     * is a 409, and a repeat of a move already made is a 200 with
+     * `applied: false`, which the repository treats as success.
      *
-     * Declared against `/v1/commerce/seller/orders/{id}/...` because that is
-     * where the seller's other order reads live, and each maps to one row of
-     * the D6 matrix the server enforces (migration 010,
-     * `order_status_transitions`, actor `seller`). commerce-service does not
-     * register these three routes yet: its only seller write on an order is
-     * `POST /orders/{id}/shipment`, which books through the courier adapter
-     * and takes no courier or tracking number, and `POST /orders/{id}/cancel`
-     * acts as the CUSTOMER. Until the server catches up every one of these
-     * answers a bare 404, which the repository renders as "not available in
-     * this version" rather than as a fault.
+     * Pack and cancel answer a [SellerFulfilmentResultDto]. Ship is the
+     * seller-prefixed spelling of `POST /orders/{id}/shipment`, so it answers
+     * that route's `{"shipments": [...]}` at 201.
      */
     @POST("v1/commerce/seller/orders/{orderId}/pack")
     suspend fun packOrder(
         @Path("orderId") orderId: String,
-    ): Response<ApiEnvelope<Unit>>
+    ): Response<ApiEnvelope<SellerFulfilmentResultDto>>
 
     @POST("v1/commerce/seller/orders/{orderId}/ship")
     suspend fun shipOrder(
         @Path("orderId") orderId: String,
         @Body body: ShipOrderRequest,
-    ): Response<ApiEnvelope<Unit>>
+    ): Response<ApiEnvelope<ShipmentsDto>>
 
     @POST("v1/commerce/seller/orders/{orderId}/cancel")
     suspend fun sellerCancelOrder(
         @Path("orderId") orderId: String,
         @Body body: SellerCancelOrderRequest,
-    ): Response<ApiEnvelope<Unit>>
+    ): Response<ApiEnvelope<SellerFulfilmentResultDto>>
+
+    /**
+     * The order's status history, oldest first: what the server actually
+     * recorded, rather than a timeline the app would otherwise derive from
+     * the order's timestamps. Same ownership rule as the detail read.
+     */
+    @GET("v1/commerce/seller/orders/{orderId}/history")
+    suspend fun sellerOrderHistory(
+        @Path("orderId") orderId: String,
+    ): Response<ApiEnvelope<SellerOrderHistoryDto>>
 
     /**
      * The returns inbox. `status` narrows to requested, approved, rejected

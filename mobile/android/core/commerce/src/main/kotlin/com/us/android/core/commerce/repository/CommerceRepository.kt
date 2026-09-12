@@ -26,6 +26,7 @@ import com.us.android.core.commerce.model.SellerDocument
 import com.us.android.core.commerce.model.SellerEarning
 import com.us.android.core.commerce.model.SellerOrder
 import com.us.android.core.commerce.model.SellerOrderSummary
+import com.us.android.core.commerce.model.SellerOrderTransition
 import com.us.android.core.commerce.model.SellerProduct
 import com.us.android.core.commerce.model.SellerProfile
 import com.us.android.core.commerce.model.SellerReadiness
@@ -54,6 +55,7 @@ import com.us.android.core.commerce.network.CreateProductRequest
 import com.us.android.core.commerce.network.CreateVariantRequest
 import com.us.android.core.commerce.network.DocumentInput
 import com.us.android.core.commerce.network.OrderDto
+import com.us.android.core.commerce.network.OrderStatusHistoryDto
 import com.us.android.core.commerce.network.PayoutRequest
 import com.us.android.core.commerce.network.ProductMediaDto
 import com.us.android.core.commerce.network.ProductMediaListDto
@@ -759,11 +761,28 @@ class CommerceRepository @Inject constructor(
         call { api.sellerOrder(orderId) }.map(SellerOrderCardDto::toSellerOrder)
 
     /**
+     * The order's recorded status moves, oldest first.
+     *
+     * A server without the route answers a bare 404, which arrives as
+     * [CommerceError.NotAvailable]; the screen then derives a timeline from
+     * the order's own timestamps instead. The history is one section of the
+     * detail, so its failure is never the screen's.
+     */
+    suspend fun sellerOrderHistory(orderId: String): CommerceResult<List<SellerOrderTransition>> =
+        call { api.sellerOrderHistory(orderId) }
+            .map { dto -> dto.history.map(OrderStatusHistoryDto::toTransition) }
+
+    /**
      * The fulfilment actions, one call per row of the seller's transition
      * table (`sellerActionsFor`). Each returns Unit and the screen RE-READS
      * the order afterwards rather than assuming the new status: a cancel on
      * a paid order lands in refund_pending, not cancelled, and the
      * difference is what the seller needs to tell the buyer.
+     *
+     * The server's own answers (the transition result with its `applied`
+     * flag, the booked shipments) are decoded and then dropped: a repeat
+     * that was not applied is still a 200, still a success, and the re-read
+     * shows the same state either way.
      */
     suspend fun packOrder(orderId: String): CommerceResult<Unit> =
         call { api.packOrder(orderId) }.map { }

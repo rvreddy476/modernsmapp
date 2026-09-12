@@ -204,6 +204,17 @@ private fun SellerOrderRow(order: SellerOrderSummary, onClick: () -> Unit) {
                 UsTheme.extended.textSecondary
             },
         )
+        // The seller's own share of the order, when the server says. On a
+        // multi-seller order the header's total is the buyer's whole bill,
+        // and this line is the number the seller is actually reconciling.
+        if (order.itemCount > 0) {
+            val items = if (order.itemCount == 1) "1 item" else "${order.itemCount} items"
+            Text(
+                text = "$items, your share ${order.sellerSubtotal.formatWithSymbol()}",
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.textSecondary,
+            )
+        }
         formatSellerTimestamp(order.placedAt)?.let { placed ->
             Text(
                 text = "Placed $placed",

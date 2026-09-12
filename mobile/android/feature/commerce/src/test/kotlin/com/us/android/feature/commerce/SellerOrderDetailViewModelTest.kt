@@ -5,11 +5,16 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.commerce.model.OrderStatus
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.SellerAction
+import com.us.android.core.commerce.network.OrderStatusHistoryDto
 import com.us.android.core.commerce.network.SellerCancelOrderRequest
+import com.us.android.core.commerce.network.SellerFulfilmentResultDto
 import com.us.android.core.commerce.network.SellerOrderCardDto
 import com.us.android.core.commerce.network.SellerOrderDto
+import com.us.android.core.commerce.network.SellerOrderHistoryDto
 import com.us.android.core.commerce.network.SellerOrderItemDto
 import com.us.android.core.commerce.network.ShipOrderRequest
+import com.us.android.core.commerce.network.ShipmentDto
+import com.us.android.core.commerce.network.ShipmentsDto
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.commerce.seller.SellerOrderDetailUiState
@@ -65,23 +70,38 @@ class SellerOrderDetailViewModelTest {
             )
         }
 
-        override suspend fun packOrder(orderId: String): Response<ApiEnvelope<Unit>> {
+        /** What the history route answers; null keeps the base fake's unstubbed 500. */
+        var history: List<OrderStatusHistoryDto>? = null
+        var historyMissing = false
+
+        override suspend fun packOrder(orderId: String): Response<ApiEnvelope<SellerFulfilmentResultDto>> {
             packs += orderId
-            return refuseWith?.let { refused(it) } ?: envelope(Unit).also { status = "packed" }
+            return refuseWith?.let { refused(it) }
+                ?: envelope(SellerFulfilmentResultDto(orderId, "packed", applied = true)).also { status = "packed" }
         }
 
-        override suspend fun shipOrder(orderId: String, body: ShipOrderRequest): Response<ApiEnvelope<Unit>> {
+        override suspend fun shipOrder(orderId: String, body: ShipOrderRequest): Response<ApiEnvelope<ShipmentsDto>> {
             ships += body
-            return refuseWith?.let { refused(it) } ?: envelope(Unit).also { status = "shipped" }
+            return refuseWith?.let { refused(it) }
+                ?: envelope(ShipmentsDto(listOf(ShipmentDto(id = "s-1", orderId = orderId, courier = body.courier))))
+                    .also { status = "shipped" }
         }
 
         override suspend fun sellerCancelOrder(
             orderId: String,
             body: SellerCancelOrderRequest,
-        ): Response<ApiEnvelope<Unit>> {
+        ): Response<ApiEnvelope<SellerFulfilmentResultDto>> {
             cancels += body
-            return refuseWith?.let { refused(it) } ?: envelope(Unit).also { status = "cancelled" }
+            return refuseWith?.let { refused(it) }
+                ?: envelope(SellerFulfilmentResultDto(orderId, "cancelled", applied = true)).also { status = "cancelled" }
         }
+
+        override suspend fun sellerOrderHistory(orderId: String): Response<ApiEnvelope<SellerOrderHistoryDto>> =
+            when {
+                historyMissing -> notFound()
+                history != null -> envelope(SellerOrderHistoryDto(orderId, history!!))
+                else -> unused()
+            }
     }
 
     private fun viewModel(api: OrderApi) = SellerOrderDetailViewModel(
@@ -191,5 +211,58 @@ class SellerOrderDetailViewModelTest {
         assertThat(api.packs).containsExactly("o-1")
         assertThat(vm.content().order.status).isEqualTo(OrderStatus.PACKED)
         assertThat(vm.content().actions).containsExactly(SellerAction.SHIP, SellerAction.CANCEL)
+    }
+
+    @Test
+    fun `the timeline is the server's recorded history, with what is left after it`() = runTest(dispatcher) {
+        val api = OrderApi("packed").apply {
+            history = listOf(
+                OrderStatusHistoryDto(toStatus = "payment_pending", actorType = "customer", createdAt = "2026-09-12T10:15:00Z"),
+                OrderStatusHistoryDto(fromStatus = "payment_pending", toStatus = "confirmed", actorType = "system", createdAt = "2026-09-12T10:16:00Z"),
+                OrderStatusHistoryDto(fromStatus = "confirmed", toStatus = "packed", actorType = "seller", createdAt = "2026-09-12T12:00:00Z"),
+            )
+        }
+        val vm = viewModel(api)
+        advanceUntilIdle()
+
+        val timeline = vm.content().timeline
+        // Every recorded move, done, at the moment the server wrote it.
+        assertThat(timeline.map { it.label }).containsExactly("Placed", "Confirmed", "Packed", "Shipped", "Delivered").inOrder()
+        assertThat(timeline.take(3).map { it.done }).containsExactly(true, true, true)
+        assertThat(timeline.take(3).map { it.at })
+            .containsExactly("2026-09-12T10:15:00Z", "2026-09-12T10:16:00Z", "2026-09-12T12:00:00Z").inOrder()
+        // What is left is shown as not done, with no guessed time.
+        assertThat(timeline.drop(3).map { it.done }).containsExactly(false, false)
+        assertThat(timeline.drop(3).map { it.at }).containsExactly(null, null)
+    }
+
+    @Test
+    fun `a server without the history route gets the derived timeline, and the order still shows`() = runTest(dispatcher) {
+        val api = OrderApi("packed").apply { historyMissing = true }
+        val vm = viewModel(api)
+        advanceUntilIdle()
+
+        val content = vm.content()
+        assertThat(content.order.status).isEqualTo(OrderStatus.PACKED)
+        // The pre-route shape: derived from the order's stamps and status.
+        assertThat(content.timeline.map { it.label }).containsExactly("Placed", "Paid", "Packed", "Shipped", "Delivered").inOrder()
+        assertThat(content.timeline.map { it.done }).containsExactly(true, true, true, false, false).inOrder()
+    }
+
+    @Test
+    fun `a cancel by the seller reads as such from the history`() = runTest(dispatcher) {
+        val api = OrderApi("cancelled").apply {
+            history = listOf(
+                OrderStatusHistoryDto(toStatus = "payment_pending", actorType = "customer", createdAt = "2026-09-12T10:15:00Z"),
+                OrderStatusHistoryDto(fromStatus = "payment_pending", toStatus = "confirmed", actorType = "system", createdAt = "2026-09-12T10:16:00Z"),
+                OrderStatusHistoryDto(fromStatus = "confirmed", toStatus = "cancelled", actorType = "seller", notes = "Out of stock", createdAt = "2026-09-12T11:00:00Z"),
+            )
+        }
+        val vm = viewModel(api)
+        advanceUntilIdle()
+
+        // A closed order ends on its closing step: nothing is left to do.
+        assertThat(vm.content().timeline.map { it.label }).containsExactly("Placed", "Confirmed", "Cancelled by you").inOrder()
+        assertThat(vm.content().timeline.all { it.done }).isTrue()
     }
 }

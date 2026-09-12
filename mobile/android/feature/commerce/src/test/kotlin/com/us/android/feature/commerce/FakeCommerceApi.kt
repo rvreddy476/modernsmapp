@@ -32,14 +32,17 @@ import com.us.android.core.commerce.network.SaveDocumentsRequest
 import com.us.android.core.commerce.network.SellerAddressRequest
 import com.us.android.core.commerce.network.SellerCancelOrderRequest
 import com.us.android.core.commerce.network.SellerEarningsDto
+import com.us.android.core.commerce.network.SellerFulfilmentResultDto
 import com.us.android.core.commerce.network.SellerOrderCardDto
 import com.us.android.core.commerce.network.SellerOrderDto
+import com.us.android.core.commerce.network.SellerOrderHistoryDto
 import com.us.android.core.commerce.network.SellerProductDto
 import com.us.android.core.commerce.network.SellerProductsDto
 import com.us.android.core.commerce.network.SellerProfileDto
 import com.us.android.core.commerce.network.SellerReturnsDto
 import com.us.android.core.commerce.network.SellerVariantDto
 import com.us.android.core.commerce.network.ShipOrderRequest
+import com.us.android.core.commerce.network.ShipmentsDto
 import com.us.android.core.commerce.network.StartSellingRequest
 import com.us.android.core.commerce.network.StockDto
 import com.us.android.core.commerce.network.TaxClassListDto
@@ -177,15 +180,18 @@ open class FakeCommerceApi : CommerceApi {
 
     override suspend fun sellerOrder(orderId: String): Response<ApiEnvelope<SellerOrderCardDto>> = unused()
 
-    override suspend fun packOrder(orderId: String): Response<ApiEnvelope<Unit>> = unused()
+    override suspend fun packOrder(orderId: String): Response<ApiEnvelope<SellerFulfilmentResultDto>> = unused()
 
-    override suspend fun shipOrder(orderId: String, body: ShipOrderRequest): Response<ApiEnvelope<Unit>> =
+    override suspend fun shipOrder(orderId: String, body: ShipOrderRequest): Response<ApiEnvelope<ShipmentsDto>> =
         unused()
 
     override suspend fun sellerCancelOrder(
         orderId: String,
         body: SellerCancelOrderRequest,
-    ): Response<ApiEnvelope<Unit>> = unused()
+    ): Response<ApiEnvelope<SellerFulfilmentResultDto>> = unused()
+
+    override suspend fun sellerOrderHistory(orderId: String): Response<ApiEnvelope<SellerOrderHistoryDto>> =
+        unused()
 
     override suspend fun sellerReturns(
         status: String?,

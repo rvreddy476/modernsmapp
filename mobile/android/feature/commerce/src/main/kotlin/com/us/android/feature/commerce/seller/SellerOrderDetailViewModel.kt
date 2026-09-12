@@ -65,6 +65,11 @@ sealed interface SellerOrderDetailUiState {
     data class Content(
         val order: SellerOrder,
         /**
+         * The order's life: the server's recorded history when it sends one,
+         * derived from the order's own stamps when it does not.
+         */
+        val timeline: List<TimelineEntry> = order.timeline(),
+        /**
          * The action in flight, or null.
          *
          * One latch for all three buttons: a pack and a cancel racing each
@@ -124,7 +129,15 @@ class SellerOrderDetailViewModel @Inject constructor(
         }
 
         is CommerceResult.Success -> {
-            _state.value = SellerOrderDetailUiState.Content(r.value)
+            val order = r.value
+            val timeline = when (val h = repo.sellerOrderHistory(orderId)) {
+                is CommerceResult.Success -> order.timeline(h.value)
+                // A server without the route (a bare 404), or one that could
+                // not answer just now. The timeline is one section of the
+                // screen, so it is derived rather than the order going unshown.
+                is CommerceResult.Failure -> order.timeline()
+            }
+            _state.value = SellerOrderDetailUiState.Content(order, timeline = timeline)
             true
         }
     }
