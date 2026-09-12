@@ -1995,8 +1995,12 @@ func (s *Service) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) 
 	return nil
 }
 
-func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetBookmarks(ctx, userID, limit, cursor)
+// GetBookmarks is the viewer's saved list. contentTypes is the canonical
+// filter from the handler (nil means every type); it is applied in SQL so
+// a page of long videos is a full page, not a page of everything with the
+// flicks removed afterwards.
+func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string) ([]PostDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetBookmarks(ctx, userID, contentTypes, limit, cursor)
 	if err != nil {
 		return nil, "", err
 	}

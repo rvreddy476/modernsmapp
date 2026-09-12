@@ -1298,14 +1298,22 @@ func (s *Store) BatchIsBookmarked(ctx context.Context, userID uuid.UUID, postIDs
 	return result, rows.Err()
 }
 
-// GetBookmarks returns paginated bookmarked posts for a user.
-func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]Post, string, error) {
-	if limit <= 0 || limit > 50 {
+// GetBookmarks returns paginated bookmarked posts for a user. contentTypes,
+// when non-empty, keeps only posts of those types (the Tube "You" page
+// asks for long_video alone; the same filter GetRecentPosts takes). The
+// limit is clamped to 100 rather than reset to the default, so a client
+// asking for more gets the largest page we serve.
+func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string) ([]Post, string, error) {
+	if limit <= 0 {
 		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
 	}
 
 	var args []interface{}
 	args = append(args, userID, limit+1)
+	argIdx := 3
 
 	// The subquery deliberately exposes saved_at instead of its own id and
 	// created_at names. This keeps the shared postCols projection unambiguous.
@@ -1318,10 +1326,16 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 		) b ON b.target_id = p.id
 		WHERE b.user_id = $1 AND p.deleted_at IS NULL`
 
+	if len(contentTypes) > 0 {
+		query += fmt.Sprintf(` AND p.content_type = ANY($%d)`, argIdx)
+		args = append(args, contentTypes)
+		argIdx++
+	}
+
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
 		if err == nil {
-			query += ` AND b.saved_at < $3`
+			query += fmt.Sprintf(` AND b.saved_at < $%d`, argIdx)
 			args = append(args, cursorTime)
 		}
 	}

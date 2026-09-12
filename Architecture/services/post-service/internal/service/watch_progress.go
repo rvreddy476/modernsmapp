@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -103,6 +104,66 @@ func (s *Service) GetContinueWatching(ctx context.Context, userID uuid.UUID, lim
 	if err != nil {
 		return nil, err
 	}
+	return s.hydrateWatchProgress(ctx, userID, rows)
+}
+
+// ErrInvalidWatchHistoryCursor: the cursor is not one this service issued.
+var ErrInvalidWatchHistoryCursor = postgres.ErrInvalidWatchHistoryCursor
+
+// GetWatchHistory is the viewer's full watch record (Tube "You" page,
+// 2026-09-12): every progress row, finished or not, most recent first,
+// keyset-paged. Items are the continue-watching shape, and a row whose
+// post is gone is dropped the same way. The cursor is taken from the last
+// DB row, not the last surviving item, so a run of deleted posts moves the
+// reader forward instead of pinning them to one page.
+func (s *Service) GetWatchHistory(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]ContinueWatchingItem, string, error) {
+	rows, nextCursor, err := s.pgStore.GetWatchHistory(ctx, userID, limit, cursor)
+	if err != nil {
+		return nil, "", err
+	}
+	items, err := s.hydrateWatchProgress(ctx, userID, rows)
+	if err != nil {
+		return nil, "", err
+	}
+	return items, nextCursor, nil
+}
+
+// ClearWatchHistory removes every progress row of the viewer, then the
+// Redis mirror of each. The DB is the record; the mirror is a read cache
+// with a 90-day TTL, so a failed DEL is logged and not surfaced: the worst
+// case is GET /progress answering from a stale hash until it expires, and
+// the next SaveWatchProgress overwrites it anyway.
+func (s *Service) ClearWatchHistory(ctx context.Context, userID uuid.UUID) error {
+	postIDs, err := s.pgStore.DeleteAllWatchProgress(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if s.rdb == nil || len(postIDs) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(postIDs))
+	for _, id := range postIDs {
+		keys = append(keys, fmt.Sprintf("watch_progress:%s:%s", userID, id))
+	}
+	// Chunked: a viewer with years of history should not become one giant
+	// DEL that blocks the Redis event loop.
+	const chunk = 500
+	for start := 0; start < len(keys); start += chunk {
+		end := start + chunk
+		if end > len(keys) {
+			end = len(keys)
+		}
+		if err := s.rdb.Del(ctx, keys[start:end]...).Err(); err != nil {
+			slog.WarnContext(ctx, "clear watch history: redis mirror not cleared", "user", userID, "keys", end-start, "err", err)
+		}
+	}
+	return nil
+}
+
+// hydrateWatchProgress pairs progress rows with their posts, read through
+// the batch read (GetPostsByIDs) as the viewer, and attaches the channel
+// card each long video carries. Shared by the shelf and the history.
+func (s *Service) hydrateWatchProgress(ctx context.Context, userID uuid.UUID, rows []postgres.WatchProgress) ([]ContinueWatchingItem, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
@@ -112,7 +173,7 @@ func (s *Service) GetContinueWatching(ctx context.Context, userID uuid.UUID, lim
 	}
 	posts, err := s.GetPostsByIDs(ctx, ids, &userID)
 	if err != nil {
-		return nil, fmt.Errorf("hydrate continue watching: %w", err)
+		return nil, fmt.Errorf("hydrate watch progress: %w", err)
 	}
 	// Tube: the channel card on each resumable long video.
 	details := make([]*PostDetail, 0, len(posts))

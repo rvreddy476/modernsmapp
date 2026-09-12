@@ -1102,6 +1102,67 @@ func (h *Handler) GetContinueWatching(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, items, nil)
 }
 
+// GetWatchHistory is GET /v1/videos/history?limit&cursor (Tube "You" page,
+// 2026-09-12): the viewer's full watch record, completed rows included,
+// most recent first. Items are the continue-watching shape (progress
+// fields plus the hydrated post); the envelope is {data, meta.next_cursor},
+// the bookmarks convention, with meta omitted on the last page.
+func (h *Handler) GetWatchHistory(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	limit := pageLimit(c.Query("limit"), 20, 100)
+	items, nextCursor, err := h.svc.GetWatchHistory(c.Request.Context(), userID, limit, c.Query("cursor"))
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidWatchHistoryCursor) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "cursor is not one this service issued", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if items == nil {
+		items = []service.ContinueWatchingItem{}
+	}
+	var meta *api.Meta
+	if nextCursor != "" {
+		meta = &api.Meta{NextCursor: nextCursor}
+	}
+	api.JSON(c.Writer, http.StatusOK, items, meta)
+}
+
+// ClearWatchHistory is DELETE /v1/videos/history: every progress row of the
+// viewer, and the Redis mirror of each, gone in one call. 204 either way;
+// an already-empty history is not an error.
+func (h *Handler) ClearWatchHistory(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
+		return
+	}
+	if err := h.svc.ClearWatchHistory(c.Request.Context(), userID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// pageLimit reads ?limit with a default and a ceiling. Above the ceiling
+// it clamps rather than falling back to the default (what parseLimitOffset
+// does), so a client asking for 500 gets the largest page we serve.
+func pageLimit(raw string, def, max int) int {
+	l, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || l <= 0 {
+		return def
+	}
+	if l > max {
+		return max
+	}
+	return l
+}
+
 func (h *Handler) DeleteWatchProgress(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {

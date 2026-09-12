@@ -284,10 +284,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/v1/posts/:postId/cards", h.GetVideoCards)
 	r.PUT("/v1/posts/:postId/membership", h.SetPostMembershipGate)
 
-	// Watch Progress
+	// Watch Progress. The static segments (continue-watching, history) are
+	// registered ahead of the :videoId routes so neither is ever read as a
+	// video id; gin matches static children first regardless, but the
+	// order here says what is intended.
+	r.GET("/v1/videos/continue-watching", h.GetContinueWatching)
+	// History (2026-09-12): the full record, completed rows included,
+	// paged, and clearable in one call. See GetWatchHistory.
+	r.GET("/v1/videos/history", h.GetWatchHistory)
+	r.DELETE("/v1/videos/history", h.ClearWatchHistory)
 	r.POST("/v1/videos/:videoId/progress", h.SaveWatchProgress)
 	r.GET("/v1/videos/:videoId/progress", h.GetWatchProgress)
-	r.GET("/v1/videos/continue-watching", h.GetContinueWatching)
 	r.DELETE("/v1/videos/:videoId/progress", h.DeleteWatchProgress)
 
 	// In-video product tags (affiliate overlays). See
@@ -1396,12 +1403,21 @@ func (h *Handler) GetBookmarks(c *gin.Context) {
 	}
 
 	cursor := c.DefaultQuery("cursor", "")
-	limit := 20
-	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
-		limit = l
+	// Clamped to 100, not reset to 20, so a client asking for more gets the
+	// largest page we serve rather than silently the default.
+	limit := pageLimit(c.Query("limit"), 20, 100)
+
+	// Optional ?type= filter (Tube "You" page, 2026-09-12): the same values
+	// and parsing as by-author's ?type= and recent's ?content_type=, legacy
+	// spellings folded ("video" is long_video). Absent means every type;
+	// an unknown value is a 400 rather than a silently unfiltered page.
+	contentTypes, err := parseContentTypeFilter(c.Query("type"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE", err.Error(), nil)
+		return
 	}
 
-	posts, nextCursor, err := h.svc.GetBookmarks(c.Request.Context(), userID, limit, cursor)
+	posts, nextCursor, err := h.svc.GetBookmarks(c.Request.Context(), userID, contentTypes, limit, cursor)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
