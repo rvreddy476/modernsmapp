@@ -260,6 +260,16 @@ func (s *Service) JoinByInvite(ctx context.Context, code string, userID uuid.UUI
 		return &out, nil
 	}
 
+	// Internal-only pilot (2026-09-12): holding a valid code is not
+	// authorisation to participate. An invite is a bearer token — an
+	// allowlisted creator could mint one and pass it to anybody — so the
+	// joiner must be on the participant allowlist, which is empty until the
+	// founder supplies authorised accounts. Checked BEFORE consuming a use,
+	// so a refused stranger does not burn the invite.
+	if !s.policy.ParticipantAllowed(userID) {
+		return nil, ErrParticipantNotAllowlisted
+	}
+
 	// Consume FIRST (atomic against revoke/expiry/max_uses), then add. A
 	// crash between the two burns one use — acceptable; the reverse order
 	// could admit past max_uses.

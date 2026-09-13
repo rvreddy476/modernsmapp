@@ -46,7 +46,13 @@ func main() {
 		"communities_enabled", policy.Enabled,
 		"pilot_mode", policy.PilotMode,
 		"allowed_creators", len(policy.AllowedCreators),
-		"creator_allowlist_configured", policy.CreatorAllowlistConfigured)
+		"allowed_participants", len(policy.AllowedParticipants),
+		"creator_allowlist_configured", policy.CreatorAllowlistConfigured,
+		"participant_allowlist_configured", policy.ParticipantAllowlistConfigured,
+		"pilot_closed", policy.PilotClosed())
+	if policy.PilotClosed() {
+		slog.Warn("channel-service: the communities pilot is CLOSED — no account is authorised to create or join a community, and none is inferred. Creation answers 403 COMMUNITY_CREATION_RESTRICTED and joining answers 403 COMMUNITY_PARTICIPATION_RESTRICTED. This is the founder's 2026-09-12 fail-closed decision, in force until they supply authorised account ids and name a moderation owner. Existing communities and their existing members are untouched.")
+	}
 	for _, w := range policyWarnings {
 		slog.Warn("communities launch policy: " + w)
 	}

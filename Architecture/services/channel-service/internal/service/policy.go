@@ -21,10 +21,11 @@ import (
 //
 // Env flags (defaults in DefaultCommunityPolicy):
 //
-//	COMMUNITIES_ENABLED          true  — false = whole product answers 404
-//	COMMUNITIES_PILOT            true  — private-by-default + invite-only join
-//	COMMUNITIES_ALLOWED_CREATORS ""    — comma-separated user ids; empty = anyone
-//	COMMUNITIES_INVITE_BASE_URL  ""    — prefix for the invite `url` field
+//	COMMUNITIES_ENABLED              true — false = whole product answers 404
+//	COMMUNITIES_PILOT                true — private-by-default + invite-only join
+//	COMMUNITIES_ALLOWED_CREATORS     ""   — user ids that may CREATE; EMPTY = NOBODY
+//	COMMUNITIES_ALLOWED_PARTICIPANTS ""   — user ids that may JOIN; empty = only creators
+//	COMMUNITIES_INVITE_BASE_URL      ""   — prefix for the invite `url` field
 
 // Pilot / policy refusals. Handlers map these to stable wire codes; see
 // internal/http/handler.go.
@@ -33,8 +34,17 @@ var (
 	// a community publicly visible while the pilot flag is on.
 	ErrPublicCommunityNotAllowed = errors.New("communities are in an invite-only pilot: public communities cannot be created and a private community cannot be made public")
 	// ErrCreatorNotAllowlisted refuses creation by a user outside
-	// COMMUNITIES_ALLOWED_CREATORS.
-	ErrCreatorNotAllowlisted = errors.New("communities are in an invite-only pilot: community creation is restricted to the pilot allowlist")
+	// COMMUNITIES_ALLOWED_CREATORS. An EMPTY allowlist refuses everyone:
+	// see CommunityPolicy.CreatorAllowed.
+	ErrCreatorNotAllowlisted = errors.New("communities are in an invite-only pilot: community creation is restricted to the pilot allowlist, which is currently closed")
+	// ErrParticipantNotAllowlisted refuses a join by a user outside
+	// COMMUNITIES_ALLOWED_PARTICIPANTS (creators included). An invite code
+	// is a bearer token, so joining is gated as well as creation, or the
+	// pilot is internal-only in name only.
+	ErrParticipantNotAllowlisted = errors.New("communities are in an internal-only pilot: joining is restricted to the pilot allowlist")
+	// ErrPaidCommunityNotAllowed refuses a paid community or paid
+	// membership activation. Paid is OUT of the pilot by decision.
+	ErrPaidCommunityNotAllowed = errors.New("paid communities are not part of the communities pilot: paid access, a subscription price and channel_type=paid are all refused")
 	// ErrInviteRequired refuses a direct subscribe to a private community.
 	ErrInviteRequired = errors.New("this community is invite-only: an invite link is required to join")
 	// ErrInviteNotFound is an unknown (or malformed) invite code.
@@ -61,20 +71,34 @@ type CommunityPolicy struct {
 	// communities, invite-only joining.
 	PilotMode bool
 	// AllowedCreators is the parsed COMMUNITIES_ALLOWED_CREATORS list.
+	// EMPTY MEANS NOBODY while PilotMode is on — see CreatorAllowed.
 	AllowedCreators []uuid.UUID
+	// AllowedParticipants is the parsed COMMUNITIES_ALLOWED_PARTICIPANTS
+	// list: who may JOIN a pilot community. Empty means nobody but the
+	// allowlisted creators — see ParticipantAllowed.
+	AllowedParticipants []uuid.UUID
 	// CreatorAllowlistConfigured records that the env var was non-empty,
-	// separately from whether anything parsed out of it. A non-empty value
-	// that yields zero valid ids restricts creation to NOBODY (fail closed)
-	// rather than silently reverting to "anyone".
+	// separately from whether anything parsed out of it, so the boot log
+	// can tell "nobody configured this" from "this was configured and every
+	// entry was malformed". Both refuse creation; only the operator's fix
+	// differs.
 	CreatorAllowlistConfigured bool
+	// ParticipantAllowlistConfigured is the same distinction for joining.
+	ParticipantAllowlistConfigured bool
 	// InviteBaseURL prefixes the `url` field of an invite response.
 	InviteBaseURL string
 }
 
-// DefaultCommunityPolicy is the shipped default: the product is on and the
-// pilot is on, because the pilot IS the current state of communities. No
-// creator allowlist, which means creation is unrestricted — that is the
-// "no named moderation owner yet" state and the boot log says so loudly.
+// DefaultCommunityPolicy is the shipped default: the product is on, the
+// pilot is on, and both allowlists are empty — which means the pilot admits
+// NOBODY. Nothing can be created and nothing can be joined until an
+// operator supplies authorised account ids.
+//
+// That is deliberate and is the founder's 2026-09-12 decision. A default
+// that granted creation to every authenticated user whenever the allowlist
+// was unset made the enforcement mechanism inert exactly when it was needed,
+// and left a boot warning as the only thing between an unconfigured
+// deployment and an open product.
 func DefaultCommunityPolicy() CommunityPolicy {
 	return CommunityPolicy{Enabled: true, PilotMode: true}
 }
@@ -100,8 +124,37 @@ func LoadCommunityPolicy(getenv func(string) string) (CommunityPolicy, []string)
 		warnings = append(warnings, "COMMUNITIES_PILOT=false — communities are NOT in the invite-only pilot: public communities can be created and private communities can be joined without an invite. The founder's 2026-09-12 decision was an invite-only pilot; do not run this in production without a named moderation owner.")
 	}
 
-	raw := strings.TrimSpace(getenv("COMMUNITIES_ALLOWED_CREATORS"))
-	p.CreatorAllowlistConfigured = raw != ""
+	p.AllowedCreators, p.CreatorAllowlistConfigured, warnings =
+		parseAllowlist(getenv, "COMMUNITIES_ALLOWED_CREATORS", warnings)
+	p.AllowedParticipants, p.ParticipantAllowlistConfigured, warnings =
+		parseAllowlist(getenv, "COMMUNITIES_ALLOWED_PARTICIPANTS", warnings)
+
+	if p.PilotMode {
+		if p.CreatorAllowlistConfigured && len(p.AllowedCreators) == 0 {
+			warnings = append(warnings, "COMMUNITIES_ALLOWED_CREATORS was set but no entry parsed as a UUID — community creation is CLOSED TO EVERYONE. That is the fail-closed outcome by decision, but it is probably not what was intended: fix the value.")
+		}
+		if !p.CreatorAllowlistConfigured {
+			warnings = append(warnings, "COMMUNITIES_ALLOWED_CREATORS is EMPTY — community creation is CLOSED TO EVERYONE (fail closed, per the founder's 2026-09-12 decision). No account is authorised and none is inferred. Set it to an authorised user id to open the pilot.")
+		}
+		if !p.ParticipantAllowlistConfigured {
+			warnings = append(warnings, "COMMUNITIES_ALLOWED_PARTICIPANTS is EMPTY — only allowlisted creators may join a pilot community; an invite code alone is not enough. An invite is a bearer token, so joining is gated as well as creation.")
+		}
+	}
+
+	p.InviteBaseURL = strings.TrimSpace(getenv("COMMUNITIES_INVITE_BASE_URL"))
+	return p, warnings
+}
+
+// parseAllowlist reads one comma-separated UUID allowlist. It returns the
+// parsed ids, whether the variable was set at all (non-empty), and the
+// warnings so far plus any it added.
+//
+// "set but unparseable" and "not set" are kept distinct because they need
+// different fixes, even though both refuse everyone.
+func parseAllowlist(getenv func(string) string, name string, warnings []string) ([]uuid.UUID, bool, []string) {
+	raw := strings.TrimSpace(getenv(name))
+	configured := raw != ""
+	var ids []uuid.UUID
 	for _, part := range strings.Split(raw, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -109,20 +162,12 @@ func LoadCommunityPolicy(getenv func(string) string) (CommunityPolicy, []string)
 		}
 		id, err := uuid.Parse(part)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("COMMUNITIES_ALLOWED_CREATORS entry %q is not a UUID and was dropped", part))
+			warnings = append(warnings, fmt.Sprintf("%s entry %q is not a UUID and was dropped", name, part))
 			continue
 		}
-		p.AllowedCreators = append(p.AllowedCreators, id)
+		ids = append(ids, id)
 	}
-	if p.CreatorAllowlistConfigured && len(p.AllowedCreators) == 0 {
-		warnings = append(warnings, "COMMUNITIES_ALLOWED_CREATORS was set but no entry parsed as a UUID — community creation is now closed to EVERYONE (fail closed). Fix the value or unset it.")
-	}
-	if p.PilotMode && !p.CreatorAllowlistConfigured {
-		warnings = append(warnings, "COMMUNITIES_ALLOWED_CREATORS is EMPTY — ANY authenticated user can create a community. This is the \"no named moderation owner\" state: per the founder's 2026-09-12 decision, access must stay internal-only until an owner is named. Set COMMUNITIES_ALLOWED_CREATORS to the pilot owner's user id.")
-	}
-
-	p.InviteBaseURL = strings.TrimSpace(getenv("COMMUNITIES_INVITE_BASE_URL"))
-	return p, warnings
+	return ids, configured, warnings
 }
 
 // parseEnvBool reports the boolean an env value names, and whether it named
@@ -139,9 +184,39 @@ func parseEnvBool(raw string) (bool, bool) {
 }
 
 // CreatorAllowed reports whether this user may create a community.
+//
+// ─── FAIL CLOSED, BY DECISION ───────────────────────────────────────────
+//
+// Founder, 2026-09-12: "An empty creator allowlist must permit NOBODY to
+// create a community, not everyone. Missing or invalid configuration must
+// not enable unrestricted creation."
+//
+// The first version of this returned true when the allowlist was unset, so
+// the pilot's own enforcement mechanism was inert by default and the only
+// signal was a boot warning. A warning is not a control: the decision was
+// internal-only access, and an unconfigured deployment silently granted
+// creation to every authenticated user on the platform.
+//
+// So while the pilot is on, an EMPTY allowlist — unset, blank, or set to
+// something that parsed to no valid ids — permits nobody. There is no
+// default creator and none is inferred from ownership, the operator id or
+// anything else: the founder has not supplied an authorised UUID, and
+// picking one would be inventing the authorisation this gate exists to
+// require.
 func (p CommunityPolicy) CreatorAllowed(userID uuid.UUID) bool {
-	if !p.PilotMode || !p.CreatorAllowlistConfigured {
+	// The load-bearing line. The original read
+	//   if !p.PilotMode || !p.CreatorAllowlistConfigured { return true }
+	// and that second clause is what made an unconfigured deployment open.
+	// Nothing about "was it configured" may appear in this decision: only
+	// whether THIS user is on the list.
+	if !p.PilotMode {
 		return true
+	}
+	// Belt and braces. The loop below already returns false on an empty
+	// list, so this is not the guard — it is here to state the intent at
+	// the point someone would otherwise add a fail-open shortcut.
+	if len(p.AllowedCreators) == 0 {
+		return false
 	}
 	for _, id := range p.AllowedCreators {
 		if id == userID {
@@ -149,6 +224,81 @@ func (p CommunityPolicy) CreatorAllowed(userID uuid.UUID) bool {
 		}
 	}
 	return false
+}
+
+// ParticipantAllowed reports whether this user may JOIN a pilot community.
+//
+// The creator allowlist controls creation only, which the founder called
+// out: "An allowlist controls creation only. Verify that existing
+// communities, discovery, invitations and joining cannot expose an
+// 'internal-only' pilot to unapproved users."
+//
+// Creation alone cannot enforce that. An invite code is a bearer token by
+// design — an approved creator could mint one and hand it to anybody, and
+// the pilot would be internal-only in name only. So joining is gated too,
+// and it fails closed the same way.
+//
+// An allowlisted CREATOR is implicitly a participant: they own the
+// community and cannot be locked out of it. That is not a widening — it
+// names people the founder has already authorised.
+func (p CommunityPolicy) ParticipantAllowed(userID uuid.UUID) bool {
+	if !p.PilotMode {
+		return true
+	}
+	for _, id := range p.AllowedParticipants {
+		if id == userID {
+			return true
+		}
+	}
+	// A creator is a participant in their own community.
+	for _, id := range p.AllowedCreators {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// PilotClosed reports that the pilot admits nobody at all: the pilot is on
+// and no user is authorised to create or to join. This is the state the
+// founder asked for until they supply an authorised UUID and name a
+// moderation owner, and cmd/server states it plainly at boot.
+func (p CommunityPolicy) PilotClosed() bool {
+	return p.PilotMode && len(p.AllowedCreators) == 0 && len(p.AllowedParticipants) == 0
+}
+
+// GuardPaidCommunity refuses anything that would create a paid community or
+// switch on paid membership.
+//
+// Founder, 2026-09-12: "Paid communities are OUT of this pilot. Explicitly
+// reject new paid-community creation and paid membership/purchase
+// activation server-side; do not let type=paid pass merely because it is
+// treated as private."
+//
+// That last clause names the exact hole. VisibilityOf("paid") is "private",
+// so the pilot's public-community refusal waved `paid` straight through:
+// the one type with money attached was the one type the gate could not see.
+// Three things are refused here, because "paid community" is expressible in
+// three ways: the channel_type, the paid_access switch, and a non-zero
+// subscription price.
+//
+// This governs NEW writes only. Existing paid communities are not deleted,
+// not retyped, and their entitlements and financial records are untouched —
+// the founder reserved that for a scoped decision.
+func (p CommunityPolicy) GuardPaidCommunity(channelType string, paidAccess bool, subscriptionPriceCents int) error {
+	if !p.PilotMode {
+		return nil
+	}
+	if strings.ToLower(strings.TrimSpace(channelType)) == "paid" {
+		return ErrPaidCommunityNotAllowed
+	}
+	if paidAccess {
+		return ErrPaidCommunityNotAllowed
+	}
+	if subscriptionPriceCents > 0 {
+		return ErrPaidCommunityNotAllowed
+	}
+	return nil
 }
 
 // IsPublicChannelType reports whether a stored channel_type is publicly

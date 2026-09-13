@@ -267,6 +267,10 @@ func writePolicyError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "PUBLIC_COMMUNITY_NOT_ALLOWED", err.Error(), nil)
 	case errors.Is(err, service.ErrCreatorNotAllowlisted):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "COMMUNITY_CREATION_RESTRICTED", err.Error(), nil)
+	case errors.Is(err, service.ErrParticipantNotAllowlisted):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "COMMUNITY_PARTICIPATION_RESTRICTED", err.Error(), nil)
+	case errors.Is(err, service.ErrPaidCommunityNotAllowed):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "PAID_COMMUNITY_NOT_ALLOWED", err.Error(), nil)
 	case errors.Is(err, service.ErrInviteRequired):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "INVITE_REQUIRED", err.Error(), nil)
 	case errors.Is(err, service.ErrInviteNotFound):

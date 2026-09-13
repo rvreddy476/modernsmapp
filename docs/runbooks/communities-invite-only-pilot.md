@@ -18,7 +18,9 @@ A community *is* a broadcast channel. There is no separate communities table or 
 | Making an existing private community public | The same refusal on `PUT /v1/broadcast-channels/{id}`, whether the caller sends `visibility` or a raw `channel_type`. |
 | The public discovery directory | Nothing a pilot community can be can appear in it. `GET /discover` filters `channel_type IN ('public','creator','brand','education','official','topic')` in SQL; a private community is not in that set. Search does the same now (see §7). |
 | Joining without an invite | `POST /{id}/subscribe` on a private community is refused `403 INVITE_REQUIRED`. Joining goes through an invite code. |
-| Unrestricted creation | `COMMUNITIES_ALLOWED_CREATORS` restricts creation to named user ids. **It is currently empty, which means it restricts nobody.** See §2. |
+| Unrestricted creation | `COMMUNITIES_ALLOWED_CREATORS` restricts creation to named user ids, and it FAILS CLOSED: **it is currently empty, which means NOBODY may create a community.** See §2. |
+| Unrestricted joining | `COMMUNITIES_ALLOWED_PARTICIPANTS` restricts who may join, and also fails closed. An invite code is a bearer token, so joining is gated as well as creation. See §2. |
+| Paid communities | Out of the pilot entirely. `channel_type=paid`, `paid_access` and any non-zero `subscription_price_cents` are refused on create AND update. See §4a. |
 
 Still on: creating a private community, inviting people to it, posting updates, reactions, reports, and fan-out to subscribers.
 
@@ -26,28 +28,46 @@ Still on: creating a private community, inviting people to it, posting updates, 
 
 ## 2. Moderation owner — NOT ASSIGNED
 
-**There is no named moderation owner for communities today.** Per the decision, access stays internal-only until one is assigned. The enforcement mechanism is `COMMUNITIES_ALLOWED_CREATORS`: a comma-separated list of user ids that may create a community. While it is **empty**, any authenticated user can create one — and channel-service logs this loudly on every boot:
+**There is no named moderation owner for communities today, and the pilot is therefore CLOSED: no account can create a community and no account can join one.**
+
+Two allowlists enforce it, and both fail closed:
+
+| Flag | Governs | Empty means |
+|---|---|---|
+| `COMMUNITIES_ALLOWED_CREATORS` | who may CREATE a community | **nobody** |
+| `COMMUNITIES_ALLOWED_PARTICIPANTS` | who may JOIN one | nobody but the allowlisted creators |
+
+Both are empty today, so channel-service says this on every boot:
 
 ```
-WARN communities launch policy: COMMUNITIES_ALLOWED_CREATORS is EMPTY — ANY authenticated user can create a community. This is the "no named moderation owner" state: per the founder's 2026-09-12 decision, access must stay internal-only until an owner is named. Set COMMUNITIES_ALLOWED_CREATORS to the pilot owner's user id.
+WARN channel-service: the communities pilot is CLOSED — no account is authorised to create or join a community, and none is inferred. Creation answers 403 COMMUNITY_CREATION_RESTRICTED and joining answers 403 COMMUNITY_PARTICIPATION_RESTRICTED.
 ```
 
-To assign the owner and close creation to everyone else, set the flag and restart the service:
+**Why joining is gated and not only creation.** An invite code is a bearer token by design. If only creation were allowlisted, an approved creator could mint a link and hand it to anyone, and "internal-only" would be a label rather than a boundary. So the joiner is checked too, on every path: the invite join, and a direct subscribe to any community including the legacy public ones. Existing members are never removed by this; it refuses **new** joins only.
+
+An earlier version of this file said an empty creator list restricted nobody. That was true of the code at the time and it was the defect: the pilot's own enforcement was inert by default, with a boot warning as the only thing between an unconfigured deployment and open creation. Founder, 2026-09-12: *"An empty creator allowlist must permit NOBODY to create a community, not everyone. Missing or invalid configuration must not enable unrestricted creation."*
+
+No account id is invented or inferred — not from ownership, not from the operator, not from anything. Opening the pilot requires an id the founder supplies.
+
+To open it once an owner is named, set the flags and restart the service:
 
 ```bash
-# 1. Put the owner's user id in the environment (compose, or the deploy's env).
-#    Comma-separate to allow more than one.
-COMMUNITIES_ALLOWED_CREATORS=<owner-user-uuid>
+# 1. Put the authorised ids in the environment (compose, or the deploy's env).
+#    Comma-separate to allow more than one. Creators are implicitly
+#    participants in their own communities, so a single-person pilot needs
+#    only the first line.
+COMMUNITIES_ALLOWED_CREATORS=<authorised-user-uuid>
+COMMUNITIES_ALLOWED_PARTICIPANTS=<tester-uuid>,<tester-uuid>
 
-# 2. Restart and confirm the boot log no longer carries the EMPTY warning:
+# 2. Restart and confirm the pilot is no longer reported as closed:
 docker compose -f Architecture/docker/docker-compose.yml up -d channel-service
 docker compose -f Architecture/docker/docker-compose.yml logs channel-service | grep "communities launch policy"
-# expect: creator_allowlist_configured=true allowed_creators=1
+# expect: pilot_closed=false allowed_creators=1 creator_allowlist_configured=true
 ```
 
-Anyone not on the list who tries to create a community gets `403 COMMUNITY_CREATION_RESTRICTED`.
+Anyone not on the creator list who tries to create gets `403 COMMUNITY_CREATION_RESTRICTED`. Anyone not on either list who tries to join gets `403 COMMUNITY_PARTICIPATION_RESTRICTED`, **including someone holding a valid invite code**. A refused join does not consume one of the invite's uses.
 
-A non-empty list whose entries are all unparseable fails **closed** — creation is refused to everyone, and the boot log says `closed to EVERYONE (fail closed)`. That is on purpose: a typo must not silently reopen the product.
+A non-empty list whose entries are all unparseable fails **closed** — refused to everyone — and the boot log says `CLOSED TO EVERYONE`, distinguishing "set but unusable" (fix the value) from "not set" (supply one). A typo must not silently reopen the product.
 
 **Until the owner is named, nobody is accountable for the report queue in §3.** That is the single biggest reason this cannot become a public launch.
 
@@ -57,11 +77,17 @@ A non-empty list whose entries are all unparseable fails **closed** — creation
 
 Reports land in `channel_reports` from `POST /{id}/report` and `POST /{id}/updates/{uid}/report`. Reporters are rate limited to 20/hour. Until 2026-09-12 nothing read that table: the reporter got `202` and nobody ever looked. There is now a reader, and a `channel.report.filed` Kafka event on the `channel-events` topic for a future trust-and-safety consumer.
 
-**Who looks:** the named moderation owner from §2. **Until that person exists, whoever is on call for channel-service.** This is a gap, not a process.
+**Who looks:** the named moderation owner from §2. **That person does not exist, so nobody is accountable for this queue today.** That is a gap, not a process, and it is why the pilot is closed.
 
 **How often:** at least once per working day while the pilot is internal-only. One pass over the open queue.
 
-**Target first-response time:** ⚠️ **NEEDS THE FOUNDER'S CONFIRMATION — do not treat the number below as a commitment.** A common floor for an internal pilot is *one working day* to first review; it is written here as a placeholder so the runbook is actionable, not because it has been agreed.
+**Target first-response time — UNCONFIRMED.**
+
+> ⚠️ **One working day is a PROPOSED INTERNAL TARGET. It is not an approved commitment and it is not a public or contractual one.** Founder, 2026-09-12: *"'One working day' is a proposed internal target, NOT an approved or public commitment. Keep it labelled unconfirmed."*
+>
+> It is written down so the process is actionable for internal testing, not because anyone has agreed to it. Do not quote it to a user, publish it, or put it in terms of service.
+
+**External participation is blocked until a named moderator accepts the review process, the coverage and the escalation arrangements.** All three, not just the first. Coverage means who looks on which days and what happens at weekends; escalation means who is reached for something that cannot wait for the next daily pass, and how. Neither is defined yet, and no moderator has accepted anything, so the participant allowlist in §2 stays empty.
 
 All commands below need the internal service key. Never paste the key into a shared log; read it from the environment.
 
@@ -163,6 +189,42 @@ After a revoke, the code answers `410 INVITE_NOT_LIVE` on join and `is_live: fal
 
 ---
 
+## 4a. Paid communities — OUT of the pilot
+
+Founder, 2026-09-12: *"Paid communities are OUT of this pilot. Explicitly reject new paid-community creation and paid membership/purchase activation server-side; do not let type=paid pass merely because it is treated as private."*
+
+That last clause names the exact hole this closes. `VisibilityOf("paid")` returns `"private"`, so the pilot's public-community refusal waved `paid` straight through: the one channel type with money attached was the one type the gate could not see.
+
+A paid community is expressible three ways, and all three are refused with `403 PAID_COMMUNITY_NOT_ALLOWED`, on **create and on update**:
+
+| Spelling | Refused |
+| --- | --- |
+| `channel_type: "paid"` | yes, case-insensitively and with padding trimmed |
+| `paid_access: true` | yes |
+| `subscription_price_cents` > 0 | yes, including `1` |
+
+The update path checks the **resolved row**, not the request, so an update that touches only the name cannot carry a paid setting along.
+
+### What was NOT done, on purpose
+
+Nothing existing was deleted, retyped or repriced, and no financial record or entitlement was touched or reinterpreted. The founder reserved that for a scoped decision.
+
+### Existing paid state, as at 2026-09-12
+
+Checked directly against the development database (`app`):
+
+```sql
+SELECT count(*) FROM broadcast_channels
+ WHERE channel_type = 'paid' OR paid_access OR subscription_price_cents > 0;   -- 0
+SELECT count(*) FROM channel_members WHERE paid;                                -- 0
+```
+
+**There are no paid communities, no paid memberships and no subscription pricing anywhere on dev, so there is nothing to make a scoped decision about.** No purchase or entitlement path exists either: nothing in channel-service ever writes `channel_members.paid = true`, and the service holds no payment integration, so "paid membership activation" has no writer to disable beyond the configuration refused above. Staging and production have not been checked from this machine and have no credentials here.
+
+Re-run the two queries above before any public launch, and if either is non-zero, stop and get the scoped decision rather than assuming this section still holds.
+
+---
+
 ## 5. Emergency disable
 
 Two levels. Level 2 first if one community is the problem; level 1 if the product is.
@@ -246,7 +308,8 @@ All read by `channel-service` at boot. Every one is logged on startup under `com
 | --- | --- | --- |
 | `COMMUNITIES_ENABLED` | `true` | `false` = level-1 emergency disable: all `/v1/broadcast-channels` answer 404, workers do not start. |
 | `COMMUNITIES_PILOT` | `true` | `true` = private by default, no public communities, no private→public flip, invite-only joining. `false` restores the pre-pilot open behaviour and logs a loud warning. |
-| `COMMUNITIES_ALLOWED_CREATORS` | *(empty)* | Comma-separated user ids allowed to create a community. **Empty = nobody is restricted** (and the boot log says so loudly). A non-empty value with no valid UUID refuses everyone (fail closed). |
+| `COMMUNITIES_ALLOWED_CREATORS` | *(empty)* | Comma-separated user ids allowed to CREATE a community. **Empty = NOBODY may create** (fail closed, by decision). A non-empty value with no valid UUID also refuses everyone. No id is ever inferred. |
+| `COMMUNITIES_ALLOWED_PARTICIPANTS` | *(empty)* | Comma-separated user ids allowed to JOIN a community. Empty = only the allowlisted creators, who are implicitly participants in their own communities. Applies to the invite join and to a direct subscribe on any channel type. |
 | `COMMUNITIES_INVITE_BASE_URL` | *(empty)* | Prefix for the `url` field of an invite response. Empty = only the bare `code` is returned. |
 | `INTERNAL_SERVICE_KEY` | *(unset)* | When unset, **nothing in this service authenticates at all**, and the `/internal` moderation routes are not registered (they fail closed rather than serve unauthenticated). Must be set in any shared environment. |
 | `HTTP_PORT` | `8106` | — |
@@ -285,13 +348,13 @@ Error codes: `PUBLIC_COMMUNITY_NOT_ALLOWED` 403, `COMMUNITY_CREATION_RESTRICTED`
 
 Drawn from what the audit and this pass actually found. None of these is speculative.
 
-1. **A named moderation owner, with `COMMUNITIES_ALLOWED_CREATORS` set.** Nobody owns the report queue today. Everything else on this list is downstream of this.
-2. **An agreed first-response time for reports** (§3 is a placeholder), and evidence the queue is actually being worked — a report volume and time-to-review number someone looks at.
+1. **A named moderation owner, with `COMMUNITIES_ALLOWED_CREATORS` set.** Nobody owns the report queue today, so the pilot is closed and nothing can be created or joined. Everything else on this list is downstream of this.
+2. **An agreed first-response time for reports, plus agreed coverage and escalation** (§3 is an unconfirmed proposal on all three), accepted by a named moderator, and evidence the queue is actually being worked — a report volume and time-to-review number someone looks at.
 3. **Something consuming `channel.report.filed`.** The event exists; there is no consumer. Today review is a human running a curl against an internal route. A public launch needs a real queue with assignment and escalation, not a runbook command.
 4. **Proactive detection, not just user reports.** There is no automated classification of community names, descriptions, avatars or updates anywhere in channel-service. At public scale, reports alone are not a moderation system.
 5. **A revalidation of every surface that indexes or lists a community.** This pass found channel documents leaking out of `search-service` with no visibility filter at all — the backfill and the Kafka consumer both index private channels, and only a query-side filter now holds them back. Before a public launch the *index* should be filtered too (so the documents are not there to leak), and every other consumer of `channel.created` should be checked the same way.
 6. **Rate limits that survive contact with abuse.** Creation is 5/day/user and reports 20/hour/user. There is no limit on invite minting, and the invite-join limit is 20/hour/user and silently skipped when Redis is unavailable.
-7. **A decision on paid communities.** `channel_type='paid'` maps to private visibility and is therefore allowed through the pilot, but nothing in the pilot was designed around payment, refunds or access-on-expiry.
+7. **A design for paid communities, if they are ever wanted.** They are refused outright for now (§4a), which is a boundary rather than a design: nothing in the pilot was built around payment, refunds or access-on-expiry, and there is no purchase path at all.
 8. **Appeals.** A banned user has no route to contest a ban, and a suspended community's owner is not told why — they just get a 404.
 9. **An owner-transfer path.** The owner cannot be removed, banned, demoted or unsubscribed; the only exit is deleting the community. If a pilot owner leaves, their communities are stranded.
 10. **Moderation coverage for updates, not just members and channels.** A moderator can ban a member and suspend a whole community, but there is no internal route to take down a single offending update — only the channel's own owner/admin can delete one, which is useless when the owner is the problem.
@@ -300,4 +363,5 @@ Drawn from what the audit and this pass actually found. None of these is specula
 
 ## 9. Changelog
 
+- **2026-09-12, boundary pass** — The founder rejected the fail-open default: an empty creator allowlist now permits **nobody**, not everyone, because "missing or invalid configuration must not enable unrestricted creation". Joining became allowlisted too (`COMMUNITIES_ALLOWED_PARTICIPANTS`), since an invite code is a bearer token and a creator-only allowlist left joining wide open. Paid communities were refused outright in all three spellings on create and update (§4a). The report-review target was relabelled as an unconfirmed proposal, with coverage and escalation added as prerequisites. Net effect: the pilot ships CLOSED and admits nobody until authorised ids are supplied. Verification in `prompt/communities-pilot-boundary-handover.md`.
 - **2026-09-12** — Pilot built. Private by default, creation allowlist, public-flip guard on create and update, invite links, invite-only joining, member removal, ban/unban, report queue reader + `channel.report.filed`, two-level emergency disable, and the search-service private-channel filter. Before this pass: communities defaulted to **public**, anyone could join any private channel directly (`Subscribe` had a literal `_ = ch` with the comment "Private channels could require approval, but for now allow direct subscribe"), there was no invite mechanism, no route could remove or ban a member, nothing read `channel_reports`, and `suspended` was a status the CHECK allowed and nothing wrote.

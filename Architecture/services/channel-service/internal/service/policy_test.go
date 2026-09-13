@@ -33,9 +33,17 @@ func TestLoadCommunityPolicy_DefaultsToThePilot(t *testing.T) {
 	if p.CreatorAllowlistConfigured || len(p.AllowedCreators) != 0 {
 		t.Fatalf("no allowlist expected by default: %+v", p)
 	}
-	// The "no named moderation owner yet" state has to be loud.
+	// The "no named moderation owner yet" state has to be loud AND closed.
+	// Loud alone was the original defect: the warning was the only thing
+	// standing between an unconfigured deployment and open creation.
 	if !containsSubstring(warnings, "COMMUNITIES_ALLOWED_CREATORS is EMPTY") {
 		t.Fatalf("empty allowlist must warn loudly; got %v", warnings)
+	}
+	if p.CreatorAllowed(uuid.New()) {
+		t.Fatal("the DEFAULT policy must permit nobody to create a community")
+	}
+	if !p.PilotClosed() {
+		t.Fatal("the default policy is a closed pilot: no creators, no participants")
 	}
 }
 
@@ -65,21 +73,160 @@ func TestLoadCommunityPolicy_ParsesFlags(t *testing.T) {
 	}
 }
 
-// An empty allowlist restricts nobody (so dev keeps working) but a
-// non-empty allowlist whose entries are all junk must fail CLOSED, not
-// silently reopen creation to everyone.
-func TestLoadCommunityPolicy_AllowlistFailsClosedOnJunk(t *testing.T) {
-	p, warnings := LoadCommunityPolicy(envMap(map[string]string{
+// Founder, 2026-09-12: "An empty creator allowlist must permit NOBODY to
+// create a community, not everyone. Missing or invalid configuration must
+// not enable unrestricted creation."
+//
+// Every way the allowlist can be absent or useless must refuse everyone.
+// The first version returned true when it was unset, which made the pilot's
+// own enforcement inert by default with only a boot warning to show it.
+func TestCreatorAllowlistFailsClosedEveryWay(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"unset entirely", nil},
+		{"set to empty", map[string]string{"COMMUNITIES_ALLOWED_CREATORS": ""}},
+		{"set to whitespace", map[string]string{"COMMUNITIES_ALLOWED_CREATORS": "   "}},
+		{"set to commas only", map[string]string{"COMMUNITIES_ALLOWED_CREATORS": " , , "}},
+		{"every entry junk", map[string]string{"COMMUNITIES_ALLOWED_CREATORS": "not-a-uuid,also-bad"}},
+		{"junk that looks close", map[string]string{"COMMUNITIES_ALLOWED_CREATORS": "00000000-0000-0000-0000-00000000000"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := LoadCommunityPolicy(envMap(tc.env))
+			if !p.PilotMode {
+				t.Fatal("the pilot must be on by default for this to mean anything")
+			}
+			if len(p.AllowedCreators) != 0 {
+				t.Fatalf("expected no parsed creators, got %d", len(p.AllowedCreators))
+			}
+			// Ten arbitrary users, none of them authorised.
+			for i := 0; i < 10; i++ {
+				if p.CreatorAllowed(uuid.New()) {
+					t.Fatalf("%s: creation was permitted. An absent or unusable "+
+						"allowlist must permit NOBODY, not everyone.", tc.name)
+				}
+			}
+			if !p.PilotClosed() {
+				t.Errorf("%s: PilotClosed() must report a closed pilot so the boot log can say so", tc.name)
+			}
+		})
+	}
+}
+
+// "Set but unparseable" and "not set" both refuse everyone, but they need
+// different fixes, so the boot log must distinguish them.
+func TestCreatorAllowlistWarnsDifferentlyForJunkAndAbsent(t *testing.T) {
+	_, junk := LoadCommunityPolicy(envMap(map[string]string{
 		"COMMUNITIES_ALLOWED_CREATORS": "not-a-uuid,also-bad",
 	}))
-	if !p.CreatorAllowlistConfigured {
-		t.Fatal("a non-empty allowlist env must count as configured")
+	if !containsSubstring(junk, "CLOSED TO EVERYONE") {
+		t.Errorf("a junk allowlist must say creation is closed; got %v", junk)
 	}
-	if p.CreatorAllowed(uuid.New()) {
-		t.Fatal("an allowlist that parsed to zero ids must refuse EVERYONE")
+	if !containsSubstring(junk, "is not a UUID and was dropped") {
+		t.Errorf("a junk allowlist must name the bad entry; got %v", junk)
 	}
-	if !containsSubstring(warnings, "closed to EVERYONE") {
-		t.Fatalf("fail-closed allowlist must warn; got %v", warnings)
+	_, absent := LoadCommunityPolicy(envMap(nil))
+	if !containsSubstring(absent, "CLOSED TO EVERYONE") {
+		t.Errorf("an absent allowlist must say creation is closed; got %v", absent)
+	}
+	if !containsSubstring(absent, "none is inferred") {
+		t.Errorf("an absent allowlist must say no account is inferred; got %v", absent)
+	}
+}
+
+// Only the explicitly listed users may create; nobody else, and no id is
+// inferred from anywhere.
+func TestOnlyAllowlistedUsersMayCreate(t *testing.T) {
+	approved, second := uuid.New(), uuid.New()
+	p, _ := LoadCommunityPolicy(envMap(map[string]string{
+		"COMMUNITIES_ALLOWED_CREATORS": approved.String() + "," + second.String(),
+	}))
+	if !p.CreatorAllowed(approved) || !p.CreatorAllowed(second) {
+		t.Fatal("an explicitly allowlisted user was refused")
+	}
+	for i := 0; i < 10; i++ {
+		if p.CreatorAllowed(uuid.New()) {
+			t.Fatal("a user outside the allowlist was permitted to create")
+		}
+	}
+	if p.PilotClosed() {
+		t.Error("with creators allowlisted the pilot is no longer closed")
+	}
+}
+
+// Participation is gated as well as creation, because an invite code is a
+// bearer token: an allowlisted creator could hand one to anybody.
+func TestParticipationFailsClosedAndAdmitsOnlyApproved(t *testing.T) {
+	creator, participant := uuid.New(), uuid.New()
+
+	closed, _ := LoadCommunityPolicy(envMap(nil))
+	for i := 0; i < 10; i++ {
+		if closed.ParticipantAllowed(uuid.New()) {
+			t.Fatal("with no allowlist configured, nobody may join")
+		}
+	}
+
+	// A creator is implicitly a participant: they own the community and
+	// cannot be locked out of it.
+	creatorOnly, _ := LoadCommunityPolicy(envMap(map[string]string{
+		"COMMUNITIES_ALLOWED_CREATORS": creator.String(),
+	}))
+	if !creatorOnly.ParticipantAllowed(creator) {
+		t.Error("an allowlisted creator must be able to be in their own community")
+	}
+	if creatorOnly.ParticipantAllowed(participant) {
+		t.Error("a user on no allowlist must not be able to join")
+	}
+
+	both, _ := LoadCommunityPolicy(envMap(map[string]string{
+		"COMMUNITIES_ALLOWED_CREATORS":     creator.String(),
+		"COMMUNITIES_ALLOWED_PARTICIPANTS": participant.String(),
+	}))
+	if !both.ParticipantAllowed(participant) || !both.ParticipantAllowed(creator) {
+		t.Error("an allowlisted participant was refused")
+	}
+	if both.CreatorAllowed(participant) {
+		t.Error("being allowed to JOIN must not confer permission to CREATE")
+	}
+}
+
+// Paid is out of the pilot, in all three spellings. The `paid` channel type
+// is the one that matters most: VisibilityOf("paid") is "private", so the
+// public-community refusal waved it straight through — the one type with
+// money attached was the one type the gate could not see.
+func TestPaidCommunitiesAreRefused(t *testing.T) {
+	p, _ := LoadCommunityPolicy(envMap(nil))
+	cases := []struct {
+		name        string
+		channelType string
+		paidAccess  bool
+		priceCents  int
+	}{
+		{"channel_type=paid", "paid", false, 0},
+		{"channel_type=paid with padding and caps", "  Paid  ", false, 0},
+		{"paid_access switch", "private", true, 0},
+		{"a subscription price", "private", false, 500},
+		{"a one-cent price", "private", false, 1},
+		{"all three at once", "paid", true, 999},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := p.GuardPaidCommunity(tc.channelType, tc.paidAccess, tc.priceCents)
+			if !errors.Is(err, ErrPaidCommunityNotAllowed) {
+				t.Fatalf("%s was accepted (err=%v); paid is out of the pilot", tc.name, err)
+			}
+		})
+	}
+	// The ordinary private pilot community must still pass.
+	if err := p.GuardPaidCommunity("private", false, 0); err != nil {
+		t.Fatalf("an ordinary free private community was refused: %v", err)
+	}
+	// A negative price is not a paid community; it is a bad request that
+	// the existing validation owns. This guard must not claim it.
+	if err := p.GuardPaidCommunity("private", false, -1); err != nil {
+		t.Errorf("the paid guard must not claim a negative price: %v", err)
 	}
 }
 

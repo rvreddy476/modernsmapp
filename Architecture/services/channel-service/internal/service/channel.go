@@ -217,14 +217,30 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 	params.Name, params.Description, params.Handle = name, about, handle
 
 	// Invite-only pilot (2026-09-12): creation is restricted to the
-	// allowlist when one is configured, an omitted visibility defaults to
-	// PRIVATE (it used to default to public), and any publicly visible
-	// channel_type is refused outright.
+	// allowlist — and an EMPTY allowlist permits NOBODY, not everyone — an
+	// omitted visibility defaults to PRIVATE (it used to default to
+	// public), any publicly visible channel_type is refused outright, and
+	// paid communities are out of the pilot entirely.
 	if !s.policy.CreatorAllowed(ownerID) {
 		return nil, ErrCreatorNotAllowlisted
 	}
+	// Paid is checked BEFORE the type resolution, because `paid` resolves
+	// to private visibility and would otherwise sail through the
+	// public-community refusal — the one type with money attached being the
+	// one type the pilot gate could not see.
+	if err := s.policy.GuardPaidCommunity(
+		params.ChannelType, params.PaidAccess, params.SubscriptionPriceCents); err != nil {
+		return nil, err
+	}
 	ct, err := s.policy.ResolveCreateChannelType(params.Visibility, params.ChannelType)
 	if err != nil {
+		return nil, err
+	}
+	// `visibility: "paid"` is not a thing, but a caller could still reach a
+	// paid type through the resolution above if the vocabulary ever grows.
+	// Re-check the RESOLVED type so the refusal cannot be bypassed by the
+	// spelling used to request it.
+	if err := s.policy.GuardPaidCommunity(ct, false, 0); err != nil {
 		return nil, err
 	}
 
@@ -533,6 +549,19 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 		ch.AllowPreviewPosts = *params.AllowPreviewPosts
 	}
 
+	// Paid is out of the pilot, so the UPDATE path must refuse it as firmly
+	// as the create path. Checked on the RESOLVED row rather than on the
+	// request, so turning a community paid is refused whether it arrives as
+	// channel_type, as paid_access, or as a subscription price — and so
+	// that an update touching only the name cannot carry an existing paid
+	// community along (nothing paid exists to carry, and if one is found
+	// later it is a scoped decision, not something this path should
+	// silently keep alive).
+	if err := s.policy.GuardPaidCommunity(
+		ch.ChannelType, ch.PaidAccess, ch.SubscriptionPriceCents); err != nil {
+		return nil, err
+	}
+
 	if err := s.store.UpdateChannel(ctx, ch); err != nil {
 		return nil, fmt.Errorf("failed to update channel: %w", err)
 	}
@@ -591,12 +620,23 @@ func (s *Service) Subscribe(ctx context.Context, channelID, userID uuid.UUID) er
 		return fmt.Errorf("already subscribed to this channel")
 	}
 
-	// Invite-only pilot (2026-09-12): a direct subscribe on a PRIVATE
-	// community is refused — joining goes through POST
+	// Internal-only pilot (2026-09-12), two separate gates.
+	//
+	// First: participation itself is allowlisted, for EVERY channel type
+	// including the legacy public ones. The creator allowlist governs
+	// creation only, which leaves joining as the open door — and while the
+	// product is internal-only, an unapproved user joining a legacy public
+	// community is unapproved participation just the same. Existing members
+	// are untouched; this refuses NEW joins only.
+	if !s.policy.ParticipantAllowed(userID) {
+		return ErrParticipantNotAllowlisted
+	}
+	// Second: a direct subscribe on a PRIVATE community is refused even for
+	// an approved participant — joining goes through POST
 	// /v1/broadcast-channels/invites/{code}/join. This replaces the
 	// "private channels could require approval, but for now allow direct
 	// subscribe" hole, which let anyone with the id join any private
-	// channel. Public (legacy) channels keep working.
+	// channel.
 	if err := s.policy.GuardDirectSubscribe(ch.ChannelType); err != nil {
 		return err
 	}
