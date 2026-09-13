@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"math/big"
 
+	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -62,14 +64,16 @@ func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var storedCode, restaurantID string
+	var storedCode, restaurantID, assignmentStatus, orderStatus string
+	var partnerID *uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(da.pickup_code, ''), o.restaurant_id::text
+		SELECT COALESCE(da.pickup_code, ''), o.restaurant_id::text, da.status::text,
+			da.delivery_partner_id, o.status::text
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.order_id = $1
 		FOR UPDATE OF da
-	`, orderID).Scan(&storedCode, &restaurantID); err != nil {
+	`, orderID).Scan(&storedCode, &restaurantID, &assignmentStatus, &partnerID, &orderStatus); err != nil {
 		return err
 	}
 	var owned int
@@ -82,24 +86,40 @@ func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID
 	if owned == 0 {
 		return pgx.ErrNoRows
 	}
-	if storedCode == "" {
-		return fmt.Errorf("pickup_code not set")
+	// The job must be held by a partner who has not picked it up yet.
+	if partnerID == nil {
+		return fmt.Errorf("%w: no delivery partner holds this order", ErrAssignmentNotReady)
 	}
-	if storedCode != code {
-		return fmt.Errorf("invalid pickup_code")
+	switch assignmentStatus {
+	case "ASSIGNED", "ACCEPTED", "ARRIVED_AT_RESTAURANT":
+	default:
+		return fmt.Errorf("%w: assignment is %s", ErrAssignmentNotReady, assignmentStatus)
+	}
+	if !codeMatches(storedCode, code) {
+		return ErrDeliveryCodeInvalid
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE food.delivery_assignments SET pickup_verified_at = NOW(), picked_up_at = NOW()
+		UPDATE food.delivery_assignments
+		SET status = 'PICKED_UP', pickup_verified_at = NOW(), picked_up_at = NOW()
 		WHERE order_id = $1
 	`, orderID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE food.orders SET status = 'PICKED_UP' WHERE id = $1 AND status IN ('DELIVERY_ASSIGNED','READY_FOR_PICKUP')
-	`, orderID); err != nil {
+	if err := transitionOrderTx(ctx, tx, OrderTransition{
+		OrderID: orderID, From: orderStatus, To: orderstate.PickedUp,
+		Actor: orderstate.ActorRestaurant, ChangedBy: &ownerID, Reason: "pickup code verified",
+	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// codeMatches compares OTPs in constant time; an unset code never matches.
+func codeMatches(stored, supplied string) bool {
+	if stored == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(stored), []byte(supplied)) == 1
 }
 
 // VerifyDeliveryCode is the customer-side OTP check at drop. Sets
@@ -110,21 +130,23 @@ func (s *Store) VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var storedCode string
+	var storedCode, assignmentStatus, orderStatus string
+	var partnerID *uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(da.delivery_code, '')
+		SELECT COALESCE(da.delivery_code, ''), da.status::text, da.delivery_partner_id, o.status::text
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.order_id = $1 AND o.user_id = $2
 		FOR UPDATE OF da
-	`, orderID, customerID).Scan(&storedCode); err != nil {
+	`, orderID, customerID).Scan(&storedCode, &assignmentStatus, &partnerID, &orderStatus); err != nil {
 		return err
 	}
-	if storedCode == "" {
-		return fmt.Errorf("delivery_code not set")
+	// Only after pickup: a leaked code cannot mark an order delivered early.
+	if partnerID == nil || (assignmentStatus != "PICKED_UP" && assignmentStatus != "ARRIVED_AT_CUSTOMER") {
+		return fmt.Errorf("%w: assignment is %s", ErrAssignmentNotReady, assignmentStatus)
 	}
-	if storedCode != code {
-		return fmt.Errorf("invalid delivery_code")
+	if !codeMatches(storedCode, code) {
+		return ErrDeliveryCodeInvalid
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE food.delivery_assignments
@@ -133,11 +155,20 @@ func (s *Store) VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid
 	`, orderID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE food.orders
-		SET status = 'DELIVERED', delivered_at = NOW()
-		WHERE id = $1 AND status IN ('OUT_FOR_DELIVERY','PICKED_UP')
-	`, orderID); err != nil {
+	if orderStatus == orderstate.PickedUp {
+		// The rider skipped "arrived at customer"; record the hop honestly.
+		if err := transitionOrderTx(ctx, tx, OrderTransition{
+			OrderID: orderID, From: orderstate.PickedUp, To: orderstate.OutForDelivery,
+			Actor: orderstate.ActorSystem, Reason: "delivery code verified before arrival was marked",
+		}); err != nil {
+			return err
+		}
+		orderStatus = orderstate.OutForDelivery
+	}
+	if err := transitionOrderTx(ctx, tx, OrderTransition{
+		OrderID: orderID, From: orderStatus, To: orderstate.Delivered,
+		Actor: orderstate.ActorCustomer, ChangedBy: &customerID, Reason: "delivery code verified",
+	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

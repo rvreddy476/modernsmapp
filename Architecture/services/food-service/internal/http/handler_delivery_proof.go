@@ -32,6 +32,9 @@ func (h *Handler) PartnerVerifyPickupOTP(c *gin.Context) {
 		return
 	}
 	if err := h.svc.VerifyPickupCode(c.Request.Context(), uid, orderID, req.Code); err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PICKUP_VERIFY_FAILED", err.Error(), nil)
 		return
 	}
@@ -56,6 +59,9 @@ func (h *Handler) CustomerVerifyDeliveryOTP(c *gin.Context) {
 		return
 	}
 	if err := h.svc.VerifyDeliveryCode(c.Request.Context(), uid, orderID, req.Code); err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "DELIVERY_VERIFY_FAILED", err.Error(), nil)
 		return
 	}

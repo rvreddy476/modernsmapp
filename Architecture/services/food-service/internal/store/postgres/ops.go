@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -432,30 +433,22 @@ func (s *Store) PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID u
 		&order.PlacedAt, &order.DeliveredAt); err != nil {
 		return nil, err
 	}
+	// partnerTransitionAllowed narrows the restaurant actor to what these
+	// endpoints may do (pickup is the OTP verify, not a status button).
 	if !partnerTransitionAllowed(order.Status, toStatus) {
-		return nil, fmt.Errorf("invalid partner transition: %s -> %s", order.Status, toStatus)
+		return nil, fmt.Errorf("%w: restaurant cannot move an order %s -> %s", ErrOrderTransitionNotAllowed, order.Status, toStatus)
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE food.orders SET status = $2 WHERE id = $1
-	`, orderID, toStatus); err != nil {
+	if err := transitionOrderTx(ctx, tx, OrderTransition{
+		OrderID: orderID, From: order.Status, To: toStatus,
+		Actor: orderstate.ActorRestaurant, ChangedBy: &ownerID, Reason: reason,
+	}); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO food.order_status_history (order_id, from_status, to_status, changed_by, reason)
-		VALUES ($1, $2, $3, $4, $5)
-	`, orderID, order.Status, toStatus, ownerID, reason); err != nil {
-		return nil, err
-	}
-	if toStatus == "READY_FOR_PICKUP" {
-		if _, err := tx.Exec(ctx, `
-			UPDATE food.orders SET status = 'DELIVERY_ASSIGNING' WHERE id = $1
-		`, orderID); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO food.order_status_history (order_id, from_status, to_status, changed_by, reason)
-			VALUES ($1, 'READY_FOR_PICKUP', 'DELIVERY_ASSIGNING', $2, 'delivery assignment started')
-		`, orderID, ownerID); err != nil {
+	if toStatus == orderstate.ReadyForPickup {
+		if err := transitionOrderTx(ctx, tx, OrderTransition{
+			OrderID: orderID, From: orderstate.ReadyForPickup, To: orderstate.DeliveryAssigning,
+			Actor: orderstate.ActorSystem, Reason: "delivery assignment started",
+		}); err != nil {
 			return nil, err
 		}
 	}
@@ -614,10 +607,9 @@ func (s *Store) ListDeliveryAssignments(ctx context.Context, userID uuid.UUID) (
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.delivery_partner_id = $1
-			OR (da.delivery_partner_id IS NULL AND da.status = 'CREATED' AND $2 = TRUE)
 		ORDER BY da.created_at DESC
 		LIMIT 50
-	`, partner.ID, partner.IsOnline)
+	`, partner.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -633,10 +625,20 @@ func (s *Store) ListDeliveryAssignments(ctx context.Context, userID uuid.UUID) (
 	return assignments, rows.Err()
 }
 
+// DeliveryUpdateAssignment is the partner's step button on an assignment they
+// already hold. It can no longer claim anything: an assignment is taken only
+// through an offer accept, only ACTIVE partners act, and pickup / delivery
+// complete only through the OTP verifies.
 func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignmentID uuid.UUID, toStatus, idempotencyKey string) (*DeliveryAssignment, error) {
+	if deliveryOTPRequired(toStatus) {
+		return nil, ErrDeliveryOTPRequired
+	}
 	partner, err := s.GetDeliveryPartner(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+	if partner.Status != "ACTIVE" {
+		return nil, ErrDeliveryPartnerNotActive
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -649,7 +651,7 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 			return nil, err
 		}
 		if handled {
-			return s.getAssignmentTx(ctx, tx, assignmentID)
+			return s.getOwnAssignmentTx(ctx, tx, assignmentID, partner.ID)
 		}
 	}
 	var fromStatus string
@@ -657,7 +659,7 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 	if err := tx.QueryRow(ctx, `
 		SELECT status::text, order_id
 		FROM food.delivery_assignments
-		WHERE id = $1 AND (delivery_partner_id = $2 OR delivery_partner_id IS NULL)
+		WHERE id = $1 AND delivery_partner_id = $2
 		FOR UPDATE
 	`, assignmentID, partner.ID).Scan(&fromStatus, &orderID); err != nil {
 		return nil, err
@@ -666,46 +668,53 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 		return nil, fmt.Errorf("invalid delivery transition: %s -> %s", fromStatus, toStatus)
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE food.delivery_assignments
-		SET delivery_partner_id = $2, status = $3::food.assignment_status,
-			accepted_at = CASE WHEN $3 = 'ACCEPTED' THEN NOW() ELSE accepted_at END,
-			picked_up_at = CASE WHEN $3 = 'PICKED_UP' THEN NOW() ELSE picked_up_at END,
-			delivered_at = CASE WHEN $3 = 'DELIVERED' THEN NOW() ELSE delivered_at END
-		WHERE id = $1
-	`, assignmentID, partner.ID, toStatus); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `
 		INSERT INTO food.delivery_tracking_events (
 			assignment_id, delivery_partner_id, status, latitude, longitude, note
 		)
-		SELECT $1, $2, $3::food.assignment_status, current_latitude, current_longitude, 'status update'
+		SELECT $1, $2, $3::text::food.assignment_status, current_latitude, current_longitude, 'status update'
 		FROM food.delivery_partners
 		WHERE id = $2
 	`, assignmentID, partner.ID, toStatus); err != nil {
 		return nil, err
 	}
-	orderStatus := map[string]string{
-		"ACCEPTED":              "DELIVERY_ASSIGNED",
-		"ARRIVED_AT_RESTAURANT": "DELIVERY_ASSIGNED",
-		"PICKED_UP":             "PICKED_UP",
-		"ARRIVED_AT_CUSTOMER":   "OUT_FOR_DELIVERY",
-		"DELIVERED":             "DELIVERED",
-	}[toStatus]
-	if orderStatus != "" {
-		if _, err := tx.Exec(ctx, `UPDATE food.orders SET status = $2::food.order_status WHERE id = $1`, orderID, orderStatus); err != nil {
-			return nil, err
-		}
+	switch toStatus {
+	case "REJECTED":
+		// Release: the job goes back to the dispatch queue. Codes are cleared
+		// so the released partner cannot present them later; batch links are
+		// cleared so the order is re-dispatched on its own.
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO food.order_status_history (order_id, from_status, to_status, changed_by, reason)
-			VALUES ($1, NULL, $2, $3, 'delivery update')
-		`, orderID, orderStatus, userID); err != nil {
+			UPDATE food.delivery_assignments
+			SET delivery_partner_id = NULL, status = 'CREATED',
+				assigned_at = NULL, accepted_at = NULL,
+				pickup_code = NULL, delivery_code = NULL,
+				batch_id = NULL, batch_sequence = NULL
+			WHERE id = $1
+		`, assignmentID); err != nil {
 			return nil, err
 		}
-	}
-	if toStatus == "DELIVERED" {
-		if _, err := tx.Exec(ctx, `UPDATE food.orders SET delivered_at = NOW() WHERE id = $1`, orderID); err != nil {
+		if err := transitionOrderTx(ctx, tx, OrderTransition{
+			OrderID: orderID, From: orderstate.DeliveryAssigned, To: orderstate.DeliveryAssigning,
+			Actor: orderstate.ActorDeliveryPartner, ChangedBy: &userID, Reason: "delivery partner released the assignment",
+		}); err != nil {
 			return nil, err
+		}
+	default:
+		if _, err := tx.Exec(ctx, `
+			UPDATE food.delivery_assignments
+			SET status = $2::text::food.assignment_status,
+				accepted_at = CASE WHEN $2::text = 'ACCEPTED' THEN NOW() ELSE accepted_at END
+			WHERE id = $1
+		`, assignmentID, toStatus); err != nil {
+			return nil, err
+		}
+		// ACCEPTED and ARRIVED_AT_RESTAURANT leave the order where it is.
+		if toStatus == "ARRIVED_AT_CUSTOMER" {
+			if err := transitionOrderTx(ctx, tx, OrderTransition{
+				OrderID: orderID, From: orderstate.PickedUp, To: orderstate.OutForDelivery,
+				Actor: orderstate.ActorDeliveryPartner, ChangedBy: &userID, Reason: "delivery partner arrived at customer",
+			}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	assignment, err := s.getAssignmentTx(ctx, tx, assignmentID)
@@ -1094,23 +1103,10 @@ func (s *Store) AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UUID
 	`, orderID).Scan(&userID, &fromStatus); err != nil {
 		return nil, err
 	}
-	if fromStatus == "DELIVERED" || strings.HasPrefix(fromStatus, "CANCELLED") || fromStatus == "REFUNDED" {
-		return nil, fmt.Errorf("order cannot be cancelled from %s", fromStatus)
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE food.orders
-		SET status = 'CANCELLED_BY_ADMIN',
-			cancellation_reason = $3,
-			cancelled_by = $2,
-			cancelled_at = NOW()
-		WHERE id = $1
-	`, orderID, adminID, reason); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO food.order_status_history (order_id, from_status, to_status, changed_by, reason)
-		VALUES ($1, $2, 'CANCELLED_BY_ADMIN', $3, $4)
-	`, orderID, fromStatus, adminID, reason); err != nil {
+	if err := transitionOrderTx(ctx, tx, OrderTransition{
+		OrderID: orderID, From: fromStatus, To: orderstate.CancelledByAdmin,
+		Actor: orderstate.ActorAdmin, ChangedBy: &adminID, Reason: reason,
+	}); err != nil {
 		return nil, err
 	}
 	order, err := s.getOrderTx(ctx, tx, userID, orderID, true)
@@ -1889,17 +1885,35 @@ func partnerTransitionAllowed(from, to string) bool {
 	return ok
 }
 
+// deliveryTransitionAllowed is the partner's step table for an assignment
+// they hold. There is no CREATED row (an unclaimed assignment is taken only
+// by accepting an offer) and no PICKED_UP / DELIVERED target (OTP only).
 func deliveryTransitionAllowed(from, to string) bool {
 	allowed := map[string]map[string]struct{}{
-		"CREATED":               {"ACCEPTED": {}, "REJECTED": {}},
 		"ASSIGNED":              {"ACCEPTED": {}, "REJECTED": {}},
-		"ACCEPTED":              {"ARRIVED_AT_RESTAURANT": {}},
-		"ARRIVED_AT_RESTAURANT": {"PICKED_UP": {}},
+		"ACCEPTED":              {"ARRIVED_AT_RESTAURANT": {}, "REJECTED": {}},
+		"ARRIVED_AT_RESTAURANT": {"REJECTED": {}},
 		"PICKED_UP":             {"ARRIVED_AT_CUSTOMER": {}},
-		"ARRIVED_AT_CUSTOMER":   {"DELIVERED": {}},
 	}
 	_, ok := allowed[from][to]
 	return ok
+}
+
+// deliveryOTPRequired: these assignment steps exist only as the result of the
+// restaurant pickup verify and the customer delivery verify.
+func deliveryOTPRequired(to string) bool {
+	return to == "PICKED_UP" || to == "DELIVERED"
+}
+
+func (s *Store) getOwnAssignmentTx(ctx context.Context, tx pgx.Tx, assignmentID, partnerID uuid.UUID) (*DeliveryAssignment, error) {
+	a, err := s.getAssignmentTx(ctx, tx, assignmentID)
+	if err != nil {
+		return nil, err
+	}
+	if a.DeliveryPartnerID == nil || *a.DeliveryPartnerID != partnerID {
+		return nil, pgx.ErrNoRows
+	}
+	return a, nil
 }
 
 func number(value any, fallback float64) float64 {

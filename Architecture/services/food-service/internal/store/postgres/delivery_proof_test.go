@@ -81,7 +81,8 @@ func TestVerifyDeliveryCode_HappyPath(t *testing.T) {
 
 	orderID, _, customerID := seedOrderWithItem(t, s, "OUT_FOR_DELIVERY")
 	_, partnerID := seedDeliveryPartner(t, s)
-	seedDeliveryAssignment(t, s, orderID, partnerID)
+	// Consistent seed: an OUT_FOR_DELIVERY order's assignment has been picked up.
+	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ARRIVED_AT_CUSTOMER")
 
 	_, delivery, err := s.EnsureDeliveryCodes(ctx, orderID)
 	if err != nil {
@@ -102,7 +103,7 @@ func TestVerifyDeliveryCode_RejectsForeignCustomer(t *testing.T) {
 
 	orderID, _, _ := seedOrderWithItem(t, s, "OUT_FOR_DELIVERY")
 	_, partnerID := seedDeliveryPartner(t, s)
-	seedDeliveryAssignment(t, s, orderID, partnerID)
+	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "PICKED_UP")
 	_, delivery, _ := s.EnsureDeliveryCodes(ctx, orderID)
 
 	stranger := uuid.New()

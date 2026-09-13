@@ -74,12 +74,13 @@ type Store interface {
 	ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error
 	ListUnassignedReadyOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
 	ListUnbatchedReadyOrders(ctx context.Context, batch int) ([]postgres.ReadyOrderForBatching, error)
-	ListEligibleDeliveryPartners(ctx context.Context, restaurantCity string, limit int) ([]uuid.UUID, error)
-	CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time) (*postgres.DeliveryOffer, error)
+	ListDispatchCandidates(ctx context.Context, q postgres.DispatchQuery) ([]postgres.DispatchCandidate, error)
+	CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time, distanceKM *float64) (*postgres.DeliveryOffer, error)
 	CreateBatch(ctx context.Context, restaurantID uuid.UUID, orderIDs []uuid.UUID) (*postgres.DeliveryBatch, error)
-	CreateDeliveryOfferForBatch(ctx context.Context, batchID, anchorOrderID, partnerID uuid.UUID, expiresAt time.Time) (*postgres.DeliveryOffer, error)
+	CreateDeliveryOfferForBatch(ctx context.Context, batchID, anchorOrderID, partnerID uuid.UUID, expiresAt time.Time, distanceKM *float64) (*postgres.DeliveryOffer, error)
 	AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryBatch, uuid.UUID, error)
 	GetBatchForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.DeliveryBatch, error)
+	GetBatchForOrderForPartner(ctx context.Context, userID, orderID uuid.UUID) (*postgres.DeliveryBatch, error)
 	ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryOffer, error)
 	AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryOffer, error)
 	RejectDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID, reason string) error
@@ -176,20 +177,32 @@ type Service struct {
 	paymentsURL     string
 	internalKey     string
 	httpClient      *http.Client
-	rtPublisher     *realtime.Publisher
+	rtPublisher     realtimePublisher
 	rtSigner        *realtime.TokenSigner
 	outboxQ         *outbox.Queuer
 	dbPool          *pgxpool.Pool
 	blob            *blob.Store
+	// Dispatch: offers go to partners within dispatchRadiusKM of the
+	// restaurant whose latest location ping is newer than dispatchLocationMaxAge.
+	dispatchRadiusKM       float64
+	dispatchLocationMaxAge time.Duration
+}
+
+// realtimePublisher is the part of *realtime.Publisher the service uses; an
+// interface so tests can capture published topics.
+type realtimePublisher interface {
+	Publish(ctx context.Context, topic, eventType string, data any) error
 }
 
 func New(store Store) *Service {
 	return &Service{
-		store:           store,
-		monetizationURL: os.Getenv("MONETIZATION_SERVICE_URL"),
-		paymentsURL:     os.Getenv("PAYMENTS_SERVICE_URL"),
-		internalKey:     os.Getenv("INTERNAL_SERVICE_KEY"),
-		httpClient:      &http.Client{Timeout: 8 * time.Second},
+		store:                  store,
+		monetizationURL:        os.Getenv("MONETIZATION_SERVICE_URL"),
+		paymentsURL:            os.Getenv("PAYMENTS_SERVICE_URL"),
+		internalKey:            os.Getenv("INTERNAL_SERVICE_KEY"),
+		httpClient:             &http.Client{Timeout: 8 * time.Second},
+		dispatchRadiusKM:       envPositiveFloat("FOOD_DISPATCH_RADIUS_KM", defaultDispatchRadiusKM),
+		dispatchLocationMaxAge: time.Duration(envPositiveFloat("FOOD_DISPATCH_LOCATION_MAX_AGE_SECONDS", defaultDispatchLocationMaxAgeSeconds) * float64(time.Second)),
 	}
 }
 
@@ -197,8 +210,22 @@ func New(store Store) *Service {
 // Both are optional; nil-checked at every callsite so misconfiguration
 // degrades to "no live push, polling still works."
 func (s *Service) WithRealtime(p *realtime.Publisher, signer *realtime.TokenSigner) *Service {
-	s.rtPublisher = p
+	if p != nil {
+		s.rtPublisher = p
+	}
 	s.rtSigner = signer
+	return s
+}
+
+// WithDispatchConfig overrides the env-derived dispatch radius and location
+// freshness; non-positive values keep the current setting.
+func (s *Service) WithDispatchConfig(radiusKM float64, maxLocationAge time.Duration) *Service {
+	if radiusKM > 0 {
+		s.dispatchRadiusKM = radiusKM
+	}
+	if maxLocationAge > 0 {
+		s.dispatchLocationMaxAge = maxLocationAge
+	}
 	return s
 }
 
@@ -254,7 +281,8 @@ func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (str
 	// Topic set:
 	//   1. food.order.{order_id}       — for every order the user placed.
 	//   2. food.restaurant.{id}.orders — for every restaurant the user owns.
-	//   3. food.delivery_partner.{id}.assignments — if they're a partner.
+	//   3. food.delivery_partner.{user_id}.assignments — keyed by USER id,
+	//      the same helper the dispatch publishes use.
 	topics := []string{}
 	if orders, err := s.store.ListOrders(ctx, userID); err == nil {
 		for _, o := range orders {
@@ -268,7 +296,7 @@ func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (str
 	}
 	// Always grant the delivery-partner self-assignment topic — the
 	// user is keyed by their own user_id, so the topic is self-scoped.
-	topics = append(topics, "food.delivery_partner."+userID.String()+".assignments")
+	topics = append(topics, deliveryPartnerTopic(userID))
 	if len(topics) == 0 {
 		// Token signer rejects empty topic list; give the caller a
 		// no-op self-topic so they at least get a connected event.

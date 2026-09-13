@@ -30,11 +30,11 @@ func TestAcceptDeliveryOfferTx_FirstWinsRace(t *testing.T) {
 	user2, partner2 := seedDeliveryPartner(t, s)
 
 	expires := time.Now().Add(30 * time.Second)
-	offer1, err := s.CreateDeliveryOffer(ctx, orderID, partner1, expires)
+	offer1, err := s.CreateDeliveryOffer(ctx, orderID, partner1, expires, nil)
 	if err != nil {
 		t.Fatalf("create offer 1: %v", err)
 	}
-	offer2, err := s.CreateDeliveryOffer(ctx, orderID, partner2, expires)
+	offer2, err := s.CreateDeliveryOffer(ctx, orderID, partner2, expires, nil)
 	if err != nil {
 		t.Fatalf("create offer 2: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestAcceptDeliveryOfferTx_RejectsExpiredOrSuperseded(t *testing.T) {
 
 	// Past-expiry offer.
 	stale := time.Now().Add(-1 * time.Hour)
-	offer, err := s.CreateDeliveryOffer(ctx, orderID, partner, stale)
+	offer, err := s.CreateDeliveryOffer(ctx, orderID, partner, stale, nil)
 	if err != nil {
 		t.Fatalf("create stale offer: %v", err)
 	}

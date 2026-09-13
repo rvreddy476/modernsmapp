@@ -19,10 +19,12 @@ type Store struct {
 	// their transactions in this package, and the intent must commit inside
 	// them. nil is supported — see identity_roles.go.
 	roles *identityroles.Outbox
+	// ordering tunes PlaceOrder serviceability and ETA; see serviceability.go.
+	ordering OrderingConfig
 }
 
 func New(db *pgxpool.Pool) *Store {
-	return &Store{db: db}
+	return (&Store{db: db}).WithOrderingConfig(OrderingConfig{})
 }
 
 // WithRoleIntents attaches the identity role queue, matching the fluent With…

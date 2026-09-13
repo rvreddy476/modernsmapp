@@ -2,10 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // DeliveryBatch is one pickup group. Members are the (order_id,
@@ -33,6 +36,10 @@ type ReadyOrderForBatching struct {
 	OrderID      uuid.UUID
 	RestaurantID uuid.UUID
 	PlacedAt     time.Time
+	// Restaurant coordinates are the dispatch pickup point; nil means the
+	// restaurant has no location and dispatch skips it (fail closed).
+	RestaurantLat *float64
+	RestaurantLng *float64
 }
 
 // ListUnbatchedReadyOrders returns DELIVERY_ASSIGNING orders that don't
@@ -43,8 +50,9 @@ func (s *Store) ListUnbatchedReadyOrders(ctx context.Context, batch int) ([]Read
 		batch = 25
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT o.id, o.restaurant_id, o.placed_at
+		SELECT o.id, o.restaurant_id, o.placed_at, r.latitude::float8, r.longitude::float8
 		FROM food.orders o
+		JOIN food.restaurants r ON r.id = o.restaurant_id
 		LEFT JOIN food.delivery_assignments da
 			ON da.order_id = o.id AND da.status NOT IN ('CANCELLED', 'CREATED')
 		LEFT JOIN food.delivery_offers offers
@@ -62,7 +70,7 @@ func (s *Store) ListUnbatchedReadyOrders(ctx context.Context, batch int) ([]Read
 	var out []ReadyOrderForBatching
 	for rows.Next() {
 		var r ReadyOrderForBatching
-		if err := rows.Scan(&r.OrderID, &r.RestaurantID, &r.PlacedAt); err != nil {
+		if err := rows.Scan(&r.OrderID, &r.RestaurantID, &r.PlacedAt, &r.RestaurantLat, &r.RestaurantLng); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -130,15 +138,15 @@ func (s *Store) CreateBatch(ctx context.Context, restaurantID uuid.UUID, orderID
 // We pin the order_id column to the first (earliest-placed) order so
 // the existing UNIQUE(order_id, partner_id) constraint still acts as
 // the dedup guard. Sibling orders are reached via the batch link.
-func (s *Store) CreateDeliveryOfferForBatch(ctx context.Context, batchID, anchorOrderID, partnerID uuid.UUID, expiresAt time.Time) (*DeliveryOffer, error) {
+func (s *Store) CreateDeliveryOfferForBatch(ctx context.Context, batchID, anchorOrderID, partnerID uuid.UUID, expiresAt time.Time, distanceKM *float64) (*DeliveryOffer, error) {
 	var o DeliveryOffer
 	if err := s.db.QueryRow(ctx, `
-		INSERT INTO food.delivery_offers (order_id, delivery_partner_id, batch_id, expires_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO food.delivery_offers (order_id, delivery_partner_id, batch_id, expires_at, distance_km)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (order_id, delivery_partner_id) DO UPDATE SET expires_at = food.delivery_offers.expires_at
-		RETURNING id, order_id, delivery_partner_id, status::text, distance_km, expires_at::text,
+		RETURNING id, order_id, delivery_partner_id, status::text, distance_km::float8, expires_at::text,
 			responded_at::text, reject_reason, created_at::text
-	`, anchorOrderID, partnerID, batchID, expiresAt).Scan(
+	`, anchorOrderID, partnerID, batchID, expiresAt, distanceKM).Scan(
 		&o.ID, &o.OrderID, &o.DeliveryPartnerID, &o.Status, &o.DistanceKM,
 		&o.ExpiresAt, &o.RespondedAt, &o.RejectReason, &o.CreatedAt,
 	); err != nil {
@@ -167,18 +175,17 @@ func (s *Store) AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUI
 		return nil, uuid.Nil, fmt.Errorf("partner lookup: %w", err)
 	}
 	var batchID uuid.UUID
-	var offerStatus string
 	if err := tx.QueryRow(ctx, `
-		SELECT batch_id, status::text FROM food.delivery_offers
+		SELECT batch_id FROM food.delivery_offers
 		WHERE id = $1 AND delivery_partner_id = $2 AND batch_id IS NOT NULL
-		FOR UPDATE
-	`, offerID, partnerID).Scan(&batchID, &offerStatus); err != nil {
+	`, offerID, partnerID).Scan(&batchID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, uuid.Nil, ErrNotBatchOffer
+		}
 		return nil, uuid.Nil, fmt.Errorf("offer lookup: %w", err)
 	}
-	if offerStatus != "pending" {
-		return nil, uuid.Nil, fmt.Errorf("offer not pending: %s", offerStatus)
-	}
-	// Lock the batch + every member assignment for the duration.
+	// Lock order: batch, then offer, then member orders. Competing accepts
+	// serialise on the batch row instead of deadlocking on sibling offers.
 	var restaurantID uuid.UUID
 	var batchStatus string
 	if err := tx.QueryRow(ctx, `
@@ -187,8 +194,55 @@ func (s *Store) AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUI
 	`, batchID).Scan(&restaurantID, &batchStatus); err != nil {
 		return nil, uuid.Nil, fmt.Errorf("batch lookup: %w", err)
 	}
+	var offerStatus string
+	if err := tx.QueryRow(ctx, `
+		SELECT status::text FROM food.delivery_offers WHERE id = $1 FOR UPDATE
+	`, offerID).Scan(&offerStatus); err != nil {
+		return nil, uuid.Nil, fmt.Errorf("offer lookup: %w", err)
+	}
+	if offerStatus != "pending" {
+		return nil, uuid.Nil, fmt.Errorf("offer not pending: %s", offerStatus)
+	}
 	if batchStatus != "pending" {
 		return nil, uuid.Nil, fmt.Errorf("batch not pending: %s", batchStatus)
+	}
+	type memberOrder struct {
+		id     uuid.UUID
+		status string
+	}
+	orderRows, err := tx.Query(ctx, `
+		SELECT o.id, o.status::text
+		FROM food.orders o
+		JOIN food.delivery_assignments da ON da.order_id = o.id
+		WHERE da.batch_id = $1
+		ORDER BY o.id
+		FOR UPDATE OF o
+	`, batchID)
+	if err != nil {
+		return nil, uuid.Nil, err
+	}
+	var memberOrders []memberOrder
+	for orderRows.Next() {
+		var m memberOrder
+		if err := orderRows.Scan(&m.id, &m.status); err != nil {
+			orderRows.Close()
+			return nil, uuid.Nil, err
+		}
+		memberOrders = append(memberOrders, m)
+	}
+	orderRows.Close()
+	if err := orderRows.Err(); err != nil {
+		return nil, uuid.Nil, err
+	}
+	// Every member must still be waiting for a partner; one cancelled member
+	// rolls the whole accept back.
+	for _, m := range memberOrders {
+		if err := transitionOrderTx(ctx, tx, OrderTransition{
+			OrderID: m.id, From: m.status, To: orderstate.DeliveryAssigned,
+			Actor: orderstate.ActorDeliveryPartner, ChangedBy: &userID, Reason: "delivery partner accepted batch offer",
+		}); err != nil {
+			return nil, uuid.Nil, err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE food.delivery_offers SET status = 'accepted', responded_at = NOW()
@@ -210,21 +264,16 @@ func (s *Store) AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUI
 		return nil, uuid.Nil, err
 	}
 	// Flip every member assignment to ASSIGNED with this partner.
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE food.delivery_assignments
-		SET delivery_partner_id = $1, status = 'ASSIGNED', accepted_at = NOW()
-		WHERE batch_id = $2 AND status = 'CREATED'
-	`, partnerID, batchID); err != nil {
+		SET delivery_partner_id = $1, status = 'ASSIGNED', assigned_at = NOW(), accepted_at = NOW()
+		WHERE batch_id = $2 AND status = 'CREATED' AND delivery_partner_id IS NULL
+	`, partnerID, batchID)
+	if err != nil {
 		return nil, uuid.Nil, err
 	}
-	// Move every member order to DELIVERY_ASSIGNED.
-	if _, err := tx.Exec(ctx, `
-		UPDATE food.orders SET status = 'DELIVERY_ASSIGNED'
-		WHERE id IN (
-			SELECT order_id FROM food.delivery_assignments WHERE batch_id = $1
-		) AND status = 'DELIVERY_ASSIGNING'
-	`, batchID); err != nil {
-		return nil, uuid.Nil, err
+	if int(tag.RowsAffected()) != len(memberOrders) {
+		return nil, uuid.Nil, fmt.Errorf("%w: a batch member assignment is already held", ErrOrderStatusConflict)
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT order_id, COALESCE(batch_sequence, 0) FROM food.delivery_assignments

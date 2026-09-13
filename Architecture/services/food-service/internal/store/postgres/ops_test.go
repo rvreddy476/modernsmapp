@@ -32,11 +32,20 @@ func TestDeliveryTransitionAllowed(t *testing.T) {
 		to   string
 		want bool
 	}{
-		{name: "created to accepted", from: "CREATED", to: "ACCEPTED", want: true},
+		{name: "assigned to accepted", from: "ASSIGNED", to: "ACCEPTED", want: true},
+		{name: "assigned to rejected", from: "ASSIGNED", to: "REJECTED", want: true},
 		{name: "accepted to restaurant arrival", from: "ACCEPTED", to: "ARRIVED_AT_RESTAURANT", want: true},
-		{name: "restaurant arrival to picked up", from: "ARRIVED_AT_RESTAURANT", to: "PICKED_UP", want: true},
+		{name: "accepted can still release", from: "ACCEPTED", to: "REJECTED", want: true},
+		{name: "restaurant arrival can still release", from: "ARRIVED_AT_RESTAURANT", to: "REJECTED", want: true},
 		{name: "picked up to arrived customer", from: "PICKED_UP", to: "ARRIVED_AT_CUSTOMER", want: true},
-		{name: "arrived customer to delivered", from: "ARRIVED_AT_CUSTOMER", to: "DELIVERED", want: true},
+		// The claim bypass: an unclaimed CREATED assignment is only ever taken
+		// through an offer accept, never by a bare status update.
+		{name: "created cannot be claimed by accept", from: "CREATED", to: "ACCEPTED", want: false},
+		{name: "created cannot be rejected", from: "CREATED", to: "REJECTED", want: false},
+		// Pickup and delivery complete only through the OTP flows.
+		{name: "bare pickup refused", from: "ARRIVED_AT_RESTAURANT", to: "PICKED_UP", want: false},
+		{name: "bare delivery refused", from: "ARRIVED_AT_CUSTOMER", to: "DELIVERED", want: false},
+		{name: "assigned cannot jump pickup", from: "ASSIGNED", to: "PICKED_UP", want: false},
 		{name: "created cannot jump delivered", from: "CREATED", to: "DELIVERED", want: false},
 	}
 

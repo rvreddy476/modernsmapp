@@ -69,7 +69,17 @@ func main() {
 	checker := health.New("food-service")
 	checker.Register("postgres", health.PingCheck(dbPool))
 
-	store := postgres.New(dbPool).WithRoleIntents(identityroles.NewOutbox("", "food-service"))
+	// FOOD_RESTAURANT_TIMEZONE / FOOD_DEFAULT_DELIVERY_RADIUS_KM /
+	// FOOD_AVG_RIDER_SPEED_KMH. A bad value stops startup rather than silently
+	// widening the delivery radius.
+	orderingCfg, err := postgres.OrderingConfigFromEnv()
+	if err != nil {
+		slog.Error("invalid ordering config", "error", err)
+		os.Exit(1)
+	}
+	store := postgres.New(dbPool).
+		WithRoleIntents(identityroles.NewOutbox("", "food-service")).
+		WithOrderingConfig(orderingCfg)
 	svc := service.New(store)
 
 	// Realtime: best-effort Pub/Sub publishes + topic-token signer.

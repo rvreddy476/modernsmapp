@@ -8,6 +8,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -25,6 +26,9 @@ type AddCartItemInput struct {
 	Quantity        int
 	ItemInstruction string
 	ClearExisting   bool
+	// Addons is the additive `addons` body field; validated against the
+	// menu item's add-on groups before anything is written.
+	Addons []CartAddonInput
 }
 
 type UpdateCartItemInput struct {
@@ -65,6 +69,9 @@ func (s *Store) AddCartItem(ctx context.Context, userID uuid.UUID, in AddCartIte
 	if !available {
 		return nil, fmt.Errorf("menu item is unavailable")
 	}
+	if err := validateCartAddonsTx(ctx, tx, in.MenuItemID, in.Addons); err != nil {
+		return nil, err
+	}
 
 	cartID, currentRestaurantID, err := s.ensureCartForUpdate(ctx, tx, userID)
 	if err != nil {
@@ -85,13 +92,23 @@ func (s *Store) AddCartItem(ctx context.Context, userID uuid.UUID, in AddCartIte
 	`, cartID, restaurantID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `
+	var cartItemID uuid.UUID
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.cart_items (
 			cart_id, restaurant_id, menu_item_id, variant_id, quantity, item_instruction
 		)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, cartID, restaurantID, in.MenuItemID, in.VariantID, in.Quantity, in.ItemInstruction); err != nil {
+		RETURNING id
+	`, cartID, restaurantID, in.MenuItemID, in.VariantID, in.Quantity, in.ItemInstruction).Scan(&cartItemID); err != nil {
 		return nil, err
+	}
+	for _, a := range in.Addons {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO food.cart_item_addons (cart_item_id, addon_id, quantity)
+			VALUES ($1, $2, $3)
+		`, cartItemID, a.AddonID, a.Quantity); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -350,6 +367,7 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	var prepMins int
 	var commissionPct float64
 	var active bool
+	var restLat, restLng *float64
 	if err := tx.QueryRow(ctx, `
 		SELECT name, jsonb_build_object(
 			'address_line1', address_line1,
@@ -361,14 +379,29 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			'latitude', latitude,
 			'longitude', longitude
 		), avg_preparation_minutes, commission_percentage::float8,
-		(status = 'ACTIVE' AND is_open = TRUE AND is_accepting_orders = TRUE)
+		(status = 'ACTIVE' AND is_open = TRUE AND is_accepting_orders = TRUE),
+		latitude::float8, longitude::float8
 		FROM food.restaurants
 		WHERE id = $1
-	`, *cart.RestaurantID).Scan(&restaurantName, &restaurantAddressJSON, &prepMins, &commissionPct, &active); err != nil {
+	`, *cart.RestaurantID).Scan(&restaurantName, &restaurantAddressJSON, &prepMins, &commissionPct, &active, &restLat, &restLng); err != nil {
 		return nil, err
 	}
 	if !active {
-		return nil, fmt.Errorf("restaurant is not accepting orders")
+		return nil, ErrRestaurantNotAccepting
+	}
+	// getAddressTx COALESCEs missing coordinates to 0, which would place the
+	// customer in the Gulf of Guinea; read the nullable columns directly.
+	var addrLat, addrLng *float64
+	if err := tx.QueryRow(ctx, `
+		SELECT latitude::float8, longitude::float8
+		FROM food.customer_addresses
+		WHERE id = $1 AND user_id = $2 AND is_deleted = FALSE
+	`, address.ID, userID).Scan(&addrLat, &addrLng); err != nil {
+		return nil, err
+	}
+	distanceKM, err := s.checkServiceabilityTx(ctx, tx, *cart.RestaurantID, restLat, restLng, addrLat, addrLng)
+	if err != nil {
+		return nil, err
 	}
 
 	if in.CouponCode != "" {
@@ -436,21 +469,36 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 		cart.Totals.AddonTotal, cart.Totals.PackagingFee, cart.Totals.TaxTotal, cart.Totals.DeliveryFee,
 		cart.Totals.PlatformFee, cart.Totals.RestaurantDiscount, cart.Totals.CouponDiscount,
 		cart.Totals.FinalAmount, emptyToNil(cart.CouponCode), commissionPct, commissionAmount,
-		prepMins, prepMins+25, in.CustomerInstruction).Scan(&orderID); err != nil {
+		prepMins, estimateDeliveryMinutes(prepMins, distanceKM, s.ordering.AvgRiderSpeedKmh),
+		in.CustomerInstruction).Scan(&orderID); err != nil {
 		return nil, err
 	}
 
 	for _, item := range cart.Items {
-		if _, err := tx.Exec(ctx, `
+		var orderItemID uuid.UUID
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO food.order_items (
 				order_id, menu_item_id, variant_id, item_name_snapshot,
 				food_type_snapshot, unit_price_snapshot, quantity,
 				tax_percentage_snapshot, tax_amount, line_total, item_instruction
 			)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			RETURNING id
 		`, orderID, item.MenuItemID, item.VariantID, item.Name, item.FoodType, item.UnitPrice,
-			item.Quantity, item.TaxPercentage, item.TaxAmount, item.LineTotal, item.ItemInstruction); err != nil {
+			item.Quantity, item.TaxPercentage, item.TaxAmount, item.LineTotal, item.ItemInstruction).Scan(&orderItemID); err != nil {
 			return nil, err
+		}
+		// Snapshot quantity is the total add-on units (add-on qty x item qty),
+		// so line_total = unit_price_snapshot x quantity holds.
+		for _, a := range item.Addons {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO food.order_item_addons (
+					order_item_id, addon_id, addon_name_snapshot, unit_price_snapshot, quantity, line_total
+				)
+				VALUES ($1, $2, $3, $4, $5, $6)
+			`, orderItemID, a.AddonID, a.Name, a.UnitPrice, a.Quantity*item.Quantity, a.LineTotal); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `
@@ -467,9 +515,9 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	}
 	if status == "CONFIRMED" {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO food.delivery_assignments (order_id, status, delivery_fee)
-			VALUES ($1, 'CREATED', $2)
-		`, orderID, cart.Totals.DeliveryFee); err != nil {
+			INSERT INTO food.delivery_assignments (order_id, status, delivery_fee, delivery_partner_payout, distance_km)
+			VALUES ($1, 'CREATED', $2, $3, $4)
+		`, orderID, cart.Totals.DeliveryFee, riderPayoutForFee(cart.Totals.DeliveryFee), roundMoney(distanceKM)); err != nil {
 			return nil, err
 		}
 	}
@@ -562,23 +610,12 @@ func (s *Store) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, reas
 	if err != nil {
 		return nil, err
 	}
-	switch order.Status {
-	case "PLACED", "CONFIRMED", "PREPARING":
-	default:
-		return nil, fmt.Errorf("order cannot be cancelled from %s", order.Status)
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE food.orders
-		SET status = 'CANCELLED_BY_CUSTOMER', cancellation_reason = $3,
-			cancelled_by = $1, cancelled_at = NOW()
-		WHERE user_id = $1 AND id = $2
-	`, userID, orderID, reason); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO food.order_status_history (order_id, from_status, to_status, changed_by, reason)
-		VALUES ($1, $2, 'CANCELLED_BY_CUSTOMER', $3, $4)
-	`, orderID, order.Status, userID, reason); err != nil {
+	// orderstate allows the customer to cancel from PLACED, CONFIRMED and
+	// PREPARING only; the guard refuses everything else.
+	if err := transitionOrderTx(ctx, tx, OrderTransition{
+		OrderID: orderID, From: order.Status, To: orderstate.CancelledByCustomer,
+		Actor: orderstate.ActorCustomer, ChangedBy: &userID, Reason: reason,
+	}); err != nil {
 		return nil, err
 	}
 	updated, err := s.getOrderTx(ctx, tx, userID, orderID, true)
@@ -731,16 +768,24 @@ func (s *Store) loadCart(ctx context.Context, q interface {
 			rows.Close()
 			return nil, err
 		}
-		item.LineTotal = roundMoney(item.UnitPrice * float64(item.Quantity))
-		item.TaxAmount = roundMoney(item.LineTotal * item.TaxPercentage / 100)
-		cart.Totals.ItemSubtotal += item.LineTotal
-		cart.Totals.TaxTotal += item.TaxAmount
 		cart.Items = append(cart.Items, item)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if len(cart.Items) > 0 {
+		if err := loadCartAddons(ctx, q, cart.ID, cart.Items); err != nil {
+			return nil, err
+		}
+	}
+	for i := range cart.Items {
+		priceCartItem(&cart.Items[i])
+		cart.Totals.ItemSubtotal += cart.Items[i].LineTotal
+		cart.Totals.AddonTotal += cart.Items[i].AddonTotal
+		cart.Totals.TaxTotal += cart.Items[i].TaxAmount
+	}
+	cart.Totals.AddonTotal = roundMoney(cart.Totals.AddonTotal)
 	if cart.RestaurantID != nil && len(cart.Items) > 0 {
 		_ = q.QueryRow(ctx, `SELECT packaging_fee::float8 FROM food.restaurants WHERE id = $1`, *cart.RestaurantID).Scan(&cart.Totals.PackagingFee)
 		cart.Totals.DeliveryFee = 29

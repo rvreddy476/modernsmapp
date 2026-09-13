@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -91,43 +92,49 @@ func (s *Store) AutoRejectExpiredOrders(ctx context.Context, batch int) ([]uuid.
 	if batch <= 0 {
 		batch = 50
 	}
-	rows, err := s.db.Query(ctx, `
-		WITH expired AS (
-			SELECT id FROM food.orders
-			WHERE status = 'CONFIRMED'
-			  AND accept_deadline_at IS NOT NULL
-			  AND accept_deadline_at <= NOW()
-			ORDER BY accept_deadline_at ASC
-			LIMIT $1
-			FOR UPDATE SKIP LOCKED
-		),
-		updated AS (
-			UPDATE food.orders
-			SET status = 'RESTAURANT_REJECTED',
-				cancellation_reason = 'sla_breach: restaurant did not accept in time',
-				cancelled_at = NOW()
-			WHERE id IN (SELECT id FROM expired)
-			RETURNING id
-		),
-		hist AS (
-			INSERT INTO food.order_status_history (order_id, from_status, to_status, changed_by, reason)
-			SELECT id, 'CONFIRMED', 'RESTAURANT_REJECTED', NULL, 'sla_breach'
-			FROM updated
-			RETURNING order_id
-		)
-		SELECT id FROM updated
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	// SKIP LOCKED keeps two workers from fighting over the same rows; each
+	// locked id then goes through the guarded writer in this transaction.
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM food.orders
+		WHERE status = 'CONFIRMED'
+		  AND accept_deadline_at IS NOT NULL
+		  AND accept_deadline_at <= NOW()
+		ORDER BY accept_deadline_at ASC
+		LIMIT $1
+		FOR UPDATE SKIP LOCKED
 	`, batch)
 	if err != nil {
 		return nil, fmt.Errorf("auto-reject expired: %w", err)
 	}
-	defer rows.Close()
 	var ids []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if err := transitionOrderTx(ctx, tx, OrderTransition{
+			OrderID: id, From: orderstate.Confirmed, To: orderstate.RestaurantRejected,
+			Actor: orderstate.ActorSystem, Reason: "sla_breach",
+			CancelReason: "sla_breach: restaurant did not accept in time",
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

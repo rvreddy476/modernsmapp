@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 
+	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -34,6 +35,9 @@ func (h *Handler) AcceptDeliveryOffer(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AcceptDeliveryOffer(c.Request.Context(), uid, offerID); err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "DELIVERY_ACCEPT_FAILED", err.Error(), nil)
 		return
 	}
@@ -48,12 +52,13 @@ type RejectDeliveryOfferRequest struct {
 // GetBatchForOrder — GET /v1/food/delivery/orders/:orderId/batch
 //
 // Returns the batch payload (members + sequence + status) for an order
-// that's part of a multi-pickup batch, or 404 when the order is
-// dispatched solo. Used by partner UI to render "Stop 1 of 2" and by
-// customer UI to render the "delivered alongside another order"
-// banner.
+// that's part of a multi-pickup batch. Visible to the delivery partner
+// assigned to the order ("Stop 1 of 2") and to admin / superadmin scopes.
+// Everyone else, like a solo order, gets 404 so batch existence and
+// sibling order ids do not leak.
 func (h *Handler) GetBatchForOrder(c *gin.Context) {
-	if _, ok := h.requireUser(c); !ok {
+	uid, ok := h.requireUser(c)
+	if !ok {
 		return
 	}
 	orderID, err := uuid.Parse(c.Param("orderId"))
@@ -61,9 +66,15 @@ func (h *Handler) GetBatchForOrder(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ORDER_ID", err.Error(), nil)
 		return
 	}
-	batch, err := h.svc.GetBatchForOrder(c.Request.Context(), orderID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "BATCH_NOT_FOUND", err.Error(), nil)
+	var batch *postgres.DeliveryBatch
+	scopes := c.GetHeader("X-Scopes")
+	if hasScope(scopes, "admin") || hasScope(scopes, "superadmin") {
+		batch, err = h.svc.GetBatchForOrder(c.Request.Context(), orderID)
+	} else {
+		batch, err = h.svc.GetBatchForOrderForPartner(c.Request.Context(), uid, orderID)
+	}
+	if err != nil || batch == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "BATCH_NOT_FOUND", "batch not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, batch, nil)

@@ -306,6 +306,11 @@ func (h *Handler) AddCartItem(c *gin.Context) {
 		Quantity        int    `json:"quantity"`
 		ItemInstruction string `json:"item_instruction"`
 		ClearExisting   bool   `json:"clear_existing"`
+		// Additive: omitted means no add-ons.
+		Addons []struct {
+			AddonID  string `json:"addon_id"`
+			Quantity int    `json:"quantity"`
+		} `json:"addons"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -325,16 +330,30 @@ func (h *Handler) AddCartItem(c *gin.Context) {
 		}
 		variantID = &parsed
 	}
+	addons := make([]postgres.CartAddonInput, 0, len(body.Addons))
+	for _, a := range body.Addons {
+		addonID, err := uuid.Parse(a.AddonID)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ADDON", "invalid addon id", nil)
+			return
+		}
+		addons = append(addons, postgres.CartAddonInput{AddonID: addonID, Quantity: a.Quantity})
+	}
 	cart, err := h.svc.AddCartItem(c.Request.Context(), userID, postgres.AddCartItemInput{
 		MenuItemID:      menuItemID,
 		VariantID:       variantID,
 		Quantity:        body.Quantity,
 		ItemInstruction: body.ItemInstruction,
 		ClearExisting:   body.ClearExisting,
+		Addons:          addons,
 	})
 	if err != nil {
 		if errors.Is(err, postgres.ErrCartRestaurantConflict) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FOOD_CART_RESTAURANT_CONFLICT", "cart contains items from another restaurant", nil)
+			return
+		}
+		if errors.Is(err, postgres.ErrAddonInvalid) {
+			writeKnownError(c, err)
 			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_CART_ADD_FAILED", err.Error(), nil)
@@ -580,6 +599,9 @@ func (h *Handler) PlaceOrder(c *gin.Context) {
 		CustomerInstruction: body.CustomerInstruction,
 	}, idempotencyKey)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ORDER_PLACE_FAILED", err.Error(), nil)
 		return
 	}
@@ -721,6 +743,9 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 	_ = c.ShouldBindJSON(&body)
 	order, err := h.svc.CancelOrder(c.Request.Context(), userID, orderID, body.Reason)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ORDER_CANCEL_FAILED", err.Error(), nil)
 		return
 	}
@@ -1257,6 +1282,9 @@ func (h *Handler) partnerOrderStatus(c *gin.Context, status string) {
 	}
 	order, err := h.svc.PartnerUpdateOrderStatus(c.Request.Context(), userID, orderID, status, body.Reason, idempotencyKey)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PARTNER_ORDER_STATUS_FAILED", err.Error(), nil)
 		return
 	}
@@ -1425,6 +1453,9 @@ func (h *Handler) deliveryAssignmentStatus(c *gin.Context, status string) {
 	}
 	assignment, err := h.svc.DeliveryUpdateAssignment(c.Request.Context(), userID, assignmentID, status, idempotencyKey)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_DELIVERY_ASSIGNMENT_STATUS_FAILED", err.Error(), nil)
 		return
 	}
@@ -1663,6 +1694,9 @@ func (h *Handler) AdminCancelOrder(c *gin.Context) {
 	_ = c.ShouldBindJSON(&body)
 	order, err := h.svc.AdminCancelOrder(c.Request.Context(), adminID, orderID, body.Reason)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ADMIN_ORDER_CANCEL_FAILED", err.Error(), nil)
 		return
 	}

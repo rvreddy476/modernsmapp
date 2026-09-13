@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 //  3. For each batch (singletons included), mint up to 5 offers to
 //     nearby online partners with a 25-second TTL.
 //
-// Partners get the push via the food.delivery_partner.{id}.assignments
+// Partners get the push via the food.delivery_partner.{user_id}.assignments
 // realtime topic plus an outbox food.delivery.offered event for FCM.
 func (s *Service) StartDeliveryDispatchWorker(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
@@ -64,18 +65,27 @@ func (s *Service) dispatchPendingOrders(ctx context.Context) error {
 	}
 	groups := groupOrdersForBatching(ready)
 	for _, g := range groups {
-		if len(g.orderIDs) == 1 {
-			s.dispatchOneOrder(ctx, g.orderIDs[0])
+		if g.restaurantLat == nil || g.restaurantLng == nil {
+			// Fail closed: without a pickup point there is no radius to
+			// search, and offering to "everyone online" is what this replaced.
+			slog.Warn("food-service: restaurant has no location; orders not dispatched",
+				"restaurant_id", g.restaurantID, "orders", len(g.orderIDs))
 			continue
 		}
-		s.dispatchOneBatch(ctx, g.restaurantID, g.orderIDs)
+		if len(g.orderIDs) == 1 {
+			s.dispatchOneOrder(ctx, g, g.orderIDs[0])
+			continue
+		}
+		s.dispatchOneBatch(ctx, g)
 	}
 	return nil
 }
 
 type orderGroup struct {
-	restaurantID uuid.UUID
-	orderIDs     []uuid.UUID
+	restaurantID  uuid.UUID
+	restaurantLat *float64
+	restaurantLng *float64
+	orderIDs      []uuid.UUID
 }
 
 // groupOrdersForBatching walks the orders (which the store returned
@@ -92,7 +102,7 @@ func groupOrdersForBatching(in []postgres.ReadyOrderForBatching) []orderGroup {
 		return nil
 	}
 	var groups []orderGroup
-	cur := orderGroup{restaurantID: in[0].RestaurantID, orderIDs: []uuid.UUID{in[0].OrderID}}
+	cur := newOrderGroup(in[0])
 	anchor := in[0].PlacedAt
 	for i := 1; i < len(in); i++ {
 		o := in[i]
@@ -104,82 +114,93 @@ func groupOrdersForBatching(in []postgres.ReadyOrderForBatching) []orderGroup {
 			continue
 		}
 		groups = append(groups, cur)
-		cur = orderGroup{restaurantID: o.RestaurantID, orderIDs: []uuid.UUID{o.OrderID}}
+		cur = newOrderGroup(o)
 		anchor = o.PlacedAt
 	}
 	groups = append(groups, cur)
 	return groups
 }
 
-func (s *Service) dispatchOneOrder(ctx context.Context, orderID uuid.UUID) {
-	partners, err := s.store.ListEligibleDeliveryPartners(ctx, "", offersPerOrder)
-	if err != nil {
-		slog.Warn("food-service: eligible partners failed", "order_id", orderID, "error", err)
-		return
+func newOrderGroup(o postgres.ReadyOrderForBatching) orderGroup {
+	return orderGroup{
+		restaurantID:  o.RestaurantID,
+		restaurantLat: o.RestaurantLat,
+		restaurantLng: o.RestaurantLng,
+		orderIDs:      []uuid.UUID{o.OrderID},
 	}
-	if len(partners) == 0 {
+}
+
+// dispatchCandidates returns the nearest fresh, ACTIVE, online partners
+// around the group's restaurant.
+func (s *Service) dispatchCandidates(ctx context.Context, g orderGroup) ([]postgres.DispatchCandidate, error) {
+	return s.store.ListDispatchCandidates(ctx, postgres.DispatchQuery{
+		Lat:            *g.restaurantLat,
+		Lng:            *g.restaurantLng,
+		RadiusKM:       s.dispatchRadiusKM,
+		MaxLocationAge: s.dispatchLocationMaxAge,
+		Limit:          offersPerOrder,
+	})
+}
+
+func (s *Service) dispatchOneOrder(ctx context.Context, g orderGroup, orderID uuid.UUID) {
+	candidates, err := s.dispatchCandidates(ctx, g)
+	if err != nil {
+		slog.Warn("food-service: dispatch candidates failed", "order_id", orderID, "error", err)
 		return
 	}
 	expiresAt := time.Now().Add(offerTTL)
-	for _, pid := range partners {
-		offer, err := s.store.CreateDeliveryOffer(ctx, orderID, pid, expiresAt)
+	for _, c := range candidates {
+		distance := c.DistanceKM
+		offer, err := s.store.CreateDeliveryOffer(ctx, orderID, c.PartnerID, expiresAt, &distance)
 		if err != nil {
 			slog.Warn("food-service: create offer failed",
-				"order_id", orderID, "partner_id", pid, "error", err)
+				"order_id", orderID, "partner_id", c.PartnerID, "error", err)
 			continue
 		}
-		s.emit(ctx,
-			"food.delivery_partner."+pid.String()+".assignments",
-			"food.delivery.offered",
-			offer,
-		)
+		s.emit(ctx, deliveryPartnerTopic(c.UserID), "food.delivery.offered", offer)
 	}
 }
 
 // dispatchOneBatch creates a batch row for the order group, then mints
 // one offer per nearby partner that points at the batch. Whichever
 // partner accepts gets all member orders flipped to ASSIGNED in one tx.
-func (s *Service) dispatchOneBatch(ctx context.Context, restaurantID uuid.UUID, orderIDs []uuid.UUID) {
-	batch, err := s.store.CreateBatch(ctx, restaurantID, orderIDs)
+func (s *Service) dispatchOneBatch(ctx context.Context, g orderGroup) {
+	batch, err := s.store.CreateBatch(ctx, g.restaurantID, g.orderIDs)
 	if err != nil {
 		slog.Warn("food-service: create batch failed",
-			"restaurant_id", restaurantID, "size", len(orderIDs), "error", err)
+			"restaurant_id", g.restaurantID, "size", len(g.orderIDs), "error", err)
 		// Fall back to per-order dispatch so progress isn't gated on
 		// batching working.
-		for _, oid := range orderIDs {
-			s.dispatchOneOrder(ctx, oid)
+		for _, oid := range g.orderIDs {
+			s.dispatchOneOrder(ctx, g, oid)
 		}
 		return
 	}
-	partners, err := s.store.ListEligibleDeliveryPartners(ctx, "", offersPerOrder)
+	candidates, err := s.dispatchCandidates(ctx, g)
 	if err != nil {
-		slog.Warn("food-service: eligible partners failed", "batch_id", batch.ID, "error", err)
-		return
-	}
-	if len(partners) == 0 {
+		slog.Warn("food-service: dispatch candidates failed", "batch_id", batch.ID, "error", err)
 		return
 	}
 	expiresAt := time.Now().Add(offerTTL)
-	anchor := orderIDs[0]
-	for _, pid := range partners {
-		offer, err := s.store.CreateDeliveryOfferForBatch(ctx, batch.ID, anchor, pid, expiresAt)
+	anchor := g.orderIDs[0]
+	for _, c := range candidates {
+		distance := c.DistanceKM
+		offer, err := s.store.CreateDeliveryOfferForBatch(ctx, batch.ID, anchor, c.PartnerID, expiresAt, &distance)
 		if err != nil {
 			slog.Warn("food-service: create batch offer failed",
-				"batch_id", batch.ID, "partner_id", pid, "error", err)
+				"batch_id", batch.ID, "partner_id", c.PartnerID, "error", err)
 			continue
 		}
-		s.emit(ctx,
-			"food.delivery_partner."+pid.String()+".assignments",
-			"food.delivery.offered",
+		s.emit(ctx, deliveryPartnerTopic(c.UserID), "food.delivery.offered",
 			map[string]any{
-				"offer":   offer,
-				"batch":   batch,
+				"offer":    offer,
+				"batch":    batch,
 				"is_batch": true,
 			},
 		)
 	}
 	slog.Info("food-service: batch dispatched",
-		"batch_id", batch.ID, "size", len(orderIDs), "offered_to", len(partners))
+		"batch_id", batch.ID, "size", len(g.orderIDs), "offered_to", len(candidates))
 }
 
 // ListMyPendingDeliveryOffers exposes the inbox view for the partner
@@ -224,7 +245,12 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 		}
 		return nil
 	}
-	// Fall through to single-order accept for non-batch offers.
+	// Only a single-order offer falls through. A real batch failure (member
+	// cancelled, offer superseded) is returned rather than retried as a
+	// single-order accept of the anchor.
+	if batchErr != nil && !errors.Is(batchErr, postgres.ErrNotBatchOffer) {
+		return batchErr
+	}
 	offer, err := s.store.AcceptDeliveryOfferTx(ctx, userID, offerID)
 	if err != nil {
 		return err
@@ -241,11 +267,16 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 	return nil
 }
 
-// GetBatchForOrder returns the batch payload for an order, or nil if
-// the order isn't batched. Partner + customer UI uses this to render
-// "Stop 1 of 2" + the sibling order summary.
+// GetBatchForOrder returns the batch payload for an order with no access
+// check. Admin only; the handler decides who reaches it.
 func (s *Service) GetBatchForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.DeliveryBatch, error) {
 	return s.store.GetBatchForOrder(ctx, orderID)
+}
+
+// GetBatchForOrderForPartner returns the batch only to the delivery partner
+// assigned to the order ("Stop 1 of 2"); anyone else gets pgx.ErrNoRows.
+func (s *Service) GetBatchForOrderForPartner(ctx context.Context, userID, orderID uuid.UUID) (*postgres.DeliveryBatch, error) {
+	return s.store.GetBatchForOrderForPartner(ctx, userID, orderID)
 }
 
 // VerifyPickupCode wraps the store call; emits the pickup-confirmed

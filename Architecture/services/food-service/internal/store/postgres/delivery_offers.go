@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -54,46 +55,18 @@ func (s *Store) ListUnassignedReadyOrders(ctx context.Context, batch int) ([]uui
 	return out, rows.Err()
 }
 
-// ListEligibleDeliveryPartners returns online + APPROVED delivery
-// partners in the restaurant's city. The dispatch worker calls this
-// then mints up to N offers.
-func (s *Store) ListEligibleDeliveryPartners(ctx context.Context, restaurantCity string, limit int) ([]uuid.UUID, error) {
-	if limit <= 0 || limit > 20 {
-		limit = 5
-	}
-	rows, err := s.db.Query(ctx, `
-		SELECT id FROM food.delivery_partners
-		WHERE status = 'ACTIVE' AND is_online = TRUE
-		  AND (city = $1 OR $1 = '')
-		ORDER BY updated_at DESC
-		LIMIT $2
-	`, restaurantCity, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
 // CreateDeliveryOffer is idempotent on (order_id, delivery_partner_id)
 // via the unique constraint; a re-insert returns the existing row.
-func (s *Store) CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time) (*DeliveryOffer, error) {
+// distanceKM (partner -> restaurant) fills offers.distance_km; nil leaves it NULL.
+func (s *Store) CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time, distanceKM *float64) (*DeliveryOffer, error) {
 	var o DeliveryOffer
 	if err := s.db.QueryRow(ctx, `
-		INSERT INTO food.delivery_offers (order_id, delivery_partner_id, expires_at)
-		VALUES ($1, $2, $3)
+		INSERT INTO food.delivery_offers (order_id, delivery_partner_id, expires_at, distance_km)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (order_id, delivery_partner_id) DO UPDATE SET expires_at = food.delivery_offers.expires_at
-		RETURNING id, order_id, delivery_partner_id, status::text, distance_km, expires_at::text,
+		RETURNING id, order_id, delivery_partner_id, status::text, distance_km::float8, expires_at::text,
 			responded_at::text, reject_reason, created_at::text
-	`, orderID, partnerID, expiresAt).Scan(
+	`, orderID, partnerID, expiresAt, distanceKM).Scan(
 		&o.ID, &o.OrderID, &o.DeliveryPartnerID, &o.Status, &o.DistanceKM,
 		&o.ExpiresAt, &o.RespondedAt, &o.RejectReason, &o.CreatedAt,
 	); err != nil {
@@ -108,7 +81,7 @@ func (s *Store) CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid
 func (s *Store) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]DeliveryOffer, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT o.id, o.order_id, o.delivery_partner_id, o.status::text,
-			o.distance_km, o.expires_at::text, o.responded_at::text, o.reject_reason, o.created_at::text
+			o.distance_km::float8, o.expires_at::text, o.responded_at::text, o.reject_reason, o.created_at::text
 		FROM food.delivery_offers o
 		JOIN food.delivery_partners dp ON dp.id = o.delivery_partner_id
 		WHERE dp.user_id = $1
@@ -137,7 +110,11 @@ func (s *Store) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUI
 //  2. Marks this offer accepted; supersedes all sibling offers.
 //  3. Inserts/updates food.delivery_assignments to this partner.
 //  4. Moves the order to DELIVERY_ASSIGNED.
-// First caller wins via SELECT ... FOR UPDATE on the order row.
+// First caller wins: the ORDER row is locked before the offer row, so two
+// partners accepting sibling offers serialise on the order instead of
+// deadlocking on each other's offer rows, and the loser then sees its offer
+// superseded. The order move is guarded (DELIVERY_ASSIGNING only), so an
+// order cancelled meanwhile rolls the whole accept back: no orphan assignment.
 func (s *Store) AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*DeliveryOffer, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -150,19 +127,43 @@ func (s *Store) AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.
 	`, userID).Scan(&partnerID); err != nil {
 		return nil, fmt.Errorf("partner lookup: %w", err)
 	}
-	var offer DeliveryOffer
+	var orderID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		SELECT id, order_id, delivery_partner_id, status::text, distance_km,
-			expires_at::text, responded_at::text, reject_reason, created_at::text
+		SELECT order_id FROM food.delivery_offers
+		WHERE id = $1 AND delivery_partner_id = $2 AND batch_id IS NULL
+	`, offerID, partnerID).Scan(&orderID); err != nil {
+		return nil, err
+	}
+	var orderStatus string
+	if err := tx.QueryRow(ctx, `
+		SELECT status::text FROM food.orders WHERE id = $1 FOR UPDATE
+	`, orderID).Scan(&orderStatus); err != nil {
+		return nil, err
+	}
+	var offer DeliveryOffer
+	var expired bool
+	if err := tx.QueryRow(ctx, `
+		SELECT id, order_id, delivery_partner_id, status::text, distance_km::float8,
+			expires_at::text, responded_at::text, reject_reason, created_at::text,
+			expires_at <= NOW()
 		FROM food.delivery_offers
 		WHERE id = $1 AND delivery_partner_id = $2
 		FOR UPDATE
 	`, offerID, partnerID).Scan(&offer.ID, &offer.OrderID, &offer.DeliveryPartnerID, &offer.Status,
-		&offer.DistanceKM, &offer.ExpiresAt, &offer.RespondedAt, &offer.RejectReason, &offer.CreatedAt); err != nil {
+		&offer.DistanceKM, &offer.ExpiresAt, &offer.RespondedAt, &offer.RejectReason, &offer.CreatedAt, &expired); err != nil {
 		return nil, err
 	}
 	if offer.Status != "pending" {
 		return nil, fmt.Errorf("offer not pending: %s", offer.Status)
+	}
+	if expired {
+		return nil, fmt.Errorf("offer expired")
+	}
+	if err := transitionOrderTx(ctx, tx, OrderTransition{
+		OrderID: offer.OrderID, From: orderStatus, To: orderstate.DeliveryAssigned,
+		Actor: orderstate.ActorDeliveryPartner, ChangedBy: &userID, Reason: "delivery partner accepted offer",
+	}); err != nil {
+		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE food.delivery_offers
@@ -178,20 +179,23 @@ func (s *Store) AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.
 	`, offer.OrderID, offerID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO food.delivery_assignments (order_id, delivery_partner_id, status, accepted_at)
-		VALUES ($1, $2, 'ASSIGNED', NOW())
+	// Claims the unclaimed row PlaceOrder / ConfirmPayment created. A row
+	// some partner already holds is never overwritten.
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO food.delivery_assignments (order_id, delivery_partner_id, status, assigned_at, accepted_at, distance_km)
+		VALUES ($1, $2, 'ASSIGNED', NOW(), NOW(), $3)
 		ON CONFLICT (order_id) DO UPDATE
 		SET delivery_partner_id = EXCLUDED.delivery_partner_id,
 			status = 'ASSIGNED',
+			assigned_at = NOW(),
 			accepted_at = NOW()
-	`, offer.OrderID, partnerID); err != nil {
+		WHERE food.delivery_assignments.delivery_partner_id IS NULL
+	`, offer.OrderID, partnerID, offer.DistanceKM)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE food.orders SET status = 'DELIVERY_ASSIGNED' WHERE id = $1 AND status = 'DELIVERY_ASSIGNING'
-	`, offer.OrderID); err != nil {
-		return nil, err
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("%w: assignment already held by another partner", ErrOrderStatusConflict)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

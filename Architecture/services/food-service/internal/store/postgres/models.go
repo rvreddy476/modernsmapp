@@ -94,6 +94,17 @@ type CartItem struct {
 	TaxAmount       float64    `json:"tax_amount"`
 	LineTotal       float64    `json:"line_total"`
 	ItemInstruction string     `json:"item_instruction,omitempty"`
+	// Addons are priced per unit of the item: line = price x add-on qty x item qty.
+	Addons     []CartItemAddon `json:"addons,omitempty"`
+	AddonTotal float64         `json:"addon_total"`
+}
+
+type CartItemAddon struct {
+	AddonID   uuid.UUID `json:"addon_id"`
+	Name      string    `json:"name"`
+	UnitPrice float64   `json:"unit_price"`
+	Quantity  int       `json:"quantity"`
+	LineTotal float64   `json:"line_total"`
 }
 
 type PriceBreakdown struct {

@@ -1,97 +1,41 @@
 package service
 
-import "fmt"
+import (
+	"fmt"
 
-const (
-	OrderStatusDraft                 = "DRAFT"
-	OrderStatusPlaced                = "PLACED"
-	OrderStatusPaymentPending        = "PAYMENT_PENDING"
-	OrderStatusPaymentFailed         = "PAYMENT_FAILED"
-	OrderStatusConfirmed             = "CONFIRMED"
-	OrderStatusRestaurantRejected    = "RESTAURANT_REJECTED"
-	OrderStatusPreparing             = "PREPARING"
-	OrderStatusReadyForPickup        = "READY_FOR_PICKUP"
-	OrderStatusDeliveryAssigning     = "DELIVERY_ASSIGNING"
-	OrderStatusDeliveryAssigned      = "DELIVERY_ASSIGNED"
-	OrderStatusPickedUp              = "PICKED_UP"
-	OrderStatusOutForDelivery        = "OUT_FOR_DELIVERY"
-	OrderStatusDelivered             = "DELIVERED"
-	OrderStatusCancelledByCustomer   = "CANCELLED_BY_CUSTOMER"
-	OrderStatusCancelledByRestaurant = "CANCELLED_BY_RESTAURANT"
-	OrderStatusCancelledByAdmin      = "CANCELLED_BY_ADMIN"
-	OrderStatusRefundPending         = "REFUND_PENDING"
-	OrderStatusRefunded              = "REFUNDED"
-	OrderStatusFailed                = "FAILED"
+	"github.com/atpost/food-service/internal/orderstate"
 )
 
-var validOrderTransitions = map[string]map[string]struct{}{
-	OrderStatusDraft: {
-		OrderStatusPlaced: {},
-	},
-	OrderStatusPlaced: {
-		OrderStatusPaymentPending:        {},
-		OrderStatusConfirmed:             {},
-		OrderStatusCancelledByCustomer:   {},
-		OrderStatusCancelledByRestaurant: {},
-		OrderStatusCancelledByAdmin:      {},
-	},
-	OrderStatusPaymentPending: {
-		OrderStatusPaymentFailed: {},
-		OrderStatusConfirmed:     {},
-	},
-	OrderStatusConfirmed: {
-		OrderStatusPreparing:             {},
-		OrderStatusRestaurantRejected:    {},
-		OrderStatusCancelledByCustomer:   {},
-		OrderStatusCancelledByRestaurant: {},
-		OrderStatusCancelledByAdmin:      {},
-	},
-	OrderStatusPreparing: {
-		OrderStatusReadyForPickup:      {},
-		OrderStatusCancelledByCustomer: {},
-		OrderStatusCancelledByAdmin:    {},
-	},
-	OrderStatusReadyForPickup: {
-		OrderStatusDeliveryAssigning: {},
-		OrderStatusCancelledByAdmin:  {},
-	},
-	OrderStatusDeliveryAssigning: {
-		OrderStatusDeliveryAssigned: {},
-		OrderStatusCancelledByAdmin: {},
-	},
-	OrderStatusDeliveryAssigned: {
-		OrderStatusPickedUp:         {},
-		OrderStatusCancelledByAdmin: {},
-	},
-	OrderStatusPickedUp: {
-		OrderStatusOutForDelivery:   {},
-		OrderStatusCancelledByAdmin: {},
-	},
-	OrderStatusOutForDelivery: {
-		OrderStatusDelivered:        {},
-		OrderStatusCancelledByAdmin: {},
-	},
-	OrderStatusCancelledByCustomer: {
-		OrderStatusRefundPending: {},
-	},
-	OrderStatusCancelledByRestaurant: {
-		OrderStatusRefundPending: {},
-	},
-	OrderStatusCancelledByAdmin: {
-		OrderStatusRefundPending: {},
-	},
-	OrderStatusRefundPending: {
-		OrderStatusRefunded: {},
-	},
-}
+// Status names live in internal/orderstate; these aliases keep existing
+// callers compiling.
+const (
+	OrderStatusDraft                 = orderstate.Draft
+	OrderStatusPlaced                = orderstate.Placed
+	OrderStatusPaymentPending        = orderstate.PaymentPending
+	OrderStatusPaymentFailed         = orderstate.PaymentFailed
+	OrderStatusConfirmed             = orderstate.Confirmed
+	OrderStatusRestaurantRejected    = orderstate.RestaurantRejected
+	OrderStatusPreparing             = orderstate.Preparing
+	OrderStatusReadyForPickup        = orderstate.ReadyForPickup
+	OrderStatusDeliveryAssigning     = orderstate.DeliveryAssigning
+	OrderStatusDeliveryAssigned      = orderstate.DeliveryAssigned
+	OrderStatusPickedUp              = orderstate.PickedUp
+	OrderStatusOutForDelivery        = orderstate.OutForDelivery
+	OrderStatusDelivered             = orderstate.Delivered
+	OrderStatusCancelledByCustomer   = orderstate.CancelledByCustomer
+	OrderStatusCancelledByRestaurant = orderstate.CancelledByRestaurant
+	OrderStatusCancelledByAdmin      = orderstate.CancelledByAdmin
+	OrderStatusRefundPending         = orderstate.RefundPending
+	OrderStatusRefunded              = orderstate.Refunded
+	OrderStatusFailed                = orderstate.Failed
+)
 
+// ValidateOrderTransition reports whether from -> to is an edge at all,
+// regardless of actor. Writers use orderstate.Validate (actor-aware) inside
+// the store's transitionOrderTx.
 func ValidateOrderTransition(from, to string) error {
-	allowed, ok := validOrderTransitions[from]
-	if !ok {
-		return fmt.Errorf("no transitions allowed from %s", from)
-	}
-	if _, ok := allowed[to]; !ok {
-		return fmt.Errorf("invalid order status transition: %s -> %s", from, to)
+	if !orderstate.EdgeExists(from, to) {
+		return fmt.Errorf("%w: %s -> %s", orderstate.ErrTransitionNotAllowed, from, to)
 	}
 	return nil
 }

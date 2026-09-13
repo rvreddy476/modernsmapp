@@ -55,7 +55,7 @@ func TestDeliveryBatching_HappyPath(t *testing.T) {
 
 	// 3. Create a batch offer for the partner.
 	expiresAt := time.Now().Add(30 * time.Second)
-	offer, err := store.CreateDeliveryOfferForBatch(ctx, batch.ID, o1, userID, expiresAt)
+	offer, err := store.CreateDeliveryOfferForBatch(ctx, batch.ID, o1, userID, expiresAt, nil)
 	if err != nil {
 		// Partner id ≠ userID — CreateDeliveryOfferForBatch wants the
 		// partner.id, not user_id. Resolve and retry.
@@ -63,7 +63,7 @@ func TestDeliveryBatching_HappyPath(t *testing.T) {
 		if err := store.db.QueryRow(ctx, `SELECT id FROM food.delivery_partners WHERE user_id = $1`, userID).Scan(&partnerID); err != nil {
 			t.Fatalf("partner lookup: %v", err)
 		}
-		offer, err = store.CreateDeliveryOfferForBatch(ctx, batch.ID, o1, partnerID, expiresAt)
+		offer, err = store.CreateDeliveryOfferForBatch(ctx, batch.ID, o1, partnerID, expiresAt, nil)
 		if err != nil {
 			t.Fatalf("create batch offer: %v", err)
 		}
