@@ -2655,18 +2655,24 @@ func (s *Service) bookReturnPickup(ctx context.Context, r *postgres.ReturnReques
 		slog.Warn("return pickup: order has no delivery address", "order_id", order.ID)
 		return
 	}
-	addr, err := s.store.GetAddressByID(ctx, *order.DeliveryAddressID)
+	row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID)
 	if err != nil {
 		slog.Warn("return pickup: address lookup failed", "error", err)
 		return
 	}
+	// Opened, not read from plaintext: after the cutover the plaintext is ''
+	// and the courier would be sent to collect from nobody at no street.
+	addr, err := s.openAddressRow(ctx, row)
+	if err != nil {
+		slog.Error("return pickup: the delivery address could not be opened",
+			"order_id", order.ID, "error", err)
+		return
+	}
 	pickup := courier.Address{
 		Name: addr.ContactName, Phone: addr.Phone,
-		Line1: addr.AddressLine1, City: addr.City, State: addr.State,
+		Line1: addr.AddressLine1, Line2: addr.AddressLine2,
+		City: addr.City, State: addr.State,
 		Postal: addr.PostalCode, Country: addr.Country,
-	}
-	if addr.AddressLine2 != nil {
-		pickup.Line2 = *addr.AddressLine2
 	}
 
 	// Drop is the seller's pickup address.
@@ -3038,8 +3044,45 @@ func (s *Service) AddAddress(ctx context.Context, addr *postgres.CustomerAddress
 	return s.store.CreateAddress(ctx, addr, sealed)
 }
 
+// GetAddresses returns the customer's address book with its identifying
+// fields OPENED.
+//
+// It used to return the plaintext columns as stored. After the PII cutover
+// those are '', so every saved address came back with no name, phone or
+// street. A row that cannot be opened fails the whole read rather than being
+// served blank: a nameless address the customer then checks out with is a
+// parcel nobody can deliver.
 func (s *Service) GetAddresses(ctx context.Context, userID uuid.UUID) ([]*postgres.CustomerAddress, error) {
-	return s.store.GetAddressesByUser(ctx, userID)
+	rows, err := s.store.GetAddressRowsByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	var out []*postgres.CustomerAddress
+	for _, row := range rows {
+		a, err := s.openAddressRow(ctx, row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, customerAddressFrom(row, a))
+	}
+	return out, nil
+}
+
+// customerAddressFrom is the wire shape of an opened address row.
+func customerAddressFrom(row *postgres.AddressRow, a *pii.Address) *postgres.CustomerAddress {
+	c := &postgres.CustomerAddress{
+		ID: row.ID, UserID: row.UserID, Label: row.Label,
+		ContactName: a.ContactName, Phone: a.Phone, AddressLine1: a.AddressLine1,
+		City: row.City, State: row.State, Country: row.Country, PostalCode: row.PostalCode,
+		AddressType: row.AddressType, IsDefault: row.IsDefault, CreatedAt: row.CreatedAt,
+	}
+	if line2 := a.AddressLine2; line2 != "" {
+		c.AddressLine2 = &line2
+	}
+	if landmark := a.Landmark; landmark != "" {
+		c.Landmark = &landmark
+	}
+	return c
 }
 
 func (s *Service) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *postgres.CustomerAddress) error {

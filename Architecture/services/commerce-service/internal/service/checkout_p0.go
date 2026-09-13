@@ -263,7 +263,7 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 	}
 
 	// KMS decryption happens BEFORE the transaction — it is a network call.
-	addr, err := s.loadAddress(ctx, in.UserID, in.AddressID)
+	addr, addrRow, err := s.loadAddressWithRow(ctx, in.UserID, in.AddressID)
 	if err != nil {
 		return nil, err
 	}
@@ -315,6 +315,11 @@ func (s *Service) CheckoutP0(ctx context.Context, in CheckoutInputP0) (*Checkout
 		QuoteID:            in.QuoteID,
 		IdempotencyKey:     in.IdempotencyKey,
 		RequestFingerprint: fingerprint(in, addr),
+		// The quote's binding, from the address as DECRYPTED, plus the
+		// fingerprint of the exact row that was decrypted (see
+		// postgres.AddressRow.ContentFingerprint).
+		AddressHash:        postgres.HashAddress(addr.AddressLine1, addr.AddressLine2, addr.City, addr.State, addr.PostalCode),
+		AddressFingerprint: addrRow.ContentFingerprint(),
 		CouponCode:         in.CouponCode,
 		PaymentMethod:      in.PaymentMethod,
 		TermsVersion:       in.TermsVersion,
@@ -454,18 +459,39 @@ func (s *Service) PaymentStatusForOrder(ctx context.Context, orderID, userID uui
 // ─── Address loading (LB-18, LB-24) ──────────────────────────────────
 
 func (s *Service) loadAddress(ctx context.Context, userID, addressID uuid.UUID) (*pii.Address, error) {
+	addr, _, err := s.loadAddressWithRow(ctx, userID, addressID)
+	return addr, err
+}
+
+// loadAddressWithRow is loadAddress that also returns the row it decrypted,
+// whose fingerprint checkout re-checks inside its transaction.
+func (s *Service) loadAddressWithRow(ctx context.Context, userID, addressID uuid.UUID) (*pii.Address, *postgres.AddressRow, error) {
 	row, err := s.store.GetAddressRow(ctx, addressID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if row.UserID != userID {
 		// The old Checkout never loaded the address at all, let alone
 		// checked ownership; it stored whatever id it was handed.
-		return nil, postgres.ErrAddressNotOwned
+		return nil, nil, postgres.ErrAddressNotOwned
 	}
 	if s.pii == nil {
-		return nil, fmt.Errorf("commerce: PII cipher is not configured")
+		return nil, nil, fmt.Errorf("commerce: PII cipher is not configured")
 	}
+	addr, err := s.openAddressRow(ctx, row)
+	if err != nil {
+		return nil, nil, err
+	}
+	return addr, row, nil
+}
+
+// openAddressRow makes a stored customer address readable.
+//
+// It is the ONE place that happens, for every reader — checkout, the address
+// book, the shipment drop address, the invoice ship-to, the return pickup.
+// Those last four used to read the plaintext columns directly, and after the
+// cutover those are ''.
+func (s *Service) openAddressRow(ctx context.Context, row *postgres.AddressRow) (*pii.Address, error) {
 	// B4/B5. A row with no ciphertext may be served from plaintext ONLY
 	// during the dual-write window.
 	//
@@ -491,6 +517,9 @@ func (s *Service) loadAddress(ctx context.Context, userID, addressID uuid.UUID) 
 			Landmark: row.Landmark, City: row.City, State: row.State,
 			PostalCode: row.PostalCode, Country: row.Country,
 		}, nil
+	}
+	if s.pii == nil {
+		return nil, fmt.Errorf("commerce: PII cipher is not configured; cannot open address %s", row.ID)
 	}
 	return s.pii.OpenAddress(ctx, pii.ScopeProfile, pii.Sealed{
 		ContactName:  row.ContactNameEnc,

@@ -130,17 +130,22 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 
 	var dropAddr courier.Address
 	if order.DeliveryAddressID != nil {
-		addr, err := s.store.GetAddressByID(ctx, *order.DeliveryAddressID)
+		row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID)
 		if err != nil {
 			return nil, fmt.Errorf("get delivery address: %w", err)
 		}
+		// Opened, not read from plaintext: after the PII cutover the plaintext
+		// columns are '', and booking against them sends a parcel with no
+		// recipient, phone or street.
+		addr, err := s.openAddressRow(ctx, row)
+		if err != nil {
+			return nil, fmt.Errorf("open delivery address: %w", err)
+		}
 		dropAddr = courier.Address{
 			Name: addr.ContactName, Phone: addr.Phone,
-			Line1: addr.AddressLine1, City: addr.City, State: addr.State,
+			Line1: addr.AddressLine1, Line2: addr.AddressLine2,
+			City: addr.City, State: addr.State,
 			Postal: addr.PostalCode, Country: addr.Country,
-		}
-		if addr.AddressLine2 != nil {
-			dropAddr.Line2 = *addr.AddressLine2
 		}
 	}
 
@@ -565,14 +570,19 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 
 	var shipTo invoice.Address
 	if order.DeliveryAddressID != nil {
-		addr, err := s.store.GetAddressByID(ctx, *order.DeliveryAddressID)
-		if err == nil {
-			shipTo = invoice.Address{
-				Line1: addr.AddressLine1, City: addr.City, State: addr.State,
-				Postal: addr.PostalCode, Country: addr.Country,
-			}
-			if addr.AddressLine2 != nil {
-				shipTo.Line2 = *addr.AddressLine2
+		if row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID); err == nil {
+			// Opened for the same reason as the shipment drop address. A
+			// failure is logged and the ship-to left blank, as a failed lookup
+			// always was — but no longer silently.
+			if addr, openErr := s.openAddressRow(ctx, row); openErr == nil {
+				shipTo = invoice.Address{
+					Line1: addr.AddressLine1, Line2: addr.AddressLine2,
+					City: addr.City, State: addr.State,
+					Postal: addr.PostalCode, Country: addr.Country,
+				}
+			} else {
+				slog.Error("invoice: the delivery address could not be opened",
+					"order_id", order.ID, "error", openErr)
 			}
 		}
 	}

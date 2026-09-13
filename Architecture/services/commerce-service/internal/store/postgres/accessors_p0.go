@@ -10,7 +10,11 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
+	"time"
 
 	"github.com/atpost/commerce-service/internal/money"
 	"github.com/google/uuid"
@@ -19,9 +23,20 @@ import (
 
 // AddressRow is a customer address as stored, with both the plaintext
 // columns (during the dual-write window) and the ciphertext ones.
+//
+// It is the ONLY way this package hands out a customer address. The readers
+// that returned plaintext columns alone (GetAddressByID, GetAddressesByUser)
+// are gone: after the cutover those columns are '' and a reader that trusted
+// them served nameless addresses. The service opens this row — ciphertext
+// first, plaintext only while the cutover mode permits it.
 type AddressRow struct {
 	ID     uuid.UUID
 	UserID uuid.UUID
+
+	Label       string
+	AddressType string
+	IsDefault   bool
+	CreatedAt   time.Time
 
 	// Plaintext columns. Present only until migration 013's contraction
 	// removes them; the service prefers the ciphertext when it exists.
@@ -51,19 +66,8 @@ type AddressRow struct {
 // error, rather than conflating "not found" with "not yours".
 func (s *Store) GetAddressRow(ctx context.Context, id uuid.UUID) (*AddressRow, error) {
 	var a AddressRow
-	err := s.db.QueryRow(ctx, `
-		SELECT id, user_id,
-		       COALESCE(contact_name,''), COALESCE(phone,''),
-		       COALESCE(address_line_1,''), COALESCE(address_line_2,''), COALESCE(landmark,''),
-		       contact_name_enc, phone_enc, address_line_1_enc, address_line_2_enc, landmark_enc,
-		       COALESCE(pii_key_version,0),
-		       city, state, postal_code, COALESCE(country,'IN')
-		  FROM customer_addresses WHERE id = $1`, id).Scan(
-		&a.ID, &a.UserID,
-		&a.ContactName, &a.Phone, &a.AddressLine1, &a.AddressLine2, &a.Landmark,
-		&a.ContactNameEnc, &a.PhoneEnc, &a.AddressLine1Enc, &a.AddressLine2Enc, &a.LandmarkEnc,
-		&a.KeyVersion,
-		&a.City, &a.State, &a.PostalCode, &a.Country)
+	err := scanAddressRow(s.db.QueryRow(ctx,
+		`SELECT `+addressRowColumns+` FROM customer_addresses WHERE id = $1`, id), &a)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrAddressNotOwned
@@ -71,6 +75,75 @@ func (s *Store) GetAddressRow(ctx context.Context, id uuid.UUID) (*AddressRow, e
 		return nil, err
 	}
 	return &a, nil
+}
+
+// GetAddressRowsByUser loads a customer's address book, sealed. Default
+// first, then newest.
+func (s *Store) GetAddressRowsByUser(ctx context.Context, userID uuid.UUID) ([]*AddressRow, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT `+addressRowColumns+` FROM customer_addresses
+		  WHERE user_id = $1 ORDER BY is_default DESC, created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*AddressRow
+	for rows.Next() {
+		var a AddressRow
+		if err := scanAddressRow(rows, &a); err != nil {
+			return nil, err
+		}
+		out = append(out, &a)
+	}
+	return out, rows.Err()
+}
+
+const addressRowColumns = `
+	id, user_id,
+	COALESCE(label,''), COALESCE(address_type,''), COALESCE(is_default,FALSE), created_at,
+	COALESCE(contact_name,''), COALESCE(phone,''),
+	COALESCE(address_line_1,''), COALESCE(address_line_2,''), COALESCE(landmark,''),
+	contact_name_enc, phone_enc, address_line_1_enc, address_line_2_enc, landmark_enc,
+	COALESCE(pii_key_version,0),
+	COALESCE(city,''), COALESCE(state,''), COALESCE(postal_code,''), COALESCE(country,'IN')`
+
+func scanAddressRow(row interface{ Scan(...any) error }, a *AddressRow) error {
+	return row.Scan(
+		&a.ID, &a.UserID,
+		&a.Label, &a.AddressType, &a.IsDefault, &a.CreatedAt,
+		&a.ContactName, &a.Phone, &a.AddressLine1, &a.AddressLine2, &a.Landmark,
+		&a.ContactNameEnc, &a.PhoneEnc, &a.AddressLine1Enc, &a.AddressLine2Enc, &a.LandmarkEnc,
+		&a.KeyVersion,
+		&a.City, &a.State, &a.PostalCode, &a.Country)
+}
+
+// ContentFingerprint identifies the delivery content of this row EXACTLY as
+// it was read.
+//
+// Checkout needs it because the address is decrypted outside the transaction
+// (KMS is a network call) but must be proven unchanged inside it. The quote is
+// bound to a hash of the decrypted street; the store can no longer recompute
+// that hash from the plaintext columns, which are '' after the cutover. So the
+// service passes this fingerprint of the row it decrypted, and Checkout
+// recomputes it from the row it has locked FOR SHARE. Any edit in between —
+// including a re-seal, since every seal draws a fresh nonce — changes it.
+func (a *AddressRow) ContentFingerprint() string {
+	return addressContentFingerprint(a.AddressLine1Enc, a.AddressLine2Enc,
+		a.AddressLine1, a.AddressLine2, a.City, a.State, a.PostalCode)
+}
+
+// addressContentFingerprint is length-prefixed, not separated: ciphertext is
+// arbitrary bytes, so a separator byte could appear inside a field.
+func addressContentFingerprint(line1Enc, line2Enc []byte, line1, line2, city, state, postal string) string {
+	h := sha256.New()
+	for _, part := range [][]byte{line1Enc, line2Enc, []byte(line1), []byte(line2),
+		[]byte(city), []byte(state), []byte(postal)} {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(part)))
+		h.Write(n[:])
+		h.Write(part)
+	}
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 
 // SellerStateForCart returns the place of supply of the cart's seller.

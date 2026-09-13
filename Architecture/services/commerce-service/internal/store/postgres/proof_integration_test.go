@@ -201,7 +201,15 @@ func (f *fixture) params(quoteID uuid.UUID, idemKey string) CheckoutParams {
 // paramsExpecting lets a proof state a DIFFERENT approved total, which is
 // what the N6 stale-price proofs need.
 func (f *fixture) paramsExpecting(quoteID uuid.UUID, idemKey string, expected money.Paise) CheckoutParams {
+	// The address binding, as the service computes it: the hash of the
+	// decrypted content, and the fingerprint of the row it was read from.
+	row, err := f.store.GetAddressRow(context.Background(), f.addressID)
+	if err != nil {
+		f.t.Fatalf("read the fixture address: %v", err)
+	}
 	return CheckoutParams{
+		AddressHash:        HashAddress("5 Main St", "", "Bengaluru", "KA", "560002"),
+		AddressFingerprint: row.ContentFingerprint(),
 		UserID:             f.userID,
 		AddressID:          f.addressID,
 		QuoteID:            quoteID,

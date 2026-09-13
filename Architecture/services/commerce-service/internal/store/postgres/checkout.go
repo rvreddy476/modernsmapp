@@ -170,6 +170,16 @@ type CheckoutParams struct {
 	DestinationState string
 	DestinationPin   string
 
+	// AddressHash is HashAddress over the DECRYPTED address the service just
+	// opened — the same computation the quote was bound with. The store cannot
+	// recompute it: after the PII cutover the plaintext columns are ''.
+	AddressHash string
+	// AddressFingerprint is AddressRow.ContentFingerprint of the row the
+	// service decrypted. Checkout recomputes it from the row it locks, so an
+	// edit between that read and this transaction is refused rather than
+	// shipped at the old quote. Both are REQUIRED.
+	AddressFingerprint string
+
 	// The seller half of the place-of-supply comparison is deliberately NOT
 	// a parameter. It is resolved inside the transaction from the locked
 	// seller — see sellerPlaceOfSupply and the note on the idempotency
@@ -303,14 +313,17 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 	var (
 		addrOwner                       uuid.UUID
 		addrLine1, addrLine2            string
+		addrLine1Enc, addrLine2Enc      []byte
 		addrCity, addrState, addrPostal string
 	)
 	err = tx.QueryRow(ctx,
 		`SELECT user_id,
 		        COALESCE(address_line_1,''), COALESCE(address_line_2,''),
+		        address_line_1_enc, address_line_2_enc,
 		        COALESCE(city,''), COALESCE(state,''), COALESCE(postal_code,'')
 		   FROM customer_addresses WHERE id = $1 FOR SHARE`, p.AddressID).
-		Scan(&addrOwner, &addrLine1, &addrLine2, &addrCity, &addrState, &addrPostal)
+		Scan(&addrOwner, &addrLine1, &addrLine2, &addrLine1Enc, &addrLine2Enc,
+			&addrCity, &addrState, &addrPostal)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrAddressNotOwned
@@ -324,6 +337,9 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 	}
 	if len(p.AddressSnapshot) == 0 {
 		return nil, fmt.Errorf("checkout: an address snapshot is required")
+	}
+	if p.AddressHash == "" || p.AddressFingerprint == "" {
+		return nil, fmt.Errorf("checkout: the address binding (decrypted-content hash and row fingerprint) is required")
 	}
 
 	// ── 4. Consume the shipping quote (A4 / R-4) ──────────────────────
@@ -375,13 +391,23 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 	// order, and the shipment could go somewhere no courier had quoted at
 	// all.
 	//
-	// Recomputed from the row locked FOR SHARE above, so this cannot race
-	// the comparison. A quote taken before this field existed has an empty
-	// hash and is refused rather than trusted.
+	// The hash is of the DECRYPTED street, computed by the service. It used to
+	// be recomputed here from the plaintext columns — which the PII cutover
+	// writes as '', so after the cutover every checkout hashed a blank street,
+	// never matched its own quote, and refused every order as QUOTE_STALE.
+	//
+	// What still cannot race: the fingerprint. The service decrypted a
+	// specific row; recomputing its fingerprint from the row locked FOR SHARE
+	// above proves this transaction ships to that same content. A quote taken
+	// before AddressHash existed has an empty hash and is refused.
 	if quote.AddressHash == "" {
 		return nil, ErrQuoteMismatch
 	}
-	if quote.AddressHash != HashAddress(addrLine1, addrLine2, addrCity, addrState, addrPostal) {
+	if p.AddressFingerprint != addressContentFingerprint(addrLine1Enc, addrLine2Enc,
+		addrLine1, addrLine2, addrCity, addrState, addrPostal) {
+		return nil, ErrQuoteMismatch
+	}
+	if quote.AddressHash != p.AddressHash {
 		return nil, ErrQuoteMismatch
 	}
 	if quote.DestinationPin != "" && quote.DestinationPin != addrPostal {

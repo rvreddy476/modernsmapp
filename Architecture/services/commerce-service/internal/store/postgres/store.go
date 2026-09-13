@@ -1673,20 +1673,8 @@ func (s *Store) GetTaxClass(ctx context.Context, id uuid.UUID) (*TaxClass, error
 	return tc, nil
 }
 
-func (s *Store) GetAddressByID(ctx context.Context, id uuid.UUID) (*CustomerAddress, error) {
-	a := &CustomerAddress{}
-	err := s.db.QueryRow(ctx, `SELECT id,user_id,label,contact_name,phone,address_line_1,
-		address_line_2,landmark,city,state,country,postal_code,address_type,is_default,created_at
-		FROM customer_addresses WHERE id=$1`, id).Scan(
-		&a.ID, &a.UserID, &a.Label, &a.ContactName, &a.Phone, &a.AddressLine1,
-		&a.AddressLine2, &a.Landmark, &a.City, &a.State, &a.Country, &a.PostalCode,
-		&a.AddressType, &a.IsDefault, &a.CreatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return a, nil
-}
+// Customer addresses are READ through GetAddressRow / GetAddressRowsByUser
+// (accessors_p0.go), which return the ciphertext for the service to open.
 
 // UpdateAddress replaces an address, re-sealing its identifying fields.
 //
@@ -1757,27 +1745,6 @@ func (s *Store) SetDefaultAddress(ctx context.Context, id, userID uuid.UUID) err
 		return fmt.Errorf("address not found")
 	}
 	return tx.Commit(ctx)
-}
-
-func (s *Store) GetAddressesByUser(ctx context.Context, userID uuid.UUID) ([]*CustomerAddress, error) {
-	rows, err := s.db.Query(ctx, `SELECT id,user_id,label,contact_name,phone,address_line_1,
-		address_line_2,landmark,city,state,country,postal_code,address_type,is_default,created_at
-		FROM customer_addresses WHERE user_id=$1 ORDER BY is_default DESC, created_at DESC`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var addrs []*CustomerAddress
-	for rows.Next() {
-		var a CustomerAddress
-		if err := rows.Scan(&a.ID, &a.UserID, &a.Label, &a.ContactName, &a.Phone, &a.AddressLine1,
-			&a.AddressLine2, &a.Landmark, &a.City, &a.State, &a.Country, &a.PostalCode,
-			&a.AddressType, &a.IsDefault, &a.CreatedAt); err != nil {
-			return nil, err
-		}
-		addrs = append(addrs, &a)
-	}
-	return addrs, nil
 }
 
 // ─── Reviews ─────────────────────────────────────────────────
