@@ -340,13 +340,19 @@ tasks.register("moduleGraphCheck") {
     //      surface are wanted by more than one feature, and rule 3 forbids the
     //      :feature:commerce → :feature:post edge that reaching Banuba
     //      through the reel studio would need.
-    // Feast A0 (2026-09-13) adds NO module, so the count stays 37. The
-    // application-boundary rules above are already in force for the modules
-    // still to come; A1–A5 raise this to 46 one module at a time as each
-    // lands: :core:food, :core:location, :core:realtime, :core:kyc-ui,
-    // :feature:feast, :feature:kitchen, :feature:rider, :app-kitchen,
-    // :app-rider.
-    val expectedModuleCount = 37
+    // Feast A0 (2026-09-13) added NO module. The application-boundary rules
+    // above were put in force ahead of the modules still to come.
+    // 38 = 37 + :core:realtime (Feast A1, 2026-09-13): the SSE client for
+    //      notification-service — Last-Event-ID resume, jittered backoff,
+    //      topic-token refresh, lifecycle-bound. Domain-free.
+    // 39 = 38 + :core:food (Feast A1, 2026-09-13): food-service DTOs pinned
+    //      by the golden contract fixtures, the repository, the onboarding
+    //      checklist and food's realtime token source.
+    // :core:location, the third A1 module, waits for its map libraries to
+    // reach the offline cache. A1–A5 still to add, one module at a time, to
+    // reach 46: :core:location, :core:kyc-ui, :feature:feast,
+    // :feature:kitchen, :feature:rider, :app-kitchen, :app-rider.
+    val expectedModuleCount = 39
 
     doLast {
         val allViolations = buildList {

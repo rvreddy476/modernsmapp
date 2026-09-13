@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "FOOD_RESTAURANT_NOT_READY",
+    "message": "complete every onboarding step before submitting for review",
+    "details": {
+      "missing": [
+        "fssai_document",
+        "payout_account"
+      ]
+    }
+  },
+  "meta": {}
+}

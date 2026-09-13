@@ -1,0 +1,38 @@
+{
+  "data": {
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "timezone": "Asia/Kolkata",
+    "is_open_now": false,
+    "windows": [
+      {
+        "day_of_week": 0,
+        "opens_at": "",
+        "closes_at": "",
+        "is_closed": true,
+        "overnight": false
+      },
+      {
+        "day_of_week": 1,
+        "opens_at": "11:00",
+        "closes_at": "15:00",
+        "is_closed": false,
+        "overnight": false
+      },
+      {
+        "day_of_week": 1,
+        "opens_at": "18:00",
+        "closes_at": "23:00",
+        "is_closed": false,
+        "overnight": false
+      },
+      {
+        "day_of_week": 5,
+        "opens_at": "18:00",
+        "closes_at": "02:00",
+        "is_closed": false,
+        "overnight": true
+      }
+    ]
+  },
+  "meta": {}
+}

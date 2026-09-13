@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_FSSAI_EXPIRY_INVALID",
+    "message": "expires_at must be after today",
+    "details": {
+      "field": "expires_at"
+    }
+  },
+  "meta": {}
+}

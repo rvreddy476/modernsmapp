@@ -1,0 +1,16 @@
+{
+  "data": {
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "tax_category": "CLOUD_KITCHEN_TAKEAWAY",
+    "legal_name": "Test Kitchens LLP",
+    "gstin": null,
+    "gstin_state_code": null,
+    "pan_masked": "****000Z",
+    "pan_holder_type": "INDIVIDUAL",
+    "specified_premises_declared_at": null,
+    "compliance_submitted_at": "2026-09-13T06:30:00Z",
+    "gst_liability": "ECO_SECTION_9_5",
+    "gstin_required": false
+  },
+  "meta": {}
+}

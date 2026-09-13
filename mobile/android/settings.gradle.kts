@@ -162,3 +162,17 @@ include(":core:analytics")
 // token. The two initialise the native SDK by different entry points in one
 // process; see FaceArGate's header for the unverified-combination warning.
 include(":core:facear")
+
+// Feast / Kitchen / Rider — A1 (2026-09-13).
+//
+// :core:realtime is the SSE client for notification-service's
+// /v1/realtime/sse: the framing parser, Last-Event-ID resume, jittered
+// backoff, topic-token refresh through a RealtimeTokenSource port, and the
+// lifecycle binding. It knows no domain, so rider and any later vertical
+// reuse it rather than growing a second stream client.
+//
+// :core:food owns the food-service DTOs (pinned by the golden contract
+// fixtures), the repository, the onboarding checklist and food's realtime
+// token source. No app depends on either yet; A3–A5 wire them in.
+include(":core:realtime")
+include(":core:food")

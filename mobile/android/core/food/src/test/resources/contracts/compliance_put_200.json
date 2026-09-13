@@ -1,0 +1,16 @@
+{
+  "data": {
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "tax_category": "RESTAURANT_SPECIFIED_PREMISES",
+    "legal_name": "Test Kitchens LLP",
+    "gstin": "29ZZZPZ0000Z1Z6",
+    "gstin_state_code": "29",
+    "pan_masked": "****000Z",
+    "pan_holder_type": "INDIVIDUAL",
+    "specified_premises_declared_at": "2026-09-01",
+    "compliance_submitted_at": "2026-09-13T06:30:00Z",
+    "gst_liability": "SUPPLIER",
+    "gstin_required": true
+  },
+  "meta": {}
+}

@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_DELIVERY_RADIUS_OUT_OF_RANGE",
+    "message": "delivery_radius_km must be between 1 and 15",
+    "details": {
+      "field": "delivery_radius_km"
+    }
+  },
+  "meta": {}
+}

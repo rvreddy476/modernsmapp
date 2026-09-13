@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_GSTIN_REQUIRED",
+    "message": "gstin is required: this tax category leaves the restaurant liable for GST",
+    "details": {
+      "field": "gstin"
+    }
+  },
+  "meta": {}
+}

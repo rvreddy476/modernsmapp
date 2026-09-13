@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_RESTAURANT_NOT_LIVE",
+    "message": "restaurant must be ACTIVE before it can accept orders"
+  },
+  "meta": {}
+}

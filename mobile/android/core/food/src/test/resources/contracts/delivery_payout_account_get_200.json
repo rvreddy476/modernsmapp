@@ -1,0 +1,16 @@
+{
+  "data": {
+    "owner_type": "DELIVERY_PARTNER",
+    "owner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+    "holder_name": "Test Holder",
+    "account_number_masked": "****6789",
+    "ifsc": "HDFC0000053",
+    "verification_status": "NOT_VERIFIED",
+    "verification_reason": "verification_pending_ops",
+    "verified_name": null,
+    "verified_at": null,
+    "created_at": "2026-09-13T06:30:00Z",
+    "updated_at": "2026-09-13T06:30:00Z"
+  },
+  "meta": {}
+}
