@@ -48,6 +48,9 @@ env:
   ENV: prod
   LOG_LEVEL: info
   REVIEWER_PUBLIC_ENABLED: "false"
+  # Mopedu's /v1/rider stays closed at the edge until a working client ships.
+  # See docs/adr/adr-dormant-products.md.
+  RIDER_PUBLIC_ENABLED: "false"
   # ── Module 3 SR-1: edge token identity ──────────────────────────────────
   # APP_ENV is what the gateway reads to decide whether to apply production
   # token rules. It is set explicitly here rather than relying on ENV so the

@@ -18,6 +18,11 @@
 #   CUSTOMER_USER_ID  — UUID to forge X-User-Id with; defaults to a
 #                       randomly generated one (fresh customer).
 #
+# Mopedu probes need RIDER_PUBLIC_ENABLED=true on api-gateway: /v1/rider is
+# closed at the edge until a working client exists
+# (docs/adr/adr-dormant-products.md). With the gate closed they are skipped,
+# not failed.
+#
 # Exit code 0 = every probed endpoint returned a 2xx OR an expected
 # 4xx (e.g. 401 from /verify-delivery without prior pickup verify).
 # Any other status fails the whole script.
@@ -54,11 +59,20 @@ echo
 echo "═══ FiGo + Mopedu smoke ══════════════════════════════════════════"
 echo "  gateway          : $GATEWAY_URL"
 echo "  customer_user_id : $CUSTOMER_USER_ID"
+
+# GET /v1/rider/cities is a real route, so a 404 can only be the gateway gate.
+RIDER_OPEN=true
+if [[ "$(curl -sS -o /dev/null -w '%{http_code}' "${H_AUTH[@]}" "$GATEWAY_URL/v1/rider/cities" || echo 000)" == "404" ]]; then
+  RIDER_OPEN=false
+  echo "  SKIP  Mopedu probes: /v1/rider is closed at the gateway (RIDER_PUBLIC_ENABLED is not true)"
+fi
 echo
 
 echo "── Realtime gateway ─────────────────────────────────────────────"
 # Token-issuance endpoints from rider + food.
-probe "POST /v1/rider/realtime/token"      '^(20[01])$'  -X POST "${H_AUTH[@]}" "$GATEWAY_URL/v1/rider/realtime/token"
+if [[ "$RIDER_OPEN" == true ]]; then
+  probe "POST /v1/rider/realtime/token"    '^(20[01])$'  -X POST "${H_AUTH[@]}" "$GATEWAY_URL/v1/rider/realtime/token"
+fi
 probe "POST /v1/food/realtime/token"       '^(20[01])$'  -X POST "${H_AUTH[@]}" "$GATEWAY_URL/v1/food/realtime/token"
 # SSE requires a valid token — without one, the gateway returns 401.
 probe "GET /v1/realtime/sse (no token)"    '^401$'       "${H_AUTH[@]}" "$GATEWAY_URL/v1/realtime/sse"
@@ -92,18 +106,20 @@ probe "GET admin coupon-abuse"             '^(20[01])$'  "${H_ADMIN[@]}" "$GATEW
 probe "GET admin moderation/queue"         '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/food/admin/moderation/queue"
 probe "GET admin fraud/top"                '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/food/admin/fraud/top"
 
-echo
-echo "── Mopedu customer read paths ───────────────────────────────────"
-probe "GET /v1/rider/cities"               '^(20[01])$'  "${H_AUTH[@]}" "$GATEWAY_URL/v1/rider/cities"
-probe "GET /v1/rider/rides/me"             '^(20[01])$'  "${H_AUTH[@]}" "$GATEWAY_URL/v1/rider/rides/me"
+if [[ "$RIDER_OPEN" == true ]]; then
+  echo
+  echo "── Mopedu customer read paths ───────────────────────────────────"
+  probe "GET /v1/rider/cities"             '^(20[01])$'  "${H_AUTH[@]}" "$GATEWAY_URL/v1/rider/cities"
+  probe "GET /v1/rider/rides/me"           '^(20[01])$'  "${H_AUTH[@]}" "$GATEWAY_URL/v1/rider/rides/me"
 
-echo
-echo "── Mopedu admin reports (D2) ────────────────────────────────────"
-probe "GET admin matching-health"          '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/matching-health"
-probe "GET admin partner-quality"          '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/partner-quality"
-probe "GET admin supply-demand"            '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/supply-demand"
-probe "GET admin safety"                   '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/safety"
-probe "GET admin compliance"               '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/compliance"
+  echo
+  echo "── Mopedu admin reports (D2) ────────────────────────────────────"
+  probe "GET admin matching-health"        '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/matching-health"
+  probe "GET admin partner-quality"        '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/partner-quality"
+  probe "GET admin supply-demand"          '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/supply-demand"
+  probe "GET admin safety"                 '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/safety"
+  probe "GET admin compliance"             '^(20[01])$'  "${H_ADMIN[@]}" "$GATEWAY_URL/v1/rider/admin/reports/compliance"
+fi
 
 echo
 echo "── Result ────────────────────────────────────────────────────────"

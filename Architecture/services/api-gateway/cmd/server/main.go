@@ -308,11 +308,11 @@ func main() {
 	// counters once we wrap upstream calls.
 	promHandler := promhttp.Handler()
 	reviewerPublicEnabled := strings.EqualFold(env("REVIEWER_PUBLIC_ENABLED", "false"), "true")
-	// Groups and communities are complete server products with no client on
-	// any platform (audit, 12 Sep 2026). Their public prefixes stay closed
-	// until a client exists: unreviewed surface is attack surface. The
-	// services keep running because other services call them internally.
-	dormantProductsEnabled := strings.EqualFold(env("DORMANT_PRODUCTS_ENABLED", "false"), "true")
+	// Built products with no working client on any platform keep their public
+	// prefixes closed until a client exists: unreviewed surface is attack
+	// surface. The services keep running because other services call them
+	// internally. See docs/adr/adr-dormant-products.md.
+	dormantProducts := dormantProductsFromEnv(os.Getenv)
 
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handleProbe(w, r, len(routes)) {
@@ -326,7 +326,7 @@ func main() {
 		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
 			return
 		}
-		if serveDormantProductGate(w, r, dormantProductsEnabled) {
+		if serveDormantProductGate(w, r, dormantProducts) {
 			return
 		}
 
@@ -858,20 +858,44 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-// dormantProductPrefixes are public prefixes of products that are built and
-// deployed but have no client anywhere. See docs/adr/adr-dormant-products.md.
-var dormantProductPrefixes = []string{"/v1/groups", "/v1/communities"}
+// dormantProduct is the public prefix set of a product that is built and
+// deployed but has no working client anywhere, and whether its flag has
+// opened it. See docs/adr/adr-dormant-products.md.
+type dormantProduct struct {
+	prefixes []string
+	enabled  bool
+}
 
-// serveDormantProductGate answers 404 for a dormant product's public prefix
-// unless DORMANT_PRODUCTS_ENABLED is true. 404 rather than 503: an edge
-// client should not learn that a product exists behind a closed door, which
-// is the same reasoning as the forbidden-path backstop below the route
-// match. Internal service-to-service calls do not pass through here.
-func serveDormantProductGate(w http.ResponseWriter, r *http.Request, enabled bool) bool {
-	if enabled {
-		return false
+// dormantProductsFromEnv reads each product's own flag. One flag per product:
+// a shared flag couples launches, so opening one product would open the rest.
+func dormantProductsFromEnv(getenv func(string) string) []dormantProduct {
+	flag := func(key string) bool { return strings.EqualFold(getenv(key), "true") }
+	return []dormantProduct{
+		{prefixes: []string{"/v1/groups", "/v1/communities"}, enabled: flag("DORMANT_PRODUCTS_ENABLED")},
+		// Mopedu (rider-service): the only caller is an iOS screen whose
+		// request body the server rejects and whose result it discards.
+		{prefixes: []string{"/v1/rider"}, enabled: flag("RIDER_PUBLIC_ENABLED")},
 	}
-	for _, p := range dormantProductPrefixes {
+}
+
+// closedDormantPrefixes lists the prefixes of every product not yet opened.
+func closedDormantPrefixes(products []dormantProduct) []string {
+	var closed []string
+	for _, p := range products {
+		if !p.enabled {
+			closed = append(closed, p.prefixes...)
+		}
+	}
+	return closed
+}
+
+// serveDormantProductGate answers 404 for a closed dormant product's public
+// prefix. 404 rather than 503: an edge client should not learn that a product
+// exists behind a closed door, which is the same reasoning as the
+// forbidden-path backstop below the route match. Internal service-to-service
+// calls do not pass through here.
+func serveDormantProductGate(w http.ResponseWriter, r *http.Request, products []dormantProduct) bool {
+	for _, p := range closedDormantPrefixes(products) {
 		if r.URL.Path == p || strings.HasPrefix(r.URL.Path, p+"/") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
