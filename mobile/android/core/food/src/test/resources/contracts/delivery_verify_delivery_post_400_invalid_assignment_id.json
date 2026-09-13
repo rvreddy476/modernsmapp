@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_ASSIGNMENT_ID",
+    "message": "assignment id must be a UUID"
+  },
+  "meta": {}
+}

@@ -1,0 +1,13 @@
+{
+  "data": {
+    "token": "test-realtime-token",
+    "scope": "restaurant",
+    "topics": [
+      "food.restaurant.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002.orders",
+      "food.restaurant.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002"
+    ],
+    "expires_at": "2026-09-13T06:35:00Z",
+    "ttl_seconds": 300
+  },
+  "meta": {}
+}

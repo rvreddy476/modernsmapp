@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_SELFIE_NUMBER_NOT_ALLOWED",
+    "message": "a selfie carries no document number",
+    "details": {
+      "field": "document_number"
+    }
+  },
+  "meta": {}
+}

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_BODY",
+    "message": "code is required"
+  },
+  "meta": {}
+}

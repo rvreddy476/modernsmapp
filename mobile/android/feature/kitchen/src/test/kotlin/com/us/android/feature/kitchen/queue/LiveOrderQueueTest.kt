@@ -2,7 +2,13 @@ package com.us.android.feature.kitchen.queue
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.food.network.KitchenOrderDto
+import com.us.android.core.food.network.RealtimeTokenDto
+import com.us.android.core.food.network.RealtimeTokenRequest
+import com.us.android.core.food.realtime.FoodRealtimeTokens
+import com.us.android.core.food.realtime.RealtimeTokenIssuer
+import com.us.android.core.food.repository.FoodError
 import com.us.android.core.food.repository.FoodResult
+import com.us.android.core.network.di.NetworkModule
 import com.us.android.core.realtime.RealtimeEvent
 import com.us.android.core.realtime.RealtimeTokenSource
 import kotlinx.coroutines.CancellationException
@@ -55,7 +61,7 @@ class LiveOrderQueueTest {
 
     @Test
     fun `a failing token source falls back to polling every fifteen seconds`() = runTest {
-        val failing = RealtimeTokenSource { throw RealtimeTokenNotWiredException() }
+        val failing = RealtimeTokenSource { throw IllegalStateException("token refused") }
         val queue = LiveOrderQueue(fetch, { sseLike(it) }, failing, { Instant.EPOCH })
 
         backgroundScope.launch { queue.run() }
@@ -76,8 +82,25 @@ class LiveOrderQueueTest {
     }
 
     @Test
-    fun `the pending B5 adapter is a failing token source, so the kitchen polls`() = runTest {
-        val tokens = PendingB5RestaurantRealtimeTokens().forRestaurant("r-1")
+    fun `the kitchen asks for a restaurant-scoped token with the restaurant id`() = runTest {
+        val requests = mutableListOf<RealtimeTokenRequest>()
+        val issuer = RealtimeTokenIssuer { request ->
+            requests += request
+            FoodResult.Success(RealtimeTokenDto("tok", "restaurant", emptyList(), "2026-09-13T06:35:00Z", 300))
+        }
+        val source = ScopedRestaurantRealtimeTokens(FoodRealtimeTokens(issuer)).forRestaurant("r-1")
+
+        assertThat(source.token(forceRefresh = false)).isEqualTo("tok")
+
+        assertThat(requests).containsExactly(RealtimeTokenRequest(scope = "restaurant", id = "r-1"))
+        assertThat(NetworkModule.provideJson().encodeToString(RealtimeTokenRequest.serializer(), requests.single()))
+            .isEqualTo("""{"scope":"restaurant","id":"r-1"}""")
+    }
+
+    @Test
+    fun `a refused restaurant token leaves the kitchen polling`() = runTest {
+        val refused = RealtimeTokenIssuer { FoodResult.Failure(FoodError.NotFound) }
+        val tokens = ScopedRestaurantRealtimeTokens(FoodRealtimeTokens(refused)).forRestaurant("r-1")
         val queue = LiveOrderQueue(fetch, { sseLike(it) }, tokens, { Instant.EPOCH })
 
         backgroundScope.launch { queue.run() }

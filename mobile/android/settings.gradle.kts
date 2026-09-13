@@ -188,3 +188,14 @@ include(":core:food")
 // out of the Kitchen APK.
 include(":feature:kitchen")
 include(":app-kitchen")
+
+// Feast Rider — A4 (2026-09-13).
+//
+// :feature:rider is the delivery partner's screens: the role gate and "become a
+// rider", verification (vehicle, DigiLocker, DL/RC, selfie, payout), going
+// online with the location foreground service, job offers and the active job.
+// :app-rider is its own installable (applicationId com.us.feast.rider,
+// proposed). Neither is reachable from :app; the same application-boundary
+// rules as Kitchen keep Banuba, the creator engine, posting and commerce out.
+include(":feature:rider")
+include(":app-rider")

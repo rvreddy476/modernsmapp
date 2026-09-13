@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      DEV FLAVOUR ONLY: the custom-scheme DigiLocker return,
+      feastrider://digilocker/return?code=…&state=…
+
+      Android opens a custom scheme without App Link verification, which makes
+      the dev round trip reliable on a test phone. It is NOT registered in
+      staging or prod: any app can claim a custom scheme.
+
+      food-service cannot redirect here yet — digilocker.SettingsFromEnv refuses
+      a FOOD_RIDER_APP_LINK_URL that is not http(s). Until the backend allows a
+      custom scheme outside production, the dev round trip uses the http link
+      registered in the main manifest.
+    -->
+    <application>
+        <activity
+            android:name=".RiderActivity"
+            tools:node="merge">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="feastrider"
+                    android:host="digilocker"
+                    android:path="/return" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

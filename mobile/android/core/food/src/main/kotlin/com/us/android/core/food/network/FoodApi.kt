@@ -26,9 +26,12 @@ interface FoodApi {
     @GET("v1/food/me/capabilities")
     suspend fun capabilities(): Response<ApiEnvelope<FoodCapabilitiesDto>>
 
-    /** One HMAC topic token for every topic the caller owns (a scoped variant is planned). */
+    /**
+     * A topic token for exactly one scope (B5). A body is mandatory: the route
+     * answers a bodiless POST with 400 INVALID_BODY.
+     */
     @POST("v1/food/realtime/token")
-    suspend fun realtimeToken(): Response<ApiEnvelope<RealtimeTokenDto>>
+    suspend fun realtimeToken(@Body body: RealtimeTokenRequest): Response<ApiEnvelope<RealtimeTokenDto>>
 
     // Restaurant onboarding (B1)
 

@@ -7,8 +7,8 @@ import com.us.android.feature.kitchen.location.FusedCurrentLocationSource
 import com.us.android.feature.kitchen.menu.MenuExtrasRepository
 import com.us.android.feature.kitchen.menu.UnavailableMenuExtrasRepository
 import com.us.android.feature.kitchen.queue.KitchenClock
-import com.us.android.feature.kitchen.queue.PendingB5RestaurantRealtimeTokens
 import com.us.android.feature.kitchen.queue.RestaurantRealtimeTokens
+import com.us.android.feature.kitchen.queue.ScopedRestaurantRealtimeTokens
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -20,11 +20,11 @@ import dagger.hilt.components.SingletonComponent
 abstract class KitchenModule {
 
     /**
-     * WIRE AFTER B5: swap this binding for the scoped-token implementation.
-     * See [PendingB5RestaurantRealtimeTokens]. Until then the queue polls.
+     * The scoped `{scope:"restaurant", id}` token (B5, wired in Feast A4). A
+     * refused token still leaves the queue polling; see [ScopedRestaurantRealtimeTokens].
      */
     @Binds
-    abstract fun bindRestaurantRealtimeTokens(impl: PendingB5RestaurantRealtimeTokens): RestaurantRealtimeTokens
+    abstract fun bindRestaurantRealtimeTokens(impl: ScopedRestaurantRealtimeTokens): RestaurantRealtimeTokens
 
     @Binds
     abstract fun bindCurrentLocationSource(impl: FusedCurrentLocationSource): CurrentLocationSource

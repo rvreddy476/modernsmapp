@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          The selfie is captured into cacheDir/selfies and handed to the upload
+          pipeline as a content:// URI, because :core:media resolves type and
+          size through the ContentResolver, which knows nothing about file://.
+          A FileProvider SUBCLASS so its manifest key can never collide with
+          another library's androidx FileProvider entry.
+        -->
+        <provider
+            android:name="com.us.android.feature.rider.selfie.SelfieFileProvider"
+            android:authorities="${applicationId}.rider.selfie"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+
+</manifest>

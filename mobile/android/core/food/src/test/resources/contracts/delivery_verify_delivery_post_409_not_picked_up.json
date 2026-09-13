@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DELIVERY_ASSIGNMENT_NOT_READY",
+    "message": "delivery assignment is not at this step: assignment is ACCEPTED"
+  },
+  "meta": {}
+}

@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_AADHAAR_USE_DIGILOCKER",
+    "message": "Aadhaar is verified through DigiLocker, not uploaded",
+    "details": {
+      "field": "document_type"
+    }
+  },
+  "meta": {}
+}

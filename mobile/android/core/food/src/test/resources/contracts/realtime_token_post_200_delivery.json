@@ -1,0 +1,12 @@
+{
+  "data": {
+    "token": "test-realtime-token",
+    "scope": "delivery",
+    "topics": [
+      "food.delivery_partner.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0008.assignments"
+    ],
+    "expires_at": "2026-09-13T06:35:00Z",
+    "ttl_seconds": 300
+  },
+  "meta": {}
+}

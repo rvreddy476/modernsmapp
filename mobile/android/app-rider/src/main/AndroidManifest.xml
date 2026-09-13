@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Feast Rider (A4, 2026-09-13). Only what the rider uses:
+        INTERNET / ACCESS_NETWORK_STATE     - the API and the offer stream
+        POST_NOTIFICATIONS                  - the on-duty notification and job offers
+                                              (runtime, 33+, asked from Home)
+        ACCESS_FINE / COARSE_LOCATION       - on-duty pings, asked only after the
+                                              prominent in-app disclosure
+        FOREGROUND_SERVICE(_LOCATION)       - RiderLocationService while online
+        CAMERA                              - the selfie, front camera only
+      NO background location: the foreground service keeps while-in-use access
+      for as long as the rider is on duty. Removed explicitly below so no
+      library can merge it in.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission
+        android:name="android.permission.ACCESS_BACKGROUND_LOCATION"
+        tools:node="remove" />
+
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        android:required="false" />
+
+    <application
+        android:name=".RiderApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.FeastRider">
+
+        <!-- Google Maps SDK key for THIS app. No map library ships; navigation hands off to Maps. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <activity
+            android:name=".RiderActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|keyboard|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              The DigiLocker return (FOOD_RIDER_APP_LINK_URL) and the job-offer
+              link. Host per flavour from build.gradle.kts. autoVerify needs the
+              founder's real domain to serve assetlinks.json; until then, on
+              Android 12+ the rider enables the link once under
+              Settings > Apps > Feast Rider > Open by default.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:scheme="http" />
+                <data android:host="${riderAppLinkHost}" />
+                <data android:path="/rider/digilocker/return" />
+                <data android:pathPrefix="/rider/offers/" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          On duty: a location foreground service, started only after the
+          disclosure, the permission grant and the server accepting availability.
+        -->
+        <service
+            android:name="com.us.android.feature.rider.location.RiderLocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!--
+          Momentum's FCM service arrives with :core:notifications. It presents
+          Momentum's push types, none of which a rider receives, and FCM is off
+          (no google-services.json). Removed rather than left dormant.
+        -->
+        <service
+            android:name="com.us.android.core.notifications.UsMessagingService"
+            tools:node="remove" />
+    </application>
+
+</manifest>

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DIGILOCKER_STATE_EXPIRED",
+    "message": "this verification link has expired; start again"
+  },
+  "meta": {}
+}

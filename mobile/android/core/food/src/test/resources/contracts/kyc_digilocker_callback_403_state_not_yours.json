@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DIGILOCKER_STATE_NOT_YOURS",
+    "message": "this verification link was started by another account"
+  },
+  "meta": {}
+}

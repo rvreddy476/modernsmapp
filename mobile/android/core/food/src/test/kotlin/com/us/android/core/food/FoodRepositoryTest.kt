@@ -6,8 +6,9 @@ import com.us.android.core.food.network.ComplianceRequest
 import com.us.android.core.food.network.FoodApi
 import com.us.android.core.food.network.OperatingHoursRequest
 import com.us.android.core.food.network.OperatingWindowRequest
+import com.us.android.core.food.realtime.FoodRealtimeScope
 import com.us.android.core.food.realtime.FoodRealtimeTokenException
-import com.us.android.core.food.realtime.FoodRealtimeTokenSource
+import com.us.android.core.food.realtime.FoodRealtimeTokens
 import com.us.android.core.food.repository.FoodError
 import com.us.android.core.food.repository.FoodRepository
 import com.us.android.core.food.repository.FoodResult
@@ -158,26 +159,56 @@ class FoodRepositoryTest {
     }
 
     @Test
-    fun `the realtime token is cached until a refresh is forced`() {
-        enqueue("""{"data":{"token":"tok-1","topics":["food.order.1"]}}""")
-        enqueue("""{"data":{"token":"tok-2","topics":["food.order.1"]}}""")
-        val source = FoodRealtimeTokenSource(repository)
+    fun `each realtime scope posts exactly its own body`() {
+        val tokens = FoodRealtimeTokens(repository)
+        val cases = listOf(
+            FoodRealtimeScope.Delivery to """{"scope":"delivery"}""",
+            FoodRealtimeScope.Restaurant("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002") to
+                """{"scope":"restaurant","id":"0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002"}""",
+            FoodRealtimeScope.Order("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015") to
+                """{"scope":"order","id":"0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015"}""",
+        )
+        val fixtures = mapOf(
+            "delivery" to "realtime_token_post_200_delivery.json",
+            "restaurant" to "realtime_token_post_200_restaurant.json",
+            "order" to "realtime_token_post_200_order.json",
+        )
+        for ((scope, body) in cases) {
+            enqueue(fixture(fixtures.getValue(scope.toRequest().scope)))
 
-        val tokens = runBlocking { listOf(source.token(false), source.token(false), source.token(true)) }
+            val token = runBlocking { tokens.forScope(scope).token(forceRefresh = false) }
 
-        assertThat(tokens).containsExactly("tok-1", "tok-1", "tok-2").inOrder()
+            val request = server.takeRequest()
+            assertThat(request.method).isEqualTo("POST")
+            assertThat(request.target).isEqualTo("/v1/food/realtime/token")
+            assertThat(request.body?.utf8()).isEqualTo(body)
+            assertThat(token).isEqualTo("test-realtime-token")
+        }
+    }
+
+    @Test
+    fun `a scoped token is fetched fresh for every connect, never cached`() {
+        enqueue(fixture("realtime_token_post_200_delivery.json"))
+        enqueue(fixture("realtime_token_post_200_delivery.json"))
+        val source = FoodRealtimeTokens(repository).forScope(FoodRealtimeScope.Delivery)
+
+        runBlocking {
+            source.token(forceRefresh = false)
+            source.token(forceRefresh = false)
+        }
+
         assertThat(server.requestCount).isEqualTo(2)
-        val first = server.takeRequest()
-        assertThat(first.method).isEqualTo("POST")
-        assertThat(first.target).isEqualTo("/v1/food/realtime/token")
     }
 
     @Test
     fun `a token issuer failure throws for the SSE client to back off on`() {
-        enqueue("""{"error":{"code":"REALTIME_TOKEN_FAILED","message":"realtime: signer not configured"}}""", code = 500)
+        enqueue(fixture("realtime_token_post_404_not_delivery_partner.json"), code = 404)
 
-        val thrown = runCatching { runBlocking { FoodRealtimeTokenSource(repository).token(false) } }.exceptionOrNull()
+        val thrown = runCatching {
+            runBlocking { FoodRealtimeTokens(repository).forScope(FoodRealtimeScope.Delivery).token(false) }
+        }.exceptionOrNull()
 
         assertThat(thrown).isInstanceOf(FoodRealtimeTokenException::class.java)
+        assertThat((thrown as FoodRealtimeTokenException).error).isEqualTo(FoodError.NotFound)
     }
 }

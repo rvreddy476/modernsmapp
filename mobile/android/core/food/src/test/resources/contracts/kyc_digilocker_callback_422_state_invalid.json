@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DIGILOCKER_STATE_INVALID",
+    "message": "this verification link is not recognised; start again"
+  },
+  "meta": {}
+}

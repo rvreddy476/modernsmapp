@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DOCUMENT_NUMBER_IN_USE",
+    "message": "this document is already registered to another delivery partner"
+  },
+  "meta": {}
+}

@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "AADHAAR_NOT_ALLOWED",
+    "message": "an Aadhaar number must not be submitted here",
+    "details": {
+      "field": "document_number"
+    }
+  },
+  "meta": {}
+}

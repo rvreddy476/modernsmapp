@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_DIGILOCKER_CODE_REQUIRED",
+    "message": "code is required",
+    "details": {
+      "field": "code"
+    }
+  },
+  "meta": {}
+}

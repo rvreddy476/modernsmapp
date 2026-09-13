@@ -1,0 +1,17 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0023",
+    "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+    "assignment_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0021",
+    "assignment_ids": [
+      "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0021",
+      "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0022"
+    ],
+    "latitude": 12.9716,
+    "longitude": 77.5946,
+    "accuracy_meters": 8.5,
+    "heading": 90,
+    "recorded_at": "2026-09-13 06:30:00+00"
+  },
+  "meta": {}
+}

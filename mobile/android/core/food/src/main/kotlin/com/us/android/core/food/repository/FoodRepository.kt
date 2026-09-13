@@ -15,6 +15,7 @@ import com.us.android.core.food.network.OperatingHoursRequest
 import com.us.android.core.food.network.PayoutAccountDto
 import com.us.android.core.food.network.PayoutAccountRequest
 import com.us.android.core.food.network.RealtimeTokenDto
+import com.us.android.core.food.network.RealtimeTokenRequest
 import com.us.android.core.food.network.SubmitDto
 import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.json.Json
@@ -50,7 +51,9 @@ class FoodRepository @Inject constructor(
         )
     }
 
-    suspend fun realtimeToken(): FoodResult<RealtimeTokenDto> = call { api.realtimeToken() }
+    /** One scoped topic token. Build [request] from a FoodRealtimeScope. */
+    suspend fun realtimeToken(request: RealtimeTokenRequest): FoodResult<RealtimeTokenDto> =
+        call { api.realtimeToken(request) }
 
     suspend fun putCompliance(restaurantId: String, request: ComplianceRequest): FoodResult<ComplianceDto> =
         call { api.putCompliance(restaurantId, request) }

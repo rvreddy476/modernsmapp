@@ -44,7 +44,22 @@ interface DeviceApi {
 data class RegisterDeviceRequest(
     val platform: String,
     @SerialName("push_token") val pushToken: String,
+    /**
+     * The installed app the token belongs to (notification-service migration
+     * 007): `momentum`, `feast_kitchen` or `feast_rider`. A push is sent only
+     * to devices registered for its app, so a Rider token registered without
+     * this would receive Momentum's pushes and never a job offer. No default,
+     * for the reason above: it must always be on the wire.
+     */
+    val app: String,
 )
+
+/** The `app` a device registers under. Each application binds its own; Momentum binds none. */
+enum class PushApp(val wire: String) {
+    MOMENTUM("momentum"),
+    FEAST_KITCHEN("feast_kitchen"),
+    FEAST_RIDER("feast_rider"),
+}
 
 @Serializable
 data class DeviceDto(

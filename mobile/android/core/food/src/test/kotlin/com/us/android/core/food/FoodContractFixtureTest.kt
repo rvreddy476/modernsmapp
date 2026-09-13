@@ -2,8 +2,17 @@ package com.us.android.core.food
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.food.model.OnboardingStep
+import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.AcceptingDto
 import com.us.android.core.food.network.ComplianceDto
+import com.us.android.core.food.network.DeliveryAssignmentDto
+import com.us.android.core.food.network.DeliveryDocumentDto
+import com.us.android.core.food.network.DeliveryKycDto
+import com.us.android.core.food.network.DeliveryLocationDto
+import com.us.android.core.food.network.DigiLockerStartDto
+import com.us.android.core.food.network.RealtimeTokenDto
+import com.us.android.core.food.network.VerifyDeliveryDto
+import com.us.android.core.food.repository.code
 import com.us.android.core.food.network.FoodErrorEnvelopeDto
 import com.us.android.core.food.network.FssaiDto
 import com.us.android.core.food.network.LocationDto
@@ -132,6 +141,121 @@ class FoodContractFixtureTest {
             assertThat(it.missing).isEmpty()
         },
         "submit_post_409_not_draft.json" to error { assertThat(it).isEqualTo(FoodError.NotDraft) },
+
+        // ── Scoped realtime token (B5) ────────────────────────────────────
+        "realtime_token_post_200_delivery.json" to data(RealtimeTokenDto.serializer()) {
+            assertThat(it.scope).isEqualTo("delivery")
+            assertThat(it.topics).containsExactly("food.delivery_partner.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0008.assignments")
+            assertThat(it.ttlSeconds).isEqualTo(300)
+            assertThat(it.expiresAt).isEqualTo("2026-09-13T06:35:00Z")
+        },
+        "realtime_token_post_200_order.json" to data(RealtimeTokenDto.serializer()) {
+            assertThat(it.scope).isEqualTo("order")
+            assertThat(it.topics).containsExactly("food.order.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015")
+        },
+        "realtime_token_post_200_restaurant.json" to data(RealtimeTokenDto.serializer()) {
+            assertThat(it.scope).isEqualTo("restaurant")
+            assertThat(it.topics).containsExactly(
+                "food.restaurant.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002.orders",
+                "food.restaurant.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+            ).inOrder()
+        },
+        "realtime_token_post_400_invalid_body.json" to error { assertThat(it).isEqualTo(FoodError.InvalidBody) },
+        "realtime_token_post_404_foreign_order.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        "realtime_token_post_404_foreign_restaurant.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        "realtime_token_post_404_not_delivery_partner.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        "realtime_token_post_422_id_invalid.json" to coded("FOOD_REALTIME_ID_INVALID", FoodError.InvalidField::class.java),
+        "realtime_token_post_422_id_not_allowed.json" to coded("FOOD_REALTIME_ID_NOT_ALLOWED", FoodError.InvalidField::class.java),
+        "realtime_token_post_422_id_required.json" to coded("FOOD_REALTIME_ID_REQUIRED", FoodError.InvalidField::class.java),
+        "realtime_token_post_422_scope_invalid.json" to coded("FOOD_REALTIME_SCOPE_INVALID", FoodError.InvalidField::class.java),
+        "realtime_token_post_503_not_configured.json" to coded("FOOD_REALTIME_NOT_CONFIGURED", FoodError.Unexpected::class.java),
+
+        // ── Rider: the job (B5c) ──────────────────────────────────────────
+        "delivery_assignment_current_get_200_accepted.json" to data(DeliveryAssignmentDto.serializer()) {
+            assertThat(it.status).isEqualTo("ACCEPTED")
+            assertThat(it.pickupCode).isEqualTo("4821")
+            assertThat(it.deliveryFee).isEqualTo(Paise(2_900))
+            assertThat(it.deliveryPartnerPayout).isEqualTo(Paise(2_320))
+        },
+        "delivery_assignment_current_get_200_assigned.json" to data(DeliveryAssignmentDto.serializer()) {
+            assertThat(it.status).isEqualTo("ASSIGNED")
+            assertThat(it.pickupCode).isNull()
+        },
+        "delivery_location_post_200.json" to data(DeliveryLocationDto.serializer()) {
+            assertThat(it.heading).isEqualTo(90.0)
+            assertThat(it.accuracyMeters).isEqualTo(8.5)
+            assertThat(it.assignmentIds).hasSize(2)
+        },
+        "delivery_verify_delivery_post_200.json" to data(VerifyDeliveryDto.serializer()) {
+            assertThat(it.status).isEqualTo("DELIVERED")
+        },
+        "delivery_verify_delivery_post_400_invalid_assignment_id.json" to
+            coded("INVALID_ASSIGNMENT_ID", FoodError.Unexpected::class.java),
+        "delivery_verify_delivery_post_400_invalid_body.json" to error { assertThat(it).isEqualTo(FoodError.InvalidBody) },
+        "delivery_verify_delivery_post_403_partner_not_active.json" to
+            coded("FOOD_DELIVERY_PARTNER_NOT_ACTIVE", FoodError.Unexpected::class.java),
+        "delivery_verify_delivery_post_404_not_your_assignment.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        "delivery_verify_delivery_post_409_not_picked_up.json" to
+            coded("FOOD_DELIVERY_ASSIGNMENT_NOT_READY", FoodError.Unexpected::class.java),
+        "delivery_verify_delivery_post_422_code_invalid.json" to
+            coded("FOOD_DELIVERY_CODE_INVALID", FoodError.InvalidField::class.java),
+        "delivery_verify_delivery_post_429_attempts_exceeded.json" to
+            coded("FOOD_DELIVERY_CODE_ATTEMPTS_EXCEEDED", FoodError.Unexpected::class.java),
+
+        // ── Rider: documents (B4) ─────────────────────────────────────────
+        "delivery_document_post_201_driving_licence.json" to data(DeliveryDocumentDto.serializer()) {
+            assertThat(it.documentType).isEqualTo("DRIVING_LICENCE")
+            assertThat(it.numberMasked).isEqualTo("****0001")
+            assertThat(it.status).isEqualTo("PENDING")
+        },
+        "delivery_document_post_201_selfie.json" to data(DeliveryDocumentDto.serializer()) {
+            assertThat(it.documentType).isEqualTo("SELFIE")
+            assertThat(it.numberMasked).isNull()
+        },
+        "delivery_document_post_422_aadhaar.json" to error {
+            assertThat(it).isEqualTo(
+                FoodError.InvalidField("AADHAAR_NOT_ALLOWED", "document_number", "an Aadhaar number must not be submitted here"),
+            )
+        },
+        "delivery_document_post_422_aadhaar_use_digilocker.json" to error {
+            assertThat((it as FoodError.InvalidField).field).isEqualTo("document_type")
+            assertThat(it.code).isEqualTo("FOOD_AADHAAR_USE_DIGILOCKER")
+        },
+        "delivery_document_post_422_selfie_number.json" to error {
+            assertThat((it as FoodError.InvalidField).field).isEqualTo("document_number")
+            assertThat(it.code).isEqualTo("FOOD_SELFIE_NUMBER_NOT_ALLOWED")
+        },
+
+        // ── Rider: DigiLocker and KYC status (B4) ─────────────────────────
+        "kyc_digilocker_start_200.json" to data(DigiLockerStartDto.serializer()) {
+            assertThat(it.state).isEqualTo("<state>")
+            assertThat(it.authorizeUrl).contains("/v1/food/dev/digilocker/authorize?state=")
+        },
+        "kyc_digilocker_start_200_http.json" to data(DigiLockerStartDto.serializer()) {
+            assertThat(it.authorizeUrl).contains("redirect_uri=https%3A%2F%2Fapi.example.test%2Fv1%2Ffood%2Fpublic%2Fdigilocker%2Freturn")
+        },
+        "kyc_digilocker_start_404_no_profile.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        "kyc_digilocker_start_503_not_configured.json" to
+            coded("FOOD_DIGILOCKER_NOT_CONFIGURED", FoodError.Unexpected::class.java),
+        "kyc_digilocker_start_503_pii_not_configured.json" to error { assertThat(it).isEqualTo(FoodError.PiiNotConfigured) },
+        "kyc_digilocker_callback_200.json" to data(DeliveryKycDto.serializer()) { kyc(it) },
+        "kyc_digilocker_callback_403_state_not_yours.json" to
+            coded("FOOD_DIGILOCKER_STATE_NOT_YOURS", FoodError.Unexpected::class.java),
+        "kyc_digilocker_callback_409_document_in_use.json" to
+            coded("FOOD_DOCUMENT_NUMBER_IN_USE", FoodError.Unexpected::class.java),
+        "kyc_digilocker_callback_409_state_used.json" to
+            coded("FOOD_DIGILOCKER_STATE_USED", FoodError.Unexpected::class.java),
+        "kyc_digilocker_callback_410_state_expired.json" to
+            coded("FOOD_DIGILOCKER_STATE_EXPIRED", FoodError.Unexpected::class.java),
+        "kyc_digilocker_callback_422_code_required.json" to error {
+            assertThat(it).isEqualTo(FoodError.InvalidField("FOOD_DIGILOCKER_CODE_REQUIRED", "code", "code is required"))
+        },
+        "kyc_digilocker_callback_422_state_invalid.json" to
+            coded("FOOD_DIGILOCKER_STATE_INVALID", FoodError.InvalidField::class.java),
+        "kyc_digilocker_callback_502_provider_failed.json" to
+            coded("FOOD_DIGILOCKER_PROVIDER_FAILED", FoodError.Unexpected::class.java),
+        "kyc_status_get_200.json" to data(DeliveryKycDto.serializer()) { kyc(it) },
+        "kyc_status_get_404_no_profile.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
         "submit_post_422_not_ready.json" to error {
             assertThat(it).isEqualTo(FoodError.NotReady(listOf("fssai_document", "payout_account")))
             val checklist = (it as FoodError.NotReady).checklist
@@ -185,6 +309,22 @@ class FoodContractFixtureTest {
             .groupValues[1].toInt()
         val envelope = strict.decodeFromString(FoodErrorEnvelopeDto.serializer(), raw)
         check(FoodError.from(status, checkNotNull(envelope.error)))
+    }
+
+    /** An error fixture whose stable code and failure kind are what a screen branches on. */
+    private fun coded(code: String, kind: Class<out FoodError>): (String, String) -> Unit = error {
+        assertThat(it).isInstanceOf(kind)
+        assertThat(it.code).isEqualTo(code)
+    }
+
+    private fun kyc(it: DeliveryKycDto) {
+        assertThat(it.status).isEqualTo("PENDING_REVIEW")
+        assertThat(it.drivingDocumentsRequired).isTrue()
+        assertThat(it.missing).containsExactly("selfie", "payout_account").inOrder()
+        assertThat(it.checks.map { c -> c.kind }).containsExactly("AADHAAR", "DRIVING_LICENCE", "VEHICLE_RC").inOrder()
+        assertThat(it.checks.first().validUntil).isNull()
+        assertThat(it.documents.map { d -> d.numberMasked }).containsExactly("****0001", "****1234").inOrder()
+        assertThat(it.hasPayoutAccount).isFalse()
     }
 
     private fun field(code: String, field: String): FoodError = FoodError.InvalidField(

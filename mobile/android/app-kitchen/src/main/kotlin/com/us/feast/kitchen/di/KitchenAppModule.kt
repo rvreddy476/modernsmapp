@@ -2,6 +2,7 @@ package com.us.feast.kitchen.di
 
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.notifications.IncomingCallPushHandler
+import com.us.android.core.notifications.data.PushApp
 import com.us.android.core.telemetry.TelemetryConfig
 import com.us.android.feature.kitchen.queue.NewOrderAlert
 import com.us.feast.kitchen.BuildConfig
@@ -48,6 +49,13 @@ object KitchenAppModule {
     @Provides
     @Singleton
     fun provideIncomingCallPushHandler(): IncomingCallPushHandler = IncomingCallPushHandler { _, _ -> }
+
+    /**
+     * Push devices register as `feast_kitchen` (Feast A4), so a kitchen token
+     * never receives Momentum's pushes once FCM is switched on here.
+     */
+    @Provides
+    fun providePushApp(): PushApp = PushApp.FEAST_KITCHEN
 
     private const val PROD_TRACE_SAMPLE_RATIO = 0.05
 }

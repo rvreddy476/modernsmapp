@@ -97,11 +97,34 @@ data class FoodCapabilitiesDto(
     @SerialName("is_moderator") val isModerator: Boolean = false,
 )
 
-/** `POST /v1/food/realtime/token` (handler_realtime.go). No golden fixture exists yet. */
+/**
+ * `POST /v1/food/realtime/token` body (handler_realtime.go, B5).
+ *
+ * [scope] is `order`, `restaurant` or `delivery`. [id] is REQUIRED for order and
+ * restaurant and REFUSED for delivery (422 FOOD_REALTIME_ID_NOT_ALLOWED), so a
+ * null id must be omitted rather than sent as `null` — the app's Json leaves
+ * `encodeDefaults` false, which does exactly that. Build it through
+ * [com.us.android.core.food.realtime.FoodRealtimeScope], never by hand.
+ */
+@Serializable
+data class RealtimeTokenRequest(
+    val scope: String,
+    val id: String? = null,
+)
+
+/**
+ * The scoped topic token (realtime_token_post_200_*.json). It lives
+ * [ttlSeconds] (300) and notification-service checks it only when an SSE
+ * connection opens, so a client fetches a fresh one for every (re)connect.
+ */
 @Serializable
 data class RealtimeTokenDto(
     val token: String,
+    val scope: String,
     val topics: List<String> = emptyList(),
+    /** RFC 3339. */
+    @SerialName("expires_at") val expiresAt: String,
+    @SerialName("ttl_seconds") val ttlSeconds: Int,
 )
 
 @Serializable

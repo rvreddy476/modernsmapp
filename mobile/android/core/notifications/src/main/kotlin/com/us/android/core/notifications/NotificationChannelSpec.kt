@@ -85,14 +85,16 @@ enum class NotificationChannelSpec(
     ),
 
     /**
-     * Feast Kitchen (A3, 2026-09-13): changes to an order the kitchen is
-     * already handling — a customer cancelling, a rider arriving. HIGH: an
-     * order cancelled while it is still being cooked is food and money wasted.
+     * Feast Kitchen (A3, 2026-09-13) and Feast Rider (A4): changes to an order
+     * the partner is already handling — a customer cancelling, a rider
+     * arriving. HIGH: an order cancelled mid-cook or mid-ride is food and money
+     * wasted. The description is app-neutral because both partner apps
+     * register this channel.
      */
     FOOD_ORDERS(
         id = "food_orders",
         title = "Order updates",
-        description = "Changes to orders your kitchen is handling",
+        description = "Changes to orders you are handling",
         importance = NotificationManager.IMPORTANCE_HIGH,
     ),
 
@@ -107,6 +109,31 @@ enum class NotificationChannelSpec(
         description = "New orders waiting for your kitchen to accept",
         importance = NotificationManager.IMPORTANCE_HIGH,
         alertSound = true,
+    ),
+
+    /**
+     * Feast Rider (A4, 2026-09-13): a delivery job offered to this rider, with
+     * a short window to accept (notification-service `food_delivery_offer`).
+     * HIGH with the alarm tone: an unheard offer goes to the next rider.
+     */
+    RIDER_JOB_OFFER(
+        id = "rider_job_offer",
+        title = "Job offers",
+        description = "Delivery jobs offered to you, with time to accept",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        alertSound = true,
+    ),
+
+    /**
+     * Feast Rider: the ongoing "you are on duty and sharing your location"
+     * notification of the location foreground service. LOW: always visible
+     * while online, never buzzing.
+     */
+    RIDER_ON_DUTY(
+        id = "rider_on_duty",
+        title = "On duty",
+        description = "Shown while you are online and sharing your location",
+        importance = NotificationManager.IMPORTANCE_LOW,
     ),
     ;
 
@@ -138,6 +165,16 @@ enum class NotificationChannelSpec(
         val KITCHEN: Set<NotificationChannelSpec> = setOf(
             FOOD_ORDERS,
             KITCHEN_NEW_ORDER,
+        )
+
+        /**
+         * Feast Rider's channels (A4, 2026-09-13) — nothing of Momentum's or
+         * the kitchen's new-order alarm.
+         */
+        val RIDER: Set<NotificationChannelSpec> = setOf(
+            FOOD_ORDERS,
+            RIDER_JOB_OFFER,
+            RIDER_ON_DUTY,
         )
 
         /**

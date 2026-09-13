@@ -200,6 +200,30 @@ fun applicationBoundarySelfCheck(): List<String> {
             ":app must not depend on :feature:kitchen",
         ),
         Triple("kitchen feature -> kitchen app", mapOf(":feature:kitchen" to setOf(":app-kitchen")), ":feature:kitchen must not depend on :app-kitchen"),
+        // :app-rider coverage (Feast A4, 2026-09-13), the same set Kitchen got
+        // in A3: every edge the Rider APK could grow is proven to fire.
+        Triple("rider app -> facear", mapOf(":app-rider" to setOf(":core:facear")), ":app-rider must not depend on :core:facear"),
+        Triple("rider app -> creator engine", mapOf(":app-rider" to setOf(":core:creator-engine")), ":app-rider must not depend on :core:creator-engine"),
+        Triple("rider app -> commerce", mapOf(":app-rider" to setOf(":core:commerce")), ":app-rider must not depend on :core:commerce"),
+        Triple(
+            "rider app -> post, transitively",
+            mapOf(":app-rider" to setOf(":feature:rider"), ":feature:rider" to setOf(":core:media"), ":core:media" to setOf(":feature:post")),
+            ":app-rider must not depend on :feature:post",
+        ),
+        Triple(
+            "rider app -> creator engine, transitively",
+            mapOf(":app-rider" to setOf(":core:auth"), ":core:auth" to setOf(":core:creator-engine")),
+            ":app-rider must not depend on :core:creator-engine",
+        ),
+        Triple(
+            "rider app -> facear, transitively through commerce",
+            mapOf(":app-rider" to setOf(":core:commerce"), ":core:commerce" to setOf(":core:facear")),
+            ":app-rider must not depend on :core:facear",
+        ),
+        Triple(":app -> rider feature", mapOf(":app" to setOf(":feature:rider")), ":app must not depend on :feature:rider"),
+        Triple("rider feature -> rider app", mapOf(":feature:rider" to setOf(":app-rider")), ":feature:rider must not depend on :app-rider"),
+        Triple("rider feature -> facear", mapOf(":feature:rider" to setOf(":core:facear")), ":feature:rider must not depend on :core:facear"),
+        Triple("kitchen app -> rider app", mapOf(":app-kitchen" to setOf(":app-rider")), ":app-kitchen must not depend on :app-rider"),
     )
     return cases.mapNotNull { (name, graph, expected) ->
         val found = applicationBoundaryViolations(graph)
@@ -352,6 +376,12 @@ tasks.register("moduleGraphCheck") {
                 add(":app-kitchen must depend on :feature:kitchen directly — it is the only app that ships it.")
             }
         }
+        // Feast A4: the same for the Rider app.
+        directEdges[":app-rider"]?.let { riderApp ->
+            if (":feature:rider" !in riderApp) {
+                add(":app-rider must depend on :feature:rider directly — it is the only app that ships it.")
+            }
+        }
     }
     val moduleCount = subprojects.size
 
@@ -394,9 +424,13 @@ tasks.register("moduleGraphCheck") {
     //      sits at the top level, so no new phantom parent is counted. The
     //      application-boundary self-check gained the transitive Kitchen cases
     //      and the real graph asserts :app-kitchen -> :feature:kitchen.
+    // 43 = 41 + :feature:rider and :app-rider (Feast A4, 2026-09-13): the
+    //      delivery partner's screens and their own installable. Top level, so
+    //      no new phantom parent. The self-check gained the Rider cases and the
+    //      real graph asserts :app-rider -> :feature:rider.
     // Still to add, one module at a time, to reach 46: :core:location,
-    // :core:kyc-ui, :feature:feast, :feature:rider, :app-rider.
-    val expectedModuleCount = 41
+    // :core:kyc-ui, :feature:feast.
+    val expectedModuleCount = 43
 
     doLast {
         val allViolations = buildList {

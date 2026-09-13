@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Momentum's navy ground and ember accent, the same values as :app and
+      :app-kitchen, so the pre-Compose window matches the theme's first frame.
+    -->
+    <color name="rider_background">#FF041122</color>
+    <color name="rider_brand">#FFFB923C</color>
+</resources>

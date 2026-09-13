@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_REALTIME_NOT_CONFIGURED",
+    "message": "realtime is not configured"
+  },
+  "meta": {}
+}

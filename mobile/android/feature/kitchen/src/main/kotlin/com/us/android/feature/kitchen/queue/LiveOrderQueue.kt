@@ -48,9 +48,9 @@ data class QueueSnapshot(
  * state is always re-read rather than patched from event payloads, so a missed
  * or reordered event cannot leave a wrong queue on screen.
  *
- * FALLBACK: when the token source throws — which it does until backend lane B5
- * lands the scoped token route and [PendingB5RestaurantRealtimeTokens] is
- * replaced — or the stream ends, [QueueTransport.POLLING] re-reads every
+ * FALLBACK: when the token source throws — the scoped restaurant token route
+ * refused ([ScopedRestaurantRealtimeTokens]) — or the stream ends,
+ * [QueueTransport.POLLING] re-reads every
  * [pollFallbackMillis]. While LIVE a slower [reconcileMillis] poll continues,
  * because `SseClient` reconnects silently and a dropped stream is otherwise
  * invisible here until the next token refresh.

@@ -1,0 +1,10 @@
+{
+  "data": {
+    "is_admin": true,
+    "is_customer": true,
+    "is_delivery_partner": true,
+    "is_moderator": true,
+    "is_restaurant_owner": true,
+    "user_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0001"
+  }
+}

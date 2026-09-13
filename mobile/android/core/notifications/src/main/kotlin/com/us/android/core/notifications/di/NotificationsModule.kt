@@ -5,9 +5,11 @@ import android.content.SharedPreferences
 import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.notifications.data.DeviceApi
 import com.us.android.core.notifications.data.NotificationsApi
+import com.us.android.core.notifications.data.PushApp
 import com.us.android.core.notifications.data.PushTeardown
 import com.us.android.core.notifications.data.PushTokenStore
 import dagger.Binds
+import dagger.BindsOptionalOf
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -95,6 +97,18 @@ internal class SharedPrefsPushTokenStore(
  * `@IntoSet` rather than a direct call from `:core:auth`: that module must not
  * depend on push. See [com.us.android.core.common.session.SessionTeardownTask].
  */
+/**
+ * Which app this install registers push devices as. Optional so Momentum needs
+ * no binding (it registers as `momentum`); Feast Kitchen and Feast Rider bind
+ * their own [PushApp].
+ */
+@Module
+@InstallIn(SingletonComponent::class)
+abstract class PushAppModule {
+    @BindsOptionalOf
+    abstract fun optionalPushApp(): PushApp
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class NotificationsTeardownModule {

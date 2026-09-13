@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_REALTIME_ID_INVALID",
+    "message": "id must be a UUID"
+  },
+  "meta": {}
+}

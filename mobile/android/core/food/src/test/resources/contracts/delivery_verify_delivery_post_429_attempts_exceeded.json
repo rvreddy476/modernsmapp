@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DELIVERY_CODE_ATTEMPTS_EXCEEDED",
+    "message": "too many wrong delivery codes for this assignment"
+  },
+  "meta": {}
+}

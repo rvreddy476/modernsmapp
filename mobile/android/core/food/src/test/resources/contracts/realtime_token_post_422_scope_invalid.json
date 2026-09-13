@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_REALTIME_SCOPE_INVALID",
+    "message": "scope must be order, restaurant or delivery"
+  },
+  "meta": {}
+}

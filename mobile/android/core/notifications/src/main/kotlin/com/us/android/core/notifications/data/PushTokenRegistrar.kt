@@ -4,6 +4,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
+import java.util.Optional
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,7 +27,14 @@ class PushTokenRegistrar @Inject constructor(
     private val api: DeviceApi,
     private val store: PushTokenStore,
     private val errorMapper: ErrorMapper,
+    /**
+     * Bound by Feast Kitchen / Feast Rider; absent in Momentum, which then
+     * registers as [PushApp.MOMENTUM] — exactly what the server assumed for
+     * every device before the partner apps existed.
+     */
+    pushApp: Optional<PushApp>,
 ) {
+    private val app: PushApp = pushApp.orElse(PushApp.MOMENTUM)
 
     /**
      * Sends the stored token, if there is one and it has not already been
@@ -40,7 +48,7 @@ class PushTokenRegistrar @Inject constructor(
         if (store.registeredToken() == token) return AppResult.Success(store.deviceId())
 
         return apiCall(errorMapper) {
-            api.registerDevice(RegisterDeviceRequest(platform = ANDROID, pushToken = token))
+            api.registerDevice(RegisterDeviceRequest(platform = ANDROID, pushToken = token, app = app.wire))
         }.map { device ->
             store.markRegistered(token = token, deviceId = device.id)
             device.id

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default policy: cleartext DENIED everywhere. Staging and prod get this file;
+  the dev flavour overrides it (src/dev/res/xml/), exactly as Momentum does.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

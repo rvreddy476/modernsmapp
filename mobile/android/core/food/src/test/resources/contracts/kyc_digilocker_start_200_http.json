@@ -1,0 +1,8 @@
+{
+  "data": {
+    "authorize_url": "https://digilocker.example.test/public/oauth2/1/authorize?client_id=food-client\u0026code_challenge=<code_challenge>\u0026code_challenge_method=S256\u0026redirect_uri=https%3A%2F%2Fapi.example.test%2Fv1%2Ffood%2Fpublic%2Fdigilocker%2Freturn\u0026response_type=code\u0026state=<state>",
+    "state": "<state>",
+    "expires_at": "2026-09-13T06:40:00Z"
+  },
+  "meta": {}
+}

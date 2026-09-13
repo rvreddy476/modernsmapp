@@ -1,5 +1,7 @@
 package com.us.android.feature.kitchen.queue
 
+import com.us.android.core.food.realtime.FoodRealtimeScope
+import com.us.android.core.food.realtime.FoodRealtimeTokens
 import com.us.android.core.realtime.RealtimeTokenSource
 import javax.inject.Inject
 
@@ -15,33 +17,19 @@ object KitchenRealtimeTopics {
 }
 
 /**
- * ============================================================================
- *  WIRE AFTER B5 — the realtime token adapter is deliberately NOT implemented.
- * ============================================================================
- *
- * Backend lane B5 is replacing the token route with a scoped one:
+ * The scoped restaurant token (backend lane B5, wired in Feast A4):
  *
  *     POST /v1/food/realtime/token   {"scope": "restaurant", "id": "<restaurant id>"}
  *
- * Its request and response DTOs are intentionally not declared here, so nothing
- * pins a contract that is still moving. Until B5 commits, every token request
- * throws [RealtimeTokenNotWiredException]; [LiveOrderQueue] sees that and polls
- * `GET …/kitchen-queue` every 15 s, which is a working (if slower) queue.
- *
- * To wire it: implement [RestaurantRealtimeTokens.forRestaurant] with a
- * cached-until-refused source (the shape of :core:food's
- * FoodRealtimeTokenSource, but posting the scoped body — the token lives 5
- * minutes, so honour `forceRefresh`), and swap the binding in
- * `KitchenModule.bindRestaurantRealtimeTokens`. Nothing else changes.
- *
- * NOTE: :core:food's existing `FoodApi.realtimeToken()` posts NO body, and the
- * current food-service handler already answers that with 400 INVALID_BODY, so
- * it must not be used as a stopgap.
+ * The token lives five minutes, so :core:food's source fetches a fresh one for
+ * every (re)connect rather than caching. When the route refuses (404 for a
+ * restaurant that is not the caller's, 503 when realtime is not configured) the
+ * source throws, [LiveOrderQueue] sees it and polls `GET …/kitchen-queue` every
+ * 15 s — the queue is never without a transport.
  */
-class PendingB5RestaurantRealtimeTokens @Inject constructor() : RestaurantRealtimeTokens {
+class ScopedRestaurantRealtimeTokens @Inject constructor(
+    private val tokens: FoodRealtimeTokens,
+) : RestaurantRealtimeTokens {
     override fun forRestaurant(restaurantId: String): RealtimeTokenSource =
-        RealtimeTokenSource { throw RealtimeTokenNotWiredException() }
+        tokens.forScope(FoodRealtimeScope.Restaurant(restaurantId))
 }
-
-class RealtimeTokenNotWiredException :
-    IllegalStateException("restaurant realtime token is not wired until backend lane B5 lands; polling instead")

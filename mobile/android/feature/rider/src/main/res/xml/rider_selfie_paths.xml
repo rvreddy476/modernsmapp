@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the selfie capture directory is shareable, nothing else in cacheDir. -->
+<paths>
+    <cache-path name="selfies" path="selfies/" />
+</paths>

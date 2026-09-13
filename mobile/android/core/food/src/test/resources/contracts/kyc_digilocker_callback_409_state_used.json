@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DIGILOCKER_STATE_USED",
+    "message": "this verification link has already been used; start again"
+  },
+  "meta": {}
+}
