@@ -445,11 +445,9 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if handled, err := c.handleRiderEvent(ctx, envelope); handled {
 			return err
 		}
-		// Food (FiGo) events: order placed / payment / cancelled / refunded
-		// fan out as notifications + FCM to the customer + restaurant + admin.
-		if handled, err := c.handleFoodEvent(ctx, envelope); handled {
-			return err
-		}
+		// Food (Feast) events are NOT handled here: food-service publishes
+		// raw payloads with the type in a Kafka header, which this envelope
+		// decoder cannot read. FoodConsumer (food_consumer.go) owns them.
 		return nil
 	}
 }

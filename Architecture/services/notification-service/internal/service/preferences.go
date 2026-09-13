@@ -158,7 +158,8 @@ const (
 	catReposts
 	catLive
 	catMessages
-	catNewVideos // creator uploads on subscribed channels (Tube long video, flicks)
+	catNewVideos  // creator uploads on subscribed channels (Tube long video, flicks)
+	catFoodOrders // Feast customer order updates (migration 007)
 )
 
 // categoryForEvent maps every event type this service delivers — both the
@@ -212,6 +213,13 @@ func categoryForEvent(eventType string) prefCategory {
 	// subscriber who mutes uploads mutes all of them. Defaults on (Tube launch).
 	case "creator_uploaded_video", "creator_uploaded_flick":
 		return catNewVideos
+	// Feast customer order updates. Kitchen new-order and rider job-offer
+	// pushes are operational and never consult Momentum preferences
+	// (food_push.go); they map here only so nothing category-gates them.
+	case "food_order_status":
+		return catFoodOrders
+	case "food_order_new", "food_delivery_offer":
+		return catAlwaysOn
 	// Calls are time-critical: a missed-call notice the user asked the app
 	// not to show would hide that a human tried to reach them. Only the
 	// master push toggle and quiet hours apply — never a category toggle.
@@ -266,6 +274,8 @@ func pushCategoryAllowed(p *postgres.NotificationPreferences, eventType string) 
 		return p.PushMessages
 	case catNewVideos:
 		return p.PushNewVideos
+	case catFoodOrders:
+		return p.PushFoodOrders
 	default: // catDefault, catAlwaysOn
 		return true
 	}
@@ -313,6 +323,8 @@ func inappCategoryAllowed(p *postgres.NotificationPreferences, eventType string)
 		return p.InappMessages
 	case catNewVideos:
 		return p.InappNewVideos
+	case catFoodOrders:
+		return p.InappFoodOrders
 	default: // catDefault, catAlwaysOn
 		return true
 	}

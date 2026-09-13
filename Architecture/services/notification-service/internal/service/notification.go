@@ -647,12 +647,13 @@ func (s *Service) UpdatePreferences(ctx context.Context, prefs *postgres.Notific
 	return s.pgStore.UpsertPreferences(ctx, prefs)
 }
 
-// RegisterDevice registers a push notification device.
-func (s *Service) RegisterDevice(ctx context.Context, userID uuid.UUID, platform, pushToken string) (*postgres.UserDevice, error) {
+// RegisterDevice registers a push notification device for one installed app
+// (momentum, feast_kitchen, feast_rider); an empty app means momentum.
+func (s *Service) RegisterDevice(ctx context.Context, userID uuid.UUID, platform, pushToken, app string) (*postgres.UserDevice, error) {
 	if s.pgStore == nil {
 		return nil, fmt.Errorf("PG store not configured")
 	}
-	return s.pgStore.RegisterDevice(ctx, userID, platform, pushToken)
+	return s.pgStore.RegisterDevice(ctx, userID, platform, pushToken, app)
 }
 
 // UnregisterDevice removes a registered device.

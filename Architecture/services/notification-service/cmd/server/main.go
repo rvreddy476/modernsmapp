@@ -374,10 +374,13 @@ func main() {
 	go riderConsumer.Start(ctx)
 	slog.Info("kafka rider consumer started", "topic", riderTopic)
 
-	// Food (FiGo) events — same Consumer type, dedicated group so food
-	// lag (busy lunch rush) doesn't block other domains.
+	// Feast (food) events — a dedicated FoodConsumer (lane B5b), own group so
+	// food lag (busy lunch rush) doesn't block other domains. food-service's
+	// outbox publishes raw payloads with the event type in a Kafka header,
+	// which the envelope-decoding generic Consumer silently dropped. Pushes
+	// go to the Kitchen, Rider or Momentum install per audience.
 	foodTopic := env("KAFKA_FOOD_TOPIC", "food-events")
-	foodConsumer := events.NewConsumerWithDialer(
+	foodConsumer := events.NewFoodConsumerWithDialer(
 		strings.Split(kafkaBrokers, ","),
 		"notification-service-food-group",
 		foodTopic,

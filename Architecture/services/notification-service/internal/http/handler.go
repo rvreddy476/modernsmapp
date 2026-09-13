@@ -277,6 +277,10 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 type RegisterDeviceRequest struct {
 	Platform  string `json:"platform" binding:"required,oneof=ios android web"`
 	PushToken string `json:"push_token" binding:"required"`
+	// App is the installed app the token was minted by. Omitted = momentum,
+	// which is what every client registered before Feast Kitchen and Feast
+	// Rider existed (migration 007).
+	App string `json:"app" binding:"omitempty,oneof=momentum feast_kitchen feast_rider"`
 }
 
 func (h *Handler) RegisterDevice(c *gin.Context) {
@@ -293,7 +297,7 @@ func (h *Handler) RegisterDevice(c *gin.Context) {
 		return
 	}
 
-	device, err := h.svc.RegisterDevice(c.Request.Context(), userID, req.Platform, req.PushToken)
+	device, err := h.svc.RegisterDevice(c.Request.Context(), userID, req.Platform, req.PushToken, req.App)
 	if err != nil {
 		log.Printf("Failed to register device: %v", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to register device", nil)
@@ -463,6 +467,7 @@ type UpdateNotifPreferencesRequest struct {
 	PushLive              *bool `json:"push_live"`
 	PushMessages          *bool `json:"push_messages"`
 	PushNewVideos         *bool `json:"push_new_videos"`
+	PushFoodOrders        *bool `json:"push_food_orders"`
 
 	InappLikes             *bool `json:"inapp_likes"`
 	InappSuperLikes        *bool `json:"inapp_super_likes"`
@@ -483,6 +488,7 @@ type UpdateNotifPreferencesRequest struct {
 	InappLive              *bool `json:"inapp_live"`
 	InappMessages          *bool `json:"inapp_messages"`
 	InappNewVideos         *bool `json:"inapp_new_videos"`
+	InappFoodOrders        *bool `json:"inapp_food_orders"`
 
 	EmailDigest *string `json:"email_digest"`
 }
@@ -526,6 +532,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.PushLive, req.PushLive)
 	setBool(&current.PushMessages, req.PushMessages)
 	setBool(&current.PushNewVideos, req.PushNewVideos)
+	setBool(&current.PushFoodOrders, req.PushFoodOrders)
 
 	setBool(&current.InappLikes, req.InappLikes)
 	setBool(&current.InappSuperLikes, req.InappSuperLikes)
@@ -546,6 +553,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.InappLive, req.InappLive)
 	setBool(&current.InappMessages, req.InappMessages)
 	setBool(&current.InappNewVideos, req.InappNewVideos)
+	setBool(&current.InappFoodOrders, req.InappFoodOrders)
 
 	if req.EmailDigest != nil {
 		current.EmailDigest = *req.EmailDigest

@@ -107,11 +107,22 @@ func (h *RealtimeHandler) stream(c *gin.Context) {
 		requested = allowed
 	}
 	resolved := make([]string, 0, len(requested))
+	seen := make(map[string]bool, len(requested))
 	for _, t := range requested {
+		// '=' and line breaks are reserved by the resume cursor and SSE
+		// framing (realtime_cursor.go).
+		if !validCursorTopic(t) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TOPIC", "topic contains a reserved character: "+strconv.Quote(t), nil)
+			return
+		}
 		if !realtime.MatchTopic(allowed, t) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TOPIC_FORBIDDEN", "topic not in token: "+t, nil)
 			return
 		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
 		resolved = append(resolved, t)
 	}
 	if len(resolved) == 0 {
@@ -122,23 +133,40 @@ func (h *RealtimeHandler) stream(c *gin.Context) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
-	// CR3-rt: prefer Streams (durable + replay). The client supplies a
-	// `Last-Event-ID` header (W3C SSE-spec) or `since` query param to
-	// resume from where it disconnected. Empty / absent = live-tail
-	// from now.
+	// CR3-rt: Streams (durable + replay). The client resumes with the
+	// `Last-Event-ID` header (W3C SSE) or the `since` query param.
+	//
+	// B5b: ONE CURSOR PER TOPIC. Stream ids are per stream, so a single id
+	// applied to every topic replayed or skipped events on multi-topic
+	// connections. The cursor is a `topic=streamID,...` vector and every
+	// emitted `id:` is the full vector, so the last id a client saw resumes
+	// all of its topics exactly. A bare legacy id still resumes a one-topic
+	// connection; a malformed cursor starts live and says so in the
+	// connected frame ("resume":"invalid") instead of 400ing, because
+	// EventSource never reconnects after a non-200. Format and rules:
+	// realtime_cursor.go.
 	since := c.GetHeader("Last-Event-ID")
 	if since == "" {
 		since = c.Query("since")
 	}
-	subscriber := realtime.NewStreamSubscriber(h.rdb, resolved, since, 25*time.Second)
+	var client streamClient
+	if h.rdb != nil {
+		client = h.rdb
+	}
+	reader, resume := newTopicCursorReader(ctx, client, resolved, since, 25*time.Second)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeaderNow()
-	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"subject\":%q,\"topics\":%q,\"since\":%q}\n\n",
-		subject, strings.Join(resolved, ","), since)
+	// The connected frame carries the starting vector as its id, so a
+	// client that disconnects before any event still resumes without a gap.
+	if initial := reader.Cursor(); initial != "" {
+		fmt.Fprintf(c.Writer, "id: %s\n", initial)
+	}
+	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"subject\":%q,\"topics\":%q,\"since\":%q,\"resume\":%q}\n\n",
+		subject, strings.Join(resolved, ","), since, string(resume))
 	c.Writer.Flush()
 
 	// Loop: XREAD BLOCK is the heartbeat — it returns nil after 25s of
@@ -148,7 +176,7 @@ func (h *RealtimeHandler) stream(c *gin.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		events, err := subscriber.Read(ctx)
+		events, err := reader.Read(ctx)
 		if err != nil {
 			slog.Warn("realtime: XREAD failed", "subject", subject, "error", err)
 			// Brief backoff then continue — a transient Redis blip
@@ -169,8 +197,9 @@ func (h *RealtimeHandler) stream(c *gin.Context) {
 		}
 		for _, e := range events {
 			body, _ := json.Marshal(e.Event)
+			// id: the full per-topic resume vector as of this event.
 			if _, werr := fmt.Fprintf(c.Writer, "id: %s\nevent: %s\ndata: %s\n\n",
-				e.StreamID, e.Topic, string(body)); werr != nil {
+				e.Cursor, e.Topic, string(body)); werr != nil {
 				return
 			}
 		}

@@ -78,10 +78,43 @@ var callPushTypes = map[string]bool{
 	"incoming_video_call": true,
 }
 
+// AndroidChannelDataKey is a transport-only data key: BuildFCMMessage lifts
+// its value into android.notification.channel_id and strips it from data, so
+// a caller can name the Android notification channel without changing the
+// Pusher interface.
+const AndroidChannelDataKey = "android_channel_id"
+
+// highPriorityTypes are operational Feast pushes that must wake a Dozing
+// device: a kitchen that sees a new order late loses it to the accept SLA, and
+// a job offer expires in seconds. They keep the notification block — the
+// system renders them on the app's channel — unlike ringing calls.
+var highPriorityTypes = map[string]bool{
+	"food_order_new":      true,
+	"food_delivery_offer": true,
+}
+
 // BuildFCMMessage shapes one FCM v1 `message` object. Exported (and pure) so
 // the calling contract is pinned by tests without an FCM round trip.
 func BuildFCMMessage(token, title, body string, data map[string]string) map[string]interface{} {
+	channelID := ""
+	if ch, ok := data[AndroidChannelDataKey]; ok {
+		channelID = ch
+		stripped := make(map[string]string, len(data))
+		for k, v := range data {
+			if k != AndroidChannelDataKey {
+				stripped[k] = v
+			}
+		}
+		data = stripped
+	}
+
 	android := map[string]interface{}{}
+	if highPriorityTypes[data["type"]] {
+		android["priority"] = "high"
+	}
+	if channelID != "" {
+		android["notification"] = map[string]string{"channel_id": channelID}
+	}
 	if ck, ok := data["collapse_key"]; ok && ck != "" {
 		// FCM collapse_key: the latest notification replaces older ones
 		// with the same key.
@@ -97,6 +130,9 @@ func BuildFCMMessage(token, title, body string, data map[string]string) map[stri
 		enriched["title"] = title
 		enriched["body"] = body
 		android["priority"] = "high"
+		// An android.notification block would make this a system-rendered
+		// notification message again — exactly what CALL-LB-4 forbids.
+		delete(android, "notification")
 		return map[string]interface{}{
 			"token":   token,
 			"data":    enriched,
