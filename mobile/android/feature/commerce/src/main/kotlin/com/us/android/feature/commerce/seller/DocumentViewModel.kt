@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.commerce.model.SellerDocument
 import com.us.android.core.commerce.model.SellerDocumentType
+import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.common.result.AppResult
@@ -37,6 +38,11 @@ data class DocumentUploadState(
     val progress: Pair<Long, Long>? = null,
     val stage: Stage = Stage.Idle,
     val error: String? = null,
+    /**
+     * A refusal of the typed number itself, shown under the field rather than
+     * as a general failure — the seller's fix is to edit that field.
+     */
+    val numberError: String? = null,
 ) {
     enum class Stage {
         Idle,
@@ -66,7 +72,58 @@ data class DocumentUploadState(
      * original in front of it.
      */
     val canPick: Boolean get() = !busy
+
+    /**
+     * Whether this document type takes a typed number at all.
+     *
+     * Not for Aadhaar. The platform may not store an Aadhaar number, so the
+     * server keeps an Aadhaar document as its upload reference only and
+     * refuses any number sent with it (AADHAAR_NUMBER_NOT_ACCEPTED). Asking
+     * for one would collect exactly what cannot be kept.
+     */
+    val asksForNumber: Boolean get() = type != SellerDocumentType.AADHAAR
+
+    /** What goes on the wire: never a number for Aadhaar, never a blank. */
+    val numberToSend: String?
+        get() = documentNumber.trim().takeIf { asksForNumber && it.isNotEmpty() }
+
+    /**
+     * Switching type clears an Aadhaar selection's number, so a number typed
+     * under another type cannot ride along after the seller picks Aadhaar.
+     */
+    fun withType(newType: SellerDocumentType): DocumentUploadState = copy(
+        type = newType,
+        documentNumber = if (newType == SellerDocumentType.AADHAAR) "" else documentNumber,
+        error = null,
+        numberError = null,
+    )
+
+    fun withNumber(raw: String): DocumentUploadState =
+        if (!asksForNumber) {
+            this
+        } else {
+            copy(documentNumber = raw.uppercase().take(MAX_DOC_NUMBER), error = null, numberError = null)
+        }
 }
+
+/** The server's code for a refused Aadhaar number (commerce migration 035). */
+internal const val AADHAAR_NUMBER_NOT_ACCEPTED = "AADHAAR_NUMBER_NOT_ACCEPTED"
+
+internal fun CommerceError.isAadhaarNumberRefusal(): Boolean =
+    this is CommerceError.Unexpected && code == AADHAAR_NUMBER_NOT_ACCEPTED
+
+/** Shown under the number field when the server refuses an Aadhaar-shaped number. */
+internal const val AADHAAR_NUMBER_REFUSED_COPY =
+    "That looks like an Aadhaar number, which we can't store. Clear the number and send " +
+        "the file again, or choose Aadhaar and upload a masked copy."
+
+/** Shown instead of the number field when the seller picks Aadhaar. */
+internal const val MASKED_AADHAAR_GUIDANCE =
+    "Upload a masked Aadhaar: the copy where only the last 4 digits of the number are " +
+        "visible. You can download one from the UIDAI website or the mAadhaar app. " +
+        "Don't type the number — we don't store Aadhaar numbers."
+
+internal const val MAX_DOC_NUMBER = 24
 
 @HiltViewModel
 class DocumentViewModel @Inject constructor(
@@ -80,11 +137,9 @@ class DocumentViewModel @Inject constructor(
 
     private var inFlight: Job? = null
 
-    fun setType(type: SellerDocumentType) = edit { it.copy(type = type, error = null) }
+    fun setType(type: SellerDocumentType) = edit { it.withType(type) }
 
-    fun setNumber(raw: String) = edit {
-        it.copy(documentNumber = raw.uppercase().take(MAX_DOC_NUMBER), error = null)
-    }
+    fun setNumber(raw: String) = edit { it.withNumber(raw) }
 
     /**
      * Runs the whole flow for one picked file.
@@ -140,10 +195,23 @@ class DocumentViewModel @Inject constructor(
         val document = SellerDocument(
             type = _state.value.type,
             mediaId = init.mediaId,
-            documentNumber = _state.value.documentNumber,
+            documentNumber = _state.value.numberToSend,
         )
         when (val r = repo.saveDocuments(listOf(document))) {
-            is CommerceResult.Failure -> fail(r.error.describe())
+            // The number the seller typed was refused, not the file: say so
+            // next to the field they have to change.
+            is CommerceResult.Failure -> if (r.error.isAadhaarNumberRefusal()) {
+                edit {
+                    it.copy(
+                        stage = DocumentUploadState.Stage.Idle,
+                        progress = null,
+                        error = null,
+                        numberError = AADHAAR_NUMBER_REFUSED_COPY,
+                    )
+                }
+            } else {
+                fail(r.error.describe())
+            }
 
             is CommerceResult.Success -> {
                 edit { it.copy(stage = DocumentUploadState.Stage.Done, progress = null) }
@@ -182,10 +250,6 @@ class DocumentViewModel @Inject constructor(
 
     private fun edit(transform: (DocumentUploadState) -> DocumentUploadState) {
         _state.value = transform(_state.value)
-    }
-
-    private companion object {
-        const val MAX_DOC_NUMBER = 24
     }
 }
 

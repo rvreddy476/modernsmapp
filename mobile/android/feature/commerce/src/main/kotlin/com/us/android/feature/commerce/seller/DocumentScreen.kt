@@ -82,16 +82,23 @@ fun DocumentScreen(
                 allowDeselect = false,
             )
 
-            UsTextField(
-                value = state.documentNumber,
-                onValueChange = viewModel::setNumber,
-                label = "Document number (optional)",
-                // Optional on purpose. A reviewer reads the number off the
-                // document itself, and demanding it typed as well adds a
-                // transcription error to a check that has the original.
-                placeholder = "We read this off the document",
-                enabled = !state.busy,
-            )
+            if (state.asksForNumber) {
+                UsTextField(
+                    value = state.documentNumber,
+                    onValueChange = viewModel::setNumber,
+                    label = "Document number (optional)",
+                    // Optional on purpose. A reviewer reads the number off the
+                    // document itself, and demanding it typed as well adds a
+                    // transcription error to a check that has the original.
+                    placeholder = "We read this off the document",
+                    errorText = state.numberError,
+                    enabled = !state.busy,
+                )
+            } else {
+                // Aadhaar: no number field at all. The number cannot be stored,
+                // so the upload itself must not show it either.
+                CommerceNotice(text = MASKED_AADHAAR_GUIDANCE)
+            }
 
             UploadProgress(state)
 

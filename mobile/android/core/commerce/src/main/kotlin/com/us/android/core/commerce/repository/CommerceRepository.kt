@@ -23,6 +23,7 @@ import com.us.android.core.commerce.model.ProductPage
 import com.us.android.core.commerce.model.ProductSummary
 import com.us.android.core.commerce.model.SellerAddress
 import com.us.android.core.commerce.model.SellerDocument
+import com.us.android.core.commerce.model.SellerDocumentType
 import com.us.android.core.commerce.model.SellerEarning
 import com.us.android.core.commerce.model.SellerOrder
 import com.us.android.core.commerce.model.SellerOrderSummary
@@ -734,10 +735,13 @@ class CommerceRepository @Inject constructor(
                         DocumentInput(
                             documentType = d.type.wire,
                             mediaId = d.mediaId,
+                            // Never a number for Aadhaar: the server stores an
+                            // Aadhaar document as its upload reference only and
+                            // refuses any number with AADHAAR_NUMBER_NOT_ACCEPTED.
                             documentNumber = d.documentNumber
                                 ?.trim()
                                 ?.uppercase()
-                                ?.takeIf { it.isNotBlank() },
+                                ?.takeIf { it.isNotBlank() && d.type != SellerDocumentType.AADHAAR },
                         )
                     },
                 ),
