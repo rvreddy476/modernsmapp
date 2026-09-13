@@ -120,10 +120,13 @@ data "aws_iam_policy_document" "key_policy" {
       type        = "AWS"
       identifiers = [aws_iam_role.commerce_pii.arn]
     }
+    # `kyc` (commerce migration 035) seals seller bank account numbers and
+    # PANs. It MUST be applied before an image that probes the kyc scope at
+    # boot is deployed: without it KMS refuses, and the service fails closed.
     condition {
       test     = "StringEquals"
       variable = "kms:EncryptionContext:scope"
-      values   = ["profile", "order_snapshot"]
+      values   = ["profile", "order_snapshot", "kyc"]
     }
     # B3: purpose and environment are pinned too. Scope alone would let a
     # blob from another environment decrypt under this key if the ARN ever
@@ -223,7 +226,7 @@ resource "aws_iam_role_policy" "commerce_pii" {
           # does not decrypt under a staging context.
           "kms:EncryptionContext:purpose"     = "commerce-pii"
           "kms:EncryptionContext:environment" = var.env
-          "kms:EncryptionContext:scope"       = ["profile", "order_snapshot"]
+          "kms:EncryptionContext:scope"       = ["profile", "order_snapshot", "kyc"]
         }
       }
     }]

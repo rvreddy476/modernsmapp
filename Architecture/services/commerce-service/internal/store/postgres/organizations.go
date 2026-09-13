@@ -15,7 +15,13 @@ import (
 // CreateOrganization inserts a new org and inserts the creator as an admin
 // member in a single tx so a half-created org without an owner is never
 // observable.
-func (s *Store) CreateOrganization(ctx context.Context, org *Organization, creatorUserID uuid.UUID) error {
+//
+// The PAN arrives sealed (migration 035) and org.PAN is ignored: the plaintext
+// column is written only from `pan`, and only in the KYC dual-write mode.
+func (s *Store) CreateOrganization(ctx context.Context, org *Organization, creatorUserID uuid.UUID, pan SealedIdentifierWrite) error {
+	if err := pan.validate(); err != nil {
+		return err
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -24,18 +30,27 @@ func (s *Store) CreateOrganization(ctx context.Context, org *Organization, creat
 
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO organizations (
-			name, legal_name, gstin, pan, billing_email, billing_phone,
+			name, legal_name, gstin, pan, pan_enc, pan_masked, pan_hash, pan_key_version,
+			billing_email, billing_phone,
 			billing_address_id, approval_threshold, credit_terms_days, credit_limit,
 			status, created_by_user_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',$11)
+		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8::int,0),
+		        $9,$10,$11,$12,$13,$14,'active',$15)
 		RETURNING id, created_at, updated_at`,
-		org.Name, org.LegalName, org.GSTIN, org.PAN, org.BillingEmail, org.BillingPhone,
+		org.Name, org.LegalName, org.GSTIN,
+		pan.plaintext(), pan.Enc, pan.Masked, pan.Hash, pan.KeyVersion,
+		org.BillingEmail, org.BillingPhone,
 		org.BillingAddressID, org.ApprovalThreshold, org.CreditTermsDays, org.CreditLimit,
 		creatorUserID,
 	).Scan(&org.ID, &org.CreatedAt, &org.UpdatedAt); err != nil {
 		return err
 	}
 	org.Status = "active"
+	org.PAN = nil
+	if pan.Masked != "" {
+		m := pan.Masked
+		org.PANMasked = &m
+	}
 	now := time.Now()
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO organization_members
@@ -50,11 +65,11 @@ func (s *Store) CreateOrganization(ctx context.Context, org *Organization, creat
 func (s *Store) GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Organization, error) {
 	o := &Organization{}
 	err := s.db.QueryRow(ctx, `
-		SELECT id, name, legal_name, gstin, pan, billing_email, billing_phone,
+		SELECT id, name, legal_name, gstin, pan, pan_enc, pan_masked, billing_email, billing_phone,
 		       billing_address_id, approval_threshold, credit_terms_days, credit_limit,
 		       status, created_by_user_id, created_at, updated_at
 		FROM organizations WHERE id = $1`, id).Scan(
-		&o.ID, &o.Name, &o.LegalName, &o.GSTIN, &o.PAN, &o.BillingEmail, &o.BillingPhone,
+		&o.ID, &o.Name, &o.LegalName, &o.GSTIN, &o.PAN, &o.PANEnc, &o.PANMasked, &o.BillingEmail, &o.BillingPhone,
 		&o.BillingAddressID, &o.ApprovalThreshold, &o.CreditTermsDays, &o.CreditLimit,
 		&o.Status, &o.CreatedByUserID, &o.CreatedAt, &o.UpdatedAt,
 	)
@@ -70,13 +85,25 @@ func (s *Store) GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Organiz
 // UpdateOrganization is a sparse update — non-nil fields on the supplied
 // struct overwrite, nil fields leave the row untouched. Returns the
 // post-update row.
-func (s *Store) UpdateOrganization(ctx context.Context, id uuid.UUID, patch *Organization) error {
+//
+// The PAN is patched as ONE group — plaintext, ciphertext, mask, hash and key
+// version move together or not at all — and only when the caller supplied
+// one. A COALESCE per column would let a patch replace the ciphertext and keep
+// a stale mask, or the reverse.
+func (s *Store) UpdateOrganization(ctx context.Context, id uuid.UUID, patch *Organization, pan SealedIdentifierWrite) error {
+	if err := pan.validate(); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(ctx, `
 		UPDATE organizations SET
 			name              = COALESCE(NULLIF($2,''), name),
 			legal_name        = COALESCE($3, legal_name),
 			gstin             = COALESCE($4, gstin),
-			pan               = COALESCE($5, pan),
+			pan               = CASE WHEN $12 THEN $5 ELSE pan END,
+			pan_enc           = CASE WHEN $12 THEN $13::bytea ELSE pan_enc END,
+			pan_masked        = CASE WHEN $12 THEN NULLIF($14,'') ELSE pan_masked END,
+			pan_hash          = CASE WHEN $12 THEN NULLIF($15,'') ELSE pan_hash END,
+			pan_key_version   = CASE WHEN $12 THEN NULLIF($16::int,0) ELSE pan_key_version END,
 			billing_email     = COALESCE($6, billing_email),
 			billing_phone     = COALESCE($7, billing_phone),
 			billing_address_id= COALESCE($8, billing_address_id),
@@ -85,9 +112,10 @@ func (s *Store) UpdateOrganization(ctx context.Context, id uuid.UUID, patch *Org
 			credit_limit      = COALESCE($11, credit_limit),
 			updated_at        = NOW()
 		WHERE id = $1`,
-		id, patch.Name, patch.LegalName, patch.GSTIN, patch.PAN,
+		id, patch.Name, patch.LegalName, patch.GSTIN, pan.plaintext(),
 		patch.BillingEmail, patch.BillingPhone, patch.BillingAddressID,
 		patch.ApprovalThreshold, patch.CreditTermsDays, patch.CreditLimit,
+		pan.Supplied, pan.Enc, pan.Masked, pan.Hash, pan.KeyVersion,
 	)
 	return err
 }
@@ -95,7 +123,7 @@ func (s *Store) UpdateOrganization(ctx context.Context, id uuid.UUID, patch *Org
 // ListOrganizationsForUser returns every org the user is an active member of.
 func (s *Store) ListOrganizationsForUser(ctx context.Context, userID uuid.UUID) ([]*Organization, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT o.id, o.name, o.legal_name, o.gstin, o.pan, o.billing_email, o.billing_phone,
+		SELECT o.id, o.name, o.legal_name, o.gstin, o.pan, o.pan_enc, o.pan_masked, o.billing_email, o.billing_phone,
 		       o.billing_address_id, o.approval_threshold, o.credit_terms_days, o.credit_limit,
 		       o.status, o.created_by_user_id, o.created_at, o.updated_at
 		FROM organizations o
@@ -109,7 +137,7 @@ func (s *Store) ListOrganizationsForUser(ctx context.Context, userID uuid.UUID) 
 	var out []*Organization
 	for rows.Next() {
 		o := &Organization{}
-		if err := rows.Scan(&o.ID, &o.Name, &o.LegalName, &o.GSTIN, &o.PAN, &o.BillingEmail,
+		if err := rows.Scan(&o.ID, &o.Name, &o.LegalName, &o.GSTIN, &o.PAN, &o.PANEnc, &o.PANMasked, &o.BillingEmail,
 			&o.BillingPhone, &o.BillingAddressID, &o.ApprovalThreshold, &o.CreditTermsDays,
 			&o.CreditLimit, &o.Status, &o.CreatedByUserID, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err

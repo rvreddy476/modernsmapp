@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/atpost/shared/identityroles"
@@ -143,17 +144,44 @@ func (s *Store) SaveOnboardingFulfillment(ctx context.Context, sellerID uuid.UUI
 	return err
 }
 
+// errPANWithoutCiphertext refuses a PAN write that skipped the seal; see
+// SealedIdentifierWrite.validate.
+var errPANWithoutCiphertext = errors.New("commerce: refusing to store a PAN without its ciphertext")
+
 // SaveOnboardingPayout saves step 7 — bank/payout details.
-func (s *Store) SaveOnboardingPayout(ctx context.Context, sellerID uuid.UUID, in OnboardingPayoutInput) error {
+//
+// Migration 035: the full account number is stored sealed, beside its last
+// four digits and a salted lookup hash. The plaintext column is written only in
+// the KYC dual-write mode (and is NOT NULL, so it becomes '' otherwise, exactly
+// as the address columns do). A write without ciphertext is refused: gated/1002
+// clears the plaintext, and a row that skipped the seal would be left with no
+// account to pay into.
+func (s *Store) SaveOnboardingPayout(ctx context.Context, sellerID uuid.UUID, in OnboardingPayoutInput, sealed SealedPayoutWrite) error {
+	if len(sealed.AccountNumberEnc) == 0 || sealed.KeyVersion <= 0 {
+		return fmt.Errorf("commerce: refusing to store a payout account without its ciphertext")
+	}
+	plain := ""
+	if sealed.WritePlaintext {
+		plain = in.AccountNumber
+	}
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO seller_payout_accounts
-		  (id, seller_id, account_holder_name, bank_name, account_number, ifsc_code, upi_id, is_primary, created_at, updated_at)
-		VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,TRUE,NOW(),NOW())
+		  (id, seller_id, account_holder_name, bank_name, account_number,
+		   account_number_enc, account_number_last4, account_number_hash, pii_key_version,
+		   ifsc_code, upi_id, is_primary, created_at, updated_at)
+		VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,TRUE,NOW(),NOW())
 		ON CONFLICT (seller_id) WHERE is_primary=TRUE DO UPDATE SET
 		  account_holder_name=EXCLUDED.account_holder_name, bank_name=EXCLUDED.bank_name,
-		  account_number=EXCLUDED.account_number, ifsc_code=EXCLUDED.ifsc_code,
+		  account_number=EXCLUDED.account_number,
+		  account_number_enc=EXCLUDED.account_number_enc,
+		  account_number_last4=EXCLUDED.account_number_last4,
+		  account_number_hash=EXCLUDED.account_number_hash,
+		  pii_key_version=EXCLUDED.pii_key_version,
+		  ifsc_code=EXCLUDED.ifsc_code,
 		  upi_id=EXCLUDED.upi_id, updated_at=NOW()`,
-		sellerID, in.AccountHolderName, in.BankName, in.AccountNumber, in.IFSCCode, in.UPIID,
+		sellerID, in.AccountHolderName, in.BankName, plain,
+		sealed.AccountNumberEnc, sealed.Last4, sealed.Hash, sealed.KeyVersion,
+		in.IFSCCode, in.UPIID,
 	)
 	if err != nil {
 		return err
@@ -166,14 +194,19 @@ func (s *Store) SaveOnboardingPayout(ctx context.Context, sellerID uuid.UUID, in
 // GetPrimaryPayoutAccount returns the seller's primary payout account, or
 // nil if the seller has not completed step 7. Errors only on DB failure.
 // Used by KYC verification (Phase 3.2) to pull bank/UPI for validation.
-func (s *Store) GetPrimaryPayoutAccount(ctx context.Context, sellerID uuid.UUID) (*OnboardingPayoutInput, error) {
-	var out OnboardingPayoutInput
+//
+// The account number comes back SEALED; the service opens it (and decides
+// whether a plaintext-only legacy row may still be served).
+func (s *Store) GetPrimaryPayoutAccount(ctx context.Context, sellerID uuid.UUID) (*PayoutAccountRow, error) {
+	var out PayoutAccountRow
 	err := s.db.QueryRow(ctx, `
-		SELECT account_holder_name, bank_name, account_number, ifsc_code, upi_id
+		SELECT account_holder_name, bank_name, account_number, account_number_enc,
+		       account_number_last4, ifsc_code, upi_id
 		FROM seller_payout_accounts
 		WHERE seller_id=$1 AND is_primary=TRUE
 		ORDER BY updated_at DESC LIMIT 1`, sellerID).Scan(
-		&out.AccountHolderName, &out.BankName, &out.AccountNumber, &out.IFSCCode, &out.UPIID,
+		&out.AccountHolderName, &out.BankName, &out.AccountNumber, &out.AccountNumberEnc,
+		&out.AccountNumberLast4, &out.IFSCCode, &out.UPIID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

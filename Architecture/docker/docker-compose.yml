@@ -1493,6 +1493,10 @@ services:
       COMMERCE_PII_LOOKUP_SALT: ${COMMERCE_PII_LOOKUP_SALT:-}
       COMMERCE_PII_DEV_KEY_PROFILE: ${COMMERCE_PII_DEV_KEY_PROFILE:-}
       COMMERCE_PII_DEV_KEY_SNAPSHOT: ${COMMERCE_PII_DEV_KEY_SNAPSHOT:-}
+      # Seller KYC identifiers (migration 035). Unset derives a local key from
+      # the profile key; the cutover defaults to dual.
+      COMMERCE_PII_DEV_KEY_KYC: ${COMMERCE_PII_DEV_KEY_KYC:-}
+      COMMERCE_KYC_PII_CUTOVER: ${COMMERCE_KYC_PII_CUTOVER:-dual}
       MONETIZATION_SERVICE_URL: http://monetization-service:8099
       # Stub gateway opt-in for POST /orders/:id/payment/confirm with
       # gateway=stub. Mirrors payments-service's flag; prod leaves both unset.

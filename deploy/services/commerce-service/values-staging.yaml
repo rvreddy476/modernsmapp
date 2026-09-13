@@ -84,6 +84,9 @@ env:
   # The gated plaintext scrub (database/gated/1000_*) refuses until this is
   # 'ciphertext' everywhere AND an operator has recorded the drain.
   COMMERCE_PII_CUTOVER: 'dual'
+  # Seller KYC identifiers (bank account numbers, PANs; migration 035). A
+  # separate cutover: 'ciphertext' only after `piibackfill -set=kyc` completes.
+  COMMERCE_KYC_PII_CUTOVER: 'dual'
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 
   # Media ownership verification.

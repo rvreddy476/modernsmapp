@@ -67,6 +67,24 @@ func TestAnUnsupportedDocumentTypeIsABadRequestThatNamesTheAlternatives(t *testi
 	}
 }
 
+// Migration 035. A refused Aadhaar number is the seller's to fix, so 400 with a
+// code the app can act on — and the body never repeats the number, even if a
+// wrapper somewhere appended it to the error.
+func TestARefusedAadhaarNumberIsABadRequestThatDoesNotEchoTheNumber(t *testing.T) {
+	err := fmt.Errorf("save documents: %w: 234567890123", service.ErrAadhaarNumberNotAccepted)
+
+	code, body := status(t, err)
+	if code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400\n%s", code, body)
+	}
+	if !contains(body, "AADHAAR_NUMBER_NOT_ACCEPTED") {
+		t.Errorf("the 400 does not carry AADHAAR_NUMBER_NOT_ACCEPTED\n%s", body)
+	}
+	if contains(body, "234567890123") || contains(body, "0123") {
+		t.Fatalf("the response echoes the refused number:\n%s", body)
+	}
+}
+
 // The last-resort arm: a constraint the client tripped is a 400, and the
 // constraint name — which names our tables — does NOT go to the client.
 func TestAnUnclaimedConstraintViolationIsABadRequestWithoutLeakingTheConstraint(t *testing.T) {

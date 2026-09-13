@@ -108,7 +108,8 @@ func (s *Store) SellerReadinessFor(ctx context.Context, sellerID uuid.UUID) (*Se
 		         AND (
 		             COALESCE(NULLIF(btrim(p.upi_id), ''), '') <> ''
 		             OR (
-		                 COALESCE(NULLIF(btrim(p.account_number), ''), '') <> ''
+		                 (p.account_number_enc IS NOT NULL -- sealed (035), or legacy plaintext
+			              OR COALESCE(NULLIF(btrim(p.account_number), ''), '') <> '')
 		                 AND COALESCE(NULLIF(btrim(p.ifsc_code), ''), '') <> ''
 		             )
 		         )

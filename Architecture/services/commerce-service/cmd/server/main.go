@@ -265,6 +265,17 @@ func main() {
 	svc.WithPIICutover(cutover)
 	slog.Info("address PII cipher ready", "cutover", cutover.String())
 
+	// Migration 035 — the seller-KYC cutover (bank account numbers, PANs). A
+	// SEPARATE switch with the same two modes, so the address cutover is never
+	// blocked on this one and either can roll back alone.
+	kycCutover, err := pii.ParseModeFor("COMMERCE_KYC_PII_CUTOVER", os.Getenv("COMMERCE_KYC_PII_CUTOVER"))
+	if err != nil {
+		slog.Error("commerce: seller KYC PII cutover mode is invalid", "error", err)
+		os.Exit(1)
+	}
+	svc.WithKYCCutover(kycCutover)
+	slog.Info("seller KYC PII cipher ready", "cutover", kycCutover.String())
+
 	// Stub gateway opt-in for ConfirmPayment(gateway="stub"). Must match
 	// payments-service's PAYMENTS_ALLOW_STUB — docker-compose sets both;
 	// production leaves it unset so a client can never name the stub.
@@ -715,19 +726,22 @@ func buildPIICipher(ctx context.Context, store *pgstore.Store) (*pii.Cipher, err
 		return cipher, nil
 
 	default: // piiEnvLocal
-		profile := os.Getenv("COMMERCE_PII_DEV_KEY_PROFILE")
-		snapshot := os.Getenv("COMMERCE_PII_DEV_KEY_SNAPSHOT")
-		if len(profile) != 32 || len(snapshot) != 32 {
-			return nil, fmt.Errorf(
-				"COMMERCE_PII_DEV_KEY_PROFILE and COMMERCE_PII_DEV_KEY_SNAPSHOT must each be exactly " +
-					"32 bytes (development only; prod and staging use KMS)")
-		}
 		// Separate scopes so a future profile-address shred cannot destroy an
-		// order snapshot that GST rules may require us to keep (review §5-D8).
-		return pii.New(&pii.StaticKeyProvider{Keys: map[pii.Scope][]byte{
-			pii.ScopeProfile:       []byte(profile),
-			pii.ScopeOrderSnapshot: []byte(snapshot),
-		}}, []byte(salt))
+		// order snapshot that GST rules may require us to keep (review §5-D8),
+		// or a seller's payout account (migration 035). pii.LocalKeyProvider is
+		// shared with cmd/piibackfill so the two can never seal differently.
+		provider, derived, err := pii.LocalKeyProvider(
+			[]byte(os.Getenv("COMMERCE_PII_DEV_KEY_PROFILE")),
+			[]byte(os.Getenv("COMMERCE_PII_DEV_KEY_SNAPSHOT")),
+			[]byte(os.Getenv("COMMERCE_PII_DEV_KEY_KYC")))
+		if err != nil {
+			return nil, err
+		}
+		if derived {
+			slog.Warn("pii: COMMERCE_PII_DEV_KEY_KYC is unset; deriving the local KYC key from the profile key " +
+				"(development only)")
+		}
+		return pii.New(provider, []byte(salt))
 	}
 }
 
@@ -747,7 +761,7 @@ func verifyPIIReadiness(ctx context.Context, cipher *pii.Cipher) error {
 	ctx, cancel := context.WithTimeout(ctx, piiReadinessTimeout)
 	defer cancel()
 
-	for _, scope := range []pii.Scope{pii.ScopeProfile, pii.ScopeOrderSnapshot} {
+	for _, scope := range []pii.Scope{pii.ScopeProfile, pii.ScopeOrderSnapshot, pii.ScopeKYC} {
 		// A fixed, non-identifying probe. Never a real address.
 		const probe = "pii-readiness-probe"
 

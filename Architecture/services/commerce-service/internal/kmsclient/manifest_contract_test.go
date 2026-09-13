@@ -137,6 +137,7 @@ func TestManagedManifestsCarryEveryRequiredPIISetting(t *testing.T) {
 		"COMMERCE_KMS_KEY_ID":      "the CMK that wraps every data key",
 		"COMMERCE_PII_LOOKUP_SALT": "the deterministic address lookup hash",
 		"COMMERCE_PII_CUTOVER":     "which half of the two-deploy PII cutover this image runs",
+		"COMMERCE_KYC_PII_CUTOVER": "which half of the separate seller-KYC cutover this image runs",
 		"ENV":                      "the environment, which binds the KMS encryption context",
 	}
 	for env, body := range managedManifests(t) {
@@ -214,6 +215,19 @@ func TestManagedManifestsStartInDualCutoverMode(t *testing.T) {
 			t.Fatalf("%s manifest does not start in dual cutover mode. Shipping 'ciphertext' "+
 				"before the backfill completes makes every legacy address unreadable, and the "+
 				"switch is a deliberate second deploy.", env)
+		}
+	}
+}
+
+// The KYC cutover is a separate switch and must also start safe. 'ciphertext'
+// before the KYC backfill would make every existing payout account unreadable,
+// and a seller with no readable account cannot be paid.
+func TestManagedManifestsStartInDualKYCCutoverMode(t *testing.T) {
+	for env, body := range managedManifests(t) {
+		if !strings.Contains(body, "COMMERCE_KYC_PII_CUTOVER: 'dual'") {
+			t.Fatalf("%s manifest does not start the seller-KYC cutover in dual mode. Shipping "+
+				"'ciphertext' before the KYC backfill completes makes every existing payout account "+
+				"unreadable.", env)
 		}
 	}
 }

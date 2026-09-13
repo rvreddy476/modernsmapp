@@ -104,13 +104,14 @@ func (s *Store) GetSellerByUserID(ctx context.Context, userID uuid.UUID) (*Selle
 	// are not interchangeable: migration 014 added `format_ok`, which means
 	// only that a regex liked the document's shape.
 	err := s.db.QueryRow(ctx, `SELECT id,user_id,seller_type,store_name,brand_name,slug,description,
-		logo_media_id,banner_media_id,email,phone,gst_number,pan_number,state,city,postal_code,
+		logo_media_id,banner_media_id,email,phone,gst_number,pan_number,pan_enc,pan_masked,state,city,postal_code,
 		verification_status,store_status,quality_score,performance_tier,avg_rating,review_count,
 		follower_count,total_products,total_orders,created_at,updated_at,
 		status,onboarding_step
 		FROM sellers WHERE user_id=$1`, userID).Scan(
 		&sel.ID, &sel.UserID, &sel.SellerType, &sel.StoreName, &sel.BrandName, &sel.Slug, &sel.Description,
 		&sel.LogoMediaID, &sel.BannerMediaID, &sel.Email, &sel.Phone, &sel.GSTNumber, &sel.PANNumber,
+		&sel.PANEnc, &sel.PANMasked,
 		&sel.State, &sel.City, &sel.PostalCode, &sel.VerificationStatus, &sel.StoreStatus,
 		&sel.QualityScore, &sel.PerformanceTier, &sel.AvgRating, &sel.ReviewCount,
 		&sel.FollowerCount, &sel.TotalProducts, &sel.TotalOrders, &sel.CreatedAt, &sel.UpdatedAt,
@@ -147,12 +148,13 @@ var ErrNoSellerRow = errors.New("commerce: this user has no seller account")
 func (s *Store) GetSellerByID(ctx context.Context, id uuid.UUID) (*Seller, error) {
 	var sel Seller
 	err := s.db.QueryRow(ctx, `SELECT id,user_id,seller_type,store_name,brand_name,slug,description,
-		logo_media_id,banner_media_id,email,phone,gst_number,pan_number,state,city,postal_code,
+		logo_media_id,banner_media_id,email,phone,gst_number,pan_number,pan_enc,pan_masked,state,city,postal_code,
 		verification_status,store_status,quality_score,performance_tier,avg_rating,review_count,
 		follower_count,total_products,total_orders,created_at,updated_at
 		FROM sellers WHERE id=$1`, id).Scan(
 		&sel.ID, &sel.UserID, &sel.SellerType, &sel.StoreName, &sel.BrandName, &sel.Slug, &sel.Description,
 		&sel.LogoMediaID, &sel.BannerMediaID, &sel.Email, &sel.Phone, &sel.GSTNumber, &sel.PANNumber,
+		&sel.PANEnc, &sel.PANMasked,
 		&sel.State, &sel.City, &sel.PostalCode, &sel.VerificationStatus, &sel.StoreStatus,
 		&sel.QualityScore, &sel.PerformanceTier, &sel.AvgRating, &sel.ReviewCount,
 		&sel.FollowerCount, &sel.TotalProducts, &sel.TotalOrders, &sel.CreatedAt, &sel.UpdatedAt,

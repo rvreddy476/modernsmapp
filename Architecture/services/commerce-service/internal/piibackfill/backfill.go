@@ -108,22 +108,35 @@ func New(pool *pgxpool.Pool, cipher *pii.Cipher) (*Job, error) {
 // cursor would each advance it past rows the other was mid-way through.
 const lockKey = int64(0x7069696266) // "piibf"
 
-// Run backfills every supported table until each reports nothing left.
-func (j *Job) Run(ctx context.Context) ([]Stats, error) {
+// acquireLock takes the backfill's session advisory lock, shared by the
+// address and KYC runs: one backfill process at a time, whichever set it runs.
+func (j *Job) acquireLock(ctx context.Context) (func(), error) {
 	conn, err := j.pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Release()
-
 	var got bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey).Scan(&got); err != nil {
+		conn.Release()
 		return nil, err
 	}
 	if !got {
+		conn.Release()
 		return nil, errors.New("piibackfill: another backfill is already running")
 	}
-	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, lockKey) }()
+	return func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, lockKey)
+		conn.Release()
+	}, nil
+}
+
+// Run backfills every supported table until each reports nothing left.
+func (j *Job) Run(ctx context.Context) ([]Stats, error) {
+	release, err := j.acquireLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	var out []Stats
 	for _, t := range tables {
@@ -146,7 +159,7 @@ func (j *Job) Run(ctx context.Context) ([]Stats, error) {
 
 // runTable drives one table to completion.
 func (j *Job) runTable(ctx context.Context, t table) (Stats, error) {
-	if err := j.ensureProgressRow(ctx, t.name); err != nil {
+	if err := j.ensureProgressRow(ctx, addressProgress,t.name); err != nil {
 		return Stats{}, err
 	}
 	for {
@@ -200,7 +213,7 @@ func (j *Job) batch(ctx context.Context, t table) (bool, error) {
 			// advance past a row that failed, so a retry re-attempts exactly
 			// this row rather than leaving a plaintext gap behind a cursor
 			// that claims to have covered it.
-			if mErr := j.recordFailure(ctx, t.name, c.id, err); mErr != nil {
+			if mErr := j.recordFailure(ctx, addressProgress,t.name, c.id, err); mErr != nil {
 				return false, fmt.Errorf("%w (and recording it failed: %v)", err, mErr)
 			}
 			return false, err
@@ -215,7 +228,7 @@ func (j *Job) sealOne(ctx context.Context, t table, c candidate) error {
 	// it without re-encrypting. Re-sealing would change the key version of a
 	// row that is already correct, for no benefit.
 	if c.alreadySealed {
-		return j.advance(ctx, t.name, c.id, false)
+		return j.advance(ctx, addressProgress,t.name, c.id, false)
 	}
 
 	sealed, err := j.cipher.SealAddress(ctx, t.scope, c.address)
@@ -269,22 +282,31 @@ func (j *Job) sealOne(ctx context.Context, t table, c candidate) error {
 	return tx.Commit(ctx)
 }
 
+// The two progress tables. One per cutover: the address scrub (gated 1000) and
+// the KYC scrub (gated 1002) each read only their own, so one cutover's
+// unfinished backfill can never hold the other hostage. Never interpolate
+// anything but these two constants into SQL.
+const (
+	addressProgress = "pii_backfill_progress"
+	kycProgress     = "pii_kyc_backfill_progress"
+)
+
 // advance moves the cursor past a row that needed no work.
-func (j *Job) advance(ctx context.Context, name string, id uuid.UUID, counted bool) error {
+func (j *Job) advance(ctx context.Context, progress, name string, id uuid.UUID, counted bool) error {
 	delta := 0
 	if counted {
 		delta = 1
 	}
-	_, err := j.pool.Exec(ctx, `
-		UPDATE pii_backfill_progress
+	_, err := j.pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s
 		   SET last_id    = $2,
 		       encrypted_rows = encrypted_rows + $3,
 		       updated_at = NOW()
-		 WHERE table_name = $1`, name, id, delta)
+		 WHERE table_name = $1`, progress), name, id, delta)
 	return err
 }
 
-func (j *Job) recordFailure(ctx context.Context, name string, id uuid.UUID, cause error) error {
+func (j *Job) recordFailure(ctx context.Context, progress, name string, id uuid.UUID, cause error) error {
 	// The row id and a KIND, never the plaintext and never the cipher's
 	// error detail, which could name the material.
 	kind := "seal_or_verify_failed"
@@ -298,22 +320,22 @@ func (j *Job) recordFailure(ctx context.Context, name string, id uuid.UUID, caus
 	// completed yesterday and fails today would keep claiming success. The
 	// gated scrub reads exactly this column to decide whether clearing
 	// plaintext is safe.
-	_, err := j.pool.Exec(ctx, `
-		UPDATE pii_backfill_progress
+	_, err := j.pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s
 		   SET failed          = failed + 1,
 		       last_error_id   = $2,
 		       last_error_at   = NOW(),
 		       last_error_kind = $3,
 		       completed_at    = NULL,
 		       updated_at      = NOW()
-		 WHERE table_name = $1`, name, id, kind)
+		 WHERE table_name = $1`, progress), name, id, kind)
 	return err
 }
 
-func (j *Job) ensureProgressRow(ctx context.Context, name string) error {
-	_, err := j.pool.Exec(ctx, `
-		INSERT INTO pii_backfill_progress (table_name) VALUES ($1)
-		ON CONFLICT (table_name) DO NOTHING`, name)
+func (j *Job) ensureProgressRow(ctx context.Context, progress, name string) error {
+	_, err := j.pool.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %s (table_name) VALUES ($1)
+		ON CONFLICT (table_name) DO NOTHING`, progress), name)
 	return err
 }
 
@@ -323,50 +345,58 @@ func (j *Job) ensureProgressRow(ctx context.Context, name string) error {
 // completion has to mean "nothing is left now", not "nothing was left when the
 // last batch was read".
 func (j *Job) markComplete(ctx context.Context, t table) error {
+	return j.markCompleteIn(ctx, addressProgress, t.name, t.remainingSQL)
+}
+
+func (j *Job) markCompleteIn(ctx context.Context, progress, name, remainingSQL string) error {
 	var remaining, failed int64
-	if err := j.pool.QueryRow(ctx, t.remainingSQL).Scan(&remaining); err != nil {
+	if err := j.pool.QueryRow(ctx, remainingSQL).Scan(&remaining); err != nil {
 		return err
 	}
 	if err := j.pool.QueryRow(ctx,
-		`SELECT failed FROM pii_backfill_progress WHERE table_name=$1`, t.name).Scan(&failed); err != nil {
+		fmt.Sprintf(`SELECT failed FROM %s WHERE table_name=$1`, progress), name).Scan(&failed); err != nil {
 		return err
 	}
 	if remaining > 0 || failed > 0 {
 		slog.Warn("piibackfill: table not marked complete",
-			"table", t.name, "remaining", remaining, "failed", failed)
+			"progress", progress, "table", name, "remaining", remaining, "failed", failed)
 		// CLEAR a stale stamp. A table that was complete and has since
 		// gained unsealed rows — a straggler writer, a restored backup — is
 		// not complete any more, and the gated scrub reads this column to
 		// decide whether clearing plaintext is safe. Leaving the old stamp
 		// would let it proceed on a claim that stopped being true.
-		_, err := j.pool.Exec(ctx, `
-			UPDATE pii_backfill_progress SET completed_at = NULL, updated_at = NOW()
-			 WHERE table_name = $1 AND completed_at IS NOT NULL`, t.name)
+		_, err := j.pool.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s SET completed_at = NULL, updated_at = NOW()
+			 WHERE table_name = $1 AND completed_at IS NOT NULL`, progress), name)
 		return err
 	}
-	_, err := j.pool.Exec(ctx, `
-		UPDATE pii_backfill_progress
+	_, err := j.pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s
 		   SET completed_at = NOW(), updated_at = NOW()
-		 WHERE table_name = $1 AND completed_at IS NULL`, t.name)
+		 WHERE table_name = $1 AND completed_at IS NULL`, progress), name)
 	return err
 }
 
 // Stats reports one table's counters, for an operator or a readiness check.
 func (j *Job) Stats(ctx context.Context, t table) (Stats, error) {
-	s := Stats{Table: t.name}
+	return j.statsIn(ctx, addressProgress, t.name, t.totalSQL, t.remainingSQL)
+}
+
+func (j *Job) statsIn(ctx context.Context, progress, name, totalSQL, remainingSQL string) (Stats, error) {
+	s := Stats{Table: name}
 	var completed *time.Time
-	err := j.pool.QueryRow(ctx, `
+	err := j.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT last_id, encrypted_rows, verified, failed, completed_at
-		  FROM pii_backfill_progress WHERE table_name = $1`, t.name).
+		  FROM %s WHERE table_name = $1`, progress), name).
 		Scan(&s.LastID, &s.Encrypted, &s.Verified, &s.Failed, &completed)
 	if err != nil {
 		return s, err
 	}
 	s.Completed = completed != nil
-	if err := j.pool.QueryRow(ctx, t.totalSQL).Scan(&s.Total); err != nil {
+	if err := j.pool.QueryRow(ctx, totalSQL).Scan(&s.Total); err != nil {
 		return s, err
 	}
-	if err := j.pool.QueryRow(ctx, t.remainingSQL).Scan(&s.Remaining); err != nil {
+	if err := j.pool.QueryRow(ctx, remainingSQL).Scan(&s.Remaining); err != nil {
 		return s, err
 	}
 	return s, nil
@@ -376,7 +406,7 @@ func (j *Job) Stats(ctx context.Context, t table) (Stats, error) {
 func (j *Job) AllStats(ctx context.Context) ([]Stats, error) {
 	var out []Stats
 	for _, t := range tables {
-		if err := j.ensureProgressRow(ctx, t.name); err != nil {
+		if err := j.ensureProgressRow(ctx, addressProgress,t.name); err != nil {
 			return nil, err
 		}
 		s, err := j.Stats(ctx, t)
@@ -522,7 +552,7 @@ func Tables() []string {
 // destroy an invoice record (review §5-D8).
 func (j *Job) runOrders(ctx context.Context) (Stats, error) {
 	const name = "orders"
-	if err := j.ensureProgressRow(ctx, name); err != nil {
+	if err := j.ensureProgressRow(ctx, addressProgress,name); err != nil {
 		return Stats{}, err
 	}
 
@@ -567,13 +597,13 @@ func (j *Job) runOrders(ctx context.Context) (Stats, error) {
 
 		for _, s := range batch {
 			if len(s.sealed) > 0 {
-				if err := j.advance(ctx, name, s.id, false); err != nil {
+				if err := j.advance(ctx, addressProgress,name, s.id, false); err != nil {
 					return Stats{}, err
 				}
 				continue
 			}
 			if err := j.sealOrder(ctx, name, s.id, s.blob); err != nil {
-				if mErr := j.recordFailure(ctx, name, s.id, err); mErr != nil {
+				if mErr := j.recordFailure(ctx, addressProgress,name, s.id, err); mErr != nil {
 					return Stats{}, fmt.Errorf("%w (and recording it failed: %v)", err, mErr)
 				}
 				return Stats{}, err

@@ -54,11 +54,16 @@ func (s *Service) CreateOrganization(ctx context.Context, actorID uuid.UUID, in 
 	if in.CreditTermsDays < 0 || in.CreditTermsDays > 90 {
 		return nil, fmt.Errorf("credit_terms_days must be 0–90")
 	}
+	// Migration 035: the PAN is sealed here; the store never sees it in the clear
+	// except as the dual-mode plaintext copy.
+	pan, err := s.sealOrganizationPAN(ctx, in.PAN)
+	if err != nil {
+		return nil, err
+	}
 	org := &postgres.Organization{
 		Name:              name,
 		LegalName:         in.LegalName,
 		GSTIN:             in.GSTIN,
-		PAN:               in.PAN,
 		BillingEmail:      in.BillingEmail,
 		BillingPhone:      in.BillingPhone,
 		BillingAddressID:  in.BillingAddressID,
@@ -66,7 +71,7 @@ func (s *Service) CreateOrganization(ctx context.Context, actorID uuid.UUID, in 
 		CreditTermsDays:   in.CreditTermsDays,
 		CreditLimit:       in.CreditLimit,
 	}
-	if err := s.store.CreateOrganization(ctx, org, actorID); err != nil {
+	if err := s.store.CreateOrganization(ctx, org, actorID, pan); err != nil {
 		return nil, fmt.Errorf("create org: %w", err)
 	}
 	s.publish(ctx, "commerce.organization.created", map[string]any{
@@ -118,7 +123,12 @@ func (s *Service) UpdateOrganization(ctx context.Context, orgID, actorID uuid.UU
 	if patch.CreditTermsDays < 0 || patch.CreditTermsDays > 90 {
 		return nil, fmt.Errorf("credit_terms_days must be 0–90")
 	}
-	if err := s.store.UpdateOrganization(ctx, orgID, patch); err != nil {
+	pan, err := s.sealOrganizationPAN(ctx, patch.PAN)
+	if err != nil {
+		return nil, err
+	}
+	patch.PAN = nil
+	if err := s.store.UpdateOrganization(ctx, orgID, patch, pan); err != nil {
 		return nil, err
 	}
 	return s.store.GetOrganizationByID(ctx, orgID)

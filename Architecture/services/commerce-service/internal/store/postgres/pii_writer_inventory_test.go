@@ -111,6 +111,61 @@ func TestEveryAddressWriterAlsoWritesCiphertext(t *testing.T) {
 	}
 }
 
+// ─── Seller KYC identifiers (migration 035) ──────────────────────────
+//
+// Same guard, for the KYC cutover: every statement that writes a bank account
+// number or a PAN must also write its ciphertext, because gated/1002 clears the
+// plaintext and a writer that skipped the seal leaves a seller with no payout
+// account at all.
+
+type kycColumn struct{ plain, enc string }
+
+// kycIdentifying is keyed by table. The column names differ per table, so the
+// match is a word match — `\bpan\b` must not fire on `pan_masked`.
+var kycIdentifying = map[string]kycColumn{
+	"seller_payout_accounts": {plain: "account_number", enc: "account_number_enc"},
+	"sellers":                {plain: "pan_number", enc: "pan_enc"},
+	"organizations":          {plain: "pan", enc: "pan_enc"},
+}
+
+var (
+	kycInsertStmt = regexp.MustCompile(`(?is)INSERT\s+INTO\s+(seller_payout_accounts|sellers|organizations)\b.*?VALUES`)
+	kycUpdateStmt = regexp.MustCompile(`(?is)UPDATE\s+(seller_payout_accounts|sellers|organizations)\s+SET.*?(?:WHERE|$)`)
+)
+
+func mentionsColumn(stmt, col string) bool {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(col) + `\b`).MatchString(stmt)
+}
+
+func TestEveryKYCIdentifierWriterAlsoWritesCiphertext(t *testing.T) {
+	for file, body := range storeSources(t) {
+		for _, re := range []*regexp.Regexp{kycInsertStmt, kycUpdateStmt} {
+			for _, m := range re.FindAllStringSubmatch(body, -1) {
+				stmt, table := m[0], strings.ToLower(m[1])
+				col := kycIdentifying[table]
+				if !mentionsColumn(stmt, col.plain) {
+					continue
+				}
+				if !mentionsColumn(stmt, col.enc) {
+					t.Fatalf("%s writes %s.%s without %s:\n\n%s\n\n"+
+						"Every writer of a bank account number or PAN must seal it. gated/1002 clears "+
+						"the plaintext, and a row written by this statement would be left with nothing.",
+						file, table, col.plain, col.enc, strings.TrimSpace(stmt))
+				}
+			}
+		}
+	}
+}
+
+func TestTheKYCGuardCoversEveryKYCTable(t *testing.T) {
+	body := strings.Join([]string{kycInsertStmt.String(), kycUpdateStmt.String()}, " ")
+	for tbl := range kycIdentifying {
+		if !strings.Contains(body, tbl) {
+			t.Fatalf("%s is not covered by the KYC writer-inventory patterns", tbl)
+		}
+	}
+}
+
 // The tables the guard covers must be the tables the backfill covers. A table
 // added to one and not the other is a hole with no symptom until the scrub.
 func TestTheGuardCoversEveryAddressTable(t *testing.T) {

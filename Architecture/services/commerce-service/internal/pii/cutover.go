@@ -64,6 +64,14 @@ func (m Mode) AllowsPlaintextRead() bool { return m == ModeDual }
 // have opposite failure behaviours, and guessing which one a misspelt manifest
 // meant is not a guess worth making.
 func ParseMode(raw string) (Mode, error) {
+	return ParseModeFor("COMMERCE_PII_CUTOVER", raw)
+}
+
+// ParseModeFor is ParseMode for a named variable. The address cutover and the
+// seller-KYC cutover (COMMERCE_KYC_PII_CUTOVER) are separate switches with the
+// same two modes, and an error that named the wrong one would send an operator
+// to fix the wrong manifest line.
+func ParseModeFor(envName, raw string) (Mode, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "dual", "dual_write", "dual-write":
 		return ModeDual, nil
@@ -71,7 +79,7 @@ func ParseMode(raw string) (Mode, error) {
 		return ModeCiphertext, nil
 	default:
 		return ModeDual, fmt.Errorf(
-			"pii: COMMERCE_PII_CUTOVER=%q is not a recognised cutover mode "+
-				"(want \"dual\" or \"ciphertext\")", raw)
+			"pii: %s=%q is not a recognised cutover mode "+
+				"(want \"dual\" or \"ciphertext\")", envName, raw)
 	}
 }

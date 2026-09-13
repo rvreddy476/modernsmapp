@@ -591,7 +591,15 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 	if order.CouponCode != nil {
 		inv.CouponCode = *order.CouponCode
 	}
-	inv.Seller = sellerParty(seller)
+	// The PAN is carried on the party but not rendered (shared/invoice prints
+	// only the GSTIN), so a seller whose PAN cannot be opened still gets an
+	// invoice — the failure is logged, never the value.
+	sellerPANValue, panErr := s.sellerPAN(ctx, seller)
+	if panErr != nil {
+		slog.Error("commerce: seller PAN could not be opened for the invoice party",
+			"seller_id", seller.ID, "error", panErr)
+	}
+	inv.Seller = sellerParty(seller, sellerPANValue)
 	inv.Buyer = invoice.Party{Name: shipTo.Line1, Address: shipTo}
 	inv.ShipTo = shipTo
 	// Cache tax classes to avoid a query per line item.
@@ -732,13 +740,10 @@ func orderNumberOrEmpty(o *postgres.Order) string {
 	return o.OrderNumber
 }
 
-func sellerParty(s *postgres.Seller) invoice.Party {
-	p := invoice.Party{Name: s.StoreName, Email: s.Email}
+func sellerParty(s *postgres.Seller, pan string) invoice.Party {
+	p := invoice.Party{Name: s.StoreName, Email: s.Email, PAN: pan}
 	if s.GSTNumber != nil {
 		p.GSTIN = *s.GSTNumber
-	}
-	if s.PANNumber != nil {
-		p.PAN = *s.PANNumber
 	}
 	if s.Phone != nil {
 		p.Phone = *s.Phone

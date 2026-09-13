@@ -639,6 +639,11 @@ func writeCommerceError(c *gin.Context, err error) {
 		// raw "no rows in result set": the sentinel did not exist on the
 		// read path, so the store's error reached the default arm.
 		api.ErrorWithContext(ctx, w, http.StatusNotFound, "PRODUCT_NOT_FOUND", "product not found", nil)
+	case errors.Is(err, service.ErrAadhaarNumberNotAccepted):
+		// A fixed message, never err.Error(): the refused value must not be
+		// echoed into a response body or an access log.
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "AADHAAR_NUMBER_NOT_ACCEPTED",
+			"an Aadhaar number cannot be stored; upload the Aadhaar document and leave its number blank", nil)
 	case errors.Is(err, service.ErrInvalidDocumentType):
 		// The message carries the permitted vocabulary — this is one of the
 		// few errors whose text a client can act on directly.

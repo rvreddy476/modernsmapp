@@ -41,7 +41,19 @@ func main() {
 
 	report := flag.Bool("report", false, "print progress and exit")
 	batch := flag.Int("batch", 200, "rows per transaction")
+	set := flag.String("set", "all", "which cutover to backfill: address, kyc (migration 035), or all")
 	flag.Parse()
+	runAddress, runKYC := false, false
+	switch *set {
+	case "all":
+		runAddress, runKYC = true, true
+	case "address":
+		runAddress = true
+	case "kyc":
+		runKYC = true
+	default:
+		fail("parsing -set", fmt.Errorf("-set=%q: want address, kyc or all", *set))
+	}
 
 	// Ctrl-C and SIGTERM stop the job cleanly. "Cleanly" means the durable
 	// cursor is left pointing at the last COMMITTED row, so the next run
@@ -67,35 +79,61 @@ func main() {
 	job.BatchSize = *batch
 
 	if *report {
-		stats, err := job.AllStats(ctx)
-		if err != nil {
-			fail("reading progress", err)
+		if runAddress {
+			stats, err := job.AllStats(ctx)
+			if err != nil {
+				fail("reading address progress", err)
+			}
+			fmt.Println("address (gated/1000):")
+			printStats(stats)
 		}
-		printStats(stats)
+		if runKYC {
+			stats, err := job.KYCStats(ctx)
+			if err != nil {
+				fail("reading KYC progress", err)
+			}
+			fmt.Println("kyc (gated/1002):")
+			printStats(stats)
+		}
 		return
 	}
 
-	slog.Info("pii backfill starting", "batch_size", job.BatchSize)
-	stats, err := job.Run(ctx)
-	printStats(stats)
-	if err != nil {
-		// A failure leaves the estate consistent and the cursor honest; the
-		// operator fixes the cause and re-runs.
-		fail("backfill", err)
-	}
-
+	slog.Info("pii backfill starting", "batch_size", job.BatchSize, "set", *set)
 	incomplete := 0
-	for _, s := range stats {
-		if !s.Completed || s.Failed > 0 {
-			incomplete++
+	count := func(stats []piibackfill.Stats) {
+		for _, s := range stats {
+			if !s.Completed || s.Failed > 0 {
+				incomplete++
+			}
 		}
 	}
+	if runAddress {
+		stats, err := job.Run(ctx)
+		fmt.Println("address (gated/1000):")
+		printStats(stats)
+		if err != nil {
+			// A failure leaves the estate consistent and the cursor honest; the
+			// operator fixes the cause and re-runs.
+			fail("address backfill", err)
+		}
+		count(stats)
+	}
+	if runKYC {
+		stats, err := job.RunKYC(ctx)
+		fmt.Println("kyc (gated/1002):")
+		printStats(stats)
+		if err != nil {
+			fail("KYC backfill", err)
+		}
+		count(stats)
+	}
+
 	if incomplete > 0 {
 		slog.Error("pii backfill did not finish; the gated plaintext scrub will refuse",
 			"incomplete_tables", incomplete)
 		os.Exit(1)
 	}
-	slog.Info("pii backfill complete; the gated plaintext scrub may now run")
+	slog.Info("pii backfill complete; the matching gated plaintext scrub may now run", "set", *set)
 }
 
 // buildCipher mirrors the service's own construction, so the backfill seals
@@ -132,16 +170,16 @@ func buildCipher(ctx context.Context, store *pgstore.Store) (*pii.Cipher, error)
 		return pii.New(provider, []byte(salt))
 
 	case "dev", "development", "local", "test", "ci":
-		profile := os.Getenv("COMMERCE_PII_DEV_KEY_PROFILE")
-		snapshot := os.Getenv("COMMERCE_PII_DEV_KEY_SNAPSHOT")
-		if len(profile) != 32 || len(snapshot) != 32 {
-			return nil, fmt.Errorf(
-				"COMMERCE_PII_DEV_KEY_PROFILE and COMMERCE_PII_DEV_KEY_SNAPSHOT must each be 32 bytes")
+		// The SAME provider the service builds (pii.LocalKeyProvider), including
+		// the derived KYC key, so the backfill seals with what the service opens.
+		provider, _, err := pii.LocalKeyProvider(
+			[]byte(os.Getenv("COMMERCE_PII_DEV_KEY_PROFILE")),
+			[]byte(os.Getenv("COMMERCE_PII_DEV_KEY_SNAPSHOT")),
+			[]byte(os.Getenv("COMMERCE_PII_DEV_KEY_KYC")))
+		if err != nil {
+			return nil, err
 		}
-		return pii.New(&pii.StaticKeyProvider{Keys: map[pii.Scope][]byte{
-			pii.ScopeProfile:       []byte(profile),
-			pii.ScopeOrderSnapshot: []byte(snapshot),
-		}}, []byte(salt))
+		return pii.New(provider, []byte(salt))
 
 	default:
 		// Same closed list as the service. An unclassifiable environment

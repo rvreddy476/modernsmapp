@@ -44,7 +44,14 @@ type Seller struct {
 	Email             string     `db:"email" json:"email"`
 	Phone             *string    `db:"phone" json:"phone,omitempty"`
 	GSTNumber         *string    `db:"gst_number" json:"gst_number,omitempty"`
-	PANNumber         *string    `db:"pan_number" json:"pan_number,omitempty"`
+	// PANNumber is the legacy plaintext column, read only as a dual-mode
+	// fallback. Never serialised: this struct is returned on GET /sellers/me
+	// and relayed by admin-service, and both used to carry the full PAN.
+	PANNumber *string `db:"pan_number" json:"-"`
+	// PANEnc is the sealed PAN (migration 035, scope kyc). Open it through the
+	// service, never here.
+	PANEnc    []byte  `db:"pan_enc" json:"-"`
+	PANMasked *string `db:"pan_masked" json:"pan_masked,omitempty"`
 	SupportPhone      *string    `db:"support_phone" json:"support_phone,omitempty"`
 	SupportEmail      *string    `db:"support_email" json:"support_email,omitempty"`
 	State             *string    `db:"state" json:"state,omitempty"`
@@ -148,6 +155,61 @@ type OnboardingPayoutInput struct {
 	AccountNumber     string
 	IFSCCode          *string
 	UPIID             *string
+}
+
+// SealedPayoutWrite is the ciphertext half of a payout-account write
+// (migration 035). The service seals; the store only persists.
+type SealedPayoutWrite struct {
+	AccountNumberEnc []byte
+	KeyVersion       int
+	Hash             string
+	Last4            string
+	// WritePlaintext is true only in the KYC dual-write cutover mode.
+	WritePlaintext bool
+}
+
+// PayoutAccountRow is a stored payout account as read back. The full number
+// is in AccountNumberEnc; AccountNumber is legacy plaintext that is '' once
+// the ciphertext-only image writes, and after gated/1002.
+type PayoutAccountRow struct {
+	AccountHolderName  string
+	BankName           *string
+	AccountNumber      string
+	AccountNumberEnc   []byte
+	AccountNumberLast4 *string
+	IFSCCode           *string
+	UPIID              *string
+}
+
+// SealedIdentifierWrite is the ciphertext half of a PAN write.
+//
+// Supplied distinguishes "the caller did not send a PAN" (leave the stored one
+// alone) from "the caller sent an empty PAN" (clear it).
+type SealedIdentifierWrite struct {
+	Supplied       bool
+	Plain          string
+	Enc            []byte
+	KeyVersion     int
+	Hash           string
+	Masked         string
+	WritePlaintext bool
+}
+
+// plaintext is the value for the legacy plaintext column: the value in dual
+// mode, NULL otherwise.
+func (w SealedIdentifierWrite) plaintext() *string {
+	if !w.WritePlaintext || w.Plain == "" {
+		return nil
+	}
+	p := w.Plain
+	return &p
+}
+
+func (w SealedIdentifierWrite) validate() error {
+	if w.Plain != "" && (len(w.Enc) == 0 || w.KeyVersion <= 0) {
+		return errPANWithoutCiphertext
+	}
+	return nil
 }
 
 // ─── Product Category ────────────────────────────────────────
@@ -862,7 +924,10 @@ type Organization struct {
 	Name              string     `db:"name" json:"name"`
 	LegalName         *string    `db:"legal_name" json:"legal_name,omitempty"`
 	GSTIN             *string    `db:"gstin" json:"gstin,omitempty"`
-	PAN               *string    `db:"pan" json:"pan,omitempty"`
+	// PAN is the legacy plaintext column; see Seller.PANNumber.
+	PAN               *string    `db:"pan" json:"-"`
+	PANEnc            []byte     `db:"pan_enc" json:"-"`
+	PANMasked         *string    `db:"pan_masked" json:"pan_masked,omitempty"`
 	BillingEmail      *string    `db:"billing_email" json:"billing_email,omitempty"`
 	BillingPhone      *string    `db:"billing_phone" json:"billing_phone,omitempty"`
 	BillingAddressID  *uuid.UUID `db:"billing_address_id" json:"billing_address_id,omitempty"`

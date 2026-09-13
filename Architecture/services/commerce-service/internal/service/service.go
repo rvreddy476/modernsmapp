@@ -110,6 +110,9 @@ type Service struct {
 	// The zero value is ModeDual, which is the safe default against an
 	// unmigrated database.
 	piiCutover pii.Mode
+	// kycCutover is the SEPARATE cutover for seller KYC identifiers
+	// (migration 035). Zero value ModeDual, for the same reason.
+	kycCutover pii.Mode
 	kyc        kyc.Validator
 	// media verifies that a media id a client supplies actually belongs to
 	// that client. Nil-safe: nil means unconfigured, which cmd/server only

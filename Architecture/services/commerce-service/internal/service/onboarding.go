@@ -115,6 +115,17 @@ func (s *Service) SaveDocuments(ctx context.Context, userID uuid.UUID, docs []po
 				strings.Join(postgres.SellerDocumentTypes, ", "))
 		}
 	}
+	// Migration 035: an Aadhaar number is never stored — also checked before
+	// the store, so nothing about the refusal depends on the database trigger
+	// that backs it up.
+	if err := validateDocumentNumbers(docs); err != nil {
+		return err
+	}
+	for i := range docs {
+		if docs[i].DocumentType == "aadhaar" {
+			docs[i].DocumentNumber = nil // a blank is stored as absent, not as ""
+		}
+	}
 	sel, err := s.store.GetSellerByUserID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("seller not found: %w", err)
@@ -140,12 +151,20 @@ func (s *Service) SaveFulfillment(ctx context.Context, userID uuid.UUID, in post
 }
 
 // SavePayout saves step 7 bank details.
+//
+// The account number is sealed first (migration 035): a service with no cipher
+// refuses before it touches the store.
 func (s *Service) SavePayout(ctx context.Context, userID uuid.UUID, in postgres.OnboardingPayoutInput) error {
+	in.AccountNumber = strings.TrimSpace(in.AccountNumber)
+	sealed, err := s.sealPayoutForWrite(ctx, in)
+	if err != nil {
+		return err
+	}
 	sel, err := s.store.GetSellerByUserID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("seller not found: %w", err)
 	}
-	return s.store.SaveOnboardingPayout(ctx, sel.ID, in)
+	return s.store.SaveOnboardingPayout(ctx, sel.ID, in, sealed)
 }
 
 // SellerReadiness reports what a shop still needs before it can be reviewed.
@@ -270,11 +289,20 @@ func (s *Service) AdminVerifySellerKYC(ctx context.Context, sellerID uuid.UUID) 
 	if sel.GSTNumber != nil {
 		snap.GSTIN = *sel.GSTNumber
 	}
-	if sel.PANNumber != nil {
-		snap.PAN = *sel.PANNumber
+	// Opened here, for the adapter only; the full values never leave this
+	// function. A PAN or account that cannot be opened fails the verification
+	// rather than being checked as blank, which the stub would call "skipped".
+	pan, err := s.sellerPAN(ctx, sel)
+	if err != nil {
+		return nil, fmt.Errorf("load seller PAN: %w", err)
 	}
+	snap.PAN = pan
 	if pa, err := s.store.GetPrimaryPayoutAccount(ctx, sellerID); err == nil && pa != nil {
-		snap.BankAccountNo = pa.AccountNumber
+		number, openErr := s.openPayoutAccountNumber(ctx, pa)
+		if openErr != nil {
+			return nil, fmt.Errorf("load payout account: %w", openErr)
+		}
+		snap.BankAccountNo = number
 		if pa.IFSCCode != nil {
 			snap.IFSC = *pa.IFSCCode
 		}
