@@ -22,9 +22,15 @@ import (
 const (
 	ScopeRestaurantPAN pii.Scope = "food.restaurant_pan"
 	ScopePayoutAccount pii.Scope = "food.payout_account"
+	// Wave 1 B4: delivery-partner document numbers (DL, RC and any other
+	// numbered document) and the DigiLocker PKCE code_verifier.
+	ScopePartnerDocument    pii.Scope = "food.partner_document"
+	ScopeDigiLockerVerifier pii.Scope = "food.digilocker_verifier"
 
-	LookupDomainPAN         = "pan"
-	LookupDomainBankAccount = "bank_account"
+	LookupDomainPAN                 = "pan"
+	LookupDomainBankAccount         = "bank_account"
+	LookupDomainDrivingLicence      = "driving_licence"
+	LookupDomainVehicleRegistration = "vehicle_registration"
 
 	EnvKeys       = "FOOD_PII_KEYS"
 	EnvLookupSalt = "FOOD_PII_LOOKUP_SALT"
@@ -99,6 +105,11 @@ type Crypto struct {
 	account       *pii.Sealer
 	panLookup     *pii.LookupHasher
 	accountLookup *pii.LookupHasher
+	// B4.
+	partnerDocument *pii.Sealer
+	verifier        *pii.Sealer
+	dlLookup        *pii.LookupHasher
+	rcLookup        *pii.LookupHasher
 }
 
 // New builds the sealers and hashers. Every version is registered for both
@@ -110,6 +121,8 @@ func New(ctx context.Context, keys []VersionedKey, salt []byte) (*Crypto, error)
 		static = append(static,
 			pii.StaticKey{Scope: ScopeRestaurantPAN, Version: k.Version, Key: k.Key},
 			pii.StaticKey{Scope: ScopePayoutAccount, Version: k.Version, Key: k.Key},
+			pii.StaticKey{Scope: ScopePartnerDocument, Version: k.Version, Key: k.Key},
+			pii.StaticKey{Scope: ScopeDigiLockerVerifier, Version: k.Version, Key: k.Key},
 		)
 	}
 	ring, err := pii.NewStaticKeyRing(static...)
@@ -132,7 +145,24 @@ func New(ctx context.Context, keys []VersionedKey, salt []byte) (*Crypto, error)
 	if err != nil {
 		return nil, fmt.Errorf("%s rejected: %w", EnvLookupSalt, err)
 	}
-	return &Crypto{pan: panSealer, account: accountSealer, panLookup: panLookup, accountLookup: accountLookup}, nil
+	documentSealer, err := pii.NewSealer(ctx, ring, ScopePartnerDocument)
+	if err != nil {
+		return nil, fmt.Errorf("partner document sealer: %w", err)
+	}
+	verifierSealer, err := pii.NewSealer(ctx, ring, ScopeDigiLockerVerifier)
+	if err != nil {
+		return nil, fmt.Errorf("digilocker verifier sealer: %w", err)
+	}
+	dlLookup, err := pii.NewLookupHasher(salt, LookupDomainDrivingLicence, pii.CompactUpper)
+	if err != nil {
+		return nil, fmt.Errorf("%s rejected: %w", EnvLookupSalt, err)
+	}
+	rcLookup, err := pii.NewLookupHasher(salt, LookupDomainVehicleRegistration, pii.CompactUpper)
+	if err != nil {
+		return nil, fmt.Errorf("%s rejected: %w", EnvLookupSalt, err)
+	}
+	return &Crypto{pan: panSealer, account: accountSealer, panLookup: panLookup, accountLookup: accountLookup,
+		partnerDocument: documentSealer, verifier: verifierSealer, dlLookup: dlLookup, rcLookup: rcLookup}, nil
 }
 
 // FromEnv returns (nil, nil) only in local/dev with BOTH variables unset.
@@ -203,4 +233,61 @@ func seal(ctx context.Context, s *pii.Sealer, h *pii.LookupHasher, value string)
 		return Sealed{}, fmt.Errorf("foodpii: seal: %w", err)
 	}
 	return Sealed{Blob: blob, KeyVersion: version, Lookup: lookup}, nil
+}
+
+// ─── Wave 1 B4: delivery-partner documents and the DigiLocker verifier ─────
+
+// SealDrivingLicence seals a DL number under food.partner_document and hashes
+// it in domain "driving_licence".
+func (c *Crypto) SealDrivingLicence(ctx context.Context, number string) (Sealed, error) {
+	if c == nil {
+		return Sealed{}, ErrNotConfigured
+	}
+	return seal(ctx, c.partnerDocument, c.dlLookup, number)
+}
+
+// SealVehicleRegistration seals an RC number under food.partner_document and
+// hashes it in domain "vehicle_registration".
+func (c *Crypto) SealVehicleRegistration(ctx context.Context, number string) (Sealed, error) {
+	if c == nil {
+		return Sealed{}, ErrNotConfigured
+	}
+	return seal(ctx, c.partnerDocument, c.rcLookup, number)
+}
+
+// SealPartnerDocumentNumber seals any other delivery-partner document number,
+// without a lookup hash (Sealed.Lookup is empty).
+func (c *Crypto) SealPartnerDocumentNumber(ctx context.Context, number string) (Sealed, error) {
+	if c == nil {
+		return Sealed{}, ErrNotConfigured
+	}
+	blob, version, err := c.partnerDocument.Seal(ctx, number)
+	if err != nil {
+		return Sealed{}, fmt.Errorf("foodpii: seal: %w", err)
+	}
+	return Sealed{Blob: blob, KeyVersion: version}, nil
+}
+
+// OpenPartnerDocumentNumber is for ops tooling and tests; no route returns it.
+func (c *Crypto) OpenPartnerDocumentNumber(ctx context.Context, blob []byte) (string, error) {
+	if c == nil {
+		return "", ErrNotConfigured
+	}
+	return c.partnerDocument.Open(ctx, blob)
+}
+
+// SealCodeVerifier seals a PKCE code_verifier under food.digilocker_verifier.
+func (c *Crypto) SealCodeVerifier(ctx context.Context, verifier string) ([]byte, uint32, error) {
+	if c == nil {
+		return nil, 0, ErrNotConfigured
+	}
+	return c.verifier.Seal(ctx, verifier)
+}
+
+// OpenCodeVerifier opens a verifier sealed by SealCodeVerifier.
+func (c *Crypto) OpenCodeVerifier(ctx context.Context, blob []byte) (string, error) {
+	if c == nil {
+		return "", ErrNotConfigured
+	}
+	return c.verifier.Open(ctx, blob)
 }

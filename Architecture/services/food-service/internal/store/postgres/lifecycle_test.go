@@ -238,6 +238,13 @@ func TestCancelOrder_GuardedWithHistory(t *testing.T) {
 	ctx := context.Background()
 
 	orderID, _, customerID := seedOrderWithItem(t, s, "CONFIRMED")
+	// seedOrderWithItem seeds a CAPTURED payment. Since the B4 follow-up a
+	// paid cancellation continues to REFUND_PENDING
+	// (TestCustomerCancel_PaidOrderRequestsRefund); this test pins the guard
+	// and history of the plain cancellation, so the order is left unpaid.
+	if _, err := s.db.Exec(ctx, `UPDATE food.orders SET payment_status = 'PENDING' WHERE id = $1`, orderID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.CancelOrder(ctx, customerID, orderID, "changed mind"); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}

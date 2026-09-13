@@ -120,7 +120,9 @@ var table = map[edge]map[Actor]struct{}{
 	// being fulfilled (or was delivered); only the payment.refunded event
 	// finalises it. An order still in the kitchen or on the road is cancelled
 	// first.
-	{CancelledByCustomer, RefundPending}:   actors(ActorAdmin),
+	// B4 follow-up: a customer's cancellation of a paid order has its refund
+	// requested by the system in the cancelling transaction.
+	{CancelledByCustomer, RefundPending}:   actors(ActorAdmin, ActorSystem),
 	{CancelledByRestaurant, RefundPending}: actors(ActorAdmin),
 	{CancelledByAdmin, RefundPending}:      actors(ActorAdmin),
 	// B3: the system (SLA worker, or the chained step after a restaurant's

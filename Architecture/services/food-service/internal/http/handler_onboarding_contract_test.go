@@ -280,8 +280,16 @@ func TestOnboardingContracts(t *testing.T) {
 			`{"tax_category":"RESTAURANT_STANDALONE","legal_name":"Test Kitchens LLP","pan":"` + ctPAN + `"}`,
 			ctOwner, false, true, nil, http.StatusServiceUnavailable},
 		{"onboarding_404_not_owner", http.MethodPut, restaurant + "/location",
-			`{"latitude":12.9716,"longitude":77.5946,"address_line1":"1 Test Lane","city":"Bengaluru","delivery_radius_km":5}`,
+			`{"latitude":12.9716,"longitude":77.5946,"address_line1":"1 Test Lane","city":"Bengaluru","state":"Karnataka","delivery_radius_km":5}`,
 			ctOwner, false, false, pgx.ErrNoRows, http.StatusNotFound},
+		// B4 follow-up: state is required, because checkout cannot price an
+		// order for a restaurant whose state is unknown.
+		{"location_put_422_state_required", http.MethodPut, restaurant + "/location",
+			`{"latitude":12.9716,"longitude":77.5946,"address_line1":"1 Test Lane","city":"Bengaluru","delivery_radius_km":5}`,
+			ctOwner, false, false, nil, http.StatusUnprocessableEntity},
+		{"location_put_422_state_invalid", http.MethodPut, restaurant + "/location",
+			`{"latitude":12.9716,"longitude":77.5946,"address_line1":"1 Test Lane","city":"Bengaluru","state":"Atlantis","delivery_radius_km":5}`,
+			ctOwner, false, false, nil, http.StatusUnprocessableEntity},
 		{"onboarding_400_invalid_body", http.MethodPut, restaurant + "/compliance", `{"pan":`,
 			ctOwner, false, false, nil, http.StatusBadRequest},
 		{"location_put_200", http.MethodPut, restaurant + "/location",

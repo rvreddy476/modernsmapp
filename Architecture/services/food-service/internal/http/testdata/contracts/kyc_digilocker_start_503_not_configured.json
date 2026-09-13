@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DIGILOCKER_NOT_CONFIGURED",
+    "message": "DigiLocker verification is not available yet"
+  },
+  "meta": {}
+}

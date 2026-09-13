@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/database"
+	"github.com/atpost/food-service/internal/digilocker"
 	"github.com/atpost/food-service/internal/foodpii"
 	foodhttp "github.com/atpost/food-service/internal/http"
 	"github.com/atpost/food-service/internal/payments"
@@ -128,6 +129,38 @@ func main() {
 			"compliance and payout-account routes answer 503 PII_NOT_CONFIGURED")
 	}
 	svc.WithPII(piiCrypto)
+
+	// Wave 1 B4: delivery-partner verification. DIGILOCKER_MODE is mock|http|
+	// disabled; unset means mock in local/dev and is refused elsewhere, and the
+	// mock itself is refused unless ENV is local/dev/development.
+	// FOOD_PUBLIC_BASE_URL (gateway origin; redirect_uri and the dev authorize
+	// URL are built from it) and FOOD_RIDER_APP_LINK_URL (where the public
+	// return route sends the browser). http mode also needs
+	// DIGILOCKER_AUTHORIZE_URL, DIGILOCKER_TOKEN_URL,
+	// DIGILOCKER_ISSUED_DOCUMENTS_URL, DIGILOCKER_CLIENT_ID and
+	// DIGILOCKER_CLIENT_SECRET.
+	dlSettings, err := digilocker.SettingsFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("food-service: DigiLocker configuration refused", "error", err)
+		os.Exit(1)
+	}
+	svc.WithDigiLocker(dlSettings)
+	slog.Info("food-service: digilocker", "mode", dlSettings.Mode,
+		"public_base_url_configured", dlSettings.PublicBaseURL != "", "app_link_configured", dlSettings.AppLinkURL != "")
+	// Seal delivery-partner document numbers written before B4 and clear the
+	// plaintext. Rows it cannot seal keep their value and are counted.
+	if piiCrypto != nil {
+		backfill, err := svc.BackfillDeliveryDocumentNumbers(ctx)
+		if err != nil {
+			slog.Error("food-service: delivery document backfill stopped; plaintext numbers remain", "error", err)
+		}
+		if backfill.AadhaarRefused > 0 || backfill.Conflicts > 0 || backfill.Failed > 0 {
+			slog.Warn("food-service: delivery documents still hold plaintext numbers and need ops",
+				"aadhaar_refused", backfill.AadhaarRefused, "conflicts", backfill.Conflicts, "failed", backfill.Failed)
+		}
+		slog.Info("food-service: delivery document backfill", "sealed", backfill.Sealed)
+	}
+
 	// FOOD_PENNY_DROP_ENABLED defaults false: payout accounts stay NOT_VERIFIED
 	// (verification_pending_ops). Payouts are off; nothing calls a transfer.
 	bankVerifier, err := payout.VerifierFromEnv(os.Getenv)
@@ -256,7 +289,8 @@ func main() {
 	// admin queue can triage high-risk customers.
 	go svc.StartFraudScoreWorker(outboxCtx)
 
-	handler := foodhttp.New(svc).WithInternalKey(internalKey)
+	handler := foodhttp.New(svc).WithInternalKey(internalKey).
+		WithDigiLockerDevRoutes(os.Getenv("ENV"), dlSettings.Mock())
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

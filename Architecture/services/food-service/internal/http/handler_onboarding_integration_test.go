@@ -138,7 +138,7 @@ func itGSTIN(t *testing.T) string {
 
 const (
 	itComplianceECO = `{"tax_category":"RESTAURANT_STANDALONE","legal_name":"IT Kitchens LLP","pan":"zzzpz0000z"}`
-	itLocation      = `{"latitude":12.9716,"longitude":77.5946,"address_line1":"1 Test Lane","city":"Bengaluru","google_place_id":"ChIJit","delivery_radius_km":5}`
+	itLocation      = `{"latitude":12.9716,"longitude":77.5946,"address_line1":"1 Test Lane","city":"Bengaluru","state":"Karnataka","google_place_id":"ChIJit","delivery_radius_km":5}`
 	itHours         = `{"windows":[{"day_of_week":1,"opens_at":"10:00","closes_at":"22:00"},{"day_of_week":5,"opens_at":"18:00","closes_at":"02:00"}]}`
 	itPayout        = `{"holder_name":"IT Holder","account_number":" ` + itAccount + ` ","ifsc":"hdfc0000053"}`
 )
@@ -403,7 +403,7 @@ func TestSubmitDecideApproveThroughRoutes(t *testing.T) {
 		t.Fatalf("code = %s", env.Error.Code)
 	}
 	missing, _ := env.Error.Details["missing"].([]any)
-	if len(missing) != 6 {
+	if len(missing) != 7 || missing[1] != "state" {
 		t.Fatalf("missing = %v", env.Error.Details["missing"])
 	}
 

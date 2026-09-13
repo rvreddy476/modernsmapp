@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_STATE_INVALID",
+    "message": "state must be the name of an Indian state or union territory",
+    "details": {
+      "field": "state"
+    }
+  },
+  "meta": {}
+}

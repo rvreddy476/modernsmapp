@@ -45,6 +45,8 @@ const (
 	CodeAddressRequired          = "FOOD_ADDRESS_REQUIRED"
 	CodeAddressInvalid           = "FOOD_ADDRESS_INVALID"
 	CodePlaceIDInvalid           = "FOOD_GOOGLE_PLACE_ID_INVALID"
+	CodeStateRequired            = "FOOD_STATE_REQUIRED"
+	CodeStateInvalid             = "FOOD_STATE_INVALID"
 
 	CodeOperatingHoursRequired   = "FOOD_OPERATING_HOURS_REQUIRED"
 	CodeOperatingHoursDayInvalid = "FOOD_OPERATING_HOURS_DAY_INVALID"
@@ -286,6 +288,16 @@ func ValidateLocation(in LocationInput) (ValidatedLocation, error) {
 	if out.AddressLine1 == "" || out.City == "" {
 		return ValidatedLocation{}, fieldErr(CodeAddressRequired, "address_line1", "address_line1 and city are required")
 	}
+	// Checkout's place of supply falls back to this state, so a restaurant
+	// without one cannot be priced. Stored as the canonical GST state name.
+	if out.State == "" {
+		return ValidatedLocation{}, fieldErr(CodeStateRequired, "state", "state is required")
+	}
+	state, ok := ResolveStateName(out.State)
+	if !ok {
+		return ValidatedLocation{}, fieldErr(CodeStateInvalid, "state", "state must be the name of an Indian state or union territory")
+	}
+	out.State = state
 	limits := []struct {
 		field, value string
 		max          int
@@ -302,6 +314,43 @@ func ValidateLocation(in LocationInput) (ValidatedLocation, error) {
 		return ValidatedLocation{}, fieldErr(CodePlaceIDInvalid, "google_place_id", "google_place_id is not a place id")
 	}
 	return out, nil
+}
+
+// stateCodesExcluded are GST codes whose names a restaurant location may not
+// use: 97 is "Other Territory" and 28 is Andhra Pradesh before
+// reorganisation. Neither is a place a new restaurant is in.
+var stateCodesExcluded = map[string]bool{"97": true, "28": true}
+
+var knownStateNames = func() map[string]string {
+	out := map[string]string{}
+	for i := 1; i <= 99; i++ {
+		code := string([]byte{byte('0' + i/10), byte('0' + i%10)})
+		if stateCodesExcluded[code] {
+			continue
+		}
+		if name, ok := kyc.GSTStateName(code); ok {
+			out[strings.ToLower(name)] = name
+		}
+	}
+	return out
+}()
+
+// KnownStateNames lists, sorted, every state name the location route accepts.
+func KnownStateNames() []string {
+	out := make([]string, 0, len(knownStateNames))
+	for _, name := range knownStateNames {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ResolveStateName matches s, ignoring case and repeated spaces, against the
+// GST state and union-territory names the pricing code recognises, and
+// returns the canonical spelling.
+func ResolveStateName(s string) (string, bool) {
+	name, ok := knownStateNames[strings.ToLower(strings.Join(strings.Fields(s), " "))]
+	return name, ok
 }
 
 // ─── FSSAI ──────────────────────────────────────────────────────────────────
@@ -404,7 +453,10 @@ func ValidateDocumentDecision(decision, reason string) (string, error) {
 
 // Step names, in the order a partner app should present them.
 const (
-	StepLocation       = "location"
+	StepLocation = "location"
+	// StepState: the restaurant's state resolves to a GST state, without
+	// which checkout refuses every order (FOOD_RESTAURANT_STATE_UNKNOWN).
+	StepState          = "state"
 	StepOperatingHours = "operating_hours"
 	StepCompliance     = "compliance"
 	StepFSSAI          = "fssai_document"
@@ -414,6 +466,7 @@ const (
 
 type ReadinessFacts struct {
 	HasLocation          bool
+	HasState             bool
 	HasOperatingHours    bool
 	HasCompliance        bool
 	HasFSSAIDocument     bool
@@ -430,6 +483,7 @@ func MissingSteps(f ReadinessFacts) []string {
 		name string
 	}{
 		{f.HasLocation, StepLocation},
+		{f.HasState, StepState},
 		{f.HasOperatingHours, StepOperatingHours},
 		{f.HasCompliance, StepCompliance},
 		{f.HasFSSAIDocument, StepFSSAI},

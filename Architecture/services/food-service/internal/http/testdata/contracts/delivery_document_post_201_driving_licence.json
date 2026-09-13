@@ -1,0 +1,15 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0004",
+    "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+    "document_type": "DRIVING_LICENCE",
+    "number_masked": "****0001",
+    "media_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0007",
+    "status": "PENDING",
+    "rejection_reason": null,
+    "expires_at": null,
+    "verified_at": null,
+    "created_at": "2026-09-13T06:30:00Z"
+  },
+  "meta": {}
+}

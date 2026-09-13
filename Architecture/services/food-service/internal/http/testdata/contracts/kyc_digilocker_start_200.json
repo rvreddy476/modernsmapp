@@ -1,0 +1,8 @@
+{
+  "data": {
+    "authorize_url": "https://api.example.test/v1/food/dev/digilocker/authorize?state=<state>",
+    "state": "<state>",
+    "expires_at": "2026-09-13T06:40:00Z"
+  },
+  "meta": {}
+}

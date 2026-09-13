@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DIGILOCKER_PROVIDER_FAILED",
+    "message": "DigiLocker could not complete the verification; start again"
+  },
+  "meta": {}
+}

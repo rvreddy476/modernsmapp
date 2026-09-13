@@ -346,6 +346,7 @@ type RestaurantSubmission struct {
 
 func readinessFactsTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID) (onboarding.ReadinessFacts, error) {
 	var f onboarding.ReadinessFacts
+	var state string
 	err := tx.QueryRow(ctx, `
 		SELECT
 			(r.latitude IS NOT NULL AND r.longitude IS NOT NULL AND EXISTS (
@@ -356,10 +357,14 @@ func readinessFactsTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID) (o
 				WHERE d.restaurant_id = r.id AND d.document_type = 'FSSAI'
 				  AND d.status IN ('PENDING', 'APPROVED') AND d.expires_at > NOW()),
 			EXISTS (SELECT 1 FROM food.payout_accounts p WHERE p.owner_type = 'RESTAURANT' AND p.owner_id = r.id),
-			EXISTS (SELECT 1 FROM food.menu_items i WHERE i.restaurant_id = r.id AND i.is_available AND i.is_active)
+			EXISTS (SELECT 1 FROM food.menu_items i WHERE i.restaurant_id = r.id AND i.is_available AND i.is_active),
+			COALESCE(r.state, '')
 		FROM food.restaurants r
 		WHERE r.id = $1
-	`, restaurantID).Scan(&f.HasLocation, &f.HasOperatingHours, &f.HasCompliance, &f.HasFSSAIDocument, &f.HasPayoutAccount, &f.HasAvailableMenuItem)
+	`, restaurantID).Scan(&f.HasLocation, &f.HasOperatingHours, &f.HasCompliance, &f.HasFSSAIDocument, &f.HasPayoutAccount, &f.HasAvailableMenuItem, &state)
+	// B4 follow-up: the same resolution the location route applies, so a
+	// restaurant approved here can always be priced at checkout.
+	_, f.HasState = onboarding.ResolveStateName(state)
 	return f, err
 }
 

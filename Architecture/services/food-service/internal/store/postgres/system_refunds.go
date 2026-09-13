@@ -25,6 +25,19 @@ import (
 // RESTAURANT_REJECTED in tx. It returns nil when nothing was paid (cash on
 // delivery, unpaid, already fully refunded or requested).
 func requestSystemRefundTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, reason string) (*RefundPlan, error) {
+	return requestSystemRefundFromTx(ctx, tx, orderID, orderstate.RestaurantRejected, reason)
+}
+
+// systemRefundSources are the statuses a system refund request may start
+// from: a rejection (B3) and, since B4, a customer's own cancellation.
+var systemRefundSources = map[string]bool{
+	orderstate.RestaurantRejected:  true,
+	orderstate.CancelledByCustomer: true,
+}
+
+// requestSystemRefundFromTx runs right after the caller moved orderID to
+// `from` in tx, and requests the refund of whatever was captured.
+func requestSystemRefundFromTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, from, reason string) (*RefundPlan, error) {
 	var status, paymentStatus, method, intentID string
 	var paymentID *uuid.UUID
 	var orderMinor, requestedMinor int64
@@ -46,8 +59,8 @@ func requestSystemRefundTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, re
 	`, orderID).Scan(&status, &paymentStatus, &method, &orderMinor, &paymentID, &intentID, &requestedMinor); err != nil {
 		return nil, err
 	}
-	if status != orderstate.RestaurantRejected {
-		return nil, fmt.Errorf("%w: a system refund needs a rejected order, not %s", ErrOrderStatusConflict, status)
+	if !systemRefundSources[from] || status != from {
+		return nil, fmt.Errorf("%w: a system refund needs a rejected or customer-cancelled order, not %s", ErrOrderStatusConflict, status)
 	}
 	switch paymentStatus {
 	case "CAPTURED", "PARTIALLY_REFUNDED":
@@ -59,7 +72,7 @@ func requestSystemRefundTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, re
 		return nil, nil
 	}
 	if err := transitionOrderTx(ctx, tx, OrderTransition{
-		OrderID: orderID, From: orderstate.RestaurantRejected, To: orderstate.RefundPending,
+		OrderID: orderID, From: from, To: orderstate.RefundPending,
 		Actor: orderstate.ActorSystem, Reason: "refund requested: " + reason,
 	}); err != nil {
 		return nil, err

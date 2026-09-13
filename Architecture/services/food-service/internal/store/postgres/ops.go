@@ -547,36 +547,8 @@ func (s *Store) GetDeliveryPartner(ctx context.Context, userID uuid.UUID) (*Deli
 	return &partner, nil
 }
 
-func (s *Store) AddDeliveryDocument(ctx context.Context, userID uuid.UUID, input map[string]any) (map[string]any, error) {
-	partner, err := s.GetDeliveryPartner(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	documentType := stringValue(input, "document_type", "")
-	if documentType == "" {
-		return nil, fmt.Errorf("document_type is required")
-	}
-	var mediaID any
-	if raw := stringValue(input, "media_id", ""); raw != "" {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return nil, fmt.Errorf("invalid media_id")
-		}
-		mediaID = id
-	}
-	var id uuid.UUID
-	if err := s.db.QueryRow(ctx, `
-		INSERT INTO food.delivery_partner_documents (
-			delivery_partner_id, document_type, document_number, media_id, file_url
-		)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id
-	`, partner.ID, documentType, emptyToNil(stringValue(input, "document_number", "")),
-		mediaID, emptyToNil(stringValue(input, "file_url", ""))).Scan(&id); err != nil {
-		return nil, err
-	}
-	return map[string]any{"id": id, "delivery_partner_id": partner.ID, "document_type": documentType, "status": "PENDING"}, nil
-}
+// AddDeliveryDocument moved to delivery_kyc.go (Wave 1 B4) as
+// AddDeliveryPartnerDocument: it no longer writes a plaintext number.
 
 func (s *Store) SetDeliveryAvailability(ctx context.Context, userID uuid.UUID, online bool) (*DeliveryPartner, error) {
 	tx, err := s.db.Begin(ctx)
@@ -1017,6 +989,12 @@ func (s *Store) AdminApproveDeliveryPartner(ctx context.Context, adminID, partne
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Wave 1 B4: approval needs every verification step (riderkyc).
+	if approve {
+		if err := requireDeliveryPartnerReadyTx(ctx, tx, partnerID); err != nil {
+			return err
+		}
+	}
 	// RETURNING user_id — :partnerId is delivery_partners.id, a local key, not
 	// the identity account the role attaches to.
 	var partnerUserID uuid.UUID
@@ -1059,6 +1037,23 @@ func (s *Store) AdminSetDeliveryPartnerStatus(ctx context.Context, adminID, part
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Wave 1 B4: the free-form setter must not be a way around the approval
+	// gate. Moving a partner who was never approved into APPROVED or ACTIVE
+	// needs the same verification steps; a previously approved partner
+	// (APPROVED, ACTIVE, OFFLINE, SUSPENDED) moves between those freely.
+	if status == "APPROVED" || status == "ACTIVE" {
+		var current string
+		if err := tx.QueryRow(ctx, `SELECT status::text FROM food.delivery_partners WHERE id = $1 FOR UPDATE`, partnerID).Scan(&current); err != nil {
+			return err
+		}
+		switch current {
+		case "APPROVED", "ACTIVE", "OFFLINE", "SUSPENDED":
+		default:
+			if err := requireDeliveryPartnerReadyTx(ctx, tx, partnerID); err != nil {
+				return err
+			}
+		}
+	}
 	var partnerUserID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		UPDATE food.delivery_partners

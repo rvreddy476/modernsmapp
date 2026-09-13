@@ -688,6 +688,13 @@ func (s *Store) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, reas
 	}); err != nil {
 		return nil, err
 	}
+	// B4 follow-up: a captured payment's refund is requested in this same
+	// transaction (order -> REFUND_PENDING), exactly as a rejection does; the
+	// service submits it and payment.refunded finalises it. An unpaid order
+	// only cancels.
+	if _, err := requestSystemRefundFromTx(ctx, tx, orderID, orderstate.CancelledByCustomer, "customer cancelled the order"); err != nil {
+		return nil, err
+	}
 	updated, err := s.getOrderTx(ctx, tx, userID, orderID, true)
 	if err != nil {
 		return nil, err

@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_STATE_REQUIRED",
+    "message": "state is required",
+    "details": {
+      "field": "state"
+    }
+  },
+  "meta": {}
+}

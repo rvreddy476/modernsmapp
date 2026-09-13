@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/food-service/internal/pricing"
 	"github.com/atpost/shared/gst"
 	"github.com/atpost/shared/kyc"
 )
@@ -165,11 +166,11 @@ func TestRestaurantTaxCategories(t *testing.T) {
 
 func TestMissingSteps(t *testing.T) {
 	all := MissingSteps(ReadinessFacts{})
-	want := []string{StepLocation, StepOperatingHours, StepCompliance, StepFSSAI, StepPayoutAccount, StepMenuItem}
+	want := []string{StepLocation, StepState, StepOperatingHours, StepCompliance, StepFSSAI, StepPayoutAccount, StepMenuItem}
 	if strings.Join(all, ",") != strings.Join(want, ",") {
 		t.Fatalf("missing = %v, want %v", all, want)
 	}
-	full := ReadinessFacts{HasLocation: true, HasOperatingHours: true, HasCompliance: true, HasFSSAIDocument: true, HasPayoutAccount: true, HasAvailableMenuItem: true}
+	full := ReadinessFacts{HasLocation: true, HasState: true, HasOperatingHours: true, HasCompliance: true, HasFSSAIDocument: true, HasPayoutAccount: true, HasAvailableMenuItem: true}
 	if got := MissingSteps(full); got == nil || len(got) != 0 {
 		t.Fatalf("complete facts: missing = %#v, want empty non-nil", got)
 	}
@@ -178,6 +179,7 @@ func TestMissingSteps(t *testing.T) {
 		unset func(*ReadinessFacts)
 	}{
 		{StepLocation, func(f *ReadinessFacts) { f.HasLocation = false }},
+		{StepState, func(f *ReadinessFacts) { f.HasState = false }},
 		{StepOperatingHours, func(f *ReadinessFacts) { f.HasOperatingHours = false }},
 		{StepCompliance, func(f *ReadinessFacts) { f.HasCompliance = false }},
 		{StepFSSAI, func(f *ReadinessFacts) { f.HasFSSAIDocument = false }},
@@ -198,10 +200,33 @@ func TestMissingSteps(t *testing.T) {
 	}
 }
 
+// Every state the location route accepts must be one checkout can price:
+// pricing.Restaurant.PlaceOfSupplyState resolves the stored canonical name.
+func TestStateNamesResolveForPricing(t *testing.T) {
+	names := KnownStateNames()
+	if len(names) < 36 {
+		t.Fatalf("known states = %d, want every state and union territory", len(names))
+	}
+	for _, name := range names {
+		got, ok := ResolveStateName(strings.ToLower(name))
+		if !ok || got != name {
+			t.Fatalf("ResolveStateName(%q) = %q, %v", strings.ToLower(name), got, ok)
+		}
+		if _, err := (pricing.Restaurant{State: got}).PlaceOfSupplyState(); err != nil {
+			t.Fatalf("pricing cannot place %q: %v", got, err)
+		}
+	}
+	if v, err := ValidateLocation(LocationInput{Latitude: ptr(12.9), Longitude: ptr(77.5), AddressLine1: "1 Test Lane", City: "Chennai", State: "tamil nadu", DeliveryRadiusKM: ptr(5)}); err != nil || v.State != "Tamil Nadu" {
+		t.Fatalf("stored state = %q, %v; want the canonical name", v.State, err)
+	}
+}
+
+func ptr(v float64) *float64 { return &v }
+
 func TestValidateLocation(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 	base := func() LocationInput {
-		return LocationInput{Latitude: f(12.9716), Longitude: f(77.5946), AddressLine1: "1 Test Lane", City: "Bengaluru", DeliveryRadiusKM: f(5)}
+		return LocationInput{Latitude: f(12.9716), Longitude: f(77.5946), AddressLine1: "1 Test Lane", City: "Bengaluru", State: "Karnataka", DeliveryRadiusKM: f(5)}
 	}
 	cases := []struct {
 		name string
@@ -224,6 +249,14 @@ func TestValidateLocation(t *testing.T) {
 		{"address missing", func(in *LocationInput) { in.AddressLine1 = " " }, CodeAddressRequired},
 		{"city missing", func(in *LocationInput) { in.City = "" }, CodeAddressRequired},
 		{"place id too long", func(in *LocationInput) { in.GooglePlaceID = strings.Repeat("a", 256) }, CodePlaceIDInvalid},
+		// B4 follow-up: checkout cannot price an order without the state, so
+		// the location route no longer accepts a pin without one.
+		{"state missing", func(in *LocationInput) { in.State = "" }, CodeStateRequired},
+		{"state blank", func(in *LocationInput) { in.State = "  " }, CodeStateRequired},
+		{"state unknown", func(in *LocationInput) { in.State = "Atlantis" }, CodeStateInvalid},
+		{"state other territory", func(in *LocationInput) { in.State = "Other Territory" }, CodeStateInvalid},
+		{"state as a GST code", func(in *LocationInput) { in.State = "29" }, CodeStateInvalid},
+		{"state any case and spacing", func(in *LocationInput) { in.State = "  tamil   NADU " }, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

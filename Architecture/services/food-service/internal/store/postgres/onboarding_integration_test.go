@@ -45,7 +45,7 @@ func testSealedPayout() PayoutAccountRecord {
 }
 
 func testLocation() onboarding.ValidatedLocation {
-	return onboarding.ValidatedLocation{Latitude: 12.9716, Longitude: 77.5946, AddressLine1: "1 Test Lane", City: "Bengaluru", GooglePlaceID: "ChIJtestplace", DeliveryRadiusKM: 5}
+	return onboarding.ValidatedLocation{Latitude: 12.9716, Longitude: 77.5946, AddressLine1: "1 Test Lane", City: "Bengaluru", State: "Karnataka", GooglePlaceID: "ChIJtestplace", DeliveryRadiusKM: 5}
 }
 
 func testFSSAI(expires time.Time) onboarding.ValidatedFSSAI {
@@ -269,7 +269,7 @@ func TestSubmitRestaurantForReviewReadiness(t *testing.T) {
 	ownerID, restaurantID := seedDraftRestaurant(t, s)
 
 	_, err := s.SubmitRestaurantForReview(ctx, ownerID, restaurantID)
-	if got := strings.Join(missingOf(t, err), ","); got != "location,operating_hours,compliance,fssai_document,payout_account,menu_item" {
+	if got := strings.Join(missingOf(t, err), ","); got != "location,state,operating_hours,compliance,fssai_document,payout_account,menu_item" {
 		t.Fatalf("missing = %s", got)
 	}
 
@@ -282,6 +282,8 @@ func TestSubmitRestaurantForReviewReadiness(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		// The location route stores the state, so the state step is met with it.
+		{"state", func() {}},
 		{"operating_hours", func() {
 			if _, err := s.ReplaceOperatingHours(ctx, ownerID, restaurantID, []OperatingHoursInput{{DayOfWeek: dayPtr(1), OpensAt: "10:00", ClosesAt: "22:00"}}); err != nil {
 				t.Fatal(err)
@@ -339,6 +341,31 @@ func TestSubmitRestaurantForReviewReadiness(t *testing.T) {
 	}
 	if _, err := s.SubmitRestaurantForReview(ctx, ownerID, restaurantID); !errors.Is(err, ErrRestaurantNotDraft) {
 		t.Fatalf("second submit: %v, want ErrRestaurantNotDraft", err)
+	}
+}
+
+// B4 follow-up: a restaurant whose state cannot be resolved (written before
+// the location route required it, or edited to nonsense) is not ready, even
+// with every other step met.
+func TestSubmitRequiresAResolvableState(t *testing.T) {
+	s, done := foodTestStore(t)
+	defer done()
+	ctx := context.Background()
+	ownerID, restaurantID := seedReadyRestaurant(t, s)
+	for _, state := range []string{"", "Atlantis"} {
+		if _, err := s.db.Exec(ctx, `UPDATE food.restaurants SET state = NULLIF($2, '') WHERE id = $1`, restaurantID, state); err != nil {
+			t.Fatal(err)
+		}
+		_, err := s.SubmitRestaurantForReview(ctx, ownerID, restaurantID)
+		if got := strings.Join(missingOf(t, err), ","); got != onboarding.StepState {
+			t.Fatalf("state %q: missing = %s, want only state", state, got)
+		}
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE food.restaurants SET state = 'karnataka' WHERE id = $1`, restaurantID); err != nil {
+		t.Fatal(err)
+	}
+	if sub, err := s.SubmitRestaurantForReview(ctx, ownerID, restaurantID); err != nil || sub.Status != "PENDING_REVIEW" {
+		t.Fatalf("submit with a resolvable state = %+v, %v", sub, err)
 	}
 }
 

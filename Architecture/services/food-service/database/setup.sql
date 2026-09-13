@@ -1806,3 +1806,82 @@ ALTER TABLE food.payout_accounts
 
 CREATE INDEX IF NOT EXISTS ix_food_payout_accounts_needs_review
     ON food.payout_accounts(updated_at DESC) WHERE needs_review;
+
+-- ============================================================
+-- WAVE 1 B4: DELIVERY-PARTNER VERIFICATION (DIGILOCKER, DL/RC, SELFIE)
+-- ============================================================
+--
+-- DigiLocker OAuth with PKCE. Only a SHA-256 of the state is stored and the
+-- code_verifier is sealed (shared/pii scope food.digilocker_verifier). The
+-- callback consumes a state exactly once with a conditional UPDATE
+-- (consumed_at IS NULL AND expires_at > NOW()) bound to the partner's user.
+CREATE TABLE IF NOT EXISTS food.digilocker_auth_states (
+    state_hash           TEXT PRIMARY KEY CHECK (state_hash ~ '^[0-9a-f]{64}$'),
+    partner_id           UUID NOT NULL REFERENCES food.delivery_partners(id) ON DELETE CASCADE,
+    code_verifier_sealed BYTEA NOT NULL,
+    key_version          INT NOT NULL CHECK (key_version > 0),
+    expires_at           TIMESTAMPTZ NOT NULL,
+    consumed_at          TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_food_digilocker_auth_states_partner
+    ON food.digilocker_auth_states(partner_id, expires_at);
+
+-- One row per provider assertion. Aadhaar is recorded ONLY here, as an
+-- opaque assertion_ref and a hash of the provider's document-type label: no
+-- column holds its number, and a reference with a twelve-digit run is refused.
+CREATE TABLE IF NOT EXISTS food.delivery_partner_kyc_checks (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    partner_id              UUID NOT NULL REFERENCES food.delivery_partners(id) ON DELETE CASCADE,
+    provider                TEXT NOT NULL CHECK (provider IN ('DIGILOCKER')),
+    kind                    TEXT NOT NULL CHECK (kind IN ('AADHAAR','DRIVING_LICENCE','VEHICLE_RC')),
+    assertion_ref           TEXT NOT NULL CHECK (length(assertion_ref) BETWEEN 1 AND 200 AND assertion_ref !~ '[0-9]{12}'),
+    doc_type_hash           TEXT NOT NULL CHECK (doc_type_hash ~ '^[0-9a-f]{64}$'),
+    name_on_document_masked TEXT,
+    valid_until             DATE,
+    verified_at             TIMESTAMPTZ NOT NULL,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_food_delivery_kyc_checks_partner_kind
+    ON food.delivery_partner_kyc_checks(partner_id, kind, verified_at DESC);
+
+-- Document numbers are sealed (scope food.partner_document) and masked; a DL
+-- or RC also carries a lookup hash (domains driving_licence /
+-- vehicle_registration). The plaintext document_number column is no longer
+-- written; the service backfill seals pre-B4 rows and clears it.
+ALTER TABLE food.delivery_partner_documents
+    ADD COLUMN IF NOT EXISTS number_sealed BYTEA,
+    ADD COLUMN IF NOT EXISTS number_key_version INT,
+    ADD COLUMN IF NOT EXISTS number_lookup TEXT,
+    ADD COLUMN IF NOT EXISTS number_masked TEXT;
+
+-- Sealed is all or nothing (blob, key version, mask); a lookup needs a blob.
+ALTER TABLE food.delivery_partner_documents DROP CONSTRAINT IF EXISTS ck_food_delivery_docs_number_sealed;
+ALTER TABLE food.delivery_partner_documents ADD CONSTRAINT ck_food_delivery_docs_number_sealed
+    CHECK (
+        (number_sealed IS NULL AND number_key_version IS NULL AND number_lookup IS NULL AND number_masked IS NULL)
+        OR (number_sealed IS NOT NULL AND number_key_version > 0 AND number_masked IS NOT NULL)
+    );
+
+-- One driving licence or vehicle RC cannot back two delivery partners.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_food_delivery_docs_number_lookup
+    ON food.delivery_partner_documents(document_type, number_lookup)
+    WHERE number_lookup IS NOT NULL;
+
+-- One active selfie per partner. Older duplicates written before B4 are
+-- retired (EXPIRED) first, newest kept, so the index can be built.
+UPDATE food.delivery_partner_documents d
+SET status = 'EXPIRED'
+WHERE d.document_type = 'SELFIE' AND d.status IN ('PENDING', 'APPROVED')
+  AND EXISTS (
+    SELECT 1 FROM food.delivery_partner_documents n
+    WHERE n.delivery_partner_id = d.delivery_partner_id
+      AND n.document_type = 'SELFIE' AND n.status IN ('PENDING', 'APPROVED')
+      AND (n.created_at, n.id) > (d.created_at, d.id)
+  );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_food_delivery_docs_active_selfie
+    ON food.delivery_partner_documents(delivery_partner_id)
+    WHERE document_type = 'SELFIE' AND status IN ('PENDING', 'APPROVED');

@@ -104,6 +104,14 @@ func TestDeliveryPartnerAdminStatusIntents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("UpsertDeliveryPartner: %v", err)
 			}
+			if tc.status == "ACTIVE" {
+				// Wave 1 B4: the setter moves a never-approved partner to ACTIVE
+				// only through the verification gate; a previously approved one
+				// moves freely, which is the re-grant this case pins.
+				if _, err := pool.Exec(ctx, `UPDATE food.delivery_partners SET status = 'APPROVED' WHERE id = $1`, p.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := st.AdminSetDeliveryPartnerStatus(ctx, uuid.New(), p.ID, tc.status, "because"); err != nil {
 				t.Fatalf("AdminSetDeliveryPartnerStatus(%s): %v", tc.status, err)
 			}

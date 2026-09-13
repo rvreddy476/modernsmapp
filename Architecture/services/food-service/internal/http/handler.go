@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/atpost/food-service/internal/riderkyc"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -19,6 +20,9 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// devDigiLockerRoutes registers the mock provider's authorize route
+	// (handler_rider_kyc.go); only ever true in local/dev with the mock.
+	devDigiLockerRoutes bool
 }
 
 func New(svc *service.Service) *Handler {
@@ -204,6 +208,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		h.registerOnboardingRoutes(partner, delivery, admin)
 		// Wave 1 B3: admin payout-account review. See handler_b3.go.
 		h.registerB3Routes(admin)
+		// Wave 1 B4: delivery-partner verification. See handler_rider_kyc.go.
+		h.registerRiderKYCRoutes(v1, delivery, admin)
 	}
 }
 
@@ -1380,17 +1386,21 @@ func (h *Handler) AddDeliveryDocument(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+	// Wave 1 B4: typed, validated and sealed (riderkyc + service). The number
+	// is never written in clear and no error echoes it.
+	var body struct {
+		DocumentType   string `json:"document_type"`
+		DocumentNumber string `json:"document_number"`
+		MediaID        string `json:"media_id"`
+		FileURL        string `json:"file_url"`
+	}
+	if !bindOnboardingBody(c, &body) {
 		return
 	}
-	document, err := h.svc.AddDeliveryDocument(c.Request.Context(), userID, body)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_DELIVERY_DOCUMENT_FAILED", err.Error(), nil)
-		return
-	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusCreated, document)
+	document, err := h.svc.AddDeliveryDocument(c.Request.Context(), userID, riderkyc.DocumentInput{
+		DocumentType: body.DocumentType, DocumentNumber: body.DocumentNumber, MediaID: body.MediaID, FileURL: body.FileURL,
+	})
+	respondRiderKYC(c, http.StatusCreated, document, err)
 }
 
 func (h *Handler) SetDeliveryAvailability(c *gin.Context) {
@@ -1671,6 +1681,10 @@ func (h *Handler) adminDeliveryPartnerReview(c *gin.Context, approve bool) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	if err := h.svc.AdminApproveDeliveryPartner(c.Request.Context(), adminID, partnerID, approve, body.Reason); err != nil {
+		if isRiderKYCError(err) {
+			writeRiderKYCError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ADMIN_DELIVERY_PARTNER_REVIEW_FAILED", err.Error(), nil)
 		return
 	}
@@ -1695,6 +1709,10 @@ func (h *Handler) AdminSetDeliveryPartnerStatus(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AdminSetDeliveryPartnerStatus(c.Request.Context(), adminID, partnerID, body.Status, body.Reason); err != nil {
+		if isRiderKYCError(err) {
+			writeRiderKYCError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ADMIN_DELIVERY_STATUS_FAILED", err.Error(), nil)
 		return
 	}

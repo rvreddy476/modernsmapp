@@ -1,0 +1,66 @@
+{
+  "data": {
+    "partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+    "status": "PENDING_REVIEW",
+    "vehicle_type": "MOTORCYCLE",
+    "driving_documents_required": true,
+    "missing": [
+      "selfie",
+      "payout_account"
+    ],
+    "checks": [
+      {
+        "kind": "AADHAAR",
+        "provider": "DIGILOCKER",
+        "name_on_document_masked": "M*** R***",
+        "valid_until": null,
+        "valid": true,
+        "verified_at": "2026-09-13T06:30:00Z"
+      },
+      {
+        "kind": "DRIVING_LICENCE",
+        "provider": "DIGILOCKER",
+        "name_on_document_masked": "M*** R***",
+        "valid_until": "2040-06-30",
+        "valid": true,
+        "verified_at": "2026-09-13T06:30:00Z"
+      },
+      {
+        "kind": "VEHICLE_RC",
+        "provider": "DIGILOCKER",
+        "name_on_document_masked": "M*** R***",
+        "valid_until": "2038-06-30",
+        "valid": true,
+        "verified_at": "2026-09-13T06:30:00Z"
+      }
+    ],
+    "documents": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0009",
+        "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+        "document_type": "DRIVING_LICENCE",
+        "number_masked": "****0001",
+        "media_id": null,
+        "status": "APPROVED",
+        "rejection_reason": null,
+        "expires_at": "2040-06-30T18:30:00Z",
+        "verified_at": "2026-09-13T06:30:00Z",
+        "created_at": "2026-09-13T06:30:00Z"
+      },
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a000a",
+        "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+        "document_type": "VEHICLE_RC",
+        "number_masked": "****1234",
+        "media_id": null,
+        "status": "APPROVED",
+        "rejection_reason": null,
+        "expires_at": "2038-06-30T18:30:00Z",
+        "verified_at": "2026-09-13T06:30:00Z",
+        "created_at": "2026-09-13T06:30:00Z"
+      }
+    ],
+    "has_payout_account": false
+  },
+  "meta": {}
+}

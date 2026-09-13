@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/food-service/internal/digilocker"
 	"github.com/atpost/food-service/internal/foodpii"
 	"github.com/atpost/food-service/internal/onboarding"
 	"github.com/atpost/food-service/internal/orderstate"
@@ -140,7 +141,6 @@ type Store interface {
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
 	GetDeliveryPartner(ctx context.Context, userID uuid.UUID) (*postgres.DeliveryPartner, error)
-	AddDeliveryDocument(ctx context.Context, userID uuid.UUID, input map[string]any) (map[string]any, error)
 	SetDeliveryAvailability(ctx context.Context, userID uuid.UUID, online bool) (*postgres.DeliveryPartner, error)
 	ListDeliveryAssignments(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryAssignment, error)
 	GetCurrentDeliveryAssignment(ctx context.Context, userID uuid.UUID) (*postgres.DeliveryAssignment, error)
@@ -198,12 +198,25 @@ type Store interface {
 	ListUnsubmittedSystemRefunds(ctx context.Context, olderThan time.Duration, limit int) ([]postgres.RefundPlan, error)
 	AllocateOrderInvoiceNumbers(ctx context.Context, orderID, restaurantID uuid.UUID, financialYear string, platform, restaurant bool) (string, string, error)
 	AdminListPayoutAccounts(ctx context.Context, needsReviewOnly bool, page postgres.Pagination) ([]postgres.AdminPayoutAccount, error)
+
+	// Wave 1 B4: delivery-partner verification (rider_kyc.go).
+	CreateDigiLockerAuthState(ctx context.Context, userID uuid.UUID, stateHash string, verifierSealed []byte, keyVersion uint32, expiresAt time.Time) (uuid.UUID, error)
+	ConsumeDigiLockerAuthState(ctx context.Context, userID uuid.UUID, stateHash string) (*postgres.DigiLockerAuthState, error)
+	RecordDigiLockerVerification(ctx context.Context, partnerID uuid.UUID, v postgres.DigiLockerVerification) error
+	AddDeliveryPartnerDocument(ctx context.Context, userID uuid.UUID, r postgres.DeliveryDocumentRecord) (*postgres.DeliveryDocument, error)
+	DeliveryPartnerKYCForUser(ctx context.Context, userID uuid.UUID) (*postgres.DeliveryPartnerKYC, error)
+	AdminDeliveryPartnerKYC(ctx context.Context, partnerID uuid.UUID) (*postgres.DeliveryPartnerKYC, error)
+	AdminDecideDeliveryPartnerDocument(ctx context.Context, adminID, partnerID, documentID uuid.UUID, decision, reason string) (*postgres.DeliveryDocument, error)
+	BackfillDeliveryDocumentNumbers(ctx context.Context, seal postgres.DocumentNumberSealer, batch int) (postgres.DocumentBackfillResult, error)
 }
 
 type Service struct {
 	store           Store
 	monetizationURL string
 	internalKey     string
+	// digilocker is the Wave 1 B4 provider wiring; a nil Client keeps the
+	// DigiLocker routes at 503.
+	digilocker digilocker.Settings
 	// payments is the service-token payments-service client; payFlags are the
 	// launch switches (cash on delivery and wallet default off).
 	payments    PaymentsClient
@@ -551,6 +564,10 @@ func (s *Service) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, re
 	if err != nil {
 		return nil, err
 	}
+	// B4 follow-up: a paid order's refund was requested in the cancelling
+	// transaction; submit it now through the same path a rejection uses. The
+	// SLA worker resubmits it if this submission fails.
+	s.submitRejectedOrderRefund(ctx, orderID, "customer cancelled the order")
 	s.emit(ctx, "food.order."+o.ID.String(), "food.order.cancelled", o)
 	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.cancelled", o)
 	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.cancelled", o)
@@ -747,10 +764,6 @@ func (s *Service) UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, i
 
 func (s *Service) GetDeliveryPartner(ctx context.Context, userID uuid.UUID) (*postgres.DeliveryPartner, error) {
 	return s.store.GetDeliveryPartner(ctx, userID)
-}
-
-func (s *Service) AddDeliveryDocument(ctx context.Context, userID uuid.UUID, input map[string]any) (map[string]any, error) {
-	return s.store.AddDeliveryDocument(ctx, userID, input)
 }
 
 func (s *Service) SetDeliveryAvailability(ctx context.Context, userID uuid.UUID, online bool) (*postgres.DeliveryPartner, error) {

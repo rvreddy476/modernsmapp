@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "FOOD_DELIVERY_PARTNER_NOT_READY",
+    "message": "complete every verification step before approval",
+    "details": {
+      "missing": [
+        "driving_licence",
+        "vehicle_rc",
+        "selfie"
+      ]
+    }
+  },
+  "meta": {}
+}

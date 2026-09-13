@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DOCUMENT_EXPIRED",
+    "message": "an expired document cannot be approved"
+  },
+  "meta": {}
+}
