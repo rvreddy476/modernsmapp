@@ -54,7 +54,7 @@ class ChatNotificationPrivacyTest {
                 addCategory(android.content.Intent.CATEGORY_LAUNCHER)
             },
         )
-        NotificationChannelSpec.createAll(context)
+        NotificationChannelSpec.createAll(context, NotificationChannelSpec.MOMENTUM)
         foreground = AppForegroundState()
         presenter = NotificationPresenter(context, foreground)
         manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

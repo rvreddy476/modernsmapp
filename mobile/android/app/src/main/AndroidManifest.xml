@@ -39,6 +39,16 @@
         android:enableOnBackInvokedCallback="true"
         android:extractNativeLibs="true">
 
+        <!--
+          Google Maps SDK for Android key (Feast A0, 2026-09-13). The value is
+          the MAPS_API_KEY placeholder the application convention plugin fills
+          from .secrets/google-maps-android-app.key (gitignored). Absent file,
+          empty value: the build succeeds and map surfaces show a placeholder.
+        -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

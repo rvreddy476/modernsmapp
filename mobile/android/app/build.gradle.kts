@@ -1,5 +1,9 @@
 plugins {
     id("us.android.application")
+    // The Banuba licence token. Momentum is the only app that ships Banuba;
+    // it must come AFTER us.android.application and never be applied to a
+    // Feast partner app (Feast A0, 2026-09-13).
+    id("us.android.banuba")
     id("us.android.compose")
     id("us.android.hilt")
     // Navigation Compose's type-safe routes are @Serializable objects, so
@@ -15,6 +19,12 @@ android {
         // ⚠ IMMUTABLE once published to Play. Verified spelling: a-n-d-r-o-i-d.
         // Blocker B1, resolved 2026-08-16.
         applicationId = "com.us.android"
+
+        // Momentum's own release line. Set here, not in the convention plugin,
+        // since Feast Kitchen and Feast Rider version independently; a release
+        // variant without a versionCode fails the build.
+        versionCode = 1
+        versionName = "0.1.0"
     }
 
     // Banuba Video Editor SDK (2026-09-05). Two of its AARs (camera-sdk and

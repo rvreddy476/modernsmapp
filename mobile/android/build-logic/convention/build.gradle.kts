@@ -43,6 +43,12 @@ gradlePlugin {
             id = "us.android.hilt"
             implementationClass = "AndroidHiltConventionPlugin"
         }
+        // The Banuba licence, applied by :app ONLY — the Feast partner apps
+        // ship neither the SDK nor its token.
+        register("banubaLicense") {
+            id = "us.android.banuba"
+            implementationClass = "BanubaLicenseConventionPlugin"
+        }
         register("jvmLibrary") {
             id = "us.jvm.library"
             implementationClass = "JvmLibraryConventionPlugin"

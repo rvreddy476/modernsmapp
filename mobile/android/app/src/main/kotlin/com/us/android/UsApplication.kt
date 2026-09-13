@@ -127,7 +127,7 @@ class UsApplication : Application(), Configuration.Provider {
         // user's setting. Done here so a push arriving before any screen
         // opens still has a channel to land on — a notification posted to a
         // missing channel is dropped silently.
-        NotificationChannelSpec.createAll(this)
+        NotificationChannelSpec.createAll(this, NotificationChannelSpec.MOMENTUM)
         // Starts a single flow collection. Without this the FCM token is
         // stored and never sent, which is the state the app shipped in.
         pushRegistration.start()

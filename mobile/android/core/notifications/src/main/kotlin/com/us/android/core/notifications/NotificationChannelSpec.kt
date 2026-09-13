@@ -78,13 +78,36 @@ enum class NotificationChannelSpec(
 
     companion object {
         /**
-         * Creates every channel. Safe to call repeatedly — the platform
-         * ignores a channel that already exists, and deliberately will not let
-         * a re-registration override a user's setting.
+         * Momentum's channels — exactly the set the app registered before the
+         * Feast partner apps existed (2026-09-13).
+         *
+         * Named rather than derived from [entries]: Feast Kitchen and Feast
+         * Rider are separate installs with their own channel lists, and an
+         * app must register only the channels it can actually post to. A
+         * Kitchen install showing "Calls" and "New videos" switches in system
+         * settings would be noise the user can neither use nor remove. Adding
+         * a new enum entry therefore adds it to NO app until someone puts it
+         * in that app's set on purpose. Pinned by MomentumChannelSetTest.
          */
-        fun createAll(context: Context) {
+        val MOMENTUM: Set<NotificationChannelSpec> = setOf(
+            CALLS,
+            MESSAGES,
+            SOCIAL,
+            NEW_VIDEOS,
+            ACCOUNT,
+        )
+
+        /**
+         * Creates the given app's channels. Safe to call repeatedly — the
+         * platform ignores a channel that already exists, and deliberately
+         * will not let a re-registration override a user's setting.
+         *
+         * No default for [specs]: each application passes its own set
+         * explicitly, so a new app cannot inherit Momentum's by omission.
+         */
+        fun createAll(context: Context, specs: Set<NotificationChannelSpec>) {
             val manager = context.getSystemService<NotificationManager>() ?: return
-            entries.forEach { spec ->
+            specs.forEach { spec ->
                 manager.createNotificationChannel(
                     NotificationChannel(spec.id, spec.title, spec.importance).apply {
                         description = spec.description

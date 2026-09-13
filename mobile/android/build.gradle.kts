@@ -49,12 +49,150 @@ tasks.register<Delete>("clean") {
 }
 
 /**
+ * Application-boundary rules (Feast A0, 2026-09-13).
+ *
+ * Momentum (`:app`), Feast Kitchen (`:app-kitchen`) and Feast Rider
+ * (`:app-rider`) are separate installs built from one module graph. These rules
+ * keep each APK to its own code:
+ *
+ *   a. No module depends on an application module (`:app` or any `:app-*`).
+ *      Applications are leaves; shared code belongs in :core.
+ *   b. `:app` never reaches `:feature:kitchen` or `:feature:rider`.
+ *   c. `:app-kitchen` / `:app-rider` never reach `:core:facear`,
+ *      `:core:creator-engine`, `:feature:post` or `:core:commerce` — no Banuba,
+ *      creator engine, posting or shop code in a partner APK.
+ *   d. `:feature:kitchen` / `:feature:rider` never reach `:core:facear`.
+ *
+ * (b)–(d) are TRANSITIVE over implementation/api/runtimeOnly project edges,
+ * because the hazard is what ends up in the APK, not what one build file says.
+ * Consequence worth knowing before A2/A3: today `:core:commerce` exposes
+ * `:core:facear` via `api`, so it cannot be pulled into a partner app without
+ * first splitting it. (a) is direct, like the rule it generalises.
+ *
+ * Why `:core:creator-model` is NOT in (c): it is pure Kotlin/JVM (only
+ * kotlinx-serialization, no android.*, no Banuba), and `:core:media` depends on
+ * it. The partner apps need `:core:media` for KYC document and menu-photo
+ * uploads, so banning the model would ban uploads. The first version of this
+ * rule banned every `:core:creator-*` and would have blocked exactly that. The
+ * creator ENGINE — the part with real weight — stays banned. Note that
+ * `:core:media` also exposes Media3 ExoPlayer via `api`; a partner app pulling
+ * it in carries the player too. That is size, not a boundary leak, and
+ * splitting `MediaUploader` out of `:core:media` is the fix if it matters.
+ *
+ * Pure over a `module -> direct project deps` map, so every rule is inert for a
+ * module that does not exist yet and [applicationBoundarySelfCheck] can prove
+ * each one fires against graphs containing modules that do not exist yet.
+ */
+fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String> {
+    fun reach(root: String): Set<String> {
+        val seen = LinkedHashSet<String>()
+        val queue = kotlin.collections.ArrayDeque(direct[root].orEmpty())
+        while (queue.isNotEmpty()) {
+            val next = queue.removeFirst()
+            if (seen.add(next)) queue.addAll(direct[next].orEmpty())
+        }
+        return seen
+    }
+
+    return buildList {
+        // (a)
+        direct.forEach { (module, deps) ->
+            deps.filter { it == ":app" || it.startsWith(":app-") }.forEach { app ->
+                add("$module must not depend on $app — application modules are leaves; shared code belongs in :core.")
+            }
+        }
+        // (b)
+        if (":app" in direct) {
+            reach(":app").filter { it == ":feature:kitchen" || it == ":feature:rider" }.forEach { dep ->
+                add(":app must not depend on $dep (directly or transitively) — partner-app features ship only in their own app.")
+            }
+        }
+        // (c)
+        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+            reach(app).filter {
+                it == ":core:facear" || it == ":core:creator-engine" ||
+                    it == ":feature:post" || it == ":core:commerce"
+            }.forEach { dep ->
+                add("$app must not depend on $dep (directly or transitively) — partner apps carry no Banuba, creator, post or commerce code.")
+            }
+        }
+        // (d)
+        listOf(":feature:kitchen", ":feature:rider").filter { it in direct }.forEach { feature ->
+            if (":core:facear" in reach(feature)) {
+                add("$feature must not depend on :core:facear (directly or transitively) — Face AR is Momentum-only.")
+            }
+        }
+    }
+}
+
+/**
+ * Proves each application-boundary rule still fires. Runs inside
+ * moduleGraphCheck on every invocation against synthetic graphs — the real
+ * graph cannot exercise rules about modules that do not exist yet, and a rule
+ * that silently stopped matching would otherwise look exactly like a clean
+ * graph. Returns one message per case that did not behave.
+ */
+fun applicationBoundarySelfCheck(): List<String> {
+    // name, graph, expected violation prefix (null = must be clean)
+    val cases: List<Triple<String, Map<String, Set<String>>, String?>> = listOf(
+        Triple(
+            "legal three-app graph",
+            mapOf(
+                ":app" to setOf(":feature:feast", ":feature:post", ":core:commerce"),
+                ":core:commerce" to setOf(":core:facear"),
+                ":app-kitchen" to setOf(":feature:kitchen", ":core:food"),
+                ":feature:kitchen" to setOf(":core:food", ":core:kyc-ui"),
+                ":app-rider" to setOf(":feature:rider", ":core:location"),
+                ":feature:rider" to setOf(":core:location", ":core:kyc-ui"),
+            ),
+            null,
+        ),
+        Triple("core -> partner app", mapOf(":core:food" to setOf(":app-kitchen")), ":core:food must not depend on :app-kitchen"),
+        Triple("feature -> :app", mapOf(":feature:feast" to setOf(":app")), ":feature:feast must not depend on :app"),
+        Triple("partner app -> :app", mapOf(":app-rider" to setOf(":app")), ":app-rider must not depend on :app"),
+        Triple(":app -> kitchen feature", mapOf(":app" to setOf(":feature:kitchen")), ":app must not depend on :feature:kitchen"),
+        Triple(
+            ":app -> rider feature, transitively",
+            mapOf(":app" to setOf(":core:x"), ":core:x" to setOf(":feature:rider")),
+            ":app must not depend on :feature:rider",
+        ),
+        Triple("kitchen app -> facear", mapOf(":app-kitchen" to setOf(":core:facear")), ":app-kitchen must not depend on :core:facear"),
+        Triple("kitchen app -> creator-*", mapOf(":app-kitchen" to setOf(":core:creator-engine")), ":app-kitchen must not depend on :core:creator-engine"),
+        Triple("rider app -> post", mapOf(":app-rider" to setOf(":feature:post")), ":app-rider must not depend on :feature:post"),
+        Triple(
+            "rider app -> commerce, transitively",
+            mapOf(":app-rider" to setOf(":feature:rider"), ":feature:rider" to setOf(":core:kyc-ui"), ":core:kyc-ui" to setOf(":core:commerce")),
+            ":app-rider must not depend on :core:commerce",
+        ),
+        Triple("kitchen feature -> facear", mapOf(":feature:kitchen" to setOf(":core:facear")), ":feature:kitchen must not depend on :core:facear"),
+        Triple(
+            "rider feature -> facear, transitively",
+            mapOf(":feature:rider" to setOf(":core:y"), ":core:y" to setOf(":core:facear")),
+            ":feature:rider must not depend on :core:facear",
+        ),
+    )
+    return cases.mapNotNull { (name, graph, expected) ->
+        val found = applicationBoundaryViolations(graph)
+        when {
+            expected == null && found.isNotEmpty() ->
+                "moduleGraphCheck self-check '$name': a legal graph was flagged: $found"
+            expected != null && found.none { it.startsWith(expected) } ->
+                "moduleGraphCheck self-check '$name': expected a violation starting " +
+                    "'$expected', got $found — a rule has stopped firing."
+            else -> null
+        }
+    }
+}
+
+/**
  * CI job 6 — enforces the module dependency rules from PHASE_0_1_PLAN §B
  * so they stay real rather than aspirational.
  *
  * Checks:
  *   1. :core:model is a plain Kotlin/JVM module with no Android plugin.
- *   2. No :core module depends on :app.
+ *   2. No module depends on an application module (:app or any :app-*), plus
+ *      the Feast application-boundary rules — see
+ *      [applicationBoundaryViolations]. Self-checked on every run.
  *   3. No :feature module depends on another :feature module.
  *
  * Runs at configuration time against the project graph, so it costs nothing
@@ -84,9 +222,9 @@ tasks.register("moduleGraphCheck") {
                 .filterIsInstance<ProjectDependency>()
                 .map { it.path }
 
-            if (sub.path.startsWith(":core") && deps.contains(":app")) {
-                add("${sub.path} must not depend on :app.")
-            }
+            // Rule 2 (":core must not depend on :app") is now part of
+            // applicationBoundaryViolations below, generalised to every module
+            // and every :app-* application.
             if (sub.path.startsWith(":feature")) {
                 deps.filter { it.startsWith(":feature") }.forEach { other ->
                     add(
@@ -161,6 +299,20 @@ tasks.register("moduleGraphCheck") {
                 }
             }
         }
+
+        // Rule 2 + Feast A0 application boundaries, over the real graph. Edges
+        // include runtimeOnly because the rules are about APK contents.
+        val directEdges: Map<String, Set<String>> = subprojects.associate { sub ->
+            sub.path to sub.configurations
+                .filter { it.name in setOf("implementation", "api", "runtimeOnly") }
+                .flatMap { config -> config.dependencies }
+                .filterIsInstance<ProjectDependency>()
+                .map { it.path }
+                .toSet()
+        }
+        addAll(applicationBoundaryViolations(directEdges))
+        // ...and proof that each of those rules still fires.
+        addAll(applicationBoundarySelfCheck())
     }
     val moduleCount = subprojects.size
 
@@ -188,6 +340,12 @@ tasks.register("moduleGraphCheck") {
     //      surface are wanted by more than one feature, and rule 3 forbids the
     //      :feature:commerce → :feature:post edge that reaching Banuba
     //      through the reel studio would need.
+    // Feast A0 (2026-09-13) adds NO module, so the count stays 37. The
+    // application-boundary rules above are already in force for the modules
+    // still to come; A1–A5 raise this to 46 one module at a time as each
+    // lands: :core:food, :core:location, :core:realtime, :core:kyc-ui,
+    // :feature:feast, :feature:kitchen, :feature:rider, :app-kitchen,
+    // :app-rider.
     val expectedModuleCount = 37
 
     doLast {

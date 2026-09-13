@@ -279,6 +279,33 @@ internal fun Project.banubaLicenseToken(): String {
         .map { it.trim() }
         .orElse("")
         .get()
-    val escaped = token.replace("\\", "\\\\").replace("\"", "\\\"")
+    return javaStringLiteral(token)
+}
+
+/**
+ * The Google Maps SDK for Android key for THIS application module, raw and
+ * trimmed, or `""` when the secrets file is absent or empty.
+ *
+ * One file per application module — `.secrets/google-maps-android-app.key`,
+ * later `-app-kitchen.key` and `-app-rider.key` — because each key is
+ * restricted in Google Cloud to one app's package names and SHA-1. Every
+ * application module sits directly under `mobile/android`, so the repo root is
+ * three levels up, as for [banubaLicenseToken]. Read through
+ * `providers.fileContents` so it is a tracked configuration input, and NEVER
+ * logged.
+ *
+ * Returned raw, not as a literal: the caller needs it both as a manifest
+ * placeholder and, via [javaStringLiteral], as a BuildConfig field.
+ */
+internal fun Project.googleMapsAndroidKey(): String = providers
+    .fileContents(layout.projectDirectory.file("../../../.secrets/google-maps-android-${project.name}.key"))
+    .asText
+    .map { it.trim() }
+    .orElse("")
+    .get()
+
+/** [value] as a Java string literal for `buildConfigField`, quotes included. */
+internal fun javaStringLiteral(value: String): String {
+    val escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
     return "\"$escaped\""
 }

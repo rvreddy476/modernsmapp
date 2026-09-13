@@ -140,6 +140,27 @@ banubaPe                  = "1.4.2"
 # Video Editor: this is 1.17.6 while `banuba` above is 1.54.1.
 banubaFaceAr              = "1.17.6"
 
+# ── Feast / Kitchen / Rider (A0 dependency spike, 2026-09-13) ─────────────
+# Declared ahead of the modules that consume them (A1–A4); no module depends
+# on them yet. Versions checked against the published maven-metadata on
+# 2026-09-13, not guessed:
+#   - playServicesLocation 21.2.0: the version already in the local Gradle
+#     cache (21.4.0 is the newest published). Fused location only.
+#   - mapsCompose 8.6.0: newest stable (9.0.0 is still rc).
+#   - places 5.3.0: newest (Places API (New) client).
+#   - androidxBrowser 1.10.0: Custom Tabs for the DigiLocker hand-off.
+#   - camerax 1.4.1: DELIBERATELY the version Banuba Face AR (sdk_core
+#     1.17.6) already pins in :app. A newer CameraX in :core:kyc-ui would
+#     upgrade try-on's camera stack by conflict resolution, for a reason
+#     nobody changed on purpose. 1.6.2 is the newest stable; move both
+#     together, with a Face AR check, or not at all.
+#   - lifecycle-service rides the existing `lifecycle` ref (2.11.0).
+playServicesLocation      = "21.2.0"
+mapsCompose               = "8.6.0"
+places                    = "5.3.0"
+androidxBrowser           = "1.10.0"
+camerax                   = "1.4.1"
+
 [libraries]
 # ── AndroidX core ──────────────────────────────────────────────────────
 androidx-core-ktx                  = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -294,6 +315,17 @@ banuba-face-ar-light              = { module = "com.banuba.sdk:light_source_dete
 # The effect's JS interpreter — callJsMethod and evalJs are this pack.
 banuba-face-ar-scripting          = { module = "com.banuba.sdk:scripting", version.ref = "banubaFaceAr" }
 
+# ── Feast / Kitchen / Rider (declared in A0, consumed from A1) ──────────
+play-services-location            = { module = "com.google.android.gms:play-services-location", version.ref = "playServicesLocation" }
+maps-compose                      = { module = "com.google.maps.android:maps-compose", version.ref = "mapsCompose" }
+places                            = { module = "com.google.android.libraries.places:places", version.ref = "places" }
+androidx-browser                  = { module = "androidx.browser:browser", version.ref = "androidxBrowser" }
+androidx-camera-core              = { module = "androidx.camera:camera-core", version.ref = "camerax" }
+androidx-camera-camera2           = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle         = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+androidx-camera-view              = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+androidx-lifecycle-service        = { module = "androidx.lifecycle:lifecycle-service", version.ref = "lifecycle" }
+
 [plugins]
 android-application       = { id = "com.android.application", version.ref = "agp" }
 android-library           = { id = "com.android.library", version.ref = "agp" }
@@ -313,4 +345,6 @@ us-android-application    = { id = "us.android.application" }
 us-android-library        = { id = "us.android.library" }
 us-android-compose        = { id = "us.android.compose" }
 us-android-hilt           = { id = "us.android.hilt" }
+# The Banuba licence BuildConfig field. :app only — never a partner app.
+us-android-banuba         = { id = "us.android.banuba" }
 us-jvm-library            = { id = "us.jvm.library" }
