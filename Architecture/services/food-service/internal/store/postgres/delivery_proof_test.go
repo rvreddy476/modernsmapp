@@ -2,13 +2,17 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // TestVerifyPickupCode_HappyPath walks the restaurant-side OTP verify
 // from issuance through the right code → status flip to PICKED_UP.
+// B5c: the rider must have ACCEPTED the job (see
+// TestVerifyPickupCode_RefusesUnacceptedAssignment).
 func TestVerifyPickupCode_HappyPath(t *testing.T) {
 	s, cleanup := foodTestStore(t)
 	defer cleanup()
@@ -16,7 +20,7 @@ func TestVerifyPickupCode_HappyPath(t *testing.T) {
 
 	orderID, _, _ := seedOrderWithItem(t, s, "DELIVERY_ASSIGNED")
 	_, partnerID := seedDeliveryPartner(t, s)
-	seedDeliveryAssignment(t, s, orderID, partnerID)
+	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ACCEPTED")
 
 	pickup, _, err := s.EnsureDeliveryCodes(ctx, orderID)
 	if err != nil {
@@ -42,7 +46,7 @@ func TestVerifyPickupCode_RejectsWrongCode(t *testing.T) {
 
 	orderID, _, _ := seedOrderWithItem(t, s, "DELIVERY_ASSIGNED")
 	_, partnerID := seedDeliveryPartner(t, s)
-	seedDeliveryAssignment(t, s, orderID, partnerID)
+	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ACCEPTED")
 	if _, _, err := s.EnsureDeliveryCodes(ctx, orderID); err != nil {
 		t.Fatalf("ensure codes: %v", err)
 	}
@@ -63,7 +67,7 @@ func TestVerifyPickupCode_RejectsForeignOwner(t *testing.T) {
 
 	orderID, _, _ := seedOrderWithItem(t, s, "DELIVERY_ASSIGNED")
 	_, partnerID := seedDeliveryPartner(t, s)
-	seedDeliveryAssignment(t, s, orderID, partnerID)
+	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ACCEPTED")
 	pickup, _, _ := s.EnsureDeliveryCodes(ctx, orderID)
 
 	stranger := uuid.New()
@@ -73,42 +77,47 @@ func TestVerifyPickupCode_RejectsForeignOwner(t *testing.T) {
 	assertOrderStatus(t, s, orderID, "DELIVERY_ASSIGNED")
 }
 
-// TestVerifyDeliveryCode_HappyPath walks the customer-side OTP at drop.
-func TestVerifyDeliveryCode_HappyPath(t *testing.T) {
+// TestRiderVerifyDeliveryCode_HappyPath walks the drop: the rider holding the
+// assignment enters the code the customer shows (B5c).
+func TestRiderVerifyDeliveryCode_HappyPath(t *testing.T) {
 	s, cleanup := foodTestStore(t)
 	defer cleanup()
 	ctx := context.Background()
 
 	orderID, _, customerID := seedOrderWithItem(t, s, "OUT_FOR_DELIVERY")
-	_, partnerID := seedDeliveryPartner(t, s)
+	rider, partnerID := seedDeliveryPartner(t, s)
 	// Consistent seed: an OUT_FOR_DELIVERY order's assignment has been picked up.
-	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ARRIVED_AT_CUSTOMER")
+	aid := seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ARRIVED_AT_CUSTOMER")
 
 	_, delivery, err := s.EnsureDeliveryCodes(ctx, orderID)
 	if err != nil {
 		t.Fatalf("ensure codes: %v", err)
 	}
-	if err := s.VerifyDeliveryCode(ctx, customerID, orderID, delivery); err != nil {
+	v, err := s.RiderVerifyDeliveryCode(ctx, rider, aid, delivery)
+	if err != nil {
 		t.Fatalf("verify delivery: %v", err)
+	}
+	if v.OrderID != orderID || v.CustomerID != customerID {
+		t.Fatalf("verification = %+v, want order %s customer %s", v, orderID, customerID)
 	}
 	assertOrderStatus(t, s, orderID, "DELIVERED")
 }
 
-// TestVerifyDeliveryCode_RejectsForeignCustomer ensures only the order
-// owner can verify the drop.
-func TestVerifyDeliveryCode_RejectsForeignCustomer(t *testing.T) {
+// TestRiderVerifyDeliveryCode_RejectsForeignRider ensures only the rider who
+// holds the assignment can verify the drop, even with the right code.
+func TestRiderVerifyDeliveryCode_RejectsForeignRider(t *testing.T) {
 	s, cleanup := foodTestStore(t)
 	defer cleanup()
 	ctx := context.Background()
 
 	orderID, _, _ := seedOrderWithItem(t, s, "OUT_FOR_DELIVERY")
 	_, partnerID := seedDeliveryPartner(t, s)
-	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "PICKED_UP")
+	aid := seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "PICKED_UP")
 	_, delivery, _ := s.EnsureDeliveryCodes(ctx, orderID)
 
-	stranger := uuid.New()
-	if err := s.VerifyDeliveryCode(ctx, stranger, orderID, delivery); err == nil {
-		t.Fatal("expected refusal — stranger is not the order customer")
+	stranger, _ := seedDeliveryPartner(t, s)
+	if _, err := s.RiderVerifyDeliveryCode(ctx, stranger, aid, delivery); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("stranger rider: want ErrNoRows, got %v", err)
 	}
 	assertOrderStatus(t, s, orderID, "OUT_FOR_DELIVERY")
 }

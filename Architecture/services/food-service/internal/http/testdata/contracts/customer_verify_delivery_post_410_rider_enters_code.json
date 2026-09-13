@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DELIVERY_CODE_ENTERED_BY_RIDER",
+    "message": "show the delivery code to your delivery partner; they enter it to complete the delivery"
+  },
+  "meta": {}
+}

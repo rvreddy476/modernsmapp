@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -86,12 +87,15 @@ func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID
 	if owned == 0 {
 		return pgx.ErrNoRows
 	}
-	// The job must be held by a partner who has not picked it up yet.
+	// The job must be held by a partner who ACCEPTED it and has not picked it
+	// up yet. ASSIGNED (an offer accept the rider has not confirmed) is not
+	// enough: the rider sees pickup_code only once they accept
+	// (PickupCodeVisible), and a code verified before then proves nothing.
 	if partnerID == nil {
 		return fmt.Errorf("%w: no delivery partner holds this order", ErrAssignmentNotReady)
 	}
 	switch assignmentStatus {
-	case "ASSIGNED", "ACCEPTED", "ARRIVED_AT_RESTAURANT":
+	case "ACCEPTED", "ARRIVED_AT_RESTAURANT":
 	default:
 		return fmt.Errorf("%w: assignment is %s", ErrAssignmentNotReady, assignmentStatus)
 	}
@@ -122,56 +126,105 @@ func codeMatches(stored, supplied string) bool {
 	return subtle.ConstantTimeCompare([]byte(stored), []byte(supplied)) == 1
 }
 
-// VerifyDeliveryCode is the customer-side OTP check at drop. Sets
-// delivery_verified_at + transitions order to DELIVERED.
-func (s *Store) VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error {
+// MaxDeliveryCodeAttempts is how many wrong delivery codes one assignment
+// takes before RiderVerifyDeliveryCode refuses every further try. The code is
+// four digits and the rider, not the customer, now submits it, so without a
+// cap it could be walked in minutes under the gateway's per-user rate limit.
+const MaxDeliveryCodeAttempts = 5
+
+// ErrDeliveryCodeLocked: the assignment took MaxDeliveryCodeAttempts wrong
+// delivery codes. HTTP 429 FOOD_DELIVERY_CODE_ATTEMPTS_EXCEEDED.
+var ErrDeliveryCodeLocked = errors.New("too many wrong delivery codes for this assignment")
+
+// DeliveryVerification is what a successful rider delivery verify reports.
+type DeliveryVerification struct {
+	OrderID    uuid.UUID
+	CustomerID uuid.UUID
+}
+
+// RiderVerifyDeliveryCode is the drop-off handover: the customer shows the
+// delivery code (it is on their order detail while the food is with the
+// rider) and the rider holding the assignment enters it, exactly as the
+// restaurant enters the rider's pickup code. Sets delivery_verified_at and
+// moves the order to DELIVERED.
+//
+// Only the ACTIVE partner who holds assignmentID may verify it (anyone else
+// gets pgx.ErrNoRows), only after pickup, and only while fewer than
+// MaxDeliveryCodeAttempts wrong codes were entered; a wrong code is counted
+// and committed before the refusal is returned.
+func (s *Store) RiderVerifyDeliveryCode(ctx context.Context, riderUserID, assignmentID uuid.UUID, code string) (*DeliveryVerification, error) {
+	partner, err := s.GetDeliveryPartner(ctx, riderUserID)
+	if err != nil {
+		return nil, err
+	}
+	if partner.Status != "ACTIVE" {
+		return nil, ErrDeliveryPartnerNotActive
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
 	var storedCode, assignmentStatus, orderStatus string
-	var partnerID *uuid.UUID
+	var failed int
+	var v DeliveryVerification
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(da.delivery_code, ''), da.status::text, da.delivery_partner_id, o.status::text
+		SELECT COALESCE(da.delivery_code, ''), da.status::text, da.delivery_code_failed_attempts,
+			o.id, o.user_id, o.status::text
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
-		WHERE da.order_id = $1 AND o.user_id = $2
+		WHERE da.id = $1 AND da.delivery_partner_id = $2
 		FOR UPDATE OF da
-	`, orderID, customerID).Scan(&storedCode, &assignmentStatus, &partnerID, &orderStatus); err != nil {
-		return err
+	`, assignmentID, partner.ID).Scan(&storedCode, &assignmentStatus, &failed, &v.OrderID, &v.CustomerID, &orderStatus); err != nil {
+		return nil, err
 	}
 	// Only after pickup: a leaked code cannot mark an order delivered early.
-	if partnerID == nil || (assignmentStatus != "PICKED_UP" && assignmentStatus != "ARRIVED_AT_CUSTOMER") {
-		return fmt.Errorf("%w: assignment is %s", ErrAssignmentNotReady, assignmentStatus)
+	if assignmentStatus != "PICKED_UP" && assignmentStatus != "ARRIVED_AT_CUSTOMER" {
+		return nil, fmt.Errorf("%w: assignment is %s", ErrAssignmentNotReady, assignmentStatus)
+	}
+	if failed >= MaxDeliveryCodeAttempts {
+		return nil, ErrDeliveryCodeLocked
 	}
 	if !codeMatches(storedCode, code) {
-		return ErrDeliveryCodeInvalid
+		if _, err := tx.Exec(ctx, `
+			UPDATE food.delivery_assignments
+			SET delivery_code_failed_attempts = delivery_code_failed_attempts + 1
+			WHERE id = $1
+		`, assignmentID); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return nil, ErrDeliveryCodeInvalid
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE food.delivery_assignments
 		SET delivery_verified_at = NOW(), delivered_at = NOW(), status = 'DELIVERED'
-		WHERE order_id = $1
-	`, orderID); err != nil {
-		return err
+		WHERE id = $1
+	`, assignmentID); err != nil {
+		return nil, err
 	}
 	if orderStatus == orderstate.PickedUp {
 		// The rider skipped "arrived at customer"; record the hop honestly.
 		if err := transitionOrderTx(ctx, tx, OrderTransition{
-			OrderID: orderID, From: orderstate.PickedUp, To: orderstate.OutForDelivery,
+			OrderID: v.OrderID, From: orderstate.PickedUp, To: orderstate.OutForDelivery,
 			Actor: orderstate.ActorSystem, Reason: "delivery code verified before arrival was marked",
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		orderStatus = orderstate.OutForDelivery
 	}
 	if err := transitionOrderTx(ctx, tx, OrderTransition{
-		OrderID: orderID, From: orderStatus, To: orderstate.Delivered,
-		Actor: orderstate.ActorCustomer, ChangedBy: &customerID, Reason: "delivery code verified",
+		OrderID: v.OrderID, From: orderStatus, To: orderstate.Delivered,
+		Actor: orderstate.ActorDeliveryPartner, ChangedBy: &riderUserID, Reason: "delivery code verified",
 	}); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 // AttachProofURL is the partner-side photo upload (MinIO key returned

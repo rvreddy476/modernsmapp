@@ -155,7 +155,7 @@ func TestOrderLifecycle_HappyPath(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	orderID, _, customerID := seedOrderWithItem(t, s, "CONFIRMED")
+	orderID, _, _ := seedOrderWithItem(t, s, "CONFIRMED")
 	owner := readRestaurantOwner(t, s, orderID)
 	seedDeliveryAssignmentWithStatus(t, s, orderID, nil, "CREATED")
 
@@ -193,7 +193,7 @@ func TestOrderLifecycle_HappyPath(t *testing.T) {
 		t.Fatalf("arrived customer: %v", err)
 	}
 	assertOrderStatus(t, s, orderID, "OUT_FOR_DELIVERY")
-	if err := s.VerifyDeliveryCode(ctx, customerID, orderID, delivery); err != nil {
+	if _, err := s.RiderVerifyDeliveryCode(ctx, user, aid, delivery); err != nil {
 		t.Fatalf("delivery: %v", err)
 	}
 	assertOrderStatus(t, s, orderID, "DELIVERED")
@@ -334,15 +334,15 @@ func TestVerifyDeliveryCode_RefusesBeforePickup(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	orderID, _, customerID := seedOrderWithItem(t, s, "DELIVERY_ASSIGNED")
-	_, partnerID := seedDeliveryPartner(t, s)
-	seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ASSIGNED")
+	orderID, _, _ := seedOrderWithItem(t, s, "DELIVERY_ASSIGNED")
+	rider, partnerID := seedDeliveryPartner(t, s)
+	aid := seedDeliveryAssignmentWithStatus(t, s, orderID, &partnerID, "ASSIGNED")
 	_, delivery, err := s.EnsureDeliveryCodes(ctx, orderID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.VerifyDeliveryCode(ctx, customerID, orderID, delivery); err == nil {
-		t.Fatal("delivery verified before pickup")
+	if _, err := s.RiderVerifyDeliveryCode(ctx, rider, aid, delivery); !errors.Is(err, ErrAssignmentNotReady) {
+		t.Fatalf("delivery verified before pickup: %v", err)
 	}
 	_, _, status := readAssignment(t, s, orderID)
 	if status != "ASSIGNED" {

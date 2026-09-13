@@ -629,6 +629,12 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	if err != nil {
 		return nil, err
 	}
+	// Placement is an INSERT, not a transition, so it is announced here. A
+	// cash-on-delivery order is placed CONFIRMED and this event is what tells
+	// the kitchen; an online order is announced again by payment_succeeded.
+	if err := enqueueOrderEventTx(ctx, tx, orderID, eventOrderPlaced, ""); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

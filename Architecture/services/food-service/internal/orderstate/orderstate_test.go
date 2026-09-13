@@ -22,8 +22,10 @@ func TestValidate(t *testing.T) {
 		{"pickup is the restaurant OTP", ActorRestaurant, DeliveryAssigned, PickedUp, true},
 		{"partner cannot self-mark pickup", ActorDeliveryPartner, DeliveryAssigned, PickedUp, false},
 		{"partner marks out for delivery", ActorDeliveryPartner, PickedUp, OutForDelivery, true},
-		{"delivery is the customer OTP", ActorCustomer, OutForDelivery, Delivered, true},
-		{"partner cannot self-mark delivered", ActorDeliveryPartner, OutForDelivery, Delivered, false},
+		// B5c: the rider enters the code the customer shows; the step button
+		// cannot reach DELIVERED (store.deliveryOTPRequired).
+		{"delivery is the rider entering the customer's code", ActorDeliveryPartner, OutForDelivery, Delivered, true},
+		{"customer cannot mark their own order delivered", ActorCustomer, OutForDelivery, Delivered, false},
 		{"customer cancels while preparing", ActorCustomer, Preparing, CancelledByCustomer, true},
 		{"customer cannot cancel once assigned", ActorCustomer, DeliveryAssigned, CancelledByCustomer, false},
 		{"admin cancels in flight", ActorAdmin, OutForDelivery, CancelledByAdmin, true},

@@ -152,6 +152,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			delivery.POST("/assignments/:assignmentId/picked-up", h.DeliveryPickedUp)
 			delivery.POST("/assignments/:assignmentId/arrived-customer", h.DeliveryArrivedCustomer)
 			delivery.POST("/assignments/:assignmentId/delivered", h.DeliveryDelivered)
+			delivery.POST("/assignments/:assignmentId/verify-delivery", h.RiderVerifyDeliveryCode)
 			delivery.POST("/location", h.UpdateDeliveryLocation)
 			delivery.GET("/earnings", h.GetDeliveryEarnings)
 			delivery.GET("/history", h.GetDeliveryHistory)

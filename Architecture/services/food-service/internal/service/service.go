@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/internal/digilocker"
+	"github.com/atpost/food-service/internal/foodevents"
 	"github.com/atpost/food-service/internal/foodpii"
 	"github.com/atpost/food-service/internal/onboarding"
 	"github.com/atpost/food-service/internal/orderstate"
@@ -94,7 +95,7 @@ type Store interface {
 	ExpireDeliveryOffers(ctx context.Context) (int, error)
 	EnsureDeliveryCodes(ctx context.Context, orderID uuid.UUID) (string, string, error)
 	VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID, code string) error
-	VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error
+	RiderVerifyDeliveryCode(ctx context.Context, riderUserID, assignmentID uuid.UUID, code string) (*postgres.DeliveryVerification, error)
 	AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, which, url string) error
 	CreateTicket(ctx context.Context, in postgres.CreateTicketInput) (*postgres.Ticket, error)
 	ListMyTickets(ctx context.Context, customerID uuid.UUID) ([]postgres.Ticket, error)
@@ -461,10 +462,23 @@ func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, in postgres.
 	if err != nil {
 		return nil, err
 	}
-	s.emit(ctx, "food.order."+o.ID.String(), "food.order.placed", o)
-	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.placed", o)
-	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.placed", o)
+	// Kafka: the placing transaction wrote food.order.placed to the outbox.
+	s.publishOrderRealtime(ctx, o, foodevents.OrderPlaced)
 	return o, nil
+}
+
+// publishOrderRealtime sends an order change to the live screens: the
+// customer's order topic, the restaurant's order board and the admin board.
+// Realtime only. The Kafka copy of every order lifecycle event is written by
+// the store inside the transaction that made the change (transitionOrderTx,
+// PlaceOrder), so it can never announce a change that rolled back.
+func (s *Service) publishOrderRealtime(ctx context.Context, o *postgres.Order, eventType string) {
+	if o == nil {
+		return
+	}
+	s.publishRealtime(ctx, foodevents.OrderTopic(o.ID), eventType, o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", eventType, o)
+	s.publishRealtime(ctx, "food.admin.live_orders", eventType, o)
 }
 
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID) ([]postgres.Order, error) {
@@ -561,9 +575,7 @@ func (s *Service) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, re
 	// transaction; submit it now through the same path a rejection uses. The
 	// SLA worker resubmits it if this submission fails.
 	s.submitRejectedOrderRefund(ctx, orderID, "customer cancelled the order")
-	s.emit(ctx, "food.order."+o.ID.String(), "food.order.cancelled", o)
-	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.cancelled", o)
-	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.cancelled", o)
+	s.publishOrderRealtime(ctx, o, foodevents.OrderCancelled)
 	return o, nil
 }
 
@@ -719,9 +731,9 @@ func (s *Service) AutoRejectSLAExpiredOrders(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for _, id := range ids {
-		// Push a minimal payload — downstream consumers re-fetch the
-		// order from food-service for the full state.
-		s.emit(ctx, "food.order."+id.String(), "food.order.restaurant_rejected", map[string]any{
+		// Realtime only: the rejecting transaction wrote the Kafka event
+		// (with user_id and restaurant_owner_user_id) to the outbox.
+		s.publishRealtime(ctx, foodevents.OrderTopic(id), foodevents.OrderRestaurantRejected, map[string]any{
 			"id":     id.String(),
 			"reason": "sla_breach",
 		})
@@ -736,6 +748,12 @@ func (s *Service) PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID
 	o, err := s.store.PartnerUpdateOrderStatus(ctx, ownerID, orderID, toStatus, reason, idempotencyKey)
 	if err != nil {
 		return nil, err
+	}
+	// The restaurant moves only CONFIRMED -> PREPARING (its accept) or
+	// RESTAURANT_REJECTED, and PREPARING -> READY_FOR_PICKUP. Kafka: the
+	// transition wrote the event; the live screens get the same name here.
+	if eventType := foodevents.ForTransition(orderstate.Confirmed, toStatus); eventType != "" {
+		s.publishOrderRealtime(ctx, o, eventType)
 	}
 	if toStatus == orderstate.RestaurantRejected {
 		s.submitRejectedOrderRefund(ctx, orderID, "restaurant rejected the order")
@@ -824,7 +842,14 @@ func (s *Service) AdminGetOrder(ctx context.Context, orderID uuid.UUID) (*postgr
 }
 
 func (s *Service) AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UUID, reason string) (*postgres.Order, error) {
-	return s.store.AdminCancelOrder(ctx, adminID, orderID, reason)
+	o, err := s.store.AdminCancelOrder(ctx, adminID, orderID, reason)
+	if err != nil {
+		return nil, err
+	}
+	// Kafka: the cancelling transaction wrote food.order.cancelled and closed
+	// the delivery assignment.
+	s.publishOrderRealtime(ctx, o, foodevents.OrderCancelled)
+	return o, nil
 }
 
 func (s *Service) AdminListCoupons(ctx context.Context) ([]map[string]any, error) {

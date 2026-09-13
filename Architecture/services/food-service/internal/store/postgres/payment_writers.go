@@ -374,9 +374,16 @@ func (s *Store) confirmOrderPaidTx(ctx context.Context, tx pgx.Tx, c paidConfirm
 			return err
 		}
 	}
+	// A capture (online, wallet) is announced as payment_succeeded; cash on
+	// delivery is announced as confirmed (the edge's default).
+	event := ""
+	if c.PaymentStatus == "CAPTURED" {
+		event = eventPaymentSucceeded
+	}
 	if err := transitionOrderTx(ctx, tx, OrderTransition{
 		OrderID: c.OrderID, From: c.From, To: orderstate.Confirmed,
 		Actor: orderstate.ActorPayment, ChangedBy: c.ChangedBy, Reason: c.Reason,
+		Event: event,
 	}); err != nil {
 		return err
 	}

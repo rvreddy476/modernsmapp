@@ -1,8 +1,10 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -42,15 +44,34 @@ func (h *Handler) PartnerVerifyPickupOTP(c *gin.Context) {
 }
 
 // CustomerVerifyDeliveryOTP — POST /v1/food/orders/:orderId/verify-delivery
-// Customer enters the delivery OTP shown on partner's screen.
+//
+// GONE (B5c). The customer used to both see delivery_code and submit it, so
+// the code proved nothing about the handover. The customer now SHOWS the code
+// (order detail, while the food is with the rider) and the rider enters it at
+// POST /v1/food/delivery/assignments/:assignmentId/verify-delivery. This route
+// never marks an order delivered; it answers 410 with a stable code so an old
+// client can tell the user what changed.
 func (h *Handler) CustomerVerifyDeliveryOTP(c *gin.Context) {
+	if _, ok := h.requireUser(c); !ok {
+		return
+	}
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, "FOOD_DELIVERY_CODE_ENTERED_BY_RIDER",
+		"show the delivery code to your delivery partner; they enter it to complete the delivery", nil)
+}
+
+// RiderVerifyDeliveryCode — POST /v1/food/delivery/assignments/:assignmentId/verify-delivery
+//
+// The rider holding the assignment enters the code the customer shows. Only
+// their own active assignment, only after pickup; wrong codes are counted and
+// the assignment locks after store.MaxDeliveryCodeAttempts.
+func (h *Handler) RiderVerifyDeliveryCode(c *gin.Context) {
 	uid, ok := h.requireUser(c)
 	if !ok {
 		return
 	}
-	orderID, err := uuid.Parse(c.Param("orderId"))
+	assignmentID, err := uuid.Parse(c.Param("assignmentId"))
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ORDER_ID", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ASSIGNMENT_ID", "assignment id must be a UUID", nil)
 		return
 	}
 	var req VerifyOTPRequest
@@ -58,14 +79,23 @@ func (h *Handler) CustomerVerifyDeliveryOTP(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "code is required", nil)
 		return
 	}
-	if err := h.svc.VerifyDeliveryCode(c.Request.Context(), uid, orderID, req.Code); err != nil {
+	v, err := h.svc.RiderVerifyDeliveryCode(c.Request.Context(), uid, assignmentID, req.Code)
+	if err != nil {
+		if errors.Is(err, postgres.ErrDeliveryCodeInvalid) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "FOOD_DELIVERY_CODE_INVALID", "the delivery code does not match", nil)
+			return
+		}
 		if writeKnownError(c, err) {
 			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "DELIVERY_VERIFY_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"order_id": orderID.String(), "status": "DELIVERED"}, nil)
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"assignment_id": assignmentID.String(),
+		"order_id":      v.OrderID.String(),
+		"status":        "DELIVERED",
+	}, nil)
 }
 
 // AttachProofRequest is the partner-side proof-of-handoff upload (MinIO

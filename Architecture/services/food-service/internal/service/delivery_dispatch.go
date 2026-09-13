@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/food-service/internal/foodevents"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -157,7 +158,31 @@ func (s *Service) dispatchOneOrder(ctx context.Context, g orderGroup, orderID uu
 				"order_id", orderID, "partner_id", c.PartnerID, "error", err)
 			continue
 		}
-		s.emit(ctx, deliveryPartnerTopic(c.UserID), "food.delivery.offered", offer)
+		s.emit(ctx, deliveryPartnerTopic(c.UserID), foodevents.DeliveryOffered, newDeliveryOfferedEvent(offer, c.UserID))
+	}
+}
+
+// deliveryOfferedEvent is food.delivery.offered for a single order: the offer
+// row plus the rider's user id. The offer only names the partner ROW
+// (delivery_partner_id); notification-service addresses the push by
+// delivery_partner_user_id and never reads this service's database.
+type deliveryOfferedEvent struct {
+	*postgres.DeliveryOffer
+	DeliveryPartnerUserID string `json:"delivery_partner_user_id"`
+}
+
+func newDeliveryOfferedEvent(offer *postgres.DeliveryOffer, riderUserID uuid.UUID) deliveryOfferedEvent {
+	return deliveryOfferedEvent{DeliveryOffer: offer, DeliveryPartnerUserID: riderUserID.String()}
+}
+
+// newBatchDeliveryOfferedEvent is food.delivery.offered for a batch. The
+// rider's user id is top level, where notification-service reads it.
+func newBatchDeliveryOfferedEvent(offer *postgres.DeliveryOffer, batch *postgres.DeliveryBatch, riderUserID uuid.UUID) map[string]any {
+	return map[string]any{
+		"offer":                    offer,
+		"batch":                    batch,
+		"is_batch":                 true,
+		"delivery_partner_user_id": riderUserID.String(),
 	}
 }
 
@@ -191,13 +216,8 @@ func (s *Service) dispatchOneBatch(ctx context.Context, g orderGroup) {
 				"batch_id", batch.ID, "partner_id", c.PartnerID, "error", err)
 			continue
 		}
-		s.emit(ctx, deliveryPartnerTopic(c.UserID), "food.delivery.offered",
-			map[string]any{
-				"offer":    offer,
-				"batch":    batch,
-				"is_batch": true,
-			},
-		)
+		s.emit(ctx, deliveryPartnerTopic(c.UserID), foodevents.DeliveryOffered,
+			newBatchDeliveryOfferedEvent(offer, batch, c.UserID))
 	}
 	slog.Info("food-service: batch dispatched",
 		"batch_id", batch.ID, "size", len(g.orderIDs), "offered_to", len(candidates))
@@ -219,11 +239,12 @@ func (s *Service) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.U
 
 // AcceptDeliveryOffer routes to the batch accept path when the offer
 // belongs to a batch, otherwise the legacy single-order path. Both mint the
-// pickup + delivery OTPs and emit the per-order assignment event so
-// downstream consumers don't need to know about batching. The event NEVER
-// carries the codes (B5a): the rider reads pickup_code from their assignment
-// once accepted, the customer reads delivery_code from the order detail once
-// the food is picked up.
+// pickup + delivery OTPs. The accept transaction wrote one
+// food.delivery.assigned per order to the outbox (B5c); this publishes the
+// matching realtime frame with the batch detail. Neither ever carries the
+// codes (B5a): the rider reads pickup_code from their assignment once
+// accepted, the customer reads delivery_code from the order detail once the
+// food is picked up.
 func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID) error {
 	// Try the batch path first — store returns a not-found / nil
 	// batch_id error if this offer is single-order, which we treat as
@@ -235,7 +256,7 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 				slog.Warn("food-service: ensure codes failed (batch)",
 					"order_id", m.OrderID, "batch_id", batch.ID, "error", cerr)
 			}
-			s.emit(ctx, orderTopic(m.OrderID), "food.delivery.assigned", map[string]any{
+			s.publishRealtime(ctx, orderTopic(m.OrderID), foodevents.DeliveryAssigned, map[string]any{
 				"order_id":       m.OrderID.String(),
 				"partner_id":     partnerID.String(),
 				"batch_id":       batch.ID.String(),
@@ -258,7 +279,7 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 	if _, _, cerr := s.store.EnsureDeliveryCodes(ctx, offer.OrderID); cerr != nil {
 		slog.Warn("food-service: ensure codes failed", "order_id", offer.OrderID, "error", cerr)
 	}
-	s.emit(ctx, orderTopic(offer.OrderID), "food.delivery.assigned", map[string]any{
+	s.publishRealtime(ctx, orderTopic(offer.OrderID), foodevents.DeliveryAssigned, map[string]any{
 		"offer": offer,
 	})
 	return nil
@@ -276,29 +297,33 @@ func (s *Service) GetBatchForOrderForPartner(ctx context.Context, userID, orderI
 	return s.store.GetBatchForOrderForPartner(ctx, userID, orderID)
 }
 
-// VerifyPickupCode wraps the store call; emits the pickup-confirmed
-// event so the customer screen ticks over to "out for delivery".
+// VerifyPickupCode wraps the store call; publishes the pickup-confirmed frame
+// so the customer screen ticks over to "out for delivery". The verify
+// transaction wrote food.delivery.picked_up to the outbox.
 func (s *Service) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID, code string) error {
 	if err := s.store.VerifyPickupCode(ctx, ownerID, orderID, code); err != nil {
 		return err
 	}
-	s.emit(ctx, "food.order."+orderID.String(), "food.delivery.picked_up", map[string]any{
+	s.publishRealtime(ctx, orderTopic(orderID), foodevents.DeliveryPickedUp, map[string]any{
 		"order_id": orderID.String(),
 	})
 	return nil
 }
 
-// VerifyDeliveryCode wraps the store call; emits the delivered event
-// so settlement + ratings flows kick in downstream. Also fires the
-// loyalty + referral hooks — both are idempotent on (user, order)
-// so a re-run of the verify (e.g. retry on flaky network) won't
-// double-credit. Best-effort: a failure on either hook is logged
-// but doesn't fail the verify.
-func (s *Service) VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error {
-	if err := s.store.VerifyDeliveryCode(ctx, customerID, orderID, code); err != nil {
-		return err
+// RiderVerifyDeliveryCode is the handover at the door: the rider holding
+// assignmentID enters the code the customer shows. The verify transaction
+// wrote food.delivery.delivered to the outbox; this publishes the realtime
+// frame and fires the loyalty + referral hooks for the order's CUSTOMER —
+// both are idempotent on (user, order), so a retried verify won't
+// double-credit. Best-effort: a failure on either hook is logged but doesn't
+// fail the verify.
+func (s *Service) RiderVerifyDeliveryCode(ctx context.Context, riderUserID, assignmentID uuid.UUID, code string) (*postgres.DeliveryVerification, error) {
+	v, err := s.store.RiderVerifyDeliveryCode(ctx, riderUserID, assignmentID, code)
+	if err != nil {
+		return nil, err
 	}
-	s.emit(ctx, "food.order."+orderID.String(), "food.delivery.delivered", map[string]any{
+	customerID, orderID := v.CustomerID, v.OrderID
+	s.publishRealtime(ctx, orderTopic(orderID), foodevents.DeliveryDelivered, map[string]any{
 		"order_id": orderID.String(),
 	})
 	// G4.4 — award loyalty. Need the order's final_amount; pull it
@@ -316,7 +341,7 @@ func (s *Service) VerifyDeliveryCode(ctx context.Context, customerID, orderID uu
 		slog.Warn("food-service: referral reward failed",
 			"customer_id", customerID, "order_id", orderID, "error", err)
 	}
-	return nil
+	return v, nil
 }
 
 // AttachProofURL stores a MinIO object key as proof at pickup or drop.

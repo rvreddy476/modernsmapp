@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DELIVERY_PARTNER_NOT_ACTIVE",
+    "message": "delivery partner is not active"
+  },
+  "meta": {}
+}

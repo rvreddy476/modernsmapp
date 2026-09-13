@@ -366,8 +366,10 @@ func countEvents(events []capturedEvent, eventType string) int {
 	return n
 }
 
-// The assignment events still go out on realtime AND the outbox (the event
-// type is unchanged for notification-service), but never with a code.
+// The assignment events still go out on realtime, never with a code. Since
+// B5c the Kafka copy is written by the store inside the accept transaction
+// (TestOrderEventsCommitWithTheirTransition), so the service's own outbox leg
+// stays empty.
 func TestDeliveryEventsNeverCarryTheOTPs(t *testing.T) {
 	ctx := context.Background()
 	single := &acceptFakeStore{offer: &postgres.DeliveryOffer{ID: uuid.New(), OrderID: uuid.New(), DeliveryPartnerID: uuid.New(), Status: "accepted"}}
@@ -382,9 +384,9 @@ func TestDeliveryEventsNeverCarryTheOTPs(t *testing.T) {
 		if err := svc.AcceptDeliveryOffer(ctx, uuid.New(), uuid.New()); err != nil {
 			t.Fatalf("%s accept: %v", name, err)
 		}
-		if countEvents(rt.events, "food.delivery.assigned") != tc.want || countEvents(ob.events, "food.delivery.assigned") != tc.want {
-			t.Fatalf("%s: food.delivery.assigned realtime=%d outbox=%d, want %d each (an OTP-bearing payload is refused)",
-				name, countEvents(rt.events, "food.delivery.assigned"), countEvents(ob.events, "food.delivery.assigned"), tc.want)
+		if countEvents(rt.events, "food.delivery.assigned") != tc.want || countEvents(ob.events, "food.delivery.assigned") != 0 {
+			t.Fatalf("%s: food.delivery.assigned realtime=%d (want %d; an OTP-bearing payload is refused) service outbox=%d (want 0: the store writes it in the accept tx)",
+				name, countEvents(rt.events, "food.delivery.assigned"), tc.want, countEvents(ob.events, "food.delivery.assigned"))
 		}
 		assertNoOTPs(t, name+" realtime", rt.events)
 		assertNoOTPs(t, name+" outbox", ob.events)

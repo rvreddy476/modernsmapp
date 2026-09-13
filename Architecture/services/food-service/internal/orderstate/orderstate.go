@@ -112,8 +112,10 @@ var table = map[edge]map[Actor]struct{}{
 	{PickedUp, OutForDelivery}:   actors(ActorDeliveryPartner, ActorSystem),
 	{PickedUp, CancelledByAdmin}: actors(ActorAdmin),
 
-	// Delivery completes only through the customer-side OTP verify.
-	{OutForDelivery, Delivered}:        actors(ActorCustomer),
+	// Delivery completes only through the delivery-code verify: the customer
+	// shows the code and the rider holding the assignment enters it (B5c). The
+	// customer can no longer mark their own order delivered.
+	{OutForDelivery, Delivered}:        actors(ActorDeliveryPartner),
 	{OutForDelivery, CancelledByAdmin}: actors(ActorAdmin),
 
 	// Refunds: an admin REQUESTS a full refund of a paid order that is no longer

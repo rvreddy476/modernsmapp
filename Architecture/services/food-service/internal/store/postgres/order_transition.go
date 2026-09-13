@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/atpost/food-service/internal/foodevents"
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -42,6 +43,10 @@ type OrderTransition struct {
 	// CancelReason is written to orders.cancellation_reason when To is a
 	// cancellation; it defaults to Reason.
 	CancelReason string
+	// Event overrides the Kafka event this edge announces
+	// (foodevents.ForTransition). A captured payment announces
+	// food.order.payment_succeeded rather than food.order.confirmed.
+	Event string
 }
 
 // transitionOrderTx is the ONLY non-payment writer of food.orders.status
@@ -52,7 +57,12 @@ type OrderTransition struct {
 //     cannot be overwritten;
 //  3. treats zero affected rows as ErrOrderStatusConflict, which the caller
 //     returns, rolling back everything else it did in the transaction;
-//  4. records history with the real from_status in the same transaction.
+//  4. records history with the real from_status in the same transaction;
+//  5. when the order ends before delivery, closes its delivery assignment and
+//     pending offers (closeOpenAssignmentsTx);
+//  6. writes the lifecycle event to the outbox in the same transaction
+//     (enqueueOrderEventTx), so notification-service hears of exactly the
+//     changes that committed.
 func transitionOrderTx(ctx context.Context, tx pgx.Tx, tr OrderTransition) error {
 	if err := orderstate.Validate(tr.Actor, tr.From, tr.To); err != nil {
 		return err
@@ -84,6 +94,20 @@ func transitionOrderTx(ctx context.Context, tx pgx.Tx, tr OrderTransition) error
 		VALUES ($1, $2::text::food.order_status, $3::text::food.order_status, $4, $5, clock_timestamp())
 	`, tr.OrderID, tr.From, tr.To, tr.ChangedBy, tr.Reason); err != nil {
 		return fmt.Errorf("record order history: %w", err)
+	}
+	if cancel {
+		if err := closeOpenAssignmentsTx(ctx, tx, tr.OrderID); err != nil {
+			return err
+		}
+	}
+	eventType := tr.Event
+	if eventType == "" {
+		eventType = foodevents.ForTransition(tr.From, tr.To)
+	}
+	if eventType != "" {
+		if err := enqueueOrderEventTx(ctx, tx, tr.OrderID, eventType, tr.From); err != nil {
+			return err
+		}
 	}
 	return nil
 }

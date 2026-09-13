@@ -167,12 +167,17 @@ func settleRefundTx(ctx context.Context, tx pgx.Tx, r refundSettlement) error {
 		return err
 	}
 	if r.Full && r.OrderStatus == orderstate.RefundPending {
+		// The transition announces food.order.refunded.
 		if err := transitionOrderTx(ctx, tx, OrderTransition{
 			OrderID: r.OrderID, From: orderstate.RefundPending, To: orderstate.Refunded,
 			Actor: orderstate.ActorPayment, ChangedBy: r.ChangedBy, Reason: "refund settled",
 		}); err != nil {
 			return err
 		}
+	} else if err := enqueueOrderEventTx(ctx, tx, r.OrderID, eventRefunded, ""); err != nil {
+		// A partial refund (or a full one on an order not waiting for it)
+		// changes no status but is still announced, in this transaction.
+		return err
 	}
 	var err error
 	switch {

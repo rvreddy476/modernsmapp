@@ -9,9 +9,9 @@ import "github.com/atpost/food-service/internal/orderstate"
 // RiderLocationShareable reports whether a rider ping may be published to the
 // customer's order topic: the rider has ACCEPTED the job (not merely been
 // assigned it by an offer accept) and the order is still on its way. Never
-// before acceptance, never after delivery, never on a cancelled order (an
-// admin cancel leaves the assignment row where it was, so the order status is
-// checked too).
+// before acceptance, never after delivery, never on a cancelled order (a
+// cancellation closes the assignment since B5c, and the order status is still
+// checked for rows closed before then).
 func RiderLocationShareable(assignmentStatus, orderStatus string) bool {
 	switch assignmentStatus {
 	case "ACCEPTED", "ARRIVED_AT_RESTAURANT", "PICKED_UP", "ARRIVED_AT_CUSTOMER":

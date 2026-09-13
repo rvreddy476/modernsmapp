@@ -1898,6 +1898,12 @@ ALTER TABLE food.delivery_partner_locations
 ALTER TABLE food.delivery_assignments
     ADD COLUMN IF NOT EXISTS location_published_at TIMESTAMPTZ;
 
+-- B5c: the rider enters the delivery code the customer shows. Wrong codes are
+-- counted per assignment and the verify refuses after five
+-- (store.MaxDeliveryCodeAttempts).
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS delivery_code_failed_attempts INT NOT NULL DEFAULT 0;
+
 -- The 30-day location-history purge scans by age.
 CREATE INDEX IF NOT EXISTS ix_food_delivery_locations_recorded_at
     ON food.delivery_partner_locations(recorded_at);

@@ -158,6 +158,10 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 			return nil, err
 		}
 		orderStatus = orderstate.RefundPending
+	} else if err := enqueueOrderEventTx(ctx, tx, orderID, eventRefundRequested, ""); err != nil {
+		// A partial refund changes no status (the REFUND_PENDING transition
+		// above announces a full one) but is still announced.
+		return nil, err
 	}
 
 	var refundID uuid.UUID

@@ -322,7 +322,9 @@ func (s *Service) submitRefundPlan(ctx context.Context, orderID uuid.UUID, plan 
 	default:
 		return nil, fmt.Errorf("%w: %s order", postgres.ErrRefundNotEligible, plan.PaymentMethod)
 	}
-	s.emit(ctx, "food.order."+orderID.String(), "food.order.refund_requested", body)
+	// Realtime only: AdminRequestRefund wrote food.order.refund_requested to
+	// the outbox in its transaction.
+	s.publishRealtime(ctx, "food.order."+orderID.String(), "food.order.refund_requested", body)
 	return body, nil
 }
 
@@ -346,8 +348,12 @@ func (s *Service) OnPaymentEventApplied(ctx context.Context, a payments.Applied)
 	s.emitPaymentEvent(ctx, eventType, a.OrderID, a.RestaurantID, data)
 }
 
+// emitPaymentEvent publishes a payment change to the live screens. Realtime
+// only: the payment transaction (confirmOrderPaidTx, markPaymentFailedTx,
+// settleRefundTx) wrote the Kafka event to the outbox, with user_id and
+// restaurant_owner_user_id, before it committed.
 func (s *Service) emitPaymentEvent(ctx context.Context, eventType string, orderID, restaurantID uuid.UUID, data any) {
-	s.emit(ctx, "food.order."+orderID.String(), eventType, data)
+	s.publishRealtime(ctx, "food.order."+orderID.String(), eventType, data)
 	if restaurantID != uuid.Nil {
 		s.publishRealtime(ctx, "food.restaurant."+restaurantID.String()+".orders", eventType, data)
 	}

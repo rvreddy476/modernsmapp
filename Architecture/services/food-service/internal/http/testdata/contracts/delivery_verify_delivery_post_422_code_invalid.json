@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_DELIVERY_CODE_INVALID",
+    "message": "the delivery code does not match"
+  },
+  "meta": {}
+}

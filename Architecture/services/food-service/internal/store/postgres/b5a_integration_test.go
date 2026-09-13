@@ -226,7 +226,7 @@ func TestDeliveryCodeReachesTheCustomerOnlyWhileWithTheRider(t *testing.T) {
 		t.Fatalf("arrived customer: %v", err)
 	}
 	detail("out for delivery", delivery)
-	if err := s.VerifyDeliveryCode(ctx, customerID, orderID, delivery); err != nil {
+	if _, err := s.RiderVerifyDeliveryCode(ctx, user, aid, delivery); err != nil {
 		t.Fatalf("delivery: %v", err)
 	}
 	detail("delivered", "")
