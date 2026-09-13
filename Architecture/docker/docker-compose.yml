@@ -1663,8 +1663,9 @@ services:
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}
       DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:-}
       DIGILOCKER_REDIRECT_URI: ${DIGILOCKER_REDIRECT_URI:-https://atpost.app/rider/aadhaar/callback}
-    ports:
-      - "8116:8116"
+    # No host port, on purpose. rider-service authorises on X-User-Id and
+    # X-Scopes, so it is reachable only through api-gateway on this network.
+    # Health: docker compose exec rider-service wget -qO- http://localhost:8116/healthz
     depends_on:
       postgres:
         condition: service_healthy

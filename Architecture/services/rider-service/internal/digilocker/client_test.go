@@ -56,6 +56,57 @@ func TestHashDocumentType_Deterministic(t *testing.T) {
 	}
 }
 
+// The mock passes every Aadhaar verification. In production that is a forged
+// KYC record for every partner, so it must refuse to be selected there.
+func TestNew_RefusesMockInProduction(t *testing.T) {
+	for _, mode := range []string{"mock", "", " MOCK "} {
+		c, err := New(mode, true, "https://partner.example", "key", false)
+		if err == nil {
+			t.Errorf("mode %q in production: got %T, want error", mode, c)
+		}
+		if c != nil {
+			t.Errorf("mode %q in production: returned a client alongside the error", mode)
+		}
+	}
+}
+
+func TestNew_MockOutsideProduction(t *testing.T) {
+	for _, mode := range []string{"mock", ""} {
+		c, err := New(mode, false, "", "", true)
+		if err != nil {
+			t.Fatalf("mode %q outside production: %v", mode, err)
+		}
+		if _, ok := c.(*MockClient); !ok {
+			t.Errorf("mode %q outside production: got %T, want *MockClient", mode, c)
+		}
+	}
+}
+
+func TestNew_HTTPClient(t *testing.T) {
+	for _, mode := range []string{"http", " HTTP "} {
+		for _, production := range []bool{true, false} {
+			c, err := New(mode, production, "https://partner.example", "key", false)
+			if err != nil {
+				t.Fatalf("mode %q production=%v: %v", mode, production, err)
+			}
+			if _, ok := c.(*HTTPClient); !ok {
+				t.Errorf("mode %q production=%v: got %T, want *HTTPClient", mode, production, c)
+			}
+		}
+	}
+}
+
+// A typo used to fall through to the mock. It must fail loudly instead.
+func TestNew_UnknownModeRejected(t *testing.T) {
+	for _, mode := range []string{"https", "htpp", "live"} {
+		for _, production := range []bool{true, false} {
+			if c, err := New(mode, production, "https://partner.example", "key", false); err == nil {
+				t.Errorf("mode %q production=%v: got %T, want error", mode, production, c)
+			}
+		}
+	}
+}
+
 // TestHTTPClient_BuildsRequest is a lightweight cover that we ship the same
 // surface area as the dating-service client. A full HTTP integration test
 // would need an httptest server; that sits in S2 alongside the real partner

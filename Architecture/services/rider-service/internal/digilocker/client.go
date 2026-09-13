@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -51,9 +52,29 @@ type Client interface {
 }
 
 // MockClient returns deterministic Assertions for tests and local dev.
-// Selected via DIGILOCKER_MODE=mock. Production must explicitly opt in to
-// the HTTP client.
+// Selected via DIGILOCKER_MODE=mock. It passes every verification, so New
+// refuses it in production.
 type MockClient struct{}
+
+// New selects the partner client for DIGILOCKER_MODE.
+//
+// "http" is the real partner. "mock", or an unset mode, is refused in
+// production, where it would record a verified Aadhaar for every partner who
+// asked. Any other value is an error everywhere: a typo used to fall through
+// to the mock.
+func New(mode string, production bool, baseURL, apiKey string, sandbox bool) (Client, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "http":
+		return NewHTTPClient(baseURL, apiKey, sandbox), nil
+	case "mock", "":
+		if production {
+			return nil, fmt.Errorf("digilocker: DIGILOCKER_MODE=%q selects the mock, which is refused in production; set DIGILOCKER_MODE=http", mode)
+		}
+		return NewMockClient(), nil
+	default:
+		return nil, fmt.Errorf("digilocker: unknown DIGILOCKER_MODE %q (want http or mock)", mode)
+	}
+}
 
 // NewMockClient returns the singleton mock.
 func NewMockClient() *MockClient { return &MockClient{} }

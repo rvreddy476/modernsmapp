@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/rider-service/internal/digilocker"
 	riderevents "github.com/atpost/rider-service/internal/events"
 	riderhttp "github.com/atpost/rider-service/internal/http"
+	"github.com/atpost/rider-service/internal/runtimeenv"
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
@@ -48,6 +49,24 @@ func main() {
 	digilockerBase := os.Getenv("DIGILOCKER_BASE_URL")
 	digilockerKey := os.Getenv("DIGILOCKER_API_KEY")
 	digilockerSandbox := strings.EqualFold(env("DIGILOCKER_SANDBOX", "true"), "true")
+
+	// Fail closed before touching any dependency: a production process with
+	// no internal key serves forged identities, and one on the DigiLocker mock
+	// verifies every Aadhaar.
+	production := runtimeenv.IsProduction(os.Getenv)
+	if err := riderhttp.CheckInternalKey(production, internalKey); err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if internalKey == "" {
+		slog.Warn("INTERNAL_SERVICE_KEY is empty; /v1/rider accepts forged X-User-Id and X-Scopes from anything that can reach this port (allowed outside production only)")
+	}
+	dlClient, err := digilocker.New(digilockerMode, production, digilockerBase, digilockerKey, digilockerSandbox)
+	if err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("digilocker client selected", "mode", digilockerMode, "production", production)
 
 	ctx := context.Background()
 	poolCfg, err := pgxpool.ParseConfig(pgDSN)
@@ -107,18 +126,6 @@ func main() {
 	}))
 
 	riderStore := store.New(dbPool).WithRoleIntents(identityroles.NewOutbox("rider", "rider-service"))
-
-	// DigiLocker partner client. Default mock; production must explicitly opt
-	// in via DIGILOCKER_MODE=http. Mirrors dating-service.
-	var dlClient digilocker.Client
-	switch digilockerMode {
-	case "http":
-		dlClient = digilocker.NewHTTPClient(digilockerBase, digilockerKey, digilockerSandbox)
-		slog.Info("digilocker client: http")
-	default:
-		dlClient = digilocker.NewMockClient()
-		slog.Info("digilocker client: mock (set DIGILOCKER_MODE=http for production)")
-	}
 
 	walletClient := wallet.NewHTTPClient(walletURL, internalKey)
 	slog.Info("wallet client wired", "url", walletURL)

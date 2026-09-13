@@ -278,6 +278,9 @@ services:
   rider-service:
     <<: *transport_certs
     environment:
+      # Arms the fail-closed start checks: no INTERNAL_SERVICE_KEY, or the
+      # DigiLocker mock, and the service refuses to start.
+      APP_ENV: production
       KAFKA_BROKERS: redpanda:9093
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
       WALLET_SERVICE_URL: http://wallet-service:8114

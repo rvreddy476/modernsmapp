@@ -2,12 +2,14 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/atpost/rider-service/internal/http/middleware"
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -23,6 +25,16 @@ func New(svc *service.Service, internalKey string) *Handler {
 	return &Handler{svc: svc, internalKey: internalKey}
 }
 
+// CheckInternalKey refuses a production process with no internal service
+// key. Every /v1/rider handler trusts X-User-Id and X-Scopes, so without the
+// key anything that can reach the pod can be any rider, partner or admin.
+func CheckInternalKey(production bool, key string) error {
+	if production && strings.TrimSpace(key) == "" {
+		return errors.New("INTERNAL_SERVICE_KEY is required in production: /v1/rider trusts gateway identity headers")
+	}
+	return nil
+}
+
 // RegisterRoutes registers all /v1/rider routes on the provided engine.
 //
 // Surface (Sprint 1 scope per mopedu/IMPLEMENTATION_PLAN.md §3):
@@ -32,8 +44,17 @@ func New(svc *service.Service, internalKey string) *Handler {
 //   - subscription: list plans, subscribe, payment-proof, GET me
 //
 // Admin routes are stubbed-out in S3.
+//
+// Every route, admin included, sits behind X-Internal-Service-Key when a key
+// is configured: the handlers trust X-User-Id and X-Scopes, which only the
+// gateway may set. The check is on the group, not the engine, so /healthz and
+// /metrics stay open whatever order main registers them in. main refuses to
+// start in production without a key (CheckInternalKey).
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	rider := r.Group("/v1/rider")
+	if h.internalKey != "" {
+		rider.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	{
 		// --- Public -------------------------------------------------------
 		rider.GET("/cities", h.GetCities)
@@ -109,7 +130,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 
 	// --- Admin (gated by AdminGuard + AuditAdmin middleware) -------------
-	admin := r.Group("/v1/rider/admin")
+	// Nested under rider so the internal-key check runs before AdminGuard.
+	admin := rider.Group("/admin")
 	admin.Use(middleware.AdminGuard())
 	admin.Use(middleware.AuditAdmin(h.svc.Store()))
 	{
