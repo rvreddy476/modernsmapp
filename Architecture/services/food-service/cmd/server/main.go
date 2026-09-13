@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/food-service/database"
 	foodhttp "github.com/atpost/food-service/internal/http"
+	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
@@ -82,6 +83,27 @@ func main() {
 		WithOrderingConfig(orderingCfg)
 	svc := service.New(store)
 
+	// Payments-service client: food-service's own Ed25519 service token
+	// (FOOD_SERVICE_TOKEN_KEY / FOOD_SERVICE_TOKEN_KID). Without a key it
+	// falls back to the shared internal key ONLY when ENV is local/dev; any
+	// other ENV, including a blank one, refuses to start.
+	pmClient, err := payments.ClientFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("food-service: payments client could not be built", "error", err)
+		os.Exit(1)
+	}
+	if pmClient.LegacyAuth() {
+		slog.Warn("food-service: FOOD_SERVICE_TOKEN_KEY not set — payments calls carry the shared internal key " +
+			"(legacy mode, local/dev only). Issue a signing key and register food-service in payments' SERVICE_CALLERS.")
+	} else {
+		slog.Info("food-service: payments client ready (service-token auth)")
+	}
+	svc.WithPayments(pmClient)
+	// FOOD_COD_ENABLED / FOOD_WALLET_PAYMENTS_ENABLED default off: online only.
+	payFlags := payments.FlagsFromEnv(os.Getenv)
+	svc.WithPaymentFlags(payFlags)
+	slog.Info("food-service: payment methods", "cod_enabled", payFlags.CODEnabled, "wallet_enabled", payFlags.WalletEnabled)
+
 	// Realtime: best-effort Pub/Sub publishes + topic-token signer.
 	// REALTIME_TOKEN_SECRET must match notification-service's verifier.
 	if rtSecret := env("REALTIME_TOKEN_SECRET", internalKey); rtSecret != "" {
@@ -103,6 +125,9 @@ func main() {
 	outboxCtx, outboxCancel := context.WithCancel(ctx)
 	defer outboxCancel()
 	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		// food.outbox_events: food shares the app database, whose public
+		// outbox_events belongs to another declaration.
+		DBSchema:     "food",
 		KafkaBrokers: strings.Join(kafkaBrokers, ","),
 		DefaultTopic: kafkaTopic,
 	})
@@ -130,7 +155,14 @@ func main() {
 		slog.Warn("INTERNAL_SERVICE_KEY is empty; identity role grants will be rejected")
 	}
 
-	svc.WithOutbox(outbox.NewQueuer(""), dbPool)
+	svc.WithOutbox(outbox.NewQueuer("food"), dbPool)
+
+	// Payment events: the ONLY path that marks a food order paid, failed or
+	// refunded. Inbox row + decision + guarded transition in one transaction.
+	paymentConsumer := payments.NewConsumer(store, kafkaBrokers, nil, svc.OnPaymentEventApplied)
+	go paymentConsumer.Start(outboxCtx)
+	defer paymentConsumer.Close()
+	slog.Info("payment event consumer started", "topic", "social.events.v1", "group", "food-payments")
 
 	// MinIO for settlement-file offload. Optional — when the env is
 	// absent or the client fails to connect, settlement files keep

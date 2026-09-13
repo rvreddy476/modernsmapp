@@ -1143,9 +1143,15 @@ ON CONFLICT (code) DO NOTHING;
 -- Domain write + outbox row inside the same tx so an event cannot be
 -- silently dropped on a Kafka outage. shared/outbox.Publisher polls
 -- this table and writes to Kafka, marks rows published, and retries
--- with backoff. The default table name `outbox_events` matches the
--- shared publisher contract.
-CREATE TABLE IF NOT EXISTS outbox_events (
+-- with backoff.
+--
+-- In the food schema (outbox.Config{DBSchema: "food"}). food shares the `app`
+-- database, where docker/database/02-app-db.sql declares its own
+-- public.outbox_events with a different (schema_name NOT NULL) shape; an
+-- unprefixed table here meant whichever DDL ran first silently won, and a
+-- fresh volume made every food emit fail. A pre-existing public.outbox_events
+-- is left alone (it held 0 food rows when this moved).
+CREATE TABLE IF NOT EXISTS food.outbox_events (
     id              BIGSERIAL PRIMARY KEY,
     event_type      TEXT NOT NULL,
     partition_key   TEXT NOT NULL,
@@ -1153,9 +1159,31 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     published_at    TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
-    ON outbox_events (id)
+CREATE INDEX IF NOT EXISTS idx_food_outbox_unpublished
+    ON food.outbox_events (id)
     WHERE published_at IS NULL;
+
+-- ============================================================
+-- Payment event inbox
+-- ============================================================
+-- One row per payments-service event applied to a food order
+-- (payment.succeeded / payment.failed / payment.refunded). The row, the
+-- decision and the guarded order transition commit in ONE transaction
+-- (store.ApplyPaymentEvent), so the primary key IS the dedupe: a replay
+-- conflicts and does nothing. order_id has no FK on purpose, so an event for
+-- an unknown order is still recorded. amount_minor is integer paise.
+CREATE TABLE IF NOT EXISTS food.payment_event_inbox (
+    event_id      TEXT PRIMARY KEY CHECK (length(btrim(event_id)) > 0),
+    event_type    TEXT NOT NULL,
+    intent_id     TEXT,
+    order_id      UUID,
+    amount_minor  BIGINT,
+    currency      TEXT,
+    outcome       TEXT NOT NULL DEFAULT 'pending',
+    detail        TEXT,
+    processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_payment_inbox_order ON food.payment_event_inbox(order_id);
 
 -- ─── B1: kitchen queue + SLA accept deadline ──────────────────────────
 --

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/atpost/food-service/internal/payments"
+	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -30,6 +32,20 @@ var lifecycleErrors = []errorMapping{
 	{postgres.ErrAddressLocationRequired, http.StatusUnprocessableEntity, "FOOD_ADDRESS_LOCATION_REQUIRED"},
 	{postgres.ErrRestaurantLocationMissing, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_LOCATION_MISSING"},
 	{postgres.ErrAddonInvalid, http.StatusUnprocessableEntity, "FOOD_CART_ADDON_INVALID"},
+
+	// Payments.
+	{payments.ErrPaymentMethodUnavailable, http.StatusUnprocessableEntity, "PAYMENT_METHOD_UNAVAILABLE"},
+	{payments.ErrPaymentMethodInvalid, http.StatusUnprocessableEntity, "PAYMENT_METHOD_INVALID"},
+	{postgres.ErrCODNotAllowed, http.StatusConflict, "FOOD_COD_NOT_ALLOWED_FROM_STATE"},
+	{postgres.ErrPaymentNotAllowedFromState, http.StatusConflict, "FOOD_PAYMENT_NOT_ALLOWED_FROM_STATE"},
+	{postgres.ErrRefundNotEligible, http.StatusConflict, "FOOD_REFUND_NOT_ELIGIBLE"},
+	{service.ErrPaymentCallbackMismatch, http.StatusConflict, "FOOD_PAYMENT_CALLBACK_MISMATCH"},
+	{service.ErrPaymentCallbackIncomplete, http.StatusBadRequest, "FOOD_PAYMENT_CALLBACK_INCOMPLETE"},
+	{service.ErrPaymentNotVerified, http.StatusBadRequest, "FOOD_PAYMENT_NOT_VERIFIED"},
+	{service.ErrPaymentIntentMissing, http.StatusConflict, "FOOD_PAYMENT_INTENT_MISSING"},
+	{service.ErrPaymentsNotConfigured, http.StatusServiceUnavailable, "FOOD_PAYMENTS_UNAVAILABLE"},
+	{payments.ErrPaymentsUnavailable, http.StatusServiceUnavailable, "FOOD_PAYMENTS_UNAVAILABLE"},
+	{payments.ErrRefused, http.StatusBadGateway, "FOOD_PAYMENTS_REFUSED"},
 }
 
 // writeKnownError writes the mapped response and returns true when err is one

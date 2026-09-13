@@ -66,14 +66,26 @@ func actors(a ...Actor) map[Actor]struct{} {
 var table = map[edge]map[Actor]struct{}{
 	{Draft, Placed}: actors(ActorCustomer),
 
+	// Payment edges. ActorPayment is the payment-event consumer (a verified
+	// payment.succeeded / payment.failed) and the payment-intent writer; it
+	// can never reach any other status (TestPaymentActorEdgesAreExactly).
 	{Placed, PaymentPending}:        actors(ActorPayment),
 	{Placed, Confirmed}:             actors(ActorPayment),
+	{Placed, PaymentFailed}:         actors(ActorPayment),
 	{Placed, CancelledByCustomer}:   actors(ActorCustomer),
 	{Placed, CancelledByRestaurant}: actors(ActorRestaurant),
 	{Placed, CancelledByAdmin}:      actors(ActorAdmin),
 
 	{PaymentPending, PaymentFailed}: actors(ActorPayment),
 	{PaymentPending, Confirmed}:     actors(ActorPayment),
+	// Cancelling an unpaid order is ordinary ops work.
+	{PaymentPending, CancelledByAdmin}: actors(ActorAdmin),
+
+	// A capture after a failure on the same intent is a legitimate retry, and
+	// a fresh intent reopens the payment.
+	{PaymentFailed, Confirmed}:        actors(ActorPayment),
+	{PaymentFailed, PaymentPending}:   actors(ActorPayment),
+	{PaymentFailed, CancelledByAdmin}: actors(ActorAdmin),
 
 	{Confirmed, Preparing}:             actors(ActorRestaurant),
 	{Confirmed, RestaurantRejected}:    actors(ActorRestaurant, ActorSystem),
@@ -104,10 +116,16 @@ var table = map[edge]map[Actor]struct{}{
 	{OutForDelivery, Delivered}:        actors(ActorCustomer),
 	{OutForDelivery, CancelledByAdmin}: actors(ActorAdmin),
 
+	// Refunds: an admin REQUESTS a full refund of a paid order that is no longer
+	// being fulfilled (or was delivered); only the payment.refunded event
+	// finalises it. An order still in the kitchen or on the road is cancelled
+	// first.
 	{CancelledByCustomer, RefundPending}:   actors(ActorAdmin),
 	{CancelledByRestaurant, RefundPending}: actors(ActorAdmin),
 	{CancelledByAdmin, RefundPending}:      actors(ActorAdmin),
-	{RefundPending, Refunded}:              actors(ActorAdmin),
+	{RestaurantRejected, RefundPending}:    actors(ActorAdmin),
+	{Delivered, RefundPending}:             actors(ActorAdmin),
+	{RefundPending, Refunded}:              actors(ActorPayment),
 }
 
 // EdgeExists reports whether from -> to is a transition at all, regardless of

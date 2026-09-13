@@ -20,14 +20,10 @@ import (
 // Keys are paths relative to internal/, optionally suffixed "#FuncName" to
 // allow a single function rather than a whole file.
 var orderStatusWriterAllowlist = map[string]string{
-	// The one guarded writer.
+	// The one guarded writer. The payment writers (intent creation, the
+	// payment-event consumer, admin refunds) all go through it with
+	// orderstate.ActorPayment / ActorAdmin.
 	"store/postgres/order_transition.go": "transitionOrderTx is the guarded writer",
-	// Payment writers (CreatePaymentIntent COD path, ConfirmPayment) belong to
-	// the payments stream, which routes them through the guard next.
-	"store/postgres/tracking_payments.go": "payment writers; owned by the payments stream",
-	// AdminRefundOrder jumps any status to REFUNDED. Left untouched on purpose:
-	// the payments stream re-routes it through REFUND_PENDING.
-	"store/postgres/ops.go#AdminRefundOrder": "refund writer; owned by the payments stream",
 }
 
 var (
@@ -99,6 +95,18 @@ func TestNoRawOrderStatusUpdates(t *testing.T) {
 	}
 	if len(offenders) > 0 {
 		t.Fatalf("raw food.orders status UPDATEs outside transitionOrderTx:\n  %s", strings.Join(offenders, "\n  "))
+	}
+}
+
+// TestOrderStatusWriterAllowlistIsOnlyTheGuard pins the allowlist itself: the
+// payment writers were routed through transitionOrderTx, so nothing may be
+// re-admitted to raw status writes, whole file or single function.
+func TestOrderStatusWriterAllowlistIsOnlyTheGuard(t *testing.T) {
+	if len(orderStatusWriterAllowlist) != 1 {
+		t.Fatalf("allowlist = %v, want only store/postgres/order_transition.go", orderStatusWriterAllowlist)
+	}
+	if _, ok := orderStatusWriterAllowlist["store/postgres/order_transition.go"]; !ok {
+		t.Fatalf("allowlist = %v, want only store/postgres/order_transition.go", orderStatusWriterAllowlist)
 	}
 }
 

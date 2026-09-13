@@ -37,8 +37,12 @@ type UpdateCartItemInput struct {
 }
 
 type PlaceOrderInput struct {
-	AddressID           uuid.UUID
-	PaymentMethod       string
+	AddressID uuid.UUID
+	// PaymentMethod is the store enum (ONLINE|WALLET|COD), already resolved and
+	// flag-gated by the service. Empty is refused.
+	PaymentMethod string
+	// PaymentInstrument is upi|card for ONLINE, recorded on orders.metadata.
+	PaymentInstrument   string
 	CouponCode          string
 	CustomerInstruction string
 }
@@ -331,6 +335,15 @@ func (s *Store) DeleteAddress(ctx context.Context, userID, addressID uuid.UUID) 
 }
 
 func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderInput, idempotencyKey string) (*Order, error) {
+	// No default method: an order that names none is refused, never COD.
+	status, paymentStatus, err := placeOrderPaymentState(in.PaymentMethod)
+	if err != nil {
+		return nil, err
+	}
+	orderMetadata, err := placeOrderMetadata(in.PaymentMethod, in.PaymentInstrument)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -420,15 +433,6 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	}
 
 	paymentMethod := in.PaymentMethod
-	if paymentMethod == "" {
-		paymentMethod = "COD"
-	}
-	status := "CONFIRMED"
-	paymentStatus := "NOT_REQUIRED"
-	if paymentMethod == "ONLINE" || paymentMethod == "WALLET" {
-		status = "PAYMENT_PENDING"
-		paymentStatus = "PENDING"
-	}
 	commissionAmount := roundMoney(cart.Totals.ItemSubtotal * commissionPct / 100)
 	orderNumber := fmt.Sprintf("FG%d", time.Now().UnixNano())
 
@@ -458,10 +462,12 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			item_subtotal, addon_total, packaging_fee, tax_total, delivery_fee,
 			platform_fee, restaurant_discount, coupon_discount, final_amount,
 			coupon_code, commission_percentage_snapshot, commission_amount,
-			estimated_preparation_minutes, estimated_delivery_minutes, customer_instruction
+			estimated_preparation_minutes, estimated_delivery_minutes, customer_instruction,
+			metadata
 		)
 		VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+			$26::jsonb
 		)
 		RETURNING id
 	`, orderNumber, userID, *cart.RestaurantID, address.ID, status, paymentStatus, paymentMethod,
@@ -470,7 +476,7 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 		cart.Totals.PlatformFee, cart.Totals.RestaurantDiscount, cart.Totals.CouponDiscount,
 		cart.Totals.FinalAmount, emptyToNil(cart.CouponCode), commissionPct, commissionAmount,
 		prepMins, estimateDeliveryMinutes(prepMins, distanceKM, s.ordering.AvgRiderSpeedKmh),
-		in.CustomerInstruction).Scan(&orderID); err != nil {
+		in.CustomerInstruction, orderMetadata).Scan(&orderID); err != nil {
 		return nil, err
 	}
 

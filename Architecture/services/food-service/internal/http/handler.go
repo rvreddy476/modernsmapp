@@ -675,19 +675,20 @@ func (h *Handler) CreatePaymentIntent(c *gin.Context) {
 	_ = c.ShouldBindJSON(&body)
 	intent, err := h.svc.CreatePaymentIntent(c.Request.Context(), userID, orderID, body.Method, idempotencyKey)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PAYMENT_INTENT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusCreated, intent)
 }
 
-// ConfirmPayment finalises an online/wallet FiGo payment.
-//
-// P0.1 — every online (Razorpay) confirm MUST carry the Razorpay
-// signature triple so the backend can hand it to payments-service for
-// HMAC verification + amount check. Wallet confirms pass through the
-// existing internal-charge path. Idempotency-Key header makes a
-// duplicate confirm a no-op.
+// ConfirmPayment reports on a checkout callback; it never marks an online
+// order paid. Every online confirm carries the provider signature triple,
+// which payments-service verifies (advisory). The response is
+// {state, verified, order}: 202 `confirming` until the payment.succeeded
+// event confirms the order, 200 `paid` once it has.
 func (h *Handler) ConfirmPayment(c *gin.Context) {
 	userID, ok := h.currentUserID(c)
 	if !ok {
@@ -710,7 +711,7 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	idemKey := c.GetHeader("Idempotency-Key")
-	order, err := h.svc.ConfirmPayment(c.Request.Context(), service.ConfirmPaymentInput{
+	result, err := h.svc.ConfirmPayment(c.Request.Context(), service.ConfirmPaymentInput{
 		UserID:            userID,
 		OrderID:           orderID,
 		ProviderPaymentID: body.ProviderPaymentID,
@@ -722,10 +723,17 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 		IdempotencyKey:    idemKey,
 	})
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PAYMENT_CONFIRM_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, order)
+	status := http.StatusOK
+	if result.State == service.PaymentStateConfirming {
+		status = http.StatusAccepted
+	}
+	api.JSONWithContext(c.Request.Context(), c.Writer, status, result)
 }
 
 func (h *Handler) CancelOrder(c *gin.Context) {
@@ -1724,10 +1732,14 @@ func (h *Handler) AdminRefundOrder(c *gin.Context) {
 	}
 	refund, err := h.svc.AdminRefundOrder(c.Request.Context(), adminID, orderID, body.Reason, body.Amount, idempotencyKey)
 	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ADMIN_ORDER_REFUND_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, refund)
+	// 202: the refund is requested and durable; payment.refunded finalises it.
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusAccepted, refund)
 }
 
 func (h *Handler) AdminListCoupons(c *gin.Context) {

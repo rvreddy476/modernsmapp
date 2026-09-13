@@ -179,6 +179,10 @@ type WalletPaymentChargeDetails struct {
 	PaymentMethod     string    `json:"payment_method"`
 	PaymentStatus     string    `json:"payment_status"`
 	Amount            float64   `json:"amount"`
+	// AmountMinor is the order total in integer paise, computed in SQL.
+	AmountMinor int64 `json:"amount_minor"`
+	// PaymentInstrument is the upi|card chosen at checkout, if any.
+	PaymentInstrument string `json:"payment_instrument,omitempty"`
 }
 
 type PaymentIntegrationDetails struct {
@@ -191,6 +195,8 @@ type PaymentIntegrationDetails struct {
 	ProviderPaymentID string    `json:"provider_payment_id,omitempty"`
 	ProviderOrderID   string    `json:"provider_order_id,omitempty"`
 	Amount            float64   `json:"amount"`
+	// AmountMinor is the order total in integer paise, computed in SQL.
+	AmountMinor int64 `json:"amount_minor"`
 }
 
 type SettlementGenerateInput struct {

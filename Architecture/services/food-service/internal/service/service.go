@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/outbox"
@@ -42,9 +43,9 @@ type Store interface {
 	WalletPaymentChargeDetails(ctx context.Context, userID, orderID uuid.UUID) (*postgres.WalletPaymentChargeDetails, error)
 	PaymentIntegrationDetails(ctx context.Context, orderID uuid.UUID) (*postgres.PaymentIntegrationDetails, error)
 	GetOrderTracking(ctx context.Context, userID, orderID uuid.UUID) (map[string]any, error)
-	CreatePaymentIntent(ctx context.Context, userID, orderID uuid.UUID, method, idempotencyKey string) (map[string]any, error)
+	CreatePaymentIntent(ctx context.Context, userID, orderID uuid.UUID, method, instrument, idempotencyKey string) (map[string]any, error)
 	AttachPaymentProviderReference(ctx context.Context, userID, orderID uuid.UUID, providerPaymentID, providerOrderID string, raw map[string]any) error
-	ConfirmPayment(ctx context.Context, userID, orderID uuid.UUID, providerPaymentID, providerReference string) (*postgres.Order, error)
+	MarkWalletPaid(ctx context.Context, userID, orderID uuid.UUID) (*postgres.Order, error)
 	CancelOrder(ctx context.Context, userID, orderID uuid.UUID, reason string) (*postgres.Order, error)
 	RateRestaurant(ctx context.Context, userID, orderID uuid.UUID, rating int, review string) (map[string]any, error)
 	RateDelivery(ctx context.Context, userID, orderID uuid.UUID, rating int, review string) (map[string]any, error)
@@ -154,7 +155,9 @@ type Store interface {
 	AdminListOrders(ctx context.Context, page postgres.Pagination) ([]postgres.Order, error)
 	AdminGetOrder(ctx context.Context, orderID uuid.UUID) (*postgres.Order, error)
 	AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UUID, reason string) (*postgres.Order, error)
-	AdminRefundOrder(ctx context.Context, adminID, orderID uuid.UUID, reason string, amount float64, idempotencyKey string) (map[string]any, error)
+	AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UUID, reason string, amount float64, idempotencyKey string) (*postgres.RefundPlan, error)
+	MarkRefundSubmitted(ctx context.Context, refundID uuid.UUID, raw map[string]any) error
+	FinalizeWalletRefund(ctx context.Context, refundID uuid.UUID) error
 	AdminListCoupons(ctx context.Context) ([]map[string]any, error)
 	AdminCreateCoupon(ctx context.Context, adminID uuid.UUID, input map[string]any) (map[string]any, error)
 	AdminUpdateCoupon(ctx context.Context, adminID, couponID uuid.UUID, input map[string]any) (map[string]any, error)
@@ -174,14 +177,17 @@ type Store interface {
 type Service struct {
 	store           Store
 	monetizationURL string
-	paymentsURL     string
 	internalKey     string
-	httpClient      *http.Client
-	rtPublisher     realtimePublisher
-	rtSigner        *realtime.TokenSigner
-	outboxQ         *outbox.Queuer
-	dbPool          *pgxpool.Pool
-	blob            *blob.Store
+	// payments is the service-token payments-service client; payFlags are the
+	// launch switches (cash on delivery and wallet default off).
+	payments    PaymentsClient
+	payFlags    payments.Flags
+	httpClient  *http.Client
+	rtPublisher realtimePublisher
+	rtSigner    *realtime.TokenSigner
+	outboxQ     *outbox.Queuer
+	dbPool      *pgxpool.Pool
+	blob        *blob.Store
 	// Dispatch: offers go to partners within dispatchRadiusKM of the
 	// restaurant whose latest location ping is newer than dispatchLocationMaxAge.
 	dispatchRadiusKM       float64
@@ -198,7 +204,7 @@ func New(store Store) *Service {
 	return &Service{
 		store:                  store,
 		monetizationURL:        os.Getenv("MONETIZATION_SERVICE_URL"),
-		paymentsURL:            os.Getenv("PAYMENTS_SERVICE_URL"),
+		payFlags:               payments.FlagsFromEnv(os.Getenv),
 		internalKey:            os.Getenv("INTERNAL_SERVICE_KEY"),
 		httpClient:             &http.Client{Timeout: 8 * time.Second},
 		dispatchRadiusKM:       envPositiveFloat("FOOD_DISPATCH_RADIUS_KM", defaultDispatchRadiusKM),
@@ -406,6 +412,14 @@ func (s *Service) DeleteAddress(ctx context.Context, userID, addressID uuid.UUID
 }
 
 func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, in postgres.PlaceOrderInput, idempotencyKey string) (*postgres.Order, error) {
+	// Online only at launch: the client names upi|card; cash on delivery and
+	// wallet are refused unless their flags are on; no method is refused.
+	resolved, err := payments.ResolveMethod(in.PaymentMethod, s.payFlags)
+	if err != nil {
+		return nil, err
+	}
+	in.PaymentMethod = resolved.Store
+	in.PaymentInstrument = resolved.Instrument
 	o, err := s.store.PlaceOrder(ctx, userID, in, idempotencyKey)
 	if err != nil {
 		return nil, err
@@ -426,120 +440,6 @@ func (s *Service) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*pos
 
 func (s *Service) GetOrderTracking(ctx context.Context, userID, orderID uuid.UUID) (map[string]any, error) {
 	return s.store.GetOrderTracking(ctx, userID, orderID)
-}
-
-func (s *Service) CreatePaymentIntent(ctx context.Context, userID, orderID uuid.UUID, method, idempotencyKey string) (map[string]any, error) {
-	details, err := s.store.WalletPaymentChargeDetails(ctx, userID, orderID)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(method) == "" {
-		method = details.PaymentMethod
-	}
-	intent, err := s.store.CreatePaymentIntent(ctx, userID, orderID, method, idempotencyKey)
-	if err != nil {
-		return nil, err
-	}
-	if strings.EqualFold(method, "ONLINE") {
-		upstream, err := s.createPaymentsServiceIntent(ctx, details, idempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-		providerPaymentID := stringFromMap(upstream, "id")
-		providerOrderID := stringFromMap(upstream, "provider_ref")
-		if providerOrderID == "" {
-			providerOrderID = stringFromMap(upstream, "provider_order_id")
-		}
-		if err := s.store.AttachPaymentProviderReference(ctx, userID, orderID, providerPaymentID, providerOrderID, upstream); err != nil {
-			return nil, err
-		}
-		intent["payment_intent"] = upstream
-		intent["provider_payment_id"] = providerPaymentID
-		intent["provider_order_id"] = providerOrderID
-	}
-	return intent, nil
-}
-
-// ConfirmPaymentInput is the FiGo confirm-payment request body in
-// canonical Go form. Online payments require the Razorpay signature
-// triple — the backend forwards it to payments-service for HMAC
-// verification before any "paid" state is persisted. Wallet payments
-// pass through the existing internal monetization charge path; the
-// signature fields are ignored for that method.
-//
-// Idempotency: an already-CAPTURED order short-circuits to a clean
-// return (the order row is reloaded so the response is the canonical
-// post-confirm state). IdempotencyKey is reserved for cross-request
-// dedup on the same {user, order} tuple.
-type ConfirmPaymentInput struct {
-	UserID            uuid.UUID
-	OrderID           uuid.UUID
-	ProviderPaymentID string
-	ProviderReference string
-	RazorpayOrderID   string
-	RazorpayPaymentID string
-	RazorpaySignature string
-	AmountMinor       int64
-	IdempotencyKey    string
-}
-
-// ConfirmPayment is the FiGo customer-facing confirm path. P0.1 fix:
-//
-//  1. Reject ONLINE confirms missing the Razorpay signature triple.
-//  2. Call payments-service /v1/payments/intents/:id/verify (which
-//     re-checks HMAC + amount against the stored intent). The
-//     previous direct status-PATCH path is gone — the client can no
-//     longer forge a paid state by sending arbitrary provider ids.
-//  3. Idempotent: already-CAPTURED orders short-circuit cleanly.
-//  4. Cancelled / refunded orders cannot be revived because
-//     payments-service refuses to verify against an intent that
-//     isn't pending. Late webhook arrival is the canonical
-//     reconciliation path.
-func (s *Service) ConfirmPayment(ctx context.Context, in ConfirmPaymentInput) (*postgres.Order, error) {
-	details, err := s.store.WalletPaymentChargeDetails(ctx, in.UserID, in.OrderID)
-	if err != nil {
-		return nil, err
-	}
-	// Idempotent short-circuit: a duplicate confirm on an already-
-	// CAPTURED order is the most common race (mobile + webhook both
-	// fire). Re-running the wallet charge or signature verify here
-	// would double-charge or 400. Reload the order row so the
-	// response is canonical post-confirm state — no further work.
-	if details.PaymentStatus == "CAPTURED" {
-		return s.store.GetOrder(ctx, in.UserID, in.OrderID)
-	}
-	providerReference := in.ProviderReference
-	if details.PaymentMethod == "WALLET" {
-		if err := s.chargeWalletForFoodOrder(ctx, details); err != nil {
-			return nil, err
-		}
-		if providerReference == "" {
-			providerReference = "monetization-wallet"
-		}
-	}
-	storeProviderPaymentID := in.ProviderPaymentID
-	if details.PaymentMethod == "ONLINE" {
-		if in.RazorpayOrderID == "" || in.RazorpayPaymentID == "" || in.RazorpaySignature == "" {
-			return nil, fmt.Errorf("razorpay signature triple is required for online payments")
-		}
-		paymentDetails, err := s.store.PaymentIntegrationDetails(ctx, in.OrderID)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.verifyPaymentsServiceIntent(ctx, paymentDetails, in); err != nil {
-			return nil, err
-		}
-		storeProviderPaymentID = in.RazorpayPaymentID
-		providerReference = in.RazorpayOrderID
-	}
-	o, err := s.store.ConfirmPayment(ctx, in.UserID, in.OrderID, storeProviderPaymentID, providerReference)
-	if err != nil {
-		return nil, err
-	}
-	s.emit(ctx, "food.order."+o.ID.String(), "food.order.payment_succeeded", o)
-	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.payment_succeeded", o)
-	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.payment_succeeded", o)
-	return o, nil
 }
 
 func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgres.WalletPaymentChargeDetails) error {
@@ -571,138 +471,6 @@ func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgre
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("wallet charge failed with status %d", resp.StatusCode)
-	}
-	return nil
-}
-
-// verifyPaymentsServiceIntent is the new (P0.1) verification path.
-// Calls payments-service `/v1/payments/intents/:id/verify` which
-// re-checks the Razorpay HMAC signature against the stored intent +
-// validates the amount (when provided). Returns nil only on a 200
-// with `verified: true` — anything else fails the confirm so the
-// order never moves to paid based on client-supplied data alone.
-//
-// The legacy direct status-PATCH path is intentionally removed —
-// the old code would call PATCH /status with the client's
-// provider_ref and trust the payments-service to mark succeeded
-// without verifying the signature.
-func (s *Service) verifyPaymentsServiceIntent(ctx context.Context, details *postgres.PaymentIntegrationDetails, in ConfirmPaymentInput) error {
-	if s.paymentsURL == "" {
-		return fmt.Errorf("PAYMENTS_SERVICE_URL is required for online payments")
-	}
-	if details.ProviderPaymentID == "" {
-		return fmt.Errorf("payments-service intent reference is missing")
-	}
-	body, _ := json.Marshal(map[string]any{
-		"razorpay_order_id":   in.RazorpayOrderID,
-		"razorpay_payment_id": in.RazorpayPaymentID,
-		"razorpay_signature":  in.RazorpaySignature,
-		"amount_minor":        in.AmountMinor,
-	})
-	// /internal route family: verify is service-only in payments-service
-	// (the user-facing group no longer exposes it).
-	url := strings.TrimRight(s.paymentsURL, "/") + "/v1/payments/internal/intents/" + details.ProviderPaymentID + "/verify"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.internalKey != "" {
-		req.Header.Set("X-Internal-Service-Key", s.internalKey)
-	}
-	req.Header.Set("X-User-Id", in.UserID.String())
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("payments verify rejected confirm (status %d)", resp.StatusCode)
-	}
-	var envelope struct {
-		Data struct {
-			Verified    bool   `json:"verified"`
-			Status      string `json:"status"`
-			AmountMinor int64  `json:"amount_minor"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return fmt.Errorf("payments verify response decode: %w", err)
-	}
-	if !envelope.Data.Verified {
-		return fmt.Errorf("payments verify returned not verified (status=%s)", envelope.Data.Status)
-	}
-	return nil
-}
-
-func (s *Service) createPaymentsServiceIntent(ctx context.Context, details *postgres.WalletPaymentChargeDetails, idempotencyKey string) (map[string]any, error) {
-	if s.paymentsURL == "" {
-		return nil, fmt.Errorf("PAYMENTS_SERVICE_URL is required for online payments")
-	}
-	body, _ := json.Marshal(map[string]any{
-		"payee_id":        details.RestaurantOwnerID.String(),
-		"reference_type":  "food_order",
-		"reference_id":    details.OrderID.String(),
-		"amount":          details.Amount,
-		"currency":        "INR",
-		"method":          "upi",
-		"idempotency_key": idempotencyKey,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.paymentsURL, "/")+"/v1/payments/intents", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.internalKey != "" {
-		req.Header.Set("X-Internal-Service-Key", s.internalKey)
-	}
-	req.Header.Set("X-User-Id", details.UserID.String())
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var envelope struct {
-		Data  map[string]any `json:"data"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		if envelope.Error != nil && envelope.Error.Message != "" {
-			return nil, errors.New(envelope.Error.Message)
-		}
-		return nil, fmt.Errorf("payments intent failed with status %d", resp.StatusCode)
-	}
-	return envelope.Data, nil
-}
-
-func (s *Service) refundPaymentsServiceIntent(ctx context.Context, details *postgres.PaymentIntegrationDetails, actorID uuid.UUID, reason string) error {
-	if s.paymentsURL == "" {
-		return fmt.Errorf("PAYMENTS_SERVICE_URL is required for online refunds")
-	}
-	body, _ := json.Marshal(map[string]string{"reason": reason})
-	// /internal: food-service has already authorised the actor against its
-	// own order; the user-facing refund route enforces payer/payee parity.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.paymentsURL, "/")+"/v1/payments/internal/intents/"+details.ProviderPaymentID+"/refund", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.internalKey != "" {
-		req.Header.Set("X-Internal-Service-Key", s.internalKey)
-	}
-	req.Header.Set("X-User-Id", actorID.String())
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("payments refund failed with status %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -1014,33 +782,6 @@ func (s *Service) AdminGetOrder(ctx context.Context, orderID uuid.UUID) (*postgr
 
 func (s *Service) AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UUID, reason string) (*postgres.Order, error) {
 	return s.store.AdminCancelOrder(ctx, adminID, orderID, reason)
-}
-
-func (s *Service) AdminRefundOrder(ctx context.Context, adminID, orderID uuid.UUID, reason string, amount float64, idempotencyKey string) (map[string]any, error) {
-	details, err := s.store.PaymentIntegrationDetails(ctx, orderID)
-	if err != nil {
-		return nil, err
-	}
-	refundAmount := amount
-	if refundAmount <= 0 || refundAmount > details.Amount {
-		refundAmount = details.Amount
-	}
-	if details.PaymentStatus != "REFUNDED" {
-		switch details.PaymentMethod {
-		case "ONLINE":
-			if details.ProviderPaymentID == "" {
-				return nil, fmt.Errorf("online payment provider reference missing")
-			}
-			if err := s.refundPaymentsServiceIntent(ctx, details, adminID, reason); err != nil {
-				return nil, err
-			}
-		case "WALLET":
-			if err := s.reverseWalletForFoodRefund(ctx, details, refundAmount); err != nil {
-				return nil, err
-			}
-		}
-	}
-	return s.store.AdminRefundOrder(ctx, adminID, orderID, reason, amount, idempotencyKey)
 }
 
 func (s *Service) AdminListCoupons(ctx context.Context) ([]map[string]any, error) {
