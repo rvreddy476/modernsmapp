@@ -1563,6 +1563,17 @@ services:
       # routes (restaurant PAN, payout accounts) answer 503
       # PII_NOT_CONFIGURED rather than writing plaintext.
       ENV: dev
+      # Order pricing needs the platform's GSTIN: the platform is the party
+      # liable for restaurant-service GST under CGST s.9(5), so it appears on
+      # every order and platform invoice. Without it, carts carry a
+      # pricing_error and every order is refused with 503.
+      #
+      # THIS IS A SYNTHETIC TEST IDENTIFIER, NOT A REAL REGISTRATION. It is
+      # the checksum-valid golden value from shared/kyc's GSTIN tests (state
+      # 29, PAN serial 0000, which is never issued). Dev only. Production must
+      # set the platform's real e-commerce-operator GSTIN, and outside
+      # local/dev the service refuses to start without one.
+      FOOD_PLATFORM_GSTIN: 29ZZZPZ0000Z1Z6
     ports:
       - "8113:8113"
     depends_on:
