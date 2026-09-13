@@ -175,6 +175,22 @@ func main() {
 		{"/v1/audio", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/media", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/notifications", env("NOTIFY_SERVICE_URL", "http://notification-service:8088")},
+		// Realtime server-sent events (notification-service
+		// GET /v1/realtime/sse): live order tracking, the kitchen order
+		// queue and rider job offers. There was no prefix for it, so no phone
+		// could ever open a stream.
+		//
+		// Two things this route depends on, both deliberate:
+		//   - `/v1/realtime` must NEVER be added to GATEWAY_QUERY_TOKEN_PATHS.
+		//     The stream is authorised by an HMAC topic token in `?token=`,
+		//     signed by the service that owns the topics, not by a JWT. On an
+		//     allowlisted path the gateway would try to verify that value as
+		//     a JWT and answer 401; off the list it passes through untouched.
+		//   - The upstream sets `Content-Type: text/event-stream`, and
+		//     httputil.ReverseProxy flushes that content type immediately, so
+		//     events are not held in a buffer. Proven end to end when this
+		//     route was added: `event: connected` reaches the client at once.
+		{"/v1/realtime", env("NOTIFY_SERVICE_URL", "http://notification-service:8088")},
 		// Search service: search, discover
 		{"/v1/discover", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
 		{"/v1/search", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
