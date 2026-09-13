@@ -22,6 +22,7 @@ class OnboardingChecklistTest {
 
         assertThat(checklist.items.map { it.step }).containsExactly(
             OnboardingStep.LOCATION,
+            OnboardingStep.STATE,
             OnboardingStep.OPERATING_HOURS,
             OnboardingStep.COMPLIANCE,
             OnboardingStep.FSSAI_DOCUMENT,
@@ -46,7 +47,7 @@ class OnboardingChecklistTest {
     @Test
     fun `the wire codes are food-service's step names`() {
         assertThat(OnboardingStep.entries.map { it.wire }).containsExactly(
-            "location", "operating_hours", "compliance", "fssai_document", "payout_account", "menu_item",
+            "location", "state", "operating_hours", "compliance", "fssai_document", "payout_account", "menu_item",
         ).inOrder()
     }
 }

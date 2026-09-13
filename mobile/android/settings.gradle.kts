@@ -176,3 +176,15 @@ include(":core:facear")
 // token source. No app depends on either yet; A3–A5 wire them in.
 include(":core:realtime")
 include(":core:food")
+
+// Feast Kitchen — A3 (2026-09-13).
+//
+// :feature:kitchen is the restaurant partner's screens: the role gate,
+// onboarding (location, compliance, FSSAI, payout, hours), the menu editor,
+// the live order queue and earnings. :app-kitchen is its own installable
+// (applicationId com.us.feast.kitchen, proposed — founder confirms before
+// Play). Neither is reachable from :app; the application-boundary rules in
+// the root build file keep Banuba, the creator engine, posting and commerce
+// out of the Kitchen APK.
+include(":feature:kitchen")
+include(":app-kitchen")

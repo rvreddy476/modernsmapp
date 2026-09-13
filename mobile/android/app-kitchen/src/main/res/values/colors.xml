@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Momentum's navy ground and ember accent — the same values as :app's
+      us_background / us_brand, so the pre-Compose window matches the theme
+      the first frame paints.
+    -->
+    <color name="kitchen_background">#FF041122</color>
+    <color name="kitchen_brand">#FFFB923C</color>
+</resources>

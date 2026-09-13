@@ -1,7 +1,7 @@
 {
   "error": {
     "code": "FOOD_RESTAURANT_NOT_DRAFT",
-    "message": "restaurant can only be submitted for review from DRAFT"
+    "message": "restaurant can only be submitted for review from DRAFT or REJECTED"
   },
   "meta": {}
 }

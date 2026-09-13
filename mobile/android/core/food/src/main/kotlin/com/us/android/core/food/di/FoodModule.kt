@@ -1,6 +1,7 @@
 package com.us.android.core.food.di
 
 import com.us.android.core.food.network.FoodApi
+import com.us.android.core.food.network.KitchenApi
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -20,4 +21,9 @@ object FoodModule {
     @Provides
     @Singleton
     fun provideFoodApi(retrofit: Retrofit): FoodApi = retrofit.create(FoodApi::class.java)
+
+    /** The restaurant partner's menu, order and earnings routes (Feast A3). */
+    @Provides
+    @Singleton
+    fun provideKitchenApi(retrofit: Retrofit): KitchenApi = retrofit.create(KitchenApi::class.java)
 }

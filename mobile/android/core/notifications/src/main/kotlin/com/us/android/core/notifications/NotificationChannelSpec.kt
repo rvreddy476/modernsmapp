@@ -3,6 +3,8 @@ package com.us.android.core.notifications
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import androidx.core.content.getSystemService
 
 /**
@@ -22,6 +24,13 @@ enum class NotificationChannelSpec(
     val title: String,
     val description: String,
     val importance: Int,
+    /**
+     * Plays the device's alarm tone instead of the default notification
+     * sound. Only for a channel whose post must be heard across a loud
+     * kitchen. The channel cannot LOOP a sound — that is the posted
+     * notification's FLAG_INSISTENT and the in-app alert player.
+     */
+    val alertSound: Boolean = false,
 ) {
     /**
      * Ringing calls. HIGH so it can interrupt, and the only channel entitled
@@ -74,6 +83,31 @@ enum class NotificationChannelSpec(
         description = "Security alerts and account updates",
         importance = NotificationManager.IMPORTANCE_LOW,
     ),
+
+    /**
+     * Feast Kitchen (A3, 2026-09-13): changes to an order the kitchen is
+     * already handling — a customer cancelling, a rider arriving. HIGH: an
+     * order cancelled while it is still being cooked is food and money wasted.
+     */
+    FOOD_ORDERS(
+        id = "food_orders",
+        title = "Order updates",
+        description = "Changes to orders your kitchen is handling",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+    ),
+
+    /**
+     * Feast Kitchen: a new order waiting to be accepted before its deadline.
+     * HIGH, with the alarm tone. Missing one is an auto-rejected order and a
+     * refund, so it must be audible over a kitchen.
+     */
+    KITCHEN_NEW_ORDER(
+        id = "kitchen_new_order",
+        title = "New orders",
+        description = "New orders waiting for your kitchen to accept",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        alertSound = true,
+    ),
     ;
 
     companion object {
@@ -98,6 +132,15 @@ enum class NotificationChannelSpec(
         )
 
         /**
+         * Feast Kitchen's channels (A3, 2026-09-13) — and nothing of Momentum's.
+         * A kitchen tablet has no calls, chat or videos to be switched off.
+         */
+        val KITCHEN: Set<NotificationChannelSpec> = setOf(
+            FOOD_ORDERS,
+            KITCHEN_NEW_ORDER,
+        )
+
+        /**
          * Creates the given app's channels. Safe to call repeatedly — the
          * platform ignores a channel that already exists, and deliberately
          * will not let a re-registration override a user's setting.
@@ -111,6 +154,23 @@ enum class NotificationChannelSpec(
                 manager.createNotificationChannel(
                     NotificationChannel(spec.id, spec.title, spec.importance).apply {
                         description = spec.description
+                        if (spec.alertSound) {
+                            // Alarm tone where the device has one. A null URI
+                            // passed to setSound would SILENCE the channel, so
+                            // with neither tone available the default stays.
+                            val tone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                            if (tone != null) {
+                                setSound(
+                                    tone,
+                                    AudioAttributes.Builder()
+                                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                        .build(),
+                                )
+                            }
+                            enableVibration(true)
+                        }
                     },
                 )
             }

@@ -170,6 +170,36 @@ fun applicationBoundarySelfCheck(): List<String> {
             mapOf(":feature:rider" to setOf(":core:y"), ":core:y" to setOf(":core:facear")),
             ":feature:rider must not depend on :core:facear",
         ),
+        // :app-kitchen coverage (Feast A3, 2026-09-13). The Kitchen app now
+        // exists, so every edge its APK could grow is proven to fire — not
+        // only the two direct ones A0 wrote ahead of it.
+        Triple("kitchen app -> :app", mapOf(":app-kitchen" to setOf(":app")), ":app-kitchen must not depend on :app"),
+        Triple("kitchen app -> post", mapOf(":app-kitchen" to setOf(":feature:post")), ":app-kitchen must not depend on :feature:post"),
+        Triple(
+            "kitchen app -> commerce, transitively",
+            mapOf(
+                ":app-kitchen" to setOf(":feature:kitchen"),
+                ":feature:kitchen" to setOf(":core:media"),
+                ":core:media" to setOf(":core:commerce"),
+            ),
+            ":app-kitchen must not depend on :core:commerce",
+        ),
+        Triple(
+            "kitchen app -> creator engine, transitively",
+            mapOf(":app-kitchen" to setOf(":core:auth"), ":core:auth" to setOf(":core:creator-engine")),
+            ":app-kitchen must not depend on :core:creator-engine",
+        ),
+        Triple(
+            "kitchen app -> facear, transitively through commerce",
+            mapOf(":app-kitchen" to setOf(":core:commerce"), ":core:commerce" to setOf(":core:facear")),
+            ":app-kitchen must not depend on :core:facear",
+        ),
+        Triple(
+            ":app -> kitchen feature, transitively",
+            mapOf(":app" to setOf(":core:z"), ":core:z" to setOf(":feature:kitchen")),
+            ":app must not depend on :feature:kitchen",
+        ),
+        Triple("kitchen feature -> kitchen app", mapOf(":feature:kitchen" to setOf(":app-kitchen")), ":feature:kitchen must not depend on :app-kitchen"),
     )
     return cases.mapNotNull { (name, graph, expected) ->
         val found = applicationBoundaryViolations(graph)
@@ -313,6 +343,15 @@ tasks.register("moduleGraphCheck") {
         addAll(applicationBoundaryViolations(directEdges))
         // ...and proof that each of those rules still fires.
         addAll(applicationBoundarySelfCheck())
+        // Feast A3: the Kitchen app is real, so the rules above are evaluated
+        // against it rather than being inert — and it must actually be the
+        // application that ships the kitchen feature. A Kitchen app that lost
+        // that edge would still be a clean graph.
+        directEdges[":app-kitchen"]?.let { kitchenApp ->
+            if (":feature:kitchen" !in kitchenApp) {
+                add(":app-kitchen must depend on :feature:kitchen directly — it is the only app that ships it.")
+            }
+        }
     }
     val moduleCount = subprojects.size
 
@@ -349,10 +388,15 @@ tasks.register("moduleGraphCheck") {
     //      by the golden contract fixtures, the repository, the onboarding
     //      checklist and food's realtime token source.
     // :core:location, the third A1 module, waits for its map libraries to
-    // reach the offline cache. A1–A5 still to add, one module at a time, to
-    // reach 46: :core:location, :core:kyc-ui, :feature:feast,
-    // :feature:kitchen, :feature:rider, :app-kitchen, :app-rider.
-    val expectedModuleCount = 39
+    // reach the offline cache.
+    // 41 = 39 + :feature:kitchen and :app-kitchen (Feast A3, 2026-09-13): the
+    //      restaurant partner's screens and their own installable. :app-kitchen
+    //      sits at the top level, so no new phantom parent is counted. The
+    //      application-boundary self-check gained the transitive Kitchen cases
+    //      and the real graph asserts :app-kitchen -> :feature:kitchen.
+    // Still to add, one module at a time, to reach 46: :core:location,
+    // :core:kyc-ui, :feature:feast, :feature:rider, :app-rider.
+    val expectedModuleCount = 41
 
     doLast {
         val allViolations = buildList {

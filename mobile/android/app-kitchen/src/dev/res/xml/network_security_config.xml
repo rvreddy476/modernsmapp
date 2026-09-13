@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEV FLAVOUR ONLY. Cleartext to any host, for the local docker stack at the
+  emulator alias or a workstation LAN address (-PdevHost=…). <domain> entries
+  match DNS suffixes, not CIDR ranges, so a list of private ranges would not
+  work — see :app's copy of this file for that history. A tunnel build
+  (-PdevApiUrl=https://…) never uses this exemption.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

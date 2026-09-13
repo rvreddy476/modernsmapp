@@ -6,6 +6,14 @@ package com.us.android.core.food.model
  */
 enum class OnboardingStep(val wire: String) {
     LOCATION("location"),
+
+    /**
+     * The restaurant's state resolves to a GST state (onboarding.StepState).
+     * Without it checkout refuses every order with FOOD_RESTAURANT_STATE_UNKNOWN.
+     * Added in A3 (2026-09-13): the server emits it, and an unknown code kept
+     * every restaurant's checklist permanently not-ready.
+     */
+    STATE("state"),
     OPERATING_HOURS("operating_hours"),
     COMPLIANCE("compliance"),
     FSSAI_DOCUMENT("fssai_document"),
