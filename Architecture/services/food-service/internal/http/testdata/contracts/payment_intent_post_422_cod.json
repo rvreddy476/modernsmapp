@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PAYMENT_METHOD_UNAVAILABLE",
+    "message": "payment method is not available: cash on delivery is not enabled"
+  },
+  "meta": {}
+}

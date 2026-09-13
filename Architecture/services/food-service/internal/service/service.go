@@ -47,6 +47,7 @@ type Store interface {
 	GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*postgres.Order, error)
 	WalletPaymentChargeDetails(ctx context.Context, userID, orderID uuid.UUID) (*postgres.WalletPaymentChargeDetails, error)
 	PaymentIntegrationDetails(ctx context.Context, orderID uuid.UUID) (*postgres.PaymentIntegrationDetails, error)
+	CustomerPaymentStatus(ctx context.Context, userID, orderID uuid.UUID) (*postgres.CustomerPaymentState, error)
 	GetOrderTracking(ctx context.Context, userID, orderID uuid.UUID) (map[string]any, error)
 	CreatePaymentIntent(ctx context.Context, userID, orderID uuid.UUID, method, instrument, idempotencyKey string) (map[string]any, error)
 	AttachPaymentProviderReference(ctx context.Context, userID, orderID uuid.UUID, providerPaymentID, providerOrderID string, raw map[string]any) error

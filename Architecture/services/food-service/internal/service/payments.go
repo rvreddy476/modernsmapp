@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/store/postgres"
@@ -105,10 +106,55 @@ func (s *Service) CreatePaymentIntent(ctx context.Context, userID, orderID uuid.
 	if err := s.store.AttachPaymentProviderReference(ctx, userID, orderID, upstream.ID.String(), upstream.ProviderRef, rawIntent); err != nil {
 		return nil, err
 	}
-	intent["payment_intent"] = upstream
+	// Only public values reach the customer: the payments intent without its
+	// parties or raw session, and a client_session of exactly
+	// provider/order_id/key_id. No session from payments (stub gateway) means
+	// no client_session field, as commerce does.
+	intent["payment_intent"] = upstream.PublicIntent()
 	intent["provider_payment_id"] = upstream.ID.String()
 	intent["provider_order_id"] = upstream.ProviderRef
+	if session := upstream.PublicClientSession(); session != nil {
+		intent["client_session"] = session
+	}
 	return intent, nil
+}
+
+// OrderPaymentStatus is GET /v1/food/orders/:id/payment.
+type OrderPaymentStatus struct {
+	OrderID uuid.UUID `json:"order_id"`
+	// Status is confirming | paid | failed (payments.CustomerStatus).
+	Status      string `json:"status"`
+	AmountMinor int64  `json:"amount_minor"`
+	Currency    string `json:"currency"`
+	// RefundStatus is null, or pending | partially_refunded | refunded.
+	RefundStatus *string   `json:"refund_status"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// GetOrderPaymentStatus reports an online order's payment to its own
+// customer. Another customer's order reads as missing (pgx.ErrNoRows, 404).
+// It never writes and never asks payments-service: `paid` comes only from an
+// applied payment.succeeded event.
+func (s *Service) GetOrderPaymentStatus(ctx context.Context, userID, orderID uuid.UUID) (*OrderPaymentStatus, error) {
+	st, err := s.store.CustomerPaymentStatus(ctx, userID, orderID)
+	if err != nil {
+		return nil, err
+	}
+	status, refund, err := payments.CustomerStatus(payments.CustomerPaymentSnapshot{
+		OrderStatus: st.OrderStatus, PaymentStatus: st.PaymentStatus,
+		PaymentMethod: st.PaymentMethod, CaptureApplied: st.CaptureApplied,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &OrderPaymentStatus{
+		OrderID: st.OrderID, Status: status, AmountMinor: st.AmountMinor,
+		Currency: st.Currency, UpdatedAt: st.UpdatedAt.UTC(),
+	}
+	if refund != "" {
+		out.RefundStatus = &refund
+	}
+	return out, nil
 }
 
 // ConfirmPaymentInput is the client's checkout callback. AmountMinor is

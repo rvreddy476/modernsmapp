@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PAYMENT_METHOD_UNAVAILABLE",
+    "message": "payment method is not available: wallet payments are not enabled"
+  },
+  "meta": {}
+}

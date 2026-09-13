@@ -45,6 +45,7 @@ var lifecycleErrors = []errorMapping{
 	// Payments.
 	{payments.ErrPaymentMethodUnavailable, http.StatusUnprocessableEntity, "PAYMENT_METHOD_UNAVAILABLE"},
 	{payments.ErrPaymentMethodInvalid, http.StatusUnprocessableEntity, "PAYMENT_METHOD_INVALID"},
+	{payments.ErrPaymentNotOnline, http.StatusConflict, "FOOD_PAYMENT_NOT_ONLINE"},
 	{postgres.ErrCODNotAllowed, http.StatusConflict, "FOOD_COD_NOT_ALLOWED_FROM_STATE"},
 	{postgres.ErrPaymentNotAllowedFromState, http.StatusConflict, "FOOD_PAYMENT_NOT_ALLOWED_FROM_STATE"},
 	{postgres.ErrRefundNotEligible, http.StatusConflict, "FOOD_REFUND_NOT_ELIGIBLE"},

@@ -70,6 +70,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.GET("/orders", h.ListOrders)
 			user.GET("/orders/:orderId", h.GetOrder)
 			user.GET("/orders/:orderId/tracking", h.GetOrderTracking)
+			user.GET("/orders/:orderId/payment", h.GetOrderPayment)
 			user.POST("/orders/:orderId/payments/intents", h.CreatePaymentIntent)
 			user.POST("/orders/:orderId/payments/confirm", h.ConfirmPayment)
 			user.POST("/orders/:orderId/cancel", h.CancelOrder)
@@ -698,6 +699,31 @@ func (h *Handler) CreatePaymentIntent(c *gin.Context) {
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusCreated, intent)
+}
+
+// GetOrderPayment is the app's poll after checkout:
+// {order_id, status: confirming|paid|failed, amount_minor, currency,
+// refund_status, updated_at}. `paid` only once the signed payment.succeeded
+// event was applied. Another customer's order is the same 404 as a missing
+// one; a COD or wallet order is 409 FOOD_PAYMENT_NOT_ONLINE.
+func (h *Handler) GetOrderPayment(c *gin.Context) {
+	userID, ok := h.currentUserID(c)
+	if !ok {
+		return
+	}
+	orderID, ok := parseUUIDParam(c, "orderId")
+	if !ok {
+		return
+	}
+	status, err := h.svc.GetOrderPaymentStatus(c.Request.Context(), userID, orderID)
+	if err != nil {
+		if writeKnownError(c, err) {
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FOOD_PAYMENT_STATUS_FAILED", "payment status is unavailable", nil)
+		return
+	}
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, status)
 }
 
 // ConfirmPayment reports on a checkout callback; it never marks an online

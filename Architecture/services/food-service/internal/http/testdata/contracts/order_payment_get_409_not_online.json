@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_PAYMENT_NOT_ONLINE",
+    "message": "order is not paid online"
+  },
+  "meta": {}
+}
