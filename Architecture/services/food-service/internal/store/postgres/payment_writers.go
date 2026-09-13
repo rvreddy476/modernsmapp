@@ -77,7 +77,7 @@ func (s *Store) WalletPaymentChargeDetails(ctx context.Context, userID, orderID 
 	if err := s.db.QueryRow(ctx, `
 		SELECT o.id, o.order_number, o.user_id, r.owner_user_id,
 			o.payment_method::text, o.payment_status::text, o.final_amount::float8,
-			(o.final_amount * 100)::bigint, COALESCE(o.metadata->>'payment_instrument', '')
+			COALESCE(o.final_amount_paise, ROUND(o.final_amount * 100)::bigint), COALESCE(o.metadata->>'payment_instrument', '')
 		FROM food.orders o
 		JOIN food.restaurants r ON r.id = o.restaurant_id
 		WHERE o.id = $1 AND o.user_id = $2
@@ -103,7 +103,7 @@ func (s *Store) PaymentIntegrationDetails(ctx context.Context, orderID uuid.UUID
 		SELECT o.id, o.order_number, o.user_id, r.owner_user_id,
 			o.payment_method::text, o.payment_status::text,
 			COALESCE(p.provider_payment_id, ''), COALESCE(p.provider_order_id, ''),
-			o.final_amount::float8, (o.final_amount * 100)::bigint
+			o.final_amount::float8, COALESCE(o.final_amount_paise, ROUND(o.final_amount * 100)::bigint)
 		FROM food.orders o
 		JOIN food.restaurants r ON r.id = o.restaurant_id
 		LEFT JOIN LATERAL (

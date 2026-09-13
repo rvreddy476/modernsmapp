@@ -372,8 +372,10 @@ func TestContractFixturesCarryNoPlaintext(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// B3 fixtures also carry the synthetic platform GSTIN (invoice only).
 		raw = bytes.ReplaceAll(raw, []byte(ctGSTIN()), []byte("<gstin>"))
-		for _, secret := range []string{ctPAN, strings.ToLower(ctPAN), ctAccount, ctAccount[:8]} {
+		raw = bytes.ReplaceAll(raw, []byte(ctPlatformGSTIN()), []byte("<gstin>"))
+		for _, secret := range []string{ctPAN, strings.ToLower(ctPAN), ctPlatformPAN, strings.ToLower(ctPlatformPAN), ctAccount, ctAccount[:8]} {
 			if bytes.Contains(raw, []byte(secret)) {
 				t.Fatalf("%s carries a plaintext identifier", e.Name())
 			}

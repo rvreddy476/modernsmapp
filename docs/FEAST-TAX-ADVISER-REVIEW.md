@@ -37,6 +37,23 @@ Prepared 13 September 2026 while building food delivery (Feast). The platform is
 16. **Commission.** Is GST at 18% chargeable on the commission the platform deducts from restaurant settlements?
 17. **TDS under s.194-O.** Does it apply to restaurant and delivery-partner settlements?
 
+## Assumptions added by order totals, invoices and settlement (13 September 2026)
+
+These are encoded in food-service's pricing, invoice and settlement code. Each needs the same confirmation as the questions above.
+
+18. **Place of supply for every line is the restaurant's state**, including the platform fee and the delivery fee. Question 7 suggests the customer's location may be right for the platform fee. The state is taken from the restaurant's GSTIN, then its recorded GSTIN state code, then an exact state-name match; a restaurant whose state cannot be determined cannot take an order.
+19. **GST on commission and TCS are each computed once on the settlement-period total**, rounded half up to the paise, not per order. Question 11 covers only per-order rounding.
+20. **The TCS base is the taxable value after the restaurant's own discount**, and a refund does not reduce it.
+21. **Commission and the GST on commission are not reversed when a delivered order is refunded.**
+22. **The restaurant's share of a refund includes the GST it collected**, and a partial refund is split proportionally across the order's lines.
+23. **Coupons, once switched on, are treated as restaurant-funded.** This extends question 12; coupons remain off.
+24. **Packaging charges count toward commission** as well as being taxed at the food rate. Question 13 covers only the rate.
+25. **Invoice numbering:** platform invoices use `FP/<financial year>/<sequence>` (for example `FP/2627/000001`) and restaurant invoices use `FR/<financial year>/<sequence>` on each restaurant's own series, at most 16 characters. This is a concrete answer to question 14 that needs confirming.
+26. **Delivery-partner settlement is 80% of the delivery fee with no GST applied.** Question 17 covers only TDS.
+27. **Zero-value lines** (a free item, a zero fee) are left out of the tax computation and off the invoice.
+
+Current rates encoded as configuration and pending confirmation: GST on commission 18% (`FOOD_COMMISSION_GST_BP=1800`); TCS 0.5% (`FOOD_TCS_RATE_BP=50`).
+
 ## KYC formats (not tax, also unverified)
 
 - GST state codes: whether 25 and 28 are still valid; code 99 is refused.

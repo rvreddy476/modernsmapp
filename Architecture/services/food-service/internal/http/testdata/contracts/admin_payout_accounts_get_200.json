@@ -1,0 +1,27 @@
+{
+  "data": {
+    "items": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0019",
+        "owner_type": "DELIVERY_PARTNER",
+        "owner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+        "holder_name": "Test Rider",
+        "account_number_masked": "****6789",
+        "ifsc": "SBIN0001234",
+        "verification_status": "NOT_VERIFIED",
+        "verification_reason": "verification_pending_ops",
+        "verified_name": null,
+        "verified_at": null,
+        "created_at": "2026-09-13T06:30:00Z",
+        "updated_at": "2026-09-13T06:30:00Z",
+        "needs_review": true,
+        "review_reason": "account_shared_with_other_owner"
+      }
+    ],
+    "pagination": {
+      "limit": 50,
+      "offset": 0
+    }
+  },
+  "meta": {}
+}

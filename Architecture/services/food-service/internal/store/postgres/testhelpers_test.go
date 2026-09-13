@@ -67,7 +67,7 @@ func foodTestStore(t *testing.T) (*Store, func()) {
 	if err := BootstrapSchema(context.Background(), pool, database.SetupSQL); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	return New(pool), func() { pool.Close() }
+	return New(pool).WithPricingConfig(testPricingConfig(t)), func() { pool.Close() }
 }
 
 // seedOrderWithItem inserts a minimal restaurant + menu_item + order +
@@ -97,10 +97,10 @@ func seedOrderWithItem(t *testing.T, s *Store, orderStatus string) (orderID, men
 	if err := s.db.QueryRow(ctx, `
 		INSERT INTO food.restaurants
 			(partner_id, name, slug, owner_user_id, status, is_open, is_accepting_orders,
-			 address_line1, city, min_order_amount, packaging_fee,
+			 address_line1, city, state, tax_category, min_order_amount, packaging_fee,
 			 avg_preparation_minutes, commission_percentage)
 		VALUES ($1, $2, $3, $4, 'ACTIVE', TRUE, TRUE,
-			'1 Test Lane', 'Bengaluru', 0, 0, 20, 10)
+			'1 Test Lane', 'Bengaluru', 'Karnataka', 'RESTAURANT_STANDALONE', 0, 0, 20, 10)
 		RETURNING id
 	`, partnerID, "Test "+uuid.NewString()[:8], "test-"+uuid.NewString()[:8], ownerID).Scan(&restaurantID); err != nil {
 		t.Fatalf("seed restaurant: %v", err)
@@ -305,9 +305,9 @@ func seedPlaceableCart(t *testing.T, s *Store, lat, lng *float64) (customerID, r
 	if err := s.db.QueryRow(ctx, `
 		INSERT INTO food.restaurants
 			(partner_id, name, slug, owner_user_id, status, is_open, is_accepting_orders,
-			 address_line1, city, latitude, longitude, min_order_amount, packaging_fee,
+			 address_line1, city, state, tax_category, latitude, longitude, min_order_amount, packaging_fee,
 			 avg_preparation_minutes, commission_percentage)
-		VALUES ($1, $2, $3, $4, 'ACTIVE', TRUE, TRUE, '1 Test Lane', 'Bengaluru', $5, $6, 0, 0, 20, 10)
+		VALUES ($1, $2, $3, $4, 'ACTIVE', TRUE, TRUE, '1 Test Lane', 'Bengaluru', 'Karnataka', 'RESTAURANT_STANDALONE', $5, $6, 0, 0, 20, 10)
 		RETURNING id
 	`, partnerID, "Test "+uuid.NewString()[:8], "test-"+uuid.NewString()[:8], ownerID, lat, lng).Scan(&restaurantID); err != nil {
 		t.Fatalf("seed restaurant: %v", err)

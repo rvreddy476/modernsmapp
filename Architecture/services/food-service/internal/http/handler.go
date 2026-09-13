@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -201,6 +202,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Wave 1 B1/B2: onboarding, FSSAI, payout accounts. See handler_onboarding.go.
 		h.registerOnboardingRoutes(partner, delivery, admin)
+		// Wave 1 B3: admin payout-account review. See handler_b3.go.
+		h.registerB3Routes(admin)
 	}
 }
 
@@ -435,6 +438,10 @@ func (h *Handler) ApplyCoupon(c *gin.Context) {
 	}
 	cart, err := h.svc.ApplyCoupon(c.Request.Context(), userID, body.Code)
 	if err != nil {
+		// Wave 1 B3: FOOD_COUPONS_DISABLED (422) while coupons are switched off.
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_COUPON_INVALID", err.Error(), nil)
 		return
 	}
@@ -913,7 +920,26 @@ func (h *Handler) UpdatePartnerRestaurant(c *gin.Context) {
 		MinOrderAmount float64  `json:"min_order_amount"`
 		PackagingFee   float64  `json:"packaging_fee"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	raw, err := c.GetRawData()
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "request body could not be read", nil)
+		return
+	}
+	// Wave 1 B3: the pin and the address belong to PUT .../location, which
+	// also moves the service area; this route refuses them so the two can
+	// never diverge.
+	fields, err := locationOwnedFields(raw)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "request body is not valid JSON", nil)
+		return
+	}
+	if len(fields) > 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "FOOD_USE_LOCATION_ROUTE",
+			"latitude, longitude and the address change only through PUT /v1/food/partner/restaurants/:restaurantId/location",
+			map[string]any{"fields": fields})
+		return
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}

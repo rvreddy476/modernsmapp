@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atpost/food-service/internal/pricing"
+	"github.com/atpost/food-service/internal/settlement"
 	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,10 +23,15 @@ type Store struct {
 	roles *identityroles.Outbox
 	// ordering tunes PlaceOrder serviceability and ETA; see serviceability.go.
 	ordering OrderingConfig
+	// pricingCfg prices carts and orders (fees, platform GSTIN, coupons
+	// flag); settlementRules are the commission GST and TCS rates. See money.go.
+	pricingCfg      pricing.Config
+	settlementRules settlement.Rules
 }
 
 func New(db *pgxpool.Pool) *Store {
-	return (&Store{db: db}).WithOrderingConfig(OrderingConfig{})
+	return (&Store{db: db, pricingCfg: pricing.DefaultConfig(), settlementRules: settlement.DefaultRules()}).
+		WithOrderingConfig(OrderingConfig{})
 }
 
 // WithRoleIntents attaches the identity role queue, matching the fluent With…

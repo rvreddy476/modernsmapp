@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/atpost/food-service/internal/payments"
+	"github.com/atpost/food-service/internal/pricing"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -32,6 +33,14 @@ var lifecycleErrors = []errorMapping{
 	{postgres.ErrAddressLocationRequired, http.StatusUnprocessableEntity, "FOOD_ADDRESS_LOCATION_REQUIRED"},
 	{postgres.ErrRestaurantLocationMissing, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_LOCATION_MISSING"},
 	{postgres.ErrAddonInvalid, http.StatusUnprocessableEntity, "FOOD_CART_ADDON_INVALID"},
+
+	// Wave 1 B3 pricing through shared/gst.
+	{pricing.ErrCouponsDisabled, http.StatusUnprocessableEntity, "FOOD_COUPONS_DISABLED"},
+	{pricing.ErrRestaurantTaxCategoryMissing, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_TAX_CATEGORY_MISSING"},
+	{pricing.ErrRestaurantStateUnknown, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_STATE_UNKNOWN"},
+	{pricing.ErrRestaurantGSTINMissing, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_GSTIN_MISSING"},
+	{pricing.ErrPlatformGSTINNotConfigured, http.StatusServiceUnavailable, "FOOD_PLATFORM_GSTIN_NOT_CONFIGURED"},
+	{pricing.ErrPricingFailed, http.StatusUnprocessableEntity, "FOOD_PRICING_FAILED"},
 
 	// Payments.
 	{payments.ErrPaymentMethodUnavailable, http.StatusUnprocessableEntity, "PAYMENT_METHOD_UNAVAILABLE"},

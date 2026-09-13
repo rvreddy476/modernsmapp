@@ -43,6 +43,12 @@ func TestValidate(t *testing.T) {
 		{"payment finalises a refund", ActorPayment, RefundPending, Refunded, true},
 		{"admin cannot finalise a refund", ActorAdmin, RefundPending, Refunded, false},
 		{"admin requests refund on a rejected order", ActorAdmin, RestaurantRejected, RefundPending, true},
+		// B3: a paid order rejected by the SLA worker or the restaurant has its
+		// refund requested in the same flow by the system.
+		{"system requests refund on a rejected order", ActorSystem, RestaurantRejected, RefundPending, true},
+		{"system cannot request refund on a cancelled order", ActorSystem, CancelledByCustomer, RefundPending, false},
+		{"system cannot finalise a refund", ActorSystem, RefundPending, Refunded, false},
+		{"restaurant cannot request a refund", ActorRestaurant, RestaurantRejected, RefundPending, false},
 		{"admin requests refund after delivery", ActorAdmin, Delivered, RefundPending, true},
 		{"admin requests refund on a cancelled order", ActorAdmin, CancelledByCustomer, RefundPending, true},
 		{"payment cannot request a refund", ActorPayment, CancelledByAdmin, RefundPending, false},

@@ -15,6 +15,7 @@ import (
 
 	"github.com/atpost/food-service/internal/foodpii"
 	"github.com/atpost/food-service/internal/onboarding"
+	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/payout"
 	"github.com/atpost/food-service/internal/store/blob"
@@ -191,6 +192,12 @@ type Store interface {
 	GetRestaurantPayoutAccount(ctx context.Context, ownerUserID, restaurantID uuid.UUID) (*postgres.PayoutAccount, error)
 	UpsertDeliveryPartnerPayoutAccount(ctx context.Context, userID uuid.UUID, rec postgres.PayoutAccountRecord) (*postgres.PayoutAccount, error)
 	GetDeliveryPartnerPayoutAccount(ctx context.Context, userID uuid.UUID) (*postgres.PayoutAccount, error)
+
+	// Wave 1 B3: system refunds, per-party invoice numbers, payout review.
+	OpenRefundPlan(ctx context.Context, orderID uuid.UUID) (*postgres.RefundPlan, error)
+	ListUnsubmittedSystemRefunds(ctx context.Context, olderThan time.Duration, limit int) ([]postgres.RefundPlan, error)
+	AllocateOrderInvoiceNumbers(ctx context.Context, orderID, restaurantID uuid.UUID, financialYear string, platform, restaurant bool) (string, string, error)
+	AdminListPayoutAccounts(ctx context.Context, needsReviewOnly bool, page postgres.Pagination) ([]postgres.AdminPayoutAccount, error)
 }
 
 type Service struct {
@@ -708,12 +715,22 @@ func (s *Service) AutoRejectSLAExpiredOrders(ctx context.Context) (int, error) {
 			"id":     id.String(),
 			"reason": "sla_breach",
 		})
+		// Wave 1 B3: a paid order's refund was requested in the rejecting
+		// transaction; submit it to payments now (refunds_b3.go).
+		s.submitRejectedOrderRefund(ctx, id, "sla_breach")
 	}
 	return len(ids), nil
 }
 
 func (s *Service) PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID uuid.UUID, toStatus, reason, idempotencyKey string) (*postgres.Order, error) {
-	return s.store.PartnerUpdateOrderStatus(ctx, ownerID, orderID, toStatus, reason, idempotencyKey)
+	o, err := s.store.PartnerUpdateOrderStatus(ctx, ownerID, orderID, toStatus, reason, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	if toStatus == orderstate.RestaurantRejected {
+		s.submitRejectedOrderRefund(ctx, orderID, "restaurant rejected the order")
+	}
+	return o, nil
 }
 
 func (s *Service) PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error) {

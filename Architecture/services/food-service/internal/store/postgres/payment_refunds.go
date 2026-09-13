@@ -87,7 +87,7 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 	// with no payment row is "not eligible", not a NULL-scan error.
 	if err := tx.QueryRow(ctx, `
 		SELECT o.status::text, o.payment_status::text, o.payment_method::text,
-			(o.final_amount * 100)::bigint,
+			COALESCE(o.final_amount_paise, ROUND(o.final_amount * 100)::bigint),
 			p.id, COALESCE(p.provider_payment_id, ''),
 			COALESCE((
 				SELECT SUM((amount * 100)::bigint) FROM food.refunds
@@ -185,9 +185,9 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 	return plan, tx.Commit(ctx)
 }
 
-func loadRefundPlanTx(ctx context.Context, tx pgx.Tx, where string, arg any) (*RefundPlan, error) {
+func loadRefundPlanTx(ctx context.Context, q rowQuerier, where string, arg any) (*RefundPlan, error) {
 	var p RefundPlan
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT r.id, r.order_id, (r.amount * 100)::bigint, r.status,
 			o.payment_method::text, o.status::text, COALESCE(p.provider_payment_id, '')
 		FROM food.refunds r
@@ -236,7 +236,7 @@ func (s *Store) FinalizeWalletRefund(ctx context.Context, refundID uuid.UUID) er
 	var paymentID *uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		SELECT r.order_id, (r.amount * 100)::bigint, r.status, o.status::text, o.payment_method::text,
-			(o.final_amount * 100)::bigint, r.payment_id,
+			COALESCE(o.final_amount_paise, ROUND(o.final_amount * 100)::bigint), r.payment_id,
 			COALESCE((
 				SELECT SUM((amount * 100)::bigint) FROM food.refunds
 				WHERE order_id = o.id AND status = 'PROCESSED'

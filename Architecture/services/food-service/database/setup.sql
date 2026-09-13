@@ -1705,3 +1705,104 @@ DROP TRIGGER IF EXISTS trg_payout_accounts_updated_at ON food.payout_accounts;
 CREATE TRIGGER trg_payout_accounts_updated_at
 BEFORE UPDATE ON food.payout_accounts
 FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+
+-- ============================================================
+-- WAVE 1 B3: GST TOTALS, INVOICES AND SETTLEMENTS IN PAISE
+-- ============================================================
+--
+-- Order money is computed in integer paise through shared/gst
+-- (internal/pricing). The NUMERIC money columns are still written, derived
+-- exactly from the paise columns, and ck_food_order_paise_match keeps the two
+-- in step. tax_breakdown is the stored GST computation. Every seeded rate is
+-- flagged for the tax adviser (docs/FEAST-TAX-ADVISER-REVIEW.md), so
+-- needs_adviser_confirmation is TRUE on every order priced this way.
+ALTER TABLE food.orders
+    ADD COLUMN IF NOT EXISTS item_subtotal_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS addon_total_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS packaging_fee_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS delivery_fee_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS platform_fee_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS tax_total_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS discount_total_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS final_amount_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS tax_breakdown JSONB,
+    ADD COLUMN IF NOT EXISTS needs_adviser_confirmation BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS platform_invoice_number VARCHAR(40),
+    ADD COLUMN IF NOT EXISTS restaurant_invoice_number VARCHAR(40);
+
+-- Orders written before B3 get paise derived from their NUMERIC columns. Only
+-- rows still without paise are touched, so a re-run is a no-op. Readers also
+-- COALESCE to the NUMERIC value for a row inserted between boots.
+UPDATE food.orders SET
+    item_subtotal_paise  = ROUND(item_subtotal * 100)::bigint,
+    addon_total_paise    = ROUND(addon_total * 100)::bigint,
+    packaging_fee_paise  = ROUND(packaging_fee * 100)::bigint,
+    delivery_fee_paise   = ROUND(delivery_fee * 100)::bigint,
+    platform_fee_paise   = ROUND(platform_fee * 100)::bigint,
+    tax_total_paise      = ROUND(tax_total * 100)::bigint,
+    discount_total_paise = ROUND((restaurant_discount + coupon_discount) * 100)::bigint,
+    final_amount_paise   = ROUND(final_amount * 100)::bigint
+WHERE final_amount_paise IS NULL;
+
+-- A NUMERIC money column must equal its paise column exactly. Added once; the
+-- backfill above runs first, so existing rows satisfy it.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_food_order_paise_match') THEN
+        ALTER TABLE food.orders ADD CONSTRAINT ck_food_order_paise_match CHECK (
+            (item_subtotal_paise IS NULL OR item_subtotal * 100 = item_subtotal_paise)
+            AND (addon_total_paise IS NULL OR addon_total * 100 = addon_total_paise)
+            AND (packaging_fee_paise IS NULL OR packaging_fee * 100 = packaging_fee_paise)
+            AND (delivery_fee_paise IS NULL OR delivery_fee * 100 = delivery_fee_paise)
+            AND (platform_fee_paise IS NULL OR platform_fee * 100 = platform_fee_paise)
+            AND (tax_total_paise IS NULL OR tax_total * 100 = tax_total_paise)
+            AND (discount_total_paise IS NULL OR (restaurant_discount + coupon_discount) * 100 = discount_total_paise)
+            AND (final_amount_paise IS NULL OR final_amount * 100 = final_amount_paise)
+        );
+    END IF;
+END $$;
+
+ALTER TABLE food.order_items
+    ADD COLUMN IF NOT EXISTS unit_price_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS tax_amount_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS line_total_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS tax_rate_bp INTEGER;
+
+ALTER TABLE food.order_item_addons
+    ADD COLUMN IF NOT EXISTS unit_price_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS line_total_paise BIGINT;
+
+-- Invoice series. The platform issues from series PLATFORM; each restaurant
+-- issues from its own series R:<restaurant id>; orders numbered before B3
+-- keep series LEGACY. The key becomes (series, financial_year).
+ALTER TABLE food.invoice_sequences
+    ADD COLUMN IF NOT EXISTS series VARCHAR(60) NOT NULL DEFAULT 'LEGACY';
+ALTER TABLE food.invoice_sequences DROP CONSTRAINT IF EXISTS invoice_sequences_pkey;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_food_invoice_sequences_series_year
+    ON food.invoice_sequences(series, financial_year);
+
+-- Settlement rows in paise with the computation that produced them. Status
+-- stays PENDING until an admin marks a row paid by hand; nothing transfers.
+ALTER TABLE food.restaurant_settlements
+    ADD COLUMN IF NOT EXISTS gross_order_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS net_supply_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS commission_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS commission_gst_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS gst_passthrough_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS tcs_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS refund_share_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS payout_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS breakdown JSONB;
+
+ALTER TABLE food.delivery_partner_settlements
+    ADD COLUMN IF NOT EXISTS gross_earning_paise BIGINT,
+    ADD COLUMN IF NOT EXISTS payout_paise BIGINT;
+
+-- A payout account whose number another owner already holds (other than
+-- another outlet of the same restaurant partner) is saved and flagged for
+-- review, never blocked. Visible on the admin view only.
+ALTER TABLE food.payout_accounts
+    ADD COLUMN IF NOT EXISTS needs_review BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS review_reason TEXT;
+
+CREATE INDEX IF NOT EXISTS ix_food_payout_accounts_needs_review
+    ON food.payout_accounts(updated_at DESC) WHERE needs_review;

@@ -53,7 +53,7 @@ func (s *Store) ApplyPaymentEvent(ctx context.Context, ev payments.Event) (payme
 	var deliveryFee float64
 	err = tx.QueryRow(ctx, `
 		SELECT o.user_id, o.restaurant_id, o.status::text, o.payment_status::text,
-			(o.final_amount * 100)::bigint, o.delivery_fee::float8,
+			COALESCE(o.final_amount_paise, ROUND(o.final_amount * 100)::bigint), o.delivery_fee::float8,
 			p.id, COALESCE(p.provider_payment_id, ''), COALESCE(btrim(p.currency::text), 'INR')
 		FROM food.orders o
 		LEFT JOIN LATERAL (

@@ -92,11 +92,12 @@ func TestCartAndOrder_AddonPricingAndSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add with add-on: %v", err)
 	}
-	// 2 x 250 = 500 base; cheese 30 x 1 x 2 = 60; tax 5% of 560 = 28;
-	// delivery 29 + platform 5 + packaging 0 -> 622.
+	// 2 x 250 = 500 base; cheese 30 x 1 x 2 = 60; GST (B3, via shared/gst):
+	// 5% of 560 = 28 on the restaurant supply, 18% of platform fee 5 = 0.90
+	// and of delivery 29 = 5.22 -> tax 34.12; final 500 + 60 + 5 + 29 + 34.12.
 	tot := cart.Totals
-	if tot.ItemSubtotal != 500 || tot.AddonTotal != 60 || tot.TaxTotal != 28 || tot.FinalAmount != 622 {
-		t.Fatalf("cart totals = %+v, want subtotal 500 addon 60 tax 28 final 622", tot)
+	if tot.ItemSubtotal != 500 || tot.AddonTotal != 60 || tot.TaxTotal != 34.12 || tot.FinalAmount != 628.12 {
+		t.Fatalf("cart totals = %+v, want subtotal 500 addon 60 tax 34.12 final 628.12", tot)
 	}
 	if len(cart.Items) != 1 || len(cart.Items[0].Addons) != 1 || cart.Items[0].AddonTotal != 60 {
 		t.Fatalf("cart item add-ons not loaded: %+v", cart.Items)
@@ -107,7 +108,7 @@ func TestCartAndOrder_AddonPricingAndSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("place: %v", err)
 	}
-	if order.Totals.AddonTotal != 60 || order.Totals.FinalAmount != 622 {
+	if order.Totals.AddonTotal != 60 || order.Totals.FinalAmount != 628.12 {
 		t.Fatalf("order totals = %+v", order.Totals)
 	}
 	var name string

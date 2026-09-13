@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "FOOD_USE_LOCATION_ROUTE",
+    "message": "latitude, longitude and the address change only through PUT /v1/food/partner/restaurants/:restaurantId/location",
+    "details": {
+      "fields": [
+        "latitude",
+        "longitude"
+      ]
+    }
+  },
+  "meta": {}
+}

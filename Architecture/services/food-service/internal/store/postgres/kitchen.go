@@ -132,6 +132,11 @@ func (s *Store) AutoRejectExpiredOrders(ctx context.Context, batch int) ([]uuid.
 		}); err != nil {
 			return nil, err
 		}
+		// Wave 1 B3: a paid order is never left rejected with nobody asking
+		// for the money back; its refund is requested in this transaction.
+		if _, err := requestSystemRefundTx(ctx, tx, id, "sla_breach"); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

@@ -224,6 +224,13 @@ func (s *Service) AdminRefundOrder(ctx context.Context, adminID, orderID uuid.UU
 	if err != nil {
 		return nil, err
 	}
+	return s.submitRefundPlan(ctx, orderID, plan, reason)
+}
+
+// submitRefundPlan submits a durable refund request (admin or system) to
+// payments with its deterministic key, or reverses a wallet charge. It never
+// marks a card/UPI refund done: the payment.refunded event does.
+func (s *Service) submitRefundPlan(ctx context.Context, orderID uuid.UUID, plan *postgres.RefundPlan, reason string) (map[string]any, error) {
 	body := plan.Body()
 	if plan.Status == "PROCESSED" {
 		return body, nil

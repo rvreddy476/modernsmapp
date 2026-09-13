@@ -142,7 +142,7 @@ func loadCartAddons(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, cartID uuid.UUID, items []CartItem) error {
 	rows, err := q.Query(ctx, `
-		SELECT cia.cart_item_id, a.id, a.name, a.price::float8, cia.quantity
+		SELECT cia.cart_item_id, a.id, a.name, ROUND(a.price * 100)::bigint, cia.quantity
 		FROM food.cart_item_addons cia
 		JOIN food.cart_items ci ON ci.id = cia.cart_item_id
 		JOIN food.menu_item_addons a ON a.id = cia.addon_id
@@ -160,7 +160,7 @@ func loadCartAddons(ctx context.Context, q interface {
 	for rows.Next() {
 		var itemID uuid.UUID
 		var a CartItemAddon
-		if err := rows.Scan(&itemID, &a.AddonID, &a.Name, &a.UnitPrice, &a.Quantity); err != nil {
+		if err := rows.Scan(&itemID, &a.AddonID, &a.Name, &a.UnitPricePaise, &a.Quantity); err != nil {
 			return err
 		}
 		if i, ok := index[itemID]; ok {
@@ -170,16 +170,5 @@ func loadCartAddons(ctx context.Context, q interface {
 	return rows.Err()
 }
 
-// priceCartItem computes one line: base = unit x qty; each add-on line =
-// add-on price x add-on qty x item qty; the item's tax % applies to both.
-func priceCartItem(item *CartItem) {
-	item.LineTotal = roundMoney(item.UnitPrice * float64(item.Quantity))
-	item.AddonTotal = 0
-	for i := range item.Addons {
-		a := &item.Addons[i]
-		a.LineTotal = roundMoney(a.UnitPrice * float64(a.Quantity) * float64(item.Quantity))
-		item.AddonTotal += a.LineTotal
-	}
-	item.AddonTotal = roundMoney(item.AddonTotal)
-	item.TaxAmount = roundMoney((item.LineTotal + item.AddonTotal) * item.TaxPercentage / 100)
-}
+// Pricing (line = unit x qty; add-on line = price x add-on qty x item qty; GST
+// through shared/gst) is PriceCart in money.go.

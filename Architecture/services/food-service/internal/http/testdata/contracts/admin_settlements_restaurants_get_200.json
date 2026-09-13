@@ -1,0 +1,57 @@
+{
+  "data": {
+    "items": [
+      {
+        "breakdown": {
+          "order_count": 1,
+          "net_supply_paise": 58000,
+          "commission_paise": 8700,
+          "commission_gst_paise": 1566,
+          "gst_passthrough_paise": 10440,
+          "tcs_base_paise": 58000,
+          "tcs_paise": 290,
+          "refund_share_paise": 9446,
+          "payout_paise": 48438,
+          "excluded_platform_fee_paise": 500,
+          "excluded_delivery_fee_paise": 2900,
+          "excluded_section_9_5_gst_paise": 0,
+          "excluded_platform_own_gst_paise": 612,
+          "orders_without_tax_breakdown": 0,
+          "needs_adviser_confirmation": true,
+          "rules": {
+            "commission_gst_bp": 1800,
+            "tcs_rate_bp": 50
+          }
+        },
+        "commission_amount": 87,
+        "commission_gst_paise": 1566,
+        "commission_paise": 8700,
+        "created_at": "2026-09-13T06:30:00Z",
+        "gross_order_amount": 724.52,
+        "gross_order_paise": 72452,
+        "gst_passthrough_paise": 10440,
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0018",
+        "needs_adviser_confirmation": true,
+        "net_supply_paise": 58000,
+        "paid_at": "",
+        "paid_reference": "",
+        "payout_amount": 484.38,
+        "payout_paise": 48438,
+        "penalty_amount": 0,
+        "period_end": "2026-09-13",
+        "period_start": "2026-09-07",
+        "refund_adjustment": 94.46,
+        "refund_share_paise": 9446,
+        "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+        "restaurant_name": "Test Kitchen",
+        "status": "PENDING",
+        "tcs_paise": 290
+      }
+    ],
+    "pagination": {
+      "limit": 50,
+      "offset": 0
+    }
+  },
+  "meta": {}
+}

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_RESTAURANT_TAX_CATEGORY_MISSING",
+    "message": "restaurant has no GST tax category and cannot take orders"
+  },
+  "meta": {}
+}

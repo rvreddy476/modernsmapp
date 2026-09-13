@@ -259,8 +259,10 @@ func TestAutoRejectExpiredOrders_GuardedWithHistory(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
+	// Unpaid (cash on delivery), so the rejection is the whole effect; a paid
+	// order also requests its refund (TestAutoReject_PaidOrderRequestsRefund).
 	orderID, _, _ := seedOrderWithItem(t, s, "CONFIRMED")
-	if _, err := s.db.Exec(ctx, `UPDATE food.orders SET accept_deadline_at = NOW() - INTERVAL '1 minute' WHERE id = $1`, orderID); err != nil {
+	if _, err := s.db.Exec(ctx, `UPDATE food.orders SET payment_status = 'NOT_REQUIRED', payment_method = 'COD', accept_deadline_at = NOW() - INTERVAL '1 minute' WHERE id = $1`, orderID); err != nil {
 		t.Fatal(err)
 	}
 	ids, err := s.AutoRejectExpiredOrders(ctx, 500)

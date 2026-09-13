@@ -32,6 +32,12 @@ func (s *Service) StartSLAAutoRejectWorker(ctx context.Context) {
 				s.runFSSAIExpiryPass(ctx)
 			}
 			tick++
+			// Wave 1 B3: resubmit system refunds whose first submission failed.
+			if resubmitted, err := s.ResubmitPendingSystemRefunds(ctx); err != nil {
+				slog.Warn("food-service: system refund resubmission pass failed", "error", err)
+			} else if resubmitted > 0 {
+				slog.Info("food-service: resubmitted system refunds", "count", resubmitted)
+			}
 			n, err := s.AutoRejectSLAExpiredOrders(ctx)
 			if err != nil {
 				slog.Warn("food-service: auto-reject pass failed", "error", err)

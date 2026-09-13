@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/internal/onboarding"
+	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -15,7 +16,7 @@ import (
 // file has no way to receive a plaintext PAN or account number.
 
 var (
-	ErrRestaurantNotDraft = errors.New("restaurant can only be submitted for review from DRAFT")
+	ErrRestaurantNotDraft = errors.New("restaurant can only be submitted for review from DRAFT or REJECTED")
 	ErrRestaurantNotLive  = errors.New("restaurant must be ACTIVE before it can accept orders")
 	ErrFSSAIRequired      = errors.New("restaurant requires an approved, unexpired FSSAI document")
 	ErrDocumentExpired    = errors.New("an expired document cannot be approved")
@@ -364,6 +365,8 @@ func readinessFactsTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID) (o
 
 // SubmitRestaurantForReview moves DRAFT to PENDING_REVIEW only when every
 // onboarding step exists; otherwise it returns *onboarding.NotReadyError.
+// Wave 1 B3: a REJECTED restaurant resubmits the same way, under the same
+// readiness check.
 func (s *Store) SubmitRestaurantForReview(ctx context.Context, ownerID, restaurantID uuid.UUID) (*RestaurantSubmission, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -374,7 +377,7 @@ func (s *Store) SubmitRestaurantForReview(ctx context.Context, ownerID, restaura
 	if err != nil {
 		return nil, err
 	}
-	if status != "DRAFT" {
+	if status != "DRAFT" && status != "REJECTED" {
 		return nil, ErrRestaurantNotDraft
 	}
 	facts, err := readinessFactsTx(ctx, tx, restaurantID)
@@ -390,9 +393,18 @@ func (s *Store) SubmitRestaurantForReview(ctx context.Context, ownerID, restaura
 	if _, err := tx.Exec(ctx, `
 		UPDATE food.restaurant_partners p SET status = 'PENDING_REVIEW'
 		FROM food.restaurants r
-		WHERE r.id = $1 AND p.id = r.partner_id AND p.status = 'DRAFT'
+		WHERE r.id = $1 AND p.id = r.partner_id AND p.status IN ('DRAFT', 'REJECTED')
 	`, restaurantID); err != nil {
 		return nil, err
+	}
+	// Rejection revoked the owner role if this was the owner's last live
+	// restaurant (revokeRestaurantOwnerIfLast). Resubmitting re-grants it,
+	// idempotently, with the status change.
+	if status == "REJECTED" {
+		if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, ownerID,
+			identityroles.RoleRestaurantOwner, "restaurant resubmitted after rejection"); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/internal/orderstate"
+	"github.com/atpost/food-service/internal/pricing"
+	"github.com/atpost/food-service/internal/settlement"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -165,6 +167,12 @@ func (s *Store) ClearCart(ctx context.Context, userID uuid.UUID) error {
 }
 
 func (s *Store) ApplyCoupon(ctx context.Context, userID uuid.UUID, code string) (*Cart, error) {
+	// Wave 1 B3: refused before anything is read while coupons are switched
+	// off (FOOD_COUPONS_ENABLED): the GST treatment of a discount is adviser
+	// question 12.
+	if !s.pricingCfg.CouponsEnabled {
+		return nil, pricing.ErrCouponsDisabled
+	}
 	cart, err := s.GetCart(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -172,8 +180,7 @@ func (s *Store) ApplyCoupon(ctx context.Context, userID uuid.UUID, code string) 
 	if len(cart.Items) == 0 {
 		return nil, ErrCartEmpty
 	}
-	discount, err := s.validateCoupon(ctx, code, cart.RestaurantID, cart.Totals.ItemSubtotal)
-	if err != nil {
+	if _, err := s.validateCoupon(ctx, code, cart.RestaurantID, rupees(cartItemsPaise(cart))); err != nil {
 		return nil, err
 	}
 	if _, err := s.db.Exec(ctx, `
@@ -183,13 +190,8 @@ func (s *Store) ApplyCoupon(ctx context.Context, userID uuid.UUID, code string) 
 	`, userID, code); err != nil {
 		return nil, err
 	}
-	cart, err = s.GetCart(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	cart.Totals.CouponDiscount = discount
-	cart.Totals.FinalAmount = roundMoney(cart.Totals.FinalAmount - discount)
-	return cart, nil
+	// The reloaded cart prices the discount through shared/gst.
+	return s.GetCart(ctx, userID)
 }
 
 func (s *Store) ListAddresses(ctx context.Context, userID uuid.UUID) ([]Address, error) {
@@ -335,6 +337,10 @@ func (s *Store) DeleteAddress(ctx context.Context, userID, addressID uuid.UUID) 
 }
 
 func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderInput, idempotencyKey string) (*Order, error) {
+	// Wave 1 B3: a coupon is refused before anything else while coupons are off.
+	if err := s.pricingCfg.CheckCoupon(in.CouponCode); err != nil {
+		return nil, err
+	}
 	// No default method: an order that names none is refused, never COD.
 	status, paymentStatus, err := placeOrderPaymentState(in.PaymentMethod)
 	if err != nil {
@@ -379,6 +385,7 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	var restaurantAddressJSON []byte
 	var prepMins int
 	var commissionPct float64
+	var commissionBP int64
 	var active bool
 	var restLat, restLng *float64
 	if err := tx.QueryRow(ctx, `
@@ -391,12 +398,12 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			'postal_code', postal_code,
 			'latitude', latitude,
 			'longitude', longitude
-		), avg_preparation_minutes, commission_percentage::float8,
+		), avg_preparation_minutes, commission_percentage::float8, ROUND(commission_percentage * 100)::bigint,
 		(status = 'ACTIVE' AND is_open = TRUE AND is_accepting_orders = TRUE),
 		latitude::float8, longitude::float8
 		FROM food.restaurants
 		WHERE id = $1
-	`, *cart.RestaurantID).Scan(&restaurantName, &restaurantAddressJSON, &prepMins, &commissionPct, &active, &restLat, &restLng); err != nil {
+	`, *cart.RestaurantID).Scan(&restaurantName, &restaurantAddressJSON, &prepMins, &commissionPct, &commissionBP, &active, &restLat, &restLng); err != nil {
 		return nil, err
 	}
 	if !active {
@@ -417,23 +424,62 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 		return nil, err
 	}
 
-	if in.CouponCode != "" {
-		if _, err := s.validateCouponTx(ctx, tx, in.CouponCode, cart.RestaurantID, cart.Totals.ItemSubtotal); err != nil {
-			return nil, err
+	// Coupons only when switched on (checked on entry). A coupon discount is
+	// treated as restaurant-funded: it reduces the restaurant's taxable value
+	// and its net supply. Adviser question 12.
+	var discountPaise int64
+	couponCode := ""
+	if s.pricingCfg.CouponsEnabled {
+		if in.CouponCode != "" {
+			cart.CouponCode = in.CouponCode
 		}
-		cart.CouponCode = in.CouponCode
-	}
-	if cart.CouponCode != "" {
-		discount, err := s.validateCouponTx(ctx, tx, cart.CouponCode, cart.RestaurantID, cart.Totals.ItemSubtotal)
-		if err != nil {
-			return nil, err
+		if cart.CouponCode != "" {
+			discount, err := s.validateCouponTx(ctx, tx, cart.CouponCode, cart.RestaurantID, rupees(cartItemsPaise(cart)))
+			if err != nil {
+				return nil, err
+			}
+			discountPaise = int64(math.Round(discount * 100))
+			couponCode = cart.CouponCode
 		}
-		cart.Totals.CouponDiscount = discount
-		cart.Totals.FinalAmount = roundMoney(cart.Totals.FinalAmount - discount)
 	}
 
+	// Wave 1 B3: price the order through shared/gst with refs naming the rows
+	// about to be written, so tax_breakdown describes every order line.
+	restaurantTax, packagingPaise, err := loadRestaurantPricing(ctx, tx, *cart.RestaurantID)
+	if err != nil {
+		return nil, err
+	}
+	orderID := uuid.New()
+	itemIDs := make([]uuid.UUID, len(cart.Items))
+	addonIDs := make([][]uuid.UUID, len(cart.Items))
+	priced := pricing.Cart{PackagingPaise: packagingPaise, DiscountPaise: discountPaise}
+	for i, item := range cart.Items {
+		itemIDs[i] = uuid.New()
+		line := pricing.ItemLine{Ref: orderItemRef(itemIDs[i]), Name: item.Name, Quantity: int64(item.Quantity), UnitPaise: item.UnitPricePaise}
+		addonIDs[i] = make([]uuid.UUID, len(item.Addons))
+		for j, a := range item.Addons {
+			addonIDs[i][j] = uuid.New()
+			line.Addons = append(line.Addons, pricing.AddonLine{Ref: orderAddonRef(addonIDs[i][j]), Name: a.Name,
+				Quantity: int64(a.Quantity) * int64(item.Quantity), UnitPaise: a.UnitPricePaise})
+		}
+		priced.Items = append(priced.Items, line)
+	}
+	quote, err := pricing.Price(s.pricingCfg, restaurantTax, priced, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	totals := quote.Totals
+	breakdownJSON, err := json.Marshal(quote.Breakdown)
+	if err != nil {
+		return nil, err
+	}
+	itemTax := quote.TaxByItem()
+	// Commission is on the restaurant's whole net supply (items, add-ons and
+	// packaging, less its discount); before B3 it was on the item subtotal.
+	commissionPaise := settlement.Commission(
+		totals.ItemSubtotalPaise+totals.AddonTotalPaise+totals.PackagingFeePaise-totals.DiscountTotalPaise, commissionBP)
+
 	paymentMethod := in.PaymentMethod
-	commissionAmount := roundMoney(cart.Totals.ItemSubtotal * commissionPct / 100)
 	orderNumber := fmt.Sprintf("FG%d", time.Now().UnixNano())
 
 	deliveryAddress := map[string]any{
@@ -453,56 +499,74 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	}
 	deliveryAddressJSON, _ := json.Marshal(deliveryAddress)
 
-	var orderID uuid.UUID
-	if err := tx.QueryRow(ctx, `
+	// Paise are the source of truth; each NUMERIC column is derived from its
+	// paise parameter in SQL, never from a float.
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO food.orders (
-			order_number, user_id, restaurant_id, customer_address_id, status,
+			id, order_number, user_id, restaurant_id, customer_address_id, status,
 			payment_status, payment_method, restaurant_name_snapshot,
 			restaurant_address_snapshot, delivery_address_snapshot,
+			item_subtotal_paise, addon_total_paise, packaging_fee_paise, tax_total_paise,
+			delivery_fee_paise, platform_fee_paise, discount_total_paise, final_amount_paise,
 			item_subtotal, addon_total, packaging_fee, tax_total, delivery_fee,
 			platform_fee, restaurant_discount, coupon_discount, final_amount,
 			coupon_code, commission_percentage_snapshot, commission_amount,
 			estimated_preparation_minutes, estimated_delivery_minutes, customer_instruction,
-			metadata
+			metadata, tax_breakdown, needs_adviser_confirmation
 		)
 		VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
-			$26::jsonb
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+			$12::bigint, $13::bigint, $14::bigint, $15::bigint, $16::bigint, $17::bigint, $18::bigint, $19::bigint,
+			($12::bigint)::numeric / 100, ($13::bigint)::numeric / 100, ($14::bigint)::numeric / 100,
+			($15::bigint)::numeric / 100, ($16::bigint)::numeric / 100, ($17::bigint)::numeric / 100,
+			0, ($18::bigint)::numeric / 100, ($19::bigint)::numeric / 100,
+			$20, $21, ($22::bigint)::numeric / 100,
+			$23, $24, $25,
+			$26::jsonb, $27::jsonb, $28
 		)
-		RETURNING id
-	`, orderNumber, userID, *cart.RestaurantID, address.ID, status, paymentStatus, paymentMethod,
-		restaurantName, restaurantAddressJSON, deliveryAddressJSON, cart.Totals.ItemSubtotal,
-		cart.Totals.AddonTotal, cart.Totals.PackagingFee, cart.Totals.TaxTotal, cart.Totals.DeliveryFee,
-		cart.Totals.PlatformFee, cart.Totals.RestaurantDiscount, cart.Totals.CouponDiscount,
-		cart.Totals.FinalAmount, emptyToNil(cart.CouponCode), commissionPct, commissionAmount,
+	`, orderID, orderNumber, userID, *cart.RestaurantID, address.ID, status, paymentStatus, paymentMethod,
+		restaurantName, restaurantAddressJSON, deliveryAddressJSON,
+		totals.ItemSubtotalPaise, totals.AddonTotalPaise, totals.PackagingFeePaise, totals.TaxTotalPaise,
+		totals.DeliveryFeePaise, totals.PlatformFeePaise, totals.DiscountTotalPaise, totals.FinalAmountPaise,
+		emptyToNil(couponCode), commissionPct, commissionPaise,
 		prepMins, estimateDeliveryMinutes(prepMins, distanceKM, s.ordering.AvgRiderSpeedKmh),
-		in.CustomerInstruction, orderMetadata).Scan(&orderID); err != nil {
+		in.CustomerInstruction, orderMetadata, breakdownJSON, quote.Breakdown.NeedsAdviserConfirmation); err != nil {
 		return nil, err
 	}
 
-	for _, item := range cart.Items {
-		var orderItemID uuid.UUID
-		if err := tx.QueryRow(ctx, `
+	for i, item := range cart.Items {
+		ref := orderItemRef(itemIDs[i])
+		var rateBP int32
+		if l, ok := quote.Line(ref); ok {
+			rateBP = l.RateBP
+		}
+		// tax_amount is the GST on the item line and its add-on lines;
+		// line_total stays pre-tax (unit price x quantity).
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO food.order_items (
-				order_id, menu_item_id, variant_id, item_name_snapshot,
+				id, order_id, menu_item_id, variant_id, item_name_snapshot,
 				food_type_snapshot, unit_price_snapshot, quantity,
-				tax_percentage_snapshot, tax_amount, line_total, item_instruction
+				tax_percentage_snapshot, tax_amount, line_total, item_instruction,
+				unit_price_paise, tax_amount_paise, line_total_paise, tax_rate_bp
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-			RETURNING id
-		`, orderID, item.MenuItemID, item.VariantID, item.Name, item.FoodType, item.UnitPrice,
-			item.Quantity, item.TaxPercentage, item.TaxAmount, item.LineTotal, item.ItemInstruction).Scan(&orderItemID); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, ($7::bigint)::numeric / 100, $8, ($9::integer)::numeric / 100,
+				($10::bigint)::numeric / 100, ($11::bigint)::numeric / 100, $12,
+				$7::bigint, $10::bigint, $11::bigint, $9::integer)
+		`, itemIDs[i], orderID, item.MenuItemID, item.VariantID, item.Name, item.FoodType, item.UnitPricePaise,
+			item.Quantity, rateBP, itemTax[ref], item.UnitPricePaise*int64(item.Quantity), item.ItemInstruction); err != nil {
 			return nil, err
 		}
 		// Snapshot quantity is the total add-on units (add-on qty x item qty),
 		// so line_total = unit_price_snapshot x quantity holds.
-		for _, a := range item.Addons {
+		for j, a := range item.Addons {
+			units := int64(a.Quantity) * int64(item.Quantity)
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO food.order_item_addons (
-					order_item_id, addon_id, addon_name_snapshot, unit_price_snapshot, quantity, line_total
+					id, order_item_id, addon_id, addon_name_snapshot, unit_price_snapshot, quantity, line_total,
+					unit_price_paise, line_total_paise
 				)
-				VALUES ($1, $2, $3, $4, $5, $6)
-			`, orderItemID, a.AddonID, a.Name, a.UnitPrice, a.Quantity*item.Quantity, a.LineTotal); err != nil {
+				VALUES ($1, $2, $3, $4, ($5::bigint)::numeric / 100, $6, ($7::bigint)::numeric / 100, $5::bigint, $7::bigint)
+			`, addonIDs[i][j], itemIDs[i], a.AddonID, a.Name, a.UnitPricePaise, units, a.UnitPricePaise*units); err != nil {
 				return nil, err
 			}
 		}
@@ -515,32 +579,32 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO food.payments (order_id, payment_method, status, amount)
-		VALUES ($1, $2, $3, $4)
-	`, orderID, paymentMethod, paymentStatus, cart.Totals.FinalAmount); err != nil {
+		VALUES ($1, $2, $3, ($4::bigint)::numeric / 100)
+	`, orderID, paymentMethod, paymentStatus, totals.FinalAmountPaise); err != nil {
 		return nil, err
 	}
 	if status == "CONFIRMED" {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO food.delivery_assignments (order_id, status, delivery_fee, delivery_partner_payout, distance_km)
-			VALUES ($1, 'CREATED', $2, $3, $4)
-		`, orderID, cart.Totals.DeliveryFee, riderPayoutForFee(cart.Totals.DeliveryFee), roundMoney(distanceKM)); err != nil {
+			VALUES ($1, 'CREATED', ($2::bigint)::numeric / 100, $3, $4)
+		`, orderID, totals.DeliveryFeePaise, riderPayoutForFee(rupees(totals.DeliveryFeePaise)), roundMoney(distanceKM)); err != nil {
 			return nil, err
 		}
 	}
-	if cart.CouponCode != "" {
+	if couponCode != "" {
 		if _, err := tx.Exec(ctx, `
 			UPDATE food.coupons SET used_count = used_count + 1 WHERE code = $1
-		`, cart.CouponCode); err != nil {
+		`, couponCode); err != nil {
 			return nil, err
 		}
 		var couponID uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT id FROM food.coupons WHERE code = $1`, cart.CouponCode).Scan(&couponID); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT id FROM food.coupons WHERE code = $1`, couponCode).Scan(&couponID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO food.coupon_redemptions (coupon_id, order_id, user_id, discount_amount)
-			VALUES ($1, $2, $3, $4)
-		`, couponID, orderID, userID, cart.Totals.CouponDiscount); err != nil {
+			VALUES ($1, $2, $3, ($4::bigint)::numeric / 100)
+		`, couponID, orderID, userID, totals.DiscountTotalPaise); err != nil {
 			return nil, err
 		}
 	}
@@ -754,8 +818,7 @@ func (s *Store) loadCart(ctx context.Context, q interface {
 	rows, err := q.Query(ctx, `
 		SELECT ci.id, ci.restaurant_id, ci.menu_item_id, ci.variant_id,
 			i.name, COALESCE(i.image_url, ''), i.food_type::text, ci.quantity,
-			COALESCE(v.price, COALESCE(i.discount_price, i.base_price))::float8,
-			i.tax_percentage::float8,
+			ROUND(COALESCE(v.price, COALESCE(i.discount_price, i.base_price)) * 100)::bigint,
 			ci.item_instruction
 		FROM food.cart_items ci
 		JOIN food.menu_items i ON i.id = ci.menu_item_id
@@ -769,8 +832,8 @@ func (s *Store) loadCart(ctx context.Context, q interface {
 	for rows.Next() {
 		var item CartItem
 		if err := rows.Scan(&item.ID, &item.RestaurantID, &item.MenuItemID, &item.VariantID,
-			&item.Name, &item.ImageURL, &item.FoodType, &item.Quantity, &item.UnitPrice,
-			&item.TaxPercentage, &item.ItemInstruction); err != nil {
+			&item.Name, &item.ImageURL, &item.FoodType, &item.Quantity, &item.UnitPricePaise,
+			&item.ItemInstruction); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -785,26 +848,25 @@ func (s *Store) loadCart(ctx context.Context, q interface {
 			return nil, err
 		}
 	}
-	for i := range cart.Items {
-		priceCartItem(&cart.Items[i])
-		cart.Totals.ItemSubtotal += cart.Items[i].LineTotal
-		cart.Totals.AddonTotal += cart.Items[i].AddonTotal
-		cart.Totals.TaxTotal += cart.Items[i].TaxAmount
-	}
-	cart.Totals.AddonTotal = roundMoney(cart.Totals.AddonTotal)
+	// Wave 1 B3: totals through shared/gst (money.go), not float tax on top.
+	var restaurant pricing.Restaurant
+	var packagingPaise, discountPaise int64
 	if cart.RestaurantID != nil && len(cart.Items) > 0 {
-		_ = q.QueryRow(ctx, `SELECT packaging_fee::float8 FROM food.restaurants WHERE id = $1`, *cart.RestaurantID).Scan(&cart.Totals.PackagingFee)
-		cart.Totals.DeliveryFee = 29
-		cart.Totals.PlatformFee = 5
-	}
-	if cart.CouponCode != "" {
-		if discount, err := s.validateCouponQuery(ctx, q, cart.CouponCode, cart.RestaurantID, cart.Totals.ItemSubtotal); err == nil {
-			cart.Totals.CouponDiscount = discount
+		restaurant, packagingPaise, err = loadRestaurantPricing(ctx, q, *cart.RestaurantID)
+		if err != nil {
+			return nil, err
+		}
+		if cart.CouponCode != "" && s.pricingCfg.CouponsEnabled {
+			if discount, err := s.validateCouponQuery(ctx, q, cart.CouponCode, cart.RestaurantID, rupees(cartItemsPaise(&cart))); err == nil {
+				discountPaise = int64(math.Round(discount * 100))
+			}
 		}
 	}
-	cart.Totals.ItemSubtotal = roundMoney(cart.Totals.ItemSubtotal)
-	cart.Totals.TaxTotal = roundMoney(cart.Totals.TaxTotal)
-	cart.Totals.FinalAmount = roundMoney(cart.Totals.ItemSubtotal + cart.Totals.AddonTotal + cart.Totals.PackagingFee + cart.Totals.TaxTotal + cart.Totals.DeliveryFee + cart.Totals.PlatformFee - cart.Totals.RestaurantDiscount - cart.Totals.CouponDiscount)
+	if !s.pricingCfg.CouponsEnabled {
+		// A code saved before coupons were switched off is not applied or shown.
+		cart.CouponCode = ""
+	}
+	PriceCart(s.pricingCfg, restaurant, &cart, packagingPaise, discountPaise, time.Now())
 	return &cart, nil
 }
 
@@ -1006,6 +1068,11 @@ func (s *Store) getOrder(ctx context.Context, q interface {
 	}
 	order.Items = items
 	order.History = history
+	money, err := loadOrderMoney(ctx, q, orderID)
+	if err != nil {
+		return nil, err
+	}
+	order.Money = money
 	return &order, nil
 }
 
@@ -1015,7 +1082,10 @@ func (s *Store) listOrderItems(ctx context.Context, q interface {
 	rows, err := q.Query(ctx, `
 		SELECT id, item_name_snapshot, food_type_snapshot::text,
 			unit_price_snapshot::float8, quantity, tax_amount::float8,
-			line_total::float8, COALESCE(item_instruction, '')
+			line_total::float8, COALESCE(item_instruction, ''),
+			COALESCE(unit_price_paise, ROUND(unit_price_snapshot * 100)::bigint),
+			COALESCE(tax_amount_paise, ROUND(tax_amount * 100)::bigint),
+			COALESCE(line_total_paise, ROUND(line_total * 100)::bigint)
 		FROM food.order_items
 		WHERE order_id = $1
 		ORDER BY created_at
@@ -1028,7 +1098,8 @@ func (s *Store) listOrderItems(ctx context.Context, q interface {
 	for rows.Next() {
 		var item OrderItem
 		if err := rows.Scan(&item.ID, &item.Name, &item.FoodType, &item.UnitPrice,
-			&item.Quantity, &item.TaxAmount, &item.LineTotal, &item.Instruction); err != nil {
+			&item.Quantity, &item.TaxAmount, &item.LineTotal, &item.Instruction,
+			&item.UnitPricePaise, &item.TaxAmountPaise, &item.LineTotalPaise); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

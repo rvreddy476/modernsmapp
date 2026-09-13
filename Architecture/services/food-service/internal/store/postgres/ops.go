@@ -119,9 +119,14 @@ func (s *Store) GetPartnerRestaurant(ctx context.Context, ownerID, restaurantID 
 	return &restaurant, rows.Err()
 }
 
+// UpdatePartnerRestaurant is the generic profile PATCH. Wave 1 B3: it never
+// writes the pin or the address. PUT .../location owns those, and it moves the
+// restaurant's service area with them, so they can never diverge. The handler
+// refuses a body that names a location field (FOOD_USE_LOCATION_ROUTE); this
+// store method ignores those fields as well.
 func (s *Store) UpdatePartnerRestaurant(ctx context.Context, ownerID, restaurantID uuid.UUID, in PartnerRestaurantInput) (*PartnerRestaurant, error) {
-	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.AddressLine1) == "" || strings.TrimSpace(in.City) == "" {
-		return nil, fmt.Errorf("name, address_line1, and city are required")
+	if strings.TrimSpace(in.Name) == "" {
+		return nil, fmt.Errorf("name is required")
 	}
 	slug := strings.TrimSpace(in.Slug)
 	if slug == "" {
@@ -134,21 +139,13 @@ func (s *Store) UpdatePartnerRestaurant(ctx context.Context, ownerID, restaurant
 			description = $5,
 			phone = $6,
 			email = $7,
-			address_line1 = $8,
-			address_line2 = $9,
-			city = $10,
-			state = $11,
-			postal_code = $12,
-			latitude = $13,
-			longitude = $14,
-			min_order_amount = $15,
-			packaging_fee = $16,
+			min_order_amount = $8,
+			packaging_fee = $9,
 			status = CASE WHEN status = 'ACTIVE' THEN 'PENDING_REVIEW' ELSE status END,
 			is_accepting_orders = CASE WHEN status = 'ACTIVE' THEN FALSE ELSE is_accepting_orders END
 		WHERE owner_user_id = $1 AND id = $2
 	`, ownerID, restaurantID, in.Name, slug, in.Description, in.Phone, in.Email,
-		in.AddressLine1, in.AddressLine2, in.City, in.State, in.PostalCode,
-		in.Latitude, in.Longitude, in.MinOrderAmount, in.PackagingFee)
+		in.MinOrderAmount, in.PackagingFee)
 	if err != nil {
 		return nil, err
 	}
@@ -449,6 +446,13 @@ func (s *Store) PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID u
 		Actor: orderstate.ActorRestaurant, ChangedBy: &ownerID, Reason: reason,
 	}); err != nil {
 		return nil, err
+	}
+	if toStatus == orderstate.RestaurantRejected {
+		// Wave 1 B3: a paid order the restaurant rejects has its refund
+		// requested in this transaction (order -> REFUND_PENDING).
+		if _, err := requestSystemRefundTx(ctx, tx, orderID, "restaurant rejected the order"); err != nil {
+			return nil, err
+		}
 	}
 	if toStatus == orderstate.ReadyForPickup {
 		if err := transitionOrderTx(ctx, tx, OrderTransition{
@@ -1295,41 +1299,6 @@ func (s *Store) AdminUpdateServiceArea(ctx context.Context, adminID, areaID uuid
 	return map[string]any{"id": areaID, "name": name, "city": city}, nil
 }
 
-func (s *Store) AdminListRestaurantSettlements(ctx context.Context, page Pagination) ([]map[string]any, error) {
-	page = normalizePagination(page)
-	rows, err := s.db.Query(ctx, `
-		SELECT rs.id::text, rs.restaurant_id::text, r.name, rs.period_start::text,
-			rs.period_end::text, rs.gross_order_amount::float8, rs.commission_amount::float8,
-			rs.refund_adjustment::float8, rs.penalty_amount::float8, rs.payout_amount::float8,
-			rs.status::text, COALESCE(rs.paid_reference, ''), COALESCE(rs.paid_at::text, ''),
-			rs.created_at::text
-		FROM food.restaurant_settlements rs
-		JOIN food.restaurants r ON r.id = rs.restaurant_id
-		ORDER BY rs.created_at DESC
-		LIMIT $1 OFFSET $2
-	`, page.Limit, page.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var settlements []map[string]any
-	for rows.Next() {
-		var id, restaurantID, restaurantName, start, end, status, ref, paidAt, createdAt string
-		var gross, commission, refund, penalty, payout float64
-		if err := rows.Scan(&id, &restaurantID, &restaurantName, &start, &end, &gross, &commission, &refund, &penalty, &payout, &status, &ref, &paidAt, &createdAt); err != nil {
-			return nil, err
-		}
-		settlements = append(settlements, map[string]any{
-			"id": id, "restaurant_id": restaurantID, "restaurant_name": restaurantName,
-			"period_start": start, "period_end": end, "gross_order_amount": gross,
-			"commission_amount": commission, "refund_adjustment": refund,
-			"penalty_amount": penalty, "payout_amount": payout, "status": status,
-			"paid_reference": ref, "paid_at": paidAt, "created_at": createdAt,
-		})
-	}
-	return settlements, rows.Err()
-}
-
 func (s *Store) AdminMarkRestaurantSettlementPaid(ctx context.Context, adminID, settlementID uuid.UUID, reference string) (map[string]any, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -1387,95 +1356,15 @@ func (s *Store) AdminGenerateSettlements(ctx context.Context, adminID uuid.UUID,
 		}
 	}
 
-	restaurantRows, err := tx.Query(ctx, `
-		WITH refunds_by_order AS (
-			SELECT order_id, COALESCE(SUM(amount), 0)::float8 AS refund_amount
-			FROM food.refunds
-			WHERE status = 'PROCESSED'
-			GROUP BY order_id
-		)
-		SELECT o.restaurant_id,
-			COALESCE(SUM(o.final_amount), 0)::float8,
-			COALESCE(SUM(o.commission_amount), 0)::float8,
-			COALESCE(SUM(rbo.refund_amount), 0)::float8
-		FROM food.orders o
-		LEFT JOIN refunds_by_order rbo ON rbo.order_id = o.id
-		WHERE o.status IN ('DELIVERED', 'REFUNDED')
-			AND o.placed_at::date BETWEEN $1::date AND $2::date
-			AND ($3::uuid IS NULL OR o.restaurant_id = $3)
-		GROUP BY o.restaurant_id
-	`, start.Format("2006-01-02"), end.Format("2006-01-02"), in.RestaurantID)
+	// Wave 1 B3: paise, through internal/settlement (settlements_b3.go). The
+	// platform fee, the delivery fee and s.9(5) GST never reach a restaurant.
+	restaurantItems, err := s.generateRestaurantSettlementsTx(ctx, tx, adminID, start, end, in.RestaurantID)
 	if err != nil {
 		return nil, err
 	}
-	type restaurantSettlementAggregate struct {
-		restaurantID uuid.UUID
-		gross        float64
-		commission   float64
-		refund       float64
-	}
-	restaurantAggregates := []restaurantSettlementAggregate{}
-	for restaurantRows.Next() {
-		var aggregate restaurantSettlementAggregate
-		if err := restaurantRows.Scan(&aggregate.restaurantID, &aggregate.gross, &aggregate.commission, &aggregate.refund); err != nil {
-			restaurantRows.Close()
-			return nil, err
-		}
-		restaurantAggregates = append(restaurantAggregates, aggregate)
-	}
-	restaurantRows.Close()
-	if err := restaurantRows.Err(); err != nil {
-		return nil, err
-	}
-	restaurantItems := []map[string]any{}
-	for _, aggregate := range restaurantAggregates {
-		payout := roundMoney(aggregate.gross - aggregate.commission - aggregate.refund)
-		item, err := s.upsertRestaurantSettlementTx(ctx, tx, adminID, aggregate.restaurantID, start, end, aggregate.gross, aggregate.commission, aggregate.refund, payout)
-		if err != nil {
-			return nil, err
-		}
-		restaurantItems = append(restaurantItems, item)
-	}
-
-	deliveryRows, err := tx.Query(ctx, `
-		SELECT da.delivery_partner_id,
-			COUNT(*)::int,
-			COALESCE(SUM(da.delivery_partner_payout), 0)::float8
-		FROM food.delivery_assignments da
-		WHERE da.status = 'DELIVERED'
-			AND da.delivery_partner_id IS NOT NULL
-			AND da.delivered_at::date BETWEEN $1::date AND $2::date
-			AND ($3::uuid IS NULL OR da.delivery_partner_id = $3)
-		GROUP BY da.delivery_partner_id
-	`, start.Format("2006-01-02"), end.Format("2006-01-02"), in.DeliveryPartnerID)
+	deliveryItems, err := s.generateDeliverySettlementsTx(ctx, tx, adminID, start, end, in.DeliveryPartnerID)
 	if err != nil {
 		return nil, err
-	}
-	type deliverySettlementAggregate struct {
-		partnerID uuid.UUID
-		count     int
-		gross     float64
-	}
-	deliveryAggregates := []deliverySettlementAggregate{}
-	for deliveryRows.Next() {
-		var aggregate deliverySettlementAggregate
-		if err := deliveryRows.Scan(&aggregate.partnerID, &aggregate.count, &aggregate.gross); err != nil {
-			deliveryRows.Close()
-			return nil, err
-		}
-		deliveryAggregates = append(deliveryAggregates, aggregate)
-	}
-	deliveryRows.Close()
-	if err := deliveryRows.Err(); err != nil {
-		return nil, err
-	}
-	deliveryItems := []map[string]any{}
-	for _, aggregate := range deliveryAggregates {
-		item, err := s.upsertDeliverySettlementTx(ctx, tx, adminID, aggregate.partnerID, start, end, aggregate.count, aggregate.gross, aggregate.gross)
-		if err != nil {
-			return nil, err
-		}
-		deliveryItems = append(deliveryItems, item)
 	}
 
 	result := map[string]any{
@@ -1688,105 +1577,6 @@ func (s *Store) latestRefundTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID
 		return nil, err
 	}
 	return map[string]any{"id": id, "order_id": orderID.String(), "amount": amount, "status": status}, nil
-}
-
-func (s *Store) upsertRestaurantSettlementTx(ctx context.Context, tx pgx.Tx, adminID, restaurantID uuid.UUID, start, end time.Time, gross, commission, refund, payout float64) (map[string]any, error) {
-	startDate := start.Format("2006-01-02")
-	endDate := end.Format("2006-01-02")
-	var id, status string
-	err := tx.QueryRow(ctx, `
-		UPDATE food.restaurant_settlements
-		SET gross_order_amount = $4::numeric,
-			commission_amount = $5::numeric,
-			refund_adjustment = $6::numeric,
-			payout_amount = $7::numeric,
-			created_by = COALESCE(created_by, $8)
-		WHERE restaurant_id = $1
-			AND period_start = $2::date
-			AND period_end = $3::date
-			AND status <> 'PAID'
-		RETURNING id::text, status::text
-	`, restaurantID, startDate, endDate, gross, commission, refund, payout, adminID).Scan(&id, &status)
-	if err == pgx.ErrNoRows {
-		err = tx.QueryRow(ctx, `
-			INSERT INTO food.restaurant_settlements (
-				restaurant_id, period_start, period_end, gross_order_amount,
-				commission_amount, refund_adjustment, payout_amount, created_by
-			)
-			SELECT $1, $2::date, $3::date, $4::numeric, $5::numeric, $6::numeric, $7::numeric, $8
-			WHERE NOT EXISTS (
-				SELECT 1 FROM food.restaurant_settlements
-				WHERE restaurant_id = $1 AND period_start = $2::date AND period_end = $3::date
-			)
-			RETURNING id::text, status::text
-		`, restaurantID, startDate, endDate, gross, commission, refund, payout, adminID).Scan(&id, &status)
-	}
-	if err == pgx.ErrNoRows {
-		err = tx.QueryRow(ctx, `
-			SELECT id::text, status::text
-			FROM food.restaurant_settlements
-			WHERE restaurant_id = $1 AND period_start = $2::date AND period_end = $3::date
-			ORDER BY created_at DESC
-			LIMIT 1
-		`, restaurantID, startDate, endDate).Scan(&id, &status)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"id": id, "restaurant_id": restaurantID.String(), "period_start": startDate,
-		"period_end": endDate, "gross_amount": gross, "commission": commission,
-		"refund_adjustment": refund, "payout_amount": payout, "status": status,
-	}, nil
-}
-
-func (s *Store) upsertDeliverySettlementTx(ctx context.Context, tx pgx.Tx, adminID, partnerID uuid.UUID, start, end time.Time, count int, gross, payout float64) (map[string]any, error) {
-	startDate := start.Format("2006-01-02")
-	endDate := end.Format("2006-01-02")
-	var id, status string
-	err := tx.QueryRow(ctx, `
-		UPDATE food.delivery_partner_settlements
-		SET delivery_count = $4::integer,
-			gross_earning_amount = $5::numeric,
-			payout_amount = $6::numeric,
-			created_by = COALESCE(created_by, $7)
-		WHERE delivery_partner_id = $1
-			AND period_start = $2::date
-			AND period_end = $3::date
-			AND status <> 'PAID'
-		RETURNING id::text, status::text
-	`, partnerID, startDate, endDate, count, gross, payout, adminID).Scan(&id, &status)
-	if err == pgx.ErrNoRows {
-		err = tx.QueryRow(ctx, `
-			INSERT INTO food.delivery_partner_settlements (
-				delivery_partner_id, period_start, period_end, delivery_count,
-				gross_earning_amount, payout_amount, created_by
-			)
-			SELECT $1, $2::date, $3::date, $4::integer, $5::numeric, $6::numeric, $7
-			WHERE NOT EXISTS (
-				SELECT 1 FROM food.delivery_partner_settlements
-				WHERE delivery_partner_id = $1 AND period_start = $2::date AND period_end = $3::date
-			)
-			RETURNING id::text, status::text
-		`, partnerID, startDate, endDate, count, gross, payout, adminID).Scan(&id, &status)
-	}
-	if err == pgx.ErrNoRows {
-		err = tx.QueryRow(ctx, `
-			SELECT id::text, status::text
-			FROM food.delivery_partner_settlements
-			WHERE delivery_partner_id = $1 AND period_start = $2::date AND period_end = $3::date
-			ORDER BY created_at DESC
-			LIMIT 1
-		`, partnerID, startDate, endDate).Scan(&id, &status)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"id": id, "delivery_partner_id": partnerID.String(), "period_start": startDate,
-		"period_end": endDate, "delivery_count": count, "gross_amount": gross,
-		"incentive_amount": 0, "penalty_amount": 0, "payout_amount": payout, "status": status,
-	}, nil
 }
 
 func normalizePagination(page Pagination) Pagination {

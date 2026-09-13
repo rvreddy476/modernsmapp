@@ -123,9 +123,12 @@ var table = map[edge]map[Actor]struct{}{
 	{CancelledByCustomer, RefundPending}:   actors(ActorAdmin),
 	{CancelledByRestaurant, RefundPending}: actors(ActorAdmin),
 	{CancelledByAdmin, RefundPending}:      actors(ActorAdmin),
-	{RestaurantRejected, RefundPending}:    actors(ActorAdmin),
-	{Delivered, RefundPending}:             actors(ActorAdmin),
-	{RefundPending, Refunded}:              actors(ActorPayment),
+	// B3: the system (SLA worker, or the chained step after a restaurant's
+	// rejection) requests the refund of a paid rejected order in the same flow,
+	// so a paid order never rests in RESTAURANT_REJECTED.
+	{RestaurantRejected, RefundPending}: actors(ActorAdmin, ActorSystem),
+	{Delivered, RefundPending}:          actors(ActorAdmin),
+	{RefundPending, Refunded}:           actors(ActorPayment),
 }
 
 // EdgeExists reports whether from -> to is a transition at all, regardless of

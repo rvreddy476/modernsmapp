@@ -12,7 +12,9 @@ import (
 	foodhttp "github.com/atpost/food-service/internal/http"
 	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/payout"
+	"github.com/atpost/food-service/internal/pricing"
 	"github.com/atpost/food-service/internal/service"
+	"github.com/atpost/food-service/internal/settlement"
 	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/health"
@@ -80,9 +82,35 @@ func main() {
 		slog.Error("invalid ordering config", "error", err)
 		os.Exit(1)
 	}
+	// Wave 1 B3: totals through shared/gst. FOOD_PLATFORM_FEE_PAISE (500),
+	// FOOD_DELIVERY_FEE_PAISE (2900), FOOD_COUPONS_ENABLED (false) and
+	// FOOD_PLATFORM_GSTIN, which is validated whenever set and required unless
+	// ENV is local/dev/development.
+	pricingCfg, err := pricing.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("invalid pricing config", "error", err)
+		os.Exit(1)
+	}
+	if pricingCfg.PlatformGSTIN == "" {
+		slog.Warn("food-service: FOOD_PLATFORM_GSTIN unset (local/dev) — carts carry pricing_error " +
+			"FOOD_PLATFORM_GSTIN_NOT_CONFIGURED and orders are refused with 503")
+	}
+	// FOOD_COMMISSION_GST_BP (1800) and FOOD_TCS_RATE_BP (50): settlement
+	// rates, both pending adviser confirmation.
+	settlementRules, err := settlement.RulesFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("invalid settlement config", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("food-service: pricing",
+		"platform_fee_paise", pricingCfg.PlatformFeePaise, "delivery_fee_paise", pricingCfg.DeliveryFeePaise,
+		"coupons_enabled", pricingCfg.CouponsEnabled, "platform_gstin_configured", pricingCfg.PlatformGSTIN != "",
+		"commission_gst_bp", settlementRules.CommissionGSTBP, "tcs_rate_bp", settlementRules.TCSRateBP)
 	store := postgres.New(dbPool).
 		WithRoleIntents(identityroles.NewOutbox("", "food-service")).
-		WithOrderingConfig(orderingCfg)
+		WithOrderingConfig(orderingCfg).
+		WithPricingConfig(pricingCfg).
+		WithSettlementRules(settlementRules)
 	svc := service.New(store)
 
 	// Wave 1 B1/B2: restaurant PAN and payout-account sealing. FOOD_PII_KEYS

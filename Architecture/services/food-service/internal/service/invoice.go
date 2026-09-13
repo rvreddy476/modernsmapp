@@ -4,89 +4,89 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/atpost/food-service/internal/foodinvoice"
 	"github.com/atpost/shared/invoice"
 	"github.com/google/uuid"
 )
 
-// GenerateOrderInvoice produces a GST invoice HTML for an order. Two
-// guarantees:
+// GetOrderInvoice builds an order's tax invoice (Wave 1 B3) from the GST
+// breakdown stored on the order, grouped by liable party:
 //
-//   1. Idempotent — calling it twice for the same order returns the
-//      same invoice_number (allocated lazily on first call and
-//      persisted on food.orders).
-//   2. Refuses non-DELIVERED orders — a draft / pending order has no
-//      legitimate tax invoice.
-func (s *Service) GenerateOrderInvoice(ctx context.Context, userID, orderID uuid.UUID) ([]byte, string, string, error) {
+//  1. Idempotent numbering: numbers are allocated on the first pull and
+//     stored on food.orders; the platform section uses the platform series,
+//     the restaurant section that restaurant's own series. An order placed
+//     before B3 keeps its single legacy number.
+//  2. Taxable value is the pre-tax line total. The legacy path used to
+//     subtract the tax from a total that never contained it.
+//  3. Every invoice carries "Tax rates pending adviser confirmation" while a
+//     rate is unconfirmed.
+func (s *Service) GetOrderInvoice(ctx context.Context, userID, orderID uuid.UUID) (*foodinvoice.Document, error) {
 	d, err := s.store.GetInvoiceData(ctx, userID, orderID)
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
 	fy := invoice.FinancialYear(d.PlacedAt)
-	num := d.InvoiceNumber
-	if num == "" {
-		allocated, aerr := s.store.AllocateInvoiceNumber(ctx, orderID, fy)
-		if aerr != nil {
-			return nil, "", "", fmt.Errorf("allocate invoice number: %w", aerr)
-		}
-		num = allocated
+	data := foodinvoice.Data{
+		OrderID: orderID.String(), OrderNumber: d.OrderNumber, PlacedAt: d.PlacedAt,
+		Restaurant: foodinvoice.Party{Name: d.RestaurantName, LegalName: d.RestaurantLegalName, GSTIN: d.RestaurantGSTIN,
+			AddressLine: d.RestaurantAddrLine, City: d.RestaurantCity, State: d.RestaurantState},
+		Buyer:            foodinvoice.Party{Name: d.BuyerName, AddressLine: d.BuyerAddrLine, City: d.BuyerCity, State: d.BuyerState},
+		FinalAmountPaise: d.FinalAmountPaise,
 	}
+	if d.Breakdown == nil {
+		num := d.InvoiceNumber
+		if num == "" {
+			if num, err = s.store.AllocateInvoiceNumber(ctx, orderID, fy); err != nil {
+				return nil, fmt.Errorf("allocate invoice number: %w", err)
+			}
+		}
+		data.LegacyInvoiceNumber = num
+		for _, it := range d.Items {
+			data.Legacy = append(data.Legacy, foodinvoice.LegacyItem{Name: it.Name, HSN: it.HSN, Quantity: int64(it.Quantity),
+				UnitPricePaise: it.UnitPricePaise, LineTotalPaise: it.LineTotalPaise, TaxPaise: it.TaxAmountPaise, TaxPercent: it.TaxPct})
+		}
+		return foodinvoice.Build(data)
+	}
+	needPlatform, needRestaurant := false, false
+	for _, l := range d.Breakdown.Lines {
+		if l.LiableParty == foodinvoice.IssuerRestaurant {
+			needRestaurant = true
+		} else {
+			needPlatform = true
+		}
+	}
+	platformNo, restaurantNo := d.PlatformInvoiceNumber, d.RestaurantInvoiceNumber
+	if (needPlatform && platformNo == "") || (needRestaurant && restaurantNo == "") {
+		if platformNo, restaurantNo, err = s.store.AllocateOrderInvoiceNumbers(ctx, orderID, d.RestaurantID, fy, needPlatform, needRestaurant); err != nil {
+			return nil, fmt.Errorf("allocate invoice numbers: %w", err)
+		}
+	}
+	data.Breakdown = d.Breakdown
+	data.PlatformInvoiceNumber, data.RestaurantInvoiceNumber = platformNo, restaurantNo
+	data.Descriptions = make(map[string]foodinvoice.LineDescription, len(d.Lines))
+	for ref, l := range d.Lines {
+		data.Descriptions[ref] = foodinvoice.LineDescription{Description: l.Name, Quantity: l.Quantity, UnitPricePaise: l.UnitPricePaise}
+	}
+	return foodinvoice.Build(data)
+}
 
-	inv := invoice.Invoice{
-		Number:      num,
-		Date:        d.PlacedAt,
-		OrderNumber: d.OrderNumber,
-		OrderDate:   d.PlacedAt,
-		Seller: invoice.Party{
-			Name:  d.RestaurantName,
-			GSTIN: d.RestaurantGSTIN,
-			Address: invoice.Address{
-				Line1: d.RestaurantAddrLine,
-				City:  d.RestaurantCity,
-				State: d.RestaurantState,
-			},
-		},
-		Buyer: invoice.Party{
-			Name: d.BuyerName,
-			Address: invoice.Address{
-				Line1: d.BuyerAddrLine,
-				City:  d.BuyerCity,
-				State: d.BuyerState,
-			},
-		},
-		ShipTo: invoice.Address{
-			Line1: d.BuyerAddrLine,
-			City:  d.BuyerCity,
-			State: d.BuyerState,
-		},
-		Subtotal:        d.Subtotal,
-		ShippingCharges: d.DeliveryFee + d.PackagingFee,
-		CouponCode:      d.CouponCode,
-		CouponDiscount:  d.CouponDiscount,
-		GrandTotal:      d.GrandTotal,
-		Currency:        "INR",
-	}
-	// Translate FiGo line items into invoice.LineItem. tax_percentage
-	// is stored as a single number; the renderer splits it CGST+SGST
-	// for intra-state and IGST for inter-state on its own.
-	for _, it := range d.Items {
-		taxable := it.LineTotal - it.TaxAmount
-		half := it.TaxPct / 2
-		li := invoice.LineItem{
-			Title:     it.Name,
-			HSN:       it.HSN,
-			Quantity:  it.Quantity,
-			UnitPrice: it.UnitPrice,
-			Taxable:   taxable,
-			CGSTPct:   half,
-			SGSTPct:   half,
-			IGSTPct:   it.TaxPct,
+// PrimaryInvoiceNumber is the X-Invoice-Number header value: the platform
+// section's number when there is one, otherwise the restaurant's.
+func PrimaryInvoiceNumber(doc *foodinvoice.Document) string {
+	for _, issuer := range []string{foodinvoice.IssuerPlatform, foodinvoice.IssuerRestaurant} {
+		if n := SectionInvoiceNumber(doc, issuer); n != "" {
+			return n
 		}
-		inv.Items = append(inv.Items, li)
 	}
-	inv.ApplyGST()
-	body, ctype, err := invoice.HTMLRenderer{}.Render(inv)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("render invoice: %w", err)
+	return ""
+}
+
+// SectionInvoiceNumber is the invoice number of one issuer's section, or "".
+func SectionInvoiceNumber(doc *foodinvoice.Document, issuer string) string {
+	for _, sec := range doc.Sections {
+		if sec.Issuer == issuer && sec.InvoiceNumber != "" {
+			return sec.InvoiceNumber
+		}
 	}
-	return body, ctype, num, nil
+	return ""
 }

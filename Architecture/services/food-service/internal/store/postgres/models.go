@@ -1,6 +1,9 @@
 package postgres
 
-import "github.com/google/uuid"
+import (
+	"github.com/atpost/food-service/internal/pricing"
+	"github.com/google/uuid"
+)
 
 type Pagination struct {
 	Limit  int `json:"limit"`
@@ -78,6 +81,11 @@ type Cart struct {
 	CouponCode   string         `json:"coupon_code,omitempty"`
 	Items        []CartItem     `json:"items"`
 	Totals       PriceBreakdown `json:"totals"`
+	// Wave 1 B3. TotalsPaise and TaxesAndCharges are set when the cart could
+	// be priced; PricingError says why checkout is blocked when it could not.
+	TotalsPaise     *pricing.Totals          `json:"totals_paise,omitempty"`
+	TaxesAndCharges *pricing.TaxesAndCharges `json:"taxes_and_charges"`
+	PricingError    *PricingError            `json:"pricing_error,omitempty"`
 }
 
 type CartItem struct {
@@ -97,6 +105,12 @@ type CartItem struct {
 	// Addons are priced per unit of the item: line = price x add-on qty x item qty.
 	Addons     []CartItemAddon `json:"addons,omitempty"`
 	AddonTotal float64         `json:"addon_total"`
+	// Wave 1 B3, integer paise. TaxAmountPaise is the GST on the item and its
+	// add-ons.
+	UnitPricePaise  int64 `json:"unit_price_paise"`
+	LineTotalPaise  int64 `json:"line_total_paise"`
+	AddonTotalPaise int64 `json:"addon_total_paise"`
+	TaxAmountPaise  int64 `json:"tax_amount_paise"`
 }
 
 type CartItemAddon struct {
@@ -105,6 +119,9 @@ type CartItemAddon struct {
 	UnitPrice float64   `json:"unit_price"`
 	Quantity  int       `json:"quantity"`
 	LineTotal float64   `json:"line_total"`
+	// Wave 1 B3, integer paise.
+	UnitPricePaise int64 `json:"unit_price_paise"`
+	LineTotalPaise int64 `json:"line_total_paise"`
 }
 
 type PriceBreakdown struct {
@@ -169,6 +186,8 @@ type Order struct {
 	DeliveredAt           string               `json:"delivered_at,omitempty"`
 	Items                 []OrderItem          `json:"items,omitempty"`
 	History               []OrderStatusHistory `json:"history,omitempty"`
+	// Money is the Wave 1 B3 money block, on order detail only.
+	Money *OrderMoney `json:"money,omitempty"`
 }
 
 type WalletPaymentChargeDetails struct {
@@ -216,6 +235,10 @@ type OrderItem struct {
 	TaxAmount   float64   `json:"tax_amount"`
 	LineTotal   float64   `json:"line_total"`
 	Instruction string    `json:"instruction,omitempty"`
+	// Wave 1 B3, integer paise.
+	UnitPricePaise int64 `json:"unit_price_paise"`
+	TaxAmountPaise int64 `json:"tax_amount_paise"`
+	LineTotalPaise int64 `json:"line_total_paise"`
 }
 
 type OrderStatusHistory struct {
