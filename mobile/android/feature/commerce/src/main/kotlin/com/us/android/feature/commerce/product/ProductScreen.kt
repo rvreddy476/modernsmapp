@@ -7,9 +7,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,7 +32,9 @@ import com.us.android.core.commerce.model.discountPercent
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.facear.TryOnEligibility
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.commerce.ui.CommerceImage
@@ -50,6 +54,11 @@ import com.us.android.feature.commerce.ui.pressScale
 fun ProductScreen(
     onBack: () -> Unit,
     onOpenBag: () -> Unit,
+    /**
+     * Opens the full-screen try-on for this product, carrying the variant the
+     * buyer has already chosen here so the camera opens on that shade.
+     */
+    onTryOn: (productId: String, variantId: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ProductViewModel = hiltViewModel(),
 ) {
@@ -79,13 +88,16 @@ fun ProductScreen(
                 onQuantityChange = viewModel::setQuantity,
                 onAddToCart = viewModel::addToCart,
                 onOpenBag = onOpenBag,
+                onTryOn = {
+                    onTryOn(s.product.id, s.selectedVariant?.id.orEmpty())
+                },
             )
         }
     }
 }
 
 @Composable
-@Suppress("LongMethod")
+@Suppress("LongMethod", "LongParameterList")
 private fun ProductContent(
     state: ProductUiState.Content,
     modifier: Modifier,
@@ -93,6 +105,7 @@ private fun ProductContent(
     onQuantityChange: (Int) -> Unit,
     onAddToCart: () -> Unit,
     onOpenBag: () -> Unit,
+    onTryOn: () -> Unit,
 ) {
     val product = state.product
     Column(
@@ -163,6 +176,12 @@ private fun ProductContent(
             }
         }
 
+        // Below the options on purpose: a try-on opens on the shade the buyer
+        // has chosen, so the choice should already be made when the action is
+        // offered. Draws nothing at all for a product that cannot be tried on
+        // — see tryOnEligibility for the whole rule.
+        TryOnAction(eligibility = state.tryOn, onTryOn = onTryOn)
+
         product.description?.takeIf { it.isNotBlank() }?.let {
             Text(
                 text = it,
@@ -202,6 +221,66 @@ private fun ProductContent(
                 .fillMaxWidth()
                 .padding(bottom = UsTheme.spacing.xxl),
         )
+    }
+}
+
+/**
+ * "Try it on", or one muted line, or nothing.
+ *
+ * The three-way split is the whole point and it is decided in `:core:facear`
+ * rather than here: a product with no try-on draws NOTHING (a disabled control
+ * on every ordinary product is noise), a licence that failed where a try-on was
+ * expected draws a SENTENCE (silence would read as a missing feature), and a
+ * licence still starting draws nothing (a control that appears a moment late
+ * reads as a glitch).
+ */
+@Composable
+private fun TryOnAction(eligibility: TryOnEligibility, onTryOn: () -> Unit) {
+    when (eligibility) {
+        TryOnEligibility.Hidden -> Unit
+
+        is TryOnEligibility.Unavailable -> Text(
+            text = eligibility.reason,
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textSecondary,
+        )
+
+        TryOnEligibility.Offer -> Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(UsTheme.radii.medium))
+                .border(
+                    width = UNSELECTED_BORDER,
+                    color = UsTheme.extended.borderMedium,
+                    shape = RoundedCornerShape(UsTheme.radii.medium),
+                )
+                .background(UsTheme.extended.bgCard)
+                .pressScale(onClick = onTryOn)
+                .padding(UsTheme.spacing.l),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = UsIcons.Smile,
+                // The row's own label already says it; a second announcement
+                // here would have a screen reader read the control twice.
+                contentDescription = null,
+                tint = UsTheme.extended.textPrimary,
+                modifier = Modifier.size(TRY_ON_GLYPH),
+            )
+            Column {
+                Text(
+                    text = "Try it on",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = UsTheme.extended.textPrimary,
+                )
+                Text(
+                    text = "See it on your own camera. Nothing is uploaded.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textSecondary,
+                )
+            }
+        }
     }
 }
 
@@ -333,6 +412,7 @@ private fun StepperButton(
 private const val LOW_STOCK_THRESHOLD = 5
 private val SELECTED_BORDER = 2.dp
 private val UNSELECTED_BORDER = 1.dp
+private val TRY_ON_GLYPH = 22.dp
 
 @Preview(showBackground = true)
 @Composable

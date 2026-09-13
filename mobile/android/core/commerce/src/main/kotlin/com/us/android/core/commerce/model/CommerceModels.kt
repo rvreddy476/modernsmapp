@@ -1,5 +1,7 @@
 package com.us.android.core.commerce.model
 
+import com.us.android.core.facear.TryOnDescriptor
+
 /**
  * Domain models for the Commerce P0 loop.
  *
@@ -29,6 +31,18 @@ data class Product(
     val avgRating: Float,
     val reviewCount: Int,
     val variants: List<Variant>,
+    /**
+     * Virtual try-on, or null when the product does not offer one — which is
+     * also what an older server sending no `try_on` at all means.
+     *
+     * The TYPE comes from `:core:facear`, not from this file, because the
+     * module that parses the wire and the module that puts the effect on a
+     * face have to agree on what a try-on kind and a shade are, and a second
+     * copy here is how they stop agreeing. That edge costs nothing at compile
+     * time: the Banuba SDK is `implementation` inside `:core:facear`, so this
+     * module gains the vocabulary and not the ability to call a camera.
+     */
+    val tryOn: TryOnDescriptor? = null,
 )
 
 data class Variant(

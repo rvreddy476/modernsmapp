@@ -9,4 +9,10 @@
     <!-- Photos exported by the advanced photo editor, copied here before the
          profile uploader reads them back through this provider. -->
     <cache-path name="photo_edits" path="photo_edits/" />
+    <!-- Virtual try-on captures. cache-path for the same reason as the camera
+         above: a try-on photo the viewer does not keep is a scratch file, and
+         one they do keep has already been copied into the gallery. The share
+         sheet reads it back through this provider — a file:// URI would throw
+         FileUriExposedException. -->
+    <cache-path name="try_on" path="try_on/" />
 </paths>

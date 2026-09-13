@@ -148,3 +148,17 @@ include(":feature:commerce")
 // save, follow-from-content, not-interested, report) have nothing to do with
 // a player.
 include(":core:analytics")
+
+// Face AR / virtual try-on (2026-09-12).
+//
+// A CORE module rather than screens inside :feature:commerce, for the reason
+// that already put the photo editor PORT in :core:ui: the licence gate, the
+// try-on domain and the camera surface are wanted by more than one product
+// (commerce first, reels and profile plausibly next) and a :feature:* →
+// :feature:* edge is forbidden by `checkFeatureGraph`.
+//
+// It owns the Banuba FACE AR SDK (1.17.6) — a different product line from the
+// Video Editor SDK (1.54.1) that :feature:post owns, on the SAME licence
+// token. The two initialise the native SDK by different entry points in one
+// process; see FaceArGate's header for the unverified-combination warning.
+include(":core:facear")

@@ -1,6 +1,7 @@
 package com.us.android.di
 
 import com.us.android.BuildConfig
+import com.us.android.core.facear.FaceArConfig
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.telemetry.TelemetryConfig
 import com.us.android.feature.post.createhub.banuba.BanubaConfig
@@ -58,6 +59,23 @@ object AppModule {
     @Provides
     @Singleton
     fun provideBanubaConfig(): BanubaConfig = BanubaConfig(
+        licenseToken = BuildConfig.BANUBA_LICENSE_TOKEN,
+    )
+
+    /**
+     * Banuba Face AR licence for virtual try-on (2026-09-12).
+     *
+     * THE SAME FIELD as [provideBanubaConfig] above, deliberately. Face AR is
+     * a different Banuba product line from the Video Editor, but it is one
+     * licence and one token file (`.secrets/banuba.token`), and a second
+     * secret path would be a second thing to keep in step — a token that can
+     * disagree with itself is a licence bug that shows up on exactly one of
+     * the two surfaces. Blank when the build had no token file, and every
+     * try-on entry point then stays hidden. Never logged.
+     */
+    @Provides
+    @Singleton
+    fun provideFaceArConfig(): FaceArConfig = FaceArConfig(
         licenseToken = BuildConfig.BANUBA_LICENSE_TOKEN,
     )
 }

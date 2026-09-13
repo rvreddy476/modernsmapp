@@ -126,6 +126,19 @@ banuba                    = "1.54.1"
 banubaFfmpeg              = "5.3.0"
 # Banuba Photo Editor SDK: same licence server, its own version line.
 banubaPe                  = "1.4.2"
+# Banuba Face AR SDK (2026-09-12): the effect player, face tracker and the
+# makeup / lips / eyes / hair / skin feature packs behind virtual try-on.
+#
+# It was ALREADY on the graph, pulled in transitively at this exact version by
+# `effect-player-adapter` (which the reel studio declares). Naming it here and
+# declaring it in :core:facear makes the dependency INTENTIONAL: a transitive
+# Face AR stack is one that a Video Editor SDK bump can silently move or drop,
+# and try-on would then stop compiling — or worse, stop tracking faces — for a
+# reason nobody changed on purpose.
+#
+# Its own version line because Banuba versions Face AR separately from the
+# Video Editor: this is 1.17.6 while `banuba` above is 1.54.1.
+banubaFaceAr              = "1.17.6"
 
 [libraries]
 # ── AndroidX core ──────────────────────────────────────────────────────
@@ -252,6 +265,34 @@ banuba-effect-player-adapter      = { module = "com.banuba.sdk:effect-player-ada
 banuba-ar-cloud                   = { module = "com.banuba.sdk:ar-cloud", version.ref = "banuba" }
 banuba-ffmpeg                      = { module = "com.banuba.sdk:ffmpeg", version.ref = "banubaFfmpeg" }
 banuba-pe-sdk                     = { module = "com.banuba.sdk:pe-sdk", version.ref = "banubaPe" }
+
+# ── Banuba Face AR SDK (virtual try-on) ─────────────────────────────────
+#
+# Declared by :core:facear only, and declared ARTIFACT BY ARTIFACT rather than
+# through the `banuba_sdk` aggregator alone. The aggregator is still named
+# (below) so the dependency is intentional, but it is taken non-transitively,
+# because its runtime graph asks for four feature packs Banuba's own repository
+# has never served into this checkout — hands, body, acne_eyebags_removal and
+# face_attributes. Those are for hand, body and skin-retouch effects; a face
+# try-on needs none of them, and letting the aggregator drag them in makes
+# every offline build fail to resolve. See :core:facear/build.gradle.kts.
+banuba-face-ar-sdk                = { module = "com.banuba.sdk:banuba_sdk", version.ref = "banubaFaceAr" }
+# The API: BanubaSdkManager, Facing, ContentRatioParams, IEventCallback.
+banuba-face-ar-api                = { module = "com.banuba.sdk:sdk_api", version.ref = "banubaFaceAr" }
+# The core: Effect, EffectManager, LicenseManager, the frame types.
+banuba-face-ar-core               = { module = "com.banuba.sdk:sdk_core", version.ref = "banubaFaceAr" }
+# The native packs a FACE try-on actually needs at runtime.
+banuba-face-ar-effect-player      = { module = "com.banuba.sdk:effect_player", version.ref = "banubaFaceAr" }
+banuba-face-ar-face-tracker       = { module = "com.banuba.sdk:face_tracker", version.ref = "banubaFaceAr" }
+banuba-face-ar-makeup             = { module = "com.banuba.sdk:makeup", version.ref = "banubaFaceAr" }
+banuba-face-ar-lips               = { module = "com.banuba.sdk:lips", version.ref = "banubaFaceAr" }
+banuba-face-ar-eyes               = { module = "com.banuba.sdk:eyes", version.ref = "banubaFaceAr" }
+banuba-face-ar-hair               = { module = "com.banuba.sdk:hair", version.ref = "banubaFaceAr" }
+banuba-face-ar-skin               = { module = "com.banuba.sdk:skin", version.ref = "banubaFaceAr" }
+banuba-face-ar-background         = { module = "com.banuba.sdk:background", version.ref = "banubaFaceAr" }
+banuba-face-ar-light              = { module = "com.banuba.sdk:light_source_detector", version.ref = "banubaFaceAr" }
+# The effect's JS interpreter — callJsMethod and evalJs are this pack.
+banuba-face-ar-scripting          = { module = "com.banuba.sdk:scripting", version.ref = "banubaFaceAr" }
 
 [plugins]
 android-application       = { id = "com.android.application", version.ref = "agp" }

@@ -15,6 +15,15 @@ dependencies {
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
     implementation(projects.core.commerce)
+    // Virtual try-on (2026-09-12): the licence gate, the try-on domain and the
+    // camera surface. A CORE module, so this stays a legal edge — reaching
+    // Banuba through :feature:post's reel studio would be the
+    // :feature: → :feature: edge `checkFeatureGraph` forbids.
+    //
+    // It arrives transitively through :core:commerce (which declares the
+    // descriptor on a Product) and is declared here as well, because this
+    // module uses the gate, the eligibility rule and the surface directly.
+    implementation(projects.core.facear)
     implementation(projects.core.auth)
     // MStore's profile menu shows the person, not an anonymous avatar: their
     // name and picture come from the same own-profile read the Me tab uses,

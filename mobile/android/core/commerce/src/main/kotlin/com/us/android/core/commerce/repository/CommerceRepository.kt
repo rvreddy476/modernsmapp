@@ -268,6 +268,10 @@ class CommerceRepository @Inject constructor(
                 sellerName = dto.product.sellerName,
                 avgRating = dto.product.avgRating,
                 reviewCount = dto.product.reviewCount,
+                // Null for a server that sends no `try_on`, for `capable:
+                // false`, and for anything half-configured — see
+                // toTryOnDescriptor.
+                tryOn = toTryOnDescriptor(dto.product.tryOn),
                 variants = dto.variants.map { v ->
                     Variant(
                         id = v.id,

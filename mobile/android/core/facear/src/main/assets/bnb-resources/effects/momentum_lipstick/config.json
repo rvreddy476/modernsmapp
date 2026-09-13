@@ -1,0 +1,8 @@
+{
+    "scene": "MomentumLipstick",
+    "depends": ["makeup_lipsshine"],
+    "script": {
+        "entry_point": "scripts/index.js",
+        "type": "latest"
+    }
+}

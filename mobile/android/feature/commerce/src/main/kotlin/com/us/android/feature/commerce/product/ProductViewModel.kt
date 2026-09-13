@@ -7,6 +7,9 @@ import com.us.android.core.commerce.model.Product
 import com.us.android.core.commerce.model.Variant
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
+import com.us.android.core.facear.FaceArGate
+import com.us.android.core.facear.TryOnEligibility
+import com.us.android.core.facear.tryOnEligibility
 import com.us.android.feature.commerce.ui.describe
 import com.us.android.feature.commerce.ui.isRetryable
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -32,6 +35,17 @@ sealed interface ProductUiState {
         /** Set after a successful add, so the screen can offer "Go to bag". */
         val addedToCart: Boolean = false,
         val message: String? = null,
+        /**
+         * Whether to show the "Try on" action, and what to say instead.
+         *
+         * Decided by [tryOnEligibility] in `:core:facear` rather than here:
+         * the rule is a licence state crossed with a product capability, it
+         * has to be the same answer on every surface that asks, and it is the
+         * kind of thing that gets decided differently on each screen the
+         * moment it lives on a screen. Starts [TryOnEligibility.Hidden], so a
+         * product page that has not heard from the licence yet shows nothing.
+         */
+        val tryOn: TryOnEligibility = TryOnEligibility.Hidden,
     ) : ProductUiState {
 
         /**
@@ -54,6 +68,7 @@ sealed interface ProductUiState {
 @HiltViewModel
 class ProductViewModel @Inject constructor(
     private val repo: CommerceRepository,
+    private val faceAr: FaceArGate,
     savedState: SavedStateHandle,
 ) : ViewModel() {
 
@@ -66,6 +81,23 @@ class ProductViewModel @Inject constructor(
 
     init {
         load()
+        watchFaceArLicence()
+    }
+
+    /**
+     * The licence answer can arrive after the product has rendered — it is a
+     * native start and a licence check — so the action appears when it lands
+     * rather than the page waiting for it.
+     */
+    private fun watchFaceArLicence() {
+        viewModelScope.launch {
+            faceAr.state.collect { licence ->
+                val current = _state.value as? ProductUiState.Content ?: return@collect
+                _state.value = current.copy(
+                    tryOn = tryOnEligibility(current.product.tryOn, licence),
+                )
+            }
+        }
     }
 
     fun retry() = load()
@@ -86,7 +118,15 @@ class ProductViewModel @Inject constructor(
                         // make. Preselecting the first of several would put a
                         // size or colour the buyer never chose into the cart.
                         selectedVariant = product.variants.singleOrNull(),
+                        tryOn = tryOnEligibility(product.tryOn, faceAr.state.value),
                     )
+                    // Only now, and only for a product that actually offers a
+                    // try-on. `ensure` loads native libraries and asks a
+                    // licence server; paying that on every product page —
+                    // almost none of which can be tried on — would be a cost
+                    // with no return. Idempotent, so a second try-on-capable
+                    // product costs nothing.
+                    if (product.tryOn?.isUsable == true) faceAr.ensure()
                 }
             }
         }

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Try-on draws an effect on the viewer's own camera feed, so this module needs
+  the camera. Declared HERE and not only in :core:call, which happens to
+  declare it today for video calls: a module that opens a camera and relies on
+  another module's manifest for the right to do so is one call-feature removal
+  away from a SecurityException.
+
+  Duplicate <uses-permission> entries merge to one; nothing is added to the
+  app's permission set by this file.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- required="false": a device with no camera can still browse the shop,
+         and the try-on entry point is simply never offered there. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+</manifest>

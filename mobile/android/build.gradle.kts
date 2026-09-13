@@ -183,7 +183,12 @@ tasks.register("moduleGraphCheck") {
     //      The app had no client for analytics-service at all, so every view,
     //      watch-second and engagement signal the creator payout model is
     //      built on was being discarded on the device.
-    val expectedModuleCount = 36
+    // 37 = 36 + :core:facear (Face AR / virtual try-on, 2026-09-12). A core
+    //      module because the licence gate, the try-on domain and the camera
+    //      surface are wanted by more than one feature, and rule 3 forbids the
+    //      :feature:commerce → :feature:post edge that reaching Banuba
+    //      through the reel studio would need.
+    val expectedModuleCount = 37
 
     doLast {
         val allViolations = buildList {

@@ -2,8 +2,17 @@ package com.us.android.core.commerce.network
 
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.network.ApiEnvelope
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.buildClassSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
@@ -618,7 +627,98 @@ data class ProductBodyDto(
     @SerialName("seller_name") val sellerName: String? = null,
     @SerialName("avg_rating") val avgRating: Float = 0f,
     @SerialName("review_count") val reviewCount: Int = 0,
+    /**
+     * Virtual try-on, when the seller has set it up. Absent on every server
+     * that predates the field, which means exactly "not capable".
+     *
+     * Decoded through [TryOnDtoOrNull], so a `try_on` of ANY unexpected shape
+     * — a null, an array, a number, an object with a wrong-typed field —
+     * becomes null rather than failing the whole product read. A try-on is a
+     * flourish; a product detail page that will not load is an outage.
+     */
+    @Serializable(with = TryOnDtoOrNull::class)
+    @SerialName("try_on")
+    val tryOn: TryOnDto? = null,
 )
+
+/**
+ * `try_on` on a product.
+ *
+ * `capable` is stated by the server rather than inferred from the other fields
+ * being filled in, because "not finished setting this up" and "switched off"
+ * are different answers that must both mean no. It defaults to FALSE: an
+ * object that arrives with fields this build does not understand and no
+ * `capable` must not turn try-on on.
+ */
+@Serializable
+data class TryOnDto(
+    val capable: Boolean = false,
+    /** "eyewear", "makeup", "jewellery", "watch". Anything else is not offered. */
+    val kind: String = "",
+    /** Joins the product to an effect bundle on disk, character for character. */
+    @SerialName("effect_slug") val effectSlug: String = "",
+    val variants: List<TryOnVariantDto> = emptyList(),
+)
+
+/**
+ * One shade or colourway.
+ *
+ * `hex` is absent for a variant that is not a colour (a frame size).
+ *
+ * `js` is the contract's escape hatch: the exact effect-specific call for a
+ * look a hex cannot drive — a gradient lens, a two-tone strap. Optional, and
+ * absent on nearly every variant; when present it REPLACES the call the client
+ * would have generated.
+ */
+@Serializable
+data class TryOnVariantDto(
+    val id: String = "",
+    val label: String = "",
+    val hex: String? = null,
+    val js: String? = null,
+)
+
+/**
+ * `try_on`, or null for anything that is not a decodable `try_on` object.
+ *
+ * WHY A CUSTOM SERIALIZER AND NOT JUST A NULLABLE FIELD
+ *
+ * A nullable field with a default already survives an ABSENT key and a JSON
+ * null — `ignoreUnknownKeys` and `explicitNulls = false` cover those. What it
+ * does not survive is a wrong SHAPE: `"try_on": []` or `"try_on": 3` or an
+ * object whose `variants` is a string throws `SerializationException`, and
+ * because this field sits on the product body that exception takes the entire
+ * product detail page down. The server contract for `try_on` is being written
+ * in parallel with this client, which is exactly when shapes change.
+ *
+ * So: read the raw element, attempt the decode, and treat any failure as "no
+ * try-on". The product still loads; only the flourish is missing.
+ */
+internal object TryOnDtoOrNull : KSerializer<TryOnDto?> {
+
+    // A descriptor of its own rather than TryOnDto's: this serializer decodes
+    // a raw element by hand, so the descriptor is only ever used to decide
+    // that the field is a structure and is not itself nullable — which is what
+    // makes a JSON `null` resolve to null before deserialize is ever called.
+    override val descriptor: SerialDescriptor =
+        buildClassSerialDescriptor("commerce.TryOnDtoOrNull")
+
+    override fun deserialize(decoder: Decoder): TryOnDto? {
+        val json = decoder as? JsonDecoder ?: return null
+        val element = runCatching { json.decodeJsonElement() }.getOrNull()
+        if (element !is JsonObject) return null
+        return runCatching { json.json.decodeFromJsonElement(TryOnDto.serializer(), element) }.getOrNull()
+    }
+
+    override fun serialize(encoder: Encoder, value: TryOnDto?) {
+        // The client never SENDS try_on; this exists so the serializer is
+        // total rather than half-implemented with a throw in it.
+        val json = encoder as? JsonEncoder ?: return
+        json.encodeJsonElement(
+            value?.let { json.json.encodeToJsonElement(TryOnDto.serializer(), it) } ?: JsonNull,
+        )
+    }
+}
 
 @Serializable
 data class VariantDto(

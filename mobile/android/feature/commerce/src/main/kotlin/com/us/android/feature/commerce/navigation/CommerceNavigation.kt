@@ -51,6 +51,7 @@ import com.us.android.feature.commerce.seller.StartSellingScreen
 import com.us.android.feature.commerce.seller.StockScreen
 import com.us.android.feature.commerce.seller.SubmitProductViewModel
 import com.us.android.feature.commerce.seller.SubmitShopScreen
+import com.us.android.feature.commerce.tryon.TryOnScreen
 import kotlinx.serialization.Serializable
 import java.util.UUID
 
@@ -88,6 +89,23 @@ data object MStoreRoute
 
 @Serializable
 data class ProductRoute(val productId: String)
+
+/**
+ * Virtual try-on, full screen.
+ *
+ * Carries the product id and the variant the buyer had chosen, and NOTHING
+ * else — no descriptor and no effect slug. The screen re-reads the product for
+ * the same reason the seller's edit-price route does: a descriptor carried
+ * through navigation is one from whenever the previous screen loaded, and the
+ * effect slug is the join to a file on disk, where stale is the one thing it
+ * must not be.
+ *
+ * [variantId] defaults to empty rather than being nullable so the route stays a
+ * plain two-string type-safe destination; empty means "no choice travelled" and
+ * the screen falls back to the descriptor's first shade.
+ */
+@Serializable
+data class TryOnRoute(val productId: String, val variantId: String = "")
 
 /**
  * The bag.
@@ -323,7 +341,16 @@ fun NavGraphBuilder.mStoreScreens(
             ProductScreen(
                 onBack = navController::popBackStack,
                 onOpenBag = { navController.navigate(BagRoute) },
+                onTryOn = { productId, variantId ->
+                    navController.navigate(TryOnRoute(productId, variantId))
+                },
             )
+        }
+
+        composable<TryOnRoute> {
+            // Back returns to the product, which is where the buyer decides.
+            // A try-on is a look, not a step in the purchase.
+            TryOnScreen(onBack = navController::popBackStack)
         }
 
         composable<BagRoute> {
