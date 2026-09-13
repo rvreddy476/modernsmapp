@@ -374,14 +374,16 @@ func (h *Handler) GetProduct(c *gin.Context) {
 		logTryOnReadFailure(c.Request.Context(), id, tryOnErr)
 		tryOn = nil
 	}
-	body := gin.H{
+	// Onto the product itself, not beside it. See Product.TryOn: as a
+	// sibling of `product` the client never found it and the Try-on control
+	// stayed hidden on a product that was correctly set up.
+	if p != nil {
+		p.TryOn = tryOn
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"product": p, "variants": variants, "media": gallery,
 		"attributes": attributes,
-	}
-	if tryOn != nil {
-		body["try_on"] = tryOn
-	}
-	api.JSON(c.Writer, http.StatusOK, body, nil)
+	}, nil)
 }
 
 type createProductReq struct {

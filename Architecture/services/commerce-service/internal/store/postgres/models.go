@@ -232,6 +232,23 @@ type Product struct {
 	// as though the shopper had deliberately not liked it.
 	IsFavourite *bool `db:"-" json:"is_favourite,omitempty"`
 
+	// TryOn is the Face AR descriptor, hydrated on the detail read from
+	// `product_try_on`. Nil — and so absent from the JSON — for every
+	// product without one, which is nearly all of them, so the field's
+	// presence is itself the capability signal.
+	//
+	// It lives INSIDE the product object rather than beside it. The first
+	// version returned it as a sibling of `product`, next to `media` and
+	// `attributes`, and the Android client read `product.try_on` and
+	// therefore found nothing: the Try-on control was hidden on a product
+	// that was fully set up, with no error anywhere, because "no descriptor"
+	// and "descriptor in the wrong place" look identical to a client. Those
+	// two siblings are separately-hydrated COLLECTIONS; a try-on descriptor
+	// is a property of the product, like ImageURL above, so it belongs here
+	// — and putting it here also lets a list response carry it later for a
+	// "Try on" badge on a tile without inventing a second shape.
+	TryOn *ProductTryOn `db:"-" json:"try_on,omitempty"`
+
 	SourceImageURL *string `db:"source_image_url" json:"source_image_url,omitempty"`
 	// RetailerName is `sellers.store_name` — the shop the listing belongs to.
 	//
