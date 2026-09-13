@@ -191,18 +191,41 @@ func main() {
 	svc.WithPaymentFlags(payFlags)
 	slog.Info("food-service: payment methods", "cod_enabled", payFlags.CODEnabled, "wallet_enabled", payFlags.WalletEnabled)
 
-	// Realtime: best-effort Pub/Sub publishes + topic-token signer.
-	// REALTIME_TOKEN_SECRET must match notification-service's verifier.
-	if rtSecret := env("REALTIME_TOKEN_SECRET", internalKey); rtSecret != "" {
-		redisAddr := os.Getenv("REDIS_ADDR")
-		if rdb, err := transport.NewRedisClientFromEnv(redisAddr); err == nil {
-			svc.WithRealtime(
-				realtime.NewPublisher(rdb),
-				realtime.NewTokenSigner([]byte(rtSecret)),
-			)
-			slog.Info("food-service realtime wired", "redis", redisAddr)
+	// Realtime (B5a): food events go onto Redis Streams (XADD rts:<topic>),
+	// which notification-service's SSE gateway reads with XREAD. Env:
+	// REDIS_ADDR (plus REDIS_USERNAME / REDIS_PASSWORD / REDIS_DB and the
+	// REDIS_* TLS settings read by shared/transport) and REALTIME_TOKEN_SECRET,
+	// falling back to INTERNAL_SERVICE_KEY; it must match notification-service's
+	// verifier. Either missing: realtime is DISABLED, said so here, dropped
+	// events are WARNed once, and the token route answers 503.
+	rtSecret, rtSecretSource := os.Getenv("REALTIME_TOKEN_SECRET"), "REALTIME_TOKEN_SECRET"
+	if rtSecret == "" {
+		rtSecret, rtSecretSource = internalKey, "INTERNAL_SERVICE_KEY"
+	}
+	redisAddr := os.Getenv("REDIS_ADDR")
+	switch {
+	case redisAddr == "":
+		slog.Warn("food-service: realtime DISABLED — REDIS_ADDR is unset; no live order, restaurant or rider " +
+			"events will be published and POST /v1/food/realtime/token answers 503")
+	case rtSecret == "":
+		slog.Warn("food-service: realtime DISABLED — neither REALTIME_TOKEN_SECRET nor INTERNAL_SERVICE_KEY is set; " +
+			"POST /v1/food/realtime/token answers 503")
+	default:
+		rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+		if err != nil {
+			slog.Warn("food-service: realtime DISABLED — redis client could not be built", "redis_addr", redisAddr, "error", err)
+			break
+		}
+		svc.WithRealtime(service.NewRealtimePublisher(rdb), realtime.NewTokenSigner([]byte(rtSecret)))
+		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+		pingErr := rdb.Ping(pingCtx).Err()
+		pingCancel()
+		if pingErr != nil {
+			slog.Warn("food-service: realtime wired (Redis Streams) but redis did not answer a ping; publishes will fail and be logged",
+				"redis_addr", redisAddr, "error", pingErr)
 		} else {
-			slog.Warn("food-service: redis unavailable, realtime disabled", "error", err)
+			slog.Info("food-service: realtime wired (Redis Streams)", "redis_addr", redisAddr,
+				"token_secret_source", rtSecretSource, "token_ttl", service.RealtimeTokenTTL)
 		}
 	}
 
@@ -283,6 +306,10 @@ func main() {
 	// B4: delivery offer dispatch worker. Expires stale offers + fans
 	// out new offers to up to 5 nearby online partners per ready order.
 	go svc.StartDeliveryDispatchWorker(outboxCtx)
+
+	// B5a: rider presence. Every 30s riders silent for 5 minutes go offline;
+	// hourly, rider location history older than 30 days is deleted.
+	go svc.StartRiderPresenceWorker(outboxCtx)
 
 	// E: fraud score worker. Runs every 6h, writes per-user signals
 	// (refund_abuse + coupon_burn) into food.fraud_scores so the

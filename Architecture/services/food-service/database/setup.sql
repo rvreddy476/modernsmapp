@@ -1885,3 +1885,22 @@ WHERE d.document_type = 'SELFIE' AND d.status IN ('PENDING', 'APPROVED')
 CREATE UNIQUE INDEX IF NOT EXISTS uq_food_delivery_docs_active_selfie
     ON food.delivery_partner_documents(delivery_partner_id)
     WHERE document_type = 'SELFIE' AND status IN ('PENDING', 'APPROVED');
+
+-- B5a: realtime and live tracking.
+--
+-- heading: optional compass heading (0-360) sent with a rider ping and carried
+-- on the rider.location frame.
+-- location_published_at: when a rider.location frame last went out for the
+-- order; the throttle (one frame per order per ~5 s) is a guarded UPDATE on it,
+-- so it holds across replicas.
+ALTER TABLE food.delivery_partner_locations
+    ADD COLUMN IF NOT EXISTS heading NUMERIC(5,2);
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS location_published_at TIMESTAMPTZ;
+
+-- The 30-day location-history purge scans by age.
+CREATE INDEX IF NOT EXISTS ix_food_delivery_locations_recorded_at
+    ON food.delivery_partner_locations(recorded_at);
+CREATE INDEX IF NOT EXISTS ix_food_delivery_tracking_location_pings
+    ON food.delivery_tracking_events(created_at)
+    WHERE note = 'location update';

@@ -1550,12 +1550,16 @@ func (h *Handler) UpdateDeliveryLocation(c *gin.Context) {
 		Latitude       float64  `json:"latitude"`
 		Longitude      float64  `json:"longitude"`
 		AccuracyMeters *float64 `json:"accuracy_meters"`
+		// Heading is optional, degrees 0-360.
+		Heading *float64 `json:"heading"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	location, err := h.svc.UpdateDeliveryLocation(c.Request.Context(), userID, body.Latitude, body.Longitude, body.AccuracyMeters)
+	location, err := h.svc.UpdateDeliveryLocation(c.Request.Context(), userID, postgres.LocationUpdate{
+		Latitude: body.Latitude, Longitude: body.Longitude, AccuracyMeters: body.AccuracyMeters, Heading: body.Heading,
+	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_DELIVERY_LOCATION_FAILED", err.Error(), nil)
 		return

@@ -188,6 +188,9 @@ type Order struct {
 	History               []OrderStatusHistory `json:"history,omitempty"`
 	// Money is the Wave 1 B3 money block, on order detail only.
 	Money *OrderMoney `json:"money,omitempty"`
+	// DeliveryCode is the customer's drop-off OTP, on order detail only and
+	// only while DeliveryCodeVisible (PICKED_UP / OUT_FOR_DELIVERY).
+	DeliveryCode string `json:"delivery_code,omitempty"`
 }
 
 type WalletPaymentChargeDetails struct {
@@ -337,6 +340,9 @@ type DeliveryAssignment struct {
 	DeliveryFee           float64    `json:"delivery_fee"`
 	DeliveryPartnerPayout float64    `json:"delivery_partner_payout"`
 	CreatedAt             string     `json:"created_at"`
+	// PickupCode is shown to the rider only while PickupCodeVisible: after
+	// they accepted the assignment and before pickup.
+	PickupCode string `json:"pickup_code,omitempty"`
 }
 
 type AdminDashboard struct {

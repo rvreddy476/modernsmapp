@@ -218,9 +218,12 @@ func (s *Service) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.U
 }
 
 // AcceptDeliveryOffer routes to the batch accept path when the offer
-// belongs to a batch, otherwise the legacy single-order path. Both
-// emit the per-order assignment event with pickup + delivery OTPs so
-// downstream consumers don't need to know about batching.
+// belongs to a batch, otherwise the legacy single-order path. Both mint the
+// pickup + delivery OTPs and emit the per-order assignment event so
+// downstream consumers don't need to know about batching. The event NEVER
+// carries the codes (B5a): the rider reads pickup_code from their assignment
+// once accepted, the customer reads delivery_code from the order detail once
+// the food is picked up.
 func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID) error {
 	// Try the batch path first — store returns a not-found / nil
 	// batch_id error if this offer is single-order, which we treat as
@@ -228,19 +231,16 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 	batch, partnerID, batchErr := s.store.AcceptBatchOfferTx(ctx, userID, offerID)
 	if batchErr == nil && batch != nil {
 		for _, m := range batch.Members {
-			pickup, delivery, cerr := s.store.EnsureDeliveryCodes(ctx, m.OrderID)
-			if cerr != nil {
+			if _, _, cerr := s.store.EnsureDeliveryCodes(ctx, m.OrderID); cerr != nil {
 				slog.Warn("food-service: ensure codes failed (batch)",
 					"order_id", m.OrderID, "batch_id", batch.ID, "error", cerr)
 			}
-			s.emit(ctx, "food.order."+m.OrderID.String(), "food.delivery.assigned", map[string]any{
-				"order_id":      m.OrderID.String(),
-				"partner_id":    partnerID.String(),
-				"pickup_code":   pickup,
-				"delivery_code": delivery,
-				"batch_id":      batch.ID.String(),
+			s.emit(ctx, orderTopic(m.OrderID), "food.delivery.assigned", map[string]any{
+				"order_id":       m.OrderID.String(),
+				"partner_id":     partnerID.String(),
+				"batch_id":       batch.ID.String(),
 				"batch_sequence": m.Sequence,
-				"batch_size":    len(batch.Members),
+				"batch_size":     len(batch.Members),
 			})
 		}
 		return nil
@@ -255,14 +255,11 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 	if err != nil {
 		return err
 	}
-	pickup, delivery, cerr := s.store.EnsureDeliveryCodes(ctx, offer.OrderID)
-	if cerr != nil {
+	if _, _, cerr := s.store.EnsureDeliveryCodes(ctx, offer.OrderID); cerr != nil {
 		slog.Warn("food-service: ensure codes failed", "order_id", offer.OrderID, "error", cerr)
 	}
-	s.emit(ctx, "food.order."+offer.OrderID.String(), "food.delivery.assigned", map[string]any{
-		"offer":         offer,
-		"pickup_code":   pickup,
-		"delivery_code": delivery,
+	s.emit(ctx, orderTopic(offer.OrderID), "food.delivery.assigned", map[string]any{
+		"offer": offer,
 	})
 	return nil
 }

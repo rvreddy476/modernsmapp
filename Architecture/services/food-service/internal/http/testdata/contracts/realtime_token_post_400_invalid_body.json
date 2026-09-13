@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_BODY",
+    "message": "request body must be a JSON object with a scope"
+  },
+  "meta": {}
+}

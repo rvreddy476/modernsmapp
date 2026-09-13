@@ -1,16 +1,33 @@
 package service
 
 import (
+	"context"
 	"os"
 	"strconv"
 
+	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
 	defaultDispatchRadiusKM              = 5.0
 	defaultDispatchLocationMaxAgeSeconds = 120.0
 )
+
+// RealtimePublisher is the part of the shared realtime publishers the service
+// uses; an interface so tests can capture published topics.
+type RealtimePublisher interface {
+	Publish(ctx context.Context, topic, eventType string, data any) error
+}
+
+// NewRealtimePublisher is the ONE constructor for food-service's live
+// publisher. It must be the Redis Streams publisher (XADD rts:<topic>):
+// notification-service's SSE gateway reads with realtime.NewStreamSubscriber
+// (XREAD), so a Pub/Sub PUBLISH would never reach a client.
+func NewRealtimePublisher(rdb *redis.Client) RealtimePublisher {
+	return realtime.NewStreamPublisher(rdb)
+}
 
 // deliveryPartnerTopic is the ONE place the partner assignment topic is built.
 // It is keyed by the partner's USER id: that is what the realtime token grants
@@ -19,6 +36,22 @@ const (
 // offer.
 func deliveryPartnerTopic(userID uuid.UUID) string {
 	return "food.delivery_partner." + userID.String() + ".assignments"
+}
+
+// orderTopic is the customer's live order topic (status, delivery and
+// rider.location frames).
+func orderTopic(orderID uuid.UUID) string {
+	return "food.order." + orderID.String()
+}
+
+// restaurantOrdersTopic carries a restaurant's incoming orders.
+func restaurantOrdersTopic(restaurantID uuid.UUID) string {
+	return "food.restaurant." + restaurantID.String() + ".orders"
+}
+
+// restaurantTopic carries restaurant-level notices (FSSAI expiry).
+func restaurantTopic(restaurantID uuid.UUID) string {
+	return "food.restaurant." + restaurantID.String()
 }
 
 func envPositiveFloat(key string, fallback float64) float64 {

@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atpost/food-service/internal/digilocker"
@@ -146,7 +146,9 @@ type Store interface {
 	ListDeliveryAssignments(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryAssignment, error)
 	GetCurrentDeliveryAssignment(ctx context.Context, userID uuid.UUID) (*postgres.DeliveryAssignment, error)
 	DeliveryUpdateAssignment(ctx context.Context, userID, assignmentID uuid.UUID, toStatus, idempotencyKey string) (*postgres.DeliveryAssignment, error)
-	UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, latitude, longitude float64, accuracyMeters *float64) (map[string]any, error)
+	UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in postgres.LocationUpdate) (*postgres.DeliveryLocationResult, error)
+	AutoOfflineStaleDeliveryPartners(ctx context.Context, silence time.Duration) ([]uuid.UUID, error)
+	PurgeDeliveryLocationHistory(ctx context.Context, olderThan time.Duration, batch int) (postgres.LocationPurgeResult, error)
 	GetAssignmentTracking(ctx context.Context, userID, assignmentID uuid.UUID) (map[string]any, error)
 	DeliveryEarnings(ctx context.Context, userID uuid.UUID) (map[string]any, error)
 	DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryAssignment, error)
@@ -223,10 +225,16 @@ type Service struct {
 	payments    PaymentsClient
 	payFlags    payments.Flags
 	httpClient  *http.Client
-	rtPublisher realtimePublisher
-	rtSigner    *realtime.TokenSigner
-	outboxQ     *outbox.Queuer
-	dbPool      *pgxpool.Pool
+	rtPublisher RealtimePublisher
+	rtSigner    RealtimeTokenSigner
+	// rtDisabledOnce: the one WARN when a live event is dropped because
+	// realtime is not wired. realtimeNow is the token-expiry clock.
+	rtDisabledOnce sync.Once
+	realtimeNow    func() time.Time
+	outboxQ        *outbox.Queuer
+	// outboxSink replaces the outbox writer (tests capture event payloads).
+	outboxSink func(ctx context.Context, eventType, partitionKey string, body []byte) error
+	dbPool     *pgxpool.Pool
 	blob        *blob.Store
 	// Dispatch: offers go to partners within dispatchRadiusKM of the
 	// restaurant whose latest location ping is newer than dispatchLocationMaxAge.
@@ -239,11 +247,6 @@ type Service struct {
 	onboardingNow func() time.Time
 }
 
-// realtimePublisher is the part of *realtime.Publisher the service uses; an
-// interface so tests can capture published topics.
-type realtimePublisher interface {
-	Publish(ctx context.Context, topic, eventType string, data any) error
-}
 
 func New(store Store) *Service {
 	return &Service{
@@ -257,12 +260,16 @@ func New(store Store) *Service {
 	}
 }
 
-// WithRealtime wires the realtime publisher + topic-token signer.
-// Both are optional; nil-checked at every callsite so misconfiguration
-// degrades to "no live push, polling still works."
-func (s *Service) WithRealtime(p *realtime.Publisher, signer *realtime.TokenSigner) *Service {
+// WithRealtime wires the realtime publisher (NewRealtimePublisher, Redis
+// Streams) and the topic-token signer. Unwired, live events are dropped with a
+// one-time WARN and the token route answers 503; polling still works. A
+// *realtime.TokenSigner is pinned to RealtimeTokenTTL here.
+func (s *Service) WithRealtime(p RealtimePublisher, signer RealtimeTokenSigner) *Service {
 	if p != nil {
 		s.rtPublisher = p
+	}
+	if ts, ok := signer.(*realtime.TokenSigner); ok && ts != nil {
+		ts.WithTTL(RealtimeTokenTTL)
 	}
 	s.rtSigner = signer
 	return s
@@ -291,14 +298,15 @@ func (s *Service) WithOutbox(q *outbox.Queuer, db *pgxpool.Pool) *Service {
 	return s
 }
 
-// emit publishes a Kafka event via the outbox AND a Pub/Sub realtime
-// frame in one call. Both are best-effort; failures are logged at
-// WARN so a Redis or Postgres hiccup does not break the user request.
+// emit publishes a Kafka event via the outbox AND a realtime (Redis Streams)
+// frame in one call. Both are best-effort; failures are logged at WARN so a
+// Redis or Postgres hiccup does not break the user request. A payload carrying
+// a delivery OTP is refused on both legs (payloadSafe).
 func (s *Service) emit(ctx context.Context, topic, eventType string, data any) {
-	s.publishRealtime(ctx, topic, eventType, data)
-	if s.outboxQ == nil || s.dbPool == nil {
+	if !payloadSafe(topic, eventType, data) {
 		return
 	}
+	s.publishRealtimeChecked(ctx, topic, eventType, data)
 	body, err := json.Marshal(data)
 	if err != nil {
 		slog.Warn("food-service: outbox marshal failed", "event", eventType, "error", err)
@@ -306,58 +314,42 @@ func (s *Service) emit(ctx context.Context, topic, eventType string, data any) {
 	}
 	// Partition by topic so consumers can use it as the Kafka key for
 	// order-preserving fan-out (e.g. one partition per order_id).
-	if err := s.outboxQ.EnqueuePool(ctx, s.dbPool, eventType, topic, body); err != nil {
+	if err := s.enqueueOutbox(ctx, eventType, topic, body); err != nil {
 		slog.Warn("food-service: outbox enqueue failed", "event", eventType, "error", err)
 	}
+}
+
+// enqueueOutbox writes one outbox row; a no-op when the outbox is not wired.
+func (s *Service) enqueueOutbox(ctx context.Context, eventType, partitionKey string, body []byte) error {
+	if s.outboxSink != nil {
+		return s.outboxSink(ctx, eventType, partitionKey, body)
+	}
+	if s.outboxQ == nil || s.dbPool == nil {
+		return nil
+	}
+	return s.outboxQ.EnqueuePool(ctx, s.dbPool, eventType, partitionKey, body)
 }
 
 // publishRealtime is a best-effort fire-and-forget broadcast. Errors
 // are logged at WARN — the durable copy is the Kafka event.
 func (s *Service) publishRealtime(ctx context.Context, topic, eventType string, data any) {
+	if !payloadSafe(topic, eventType, data) {
+		return
+	}
+	s.publishRealtimeChecked(ctx, topic, eventType, data)
+}
+
+func (s *Service) publishRealtimeChecked(ctx context.Context, topic, eventType string, data any) {
 	if s.rtPublisher == nil {
+		s.rtDisabledOnce.Do(func() {
+			slog.Warn("food-service: realtime is not wired; live events are being dropped (polling still works)",
+				"first_topic", topic, "first_event", eventType)
+		})
 		return
 	}
 	if err := s.rtPublisher.Publish(ctx, topic, eventType, data); err != nil {
 		slog.Warn("food-service: realtime publish failed", "topic", topic, "event", eventType, "error", err)
 	}
-}
-
-// IssueRealtimeToken builds a topic-scoped token granting the user
-// access to the order/restaurant/partner topics they own. Caller is
-// responsible for X-User-Id auth.
-func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (string, []string, error) {
-	if s.rtSigner == nil {
-		return "", nil, errors.New("realtime: signer not configured")
-	}
-	// Topic set:
-	//   1. food.order.{order_id}       — for every order the user placed.
-	//   2. food.restaurant.{id}.orders — for every restaurant the user owns.
-	//   3. food.delivery_partner.{user_id}.assignments — keyed by USER id,
-	//      the same helper the dispatch publishes use.
-	topics := []string{}
-	if orders, err := s.store.ListOrders(ctx, userID); err == nil {
-		for _, o := range orders {
-			topics = append(topics, "food.order."+o.ID.String())
-		}
-	}
-	if rests, err := s.store.ListPartnerRestaurants(ctx, userID); err == nil {
-		for _, r := range rests {
-			topics = append(topics, "food.restaurant."+r.ID.String()+".orders")
-		}
-	}
-	// Always grant the delivery-partner self-assignment topic — the
-	// user is keyed by their own user_id, so the topic is self-scoped.
-	topics = append(topics, deliveryPartnerTopic(userID))
-	if len(topics) == 0 {
-		// Token signer rejects empty topic list; give the caller a
-		// no-op self-topic so they at least get a connected event.
-		topics = []string{"food.user." + userID.String()}
-	}
-	tok, err := s.rtSigner.Sign(userID.String(), topics)
-	if err != nil {
-		return "", nil, err
-	}
-	return tok, topics, nil
 }
 
 type Home struct {
@@ -781,10 +773,6 @@ func (s *Service) GetCurrentDeliveryAssignment(ctx context.Context, userID uuid.
 
 func (s *Service) DeliveryUpdateAssignment(ctx context.Context, userID, assignmentID uuid.UUID, toStatus, idempotencyKey string) (*postgres.DeliveryAssignment, error) {
 	return s.store.DeliveryUpdateAssignment(ctx, userID, assignmentID, toStatus, idempotencyKey)
-}
-
-func (s *Service) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, latitude, longitude float64, accuracyMeters *float64) (map[string]any, error) {
-	return s.store.UpdateDeliveryLocation(ctx, userID, latitude, longitude, accuracyMeters)
 }
 
 func (s *Service) GetAssignmentTracking(ctx context.Context, userID, assignmentID uuid.UUID) (map[string]any, error) {

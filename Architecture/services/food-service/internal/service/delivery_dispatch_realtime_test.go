@@ -41,6 +41,17 @@ func (f *dispatchFakeStore) ListPartnerRestaurants(context.Context, uuid.UUID) (
 	return nil, nil
 }
 
+// GetDeliveryPartner returns the candidate's row: its id is the
+// delivery_partners.id, deliberately different from the user id.
+func (f *dispatchFakeStore) GetDeliveryPartner(_ context.Context, userID uuid.UUID) (*postgres.DeliveryPartner, error) {
+	for _, c := range f.cands {
+		if c.UserID == userID {
+			return &postgres.DeliveryPartner{ID: c.PartnerID, UserID: c.UserID}, nil
+		}
+	}
+	return nil, nil
+}
+
 type capturePublisher struct{ topics []string }
 
 func (c *capturePublisher) Publish(_ context.Context, topic, _ string, _ any) error {
@@ -72,9 +83,13 @@ func TestDispatchPublishesOnTheTopicTheTokenGrants(t *testing.T) {
 	if len(pub.topics) != 1 {
 		t.Fatalf("want one publish, got %v", pub.topics)
 	}
-	_, granted, err := svc.IssueRealtimeToken(context.Background(), partnerUser)
+	tok, err := svc.IssueRealtimeToken(context.Background(), partnerUser, RealtimeScopeDelivery, nil)
 	if err != nil {
 		t.Fatalf("token: %v", err)
+	}
+	granted := tok.Topics
+	if len(granted) != 1 {
+		t.Fatalf("delivery token grants %v, want exactly the partner's assignments topic", granted)
 	}
 	found := false
 	for _, g := range granted {

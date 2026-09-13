@@ -1,0 +1,16 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0021",
+    "order_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+    "order_number": "FG1000000000002",
+    "restaurant_name": "Test Kitchen",
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+    "status": "ASSIGNED",
+    "order_status": "DELIVERY_ASSIGNED",
+    "delivery_fee": 29,
+    "delivery_partner_payout": 23.2,
+    "created_at": "2026-09-13T06:30:00Z"
+  },
+  "meta": {}
+}

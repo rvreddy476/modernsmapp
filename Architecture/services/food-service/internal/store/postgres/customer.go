@@ -1080,6 +1080,18 @@ func (s *Store) getOrder(ctx context.Context, q interface {
 		return nil, err
 	}
 	order.Money = money
+	if DeliveryCodeVisible(order.Status) {
+		var code string
+		err := q.QueryRow(ctx, `
+			SELECT COALESCE(delivery_code, '')
+			FROM food.delivery_assignments
+			WHERE order_id = $1 AND delivery_partner_id IS NOT NULL
+		`, orderID).Scan(&code)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		order.DeliveryCode = code
+	}
 	return &order, nil
 }
 

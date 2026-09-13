@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_REALTIME_ID_NOT_ALLOWED",
+    "message": "the delivery scope takes no id"
+  },
+  "meta": {}
+}

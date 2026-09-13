@@ -585,7 +585,8 @@ func (s *Store) ListDeliveryAssignments(ctx context.Context, userID uuid.UUID) (
 	rows, err := s.db.Query(ctx, `
 		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
 			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text
+			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
+			COALESCE(da.pickup_code, '')
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.delivery_partner_id = $1
@@ -723,7 +724,8 @@ func (s *Store) GetCurrentDeliveryAssignment(ctx context.Context, userID uuid.UU
 	rows, err := s.db.Query(ctx, `
 		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
 			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text
+			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
+			COALESCE(da.pickup_code, '')
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.delivery_partner_id = $1
@@ -779,7 +781,8 @@ func (s *Store) DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]Delive
 	rows, err := s.db.Query(ctx, `
 		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
 			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text
+			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
+			COALESCE(da.pickup_code, '')
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.delivery_partner_id = $1
@@ -1460,12 +1463,18 @@ func scanDeliveryPartner(rows pgx.Rows) (DeliveryPartner, error) {
 	return partner, err
 }
 
+// scanDeliveryAssignment reads the shared assignment column list, whose last
+// column is the raw pickup code. The code is kept only when PickupCodeVisible.
 func scanDeliveryAssignment(rows pgx.Rows) (DeliveryAssignment, error) {
 	var assignment DeliveryAssignment
+	var pickupCode string
 	err := rows.Scan(&assignment.ID, &assignment.OrderID, &assignment.OrderNumber,
 		&assignment.RestaurantName, &assignment.RestaurantID, &assignment.DeliveryPartnerID,
 		&assignment.Status, &assignment.OrderStatus, &assignment.DeliveryFee,
-		&assignment.DeliveryPartnerPayout, &assignment.CreatedAt)
+		&assignment.DeliveryPartnerPayout, &assignment.CreatedAt, &pickupCode)
+	if err == nil && PickupCodeVisible(assignment.Status, assignment.OrderStatus) {
+		assignment.PickupCode = pickupCode
+	}
 	return assignment, err
 }
 
@@ -1473,7 +1482,8 @@ func (s *Store) getAssignmentTx(ctx context.Context, tx pgx.Tx, assignmentID uui
 	rows, err := tx.Query(ctx, `
 		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
 			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text
+			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
+			COALESCE(da.pickup_code, '')
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.id = $1

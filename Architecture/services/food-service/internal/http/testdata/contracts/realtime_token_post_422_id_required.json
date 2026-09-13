@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_REALTIME_ID_REQUIRED",
+    "message": "this scope needs an id"
+  },
+  "meta": {}
+}

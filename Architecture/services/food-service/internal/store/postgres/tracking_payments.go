@@ -3,8 +3,10 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -68,9 +70,60 @@ func (s *Store) AttachPaymentProviderReference(ctx context.Context, userID, orde
 	return nil
 }
 
-func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, latitude, longitude float64, accuracyMeters *float64) (map[string]any, error) {
-	if latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+// RiderLocationMinInterval is the throttle: at most one rider.location frame
+// per order in this window, however often the rider pings.
+const RiderLocationMinInterval = 5 * time.Second
+
+// LocationUpdate is one rider ping.
+type LocationUpdate struct {
+	Latitude       float64
+	Longitude      float64
+	AccuracyMeters *float64
+	// Heading is an optional compass heading in degrees, 0 to 360.
+	Heading *float64
+}
+
+// RiderLocationFrame names one order a ping must reach live. The store adds
+// one only when RiderLocationShareable and the per-order throttle allowed it.
+type RiderLocationFrame struct {
+	OrderID      uuid.UUID
+	AssignmentID uuid.UUID
+}
+
+// DeliveryLocationResult is the POST /v1/food/delivery/location response.
+type DeliveryLocationResult struct {
+	ID                uuid.UUID `json:"id"`
+	DeliveryPartnerID uuid.UUID `json:"delivery_partner_id"`
+	// AssignmentID is the newest active assignment (the zero UUID when the
+	// rider holds none), kept for clients written against the one-assignment
+	// response; AssignmentIDs lists every active assignment the ping updated.
+	AssignmentID   uuid.UUID   `json:"assignment_id"`
+	AssignmentIDs  []uuid.UUID `json:"assignment_ids"`
+	Latitude       float64     `json:"latitude"`
+	Longitude      float64     `json:"longitude"`
+	AccuracyMeters *float64    `json:"accuracy_meters"`
+	Heading        *float64    `json:"heading"`
+	RecordedAt     string      `json:"recorded_at"`
+
+	// For the service's live fan-out; never serialised.
+	RecordedAtTime time.Time            `json:"-"`
+	Frames         []RiderLocationFrame `json:"-"`
+}
+
+type activeAssignment struct {
+	id, orderID                   uuid.UUID
+	assignmentStatus, orderStatus string
+}
+
+// UpdateDeliveryLocation records a ping, writes a tracking event on EVERY
+// active assignment the rider holds (a batch run holds several), and returns
+// the orders whose customers should get a rider.location frame now.
+func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in LocationUpdate) (*DeliveryLocationResult, error) {
+	if in.Latitude < -90 || in.Latitude > 90 || in.Longitude < -180 || in.Longitude > 180 {
 		return nil, fmt.Errorf("invalid coordinates")
+	}
+	if in.Heading != nil && (*in.Heading < 0 || *in.Heading > 360) {
+		return nil, fmt.Errorf("invalid heading: must be between 0 and 360")
 	}
 	partner, err := s.GetDeliveryPartner(ctx, userID)
 	if err != nil {
@@ -82,60 +135,91 @@ func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, la
 	}
 	defer tx.Rollback(ctx)
 
-	var locationID uuid.UUID
-	var recordedAt string
+	res := &DeliveryLocationResult{
+		DeliveryPartnerID: partner.ID, AssignmentIDs: []uuid.UUID{},
+		Latitude: in.Latitude, Longitude: in.Longitude, AccuracyMeters: in.AccuracyMeters, Heading: in.Heading,
+	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.delivery_partner_locations (
-			delivery_partner_id, latitude, longitude, accuracy_meters
+			delivery_partner_id, latitude, longitude, accuracy_meters, heading
 		)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, recorded_at::text
-	`, partner.ID, latitude, longitude, accuracyMeters).Scan(&locationID, &recordedAt); err != nil {
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, recorded_at, recorded_at::text
+	`, partner.ID, in.Latitude, in.Longitude, in.AccuracyMeters, in.Heading).Scan(&res.ID, &res.RecordedAtTime, &res.RecordedAt); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE food.delivery_partners
 		SET current_latitude = $2, current_longitude = $3
 		WHERE id = $1
-	`, partner.ID, latitude, longitude); err != nil {
+	`, partner.ID, in.Latitude, in.Longitude); err != nil {
 		return nil, err
 	}
 
-	var assignmentID uuid.UUID
-	var assignmentStatus string
-	err = tx.QueryRow(ctx, `
-		SELECT id, status::text
-		FROM food.delivery_assignments
-		WHERE delivery_partner_id = $1
-			AND status NOT IN ('DELIVERED', 'FAILED', 'CANCELLED', 'REJECTED')
-		ORDER BY created_at DESC
-		LIMIT 1
-	`, partner.ID).Scan(&assignmentID, &assignmentStatus)
-	if err != nil && err != pgx.ErrNoRows {
+	rows, err := tx.Query(ctx, `
+		SELECT da.id, da.order_id, da.status::text, o.status::text
+		FROM food.delivery_assignments da
+		JOIN food.orders o ON o.id = da.order_id
+		WHERE da.delivery_partner_id = $1
+			AND da.status NOT IN ('DELIVERED', 'FAILED', 'CANCELLED', 'REJECTED')
+		ORDER BY da.created_at DESC, da.id
+	`, partner.ID)
+	if err != nil {
 		return nil, err
 	}
-	if err == nil {
+	var active []activeAssignment
+	for rows.Next() {
+		var a activeAssignment
+		if err := rows.Scan(&a.id, &a.orderID, &a.assignmentStatus, &a.orderStatus); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		active = append(active, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i, a := range active {
+		if i == 0 {
+			res.AssignmentID = a.id
+		}
+		res.AssignmentIDs = append(res.AssignmentIDs, a.id)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO food.delivery_tracking_events (
 				assignment_id, delivery_partner_id, status, latitude, longitude, note
 			)
-			VALUES ($1, $2, $3, $4, $5, 'location update')
-		`, assignmentID, partner.ID, assignmentStatus, latitude, longitude); err != nil {
+			VALUES ($1, $2, $3::text::food.assignment_status, $4, $5, 'location update')
+		`, a.id, partner.ID, a.assignmentStatus, in.Latitude, in.Longitude); err != nil {
 			return nil, err
 		}
+		if !RiderLocationShareable(a.assignmentStatus, a.orderStatus) {
+			continue
+		}
+		// The throttle claim: succeeds for at most one ping per order per
+		// RiderLocationMinInterval, on every replica.
+		var claimed bool
+		err := tx.QueryRow(ctx, `
+			UPDATE food.delivery_assignments
+			SET location_published_at = NOW()
+			WHERE id = $1
+				AND (location_published_at IS NULL
+					OR location_published_at <= NOW() - make_interval(secs => $2::float8))
+			RETURNING TRUE
+		`, a.id, RiderLocationMinInterval.Seconds()).Scan(&claimed)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		res.Frames = append(res.Frames, RiderLocationFrame{OrderID: a.orderID, AssignmentID: a.id})
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"id":                  locationID,
-		"delivery_partner_id": partner.ID,
-		"assignment_id":       assignmentID,
-		"latitude":            latitude,
-		"longitude":           longitude,
-		"accuracy_meters":     accuracyMeters,
-		"recorded_at":         recordedAt,
-	}, nil
+	return res, nil
 }
 
 func (s *Store) GetAssignmentTracking(ctx context.Context, userID, assignmentID uuid.UUID) (map[string]any, error) {
@@ -146,7 +230,8 @@ func (s *Store) GetAssignmentTracking(ctx context.Context, userID, assignmentID 
 	rows, err := s.db.Query(ctx, `
 		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
 			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text
+			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
+			COALESCE(da.pickup_code, '')
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.id = $1 AND da.delivery_partner_id = $2
