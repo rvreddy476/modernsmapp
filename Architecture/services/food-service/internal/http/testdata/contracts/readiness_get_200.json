@@ -1,0 +1,13 @@
+{
+  "data": {
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "ready": false,
+    "missing": [
+      "fssai_document",
+      "payout_account"
+    ],
+    "status": "DRAFT",
+    "can_submit": false
+  },
+  "meta": {}
+}

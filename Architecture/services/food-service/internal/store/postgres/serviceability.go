@@ -240,7 +240,16 @@ func (s *Store) checkServiceabilityTx(ctx context.Context, tx pgx.Tx, restaurant
 }
 
 func loadHoursTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID) ([]hoursWindow, error) {
-	rows, err := tx.Query(ctx, `
+	return loadHours(ctx, tx, restaurantID)
+}
+
+// hoursQuerier is a transaction or the pool.
+type hoursQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func loadHours(ctx context.Context, q hoursQuerier, restaurantID uuid.UUID) ([]hoursWindow, error) {
+	rows, err := q.Query(ctx, `
 		SELECT day_of_week, EXTRACT(EPOCH FROM opens_at)::int, EXTRACT(EPOCH FROM closes_at)::int, is_closed
 		FROM food.restaurant_operating_hours
 		WHERE restaurant_id = $1

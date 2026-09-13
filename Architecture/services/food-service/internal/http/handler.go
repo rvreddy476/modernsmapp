@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/atpost/food-service/internal/onboarding"
 	"github.com/atpost/food-service/internal/riderkyc"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/postgres"
@@ -212,6 +213,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		h.registerB3Routes(admin)
 		// Wave 1 B4: delivery-partner verification. See handler_rider_kyc.go.
 		h.registerRiderKYCRoutes(v1, delivery, admin)
+		// Lane B8: Kitchen read-backs, readiness, menu extras. See handler_b8.go.
+		h.registerB8Routes(partner)
 	}
 }
 
@@ -976,7 +979,16 @@ func (h *Handler) UpdatePartnerRestaurant(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	// B8: a true partial update. Only the keys the body carries are written;
+	// null clears description, phone, email and display_name.
+	present, null, err := patchPresence(raw)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "request body is not valid JSON", nil)
+		return
+	}
 	restaurant, err := h.svc.UpdatePartnerRestaurant(c.Request.Context(), userID, restaurantID, postgres.PartnerRestaurantInput{
+		Present:        present,
+		Null:           null,
 		LegalName:      body.LegalName,
 		DisplayName:    body.DisplayName,
 		Name:           body.Name,
@@ -1162,6 +1174,8 @@ func (h *Handler) CreateMenuItem(c *gin.Context) {
 		PreparationMinutes int      `json:"preparation_minutes"`
 		IsRecommended      bool     `json:"is_recommended"`
 		TaxPercentage      float64  `json:"tax_percentage"`
+		// B8: the uploaded dish photo; when set it decides image_url.
+		ImageMediaID string `json:"image_media_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -1172,7 +1186,13 @@ func (h *Handler) CreateMenuItem(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", "invalid category id", nil)
 		return
 	}
+	mediaID, err := onboarding.ParseOptionalMediaID("image_media_id", body.ImageMediaID)
+	if err != nil {
+		writeOnboardingError(c, err)
+		return
+	}
 	item, err := h.svc.CreateMenuItem(c.Request.Context(), userID, restaurantID, categoryID, postgres.MenuItemInput{
+		ImageMediaID:       mediaID,
 		Name:               body.Name,
 		Description:        body.Description,
 		FoodType:           body.FoodType,
@@ -1184,6 +1204,10 @@ func (h *Handler) CreateMenuItem(c *gin.Context) {
 		TaxPercentage:      body.TaxPercentage,
 	})
 	if err != nil {
+		if isFieldError(err) {
+			writeOnboardingError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_MENU_ITEM_CREATE_FAILED", err.Error(), nil)
 		return
 	}
@@ -1209,12 +1233,20 @@ func (h *Handler) UpdateMenuItem(c *gin.Context) {
 		PreparationMinutes int      `json:"preparation_minutes"`
 		IsRecommended      bool     `json:"is_recommended"`
 		TaxPercentage      float64  `json:"tax_percentage"`
+		// B8: the uploaded dish photo; when set it decides image_url.
+		ImageMediaID string `json:"image_media_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	mediaID, err := onboarding.ParseOptionalMediaID("image_media_id", body.ImageMediaID)
+	if err != nil {
+		writeOnboardingError(c, err)
+		return
+	}
 	item, err := h.svc.UpdateMenuItem(c.Request.Context(), userID, itemID, postgres.MenuItemInput{
+		ImageMediaID:       mediaID,
 		Name:               body.Name,
 		Description:        body.Description,
 		FoodType:           body.FoodType,
@@ -1226,6 +1258,10 @@ func (h *Handler) UpdateMenuItem(c *gin.Context) {
 		TaxPercentage:      body.TaxPercentage,
 	})
 	if err != nil {
+		if isFieldError(err) {
+			writeOnboardingError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_MENU_ITEM_UPDATE_FAILED", err.Error(), nil)
 		return
 	}
@@ -1285,7 +1321,8 @@ func (h *Handler) ListPartnerOrders(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PARTNER_ORDERS_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": orders})
+	// B8: totals carry *_paise siblings on the partner routes.
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": postgres.PartnerOrdersOf(orders)})
 }
 
 func (h *Handler) PartnerRestaurantSettlements(c *gin.Context) {
@@ -1364,7 +1401,9 @@ func (h *Handler) partnerOrderStatus(c *gin.Context, status string) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PARTNER_ORDER_STATUS_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, order)
+	// B8: totals carry *_paise siblings; the customer's drop-off code is never
+	// included, even on an idempotent replay after pickup.
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, postgres.PartnerOrderOf(order))
 }
 
 func (h *Handler) UpsertDeliveryPartner(c *gin.Context) {

@@ -215,6 +215,26 @@ type Store interface {
 	AdminDeliveryPartnerKYC(ctx context.Context, partnerID uuid.UUID) (*postgres.DeliveryPartnerKYC, error)
 	AdminDecideDeliveryPartnerDocument(ctx context.Context, adminID, partnerID, documentID uuid.UUID, decision, reason string) (*postgres.DeliveryDocument, error)
 	BackfillDeliveryDocumentNumbers(ctx context.Context, seal postgres.DocumentNumberSealer, batch int) (postgres.DocumentBackfillResult, error)
+
+	// Lane B8: partner read-backs, readiness, single reads, menu extras (partner_b8.go).
+	GetRestaurantReadiness(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.RestaurantReadiness, error)
+	GetRestaurantCompliance(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.RestaurantCompliance, error)
+	GetRestaurantLocation(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.RestaurantLocation, error)
+	GetOperatingHours(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.OperatingHours, error)
+	GetRestaurantFSSAI(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.RestaurantFSSAIView, error)
+	GetPartnerOrder(ctx context.Context, ownerID, orderID uuid.UUID) (*postgres.Order, error)
+	GetPartnerMenuItem(ctx context.Context, ownerID, itemID uuid.UUID) (*postgres.PartnerMenuItem, error)
+	ListMenuVariants(ctx context.Context, ownerID, itemID uuid.UUID) ([]postgres.MenuVariant, error)
+	CreateMenuVariant(ctx context.Context, ownerID, itemID uuid.UUID, in postgres.MenuPriceInput) (*postgres.MenuVariant, error)
+	UpdateMenuVariant(ctx context.Context, ownerID, itemID, variantID uuid.UUID, in postgres.MenuPriceInput) (*postgres.MenuVariant, error)
+	DeleteMenuVariant(ctx context.Context, ownerID, itemID, variantID uuid.UUID) error
+	ListAddonGroups(ctx context.Context, ownerID, itemID uuid.UUID) ([]postgres.MenuAddonGroup, error)
+	CreateAddonGroup(ctx context.Context, ownerID, itemID uuid.UUID, in postgres.MenuAddonGroupInput) (*postgres.MenuAddonGroup, error)
+	UpdateAddonGroup(ctx context.Context, ownerID, itemID, groupID uuid.UUID, in postgres.MenuAddonGroupInput) (*postgres.MenuAddonGroup, error)
+	DeleteAddonGroup(ctx context.Context, ownerID, itemID, groupID uuid.UUID) error
+	CreateAddon(ctx context.Context, ownerID, itemID, groupID uuid.UUID, in postgres.MenuPriceInput) (*postgres.MenuAddon, error)
+	UpdateAddon(ctx context.Context, ownerID, itemID, groupID, addonID uuid.UUID, in postgres.MenuPriceInput) (*postgres.MenuAddon, error)
+	DeleteAddon(ctx context.Context, ownerID, itemID, groupID, addonID uuid.UUID) error
 }
 
 type Service struct {
@@ -251,6 +271,8 @@ type Service struct {
 	pii           *foodpii.Crypto
 	bankVerifier  payout.BankVerifier
 	onboardingNow func() time.Time
+	// mediaBaseURL prefixes the dish-photo URL a media id resolves to (B8).
+	mediaBaseURL string
 }
 
 
@@ -263,6 +285,7 @@ func New(store Store) *Service {
 		httpClient:             &http.Client{Timeout: 8 * time.Second},
 		dispatchRadiusKM:       envPositiveFloat("FOOD_DISPATCH_RADIUS_KM", defaultDispatchRadiusKM),
 		dispatchLocationMaxAge: time.Duration(envPositiveFloat("FOOD_DISPATCH_LOCATION_MAX_AGE_SECONDS", defaultDispatchLocationMaxAgeSeconds) * float64(time.Second)),
+		mediaBaseURL:           strings.TrimRight(os.Getenv("FOOD_MEDIA_PUBLIC_BASE_URL"), "/"),
 	}
 }
 
@@ -633,10 +656,12 @@ func (s *Service) DeleteMenuCategory(ctx context.Context, ownerID, categoryID uu
 }
 
 func (s *Service) CreateMenuItem(ctx context.Context, ownerID, restaurantID, categoryID uuid.UUID, in postgres.MenuItemInput) (*postgres.MenuItem, error) {
+	s.resolveMenuImage(&in)
 	return s.store.CreateMenuItem(ctx, ownerID, restaurantID, categoryID, in)
 }
 
 func (s *Service) UpdateMenuItem(ctx context.Context, ownerID, itemID uuid.UUID, in postgres.MenuItemInput) (*postgres.MenuItem, error) {
+	s.resolveMenuImage(&in)
 	return s.store.UpdateMenuItem(ctx, ownerID, itemID, in)
 }
 

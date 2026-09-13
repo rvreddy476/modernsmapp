@@ -1,0 +1,27 @@
+{
+  "data": {
+    "items": [
+      {
+        "commission": 1168.57,
+        "commission_paise": 116857,
+        "created_at": "2026-09-13T06:30:00Z",
+        "gross_amount": 7790.44,
+        "gross_amount_paise": 779044,
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0018",
+        "paid_at": "",
+        "paid_reference": "",
+        "payout_amount": 5972.75,
+        "payout_amount_paise": 597275,
+        "penalty_amount": 0,
+        "penalty_amount_paise": 0,
+        "period_end": "2026-09-13",
+        "period_start": "2026-09-07",
+        "refund_adjustment": 649.12,
+        "refund_adjustment_paise": 64912,
+        "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+        "status": "PENDING"
+      }
+    ]
+  },
+  "meta": {}
+}

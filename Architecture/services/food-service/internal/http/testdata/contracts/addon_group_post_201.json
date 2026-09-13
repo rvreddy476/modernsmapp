@@ -1,0 +1,13 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0033",
+    "menu_item_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0013",
+    "name": "Extras",
+    "min_select": 0,
+    "max_select": 2,
+    "is_required": false,
+    "sort_order": 0,
+    "addons": []
+  },
+  "meta": {}
+}

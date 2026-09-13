@@ -55,6 +55,9 @@ type MenuCategory struct {
 	Description string     `json:"description,omitempty"`
 	SortOrder   int        `json:"sort_order"`
 	Items       []MenuItem `json:"items"`
+	// ItemCount (B8) is the number of active items in the category, on the
+	// partner routes only; the customer menu omits it.
+	ItemCount *int `json:"item_count,omitempty"`
 }
 
 type MenuItem struct {
@@ -71,6 +74,11 @@ type MenuItem struct {
 	IsAvailable        bool      `json:"is_available"`
 	IsRecommended      bool      `json:"is_recommended"`
 	TaxPercentage      float64   `json:"tax_percentage"`
+	// B8: integer-paise siblings of the two float rupee prices (FillPaise),
+	// and the media id the dish photo was resolved from, when it was.
+	BasePricePaise     int64      `json:"base_price_paise"`
+	DiscountPricePaise int64      `json:"discount_price_paise,omitempty"`
+	ImageMediaID       *uuid.UUID `json:"image_media_id,omitempty"`
 }
 
 type Cart struct {
@@ -273,6 +281,13 @@ type PartnerRestaurantInput struct {
 	Longitude      *float64
 	MinOrderAmount float64
 	PackagingFee   float64
+	// Present (B8) names the JSON keys a PATCH body carried; the update writes
+	// only those. nil means every field is present: the pre-B8 full replace,
+	// which never touches legal_name or display_name.
+	Present map[string]bool
+	// Null names the keys the body set to JSON null, clearing the field where
+	// clearing is valid (description, phone, email, display_name).
+	Null map[string]bool
 }
 
 type PartnerRestaurant struct {
@@ -290,6 +305,13 @@ type PartnerRestaurant struct {
 	MinOrderAmount    float64   `json:"min_order_amount"`
 	PackagingFee      float64   `json:"packaging_fee"`
 	CreatedAt         string    `json:"created_at"`
+	// B8: what the profile PATCH writes. Phone and email are the restaurant's;
+	// legal_name and display_name are the partner row's (the compliance legal
+	// name is GET .../compliance).
+	Phone       *string `json:"phone"`
+	Email       *string `json:"email"`
+	LegalName   *string `json:"legal_name"`
+	DisplayName *string `json:"display_name"`
 }
 
 type MenuCategoryInput struct {
@@ -308,6 +330,9 @@ type MenuItemInput struct {
 	PreparationMinutes int
 	IsRecommended      bool
 	TaxPercentage      float64
+	// ImageMediaID (B8) is the uploaded dish photo; the service resolves it to
+	// ImageURL before the store writes either.
+	ImageMediaID *uuid.UUID
 }
 
 type DeliveryPartnerInput struct {

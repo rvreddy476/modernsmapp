@@ -681,7 +681,11 @@ func (s *Store) ListOrders(ctx context.Context, userID uuid.UUID) ([]Order, erro
 	return orders, rows.Err()
 }
 
+// GetOrder is the customer's order detail. B6 follow-up: before a rider has
+// accepted, reading the detail recomputes eta_at under the same 60 s claim a
+// rider ping takes, so the estimate cannot drift into the past.
 func (s *Store) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*Order, error) {
+	s.refreshPreAcceptETA(ctx, userID, orderID)
 	return s.getOrder(ctx, s.db, userID, orderID, true)
 }
 

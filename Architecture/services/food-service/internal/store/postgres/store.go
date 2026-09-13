@@ -259,6 +259,7 @@ func (s *Store) GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]MenuCate
 			return nil, err
 		}
 		item.CategoryID = cat.ID
+		item.FillPaise()
 		idx, ok := byID[cat.ID]
 		if !ok {
 			cat.Items = []MenuItem{}

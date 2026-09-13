@@ -1,0 +1,19 @@
+{
+  "data": {
+    "orders": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+        "order_number": "FG1000000000001",
+        "status": "CONFIRMED",
+        "final_amount": 649.12,
+        "item_count": 2,
+        "customer_instruction": "Less spicy",
+        "placed_at": "2026-09-13 06:30:00+00",
+        "accept_deadline_at": "2026-09-13 06:35:00+00",
+        "seconds_to_breach": 300,
+        "final_amount_paise": 64912,
+        "accept_deadline_at_rfc3339": "2026-09-13T06:35:00Z"
+      }
+    ]
+  }
+}

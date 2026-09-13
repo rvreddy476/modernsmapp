@@ -151,8 +151,17 @@ func claimOrderETATx(ctx context.Context, tx pgx.Tx, a activeAssignment) (*ETAJo
 	if err != nil {
 		return nil, fmt.Errorf("claim eta recompute: %w", err)
 	}
+	if err := loadETAInputs(ctx, tx, &job); err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// loadETAInputs reads a claimed order's map points and when its food is
+// expected ready; shared by the rider-ping claim and the pre-accept claim.
+func loadETAInputs(ctx context.Context, q rowQuerier, job *ETAJob) error {
 	var restaurantSnapshot, deliverySnapshot []byte
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		SELECT o.restaurant_address_snapshot, o.delivery_address_snapshot,
 			CASE WHEN EXISTS (
 					SELECT 1 FROM food.order_status_history h
@@ -166,12 +175,12 @@ func claimOrderETATx(ctx context.Context, tx pgx.Tx, a activeAssignment) (*ETAJo
 			END
 		FROM food.orders o
 		WHERE o.id = $1
-	`, a.orderID).Scan(&restaurantSnapshot, &deliverySnapshot, &job.FoodReadyAt); err != nil {
-		return nil, fmt.Errorf("read eta inputs: %w", err)
+	`, job.OrderID).Scan(&restaurantSnapshot, &deliverySnapshot, &job.FoodReadyAt); err != nil {
+		return fmt.Errorf("read eta inputs: %w", err)
 	}
 	job.Restaurant = latLngFromSnapshot(restaurantSnapshot)
 	job.Customer = latLngFromSnapshot(deliverySnapshot)
-	return &job, nil
+	return nil
 }
 
 // RecordOrderETA writes a recomputed ETA, only if the claim it was computed

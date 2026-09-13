@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_MENU_PRICE_MISMATCH",
+    "message": "price and price_paise disagree",
+    "details": {
+      "field": "price_paise"
+    }
+  },
+  "meta": {}
+}

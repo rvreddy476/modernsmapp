@@ -1,0 +1,134 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+    "order_number": "FG1000000000001",
+    "user_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0010",
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "restaurant_name": "Test Kitchen",
+    "status": "CONFIRMED",
+    "payment_status": "CAPTURED",
+    "payment_method": "ONLINE",
+    "estimated_preparation_minutes": 20,
+    "estimated_delivery_minutes": 29,
+    "placed_at": "2026-09-13T06:30:00Z",
+    "items": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0016",
+        "name": "Paneer Tikka",
+        "food_type": "VEG",
+        "unit_price": 250,
+        "quantity": 2,
+        "tax_amount": 28,
+        "line_total": 500,
+        "unit_price_paise": 25000,
+        "tax_amount_paise": 2800,
+        "line_total_paise": 50000
+      }
+    ],
+    "history": [
+      {
+        "to_status": "PLACED",
+        "created_at": "2026-09-13T06:30:00Z"
+      }
+    ],
+    "money": {
+      "totals_paise": {
+        "item_subtotal_paise": 50000,
+        "addon_total_paise": 6000,
+        "packaging_fee_paise": 2000,
+        "delivery_fee_paise": 2900,
+        "platform_fee_paise": 500,
+        "tax_total_paise": 3512,
+        "discount_total_paise": 0,
+        "final_amount_paise": 64912
+      },
+      "taxes_and_charges": {
+        "charges": [
+          {
+            "kind": "PACKAGING",
+            "label": "Packaging charges",
+            "amount_paise": 2000
+          },
+          {
+            "kind": "PLATFORM_FEE",
+            "label": "Platform fee",
+            "amount_paise": 500
+          },
+          {
+            "kind": "DELIVERY_FEE",
+            "label": "Delivery fee",
+            "amount_paise": 2900
+          }
+        ],
+        "taxes": [
+          {
+            "liable_party": "PLATFORM",
+            "liability": "SUPPLIER",
+            "label": "GST on platform and delivery fees",
+            "taxable_paise": 3400,
+            "tax_paise": 612,
+            "rates": [
+              {
+                "rate_bp": 1800,
+                "rate_percent": "18.00",
+                "taxable_paise": 3400,
+                "cgst_paise": 306,
+                "sgst_paise": 306,
+                "igst_paise": 0,
+                "tax_paise": 612,
+                "needs_adviser_confirmation": true
+              }
+            ]
+          },
+          {
+            "liable_party": "PLATFORM",
+            "liability": "ECO_SECTION_9_5",
+            "label": "GST on food, paid by the platform under section 9(5)",
+            "taxable_paise": 58000,
+            "tax_paise": 2900,
+            "rates": [
+              {
+                "rate_bp": 500,
+                "rate_percent": "5.00",
+                "taxable_paise": 58000,
+                "cgst_paise": 1450,
+                "sgst_paise": 1450,
+                "igst_paise": 0,
+                "tax_paise": 2900,
+                "needs_adviser_confirmation": true
+              }
+            ]
+          }
+        ],
+        "total_charges_paise": 5400,
+        "total_tax_paise": 3512,
+        "total_taxes_and_charges_paise": 8912,
+        "menu_prices_treated_as_exclusive": true,
+        "needs_adviser_confirmation": true,
+        "adviser_notice": "Tax rates pending adviser confirmation"
+      },
+      "needs_adviser_confirmation": true
+    },
+    "totals": {
+      "item_subtotal": 500,
+      "addon_total": 60,
+      "packaging_fee": 20,
+      "tax_total": 35.12,
+      "delivery_fee": 29,
+      "platform_fee": 5,
+      "restaurant_discount": 0,
+      "coupon_discount": 0,
+      "final_amount": 649.12,
+      "item_subtotal_paise": 50000,
+      "addon_total_paise": 6000,
+      "packaging_fee_paise": 2000,
+      "tax_total_paise": 3512,
+      "delivery_fee_paise": 2900,
+      "platform_fee_paise": 500,
+      "restaurant_discount_paise": 0,
+      "coupon_discount_paise": 0,
+      "final_amount_paise": 64912
+    }
+  },
+  "meta": {}
+}

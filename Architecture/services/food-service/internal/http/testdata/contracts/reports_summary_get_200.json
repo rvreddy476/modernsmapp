@@ -1,0 +1,17 @@
+{
+  "data": {
+    "commission": 1168.57,
+    "commission_paise": 116857,
+    "delivered": 10,
+    "gross_amount": 7790.44,
+    "gross_amount_paise": 779044,
+    "orders": 12,
+    "payout_amount": 5972.75,
+    "payout_amount_paise": 597275,
+    "refunded": 1,
+    "refunds": 649.12,
+    "refunds_paise": 64912,
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002"
+  },
+  "meta": {}
+}

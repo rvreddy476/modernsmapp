@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_ONBOARDING_STEP_NOT_SAVED",
+    "message": "this onboarding step has not been saved yet",
+    "details": {
+      "step": "compliance"
+    }
+  },
+  "meta": {}
+}

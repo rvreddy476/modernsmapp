@@ -309,17 +309,12 @@ func (s *Store) PartnerRestaurantSettlements(ctx context.Context, ownerID, resta
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var id, start, end, status, ref, paidAt, createdAt string
-		var gross, commission, refund, penalty, payout float64
-		if err := rows.Scan(&id, &start, &end, &gross, &commission, &refund, &penalty, &payout, &status, &ref, &paidAt, &createdAt); err != nil {
+		var r PartnerSettlementRow
+		if err := rows.Scan(&r.ID, &r.PeriodStart, &r.PeriodEnd, &r.Gross, &r.Commission, &r.RefundAdjustment, &r.Penalty, &r.Payout,
+			&r.Status, &r.PaidReference, &r.PaidAt, &r.CreatedAt); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{
-			"id": id, "restaurant_id": restaurantID, "period_start": start, "period_end": end,
-			"gross_amount": gross, "commission": commission, "refund_adjustment": refund,
-			"penalty_amount": penalty, "payout_amount": payout, "status": status,
-			"paid_reference": ref, "paid_at": paidAt, "created_at": createdAt,
-		})
+		items = append(items, PartnerSettlementMap(restaurantID, r))
 	}
 	return items, rows.Err()
 }
@@ -342,16 +337,7 @@ func (s *Store) PartnerRestaurantSummary(ctx context.Context, ownerID, restauran
 	`, restaurantID).Scan(&orders, &delivered, &refunded, &gross, &commission, &refunds); err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"restaurant_id": restaurantID,
-		"orders":        orders,
-		"delivered":     delivered,
-		"refunded":      refunded,
-		"gross_amount":  gross,
-		"commission":    commission,
-		"refunds":       refunds,
-		"payout_amount": roundMoney(gross - commission - refunds),
-	}, nil
+	return PartnerSummaryMap(restaurantID, orders, delivered, refunded, gross, commission, refunds), nil
 }
 
 func (s *Store) AdminListDeliverySettlements(ctx context.Context, page Pagination) ([]map[string]any, error) {

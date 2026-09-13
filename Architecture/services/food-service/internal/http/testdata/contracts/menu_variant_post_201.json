@@ -1,0 +1,12 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0032",
+    "menu_item_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0013",
+    "name": "Half",
+    "price": 150,
+    "price_paise": 15000,
+    "is_available": true,
+    "sort_order": 0
+  },
+  "meta": {}
+}

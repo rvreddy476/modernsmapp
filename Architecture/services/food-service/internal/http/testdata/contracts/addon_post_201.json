@@ -1,0 +1,12 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0014",
+    "addon_group_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0033",
+    "name": "Extra cheese",
+    "price": 30,
+    "price_paise": 3000,
+    "is_available": true,
+    "sort_order": 0
+  },
+  "meta": {}
+}

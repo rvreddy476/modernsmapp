@@ -1,0 +1,23 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+    "owner_user_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0001",
+    "name": "Test Kitchen",
+    "slug": "test-kitchen",
+    "description": "South Indian",
+    "status": "DRAFT",
+    "is_open": false,
+    "is_accepting_orders": false,
+    "city": "Bengaluru",
+    "state": "Karnataka",
+    "min_order_amount": 99,
+    "packaging_fee": 10,
+    "created_at": "2026-09-13T06:30:00Z",
+    "phone": "08040000000",
+    "email": "kitchen@example.test",
+    "legal_name": "Test Kitchens LLP",
+    "display_name": "Test Kitchen"
+  },
+  "meta": {}
+}

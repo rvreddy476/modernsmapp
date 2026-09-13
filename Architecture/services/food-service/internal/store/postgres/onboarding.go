@@ -344,10 +344,21 @@ type RestaurantSubmission struct {
 	Missing      []string  `json:"missing"`
 }
 
-func readinessFactsTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID) (onboarding.ReadinessFacts, error) {
+// restaurantMissingSteps is THE readiness evaluation. Submit (inside its
+// locked transaction) and GET .../readiness both call it, so the two can never
+// disagree about what is missing.
+func restaurantMissingSteps(ctx context.Context, q rowQuerier, restaurantID uuid.UUID) ([]string, error) {
+	facts, err := readinessFacts(ctx, q, restaurantID)
+	if err != nil {
+		return nil, err
+	}
+	return onboarding.MissingSteps(facts), nil
+}
+
+func readinessFacts(ctx context.Context, q rowQuerier, restaurantID uuid.UUID) (onboarding.ReadinessFacts, error) {
 	var f onboarding.ReadinessFacts
 	var state string
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT
 			(r.latitude IS NOT NULL AND r.longitude IS NOT NULL AND EXISTS (
 				SELECT 1 FROM food.restaurant_service_areas a WHERE a.restaurant_id = r.id AND a.is_active)),
@@ -385,11 +396,11 @@ func (s *Store) SubmitRestaurantForReview(ctx context.Context, ownerID, restaura
 	if status != "DRAFT" && status != "REJECTED" {
 		return nil, ErrRestaurantNotDraft
 	}
-	facts, err := readinessFactsTx(ctx, tx, restaurantID)
+	missing, err := restaurantMissingSteps(ctx, tx, restaurantID)
 	if err != nil {
 		return nil, err
 	}
-	if missing := onboarding.MissingSteps(facts); len(missing) > 0 {
+	if len(missing) > 0 {
 		return nil, &onboarding.NotReadyError{Missing: missing}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE food.restaurants SET status = 'PENDING_REVIEW' WHERE id = $1`, restaurantID); err != nil {

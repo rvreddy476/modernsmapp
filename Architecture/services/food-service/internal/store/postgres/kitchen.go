@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/google/uuid"
@@ -22,6 +23,10 @@ type KitchenOrder struct {
 	PlacedAt            string    `json:"placed_at"`
 	AcceptDeadlineAt    *string   `json:"accept_deadline_at,omitempty"`
 	SecondsToBreach     *int      `json:"seconds_to_breach,omitempty"`
+	// B8 (additive): the paise sibling of final_amount, and the deadline in
+	// RFC 3339 UTC. accept_deadline_at stays the Postgres text it always was.
+	FinalAmountPaise        int64   `json:"final_amount_paise"`
+	AcceptDeadlineAtRFC3339 *string `json:"accept_deadline_at_rfc3339,omitempty"`
 }
 
 // ListKitchenQueue returns CONFIRMED orders awaiting partner accept
@@ -53,7 +58,8 @@ func (s *Store) ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid
 			CASE
 				WHEN o.accept_deadline_at IS NULL THEN NULL
 				ELSE GREATEST(0, EXTRACT(EPOCH FROM (o.accept_deadline_at - NOW()))::int)
-			END AS seconds_to_breach
+			END AS seconds_to_breach,
+			o.accept_deadline_at
 		FROM food.orders o
 		WHERE o.restaurant_id = $1
 		  AND o.status = 'CONFIRMED'
@@ -72,13 +78,15 @@ func (s *Store) ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid
 		var k KitchenOrder
 		var deadline, instruction *string
 		var secs *int
+		var deadlineAt *time.Time
 		if err := rows.Scan(&k.ID, &k.OrderNumber, &k.Status, &k.FinalAmount, &k.ItemCount,
-			&instruction, &k.PlacedAt, &deadline, &secs); err != nil {
+			&instruction, &k.PlacedAt, &deadline, &secs, &deadlineAt); err != nil {
 			return nil, err
 		}
 		k.CustomerInstruction = instruction
 		k.AcceptDeadlineAt = deadline
 		k.SecondsToBreach = secs
+		k.FillDerived(deadlineAt)
 		out = append(out, k)
 	}
 	return out, rows.Err()
