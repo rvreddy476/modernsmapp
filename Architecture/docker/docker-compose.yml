@@ -1579,6 +1579,13 @@ services:
       # set the platform's real e-commerce-operator GSTIN, and outside
       # local/dev the service refuses to start without one.
       FOOD_PLATFORM_GSTIN: 29ZZZPZ0000Z1Z6
+      # Rider DigiLocker return. The public base URL must be an origin the
+      # PHONE's browser can reach (the gateway on the PC's LAN IP, or the dev
+      # tunnel); localhost only works from this machine. The app link is the
+      # Feast Rider dev flavour's http link — on Android 12+ enable it once
+      # under Settings > Apps > Feast Rider (dev) > Open by default.
+      FOOD_PUBLIC_BASE_URL: ${FOOD_PUBLIC_BASE_URL:-http://localhost:8080}
+      FOOD_RIDER_APP_LINK_URL: ${FOOD_RIDER_APP_LINK_URL:-http://rider.feast.dev.invalid/rider/digilocker/return}
     ports:
       - "8113:8113"
     depends_on:
