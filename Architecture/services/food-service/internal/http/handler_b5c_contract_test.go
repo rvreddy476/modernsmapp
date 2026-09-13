@@ -28,6 +28,8 @@ var (
 	ctB5cAssignmentNotPicked = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0042")
 	ctB5cSuspendedRider      = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0043")
 	ctB5cOtherRider          = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0044")
+	// ctB6PickupLockedOrder took store.MaxPickupCodeAttempts wrong pickup codes.
+	ctB6PickupLockedOrder = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0045")
 )
 
 const ctB5cDeliveryCode = "7390"
@@ -59,8 +61,11 @@ func (f *b5cContractStore) RiderVerifyDeliveryCode(_ context.Context, rider, ass
 	return &postgres.DeliveryVerification{OrderID: ctOrder, CustomerID: ctCustomer}, nil
 }
 
-func (f *b5cContractStore) VerifyPickupCode(_ context.Context, _, _ uuid.UUID, _ string) error {
+func (f *b5cContractStore) VerifyPickupCode(_ context.Context, _, order uuid.UUID, _ string) error {
 	f.calls++
+	if order == ctB6PickupLockedOrder {
+		return postgres.ErrPickupCodeLocked
+	}
 	return fmt.Errorf("%w: assignment is ASSIGNED", postgres.ErrAssignmentNotReady)
 }
 
@@ -90,6 +95,7 @@ var b5cFixtures = []string{
 	"delivery_verify_delivery_post_400_invalid_body",
 	"delivery_verify_delivery_post_400_invalid_assignment_id",
 	"partner_verify_pickup_post_409_not_accepted",
+	"partner_verify_pickup_post_429_attempts_exceeded",
 }
 
 func TestB5cDeliveryVerifyContracts(t *testing.T) {
@@ -116,6 +122,7 @@ func TestB5cDeliveryVerifyContracts(t *testing.T) {
 		{"delivery_verify_delivery_post_400_invalid_body", rider(ctB5cAssignment), `{}`, ctRider, http.StatusBadRequest, 0},
 		{"delivery_verify_delivery_post_400_invalid_assignment_id", "/v1/food/delivery/assignments/not-a-uuid/verify-delivery", good, ctRider, http.StatusBadRequest, 0},
 		{"partner_verify_pickup_post_409_not_accepted", "/v1/food/partner/orders/" + ctOrder.String() + "/verify-pickup", `{"code":"4821"}`, ctOwner, http.StatusConflict, 1},
+		{"partner_verify_pickup_post_429_attempts_exceeded", "/v1/food/partner/orders/" + ctB6PickupLockedOrder.String() + "/verify-pickup", `{"code":"4821"}`, ctOwner, http.StatusTooManyRequests, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/atpost/food-service/internal/pricing"
+	"github.com/atpost/food-service/internal/routing"
 	"github.com/atpost/food-service/internal/settlement"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -350,6 +351,8 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	if err != nil {
 		return nil, err
 	}
+	// B6: the delivery ride is priced before the transaction opens.
+	pricedRide := s.pricePlacementLeg(ctx, userID, in.AddressID)
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -423,6 +426,9 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	if err != nil {
 		return nil, err
 	}
+	// B6 placement ETA = preparation + the restaurant-to-customer ride (Google
+	// when it priced exactly these points, haversine otherwise).
+	ride := s.placementLeg(pricedRide, routing.LatLng{Lat: *restLat, Lng: *restLng}, routing.LatLng{Lat: *addrLat, Lng: *addrLng})
 
 	// Coupons only when switched on (checked on entry). A coupon discount is
 	// treated as restaurant-funded: it reduces the restaurant's taxable value
@@ -512,7 +518,8 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			platform_fee, restaurant_discount, coupon_discount, final_amount,
 			coupon_code, commission_percentage_snapshot, commission_amount,
 			estimated_preparation_minutes, estimated_delivery_minutes, customer_instruction,
-			metadata, tax_breakdown, needs_adviser_confirmation
+			metadata, tax_breakdown, needs_adviser_confirmation,
+			eta_at, eta_source, eta_computed_at
 		)
 		VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
@@ -522,15 +529,17 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			0, ($18::bigint)::numeric / 100, ($19::bigint)::numeric / 100,
 			$20, $21, ($22::bigint)::numeric / 100,
 			$23, $24, $25,
-			$26::jsonb, $27::jsonb, $28
+			$26::jsonb, $27::jsonb, $28,
+			NOW() + make_interval(secs => $29::float8), $30, NOW()
 		)
 	`, orderID, orderNumber, userID, *cart.RestaurantID, address.ID, status, paymentStatus, paymentMethod,
 		restaurantName, restaurantAddressJSON, deliveryAddressJSON,
 		totals.ItemSubtotalPaise, totals.AddonTotalPaise, totals.PackagingFeePaise, totals.TaxTotalPaise,
 		totals.DeliveryFeePaise, totals.PlatformFeePaise, totals.DiscountTotalPaise, totals.FinalAmountPaise,
 		emptyToNil(couponCode), commissionPct, commissionPaise,
-		prepMins, estimateDeliveryMinutes(prepMins, distanceKM, s.ordering.AvgRiderSpeedKmh),
-		in.CustomerInstruction, orderMetadata, breakdownJSON, quote.Breakdown.NeedsAdviserConfirmation); err != nil {
+		prepMins, deliveryMinutesForRoute(prepMins, ride.Duration),
+		in.CustomerInstruction, orderMetadata, breakdownJSON, quote.Breakdown.NeedsAdviserConfirmation,
+		placementETASeconds(prepMins, ride.Duration), ride.Source); err != nil {
 		return nil, err
 	}
 
@@ -1048,7 +1057,8 @@ func (s *Store) getOrder(ctx context.Context, q interface {
 			restaurant_discount::float8, coupon_discount::float8, final_amount::float8,
 			COALESCE(estimated_preparation_minutes, 0),
 			COALESCE(estimated_delivery_minutes, 0),
-			placed_at::text, COALESCE(delivered_at::text, '')
+			placed_at::text, COALESCE(delivered_at::text, ''),
+			eta_at, COALESCE(eta_source, '')
 		FROM food.orders
 		WHERE user_id = $1 AND id = $2
 	`, userID, orderID)
@@ -1059,7 +1069,9 @@ func (s *Store) getOrder(ctx context.Context, q interface {
 		rows.Close()
 		return nil, pgx.ErrNoRows
 	}
-	order, err := scanOrder(rows)
+	var etaAt *time.Time
+	var etaSource string
+	order, err := scanOrder(rows, &etaAt, &etaSource)
 	if err != nil {
 		rows.Close()
 		return nil, err
@@ -1067,6 +1079,9 @@ func (s *Store) getOrder(ctx context.Context, q interface {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if etaAt != nil && validETASource(etaSource) && ETAVisible(order.Status) {
+		order.ETAAt, order.ETASource = FormatETA(*etaAt), etaSource
 	}
 	if !includeDetails {
 		return &order, nil
@@ -1157,9 +1172,11 @@ func (s *Store) listOrderHistory(ctx context.Context, q interface {
 	return history, rows.Err()
 }
 
-func scanOrder(rows pgx.Rows) (Order, error) {
+// scanOrder scans the common order columns, then any extra columns the query
+// selected after them into extra.
+func scanOrder(rows pgx.Rows, extra ...any) (Order, error) {
 	var order Order
-	err := rows.Scan(
+	dest := []any{
 		&order.ID,
 		&order.OrderNumber,
 		&order.UserID,
@@ -1181,7 +1198,8 @@ func scanOrder(rows pgx.Rows) (Order, error) {
 		&order.EstimatedDeliveryMins,
 		&order.PlacedAt,
 		&order.DeliveredAt,
-	)
+	}
+	err := rows.Scan(append(dest, extra...)...)
 	return order, err
 }
 

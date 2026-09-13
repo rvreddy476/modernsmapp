@@ -27,6 +27,7 @@ var lifecycleErrors = []errorMapping{
 	{postgres.ErrDeliveryOTPRequired, http.StatusConflict, "FOOD_DELIVERY_OTP_REQUIRED"},
 	{postgres.ErrAssignmentNotReady, http.StatusConflict, "FOOD_DELIVERY_ASSIGNMENT_NOT_READY"},
 	{postgres.ErrDeliveryCodeLocked, http.StatusTooManyRequests, "FOOD_DELIVERY_CODE_ATTEMPTS_EXCEEDED"},
+	{postgres.ErrPickupCodeLocked, http.StatusTooManyRequests, "FOOD_PICKUP_CODE_ATTEMPTS_EXCEEDED"},
 	{postgres.ErrDeliveryPartnerNotActive, http.StatusForbidden, "FOOD_DELIVERY_PARTNER_NOT_ACTIVE"},
 	{postgres.ErrRestaurantNotAccepting, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_NOT_ACCEPTING"},
 	{postgres.ErrRestaurantOutsideHours, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_OUTSIDE_HOURS"},

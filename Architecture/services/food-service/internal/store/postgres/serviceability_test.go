@@ -45,25 +45,6 @@ func TestOpenAt(t *testing.T) {
 	}
 }
 
-func TestEstimateDeliveryMinutes(t *testing.T) {
-	cases := []struct {
-		prep       int
-		km, speed  float64
-		want       int
-	}{
-		{20, 2.9, 20, 29},
-		{15, 0, 20, 15},
-		{10, 10, 20, 40},
-		{10, 10, 0, 40}, // speed falls back to 20 km/h
-		{25, 0.1, 20, 26},
-	}
-	for _, c := range cases {
-		if got := estimateDeliveryMinutes(c.prep, c.km, c.speed); got != c.want {
-			t.Errorf("estimateDeliveryMinutes(%d, %v, %v) = %d, want %d", c.prep, c.km, c.speed, got, c.want)
-		}
-	}
-}
-
 func TestRiderPayoutForFee(t *testing.T) {
 	if got := riderPayoutForFee(29); got != 23.20 {
 		t.Fatalf("payout for 29 = %v, want 23.20", got)

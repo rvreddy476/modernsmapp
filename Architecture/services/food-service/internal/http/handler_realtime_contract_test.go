@@ -53,6 +53,7 @@ func (realtimeContractStore) GetOrder(_ context.Context, user, order uuid.UUID) 
 			{FromStatus: "PICKED_UP", ToStatus: "OUT_FOR_DELIVERY", Reason: "delivery partner arrived at customer", CreatedAt: ctTime},
 		},
 		DeliveryCode: "7390",
+		ETAAt:        "2026-09-13T06:52:00Z", ETASource: "google",
 	}, nil
 }
 

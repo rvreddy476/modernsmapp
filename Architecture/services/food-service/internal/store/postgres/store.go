@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/atpost/food-service/internal/routing"
 )
 
 type Store struct {
@@ -23,6 +25,9 @@ type Store struct {
 	roles *identityroles.Outbox
 	// ordering tunes PlaceOrder serviceability and ETA; see serviceability.go.
 	ordering OrderingConfig
+	// router prices the delivery ride at placement (B6); nil means the
+	// ordering config's haversine estimate. See eta.go.
+	router routing.Router
 	// pricingCfg prices carts and orders (fees, platform GSTIN, coupons
 	// flag); settlementRules are the commission GST and TCS rates. See money.go.
 	pricingCfg      pricing.Config

@@ -21,6 +21,7 @@ import (
 	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/payout"
 	"github.com/atpost/food-service/internal/store/blob"
+	"github.com/atpost/food-service/internal/routing"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/realtime"
@@ -148,6 +149,8 @@ type Store interface {
 	GetCurrentDeliveryAssignment(ctx context.Context, userID uuid.UUID) (*postgres.DeliveryAssignment, error)
 	DeliveryUpdateAssignment(ctx context.Context, userID, assignmentID uuid.UUID, toStatus, idempotencyKey string) (*postgres.DeliveryAssignment, error)
 	UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in postgres.LocationUpdate) (*postgres.DeliveryLocationResult, error)
+	// B6: write back an ETA a ping claimed (guarded on the claim).
+	RecordOrderETA(ctx context.Context, orderID uuid.UUID, claimedAt, etaAt time.Time, source string) (bool, error)
 	AutoOfflineStaleDeliveryPartners(ctx context.Context, silence time.Duration) ([]uuid.UUID, error)
 	PurgeDeliveryLocationHistory(ctx context.Context, olderThan time.Duration, batch int) (postgres.LocationPurgeResult, error)
 	GetAssignmentTracking(ctx context.Context, userID, assignmentID uuid.UUID) (map[string]any, error)
@@ -241,6 +244,8 @@ type Service struct {
 	// restaurant whose latest location ping is newer than dispatchLocationMaxAge.
 	dispatchRadiusKM       float64
 	dispatchLocationMaxAge time.Duration
+	// router prices ETA legs on rider pings (B6); nil means haversine.
+	router routing.Router
 	// Onboarding (onboarding.go): pii nil means the PII routes answer 503;
 	// bankVerifier nil means payout.DisabledVerifier.
 	pii           *foodpii.Crypto

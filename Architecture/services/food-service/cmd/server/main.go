@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/food-service/internal/payments"
 	"github.com/atpost/food-service/internal/payout"
 	"github.com/atpost/food-service/internal/pricing"
+	"github.com/atpost/food-service/internal/routing"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/settlement"
 	"github.com/atpost/food-service/internal/store/blob"
@@ -29,6 +30,7 @@ import (
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -81,6 +83,21 @@ func main() {
 	orderingCfg, err := postgres.OrderingConfigFromEnv()
 	if err != nil {
 		slog.Error("invalid ordering config", "error", err)
+		os.Exit(1)
+	}
+	// B6 routing and ETA:
+	//   GOOGLE_MAPS_SERVER_KEY     optional; set, ride times come from the
+	//                              Routes API (TWO_WHEELER, TRAFFIC_AWARE) with
+	//                              haversine as the fallback; empty, haversine
+	//                              only. Never logged.
+	//   FOOD_ROUTING_TIMEOUT_MS    optional, default 2000 (1..10000).
+	//   FOOD_AVG_RIDER_SPEED_KMH   haversine speed, default 20 (read above).
+	//   FOOD_ROUTE_WINDING_FACTOR  haversine road/straight-line ratio, default
+	//                              1.0, 1..3 (read above).
+	// Google answers are cached in Redis (REDIS_ADDR) for 5 minutes.
+	routingCfg, err := routing.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("invalid routing config", "error", err)
 		os.Exit(1)
 	}
 	// Wave 1 B3: totals through shared/gst. FOOD_PLATFORM_FEE_PAISE (500),
@@ -203,19 +220,27 @@ func main() {
 		rtSecret, rtSecretSource = internalKey, "INTERNAL_SERVICE_KEY"
 	}
 	redisAddr := os.Getenv("REDIS_ADDR")
+	// One client for realtime and the route cache.
+	var rdb *redis.Client
+	if redisAddr != "" {
+		c, err := transport.NewRedisClientFromEnv(redisAddr)
+		if err != nil {
+			slog.Warn("food-service: realtime DISABLED and routes uncached — redis client could not be built",
+				"redis_addr", redisAddr, "error", err)
+		} else {
+			rdb = c
+		}
+	}
 	switch {
 	case redisAddr == "":
 		slog.Warn("food-service: realtime DISABLED — REDIS_ADDR is unset; no live order, restaurant or rider " +
 			"events will be published and POST /v1/food/realtime/token answers 503")
+	case rdb == nil:
+		// Warned when the client failed to build.
 	case rtSecret == "":
 		slog.Warn("food-service: realtime DISABLED — neither REALTIME_TOKEN_SECRET nor INTERNAL_SERVICE_KEY is set; " +
 			"POST /v1/food/realtime/token answers 503")
 	default:
-		rdb, err := transport.NewRedisClientFromEnv(redisAddr)
-		if err != nil {
-			slog.Warn("food-service: realtime DISABLED — redis client could not be built", "redis_addr", redisAddr, "error", err)
-			break
-		}
 		svc.WithRealtime(service.NewRealtimePublisher(rdb), realtime.NewTokenSigner([]byte(rtSecret)))
 		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
 		pingErr := rdb.Ping(pingCtx).Err()
@@ -228,6 +253,20 @@ func main() {
 				"token_secret_source", rtSecretSource, "token_ttl", service.RealtimeTokenTTL)
 		}
 	}
+
+	// B6: Cache(Fallback(Google, Haversine)). A nil Router interface, not a
+	// typed nil, when there is no key.
+	var googleRoutes routing.Router
+	if routingCfg.GoogleKey != "" {
+		googleRoutes = routing.NewGoogleRoutes(routingCfg.GoogleKey, routing.GoogleOptions{Timeout: routingCfg.Timeout})
+	}
+	router := routing.NewCache(rdb, routing.NewFallback(googleRoutes, orderingCfg.Haversine(), slog.Default()), slog.Default())
+	store.WithRouter(router)
+	svc.WithRouter(router)
+	slog.Info("food-service: routing",
+		"google_routes_configured", routingCfg.GoogleKey != "", "timeout", routingCfg.Timeout,
+		"route_cache", rdb != nil, "avg_rider_speed_kmh", orderingCfg.AvgRiderSpeedKmh,
+		"route_winding_factor", orderingCfg.RouteWindingFactor)
 
 	// P0.3 — durable outbox publisher. Domain events PlaceOrder /
 	// ConfirmPayment / CancelOrder enqueue here (via service.emit);

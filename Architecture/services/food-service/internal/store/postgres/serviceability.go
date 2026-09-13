@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"time"
 	_ "time/tzdata" // the container image may have no zoneinfo
 
 	"github.com/atpost/food-service/internal/geo"
+	"github.com/atpost/food-service/internal/routing"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -44,11 +44,14 @@ type OrderingConfig struct {
 	// restaurant_service_areas rows.
 	DefaultDeliveryRadiusKM float64
 	AvgRiderSpeedKmh        float64
+	// RouteWindingFactor is road distance over straight-line distance for the
+	// haversine estimate (routing.Haversine), >= 1.
+	RouteWindingFactor float64
 	// Now is injectable for tests.
 	Now func() time.Time
 }
 
-// DefaultOrderingConfig: Asia/Kolkata, 7 km, 20 km/h, time.Now.
+// DefaultOrderingConfig: Asia/Kolkata, 7 km, 20 km/h, winding 1.0, time.Now.
 func DefaultOrderingConfig() OrderingConfig {
 	loc, err := time.LoadLocation(defaultRestaurantTimezone)
 	if err != nil {
@@ -58,14 +61,22 @@ func DefaultOrderingConfig() OrderingConfig {
 		Location:                loc,
 		DefaultDeliveryRadiusKM: defaultDeliveryRadiusKM,
 		AvgRiderSpeedKmh:        defaultAvgRiderSpeedKmh,
+		RouteWindingFactor:      routing.DefaultWindingFactor,
 		Now:                     time.Now,
 	}
 }
 
+// Haversine is the no-network ride estimate these settings describe: what
+// PlaceOrder uses when the service priced no leg, and the routing chain's
+// fallback.
+func (c OrderingConfig) Haversine() routing.Haversine {
+	return routing.Haversine{SpeedKmh: c.AvgRiderSpeedKmh, WindingFactor: c.RouteWindingFactor}
+}
+
 // OrderingConfigFromEnv reads FOOD_RESTAURANT_TIMEZONE,
-// FOOD_DEFAULT_DELIVERY_RADIUS_KM and FOOD_AVG_RIDER_SPEED_KMH over the
-// defaults. An invalid value is an error so a typo cannot silently widen the
-// delivery radius.
+// FOOD_DEFAULT_DELIVERY_RADIUS_KM, FOOD_AVG_RIDER_SPEED_KMH and
+// FOOD_ROUTE_WINDING_FACTOR (>= 1, default 1.0) over the defaults. An invalid
+// value is an error so a typo cannot silently widen the delivery radius.
 func OrderingConfigFromEnv() (OrderingConfig, error) {
 	cfg := DefaultOrderingConfig()
 	if tz := os.Getenv("FOOD_RESTAURANT_TIMEZONE"); tz != "" {
@@ -87,6 +98,13 @@ func OrderingConfigFromEnv() (OrderingConfig, error) {
 			*dst = v
 		}
 	}
+	if raw := os.Getenv("FOOD_ROUTE_WINDING_FACTOR"); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v < 1 || v > 3 {
+			return cfg, fmt.Errorf("FOOD_ROUTE_WINDING_FACTOR must be a number from 1 to 3")
+		}
+		cfg.RouteWindingFactor = v
+	}
 	return cfg, nil
 }
 
@@ -101,6 +119,9 @@ func (s *Store) WithOrderingConfig(cfg OrderingConfig) *Store {
 	}
 	if cfg.AvgRiderSpeedKmh <= 0 {
 		cfg.AvgRiderSpeedKmh = def.AvgRiderSpeedKmh
+	}
+	if cfg.RouteWindingFactor < 1 {
+		cfg.RouteWindingFactor = def.RouteWindingFactor
 	}
 	if cfg.Now == nil {
 		cfg.Now = def.Now
@@ -182,18 +203,6 @@ func addressServiceable(restLat, restLng, addrLat, addrLng float64, areas []serv
 		}
 	}
 	return false
-}
-
-// estimateDeliveryMinutes = preparation + ride time at the average speed,
-// rounded up to the minute.
-func estimateDeliveryMinutes(prepMinutes int, distanceKM, speedKmh float64) int {
-	if speedKmh <= 0 {
-		speedKmh = defaultAvgRiderSpeedKmh
-	}
-	if distanceKM < 0 {
-		distanceKM = 0
-	}
-	return prepMinutes + int(math.Ceil(distanceKM/speedKmh*60))
 }
 
 // riderPayoutForFee is the rider's share of the delivery fee. Same rule as

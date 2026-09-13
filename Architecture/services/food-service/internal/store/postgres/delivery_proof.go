@@ -54,11 +54,25 @@ func (s *Store) EnsureDeliveryCodes(ctx context.Context, orderID uuid.UUID) (pic
 	return pickup, delivery, nil
 }
 
+// MaxPickupCodeAttempts is how many wrong pickup codes one assignment takes
+// before VerifyPickupCode refuses every further try. Like the delivery code it
+// is four digits, so without a cap a kitchen terminal could walk it.
+const MaxPickupCodeAttempts = 5
+
+// ErrPickupCodeLocked: the assignment took MaxPickupCodeAttempts wrong pickup
+// codes. HTTP 429 FOOD_PICKUP_CODE_ATTEMPTS_EXCEEDED.
+var ErrPickupCodeLocked = errors.New("too many wrong pickup codes for this assignment")
+
 // VerifyPickupCode is the restaurant-side OTP check. The partner reads
 // the OTP off their screen and the restaurant agent (or the restaurant
 // terminal) submits it here.
 //
 // Sets pickup_verified_at + transitions order to PICKED_UP.
+//
+// Only the restaurant's owner may verify (anyone else gets pgx.ErrNoRows and
+// is not counted), only while the rider holds an accepted job, and only while
+// fewer than MaxPickupCodeAttempts wrong codes were entered; a wrong code is
+// counted and committed before the refusal is returned.
 func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID, code string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -67,14 +81,15 @@ func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID
 	defer tx.Rollback(ctx)
 	var storedCode, restaurantID, assignmentStatus, orderStatus string
 	var partnerID *uuid.UUID
+	var failed int
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(da.pickup_code, ''), o.restaurant_id::text, da.status::text,
-			da.delivery_partner_id, o.status::text
+			da.delivery_partner_id, o.status::text, da.pickup_code_failed_attempts
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.order_id = $1
 		FOR UPDATE OF da
-	`, orderID).Scan(&storedCode, &restaurantID, &assignmentStatus, &partnerID, &orderStatus); err != nil {
+	`, orderID).Scan(&storedCode, &restaurantID, &assignmentStatus, &partnerID, &orderStatus, &failed); err != nil {
 		return err
 	}
 	var owned int
@@ -99,7 +114,20 @@ func (s *Store) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID
 	default:
 		return fmt.Errorf("%w: assignment is %s", ErrAssignmentNotReady, assignmentStatus)
 	}
+	if failed >= MaxPickupCodeAttempts {
+		return ErrPickupCodeLocked
+	}
 	if !codeMatches(storedCode, code) {
+		if _, err := tx.Exec(ctx, `
+			UPDATE food.delivery_assignments
+			SET pickup_code_failed_attempts = pickup_code_failed_attempts + 1
+			WHERE order_id = $1
+		`, orderID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
 		return ErrDeliveryCodeInvalid
 	}
 	if _, err := tx.Exec(ctx, `

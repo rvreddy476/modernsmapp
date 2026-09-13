@@ -41,3 +41,17 @@ func PickupCodeVisible(assignmentStatus, orderStatus string) bool {
 func DeliveryCodeVisible(orderStatus string) bool {
 	return orderStatus == orderstate.PickedUp || orderStatus == orderstate.OutForDelivery
 }
+
+// ETAVisible reports whether the customer's order detail and tracking may
+// carry eta_at / eta_source: only while the order can still arrive. A
+// delivered, cancelled, rejected, failed or refunded order has no arrival to
+// promise, and showing the last estimate would read as one.
+func ETAVisible(orderStatus string) bool {
+	switch orderStatus {
+	case orderstate.Placed, orderstate.PaymentPending, orderstate.Confirmed, orderstate.Preparing,
+		orderstate.ReadyForPickup, orderstate.DeliveryAssigning, orderstate.DeliveryAssigned,
+		orderstate.PickedUp, orderstate.OutForDelivery:
+		return true
+	}
+	return false
+}

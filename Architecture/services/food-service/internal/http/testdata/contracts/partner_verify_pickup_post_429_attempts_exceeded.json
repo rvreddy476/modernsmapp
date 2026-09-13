@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_PICKUP_CODE_ATTEMPTS_EXCEEDED",
+    "message": "too many wrong pickup codes for this assignment"
+  },
+  "meta": {}
+}

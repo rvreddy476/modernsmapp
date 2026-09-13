@@ -1910,3 +1910,24 @@ CREATE INDEX IF NOT EXISTS ix_food_delivery_locations_recorded_at
 CREATE INDEX IF NOT EXISTS ix_food_delivery_tracking_location_pings
     ON food.delivery_tracking_events(created_at)
     WHERE note = 'location update';
+
+-- B6: routing and ETA.
+--
+-- eta_at: when the food is expected at the customer's door. Written at
+-- placement (prep + restaurant-to-customer) and recomputed from rider pings.
+-- eta_source: 'google' when every leg came from the Routes API, 'haversine'
+-- when any leg was the straight-line estimate.
+-- eta_computed_at: when the ETA was last claimed for recomputation. The claim
+-- is a guarded UPDATE (at most once per order per 60 s), so the throttle holds
+-- across replicas; the write-back is guarded on the same value, so a slow
+-- replica cannot overwrite a newer estimate.
+ALTER TABLE food.orders
+    ADD COLUMN IF NOT EXISTS eta_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS eta_source VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS eta_computed_at TIMESTAMPTZ;
+
+-- B6 security: wrong pickup codes are counted per assignment and the verify
+-- refuses after five (store.MaxPickupCodeAttempts), exactly as the delivery
+-- code does.
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS pickup_code_failed_attempts INT NOT NULL DEFAULT 0;

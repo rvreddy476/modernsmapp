@@ -191,6 +191,11 @@ type Order struct {
 	// DeliveryCode is the customer's drop-off OTP, on order detail only and
 	// only while DeliveryCodeVisible (PICKED_UP / OUT_FOR_DELIVERY).
 	DeliveryCode string `json:"delivery_code,omitempty"`
+	// ETAAt (RFC 3339, UTC) is when the food is expected at the door and
+	// ETASource is "google" or "haversine" (B6). On order detail only, while
+	// ETAVisible.
+	ETAAt     string `json:"eta_at,omitempty"`
+	ETASource string `json:"eta_source,omitempty"`
 }
 
 type WalletPaymentChargeDetails struct {

@@ -16,13 +16,21 @@ func (s *Store) GetOrderTracking(ctx context.Context, userID, orderID uuid.UUID)
 	var orderNumber, status string
 	var restaurantSnapshot, deliverySnapshot []byte
 	var etaMins int
+	var etaAt *time.Time
+	var etaSource string
 	if err := s.db.QueryRow(ctx, `
 		SELECT order_number, status::text, restaurant_address_snapshot,
-			delivery_address_snapshot, COALESCE(estimated_delivery_minutes, 0)
+			delivery_address_snapshot, COALESCE(estimated_delivery_minutes, 0),
+			eta_at, COALESCE(eta_source, '')
 		FROM food.orders
 		WHERE id = $1 AND user_id = $2
-	`, orderID, userID).Scan(&orderNumber, &status, &restaurantSnapshot, &deliverySnapshot, &etaMins); err != nil {
+	`, orderID, userID).Scan(&orderNumber, &status, &restaurantSnapshot, &deliverySnapshot, &etaMins, &etaAt, &etaSource); err != nil {
 		return nil, err
+	}
+	// B6: eta_at / eta_source are null unless the order can still arrive.
+	var etaAtOut, etaSourceOut any
+	if etaAt != nil && validETASource(etaSource) && ETAVisible(status) {
+		etaAtOut, etaSourceOut = FormatETA(*etaAt), etaSource
 	}
 
 	assignment, _ := s.assignmentForOrder(ctx, orderID)
@@ -42,6 +50,8 @@ func (s *Store) GetOrderTracking(ctx context.Context, userID, orderID uuid.UUID)
 		"delivery_location":          deliveryLocation,
 		"customer_location":          locationFromJSON(deliverySnapshot),
 		"estimated_delivery_minutes": etaMins,
+		"eta_at":                     etaAtOut,
+		"eta_source":                 etaSourceOut,
 	}, nil
 }
 
@@ -88,6 +98,11 @@ type LocationUpdate struct {
 type RiderLocationFrame struct {
 	OrderID      uuid.UUID
 	AssignmentID uuid.UUID
+	// ETAAt / ETASource are the order's stored ETA when the ping was taken
+	// (B6); the service replaces them with a fresh one when this ping
+	// recomputed it.
+	ETAAt     *time.Time
+	ETASource string
 }
 
 // DeliveryLocationResult is the POST /v1/food/delivery/location response.
@@ -108,11 +123,15 @@ type DeliveryLocationResult struct {
 	// For the service's live fan-out; never serialised.
 	RecordedAtTime time.Time            `json:"-"`
 	Frames         []RiderLocationFrame `json:"-"`
+	// ETAJobs are the orders this ping claimed for ETA recomputation (B6).
+	ETAJobs []ETAJob `json:"-"`
 }
 
 type activeAssignment struct {
 	id, orderID                   uuid.UUID
 	assignmentStatus, orderStatus string
+	etaAt                         *time.Time
+	etaSource                     string
 }
 
 // UpdateDeliveryLocation records a ping, writes a tracking event on EVERY
@@ -157,7 +176,7 @@ func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT da.id, da.order_id, da.status::text, o.status::text
+		SELECT da.id, da.order_id, da.status::text, o.status::text, o.eta_at, COALESCE(o.eta_source, '')
 		FROM food.delivery_assignments da
 		JOIN food.orders o ON o.id = da.order_id
 		WHERE da.delivery_partner_id = $1
@@ -170,7 +189,7 @@ func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in
 	var active []activeAssignment
 	for rows.Next() {
 		var a activeAssignment
-		if err := rows.Scan(&a.id, &a.orderID, &a.assignmentStatus, &a.orderStatus); err != nil {
+		if err := rows.Scan(&a.id, &a.orderID, &a.assignmentStatus, &a.orderStatus, &a.etaAt, &a.etaSource); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -197,10 +216,20 @@ func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in
 		if !RiderLocationShareable(a.assignmentStatus, a.orderStatus) {
 			continue
 		}
+		// B6: the ETA recompute claim, at most once per order per
+		// ETARecomputeInterval on every replica. Independent of the frame
+		// throttle below; a fresh ETA rides the next frame that goes out.
+		job, err := claimOrderETATx(ctx, tx, a)
+		if err != nil {
+			return nil, err
+		}
+		if job != nil {
+			res.ETAJobs = append(res.ETAJobs, *job)
+		}
 		// The throttle claim: succeeds for at most one ping per order per
 		// RiderLocationMinInterval, on every replica.
 		var claimed bool
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			UPDATE food.delivery_assignments
 			SET location_published_at = NOW()
 			WHERE id = $1
@@ -214,7 +243,7 @@ func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in
 		if err != nil {
 			return nil, err
 		}
-		res.Frames = append(res.Frames, RiderLocationFrame{OrderID: a.orderID, AssignmentID: a.id})
+		res.Frames = append(res.Frames, RiderLocationFrame{OrderID: a.orderID, AssignmentID: a.id, ETAAt: a.etaAt, ETASource: a.etaSource})
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
