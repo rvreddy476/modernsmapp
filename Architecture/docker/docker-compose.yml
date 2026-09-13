@@ -1543,7 +1543,12 @@ services:
       context: ..
       dockerfile: services/food-service/Dockerfile
     environment:
+      <<: *redis_client_env
       HTTP_PORT: "8113"
+      # Realtime (order tracking, kitchen queue, rider offers) is published to
+      # Redis Streams, which notification-service's SSE reads. Without it the
+      # token route answers 503 and every live event is dropped.
+      REDIS_ADDR: redis:6379
       POSTGRES_DSN: *app_postgres_dsn
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       MONETIZATION_SERVICE_URL: http://monetization-service:8099
@@ -1578,6 +1583,8 @@ services:
       - "8113:8113"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     deploy:
       resources:
