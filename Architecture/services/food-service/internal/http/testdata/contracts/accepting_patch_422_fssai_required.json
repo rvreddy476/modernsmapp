@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_FSSAI_REQUIRED",
+    "message": "restaurant requires an approved, unexpired FSSAI document"
+  },
+  "meta": {}
+}

@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_OPERATING_HOURS_DAY_INVALID",
+    "message": "day_of_week must be 0 (Sunday) to 6 (Saturday)",
+    "details": {
+      "field": "windows[0].day_of_week"
+    }
+  },
+  "meta": {}
+}

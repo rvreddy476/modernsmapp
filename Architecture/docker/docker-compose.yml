@@ -1554,6 +1554,15 @@ services:
       # the reason recorded in commerce-service's block below: a client that
       # defaults to a host name compose does not have fails silently forever.
       IDENTITY_AUTH_URL: http://identity-auth:8081
+      # food-service refuses to start when ENV is blank or anything other than
+      # local/dev/development AND a production secret is missing: the
+      # payments service-token key (FOOD_SERVICE_TOKEN_KEY) and the PII
+      # sealing keys (FOOD_PII_KEYS, FOOD_PII_LOOKUP_SALT). A blank ENV counts
+      # as production on purpose. This dev stack sets neither secret, so ENV
+      # must say dev: payments fall back to the internal key, and the PII
+      # routes (restaurant PAN, payout accounts) answer 503
+      # PII_NOT_CONFIGURED rather than writing plaintext.
+      ENV: dev
     ports:
       - "8113:8113"
     depends_on:

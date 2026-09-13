@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PII_NOT_CONFIGURED",
+    "message": "identity and bank details cannot be accepted until encryption keys are configured"
+  },
+  "meta": {}
+}

@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_GSTIN_PAN_MISMATCH",
+    "message": "the PAN inside gstin does not match pan",
+    "details": {
+      "field": "gstin"
+    }
+  },
+  "meta": {}
+}

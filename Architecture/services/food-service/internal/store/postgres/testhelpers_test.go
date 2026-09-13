@@ -33,6 +33,19 @@ func requireTestDatabase(dsn string) error {
 // food schema first so a fresh test container is fully ready. Skips
 // the test if TEST_PG_DSN is unset (CI runs unit-only).
 //
+// RUN INTEGRATION PACKAGES ONE AT A TIME:
+//
+//	go test -p 1 -count=1 ./internal/store/postgres/ ./internal/service/ ./internal/http/
+//
+// Every integration package seeds and truncates the same tables in the one
+// scratch database. With Go's default package parallelism, tests in
+// different packages collide mid-fixture and fail with `deadlock detected`
+// (40P01) or `current transaction is aborted` (25P02) — observed 13 Sep 2026.
+// Each package passes on its own and all pass under -p 1. This is test
+// isolation, not a product bug. The schema bootstrap itself IS safe to run
+// concurrently: BootstrapSchema holds food-service's advisory lock, pinned by
+// TestBootstrapSchemaSurvivesConcurrentBooters.
+//
 // Mirrors rider-service/internal/store/testhelpers_test.go.
 func foodTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()

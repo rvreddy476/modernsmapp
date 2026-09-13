@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_BODY",
+    "message": "request body is not valid JSON for this route"
+  },
+  "meta": {}
+}

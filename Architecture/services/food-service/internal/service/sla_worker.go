@@ -19,12 +19,19 @@ func (s *Service) StartSLAAutoRejectWorker(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	slog.Info("food-service: SLA auto-reject worker started")
+	tick := 0
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("food-service: SLA auto-reject worker stopped")
 			return
 		case <-ticker.C:
+			// Wave 1 B1: once a minute, pause restaurants whose approved
+			// FSSAI licence has expired and announce each one.
+			if tick%fssaiExpiryEveryTicks == 0 {
+				s.runFSSAIExpiryPass(ctx)
+			}
+			tick++
 			n, err := s.AutoRejectSLAExpiredOrders(ctx)
 			if err != nil {
 				slog.Warn("food-service: auto-reject pass failed", "error", err)
@@ -34,5 +41,20 @@ func (s *Service) StartSLAAutoRejectWorker(ctx context.Context) {
 				slog.Info("food-service: auto-rejected SLA-breached orders", "count", n)
 			}
 		}
+	}
+}
+
+// fssaiExpiryEveryTicks runs the FSSAI expiry pass on every 4th 15-second
+// tick: once a minute, starting with the first tick.
+const fssaiExpiryEveryTicks = 4
+
+func (s *Service) runFSSAIExpiryPass(ctx context.Context) {
+	n, err := s.PauseExpiredFSSAIRestaurants(ctx)
+	if err != nil {
+		slog.Warn("food-service: FSSAI expiry pass failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("food-service: paused restaurants with expired FSSAI licences", "count", n)
 	}
 }

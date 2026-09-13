@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_REJECTION_REASON_REQUIRED",
+    "message": "reason is required when rejecting a document",
+    "details": {
+      "field": "reason"
+    }
+  },
+  "meta": {}
+}

@@ -256,9 +256,9 @@ func (s *Store) ReportCompliance(ctx context.Context) ([]ComplianceReportRow, er
 			EXISTS(
 				SELECT 1 FROM food.restaurant_documents
 				WHERE restaurant_id = r.id
-				  AND lower(document_type) LIKE '%fssai%'
+				  AND document_type = 'FSSAI'
 				  AND status = 'APPROVED'
-				  AND (expires_at IS NULL OR expires_at > NOW())
+				  AND expires_at IS NOT NULL AND expires_at > NOW()
 			) AS has_fssai,
 			COALESCE((SELECT COUNT(*) FROM food.restaurant_documents
 				WHERE restaurant_id = r.id

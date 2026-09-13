@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/database"
+	"github.com/atpost/food-service/internal/foodpii"
 	foodhttp "github.com/atpost/food-service/internal/http"
 	"github.com/atpost/food-service/internal/payments"
+	"github.com/atpost/food-service/internal/payout"
 	"github.com/atpost/food-service/internal/service"
 	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
@@ -82,6 +84,30 @@ func main() {
 		WithRoleIntents(identityroles.NewOutbox("", "food-service")).
 		WithOrderingConfig(orderingCfg)
 	svc := service.New(store)
+
+	// Wave 1 B1/B2: restaurant PAN and payout-account sealing. FOOD_PII_KEYS
+	// ("v1:<base64 32-byte key>[,v2:<key>]") and FOOD_PII_LOOKUP_SALT are
+	// required unless ENV is local/dev/development; locally without them the
+	// compliance and payout-account routes answer 503 PII_NOT_CONFIGURED
+	// instead of ever writing plaintext.
+	piiCrypto, err := foodpii.FromEnv(ctx, os.Getenv)
+	if err != nil {
+		slog.Error("food-service: PII sealing is not configured", "error", err)
+		os.Exit(1)
+	}
+	if piiCrypto == nil {
+		slog.Warn("food-service: FOOD_PII_KEYS / FOOD_PII_LOOKUP_SALT unset (local/dev) — " +
+			"compliance and payout-account routes answer 503 PII_NOT_CONFIGURED")
+	}
+	svc.WithPII(piiCrypto)
+	// FOOD_PENNY_DROP_ENABLED defaults false: payout accounts stay NOT_VERIFIED
+	// (verification_pending_ops). Payouts are off; nothing calls a transfer.
+	bankVerifier, err := payout.VerifierFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("food-service: bank verifier", "error", err)
+		os.Exit(1)
+	}
+	svc.WithBankVerifier(bankVerifier)
 
 	// Payments-service client: food-service's own Ed25519 service token
 	// (FOOD_SERVICE_TOKEN_KEY / FOOD_SERVICE_TOKEN_KID). Without a key it

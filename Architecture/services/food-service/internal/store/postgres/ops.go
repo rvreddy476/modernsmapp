@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/food-service/internal/onboarding"
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/atpost/shared/identityroles"
 	"github.com/google/uuid"
@@ -31,7 +32,7 @@ func (s *Store) CreatePartnerRestaurant(ctx context.Context, ownerID uuid.UUID, 
 		INSERT INTO food.restaurant_partners (
 			owner_user_id, legal_name, display_name, phone, email, status
 		)
-		VALUES ($1, $2, $3, $4, $5, 'PENDING_REVIEW')
+		VALUES ($1, $2, $3, $4, $5, 'DRAFT')
 		RETURNING id
 	`, ownerID, legalName, in.DisplayName, in.Phone, in.Email).Scan(&partnerID); err != nil {
 		return nil, err
@@ -48,14 +49,18 @@ func (s *Store) CreatePartnerRestaurant(ctx context.Context, ownerID uuid.UUID, 
 			status, address_line1, address_line2, city, state, postal_code,
 			latitude, longitude, min_order_amount, packaging_fee
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING_REVIEW',$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,'DRAFT',$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		RETURNING id
 	`, partnerID, ownerID, in.Name, slug, in.Description, in.Phone, in.Email,
 		in.AddressLine1, in.AddressLine2, in.City, in.State, in.PostalCode,
 		in.Latitude, in.Longitude, in.MinOrderAmount, in.PackagingFee).Scan(&restaurantID); err != nil {
 		return nil, err
 	}
-	// The role is granted HERE, at PENDING_REVIEW — not at approval. See
+	// Wave 1 B1: a new restaurant (and its partner row) starts in DRAFT and
+	// reaches PENDING_REVIEW only through SubmitRestaurantForReview, once
+	// every onboarding step exists. The owner still needs the partner area to
+	// complete those steps, so the role is granted HERE, at creation — not at
+	// approval. See
 	// identity_roles.go for why, and note the intent commits with the partner
 	// row, so an identity outage delays the grant but cannot lose it.
 	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, ownerID,
@@ -161,23 +166,24 @@ func (s *Store) AddRestaurantDocument(ctx context.Context, ownerID, restaurantID
 	if documentType == "" {
 		return nil, fmt.Errorf("document_type is required")
 	}
-	var mediaID any
+	// The licence gates match document_type exactly FSSAI; that document is
+	// written only by SubmitRestaurantFSSAI, which validates the number and
+	// the expiry. Letting it in here would skip both.
+	if strings.EqualFold(documentType, DocumentTypeFSSAI) {
+		return nil, &onboarding.FieldError{Code: onboarding.CodeFSSAIUseDedicatedRoute, Field: "document_type",
+			Message: "submit the FSSAI licence through PUT /v1/food/partner/restaurants/:id/fssai"}
+	}
+	var mediaID *uuid.UUID
 	if raw := stringValue(input, "media_id", ""); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
 			return nil, fmt.Errorf("invalid media_id")
 		}
-		mediaID = id
+		mediaID = &id
 	}
-	var id uuid.UUID
-	if err := s.db.QueryRow(ctx, `
-		INSERT INTO food.restaurant_documents (
-			restaurant_id, document_type, document_number, media_id, file_url
-		)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id
-	`, restaurantID, documentType, emptyToNil(stringValue(input, "document_number", "")),
-		mediaID, emptyToNil(stringValue(input, "file_url", ""))).Scan(&id); err != nil {
+	id, err := insertRestaurantDocument(ctx, s.db, restaurantID, documentType,
+		stringValue(input, "document_number", ""), mediaID, stringValue(input, "file_url", ""), nil)
+	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"id": id, "restaurant_id": restaurantID, "document_type": documentType, "status": "PENDING"}, nil
@@ -855,6 +861,18 @@ func (s *Store) AdminApproveRestaurant(ctx context.Context, adminID, restaurantI
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Approval makes the restaurant ACTIVE and accepting orders, so it needs
+	// the same licence gate as the status setter: an APPROVED document of type
+	// exactly FSSAI that has not expired.
+	if approve {
+		ok, err := hasApprovedFSSAI(ctx, tx, restaurantID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrFSSAIRequired
+		}
+	}
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		UPDATE food.restaurants
@@ -926,24 +944,16 @@ func (s *Store) AdminSetRestaurantStatus(ctx context.Context, adminID, restauran
 	}
 	defer tx.Rollback(ctx)
 	// P0.6 — FSSAI gate. A restaurant cannot be moved to ACTIVE unless
-	// it has an APPROVED FSSAI document that has not yet expired.
-	// Document types are matched case-insensitively against `fssai`
-	// because the upload UI lets sellers free-text the type.
+	// it has an APPROVED FSSAI document that has not yet expired. Wave 1 B1
+	// tightened the match to document_type = 'FSSAI' exactly (written only
+	// by the validated FSSAI route) and requires an expiry to be set.
 	if status == "ACTIVE" {
-		var ok bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM food.restaurant_documents
-				WHERE restaurant_id = $1
-				  AND lower(document_type) LIKE '%fssai%'
-				  AND status = 'APPROVED'
-				  AND (expires_at IS NULL OR expires_at > NOW())
-			)
-		`, restaurantID).Scan(&ok); err != nil {
+		ok, err := hasApprovedFSSAI(ctx, tx, restaurantID)
+		if err != nil {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("fssai compliance: restaurant requires an approved, non-expired FSSAI document before going live")
+			return ErrFSSAIRequired
 		}
 	}
 	tag, err := tx.Exec(ctx, `

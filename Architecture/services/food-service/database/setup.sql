@@ -1625,3 +1625,83 @@ CREATE INDEX IF NOT EXISTS idx_identity_role_intents_pending
 CREATE INDEX IF NOT EXISTS idx_identity_role_intents_dead
     ON identity_role_intents (dead_lettered_at)
     WHERE dead_lettered_at IS NOT NULL;
+
+-- ============================================================
+-- WAVE 1 B1 + B2: RESTAURANT ONBOARDING AND PAYOUT ACCOUNTS
+-- ============================================================
+--
+-- Onboarding columns on food.restaurants. The PAN is stored ONLY sealed
+-- (shared/pii scope food.restaurant_pan) with an exact-match lookup hash and
+-- a masked form; no column holds it in clear. gstin (added by G4.2 above) is
+-- written normalised by PUT .../compliance.
+ALTER TABLE food.restaurants
+    ADD COLUMN IF NOT EXISTS tax_category TEXT,
+    ADD COLUMN IF NOT EXISTS specified_premises_declared_at DATE,
+    ADD COLUMN IF NOT EXISTS legal_name VARCHAR(200),
+    ADD COLUMN IF NOT EXISTS gstin_state_code TEXT,
+    ADD COLUMN IF NOT EXISTS pan_sealed BYTEA,
+    ADD COLUMN IF NOT EXISTS pan_key_version INT,
+    ADD COLUMN IF NOT EXISTS pan_lookup TEXT,
+    ADD COLUMN IF NOT EXISTS pan_masked TEXT,
+    ADD COLUMN IF NOT EXISTS pan_holder_type TEXT,
+    ADD COLUMN IF NOT EXISTS fssai_licence_number TEXT,
+    ADD COLUMN IF NOT EXISTS fssai_expires_at DATE,
+    ADD COLUMN IF NOT EXISTS google_place_id TEXT,
+    ADD COLUMN IF NOT EXISTS compliance_submitted_at TIMESTAMPTZ;
+
+-- The restaurant tax categories of shared/gst (rows supplied by the
+-- RESTAURANT). TestSetupSQLTaxCategoryCheckMatchesRateTable fails when this
+-- list and gst.DefaultRateTable() drift. Dropped and re-added so a changed
+-- list takes effect on the next boot.
+ALTER TABLE food.restaurants DROP CONSTRAINT IF EXISTS ck_food_restaurant_tax_category;
+ALTER TABLE food.restaurants ADD CONSTRAINT ck_food_restaurant_tax_category
+    CHECK (tax_category IS NULL OR tax_category IN ('CLOUD_KITCHEN_TAKEAWAY','OUTDOOR_CATERING','OUTDOOR_CATERING_SPECIFIED_PREMISES','RESTAURANT_SPECIFIED_PREMISES','RESTAURANT_STANDALONE'));
+
+-- A sealed PAN is all or nothing: blob, key version, lookup hash and mask.
+ALTER TABLE food.restaurants DROP CONSTRAINT IF EXISTS ck_food_restaurant_pan_sealed;
+ALTER TABLE food.restaurants ADD CONSTRAINT ck_food_restaurant_pan_sealed
+    CHECK (
+        (pan_sealed IS NULL AND pan_key_version IS NULL AND pan_lookup IS NULL AND pan_masked IS NULL)
+        OR (pan_sealed IS NOT NULL AND pan_key_version > 0 AND pan_lookup IS NOT NULL AND pan_masked IS NOT NULL)
+    );
+
+CREATE INDEX IF NOT EXISTS ix_food_restaurants_pan_lookup
+    ON food.restaurants(pan_lookup) WHERE pan_lookup IS NOT NULL;
+
+-- The licence gates (approval, status ACTIVE, accepting orders, the expiry
+-- worker) all look for an APPROVED document of type exactly 'FSSAI'.
+CREATE INDEX IF NOT EXISTS ix_food_restaurant_documents_fssai
+    ON food.restaurant_documents(restaurant_id, expires_at)
+    WHERE document_type = 'FSSAI' AND status = 'APPROVED';
+
+-- Payout accounts for restaurants and delivery partners. The account number
+-- is sealed (scope food.payout_account) with a lookup hash (domain
+-- bank_account); only the last four digits are in clear. Payouts are OFF:
+-- nothing reads account_sealed, and verification stays NOT_VERIFIED while
+-- FOOD_PENNY_DROP_ENABLED is false.
+CREATE TABLE IF NOT EXISTS food.payout_accounts (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_type          TEXT NOT NULL CHECK (owner_type IN ('RESTAURANT','DELIVERY_PARTNER')),
+    owner_id            UUID NOT NULL,
+    holder_name         VARCHAR(200) NOT NULL,
+    account_sealed      BYTEA NOT NULL,
+    key_version         INT NOT NULL CHECK (key_version > 0),
+    account_lookup      TEXT NOT NULL,
+    account_last4       TEXT NOT NULL CHECK (account_last4 ~ '^[0-9]{4}$'),
+    ifsc                TEXT NOT NULL CHECK (ifsc ~ '^[A-Z]{4}0[A-Z0-9]{6}$'),
+    verification_status TEXT NOT NULL DEFAULT 'NOT_VERIFIED'
+                        CHECK (verification_status IN ('NOT_VERIFIED','PENDING','VERIFIED','FAILED')),
+    verification_reason TEXT,
+    verified_name       TEXT,
+    verified_at         TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_food_payout_accounts_owner UNIQUE (owner_type, owner_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_food_payout_accounts_lookup ON food.payout_accounts(account_lookup);
+
+DROP TRIGGER IF EXISTS trg_payout_accounts_updated_at ON food.payout_accounts;
+CREATE TRIGGER trg_payout_accounts_updated_at
+BEFORE UPDATE ON food.payout_accounts
+FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();

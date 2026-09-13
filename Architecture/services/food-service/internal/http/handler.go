@@ -198,6 +198,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			admin.GET("/reports/orders", h.AdminOrderReport)
 			admin.GET("/reports/revenue", h.AdminRevenueReport)
 		}
+
+		// Wave 1 B1/B2: onboarding, FSSAI, payout accounts. See handler_onboarding.go.
+		h.registerOnboardingRoutes(partner, delivery, admin)
 	}
 }
 
@@ -955,6 +958,12 @@ func (h *Handler) AddRestaurantDocument(c *gin.Context) {
 	}
 	document, err := h.svc.AddRestaurantDocument(c.Request.Context(), userID, restaurantID, body)
 	if err != nil {
+		// Aadhaar-shaped numbers, generic FSSAI uploads and non-owners get
+		// their specific answer; never echo a refused document number.
+		if isOnboardingError(err) {
+			writeOnboardingError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_RESTAURANT_DOCUMENT_FAILED", err.Error(), nil)
 		return
 	}
@@ -1564,6 +1573,10 @@ func (h *Handler) adminRestaurantReview(c *gin.Context, approve bool) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	if err := h.svc.AdminApproveRestaurant(c.Request.Context(), adminID, restaurantID, approve, body.Reason); err != nil {
+		if errors.Is(err, postgres.ErrFSSAIRequired) {
+			writeOnboardingError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ADMIN_RESTAURANT_REVIEW_FAILED", err.Error(), nil)
 		return
 	}
@@ -1588,6 +1601,10 @@ func (h *Handler) AdminSetRestaurantStatus(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AdminSetRestaurantStatus(c.Request.Context(), adminID, restaurantID, body.Status, body.Reason); err != nil {
+		if errors.Is(err, postgres.ErrFSSAIRequired) {
+			writeOnboardingError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ADMIN_RESTAURANT_STATUS_FAILED", err.Error(), nil)
 		return
 	}

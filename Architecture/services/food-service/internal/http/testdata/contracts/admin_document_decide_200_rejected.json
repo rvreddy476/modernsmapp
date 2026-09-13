@@ -1,0 +1,16 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0004",
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "document_type": "FSSAI",
+    "document_number": "10099999000000",
+    "media_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0007",
+    "status": "REJECTED",
+    "rejection_reason": "Licence photo is unreadable",
+    "expires_at": "2027-03-30T18:30:00Z",
+    "verified_by": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0003",
+    "verified_at": "2026-09-13T06:30:00Z",
+    "created_at": "2026-09-13T06:30:00Z"
+  },
+  "meta": {}
+}

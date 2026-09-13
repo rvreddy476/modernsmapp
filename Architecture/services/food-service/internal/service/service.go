@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/food-service/internal/foodpii"
+	"github.com/atpost/food-service/internal/onboarding"
 	"github.com/atpost/food-service/internal/payments"
+	"github.com/atpost/food-service/internal/payout"
 	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/outbox"
@@ -172,6 +175,22 @@ type Store interface {
 	AdminAuditLogs(ctx context.Context, page postgres.Pagination) ([]map[string]any, error)
 	AdminOrderReport(ctx context.Context) (map[string]any, error)
 	AdminRevenueReport(ctx context.Context) (map[string]any, error)
+
+	// Wave 1 B1 restaurant onboarding.
+	SetRestaurantCompliance(ctx context.Context, ownerID, restaurantID uuid.UUID, rec postgres.ComplianceRecord) (*postgres.RestaurantCompliance, error)
+	SetRestaurantLocation(ctx context.Context, ownerID, restaurantID uuid.UUID, loc onboarding.ValidatedLocation) (*postgres.RestaurantLocation, error)
+	ReplaceOperatingHours(ctx context.Context, ownerID, restaurantID uuid.UUID, in []postgres.OperatingHoursInput) (*postgres.OperatingHours, error)
+	SetRestaurantAccepting(ctx context.Context, ownerID, restaurantID uuid.UUID, accepting bool) (*postgres.RestaurantAccepting, error)
+	SubmitRestaurantFSSAI(ctx context.Context, ownerID, restaurantID uuid.UUID, v onboarding.ValidatedFSSAI) (*postgres.RestaurantFSSAI, error)
+	SubmitRestaurantForReview(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.RestaurantSubmission, error)
+	AdminDecideRestaurantDocument(ctx context.Context, adminID, restaurantID, documentID uuid.UUID, decision, reason string) (*postgres.RestaurantDocument, error)
+	PauseRestaurantsWithExpiredFSSAI(ctx context.Context, limit int) ([]uuid.UUID, error)
+
+	// Wave 1 B2 payout accounts.
+	UpsertRestaurantPayoutAccount(ctx context.Context, ownerUserID, restaurantID uuid.UUID, rec postgres.PayoutAccountRecord) (*postgres.PayoutAccount, error)
+	GetRestaurantPayoutAccount(ctx context.Context, ownerUserID, restaurantID uuid.UUID) (*postgres.PayoutAccount, error)
+	UpsertDeliveryPartnerPayoutAccount(ctx context.Context, userID uuid.UUID, rec postgres.PayoutAccountRecord) (*postgres.PayoutAccount, error)
+	GetDeliveryPartnerPayoutAccount(ctx context.Context, userID uuid.UUID) (*postgres.PayoutAccount, error)
 }
 
 type Service struct {
@@ -192,6 +211,11 @@ type Service struct {
 	// restaurant whose latest location ping is newer than dispatchLocationMaxAge.
 	dispatchRadiusKM       float64
 	dispatchLocationMaxAge time.Duration
+	// Onboarding (onboarding.go): pii nil means the PII routes answer 503;
+	// bankVerifier nil means payout.DisabledVerifier.
+	pii           *foodpii.Crypto
+	bankVerifier  payout.BankVerifier
+	onboardingNow func() time.Time
 }
 
 // realtimePublisher is the part of *realtime.Publisher the service uses; an

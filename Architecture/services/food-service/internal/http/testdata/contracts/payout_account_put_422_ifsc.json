@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "INVALID_IFSC",
+    "message": "ifsc is not a well-formed IFSC",
+    "details": {
+      "field": "ifsc"
+    }
+  },
+  "meta": {}
+}

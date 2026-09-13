@@ -1,0 +1,16 @@
+{
+  "data": {
+    "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "latitude": 12.9716,
+    "longitude": 77.5946,
+    "address_line1": "1 Test Lane",
+    "address_line2": "Near Test Park",
+    "city": "Bengaluru",
+    "state": "Karnataka",
+    "postal_code": "560001",
+    "google_place_id": "ChIJtestplace0001",
+    "delivery_radius_km": 6.5,
+    "service_area_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0005"
+  },
+  "meta": {}
+}
