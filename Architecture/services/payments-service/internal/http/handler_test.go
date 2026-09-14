@@ -39,18 +39,45 @@ type fakeService struct {
 	listFilters  []postgres.NeedsAttentionFilter
 	resolveCalls []postgres.ResolveRefundInput
 	resolveErr   error
+
+	// Application registry (applications_test.go).
+	apps        map[string]*postgres.Application
+	puts        []postgres.PutApplicationInput
+	txFilters   []postgres.TransactionFilter
+	initiations []service.InitiateInput
 }
 
 func newFake() *fakeService {
-	return &fakeService{intents: map[uuid.UUID]*postgres.PaymentIntent{}, applied: map[string]bool{}}
+	return &fakeService{
+		intents: map[uuid.UUID]*postgres.PaymentIntent{},
+		applied: map[string]bool{},
+		apps: map[string]*postgres.Application{
+			"mstore": {Key: "mstore", DisplayName: "MStore", Status: "active", MerchantDisplayName: "Momentum Merchant",
+				EnabledMethods: []string{"card", "upi"}, Settings: []byte(`{}`)},
+			"feast": {Key: "feast", DisplayName: "Feast", Status: "active", MerchantDisplayName: "Momentum Merchant",
+				EnabledMethods: []string{"card", "upi"}, Settings: []byte(`{}`)},
+		},
+	}
 }
 
+// InitiatePayment applies the service's registry gate (exists, active, method)
+// the way service.requireApplicationForPayment does.
 func (f *fakeService) InitiatePayment(_ context.Context, in service.InitiateInput) (*postgres.PaymentIntent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.initiations = append(f.initiations, in)
+	app, ok := f.apps[in.ApplicationID]
+	switch {
+	case !ok:
+		return nil, service.ErrApplicationUnknown
+	case !app.Active():
+		return nil, service.ErrApplicationDisabled
+	case !app.MethodEnabled(in.Method):
+		return nil, service.ErrMethodNotEnabledForApplication
+	}
 	p := &postgres.PaymentIntent{ID: uuid.New(), PayerID: in.PayerID, PayeeID: in.PayeeID, Status: "pending",
 		ReferenceType: in.ReferenceType, ReferenceID: in.ReferenceID, AmountMinorRaw: in.AmountMinor,
-		ProviderRef: "order_stub_1", OwnerDomain: in.OwnerDomain}
+		ProviderRef: "order_stub_1", OwnerDomain: in.OwnerDomain, ApplicationID: in.ApplicationID, Channel: in.Channel}
 	f.intents[p.ID] = p
 	return p, nil
 }
@@ -73,19 +100,19 @@ func (f *fakeService) GetIntentForActor(ctx context.Context, id, actor uuid.UUID
 	}
 	return p, nil
 }
-func (f *fakeService) ListByReference(_ context.Context, _ string, refID uuid.UUID) ([]postgres.PaymentIntent, error) {
+func (f *fakeService) ListByReference(_ context.Context, _ string, refID uuid.UUID, appID string) ([]postgres.PaymentIntent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []postgres.PaymentIntent
 	for _, p := range f.intents {
-		if p.ReferenceID == refID {
+		if p.ReferenceID == refID && (appID == "" || p.ApplicationID == appID) {
 			out = append(out, *p)
 		}
 	}
 	return out, nil
 }
 func (f *fakeService) ListByReferenceForActor(ctx context.Context, refType string, refID, actor uuid.UUID) ([]postgres.PaymentIntent, error) {
-	all, _ := f.ListByReference(ctx, refType, refID)
+	all, _ := f.ListByReference(ctx, refType, refID, "")
 	var out []postgres.PaymentIntent
 	for i := range all {
 		if service.IsParty(&all[i], actor) {
@@ -104,16 +131,24 @@ func (f *fakeService) VerifyIntent(_ context.Context, id uuid.UUID, _, _, _ stri
 	}
 	// Advisory: the stored status is echoed unchanged.
 	return &service.VerifyResult{Verified: true, Advisory: true, IntentID: id, Status: p.Status,
-		ReferenceType: p.ReferenceType, ReferenceID: p.ReferenceID, PayerID: p.PayerID, PayeeID: p.PayeeID}, nil
+		ReferenceType: p.ReferenceType, ReferenceID: p.ReferenceID, PayerID: p.PayerID, PayeeID: p.PayeeID,
+		ApplicationID: p.ApplicationID, Channel: p.Channel}, nil
 }
+
+// RequestRefund compares the application with the intent's, as the store does
+// under the row lock.
 func (f *fakeService) RequestRefund(_ context.Context, req service.RefundRequest) (*postgres.RefundCommand, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if req.ProviderIdempotencyKey == "" || req.AmountMinor <= 0 {
 		return nil, errors.New("key and positive amount required")
 	}
+	if p, ok := f.intents[req.IntentID]; ok && p.ApplicationID != req.ApplicationID {
+		return nil, postgres.ErrApplicationMismatch
+	}
 	f.refunds = append(f.refunds, req)
-	return &postgres.RefundCommand{ID: uuid.New(), IntentID: req.IntentID, AmountMinor: req.AmountMinor, Status: "pending"}, nil
+	return &postgres.RefundCommand{ID: uuid.New(), IntentID: req.IntentID, AmountMinor: req.AmountMinor, Status: "pending",
+		ApplicationID: req.ApplicationID}, nil
 }
 func (f *fakeService) IntentOwnerDomain(_ context.Context, id uuid.UUID) (string, error) {
 	f.mu.Lock()
@@ -183,6 +218,10 @@ type routerOpts struct {
 	internalKey   string
 	caller        *commerceCaller
 	production    bool
+	// callerApps overrides the default allowlist, which gives commerce-service
+	// mstore and food-service feast, as the deploy values do.
+	callerApps map[string][]string
+	verifier   *servicetoken.Verifier
 }
 
 func newRouter(t *testing.T, fake *fakeService, o routerOpts) *gin.Engine {
@@ -190,6 +229,14 @@ func newRouter(t *testing.T, fake *fakeService, o routerOpts) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := New(fake)
+	apps := o.callerApps
+	if apps == nil {
+		apps = map[string][]string{"commerce-service": {"mstore"}, "food-service": {"feast"}}
+	}
+	h.WithCallerApplications(apps)
+	if o.verifier != nil {
+		h.WithServiceAuth(o.verifier)
+	}
 	if o.webhookSecret != "" {
 		h.WithProvider(gateway.NewRazorpayProvider("rzp_test_k", "s", o.webhookSecret))
 	}
@@ -551,7 +598,8 @@ func TestRouteSplit_ServiceToken(t *testing.T) {
 	})
 	t.Run("an intent owned by another domain reads as not found", func(t *testing.T) {
 		other, _ := fake.InitiatePayment(context.Background(), service.InitiateInput{PayerID: payer, PayeeID: payee,
-			ReferenceType: "food_order", ReferenceID: uuid.New(), AmountMinor: 100, OwnerDomain: "food-service"})
+			ReferenceType: "food_order", ReferenceID: uuid.New(), AmountMinor: 100, OwnerDomain: "food-service",
+			Method: "upi", ApplicationID: "feast"})
 		w := do(r, http.MethodGet, "/v1/payments/internal/intents/"+other.ID.String(), nil, caller.header(t, servicetoken.OpIntentRead))
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", w.Code)
@@ -577,7 +625,8 @@ func TestRouteSplit_LegacyInternalKey(t *testing.T) {
 	payer, payee := uuid.New(), uuid.New()
 	orderID := uuid.New()
 	intent, _ := fake.InitiatePayment(context.Background(), service.InitiateInput{PayerID: payer, PayeeID: payee,
-		ReferenceType: "food_order", ReferenceID: orderID, AmountMinor: 50000, OwnerDomain: "food-service"})
+		ReferenceType: "food_order", ReferenceID: orderID, AmountMinor: 50000, OwnerDomain: "food-service",
+		Method: "upi", ApplicationID: "feast"})
 	intent.Status = "succeeded"
 
 	t.Run("wrong key is refused", func(t *testing.T) {
@@ -604,13 +653,21 @@ func TestRouteSplit_LegacyInternalKey(t *testing.T) {
 			t.Fatalf("status = %d verifyCalls=%d body=%s", w.Code, fake.verifyCalls, w.Body.String())
 		}
 	})
-	t.Run("refund with only a reason: full remaining balance, derived key, owner domain", func(t *testing.T) {
+	t.Run("a legacy refund that names no application is refused: the key may name any", func(t *testing.T) {
 		w := do(r, http.MethodPost, "/v1/payments/internal/intents/"+intent.ID.String()+"/refund", []byte(`{"reason":"support:42"}`), withKey(payer))
+		if w.Code != http.StatusUnprocessableEntity || errorCode(t, w.Body.Bytes()) != CodeApplicationRequired || len(fake.refunds) != 0 {
+			t.Fatalf("status = %d refunds=%d body=%s, want 422 %s", w.Code, len(fake.refunds), w.Body.String(), CodeApplicationRequired)
+		}
+	})
+	t.Run("refund with only a reason and the application: full remaining balance, derived key, owner domain", func(t *testing.T) {
+		w := do(r, http.MethodPost, "/v1/payments/internal/intents/"+intent.ID.String()+"/refund",
+			[]byte(`{"reason":"support:42","application_id":"feast"}`), withKey(payer))
 		if w.Code != http.StatusAccepted || len(fake.refunds) != 1 {
 			t.Fatalf("status = %d refunds=%d body=%s", w.Code, len(fake.refunds), w.Body.String())
 		}
 		got := fake.refunds[0]
-		if got.AmountMinor != 50000 || got.CallerDomain != "food-service" || got.ProviderIdempotencyKey != "legacy:"+intent.ID.String()+":support:42" {
+		if got.AmountMinor != 50000 || got.CallerDomain != "food-service" || got.ProviderIdempotencyKey != "legacy:"+intent.ID.String()+":support:42" ||
+			got.ApplicationID != "feast" {
 			t.Fatalf("refund request = %+v", got)
 		}
 	})

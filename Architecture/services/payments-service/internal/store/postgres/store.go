@@ -65,9 +65,16 @@ type PaymentIntent struct {
 	// issued after the 201 had already been decided, so a transient failure
 	// produced a live intent with an EMPTY owner — and every ownership check
 	// treated empty as "anyone may act on this".
-	OwnerDomain string    `json:"owner_domain,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	OwnerDomain string `json:"owner_domain,omitempty"`
+	// ApplicationID is the product the payment belongs to (migration 010):
+	// mstore, feast, …. Required on every new intent; empty only on a legacy
+	// row the backfill could not map.
+	ApplicationID string `json:"application_id,omitempty"`
+	// Channel is the installed app the payment came through (momentum_android,
+	// web, …). Optional, and never the application.
+	Channel   string    `json:"channel,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // AmountMinor returns the intent amount in paise-minor int64.
@@ -132,31 +139,47 @@ func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*CreateInte
 	// N4: the REQUESTED tuple, captured before the Scan overwrites `in`
 	// with whatever the database actually holds under this key.
 	want := struct {
-		owner, refType, currency, method string
-		refID, payer, payee              uuid.UUID
-		amountMinor                      int64
+		owner, refType, currency, method, app, channel string
+		refID, payer, payee                            uuid.UUID
+		amountMinor                                    int64
 	}{
 		owner: in.OwnerDomain, refType: in.ReferenceType, currency: in.Currency,
 		method: in.Method, refID: in.ReferenceID, payer: in.PayerID,
 		payee: in.PayeeID, amountMinor: in.AmountMinorRaw,
+		app: in.ApplicationID, channel: in.Channel,
+	}
+
+	// Migration 010: no new intent is written without an application. The
+	// column stays nullable through the rollout (old replicas), so this is the
+	// check that holds the line.
+	if !ValidApplicationKey(in.ApplicationID) {
+		return nil, fmt.Errorf("%w (got %q)", ErrApplicationRequired, in.ApplicationID)
+	}
+	if !ValidChannel(in.Channel) {
+		return nil, fmt.Errorf("%w (got %q)", ErrInvalidChannel, in.Channel)
 	}
 
 	var inserted bool
 	err = tx.QueryRow(ctx,
 		`INSERT INTO payments.payment_intents
-		    (payer_id, payee_id, reference_type, reference_id, amount, amount_minor, currency, method, status, provider_ref, idempotency_key, owner_domain, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, NULLIF($11,''), $12)
+		    (payer_id, payee_id, reference_type, reference_id, amount, amount_minor, currency, method, status, provider_ref, idempotency_key, owner_domain, metadata, application_id, channel)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, NULLIF($11,''), $12, $13, NULLIF($14,''))
 		 ON CONFLICT (idempotency_key)
 		 DO UPDATE SET updated_at = payments.payment_intents.updated_at
 		 RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
 		           currency, method, status, idempotency_key, COALESCE(provider_ref,''),
-		           COALESCE(owner_domain,''), created_at, updated_at, (xmax = 0)`,
+		           COALESCE(owner_domain,''), COALESCE(application_id,''), COALESCE(channel,''),
+		           created_at, updated_at, (xmax = 0)`,
 		in.PayerID, in.PayeeID, in.ReferenceType, in.ReferenceID,
 		in.Amount, in.AmountMinorRaw, in.Currency, in.Method, in.ProviderRef, in.IdempotencyKey, in.OwnerDomain, "{}",
+		in.ApplicationID, in.Channel,
 	).Scan(&in.ID, &in.PayerID, &in.PayeeID, &in.ReferenceType, &in.ReferenceID,
 		&in.Amount, &in.AmountMinorRaw, &in.Currency, &in.Method, &in.Status, &in.IdempotencyKey,
-		&in.ProviderRef, &in.OwnerDomain, &in.CreatedAt, &in.UpdatedAt, &inserted)
+		&in.ProviderRef, &in.OwnerDomain, &in.ApplicationID, &in.Channel, &in.CreatedAt, &in.UpdatedAt, &inserted)
 	if err != nil {
+		if isApplicationFKViolation(err) {
+			return nil, fmt.Errorf("%w: %q", ErrApplicationNotFound, want.app)
+		}
 		return nil, err
 	}
 
@@ -219,6 +242,29 @@ func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*CreateInte
 		case want.method != in.Method:
 			return nil, fmt.Errorf("%w: key was created for method %q, request is %q",
 				ErrIdempotencyFingerprint, in.Method, want.method)
+		// Migration 010: the application is part of the fingerprint. A stored
+		// row with NO application is one an old replica wrote mid-rollout;
+		// every other dimension already matched above, so this retry adopts it
+		// below rather than failing the checkout.
+		case in.ApplicationID != "" && want.app != in.ApplicationID:
+			return nil, fmt.Errorf("%w: key was created for application %q, request is %q",
+				ErrIdempotencyFingerprint, in.ApplicationID, want.app)
+		}
+		if in.ApplicationID == "" {
+			if _, err := tx.Exec(ctx,
+				`UPDATE payments.payment_intents
+				    SET application_id = $2, channel = COALESCE(channel, NULLIF($3,''))
+				  WHERE id = $1 AND application_id IS NULL`,
+				in.ID, want.app, want.channel); err != nil {
+				if isApplicationFKViolation(err) {
+					return nil, fmt.Errorf("%w: %q", ErrApplicationNotFound, want.app)
+				}
+				return nil, err
+			}
+			in.ApplicationID = want.app
+			if in.Channel == "" {
+				in.Channel = want.channel
+			}
 		}
 	}
 
@@ -255,12 +301,13 @@ func (s *Store) GetIntent(ctx context.Context, id uuid.UUID) (*PaymentIntent, er
 		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
 		        currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
-		        COALESCE(refunded_amount_minor, 0), created_at, updated_at
+		        COALESCE(refunded_amount_minor, 0), created_at, updated_at,
+		        COALESCE(application_id,''), COALESCE(channel,'')
 		 FROM payments.payment_intents WHERE id = $1`,
 		id,
 	).Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
 		&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
-		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt)
+		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt, &p.ApplicationID, &p.Channel)
 	return &p, err
 }
 
@@ -277,13 +324,14 @@ func (s *Store) GetIntentByProviderRef(ctx context.Context, providerRef string) 
 		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
 		        currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
-		        COALESCE(refunded_amount_minor, 0), created_at, updated_at
+		        COALESCE(refunded_amount_minor, 0), created_at, updated_at,
+		        COALESCE(application_id,''), COALESCE(channel,'')
 		 FROM payments.payment_intents WHERE provider_ref = $1
 		 ORDER BY updated_at DESC LIMIT 1`,
 		providerRef,
 	).Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
 		&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
-		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt)
+		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt, &p.ApplicationID, &p.Channel)
 	if err != nil {
 		return nil, err
 	}
@@ -430,8 +478,8 @@ func (s *Store) RecordRefundIfFresh(ctx context.Context, refundProviderRef strin
 		return false, fmt.Errorf("amount_minor must be positive")
 	}
 	tag, err := s.db.Exec(ctx,
-		`INSERT INTO payments.refunds_applied (refund_provider_ref, intent_id, amount_minor)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO payments.refunds_applied (refund_provider_ref, intent_id, amount_minor, application_id)
+		 VALUES ($1, $2, $3, (SELECT application_id FROM payments.payment_intents WHERE id = $2))
 		 ON CONFLICT (refund_provider_ref) DO NOTHING`,
 		refundProviderRef, intentID, amountMinor,
 	)
@@ -447,17 +495,21 @@ func (s *Store) RecordRefundIfFresh(ctx context.Context, refundProviderRef strin
 // into memory and back through the API envelope. Callers want the
 // latest attempts anyway (status-display + refund-locator); 100 is
 // well past any real-world tail.
-func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.UUID) ([]PaymentIntent, error) {
+//
+// applicationID narrows to one application; "" lists every application.
+func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.UUID, applicationID string) ([]PaymentIntent, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
 		        currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
-		        COALESCE(refunded_amount_minor, 0), created_at, updated_at
+		        COALESCE(refunded_amount_minor, 0), created_at, updated_at,
+		        COALESCE(application_id,''), COALESCE(channel,'')
 		 FROM payments.payment_intents
 		 WHERE reference_type = $1 AND reference_id = $2
+		   AND ($3::text = '' OR application_id = $3::text)
 		 ORDER BY created_at DESC
 		 LIMIT 100`,
-		refType, refID,
+		refType, refID, applicationID,
 	)
 	if err != nil {
 		return nil, err
@@ -468,7 +520,8 @@ func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.
 		var p PaymentIntent
 		if err := rows.Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
 			&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
-			&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt,
+			&p.ApplicationID, &p.Channel); err != nil {
 			return nil, err
 		}
 		intents = append(intents, p)
@@ -545,11 +598,12 @@ func (s *Store) UpdateStatusByProviderRef(ctx context.Context, providerRef, newS
 		RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
 		          currency, method, status,
 		          COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
-		          COALESCE(refunded_amount_minor, 0), created_at, updated_at
+		          COALESCE(refunded_amount_minor, 0), created_at, updated_at,
+		          COALESCE(application_id,''), COALESCE(channel,'')
 	`, newStatus, paymentID, providerRef, allowedCurrent).Scan(
 		&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
 		&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
-		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt)
+		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt, &p.ApplicationID, &p.Channel)
 	if err == nil {
 		return &p, nil
 	}
@@ -591,9 +645,10 @@ func (s *Store) RecordWebhookEventIfNew(ctx context.Context, eventID, eventType,
 
 // CreateHold creates a payment hold record for an escrow payment.
 func (s *Store) CreateHold(ctx context.Context, intentID uuid.UUID, amount int64, currency, condition string) error {
+	// The hold carries its intent's application (migration 010).
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO payments.payment_holds (payment_intent_id, hold_amount, currency, release_condition)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO payments.payment_holds (payment_intent_id, hold_amount, currency, release_condition, application_id)
+		VALUES ($1, $2, $3, $4, (SELECT application_id FROM payments.payment_intents WHERE id = $1))
 	`, intentID, amount, currency, condition)
 	return err
 }

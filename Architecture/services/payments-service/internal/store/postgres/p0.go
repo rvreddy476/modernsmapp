@@ -239,7 +239,7 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		        amount, COALESCE(amount_minor,0), currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''),
 		        idempotency_key, COALESCE(refunded_amount_minor,0),
-		        created_at, updated_at
+		        created_at, updated_at, COALESCE(application_id,''), COALESCE(channel,'')
 		   FROM payments.payment_intents
 		  WHERE provider = $1 AND provider_order_id = $2
 		  FOR UPDATE`,
@@ -247,7 +247,7 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		&intent.ID, &intent.PayerID, &intent.PayeeID, &intent.ReferenceType, &intent.ReferenceID,
 		&intent.Amount, &intent.AmountMinorRaw, &intent.Currency, &intent.Method, &intent.Status,
 		&intent.ProviderRef, &intent.UPIIntentURL, &intent.IdempotencyKey, &intent.RefundedAmountMinor,
-		&intent.CreatedAt, &intent.UpdatedAt)
+		&intent.CreatedAt, &intent.UpdatedAt, &intent.ApplicationID, &intent.Channel)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrIntentNotFound
@@ -396,8 +396,9 @@ func recordLateCaptureTx(ctx context.Context, tx pgx.Tx, intent *PaymentIntent, 
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO payments.refund_required
 		     (intent_id, provider, provider_order_id, provider_payment_id, event_id,
-		      amount_minor, currency, reason)
-		 VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),'late_capture_after_failed')
+		      amount_minor, currency, reason, application_id)
+		 VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),'late_capture_after_failed',
+		         (SELECT application_id FROM payments.payment_intents WHERE id = $1))
 		 ON CONFLICT (provider, provider_payment_id) DO NOTHING`,
 		intent.ID, e.Provider, e.ProviderOrderID, key, e.EventID, e.AmountMinor, e.Currency)
 	if err != nil {
@@ -456,6 +457,21 @@ type RefundCommand struct {
 	RequestedBy            string
 	CreatedAt              time.Time
 	SettledAt              *time.Time
+	// ApplicationID is copied from the intent when the command is created.
+	ApplicationID string
+}
+
+// refundCommandColumns is the SELECT/RETURNING list scanRefundCommand reads.
+const refundCommandColumns = `id, intent_id, amount_minor, currency, COALESCE(reason,''),
+	provider_idempotency_key, status, provider, COALESCE(provider_refund_id,''),
+	attempts, COALESCE(last_error,''), next_attempt_at, requested_by, created_at, settled_at,
+	COALESCE(application_id,'')`
+
+func scanRefundCommand(row pgx.Row, c *RefundCommand) error {
+	return row.Scan(&c.ID, &c.IntentID, &c.AmountMinor, &c.Currency, &c.Reason,
+		&c.ProviderIdempotencyKey, &c.Status, &c.Provider, &c.ProviderRefundID,
+		&c.Attempts, &c.LastError, &c.NextAttemptAt, &c.RequestedBy, &c.CreatedAt, &c.SettledAt,
+		&c.ApplicationID)
 }
 
 // CreateRefundCommand durably reserves a refund BEFORE any provider call.
@@ -469,11 +485,16 @@ type RefundCommand struct {
 // The provider idempotency key is supplied by the caller and is unique, so a
 // retried request (a double-tapped cancel, a redelivered command) returns the
 // existing command instead of creating a second one.
+//
+// applicationID must be the intent's application (migration 010), compared
+// under the intent's row lock: a refund names the product it belongs to, and a
+// request that names another product, or an intent with no application, is
+// refused with ErrApplicationMismatch before anything is reserved.
 func (s *Store) CreateRefundCommand(
 	ctx context.Context,
 	intentID uuid.UUID,
 	amountMinor int64,
-	reason, providerIdemKey, requestedBy, ownerDomain string,
+	reason, providerIdemKey, requestedBy, ownerDomain, applicationID string,
 ) (*RefundCommand, bool, error) {
 	if providerIdemKey == "" {
 		return nil, false, fmt.Errorf("payments: provider idempotency key is required")
@@ -490,6 +511,11 @@ func (s *Store) CreateRefundCommand(
 
 	// Existing command for this key? Return it verbatim — idempotent.
 	if existing, err := getRefundCommandByKeyTx(ctx, tx, providerIdemKey); err == nil && existing != nil {
+		if existing.ApplicationID != "" && existing.ApplicationID != applicationID {
+			// The key names a refund of another product: not a retry.
+			return nil, false, fmt.Errorf("%w: refund key belongs to application %q, request is %q",
+				ErrApplicationMismatch, existing.ApplicationID, applicationID)
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, false, err
 		}
@@ -502,15 +528,15 @@ func (s *Store) CreateRefundCommand(
 		status                            string
 		amount, refunded, reserved        int64
 		domain, provider, providerOrderID string
-		method                            string
+		method, intentApp                 string
 	)
 	err = tx.QueryRow(ctx,
 		`SELECT status, COALESCE(amount_minor,0), COALESCE(refunded_amount_minor,0),
 		        COALESCE(refund_reserved_minor,0), COALESCE(owner_domain,''),
 		        COALESCE(provider,'razorpay'), COALESCE(provider_order_id, COALESCE(provider_ref,'')),
-		        method
+		        method, COALESCE(application_id,'')
 		   FROM payments.payment_intents WHERE id = $1 FOR UPDATE`,
-		intentID).Scan(&status, &amount, &refunded, &reserved, &domain, &provider, &providerOrderID, &method)
+		intentID).Scan(&status, &amount, &refunded, &reserved, &domain, &provider, &providerOrderID, &method, &intentApp)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, ErrIntentNotFound
@@ -535,6 +561,21 @@ func (s *Store) CreateRefundCommand(
 	if domain != ownerDomain {
 		return nil, false, ErrNotOwnerDomain
 	}
+	// Migration 010: the refund's application is the intent's, exactly. Fails
+	// closed on either blank side, like the owner check above. The
+	// application's registry status is deliberately NOT read: disabling an
+	// application refuses new payments and never strands a refund owed on an
+	// existing one.
+	if applicationID == "" {
+		return nil, false, ErrApplicationRequired
+	}
+	if intentApp == "" {
+		return nil, false, fmt.Errorf("%w: intent %s has no application", ErrApplicationMismatch, intentID)
+	}
+	if intentApp != applicationID {
+		return nil, false, fmt.Errorf("%w: intent %s belongs to %q, request names %q",
+			ErrApplicationMismatch, intentID, intentApp, applicationID)
+	}
 	if status != "succeeded" && status != "partially_refunded" {
 		return nil, false, fmt.Errorf("payments: cannot refund an intent in status %s", status)
 	}
@@ -554,14 +595,15 @@ func (s *Store) CreateRefundCommand(
 		RequestedBy:            requestedBy,
 		NextAttemptAt:          time.Now(),
 		CreatedAt:              time.Now(),
+		ApplicationID:          intentApp,
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO payments.refund_commands
 		    (id, intent_id, amount_minor, currency, reason, provider_idempotency_key,
-		     status, provider, requested_by, next_attempt_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,NOW())`,
+		     status, provider, requested_by, next_attempt_at, application_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,NOW(),$9)`,
 		cmd.ID, cmd.IntentID, cmd.AmountMinor, cmd.Currency, cmd.Reason,
-		cmd.ProviderIdempotencyKey, cmd.Provider, cmd.RequestedBy); err != nil {
+		cmd.ProviderIdempotencyKey, cmd.Provider, cmd.RequestedBy, cmd.ApplicationID); err != nil {
 		return nil, false, err
 	}
 
@@ -585,11 +627,12 @@ func (s *Store) CreateRefundCommand(
 	// Tell the domain a refund is now owed. `refund_pending` is a promise
 	// the reconciliation worker is accountable for; it is NOT "refunded".
 	payer := requestedBy
-	if err := enqueueOutboxTx(ctx, tx, "payment.refund_pending", intentID.String(), &payer, map[string]any{
-		"intent_id":    intentID,
-		"command_id":   cmd.ID,
-		"amount_minor": amountMinor,
-		"reason":       reason,
+	if err := enqueueOutboxTx(ctx, tx, EventPaymentRefundPending, intentID.String(), &payer, map[string]any{
+		"intent_id":      intentID,
+		"command_id":     cmd.ID,
+		"amount_minor":   amountMinor,
+		"reason":         reason,
+		"application_id": intentApp,
 	}); err != nil {
 		return nil, false, err
 	}
@@ -600,16 +643,14 @@ func (s *Store) CreateRefundCommand(
 	return cmd, true, nil
 }
 
+// EventPaymentRefundPending announces a durable refund command: a refund is now
+// owed, NOT that one has been paid.
+const EventPaymentRefundPending = "payment.refund_pending"
+
 func getRefundCommandByKeyTx(ctx context.Context, tx pgx.Tx, key string) (*RefundCommand, error) {
 	var c RefundCommand
-	err := tx.QueryRow(ctx,
-		`SELECT id, intent_id, amount_minor, currency, COALESCE(reason,''),
-		        provider_idempotency_key, status, provider, COALESCE(provider_refund_id,''),
-		        attempts, COALESCE(last_error,''), next_attempt_at, requested_by, created_at, settled_at
-		   FROM payments.refund_commands WHERE provider_idempotency_key = $1`, key).
-		Scan(&c.ID, &c.IntentID, &c.AmountMinor, &c.Currency, &c.Reason,
-			&c.ProviderIdempotencyKey, &c.Status, &c.Provider, &c.ProviderRefundID,
-			&c.Attempts, &c.LastError, &c.NextAttemptAt, &c.RequestedBy, &c.CreatedAt, &c.SettledAt)
+	err := scanRefundCommand(tx.QueryRow(ctx,
+		`SELECT `+refundCommandColumns+` FROM payments.refund_commands WHERE provider_idempotency_key = $1`, key), &c)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -622,14 +663,8 @@ func getRefundCommandByKeyTx(ctx context.Context, tx pgx.Tx, key string) (*Refun
 // GetRefundCommand fetches one command by id.
 func (s *Store) GetRefundCommand(ctx context.Context, id uuid.UUID) (*RefundCommand, error) {
 	var c RefundCommand
-	err := s.db.QueryRow(ctx,
-		`SELECT id, intent_id, amount_minor, currency, COALESCE(reason,''),
-		        provider_idempotency_key, status, provider, COALESCE(provider_refund_id,''),
-		        attempts, COALESCE(last_error,''), next_attempt_at, requested_by, created_at, settled_at
-		   FROM payments.refund_commands WHERE id = $1`, id).
-		Scan(&c.ID, &c.IntentID, &c.AmountMinor, &c.Currency, &c.Reason,
-			&c.ProviderIdempotencyKey, &c.Status, &c.Provider, &c.ProviderRefundID,
-			&c.Attempts, &c.LastError, &c.NextAttemptAt, &c.RequestedBy, &c.CreatedAt, &c.SettledAt)
+	err := scanRefundCommand(s.db.QueryRow(ctx,
+		`SELECT `+refundCommandColumns+` FROM payments.refund_commands WHERE id = $1`, id), &c)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -655,9 +690,7 @@ func (s *Store) ClaimDueRefundCommands(ctx context.Context, limit int) ([]Refund
 		         ORDER BY next_attempt_at
 		         FOR UPDATE SKIP LOCKED
 		         LIMIT $1)
-		RETURNING id, intent_id, amount_minor, currency, COALESCE(reason,''),
-		          provider_idempotency_key, status, provider, COALESCE(provider_refund_id,''),
-		          attempts, COALESCE(last_error,''), next_attempt_at, requested_by, created_at, settled_at`,
+		RETURNING `+refundCommandColumns,
 		limit)
 	if err != nil {
 		return nil, err
@@ -666,9 +699,7 @@ func (s *Store) ClaimDueRefundCommands(ctx context.Context, limit int) ([]Refund
 	var out []RefundCommand
 	for rows.Next() {
 		var c RefundCommand
-		if err := rows.Scan(&c.ID, &c.IntentID, &c.AmountMinor, &c.Currency, &c.Reason,
-			&c.ProviderIdempotencyKey, &c.Status, &c.Provider, &c.ProviderRefundID,
-			&c.Attempts, &c.LastError, &c.NextAttemptAt, &c.RequestedBy, &c.CreatedAt, &c.SettledAt); err != nil {
+		if err := scanRefundCommand(rows, &c); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -825,8 +856,8 @@ func applyProviderRefundTx(
 ) (applied bool, newStatus string, err error) {
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO payments.provider_refunds_applied
-		     (provider, provider_refund_id, intent_id, amount_minor)
-		 VALUES ($1,$2,$3,$4)
+		     (provider, provider_refund_id, intent_id, amount_minor, application_id)
+		 VALUES ($1,$2,$3,$4,(SELECT application_id FROM payments.payment_intents WHERE id = $3))
 		 ON CONFLICT (provider, provider_refund_id) DO NOTHING`,
 		provider, providerRefundID, intentID, amountMinor)
 	if err != nil {
@@ -856,12 +887,12 @@ func applyProviderRefundTx(
 	}
 
 	var amount, refunded, reserved int64
-	var intentCurrency, refType, refID string
+	var intentCurrency, refType, refID, appID string
 	if err := tx.QueryRow(ctx,
 		`SELECT COALESCE(amount_minor,0), COALESCE(refunded_amount_minor,0), COALESCE(refund_reserved_minor,0),
-		        currency, COALESCE(reference_type,''), COALESCE(reference_id::text,'')
+		        currency, COALESCE(reference_type,''), COALESCE(reference_id::text,''), COALESCE(application_id,'')
 		   FROM payments.payment_intents WHERE id = $1 FOR UPDATE`, intentID).
-		Scan(&amount, &refunded, &reserved, &intentCurrency, &refType, &refID); err != nil {
+		Scan(&amount, &refunded, &reserved, &intentCurrency, &refType, &refID, &appID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, "", ErrIntentNotFound
 		}
@@ -965,6 +996,8 @@ func applyProviderRefundTx(
 		// of the loop worked and this half did not.
 		"reference_type": refType,
 		"reference_id":   refID,
+		// The product the refunded payment belongs to (migration 010).
+		"application_id": appID,
 	}); err != nil {
 		return false, "", err
 	}
@@ -1142,7 +1175,8 @@ func (s *Store) StalePending(ctx context.Context, age time.Duration, limit int) 
 		`SELECT id, payer_id, payee_id, reference_type, reference_id,
 		        amount, COALESCE(amount_minor,0), currency, method, status,
 		        COALESCE(provider_order_id, COALESCE(provider_ref,'')), COALESCE(upi_intent_url,''),
-		        idempotency_key, COALESCE(refunded_amount_minor,0), created_at, updated_at
+		        idempotency_key, COALESCE(refunded_amount_minor,0), created_at, updated_at,
+		        COALESCE(application_id,''), COALESCE(channel,'')
 		   FROM payments.payment_intents
 		  WHERE status IN ('pending','processing')
 		    AND created_at < NOW() - $1::interval
@@ -1160,7 +1194,7 @@ func (s *Store) StalePending(ctx context.Context, age time.Duration, limit int) 
 		if err := rows.Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
 			&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status,
 			&p.ProviderRef, &p.UPIIntentURL, &p.IdempotencyKey, &p.RefundedAmountMinor,
-			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.CreatedAt, &p.UpdatedAt, &p.ApplicationID, &p.Channel); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

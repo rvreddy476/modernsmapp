@@ -52,7 +52,7 @@ func seedStubIntent(t *testing.T, amountMinor int64, providerRef string) uuid.UU
 		INSERT INTO payments.payment_intents
 		    (id, payer_id, payee_id, reference_type, reference_id, amount, amount_minor,
 		     currency, method, status, provider, provider_ref, provider_order_id,
-		     owner_domain, idempotency_key, created_at)
+		     owner_domain, idempotency_key, created_at, application_id)
 		-- provider='razorpay' DELIBERATELY, on a stub deployment.
 		--
 		-- That is what the live checkout writes: the column carries the
@@ -62,7 +62,7 @@ func seedStubIntent(t *testing.T, amountMinor int64, providerRef string) uuid.UU
 		-- provider "stub", matched no row, and failed with
 		-- "no intent for provider order" the moment it met real data.
 		VALUES ($1,$2,$3,'order',$4,$5,$6,'INR','upi','pending','razorpay',$7,$7,
-		        'commerce',$8,NOW())`,
+		        'commerce',$8,NOW(),'mstore')`,
 		id, uuid.New(), uuid.New(), uuid.New(),
 		float64(amountMinor)/100.0, amountMinor, providerRef, "idem-"+id.String())
 	if err != nil {
@@ -170,6 +170,7 @@ func TestStubSettlementCompletesARefundInsteadOfLeavingItSubmitted(t *testing.T)
 		Reason:                 "integration proof",
 		ProviderIdempotencyKey: "refund-" + id.String(),
 		CallerDomain:           "commerce",
+		ApplicationID:          "mstore",
 	}); err != nil {
 		t.Fatalf("request refund: %v", err)
 	}

@@ -68,6 +68,7 @@ func baseInput(key, owner string) InitiateInput {
 		Method:         "upi",
 		IdempotencyKey: key,
 		OwnerDomain:    owner,
+		ApplicationID:  "mstore",
 	}
 }
 
@@ -104,7 +105,7 @@ func TestFingerprintRefusesAnOwnerlessStoredRow(t *testing.T) {
 		ReferenceType: "order", ReferenceID: ref,
 		Amount: 1180, AmountMinorRaw: 118000,
 		Currency: "INR", Method: "upi",
-		OwnerDomain: "commerce", IdempotencyKey: key,
+		OwnerDomain: "commerce", IdempotencyKey: key, ApplicationID: "mstore",
 	})
 	if !errors.Is(err, postgres.ErrIdempotencyFingerprint) {
 		t.Fatalf("got %v, want ErrIdempotencyFingerprint — a caller must never inherit an "+
@@ -127,7 +128,7 @@ func TestFingerprintRefusesAnUnidentifiedCaller(t *testing.T) {
 		ReferenceType: "order", ReferenceID: uuid.New(),
 		Amount: 1180, AmountMinorRaw: 118000,
 		Currency: "INR", Method: "upi",
-		OwnerDomain: "commerce", IdempotencyKey: key,
+		OwnerDomain: "commerce", IdempotencyKey: key, ApplicationID: "mstore",
 	}
 	if _, err := store.CreateIntent(ctx, req); err != nil {
 		t.Fatalf("first create: %v", err)
@@ -165,6 +166,8 @@ func TestFingerprintMismatchNeverCallsTheProvider(t *testing.T) {
 		"amount":    func(i InitiateInput) InitiateInput { i.AmountMinor = 1180000; return i },
 		"currency":  func(i InitiateInput) InitiateInput { i.Currency = "USD"; return i },
 		"method":    func(i InitiateInput) InitiateInput { i.Method = "card"; return i },
+		// Migration 010: the application is part of the fingerprint.
+		"application": func(i InitiateInput) InitiateInput { i.ApplicationID = "feast"; return i },
 	}
 	for name, mutate := range mismatches {
 		t.Run(name, func(t *testing.T) {
@@ -223,7 +226,7 @@ func TestFingerprintMismatchReturnsNoIntentBody(t *testing.T) {
 		ReferenceType: "order", ReferenceID: uuid.New(),
 		Amount: 1180, AmountMinorRaw: 118000,
 		Currency: "INR", Method: "upi",
-		OwnerDomain: "commerce", IdempotencyKey: key,
+		OwnerDomain: "commerce", IdempotencyKey: key, ApplicationID: "mstore",
 	}
 	if _, err := store.CreateIntent(ctx, req); err != nil {
 		t.Fatalf("first create: %v", err)

@@ -219,9 +219,40 @@ func main() {
 		}
 	}
 
-	// WithProduction: in production the refund operator routes refuse the
-	// legacy internal key and need a token carrying payments:refund.admin.
-	handler := nethttp.New(svc).WithProvider(provider).WithProduction(isProd)
+	// Migration 010: which applications each token caller may open payments
+	// for (SERVICE_CALLER_<NAME>_APPLICATIONS), checked against the registry.
+	// Production refuses to start on an empty list or an unregistered key;
+	// elsewhere those are WARNs. A disabled application is always a WARN (see
+	// config/callers.go for why it must not crash-loop the fleet).
+	callerApps := config.CallerApplications(os.Getenv)
+	if verifier != nil {
+		apps, err := store.ListApplications(ctx)
+		if err != nil {
+			slog.Error("payments: could not read the application registry", "error", err)
+			os.Exit(1)
+		}
+		registry := make(map[string]string, len(apps))
+		for _, a := range apps {
+			registry[a.Key] = a.Status
+		}
+		warnings, err := config.ValidateCallerApplications(callerApps, registry, isProd)
+		for _, w := range warnings {
+			slog.Warn("payments: caller application allowlist: " + w)
+		}
+		if err != nil {
+			slog.Error("payments: caller application allowlist is invalid", "error", err)
+			os.Exit(1)
+		}
+		for name, list := range callerApps {
+			slog.Info("payments: caller application allowlist", "caller", name, "applications", list)
+		}
+	}
+	reportUnmappedApplications(ctx, store)
+
+	// WithProduction: in production the operator routes (refund admin, registry
+	// write) refuse the legacy internal key and need a service token.
+	handler := nethttp.New(svc).WithProvider(provider).WithProduction(isProd).
+		WithCallerApplications(callerApps)
 	if verifier != nil {
 		handler.WithServiceAuth(verifier)
 	}
@@ -303,6 +334,30 @@ func main() {
 	})
 }
 
+// reportUnmappedApplications logs, per table, the payment rows migration 010's
+// backfill could not attribute to an application. They stay NULL, the
+// per-application views cannot show them, and gated 998 (NOT NULL) refuses
+// until they are mapped. A failed count is logged and does not stop the boot.
+func reportUnmappedApplications(ctx context.Context, store *postgres.Store) {
+	counts, err := store.UnmappedApplicationCounts(ctx)
+	if err != nil {
+		slog.Warn("payments: could not count rows without an application", "error", err)
+		return
+	}
+	var total int64
+	for _, n := range counts {
+		total += n
+	}
+	if total == 0 {
+		slog.Info("payments: every payment row carries an application_id")
+		return
+	}
+	slog.Warn("payments: payment rows without an application_id (see docs/runbooks/payments-applications.md)",
+		"total", total, "payment_intents", counts["payment_intents"], "refund_commands", counts["refund_commands"],
+		"refund_required", counts["refund_required"], "provider_refunds_applied", counts["provider_refunds_applied"],
+		"refunds_applied", counts["refunds_applied"], "payment_holds", counts["payment_holds"])
+}
+
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -323,6 +378,7 @@ func envInt(key string, def int) int {
 //	SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY=<base64 ed25519 public key>
 //	SERVICE_CALLER_COMMERCE_SERVICE_OPS=payments:intent.create,payments:intent.read,payments:refund.create
 //	SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES=order
+//	SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS=mstore   (read by config.CallerApplications)
 //
 // Note what is NOT here: any private key. payments verifies and can never
 // mint, so a compromise of this service cannot forge a caller.

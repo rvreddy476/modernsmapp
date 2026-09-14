@@ -91,6 +91,11 @@ env:
   SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: 'order'
   SERVICE_CALLER_FOOD_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
   SERVICE_CALLER_FOOD_SERVICE_REFTYPES: 'food_order'
+  # Migration 010 — the APPLICATIONS (products) each caller may open payments
+  # for. Every key must be in payments.applications; an empty list or an
+  # unregistered key refuses to boot when ENV=prod.
+  SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: 'mstore'
+  SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS: 'feast'
 
   # LB-9 — reconciliation: resolve captures the webhook never delivered, and
   # surface ledger-vs-provider drift instead of letting it accumulate.

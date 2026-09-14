@@ -54,8 +54,8 @@ func seedIntent(t *testing.T, amountMinor int64, owner string) (uuid.UUID, strin
 		INSERT INTO payments.payment_intents
 		    (id, payer_id, payee_id, reference_type, reference_id, amount, amount_minor,
 		     currency, method, status, provider, provider_ref, provider_order_id,
-		     owner_domain, idempotency_key)
-		VALUES ($1,$2,$3,'order',$4,$5,$6,'INR','upi','succeeded','razorpay',$7,$7,$8,$9)`,
+		     owner_domain, idempotency_key, application_id)
+		VALUES ($1,$2,$3,'order',$4,$5,$6,'INR','upi','succeeded','razorpay',$7,$7,$8,$9,'mstore')`,
 		id, uuid.New(), uuid.New(), uuid.New(),
 		float64(amountMinor)/100.0, amountMinor, providerOrder, owner, "seed-"+id.String())
 	if err != nil {
@@ -241,7 +241,7 @@ func TestProofC8_RefundIsDurableBeforeProviderContact(t *testing.T) {
 	id, _ := seedIntent(t, 118000, "commerce-service")
 	key := "refund:" + id.String()
 
-	cmd, created, err := store.CreateRefundCommand(ctx, id, 118000, "cancel", key, "commerce-service", "commerce-service")
+	cmd, created, err := store.CreateRefundCommand(ctx, id, 118000, "cancel", key, "commerce-service", "commerce-service", "mstore")
 	if err != nil {
 		t.Fatalf("create refund command: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestProofC8_RefundIsDurableBeforeProviderContact(t *testing.T) {
 	}
 
 	// A retry with the same deterministic key returns the SAME command.
-	again, created2, err := store.CreateRefundCommand(ctx, id, 118000, "cancel", key, "commerce-service", "commerce-service")
+	again, created2, err := store.CreateRefundCommand(ctx, id, 118000, "cancel", key, "commerce-service", "commerce-service", "mstore")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestProofC8_ConcurrentRefundsCannotExceedTheIntent(t *testing.T) {
 			<-start
 			// Each asks for ₹200. Only five can fit inside ₹1,000.
 			_, _, err := store.CreateRefundCommand(ctx, id, 20000, "test",
-				fmt.Sprintf("refund:%s:%d", id, i), "commerce-service", "commerce-service")
+				fmt.Sprintf("refund:%s:%d", id, i), "commerce-service", "commerce-service", "mstore")
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -392,7 +392,7 @@ func TestProofCrossDomainRefundRefused(t *testing.T) {
 	id, _ := seedIntent(t, 50000, "commerce-service")
 
 	_, _, err := store.CreateRefundCommand(ctx, id, 50000, "steal",
-		"refund:"+id.String()+":food", "food-service", "food-service")
+		"refund:"+id.String()+":food", "food-service", "food-service", "mstore")
 	if !errors.Is(err, ErrNotOwnerDomain) {
 		t.Fatalf("got %v, want ErrNotOwnerDomain — food-service must not refund a commerce payment", err)
 	}

@@ -220,9 +220,9 @@ func rwSeedPaid(t *testing.T, amountMinor int64, order, storedPayment string) rw
 		INSERT INTO payments.payment_intents
 		    (id, payer_id, payee_id, reference_type, reference_id, amount, amount_minor,
 		     currency, method, status, provider, provider_ref, provider_order_id,
-		     provider_payment_id, owner_domain, idempotency_key, created_at)
+		     provider_payment_id, owner_domain, idempotency_key, created_at, application_id)
 		VALUES ($1,$2,$3,'order',$4,$5,$6,'INR','upi','succeeded','razorpay',$7,$7,
-		        NULLIF($8,''),'commerce',$9,NOW())`,
+		        NULLIF($8,''),'commerce',$9,NOW(),'mstore')`,
 		pi.id, uuid.New(), uuid.New(), uuid.New(),
 		float64(amountMinor)/100.0, amountMinor, order, storedPayment, "idem-"+pi.id.String())
 	if err != nil {
@@ -242,6 +242,7 @@ func rwRequestRefund(t *testing.T, svc *Service, pi rwPaid) uuid.UUID {
 		Reason:                 "refund worker proof",
 		ProviderIdempotencyKey: rwKey(pi),
 		CallerDomain:           "commerce",
+		ApplicationID:          "mstore",
 	})
 	if err != nil {
 		t.Fatalf("request refund: %v", err)

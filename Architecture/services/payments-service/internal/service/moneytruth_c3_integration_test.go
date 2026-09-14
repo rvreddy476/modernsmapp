@@ -112,6 +112,7 @@ func initiate(t *testing.T, s *Service, amountMinor int64, currency string) (str
 		Method:         "upi",
 		IdempotencyKey: key,
 		OwnerDomain:    "commerce",
+		ApplicationID:  "mstore",
 	})
 	return key, err
 }

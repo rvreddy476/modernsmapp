@@ -2,7 +2,7 @@ package http
 
 // Operator routes for parked refunds, on the /v1/payments/internal family.
 //
-//	GET  /v1/payments/internal/refunds/needs-attention?ref_type=&limit=&cursor=
+//	GET  /v1/payments/internal/refunds/needs-attention?ref_type=&application_id=&limit=&cursor=
 //	POST /v1/payments/internal/refunds/:commandId/resolve
 //	     {"resolution":"refunded_manually"|"written_off"|"test_data","note":"…"}
 //
@@ -45,19 +45,20 @@ const (
 )
 
 // refuseLegacyKeyInProduction runs after requireServiceCredential and before
-// requireOp on the two operator routes. In production a legacy internal-key
-// caller is refused: the key is shared by every sibling service and sees every
-// domain, so it must not be able to write off or manually settle another
-// domain's refund. Nothing is read or written before the refusal. The WARN
-// names the route, never the key.
-func (h *Handler) refuseLegacyKeyInProduction() gin.HandlerFunc {
+// requireOp on the operator routes (the refund admin pair, the registry write).
+// In production a legacy internal-key caller is refused: the key is shared by
+// every sibling service and sees every domain, so it must not be able to write
+// off or manually settle another domain's refund, or reconfigure an
+// application. Nothing is read or written before the refusal. The WARN names
+// the route, never the key. op is the operation a token needs instead.
+func (h *Handler) refuseLegacyKeyInProduction(op string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if h.production && isLegacyCaller(c) {
-			slog.Warn("payments: refund operator route refused the internal service key in production; "+
-				"a service token carrying "+OpRefundAdmin+" is required",
+			slog.Warn("payments: operator route refused the internal service key in production; "+
+				"a service token carrying "+op+" is required",
 				"method", c.Request.Method, "route", c.FullPath())
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeServiceTokenRequired,
-				"this route requires a service token carrying "+OpRefundAdmin+
+				"this route requires a service token carrying "+op+
 					"; the internal service key is not accepted in production", nil)
 			c.Abort()
 			return
@@ -79,6 +80,11 @@ func (h *Handler) ListRefundsNeedingAttention(c *gin.Context) {
 		limit = n
 	}
 	f := postgres.NeedsAttentionFilter{Limit: limit, ReferenceType: c.Query("ref_type")}
+	appID, ok := h.applicationFilter(c)
+	if !ok {
+		return
+	}
+	f.ApplicationID = appID
 	if v := c.Query("cursor"); v != "" {
 		cur, err := decodeRefundCursor(v)
 		if err != nil {

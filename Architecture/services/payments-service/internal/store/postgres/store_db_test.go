@@ -43,6 +43,7 @@ func TestDB_UpdateStatusByProviderRef_ReturnsFullIntent(t *testing.T) {
 	res, err := st.CreateIntent(ctx, PaymentIntent{
 		PayerID: uuid.New(), PayeeID: uuid.New(), ReferenceType: "order", ReferenceID: orderID,
 		Amount: 900, AmountMinorRaw: 90000, Currency: "INR", Method: "upi", ProviderRef: rzpOrder, IdempotencyKey: uuid.NewString(),
+		OwnerDomain: "commerce-service", ApplicationID: "mstore",
 	})
 	if err != nil {
 		t.Fatalf("create intent: %v", err)

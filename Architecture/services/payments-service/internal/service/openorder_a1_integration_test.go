@@ -191,7 +191,7 @@ func TestA1RetryConvergesOnTheSameIntentAndReference(t *testing.T) {
 			PayerID: payer, PayeeID: payee,
 			ReferenceType: "order", ReferenceID: ref,
 			AmountMinor: 118000, Currency: "INR", Method: "upi",
-			IdempotencyKey: key, OwnerDomain: "commerce",
+			IdempotencyKey: key, OwnerDomain: "commerce", ApplicationID: "mstore",
 		})
 		if err != nil {
 			t.Fatalf("attempt %d: %v", i+1, err)

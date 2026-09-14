@@ -409,7 +409,7 @@ func TestInternalRoutes_ProductionKeepsTheLegacyKeyElsewhere(t *testing.T) {
 		refID := uuid.New()
 		create := []byte(`{"payer_id":"` + uuid.NewString() + `","payee_id":"` + uuid.NewString() +
 			`","reference_type":"order","reference_id":"` + refID.String() +
-			`","amount_minor":90000,"currency":"INR","method":"upi","idempotency_key":"legacy-create-1"}`)
+			`","amount_minor":90000,"currency":"INR","method":"upi","idempotency_key":"legacy-create-1","application_id":"mstore"}`)
 		w := do(r, http.MethodPost, "/v1/payments/internal/intents", create, withKey(uuid.Nil))
 		record("create", w)
 		var env struct {
@@ -422,7 +422,7 @@ func TestInternalRoutes_ProductionKeepsTheLegacyKeyElsewhere(t *testing.T) {
 		record("read", do(r, http.MethodGet, "/v1/payments/internal/intents/"+id, nil, withKey(uuid.Nil)))
 		record("list", do(r, http.MethodGet, "/v1/payments/internal/intents?ref_type=order&ref_id="+refID.String(), nil, withKey(uuid.Nil)))
 		record("refund", do(r, http.MethodPost, "/v1/payments/internal/intents/"+id+"/refund",
-			[]byte(`{"reason":"customer cancelled"}`), withKey(uuid.Nil)))
+			[]byte(`{"reason":"customer cancelled","application_id":"mstore"}`), withKey(uuid.Nil)))
 		return out
 	}
 	dev, prod := run(false), run(true)

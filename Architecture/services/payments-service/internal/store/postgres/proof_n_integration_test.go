@@ -26,7 +26,7 @@ func newIntentReq(key, owner string, amountMinor int64) PaymentIntent {
 		ReferenceType: "order", ReferenceID: uuid.New(),
 		Amount: float64(amountMinor) / 100.0, AmountMinorRaw: amountMinor,
 		Currency: "INR", Method: "upi",
-		OwnerDomain: owner, IdempotencyKey: key,
+		OwnerDomain: owner, IdempotencyKey: key, ApplicationID: "mstore",
 	}
 }
 

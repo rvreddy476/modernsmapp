@@ -382,6 +382,7 @@ func TestAManualResolutionNeverSettlesASiblingRefund(t *testing.T) {
 		t.Helper()
 		c, err := svc.RequestRefund(ctx, RefundRequest{
 			IntentID: pi.id, AmountMinor: 30000, Reason: "ra sibling", ProviderIdempotencyKey: key, CallerDomain: "commerce",
+			ApplicationID: "mstore",
 		})
 		if err != nil {
 			t.Fatal(err)

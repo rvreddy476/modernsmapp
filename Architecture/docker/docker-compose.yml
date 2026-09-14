@@ -1395,6 +1395,8 @@ services:
       SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY: ${SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY:-}
       SERVICE_CALLER_COMMERCE_SERVICE_OPS: ${SERVICE_CALLER_COMMERCE_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
       SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: ${SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES:-order}
+      # The applications (products) commerce may open payments for (migration 010).
+      SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: ${SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS:-mstore}
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
       # Razorpay credentials — omit to use StubGateway in dev.

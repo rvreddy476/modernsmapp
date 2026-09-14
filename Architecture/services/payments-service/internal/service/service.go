@@ -133,7 +133,7 @@ func (s *Service) GetIntentForActor(ctx context.Context, id, actor uuid.UUID) (*
 // than erroring so a buyer sees "no intents" instead of learning that a
 // reference exists.
 func (s *Service) ListByReferenceForActor(ctx context.Context, refType string, refID, actor uuid.UUID) ([]postgres.PaymentIntent, error) {
-	all, err := s.store.ListByReference(ctx, refType, refID)
+	all, err := s.store.ListByReference(ctx, refType, refID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +168,12 @@ type InitiateInput struct {
 	// written with the intent, not stamped afterwards, and it is required:
 	// an intent with no owner is refundable by any authorised service.
 	OwnerDomain string
+	// ApplicationID is the product the payment belongs to (migration 010). It
+	// is required, and must be registered, active and accept Method. The
+	// handler has already checked it against the caller's allowlist.
+	ApplicationID string
+	// Channel is the installed app the payment came through. Optional.
+	Channel string
 }
 
 func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postgres.PaymentIntent, error) {
@@ -223,6 +229,15 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 	if in.OwnerDomain == "" {
 		return nil, fmt.Errorf("payments: owner domain is required to create an intent")
 	}
+	// Migration 010: every payment belongs to a registered, active application
+	// that accepts this method. Checked before the row exists and before any
+	// PSP contact, so a disabled product opens nothing.
+	if _, err := s.requireApplicationForPayment(ctx, in.ApplicationID, in.Method); err != nil {
+		return nil, err
+	}
+	if !postgres.ValidChannel(in.Channel) {
+		return nil, fmt.Errorf("%w (got %q)", postgres.ErrInvalidChannel, in.Channel)
+	}
 
 	// ── B6. The DB row is created BEFORE the PSP is contacted ──────────
 	//
@@ -252,6 +267,8 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 		Method:         in.Method,
 		OwnerDomain:    in.OwnerDomain,
 		IdempotencyKey: in.IdempotencyKey,
+		ApplicationID:  in.ApplicationID,
+		Channel:        in.Channel,
 	})
 	if err != nil {
 		return nil, err
@@ -631,8 +648,10 @@ func computeRefundStatus(currentRefundedMinor, refundMinor, intentAmountMinor in
 // feed that path; resolveRefundAmount above is the cap the handler applies
 // when a legacy caller omits the amount.
 
-func (s *Service) ListByReference(ctx context.Context, refType string, refID uuid.UUID) ([]postgres.PaymentIntent, error) {
-	return s.store.ListByReference(ctx, refType, refID)
+// ListByReference lists a reference's intents; applicationID "" means every
+// application.
+func (s *Service) ListByReference(ctx context.Context, refType string, refID uuid.UUID, applicationID string) ([]postgres.PaymentIntent, error) {
+	return s.store.ListByReference(ctx, refType, refID, applicationID)
 }
 
 // VerifyResult is returned by VerifyIntent. Verified is only ever true
@@ -657,6 +676,10 @@ type VerifyResult struct {
 	PayeeID       uuid.UUID `json:"payee_id"`
 	ReferenceType string    `json:"reference_type"`
 	ReferenceID   uuid.UUID `json:"reference_id"`
+	// ApplicationID and Channel are echoed for the same reason (migration 010):
+	// a callback for another product's intent is refusable too.
+	ApplicationID string `json:"application_id,omitempty"`
+	Channel       string `json:"channel,omitempty"`
 }
 
 // VerifyIntent is the synchronous gateway-verification path commerce-service
@@ -772,6 +795,8 @@ func (s *Service) VerifyIntent(ctx context.Context, id uuid.UUID, rzpOrderID, rz
 		PayeeID:       current.PayeeID,
 		ReferenceType: current.ReferenceType,
 		ReferenceID:   current.ReferenceID,
+		ApplicationID: current.ApplicationID,
+		Channel:       current.Channel,
 	}, nil
 }
 

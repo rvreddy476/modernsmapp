@@ -198,6 +198,9 @@ type RefundRequest struct {
 	// matched against the intent's owner_domain, so food-service cannot
 	// refund a commerce order even with a valid token of its own.
 	CallerDomain string
+	// ApplicationID must be the intent's application (migration 010). The store
+	// compares the two under the intent's row lock.
+	ApplicationID string
 }
 
 // RequestRefund persists a refund command and returns immediately.
@@ -215,14 +218,15 @@ func (s *Service) RequestRefund(ctx context.Context, req RefundRequest) (*postgr
 	}
 	cmd, created, err := s.store.CreateRefundCommand(
 		ctx, req.IntentID, req.AmountMinor, req.Reason,
-		req.ProviderIdempotencyKey, req.CallerDomain, req.CallerDomain)
+		req.ProviderIdempotencyKey, req.CallerDomain, req.CallerDomain, req.ApplicationID)
 	if err != nil {
 		return nil, err
 	}
 	if created {
 		slog.Info("payments: refund command accepted",
 			"intent_id", req.IntentID, "command_id", cmd.ID,
-			"amount_minor", req.AmountMinor, "caller", req.CallerDomain)
+			"amount_minor", req.AmountMinor, "caller", req.CallerDomain,
+			"application_id", cmd.ApplicationID)
 	}
 	return cmd, nil
 }

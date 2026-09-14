@@ -89,11 +89,12 @@ const maxParkReasonRunes = 500
 //	reason        the REDACTED reason stored in last_error: status, provider
 //	              error code/reason and a bounded description — never a raw
 //	              provider body, a credential or a signature
-//	status        always "needs_attention"
+//	status          always "needs_attention"
+//	application_id  the product the refund belongs to (migration 010)
 //
 // It is published once per command, in the transaction that parks it.
 func refundFailedPayload(intentID, commandID uuid.UUID, refType, refID, provider string,
-	amountMinor int64, currency, code, reason string) map[string]any {
+	amountMinor int64, currency, code, reason, applicationID string) map[string]any {
 	return map[string]any{
 		"id":             intentID,
 		"intent_id":      intentID,
@@ -106,6 +107,7 @@ func refundFailedPayload(intentID, commandID uuid.UUID, refType, refID, provider
 		"reason_code":    code,
 		"reason":         reason,
 		"status":         RefundStatusNeedsAttention,
+		"application_id": applicationID,
 	}
 }
 
@@ -140,16 +142,16 @@ func (s *Store) ParkRefundCommand(ctx context.Context, id uuid.UUID, code, reaso
 		return false, fmt.Errorf("payments: park refund command %s: %w", id, err)
 	}
 
-	var refType, refID string
+	var refType, refID, appID string
 	err = tx.QueryRow(ctx,
-		`SELECT COALESCE(reference_type,''), COALESCE(reference_id::text,'')
-		   FROM payments.payment_intents WHERE id = $1`, intentID).Scan(&refType, &refID)
+		`SELECT COALESCE(reference_type,''), COALESCE(reference_id::text,''), COALESCE(application_id,'')
+		   FROM payments.payment_intents WHERE id = $1`, intentID).Scan(&refType, &refID, &appID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, err
 	}
 
 	if err := enqueueOutboxTx(ctx, tx, EventPaymentRefundFailed, intentID.String(), nil,
-		refundFailedPayload(intentID, id, refType, refID, provider, amount, currency, code, reason)); err != nil {
+		refundFailedPayload(intentID, id, refType, refID, provider, amount, currency, code, reason, appID)); err != nil {
 		return false, fmt.Errorf("payments: enqueue %s: %w", EventPaymentRefundFailed, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -182,6 +184,7 @@ type NeedsAttentionRefund struct {
 	ProviderOrderID   string    `json:"provider_order_id,omitempty"`
 	ProviderPaymentID string    `json:"provider_payment_id,omitempty"`
 	RequestedBy       string    `json:"requested_by"`
+	ApplicationID     string    `json:"application_id,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
@@ -197,6 +200,7 @@ type NeedsAttentionFilter struct {
 	Limit         int
 	ReferenceType string // "" = every reference type
 	OwnerDomain   string // "" = every domain (legacy internal-key caller)
+	ApplicationID string // "" = every application
 	After         *RefundCursor
 }
 
@@ -218,16 +222,18 @@ func (s *Store) ListRefundsNeedingAttention(ctx context.Context, f NeedsAttentio
 		        COALESCE(NULLIF(c.failure_code,''),'unclassified'), COALESCE(c.last_error,''),
 		        c.attempts, c.provider,
 		        COALESCE(NULLIF(i.provider_order_id,''), COALESCE(i.provider_ref,'')),
-		        COALESCE(i.provider_payment_id,''), c.requested_by, c.created_at, c.updated_at
+		        COALESCE(i.provider_payment_id,''), c.requested_by, COALESCE(c.application_id,''),
+		        c.created_at, c.updated_at
 		   FROM payments.refund_commands c
 		   JOIN payments.payment_intents i ON i.id = c.intent_id
 		  WHERE c.status = 'needs_attention'
 		    AND ($1::text = '' OR i.reference_type = $1::text)
 		    AND ($2::text = '' OR i.owner_domain = $2::text)
+		    AND ($6::text = '' OR c.application_id = $6::text)
 		    AND ($3::timestamptz IS NULL OR (c.created_at, c.id) > ($3::timestamptz, $4::uuid))
 		  ORDER BY c.created_at, c.id
 		  LIMIT $5`,
-		f.ReferenceType, f.OwnerDomain, afterAt, afterID, f.Limit+1)
+		f.ReferenceType, f.OwnerDomain, afterAt, afterID, f.Limit+1, f.ApplicationID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -237,7 +243,7 @@ func (s *Store) ListRefundsNeedingAttention(ctx context.Context, f NeedsAttentio
 		var r NeedsAttentionRefund
 		if err := rows.Scan(&r.ID, &r.IntentID, &r.ReferenceType, &r.ReferenceID, &r.PayerID,
 			&r.AmountMinor, &r.Currency, &r.ReasonCode, &r.Reason, &r.Attempts, &r.Provider,
-			&r.ProviderOrderID, &r.ProviderPaymentID, &r.RequestedBy, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&r.ProviderOrderID, &r.ProviderPaymentID, &r.RequestedBy, &r.ApplicationID, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, nil, err
 		}
 		out = append(out, r)
@@ -313,15 +319,16 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 	}
 
 	var (
-		intentStatus, intentCurrency, owner, refType, refID, provider string
-		intentAmount, refunded, reserved                              int64
+		intentStatus, intentCurrency, owner, refType, refID, provider, appID string
+		intentAmount, refunded, reserved                                     int64
 	)
 	err = tx.QueryRow(ctx,
 		`SELECT status, COALESCE(amount_minor,0), COALESCE(refunded_amount_minor,0),
 		        COALESCE(refund_reserved_minor,0), COALESCE(currency,''), COALESCE(owner_domain,''),
-		        COALESCE(reference_type,''), COALESCE(reference_id::text,''), COALESCE(provider,'razorpay')
+		        COALESCE(reference_type,''), COALESCE(reference_id::text,''), COALESCE(provider,'razorpay'),
+		        COALESCE(application_id,'')
 		   FROM payments.payment_intents WHERE id = $1 FOR UPDATE`, intentID).
-		Scan(&intentStatus, &intentAmount, &refunded, &reserved, &intentCurrency, &owner, &refType, &refID, &provider)
+		Scan(&intentStatus, &intentAmount, &refunded, &reserved, &intentCurrency, &owner, &refType, &refID, &provider, &appID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrRefundCommandNotFound
 	}
@@ -409,10 +416,10 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 		manualID := "manual:" + in.CommandID.String()
 		tag, err := tx.Exec(ctx,
 			`INSERT INTO payments.provider_refunds_applied
-			     (provider, provider_refund_id, command_id, intent_id, amount_minor)
-			 VALUES ($1,$2,$3,$4,$5)
+			     (provider, provider_refund_id, command_id, intent_id, amount_minor, application_id)
+			 VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))
 			 ON CONFLICT (provider, provider_refund_id) DO NOTHING`,
-			manualRefundProvider, manualID, in.CommandID, intentID, amount)
+			manualRefundProvider, manualID, in.CommandID, intentID, amount, appID)
 		if err != nil {
 			return nil, err
 		}
@@ -437,6 +444,7 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 			"reference_type":     refType,
 			"reference_id":       refID,
 			"command_id":         in.CommandID,
+			"application_id":     appID,
 			// manual: no provider refund exists. The money was returned outside
 			// the provider integration and an operator recorded it.
 			"manual": true,

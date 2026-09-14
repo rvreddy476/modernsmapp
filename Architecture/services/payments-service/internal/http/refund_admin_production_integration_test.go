@@ -107,14 +107,16 @@ func itSeedParked(t *testing.T, pool *pgxpool.Pool, svc *service.Service, store 
 		INSERT INTO payments.payment_intents
 		    (id, payer_id, payee_id, reference_type, reference_id, amount, amount_minor,
 		     currency, method, status, provider, provider_ref, provider_order_id,
-		     provider_payment_id, owner_domain, idempotency_key, created_at)
-		VALUES ($1,$2,$3,$4,$5,607.12,60712,'INR','upi','succeeded','razorpay',$6,$6,$7,$8,$9,NOW())`,
-		id, uuid.New(), uuid.New(), refType, uuid.New(), "order_"+s, "pay_"+s, owner, "it-prod-"+id.String()); err != nil {
+		     provider_payment_id, owner_domain, idempotency_key, created_at, application_id)
+		VALUES ($1,$2,$3,$4,$5,607.12,60712,'INR','upi','succeeded','razorpay',$6,$6,$7,$8,$9,NOW(),$10)`,
+		id, uuid.New(), uuid.New(), refType, uuid.New(), "order_"+s, "pay_"+s, owner, "it-prod-"+id.String(),
+		legacyApplications[refType]); err != nil {
 		t.Fatalf("seed intent: %v", err)
 	}
 	cmd, err := svc.RequestRefund(ctx, service.RefundRequest{
 		IntentID: id, AmountMinor: 60712, Reason: "production credential proof",
 		ProviderIdempotencyKey: "it-prod-refund-" + id.String(), CallerDomain: owner,
+		ApplicationID: legacyApplications[refType],
 	})
 	if err != nil {
 		t.Fatalf("request refund: %v", err)

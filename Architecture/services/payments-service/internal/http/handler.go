@@ -78,7 +78,7 @@ type Service interface {
 	InitiatePayment(ctx context.Context, in service.InitiateInput) (*postgres.PaymentIntent, error)
 	GetIntent(ctx context.Context, id uuid.UUID) (*postgres.PaymentIntent, error)
 	GetIntentForActor(ctx context.Context, id, actor uuid.UUID) (*postgres.PaymentIntent, error)
-	ListByReference(ctx context.Context, refType string, refID uuid.UUID) ([]postgres.PaymentIntent, error)
+	ListByReference(ctx context.Context, refType string, refID uuid.UUID, applicationID string) ([]postgres.PaymentIntent, error)
 	ListByReferenceForActor(ctx context.Context, refType string, refID, actor uuid.UUID) ([]postgres.PaymentIntent, error)
 	VerifyIntent(ctx context.Context, id uuid.UUID, rzpOrderID, rzpPaymentID, rzpSignature string, amountMinor int64) (*service.VerifyResult, error)
 	RequestRefund(ctx context.Context, req service.RefundRequest) (*postgres.RefundCommand, error)
@@ -87,6 +87,10 @@ type Service interface {
 	ApplyWebhook(ctx context.Context, in service.WebhookInput) error
 	ListRefundsNeedingAttention(ctx context.Context, f postgres.NeedsAttentionFilter) ([]postgres.NeedsAttentionRefund, *postgres.RefundCursor, error)
 	ResolveRefundCommand(ctx context.Context, in postgres.ResolveRefundInput) (*postgres.RefundResolution, error)
+	GetApplication(ctx context.Context, key string) (*postgres.Application, error)
+	ListApplications(ctx context.Context) ([]postgres.Application, error)
+	PutApplication(ctx context.Context, in postgres.PutApplicationInput) (*postgres.ApplicationWrite, error)
+	ListApplicationTransactions(ctx context.Context, f postgres.TransactionFilter) ([]postgres.Transaction, *postgres.RefundCursor, error)
 }
 
 type Handler struct {
@@ -95,8 +99,12 @@ type Handler struct {
 	provider    gateway.Provider
 	internalKey string
 	// production is main.go's ENV=prod rule (config.Config.Production). In
-	// production the refund operator routes refuse the legacy internal key.
+	// production the operator routes (refund admin, registry write) refuse the
+	// legacy internal key.
 	production bool
+	// callerApps is SERVICE_CALLER_<NAME>_APPLICATIONS by caller (issuer). A
+	// token caller may name only these applications (applications.go).
+	callerApps map[string][]string
 }
 
 func New(svc Service) *Handler {
@@ -193,8 +201,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 		// Operator routes for refunds the worker parked in needs_attention
 		// (refund_admin.go). Same family gate; a token needs OpRefundAdmin,
 		// and in production the legacy internal key is refused outright.
-		internal.GET("/refunds/needs-attention", h.refuseLegacyKeyInProduction(), h.requireOp(OpRefundAdmin), h.ListRefundsNeedingAttention)
-		internal.POST("/refunds/:commandId/resolve", h.refuseLegacyKeyInProduction(), h.requireOp(OpRefundAdmin), h.ResolveRefundCommand)
+		internal.GET("/refunds/needs-attention", h.refuseLegacyKeyInProduction(OpRefundAdmin), h.requireOp(OpRefundAdmin), h.ListRefundsNeedingAttention)
+		internal.POST("/refunds/:commandId/resolve", h.refuseLegacyKeyInProduction(OpRefundAdmin), h.requireOp(OpRefundAdmin), h.ResolveRefundCommand)
+
+		// The application registry and per-application reads (applications.go).
+		// Registry writes are operator routes, gated like the refund admin pair.
+		internal.GET("/applications", h.requireOp(servicetoken.OpIntentRead), h.ListApplications)
+		internal.GET("/applications/:applicationId", h.requireOp(servicetoken.OpIntentRead), h.GetApplication)
+		internal.PUT("/applications/:applicationId", h.refuseLegacyKeyInProduction(OpApplicationAdmin), h.requireOp(OpApplicationAdmin), h.PutApplication)
+		internal.GET("/applications/:applicationId/transactions", h.requireOp(servicetoken.OpIntentRead), h.ListApplicationTransactions)
 
 		// A1: PATCH /intents/:id/status is REMOVED and must never return.
 		// It let a caller assert `succeeded` with no PSP proof and no
@@ -369,6 +384,8 @@ func (h *Handler) InitiateUserPayment(c *gin.Context) {
 		Currency       string  `json:"currency"`
 		Method         string  `json:"method" binding:"required"`
 		IdempotencyKey string  `json:"idempotency_key"`
+		ApplicationID  string  `json:"application_id"`
+		Channel        string  `json:"channel"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -398,6 +415,21 @@ func (h *Handler) InitiateUserPayment(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "invalid reference_id", nil)
 		return
 	}
+	// Migration 010. This family presents no caller identity to hold an
+	// allowlist, so an absent application_id is derived from the reference type
+	// (the backfill's mapping); the service still requires it to be registered,
+	// active and to accept the method.
+	appID := body.ApplicationID
+	if appID == "" {
+		appID = legacyApplications[body.ReferenceType]
+		if appID == "" {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, CodeApplicationRequired,
+				"application_id is required", nil)
+			return
+		}
+		slog.Warn("payments: user-facing intent named no application_id; derived from the reference type",
+			"reference_type", body.ReferenceType, "application_id", appID)
+	}
 
 	intent, err := h.svc.InitiatePayment(c.Request.Context(), service.InitiateInput{
 		PayerID:        userID,
@@ -410,12 +442,17 @@ func (h *Handler) InitiateUserPayment(c *gin.Context) {
 		Method:         body.Method,
 		IdempotencyKey: body.IdempotencyKey,
 		OwnerDomain:    ownerDomainForReference(body.ReferenceType),
+		ApplicationID:  appID,
+		Channel:        body.Channel,
 	})
 	if err != nil {
+		if writeApplicationError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INITIATE_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, h.withClientSession(intent), nil)
+	api.JSON(c.Writer, http.StatusCreated, h.withClientSession(c.Request.Context(), intent), nil)
 }
 
 // GetIntentForUser GET /v1/payments/intents/:id — the caller must be the
@@ -439,7 +476,7 @@ func (h *Handler) GetIntentForUser(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "intent not found", nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, h.withClientSession(intent), nil)
+	api.JSON(c.Writer, http.StatusOK, h.withClientSession(c.Request.Context(), intent), nil)
 }
 
 // ListByReferenceForUser GET /v1/payments/intents?ref_type=order&ref_id=uuid
@@ -502,6 +539,10 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 		Currency       string `json:"currency"`
 		Method         string `json:"method" binding:"required"`
 		IdempotencyKey string `json:"idempotency_key" binding:"required"`
+		// ApplicationID is the product this payment belongs to (migration 010);
+		// Channel the installed app it came through (optional).
+		ApplicationID string `json:"application_id"`
+		Channel       string `json:"channel"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -558,6 +599,18 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 			"FORBIDDEN", "caller identity is required", nil)
 		return
 	}
+	if !postgres.ValidChannel(body.Channel) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"channel must match ^[a-z][a-z0-9_]{1,31}$", nil)
+		return
+	}
+	// Migration 010: the application must be registered and allowed for THIS
+	// caller (SERVICE_CALLER_<NAME>_APPLICATIONS). The service then requires it
+	// to be active and to accept the method.
+	appID, ok := h.resolveCreateApplication(c, body.ApplicationID)
+	if !ok {
+		return
+	}
 
 	intent, err := h.svc.InitiatePayment(c.Request.Context(), service.InitiateInput{
 		PayerID:        payerID,
@@ -572,13 +625,18 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 		// StampOwnerDomain call that used to sit after this one is gone —
 		// it could fail, log a warning, and still return 201 with an
 		// unowned intent.
-		OwnerDomain: caller,
+		OwnerDomain:   caller,
+		ApplicationID: appID,
+		Channel:       body.Channel,
 	})
 	if err != nil {
+		if writeApplicationError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INITIATE_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, h.withClientSession(intent), nil)
+	api.JSON(c.Writer, http.StatusCreated, h.withClientSession(c.Request.Context(), intent), nil)
 }
 
 // refuseNonLaunchMethod applies A5 / C3-LB-3: the launch vocabulary, refused
@@ -616,7 +674,7 @@ func (h *Handler) GetIntent(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "intent not found", nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, h.withClientSession(intent), nil)
+	api.JSON(c.Writer, http.StatusOK, h.withClientSession(c.Request.Context(), intent), nil)
 }
 
 // withClientSession attaches what the client SDK needs to open checkout.
@@ -636,7 +694,13 @@ func (h *Handler) GetIntent(c *gin.Context) {
 // a stored payment_session_id) contributes nothing, and the field is simply
 // absent — the app then reports that it cannot open a sheet rather than
 // opening one that will fail.
-func (h *Handler) withClientSession(intent *postgres.PaymentIntent) map[string]any {
+//
+// Migration 010: application_id and channel are echoed, and the session carries
+// the application's merchant_display_name from the registry — the name the
+// checkout sheet should show. It is additive: the shared client decodes only
+// provider, order_id and key_id today, and the Android launcher still uses its
+// own constant.
+func (h *Handler) withClientSession(ctx context.Context, intent *postgres.PaymentIntent) map[string]any {
 	out := map[string]any{
 		"id":             intent.ID,
 		"status":         intent.Status,
@@ -647,9 +711,21 @@ func (h *Handler) withClientSession(intent *postgres.PaymentIntent) map[string]a
 		"reference_type": intent.ReferenceType,
 		"payer_id":       intent.PayerID,
 		"payee_id":       intent.PayeeID,
+		"application_id": intent.ApplicationID,
+	}
+	if intent.Channel != "" {
+		out["channel"] = intent.Channel
 	}
 	if h.provider != nil && intent.ProviderRef != "" {
 		if session := h.provider.ClientSession(intent.ProviderRef); len(session) > 0 {
+			if intent.ApplicationID != "" {
+				if app, err := h.svc.GetApplication(ctx, intent.ApplicationID); err == nil {
+					session["merchant_display_name"] = app.MerchantDisplayName
+				} else {
+					slog.Warn("payments: could not read the application for the client session",
+						"intent_id", intent.ID, "application_id", intent.ApplicationID, "error", err)
+				}
+			}
 			out["client_session"] = session
 		}
 	}
@@ -751,6 +827,8 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 		AmountMinor int64 `json:"amount_minor"`
 		// IdempotencyKey is deterministic and caller-derived.
 		IdempotencyKey string `json:"idempotency_key"`
+		// ApplicationID must be the intent's application (migration 010).
+		ApplicationID string `json:"application_id"`
 	}
 	c.ShouldBindJSON(&body) //nolint:errcheck
 
@@ -787,17 +865,32 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 			return
 		}
 	}
+	// Migration 010: the refund names its application, and the store refuses
+	// one that is not the intent's (APPLICATION_MISMATCH), under the intent's
+	// row lock. An absent id gets the one-release default.
+	req.ApplicationID = body.ApplicationID
+	if req.ApplicationID == "" {
+		appID, ok := h.defaultApplication(c)
+		if !ok {
+			return
+		}
+		req.ApplicationID = appID
+	}
 	cmd, err := h.svc.RequestRefund(c.Request.Context(), req)
 	if err != nil {
+		if writeApplicationError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REFUND_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusAccepted, gin.H{
-		"command_id":   cmd.ID,
-		"intent_id":    cmd.IntentID,
-		"amount_minor": cmd.AmountMinor,
-		"status":       cmd.Status,
-		"note":         "refund accepted and durable; settlement is confirmed by the provider webhook",
+		"command_id":     cmd.ID,
+		"intent_id":      cmd.IntentID,
+		"amount_minor":   cmd.AmountMinor,
+		"status":         cmd.Status,
+		"application_id": cmd.ApplicationID,
+		"note":           "refund accepted and durable; settlement is confirmed by the provider webhook",
 	}, nil)
 }
 
@@ -838,14 +931,19 @@ func (h *Handler) VerifyIntent(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
-// ListByReference GET /v1/payments/internal/intents?ref_type=order&ref_id=uuid
-// — unfiltered, for services locating the intent behind an order.
+// ListByReference GET /v1/payments/internal/intents?ref_type=order&ref_id=uuid[&application_id=]
+// — for services locating the intent behind an order. application_id narrows
+// to one application; a token may only name one it is allowed.
 func (h *Handler) ListByReference(c *gin.Context) {
 	refType, refID, ok := parseReference(c)
 	if !ok {
 		return
 	}
-	intents, err := h.svc.ListByReference(c.Request.Context(), refType, refID)
+	appID, ok := h.applicationFilter(c)
+	if !ok {
+		return
+	}
+	intents, err := h.svc.ListByReference(c.Request.Context(), refType, refID, appID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return

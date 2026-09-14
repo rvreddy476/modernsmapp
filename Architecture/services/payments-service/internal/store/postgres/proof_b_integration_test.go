@@ -41,8 +41,8 @@ func seedPendingIntent(t *testing.T, amountMinor int64, owner string) (uuid.UUID
 		INSERT INTO payments.payment_intents
 		    (id, payer_id, payee_id, reference_type, reference_id, amount, amount_minor,
 		     currency, method, status, provider, provider_ref, provider_order_id,
-		     owner_domain, idempotency_key)
-		VALUES ($1,$2,$3,'order',$4,$5,$6,'INR','upi','pending','razorpay',$7,$7,NULLIF($8,''),$9)`,
+		     owner_domain, idempotency_key, application_id)
+		VALUES ($1,$2,$3,'order',$4,$5,$6,'INR','upi','pending','razorpay',$7,$7,NULLIF($8,''),$9,'mstore')`,
 		id, uuid.New(), uuid.New(), referenceID,
 		float64(amountMinor)/100.0, amountMinor, providerOrder, owner, "seed-"+id.String())
 	if err != nil {
@@ -349,7 +349,7 @@ func TestProofB4_RefundRefusedWhenIntentHasNoOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := store.CreateRefundCommand(ctx, id, 1000, "test",
-		"idem-"+uuid.NewString(), "commerce", "commerce")
+		"idem-"+uuid.NewString(), "commerce", "commerce", "mstore")
 	if !errors.Is(err, ErrNotOwnerDomain) {
 		t.Fatalf("got %v, want ErrNotOwnerDomain — an unowned intent must not be refundable by "+
 			"whichever service happens to know its UUID", err)
@@ -362,7 +362,7 @@ func TestProofB4_RefundRefusedWhenCallerHasNoIdentity(t *testing.T) {
 
 	id, _ := seedIntent(t, 100000, "commerce")
 	_, _, err := store.CreateRefundCommand(ctx, id, 1000, "test",
-		"idem-"+uuid.NewString(), "", "")
+		"idem-"+uuid.NewString(), "", "", "mstore")
 	if !errors.Is(err, ErrNotOwnerDomain) {
 		t.Fatalf("got %v, want ErrNotOwnerDomain for a caller with no verified identity", err)
 	}
@@ -374,7 +374,7 @@ func TestProofB4_CrossDomainRefundStillRefused(t *testing.T) {
 
 	id, _ := seedIntent(t, 100000, "commerce")
 	if _, _, err := store.CreateRefundCommand(ctx, id, 1000, "test",
-		"idem-"+uuid.NewString(), "food", "food"); !errors.Is(err, ErrNotOwnerDomain) {
+		"idem-"+uuid.NewString(), "food", "food", "mstore"); !errors.Is(err, ErrNotOwnerDomain) {
 		t.Fatalf("got %v, want ErrNotOwnerDomain", err)
 	}
 }
@@ -386,7 +386,7 @@ func TestProofB4_OwnerMayStillRefund(t *testing.T) {
 
 	id, _ := seedIntent(t, 100000, "commerce")
 	if _, _, err := store.CreateRefundCommand(ctx, id, 1000, "test",
-		"idem-"+uuid.NewString(), "commerce", "commerce"); err != nil {
+		"idem-"+uuid.NewString(), "commerce", "commerce", "mstore"); err != nil {
 		t.Fatalf("the owning domain must still be able to refund: %v", err)
 	}
 }
@@ -409,7 +409,7 @@ func TestProofB6_WasExistingIsExactNotTimeBased(t *testing.T) {
 		ReferenceType: "order", ReferenceID: uuid.New(),
 		Amount: 1180, AmountMinorRaw: 118000,
 		Currency: "INR", Method: "upi",
-		OwnerDomain: "commerce", IdempotencyKey: key,
+		OwnerDomain: "commerce", IdempotencyKey: key, ApplicationID: "mstore",
 	}
 	mk := func() (*CreateIntentResult, error) {
 		return store.CreateIntent(ctx, req)
@@ -452,7 +452,7 @@ func TestProofB6_OwnerDomainIsWrittenWithTheIntent(t *testing.T) {
 		ReferenceType: "order", ReferenceID: uuid.New(),
 		Amount: 100, AmountMinorRaw: 10000,
 		Currency: "INR", Method: "upi",
-		OwnerDomain: "commerce", IdempotencyKey: "idem-" + uuid.NewString(),
+		OwnerDomain: "commerce", IdempotencyKey: "idem-" + uuid.NewString(), ApplicationID: "mstore",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -480,7 +480,7 @@ func TestProofB6_ProviderOrderIsAttachedOnceAndNotOverwritten(t *testing.T) {
 		ReferenceType: "order", ReferenceID: uuid.New(),
 		Amount: 100, AmountMinorRaw: 10000,
 		Currency: "INR", Method: "upi",
-		OwnerDomain: "commerce", IdempotencyKey: "idem-" + uuid.NewString(),
+		OwnerDomain: "commerce", IdempotencyKey: "idem-" + uuid.NewString(), ApplicationID: "mstore",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
