@@ -91,6 +91,7 @@ type Store interface {
 	GetBatchForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.DeliveryBatch, error)
 	GetBatchForOrderForPartner(ctx context.Context, userID, orderID uuid.UUID) (*postgres.DeliveryBatch, error)
 	ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryOffer, error)
+	DeliveryOfferContexts(ctx context.Context, offerIDs []uuid.UUID) (map[uuid.UUID]postgres.DeliveryOfferContext, error)
 	AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryOffer, error)
 	RejectDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID, reason string) error
 	ExpireDeliveryOffers(ctx context.Context) (int, error)

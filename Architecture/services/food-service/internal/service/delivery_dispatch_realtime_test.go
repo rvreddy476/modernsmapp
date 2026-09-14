@@ -16,6 +16,22 @@ type dispatchFakeStore struct {
 	cands   []postgres.DispatchCandidate
 	queries []postgres.DispatchQuery
 	offers  []postgres.DeliveryOffer
+	// offerCtx is what DeliveryOfferContexts answers for every offer id; nil
+	// answers none, as for an offer whose order has gone.
+	offerCtx *postgres.DeliveryOfferContext
+}
+
+func (f *dispatchFakeStore) DeliveryOfferContexts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]postgres.DeliveryOfferContext, error) {
+	out := map[uuid.UUID]postgres.DeliveryOfferContext{}
+	if f.offerCtx == nil {
+		return out, nil
+	}
+	for _, id := range ids {
+		c := *f.offerCtx
+		c.OfferID = id
+		out[id] = c
+	}
+	return out, nil
 }
 
 func (f *dispatchFakeStore) ListUnbatchedReadyOrders(context.Context, int) ([]postgres.ReadyOrderForBatching, error) {

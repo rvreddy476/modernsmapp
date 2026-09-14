@@ -561,13 +561,7 @@ func (s *Store) ListDeliveryAssignments(ctx context.Context, userID uuid.UUID) (
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
-			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
-			COALESCE(da.pickup_code, '')
-		FROM food.delivery_assignments da
-		JOIN food.orders o ON o.id = da.order_id
+	rows, err := s.db.Query(ctx, deliveryAssignmentSelect+`
 		WHERE da.delivery_partner_id = $1
 		ORDER BY da.created_at DESC
 		LIMIT 50
@@ -700,13 +694,7 @@ func (s *Store) GetCurrentDeliveryAssignment(ctx context.Context, userID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
-			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
-			COALESCE(da.pickup_code, '')
-		FROM food.delivery_assignments da
-		JOIN food.orders o ON o.id = da.order_id
+	rows, err := s.db.Query(ctx, deliveryAssignmentSelect+`
 		WHERE da.delivery_partner_id = $1
 			AND da.status NOT IN ('DELIVERED', 'FAILED', 'CANCELLED', 'REJECTED')
 		ORDER BY da.created_at DESC
@@ -733,23 +721,22 @@ func (s *Store) DeliveryEarnings(ctx context.Context, userID uuid.UUID) (map[str
 	}
 	var todayCount, totalCount int
 	var todayAmount, totalAmount float64
+	var todayPaise, totalPaise int64
+	// The paise sums are exact NUMERIC arithmetic, per row as settlement rounds.
 	if err := s.db.QueryRow(ctx, `
 		SELECT
 			COUNT(*) FILTER (WHERE delivered_at::date = CURRENT_DATE),
 			COALESCE(SUM(delivery_partner_payout) FILTER (WHERE delivered_at::date = CURRENT_DATE), 0)::float8,
+			COALESCE(SUM(ROUND(delivery_partner_payout * 100)) FILTER (WHERE delivered_at::date = CURRENT_DATE), 0)::bigint,
 			COUNT(*) FILTER (WHERE status = 'DELIVERED'),
-			COALESCE(SUM(delivery_partner_payout) FILTER (WHERE status = 'DELIVERED'), 0)::float8
+			COALESCE(SUM(delivery_partner_payout) FILTER (WHERE status = 'DELIVERED'), 0)::float8,
+			COALESCE(SUM(ROUND(delivery_partner_payout * 100)) FILTER (WHERE status = 'DELIVERED'), 0)::bigint
 		FROM food.delivery_assignments
 		WHERE delivery_partner_id = $1
-	`, partner.ID).Scan(&todayCount, &todayAmount, &totalCount, &totalAmount); err != nil {
+	`, partner.ID).Scan(&todayCount, &todayAmount, &todayPaise, &totalCount, &totalAmount, &totalPaise); err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"deliveries_today": todayCount,
-		"earnings_today":   todayAmount,
-		"total_deliveries": totalCount,
-		"total_earnings":   totalAmount,
-	}, nil
+	return DeliveryEarningsMap(todayCount, todayAmount, todayPaise, totalCount, totalAmount, totalPaise), nil
 }
 
 func (s *Store) DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]DeliveryAssignment, error) {
@@ -757,13 +744,7 @@ func (s *Store) DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]Delive
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
-			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
-			COALESCE(da.pickup_code, '')
-		FROM food.delivery_assignments da
-		JOIN food.orders o ON o.id = da.order_id
+	rows, err := s.db.Query(ctx, deliveryAssignmentSelect+`
 		WHERE da.delivery_partner_id = $1
 			AND da.status IN ('DELIVERED', 'FAILED', 'CANCELLED', 'REJECTED')
 		ORDER BY da.created_at DESC
@@ -1443,29 +1424,34 @@ func scanDeliveryPartner(rows pgx.Rows) (DeliveryPartner, error) {
 	return partner, err
 }
 
-// scanDeliveryAssignment reads the shared assignment column list, whose last
-// column is the raw pickup code. The code is kept only when PickupCodeVisible.
+// scanDeliveryAssignment reads deliveryAssignmentSelect (rider_navigation.go).
+// The raw pickup code is kept only when PickupCodeVisible; the delivery
+// snapshot goes through FillRiderView and never out as it is.
 func scanDeliveryAssignment(rows pgx.Rows) (DeliveryAssignment, error) {
 	var assignment DeliveryAssignment
 	var pickupCode string
+	var places AssignmentPlaces
 	err := rows.Scan(&assignment.ID, &assignment.OrderID, &assignment.OrderNumber,
 		&assignment.RestaurantName, &assignment.RestaurantID, &assignment.DeliveryPartnerID,
 		&assignment.Status, &assignment.OrderStatus, &assignment.DeliveryFee,
-		&assignment.DeliveryPartnerPayout, &assignment.CreatedAt, &pickupCode)
-	if err == nil && PickupCodeVisible(assignment.Status, assignment.OrderStatus) {
+		&assignment.DeliveryPartnerPayout, &assignment.CreatedAt, &pickupCode,
+		&assignment.DeliveryFeePaise, &assignment.DeliveryPartnerPayoutPaise,
+		&places.RestaurantLat, &places.RestaurantLng, &places.RestaurantAddressLine1, &places.RestaurantAddressLine2,
+		&places.RestaurantCity, &places.RestaurantPhone,
+		&places.DeliverySnapshot, &places.CustomerInstruction,
+		&places.ETAAt, &places.ETASource)
+	if err != nil {
+		return assignment, err
+	}
+	if PickupCodeVisible(assignment.Status, assignment.OrderStatus) {
 		assignment.PickupCode = pickupCode
 	}
-	return assignment, err
+	assignment.FillRiderView(places)
+	return assignment, nil
 }
 
 func (s *Store) getAssignmentTx(ctx context.Context, tx pgx.Tx, assignmentID uuid.UUID) (*DeliveryAssignment, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
-			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
-			COALESCE(da.pickup_code, '')
-		FROM food.delivery_assignments da
-		JOIN food.orders o ON o.id = da.order_id
+	rows, err := tx.Query(ctx, deliveryAssignmentSelect+`
 		WHERE da.id = $1
 	`, assignmentID)
 	if err != nil {

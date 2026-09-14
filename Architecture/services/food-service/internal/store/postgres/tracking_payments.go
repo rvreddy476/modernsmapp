@@ -256,13 +256,7 @@ func (s *Store) GetAssignmentTracking(ctx context.Context, userID, assignmentID 
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT da.id, da.order_id, o.order_number, o.restaurant_name_snapshot,
-			o.restaurant_id, da.delivery_partner_id, da.status::text, o.status::text,
-			da.delivery_fee::float8, da.delivery_partner_payout::float8, da.created_at::text,
-			COALESCE(da.pickup_code, '')
-		FROM food.delivery_assignments da
-		JOIN food.orders o ON o.id = da.order_id
+	rows, err := s.db.Query(ctx, deliveryAssignmentSelect+`
 		WHERE da.id = $1 AND da.delivery_partner_id = $2
 	`, assignmentID, partner.ID)
 	if err != nil {

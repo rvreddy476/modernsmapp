@@ -373,6 +373,20 @@ type DeliveryAssignment struct {
 	// PickupCode is shown to the rider only while PickupCodeVisible: after
 	// they accepted the assignment and before pickup.
 	PickupCode string `json:"pickup_code,omitempty"`
+
+	// Rider navigation and money (rider_navigation.go), filled by FillRiderView.
+	// The paise siblings are the NUMERIC columns times 100, computed in SQL.
+	DeliveryFeePaise           int64  `json:"delivery_fee_paise"`
+	DeliveryPartnerPayoutPaise int64  `json:"delivery_partner_payout_paise"`
+	PayoutPaise                int64  `json:"payout_paise"`
+	Currency                   string `json:"currency"`
+	Restaurant                 *AssignmentRestaurant `json:"restaurant,omitempty"`
+	// Drop is present only while DropVisible; DropSummary only once closed.
+	Drop        *AssignmentDrop       `json:"drop,omitempty"`
+	DropSummary *DropSummary          `json:"drop_summary,omitempty"`
+	ETAAt       string                `json:"eta_at,omitempty"`
+	ETASource   string                `json:"eta_source,omitempty"`
+	Navigation  *AssignmentNavigation `json:"navigation,omitempty"`
 }
 
 type AdminDashboard struct {

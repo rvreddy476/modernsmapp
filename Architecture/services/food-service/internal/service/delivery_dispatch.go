@@ -150,6 +150,8 @@ func (s *Service) dispatchOneOrder(ctx context.Context, g orderGroup, orderID uu
 		return
 	}
 	expiresAt := time.Now().Add(offerTTL)
+	var offers []postgres.DeliveryOffer
+	var riders []uuid.UUID
 	for _, c := range candidates {
 		distance := c.DistanceKM
 		offer, err := s.store.CreateDeliveryOffer(ctx, orderID, c.PartnerID, expiresAt, &distance)
@@ -158,26 +160,73 @@ func (s *Service) dispatchOneOrder(ctx context.Context, g orderGroup, orderID uu
 				"order_id", orderID, "partner_id", c.PartnerID, "error", err)
 			continue
 		}
-		s.emit(ctx, deliveryPartnerTopic(c.UserID), foodevents.DeliveryOffered, newDeliveryOfferedEvent(offer, c.UserID))
+		offers = append(offers, *offer)
+		riders = append(riders, c.UserID)
+	}
+	for i, view := range s.dispatchOfferViews(ctx, offers) {
+		s.emit(ctx, deliveryPartnerTopic(riders[i]), foodevents.DeliveryOffered, newDeliveryOfferedEvent(view, riders[i]))
 	}
 }
 
+// deliveryOfferViews adds the rider's job detail (restaurant, rounded drop
+// area, distances, payout) to offers from one store read.
+func (s *Service) deliveryOfferViews(ctx context.Context, offers []postgres.DeliveryOffer) ([]postgres.DeliveryOfferView, error) {
+	views := make([]postgres.DeliveryOfferView, 0, len(offers))
+	if len(offers) == 0 {
+		return views, nil
+	}
+	ids := make([]uuid.UUID, 0, len(offers))
+	for _, o := range offers {
+		ids = append(ids, o.ID)
+	}
+	contexts, err := s.store.DeliveryOfferContexts(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clockNow()
+	for _, o := range offers {
+		var c *postgres.DeliveryOfferContext
+		if oc, ok := contexts[o.ID]; ok {
+			c = &oc
+		}
+		views = append(views, postgres.BuildDeliveryOfferView(o, c, now, s.dispatchLocationMaxAge))
+	}
+	return views, nil
+}
+
+// dispatchOfferViews is deliveryOfferViews for the dispatch worker: the push
+// must go out, so if the detail cannot be read the bare offers are sent.
+func (s *Service) dispatchOfferViews(ctx context.Context, offers []postgres.DeliveryOffer) []postgres.DeliveryOfferView {
+	views, err := s.deliveryOfferViews(ctx, offers)
+	if err == nil {
+		return views
+	}
+	slog.Warn("food-service: offer detail unavailable; sending bare offers", "offers", len(offers), "error", err)
+	now := s.clockNow()
+	views = make([]postgres.DeliveryOfferView, 0, len(offers))
+	for _, o := range offers {
+		views = append(views, postgres.BuildDeliveryOfferView(o, nil, now, s.dispatchLocationMaxAge))
+	}
+	return views
+}
+
 // deliveryOfferedEvent is food.delivery.offered for a single order: the offer
-// row plus the rider's user id. The offer only names the partner ROW
+// view plus the rider's user id. The offer only names the partner ROW
 // (delivery_partner_id); notification-service addresses the push by
-// delivery_partner_user_id and never reads this service's database.
+// delivery_partner_user_id and never reads this service's database. The view's
+// keys are additive; the consumer decodes only the fields it needs.
 type deliveryOfferedEvent struct {
-	*postgres.DeliveryOffer
+	postgres.DeliveryOfferView
 	DeliveryPartnerUserID string `json:"delivery_partner_user_id"`
 }
 
-func newDeliveryOfferedEvent(offer *postgres.DeliveryOffer, riderUserID uuid.UUID) deliveryOfferedEvent {
-	return deliveryOfferedEvent{DeliveryOffer: offer, DeliveryPartnerUserID: riderUserID.String()}
+func newDeliveryOfferedEvent(offer postgres.DeliveryOfferView, riderUserID uuid.UUID) deliveryOfferedEvent {
+	return deliveryOfferedEvent{DeliveryOfferView: offer, DeliveryPartnerUserID: riderUserID.String()}
 }
 
 // newBatchDeliveryOfferedEvent is food.delivery.offered for a batch. The
 // rider's user id is top level, where notification-service reads it.
-func newBatchDeliveryOfferedEvent(offer *postgres.DeliveryOffer, batch *postgres.DeliveryBatch, riderUserID uuid.UUID) map[string]any {
+func newBatchDeliveryOfferedEvent(offer postgres.DeliveryOfferView, batch *postgres.DeliveryBatch, riderUserID uuid.UUID) map[string]any {
 	return map[string]any{
 		"offer":                    offer,
 		"batch":                    batch,
@@ -208,6 +257,8 @@ func (s *Service) dispatchOneBatch(ctx context.Context, g orderGroup) {
 	}
 	expiresAt := time.Now().Add(offerTTL)
 	anchor := g.orderIDs[0]
+	var offers []postgres.DeliveryOffer
+	var riders []uuid.UUID
 	for _, c := range candidates {
 		distance := c.DistanceKM
 		offer, err := s.store.CreateDeliveryOfferForBatch(ctx, batch.ID, anchor, c.PartnerID, expiresAt, &distance)
@@ -216,23 +267,32 @@ func (s *Service) dispatchOneBatch(ctx context.Context, g orderGroup) {
 				"batch_id", batch.ID, "partner_id", c.PartnerID, "error", err)
 			continue
 		}
-		s.emit(ctx, deliveryPartnerTopic(c.UserID), foodevents.DeliveryOffered,
-			newBatchDeliveryOfferedEvent(offer, batch, c.UserID))
+		offers = append(offers, *offer)
+		riders = append(riders, c.UserID)
+	}
+	for i, view := range s.dispatchOfferViews(ctx, offers) {
+		s.emit(ctx, deliveryPartnerTopic(riders[i]), foodevents.DeliveryOffered,
+			newBatchDeliveryOfferedEvent(view, batch, riders[i]))
 	}
 	slog.Info("food-service: batch dispatched",
 		"batch_id", batch.ID, "size", len(g.orderIDs), "offered_to", len(candidates))
 }
 
 // ListMyPendingDeliveryOffers exposes the inbox view for the partner
-// mobile app. Returns offers still pending and not yet expired.
+// mobile app. Returns offers still pending and not yet expired, each with the
+// job detail a rider judges it by.
 func (s *Service) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]any, error) {
 	offers, err := s.store.ListMyPendingDeliveryOffers(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]any, 0, len(offers))
-	for _, o := range offers {
-		out = append(out, o)
+	views, err := s.deliveryOfferViews(ctx, offers)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]any, 0, len(views))
+	for _, v := range views {
+		out = append(out, v)
 	}
 	return out, nil
 }

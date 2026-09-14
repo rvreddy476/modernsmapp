@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atpost/food-service/internal/foodevents"
 	"github.com/atpost/food-service/internal/orderstate"
@@ -110,16 +111,18 @@ func TestFoodEventsCarryTheRecipientNotificationServiceReads(t *testing.T) {
 	}
 
 	rider, partnerRow := uuid.New(), uuid.New()
-	offer := &postgres.DeliveryOffer{ID: uuid.New(), OrderID: header.OrderID, DeliveryPartnerID: partnerRow,
+	offer := postgres.DeliveryOffer{ID: uuid.New(), OrderID: header.OrderID, DeliveryPartnerID: partnerRow,
 		Status: "pending", ExpiresAt: "2026-09-13T06:30:25Z", CreatedAt: "2026-09-13T06:30:00Z"}
+	offerCtx := rnOfferContext()
+	view := postgres.BuildDeliveryOfferView(offer, &offerCtx, time.Date(2026, 9, 13, 6, 30, 0, 0, time.UTC), 2*time.Minute)
 	batch := &postgres.DeliveryBatch{ID: uuid.New(), RestaurantID: header.RestaurantID, Status: "pending",
 		Members: []postgres.BatchMember{{OrderID: header.OrderID, Sequence: 1}, {OrderID: uuid.New(), Sequence: 2}}}
 	offerCases := []struct {
 		name string
 		data any
 	}{
-		{"food.delivery.offered single", newDeliveryOfferedEvent(offer, rider)},
-		{"food.delivery.offered batch", newBatchDeliveryOfferedEvent(offer, batch, rider)},
+		{"food.delivery.offered single", newDeliveryOfferedEvent(view, rider)},
+		{"food.delivery.offered batch", newBatchDeliveryOfferedEvent(view, batch, rider)},
 	}
 	for _, tc := range offerCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,6 +147,8 @@ func TestFoodEventsCarryTheRecipientNotificationServiceReads(t *testing.T) {
 			if strings.Contains(string(raw), "code") {
 				t.Fatalf("payload carries a code: %s", raw)
 			}
+			// Additive offer detail; never the exact drop-off (rider-nav lane).
+			rnAssertOfferPrivate(t, raw)
 		})
 	}
 }

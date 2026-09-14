@@ -77,6 +77,7 @@ func (realtimeContractStore) GetCurrentDeliveryAssignment(_ context.Context, use
 	a := &postgres.DeliveryAssignment{
 		ID: ctRtAssignment, OrderID: ctOrder, OrderNumber: "FG1000000000002", RestaurantName: "Test Kitchen", RestaurantID: ctRestaurant,
 		DeliveryPartnerID: &partner, OrderStatus: "DELIVERY_ASSIGNED", DeliveryFee: 29, DeliveryPartnerPayout: 23.2, CreatedAt: ctTime,
+		DeliveryFeePaise: 2900, DeliveryPartnerPayoutPaise: 2320,
 	}
 	switch user {
 	case ctRider:
@@ -86,6 +87,8 @@ func (realtimeContractStore) GetCurrentDeliveryAssignment(_ context.Context, use
 	default:
 		return nil, pgx.ErrNoRows
 	}
+	// The store fills the rider view after the scan; the fixtures show it.
+	a.FillRiderView(ctRnPlaces())
 	return a, nil
 }
 

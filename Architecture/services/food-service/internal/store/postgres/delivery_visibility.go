@@ -36,6 +36,23 @@ func PickupCodeVisible(assignmentStatus, orderStatus string) bool {
 	return false
 }
 
+// DropVisible reports whether the rider's assignment may carry the exact
+// drop-off (address, pin, the receiver's first name, instructions): once the
+// rider accepted the job and while the order is on its way. Never on a merely
+// assigned job, never after delivery, never on a cancelled order.
+func DropVisible(assignmentStatus, orderStatus string) bool {
+	switch assignmentStatus {
+	case "ACCEPTED", "ARRIVED_AT_RESTAURANT", "PICKED_UP", "ARRIVED_AT_CUSTOMER":
+	default:
+		return false
+	}
+	switch orderStatus {
+	case orderstate.DeliveryAssigned, orderstate.PickedUp, orderstate.OutForDelivery:
+		return true
+	}
+	return false
+}
+
 // DeliveryCodeVisible reports whether the customer's order detail may carry
 // delivery_code: only while the food is with the rider.
 func DeliveryCodeVisible(orderStatus string) bool {

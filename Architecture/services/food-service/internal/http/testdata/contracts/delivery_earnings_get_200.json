@@ -1,0 +1,12 @@
+{
+  "data": {
+    "currency": "INR",
+    "deliveries_today": 2,
+    "earnings_today": 51.6,
+    "earnings_today_paise": 5160,
+    "total_deliveries": 14,
+    "total_earnings": 1234.56,
+    "total_earnings_paise": 123456
+  },
+  "meta": {}
+}
