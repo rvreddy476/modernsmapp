@@ -199,3 +199,14 @@ include(":app-kitchen")
 // rules as Kitchen keep Banuba, the creator engine, posting and commerce out.
 include(":feature:rider")
 include(":app-rider")
+
+// Payments — the reusable payment sheet (2026-09-14).
+//
+// :core:payments owns the PSP SDK (Razorpay), the one-flight launcher, the
+// SDK-outcome mapping, the Activity binding and the generic coordinator that
+// opens a sheet and then polls a product's PaymentStatusSource until the
+// SERVER says paid, failed or refunded. It was :app's payment package; Momentum
+// commerce checkout is its first product and Feast checkout its next. It
+// depends on no :feature:*, no :app* and no :core:commerce, and the partner
+// apps may not depend on it — both enforced by moduleGraphCheck.
+include(":core:payments")

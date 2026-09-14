@@ -264,7 +264,7 @@ class CheckoutProcessDeathTest {
     }
 
     private fun vm(api: RecoveryApi, handle: SavedStateHandle, handoff: PaymentHandoff) =
-        CheckoutViewModel(CommerceRepository(api), handoff, handle)
+        CheckoutViewModel(CommerceRepository(api), handoff, handle, pollingOnlyPaymentCoordinator())
 
     // ─── 1. Before order creation ────────────────────────────────────
 

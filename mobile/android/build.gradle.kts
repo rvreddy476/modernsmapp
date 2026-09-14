@@ -62,8 +62,13 @@ tasks.register<Delete>("clean") {
  *      `:core:creator-engine`, `:feature:post` or `:core:commerce` — no Banuba,
  *      creator engine, posting or shop code in a partner APK.
  *   d. `:feature:kitchen` / `:feature:rider` never reach `:core:facear`.
+ *   e. `:app-kitchen` / `:app-rider` never reach `:core:payments` — partner
+ *      apps take no payments, so they carry no PSP SDK (2026-09-14).
+ *   f. `:core:payments` never reaches a `:feature:*`, an application or
+ *      `:core:commerce` — the payment sheet is product-neutral; products
+ *      depend on it, never the reverse (2026-09-14).
  *
- * (b)–(d) are TRANSITIVE over implementation/api/runtimeOnly project edges,
+ * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
  * Consequence worth knowing before A2/A3: today `:core:commerce` exposes
  * `:core:facear` via `api`, so it cannot be pulled into a partner app without
@@ -114,6 +119,20 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
                     it == ":feature:post" || it == ":core:commerce"
             }.forEach { dep ->
                 add("$app must not depend on $dep (directly or transitively) — partner apps carry no Banuba, creator, post or commerce code.")
+            }
+        }
+        // (e)
+        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+            if (":core:payments" in reach(app)) {
+                add("$app must not depend on :core:payments (directly or transitively) — partner apps take no payments.")
+            }
+        }
+        // (f)
+        if (":core:payments" in direct) {
+            reach(":core:payments").filter {
+                it.startsWith(":feature:") || it == ":app" || it.startsWith(":app-") || it == ":core:commerce"
+            }.forEach { dep ->
+                add(":core:payments must not depend on $dep (directly or transitively) — the payment sheet is product-neutral.")
             }
         }
         // (d)
@@ -224,6 +243,49 @@ fun applicationBoundarySelfCheck(): List<String> {
         Triple("rider feature -> rider app", mapOf(":feature:rider" to setOf(":app-rider")), ":feature:rider must not depend on :app-rider"),
         Triple("rider feature -> facear", mapOf(":feature:rider" to setOf(":core:facear")), ":feature:rider must not depend on :core:facear"),
         Triple("kitchen app -> rider app", mapOf(":app-kitchen" to setOf(":app-rider")), ":app-kitchen must not depend on :app-rider"),
+        // :core:payments coverage (2026-09-14): rules (e) and (f), and the
+        // graph that must stay legal — Momentum and its commerce feature
+        // taking payments through a module that knows no product.
+        Triple(
+            "legal payments graph",
+            mapOf(
+                ":app" to setOf(":feature:commerce", ":core:payments", ":core:commerce"),
+                ":feature:commerce" to setOf(":core:commerce", ":core:payments"),
+                ":core:payments" to setOf(":core:common"),
+                ":app-kitchen" to setOf(":feature:kitchen", ":core:food"),
+                ":app-rider" to setOf(":feature:rider", ":core:food"),
+            ),
+            null,
+        ),
+        Triple("kitchen app -> payments", mapOf(":app-kitchen" to setOf(":core:payments")), ":app-kitchen must not depend on :core:payments"),
+        Triple("rider app -> payments", mapOf(":app-rider" to setOf(":core:payments")), ":app-rider must not depend on :core:payments"),
+        Triple(
+            "kitchen app -> payments, transitively",
+            mapOf(":app-kitchen" to setOf(":feature:kitchen"), ":feature:kitchen" to setOf(":core:payments")),
+            ":app-kitchen must not depend on :core:payments",
+        ),
+        Triple(
+            "rider app -> payments, transitively",
+            mapOf(":app-rider" to setOf(":core:food"), ":core:food" to setOf(":core:payments")),
+            ":app-rider must not depend on :core:payments",
+        ),
+        Triple("payments -> feature", mapOf(":core:payments" to setOf(":feature:commerce")), ":core:payments must not depend on :feature:commerce"),
+        Triple(
+            "payments -> feature, transitively",
+            mapOf(":core:payments" to setOf(":core:x"), ":core:x" to setOf(":feature:feast")),
+            ":core:payments must not depend on :feature:feast",
+        ),
+        Triple("payments -> commerce", mapOf(":core:payments" to setOf(":core:commerce")), ":core:payments must not depend on :core:commerce"),
+        Triple(
+            "payments -> an application, transitively",
+            mapOf(":core:payments" to setOf(":core:y"), ":core:y" to setOf(":app")),
+            ":core:payments must not depend on :app (directly or transitively)",
+        ),
+        Triple(
+            "payments -> a partner app, transitively",
+            mapOf(":core:payments" to setOf(":core:y"), ":core:y" to setOf(":app-rider")),
+            ":core:payments must not depend on :app-rider (directly or transitively)",
+        ),
     )
     return cases.mapNotNull { (name, graph, expected) ->
         val found = applicationBoundaryViolations(graph)
@@ -428,9 +490,15 @@ tasks.register("moduleGraphCheck") {
     //      delivery partner's screens and their own installable. Top level, so
     //      no new phantom parent. The self-check gained the Rider cases and the
     //      real graph asserts :app-rider -> :feature:rider.
-    // Still to add, one module at a time, to reach 46: :core:location,
+    // 44 = 43 + :core:payments (2026-09-14): the payment sheet moved out of
+    //      :app into a product-neutral module — PSP SDK, one-flight launcher,
+    //      outcome mapping, Activity binding and the confirm-by-polling
+    //      coordinator, scoped per application. Core, so no new phantom
+    //      parent. Rules (e) and (f) keep it out of the partner apps and free
+    //      of every product module.
+    // Still to add, one module at a time, to reach 47: :core:location,
     // :core:kyc-ui, :feature:feast.
-    val expectedModuleCount = 43
+    val expectedModuleCount = 44
 
     doLast {
         val allViolations = buildList {

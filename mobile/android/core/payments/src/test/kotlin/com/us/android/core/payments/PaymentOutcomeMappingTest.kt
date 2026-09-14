@@ -1,7 +1,5 @@
-package com.us.android.payment
+package com.us.android.core.payments
 
-import com.us.android.core.commerce.payment.PaymentAttempt
-import com.us.android.core.commerce.payment.PaymentHandoffEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,67 +8,69 @@ import org.junit.Test
  * The single most dangerous decision in the payment handoff: what a client
  * callback is allowed to mean.
  *
- * A1/R-3 — an order becomes paid only when a signature-verified provider
+ * A1/R-3 — a payment becomes paid only when a signature-verified provider
  * webhook reaches the server. So the SDK's opinion is evidence about where to
  * look, never a fact about money. This pins the two rules that follow:
  *
  *  1. Every ENDING of the sheet — success, failure, cancellation — maps to
- *     [PaymentHandoffEvent.SheetClosed], which makes the app poll the server.
+ *     [PaymentSheetResult.Closed], which makes the app poll the server.
  *     Mapping a reported failure to a failure state would be the dangerous
  *     one: a dropped callback or a killed process can sit on top of a capture
  *     that completed, and telling someone their payment failed while their
  *     money is gone is the worst outcome this flow can produce.
  *
- *  2. Only [PaymentSheetOutcome.Unavailable] — where no sheet was ever shown —
- *     maps to an unavailable event, because then no payment CAN have been
+ *  2. Only [PaymentOutcome.Unavailable] — where no sheet was ever shown —
+ *     maps to an unavailable result, because then no payment CAN have been
  *     taken and making the buyer wait through a poll would be dishonest in
  *     the other direction.
  *
  * ## C3-LB-4: this calls the production mapper
  *
- * The previous version of this file reimplemented the mapping, because the
- * production one was a private method on [CheckoutPaymentCoordinator]. Review
- * 3 was right to call that out: a test that owns its own copy of the rule
- * stays green when production stops following it, which is the opposite of
- * what a proof is for.
+ * An earlier version of this file reimplemented the mapping, because the
+ * production one was a private method. Review 3 was right to call that out: a
+ * test that owns its own copy of the rule stays green when production stops
+ * following it, which is the opposite of what a proof is for.
  *
- * `toHandoffEvent` is now a top-level function in `PaymentLauncher.kt` and is
- * the same one the coordinator calls. Nothing is duplicated here.
+ * `toSheetResult` is a top-level function in `PaymentLauncher.kt` and is the
+ * same one [PaymentCoordinator.launch] calls. Nothing is duplicated here.
+ * Moved from `:app` with the launcher (2026-09-14); the cases are unchanged,
+ * and commerce's own last hop onto its handoff bus is pinned in
+ * `:feature:commerce` by CheckoutPaymentOpenerTest.
  */
 class PaymentOutcomeMappingTest {
 
-    private val attempt = PaymentAttempt(orderId = "order-1", id = "attempt-1")
+    private val attempt = PaymentAttempt(applicationId = "mstore", referenceId = "order-1", id = "attempt-1")
 
     @Test
     fun `a reported success does not assert payment`() {
-        val event = PaymentSheetOutcome.Succeeded("pay_123").toHandoffEvent(attempt)
+        val event = PaymentOutcome.Succeeded("pay_123").toSheetResult(attempt)
         assertTrue(
             "a client success must lead to a server poll, not a paid state",
-            event is PaymentHandoffEvent.SheetClosed,
+            event is PaymentSheetResult.Closed,
         )
     }
 
     @Test
     fun `a reported failure still leads to a server poll`() {
         // THE important one. The payment may have been captured anyway.
-        val event = PaymentSheetOutcome.Failed(code = 2, message = "network").toHandoffEvent(attempt)
+        val event = PaymentOutcome.Failed(code = 2, message = "network").toSheetResult(attempt)
         assertTrue(
             "a client failure must NOT be treated as a failed payment; the capture " +
                 "may have completed and only the callback was lost",
-            event is PaymentHandoffEvent.SheetClosed,
+            event is PaymentSheetResult.Closed,
         )
     }
 
     @Test
     fun `a cancellation still leads to a server poll`() {
-        assertTrue(PaymentSheetOutcome.Cancelled.toHandoffEvent(attempt) is PaymentHandoffEvent.SheetClosed)
+        assertTrue(PaymentOutcome.Cancelled.toSheetResult(attempt) is PaymentSheetResult.Closed)
     }
 
     @Test
     fun `a sheet that never opened is reported as unavailable`() {
-        val event = PaymentSheetOutcome.Unavailable("no session").toHandoffEvent(attempt)
-        assertTrue(event is PaymentHandoffEvent.Unavailable)
-        assertEquals("no session", (event as PaymentHandoffEvent.Unavailable).reason)
+        val event = PaymentOutcome.Unavailable("no session").toSheetResult(attempt)
+        assertTrue(event is PaymentSheetResult.Unavailable)
+        assertEquals("no session", (event as PaymentSheetResult.Unavailable).reason)
     }
 
     @Test
@@ -79,14 +79,14 @@ class PaymentOutcomeMappingTest {
         // second attempt, and an outcome that only named the order could be
         // applied to either.
         listOf(
-            PaymentSheetOutcome.Succeeded("p"),
-            PaymentSheetOutcome.Failed(1, "x"),
-            PaymentSheetOutcome.Cancelled,
-            PaymentSheetOutcome.Unavailable("r"),
+            PaymentOutcome.Succeeded("p"),
+            PaymentOutcome.Failed(1, "x"),
+            PaymentOutcome.Cancelled,
+            PaymentOutcome.Unavailable("r"),
         ).forEach {
-            val event = it.toHandoffEvent(attempt)
+            val event = it.toSheetResult(attempt)
             assertEquals(attempt, event.attempt)
-            assertEquals("order-1", event.orderId)
+            assertEquals("order-1", event.referenceId)
         }
     }
 }

@@ -12,8 +12,10 @@ import com.us.android.core.commerce.payment.PaymentHandoffEvent
 import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
+import com.us.android.core.payments.PaymentConfirmation
+import com.us.android.core.payments.PaymentCoordinator
+import com.us.android.core.payments.PaymentPollPolicy
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,7 +52,19 @@ class CheckoutViewModel @Inject constructor(
     private val repo: CommerceRepository,
     private val handoff: PaymentHandoff,
     savedState: SavedStateHandle,
+    /**
+     * The generic payment flow from `:core:payments`. Checkout only ever
+     * CONFIRMS through it: the sheet is opened from the Activity by
+     * [CheckoutPaymentOpener], and its outcome arrives on [handoff].
+     */
+    private val payments: PaymentCoordinator,
 ) : ViewModel() {
+
+    /** MStore's payment status endpoint, as the coordinator reads it. */
+    private val paymentStatus = CommercePaymentStatusSource(repo)
+
+    /** The checkout poll's schedule: the coordinator's default, 180s. */
+    private val confirmationPolicy = PaymentPollPolicy(timeoutSeconds = PAYMENT_CONFIRMATION_TIMEOUT_SECONDS)
 
     /**
      * Scope C — the checkout state that survives process death.
@@ -502,58 +516,46 @@ class CheckoutViewModel @Inject constructor(
         pollPaymentStatus(orderId, orderNumber)
     }
 
-    @Suppress("MagicNumber")
+    /**
+     * Polls the server through `:core:payments`' coordinator, as MStore, on
+     * checkout's schedule (1s growing to 5s, 180s in total), and renders each
+     * confirmation.
+     *
+     * The mapping is the one this ViewModel always applied:
+     *
+     *  * still confirming — or a read that could not be made — stays
+     *    AwaitingConfirmation with the elapsed seconds: a transient failure
+     *    must not be reported as a payment failure, we simply do not know yet;
+     *  * paid is Paid and failed is PaymentFailed;
+     *  * refund_pending / refunded are LB-22: the hold expired and the capture
+     *    landed late, so the money is being returned. Never show this as a
+     *    successful order — it is Expired;
+     *  * a poll that times out stays AwaitingConfirmation at 180s. The order
+     *    EXISTS and may yet be paid, so the copy on this state must send the
+     *    customer to their orders rather than implying failure.
+     */
     private fun pollPaymentStatus(orderId: String, orderNumber: String) {
         viewModelScope.launch {
-            var elapsed = 0
-            // Back off from 1s toward 5s: most captures land in the first few
-            // seconds, and a slow one should not be hammered.
-            var interval = 1
-            while (elapsed < PAYMENT_CONFIRMATION_TIMEOUT_SECONDS) {
-                delay(interval * 1000L)
-                elapsed += interval
-                interval = minOf(interval + 1, 5)
-
-                when (val s = repo.paymentStatus(orderId)) {
-                    is CommerceResult.Failure -> {
-                        // A transient failure must not be reported as a
-                        // payment failure: we simply do not know yet.
-                        _state.value = CheckoutUiState.AwaitingConfirmation(
-                            orderId, orderNumber, elapsed,
+            payments.confirm(MSTORE_PAYMENT_APPLICATION_ID, orderId, paymentStatus, confirmationPolicy)
+                .collect { confirmation ->
+                    _state.value = when (confirmation) {
+                        is PaymentConfirmation.Confirming -> CheckoutUiState.AwaitingConfirmation(
+                            orderId, orderNumber, confirmation.elapsedSeconds,
                         )
-                    }
 
-                    is CommerceResult.Success -> when (s.value) {
-                        PaymentStatus.PAID -> {
-                            _state.value = CheckoutUiState.Paid(orderId, orderNumber)
-                            return@launch
-                        }
+                        PaymentConfirmation.Paid -> CheckoutUiState.Paid(orderId, orderNumber)
 
-                        PaymentStatus.FAILED -> {
-                            _state.value = CheckoutUiState.PaymentFailed(orderId, orderNumber)
-                            return@launch
-                        }
+                        is PaymentConfirmation.Failed -> CheckoutUiState.PaymentFailed(orderId, orderNumber)
 
-                        PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED -> {
-                            // LB-22: the hold expired and the capture landed
-                            // late, so the money is being returned. Never
-                            // show this as a successful order.
-                            _state.value = CheckoutUiState.Expired(orderId)
-                            return@launch
-                        }
+                        PaymentConfirmation.RefundPending,
+                        PaymentConfirmation.Refunded,
+                        -> CheckoutUiState.Expired(orderId)
 
-                        else -> _state.value = CheckoutUiState.AwaitingConfirmation(
-                            orderId, orderNumber, elapsed,
+                        is PaymentConfirmation.TimedOut -> CheckoutUiState.AwaitingConfirmation(
+                            orderId, orderNumber, confirmation.elapsedSeconds,
                         )
                     }
                 }
-            }
-            // Still unconfirmed. The order EXISTS and may yet be paid, so the
-            // copy on this state must send the customer to their orders
-            // rather than implying failure.
-            _state.value = CheckoutUiState.AwaitingConfirmation(
-                orderId, orderNumber, PAYMENT_CONFIRMATION_TIMEOUT_SECONDS,
-            )
         }
     }
 

@@ -234,7 +234,7 @@ class CheckoutJourneyTest {
     }
 
     private fun vm(api: FakeApi, handoff: PaymentHandoff = PaymentHandoff()) =
-        CheckoutViewModel(CommerceRepository(api), handoff, SavedStateHandle())
+        CheckoutViewModel(CommerceRepository(api), handoff, SavedStateHandle(), pollingOnlyPaymentCoordinator())
 
     // ─── C3-LB-2 ─────────────────────────────────────────────────────
 

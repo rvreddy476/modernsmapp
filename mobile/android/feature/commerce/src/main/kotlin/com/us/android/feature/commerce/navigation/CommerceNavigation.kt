@@ -259,8 +259,9 @@ data class SellerEditPriceRoute(val variantId: String, val title: String)
  * table, so `:app` composes the graph without importing the feature's screens
  * or ViewModels. Navigation OUT of commerce arrives as callbacks:
  *
- *  * [onOpenPaymentSheet] / [onAbandonPaymentSheet] — the PSP handoff lives in
- *    `:app`, because a feature module must not know which provider is wired.
+ *  * [onOpenPaymentSheet] / [onAbandonPaymentSheet] — the PSP sheet opens onto
+ *    the Activity, which only `:app` holds; `:app` calls CheckoutPaymentOpener,
+ *    and the provider itself stays hidden behind `:core:payments`.
  *  * [onOpenSettings] — the app's settings belong to `:feature:profile`, and a
  *    `:feature:*` → `:feature:*` edge is forbidden by `checkFeatureGraph`.
  *  * [onOpenSeller] — the switch into the OTHER mini-app, resolved by `:app`

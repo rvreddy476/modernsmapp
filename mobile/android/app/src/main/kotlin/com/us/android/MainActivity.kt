@@ -9,16 +9,14 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
-import com.razorpay.PaymentData
-import com.razorpay.PaymentResultWithDataListener
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.notifications.NotificationPresenter
+import com.us.android.core.payments.ActivityPaymentHost
+import com.us.android.core.payments.PaymentResultSink
+import com.us.android.feature.commerce.checkout.CheckoutPaymentOpener
 import com.us.android.navigation.MainViewModel
 import com.us.android.navigation.UsApp
-import com.us.android.payment.CheckoutPaymentCoordinator
-import com.us.android.payment.PaymentSheetOutcome
-import com.us.android.payment.RazorpayPaymentLauncher
 import com.us.android.push.PushDestinations
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -30,9 +28,17 @@ import javax.inject.Inject
  * splash while awaiting session restore is exactly the cold-start stall
  * (finding F5) this architecture exists to avoid. Phase 2 wires the nav
  * graph to observe SessionState instead, so the first frame is never blocked.
+ *
+ * ## Payment result plumbing
+ *
+ * The PSP SDK calls back on THIS Activity rather than on the code that opened
+ * the sheet. [ActivityPaymentHost] (from `:core:payments`) is that listener
+ * with the forwarding written once: it hands the SDK's result to
+ * [paymentResultSink] and interprets nothing. A1/R-3 says a client callback is
+ * evidence, never proof, and checkout polls the server for every ending.
  */
 @AndroidEntryPoint
-class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
+class MainActivity : ComponentActivity(), ActivityPaymentHost {
 
     /**
      * Injected here rather than into the reels screen so the pool outlives any
@@ -46,17 +52,15 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
     lateinit var pushDestinations: PushDestinations
 
     /**
-     * Razorpay delivers its result to the ACTIVITY, not to whoever opened the
-     * sheet, so the Activity has to implement the listener and forward it.
-     * Injected as the concrete type because `deliver` is the forwarding seam
-     * and is not part of the [com.us.android.payment.PaymentLauncher] port —
-     * nothing above this line should be able to inject a payment result.
+     * Where the PSP's result goes — the launcher holding the in-flight sheet.
+     * Only the Activity holds this seam: nothing above this line should be able
+     * to inject a payment result.
      */
     @Inject
-    lateinit var razorpayLauncher: RazorpayPaymentLauncher
+    override lateinit var paymentResultSink: PaymentResultSink
 
     @Inject
-    lateinit var paymentCoordinator: CheckoutPaymentCoordinator
+    lateinit var paymentOpener: CheckoutPaymentOpener
 
     private val viewModel: MainViewModel by viewModels()
 
@@ -82,7 +86,7 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                     // somewhere in the Compose tree that would have to hunt
                     // for an Activity in a LocalContext.
                     onOpenPaymentSheet = { attempt, orderNumber ->
-                        paymentCoordinator.start(
+                        paymentOpener.start(
                             activity = this,
                             scope = lifecycleScope,
                             attempt = attempt,
@@ -93,7 +97,7 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                     // when the checkout screen goes away, so a buyer who backs
                     // out mid-sheet is not refused on every later attempt.
                     onAbandonPaymentSheet = { attempt ->
-                        razorpayLauncher.abandon(attempt)
+                        paymentOpener.abandon(attempt)
                     },
                 )
             }
@@ -125,26 +129,5 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
             entityId = intent?.getStringExtra(NotificationPresenter.KEY_ENTITY_ID),
             deepLink = intent?.getStringExtra(NotificationPresenter.KEY_DEEP_LINK),
         )
-    }
-
-    // ─── Razorpay result plumbing ────────────────────────────────────
-    //
-    // The SDK calls back HERE rather than on the code that opened the sheet,
-    // so these two overrides exist purely to forward it. They deliberately
-    // interpret nothing: A1/R-3 says a client callback is evidence, never
-    // proof, and the checkout flow polls the server for both outcomes. An
-    // Activity that decided "paid" from onPaymentSuccess would be asserting
-    // something no one has verified.
-
-    override fun onPaymentSuccess(razorpayPaymentId: String?, paymentData: PaymentData?) {
-        razorpayLauncher.deliver(PaymentSheetOutcome.Succeeded(razorpayPaymentId))
-    }
-
-    override fun onPaymentError(code: Int, response: String?, paymentData: PaymentData?) {
-        // A user-cancelled sheet and a genuine provider error arrive through
-        // the same callback. Both are reported as-is; the coordinator treats
-        // every ending the same way, because a reported failure can still sit
-        // on top of a capture that completed.
-        razorpayLauncher.deliver(PaymentSheetOutcome.Failed(code, response))
     }
 }

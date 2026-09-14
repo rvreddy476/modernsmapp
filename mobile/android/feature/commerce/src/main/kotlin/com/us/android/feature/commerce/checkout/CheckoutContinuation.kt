@@ -4,6 +4,8 @@ import androidx.lifecycle.SavedStateHandle
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.PriceBreakdown
 import com.us.android.core.commerce.payment.PaymentAttempt
+import com.us.android.core.payments.InFlightPayment
+import com.us.android.core.payments.PaymentStateStore
 
 /**
  * The checkout state that must outlive the process.
@@ -151,15 +153,26 @@ internal class CheckoutContinuation(private val handle: SavedStateHandle) {
      * of C3-LB-4.
      */
     var attempt: PaymentAttempt?
-        get() {
-            val order = handle.get<String>(KEY_ATTEMPT_ORDER) ?: return null
-            val id = handle.get<String>(KEY_ATTEMPT_ID) ?: return null
-            return PaymentAttempt(orderId = order, id = id)
-        }
+        get() = inFlightPayment.attempt?.let { PaymentAttempt(orderId = it.referenceId, id = it.id) }
         set(v) {
-            handle[KEY_ATTEMPT_ORDER] = v?.orderId
-            handle[KEY_ATTEMPT_ID] = v?.id
+            inFlightPayment.attempt = v?.toSheetAttempt()
         }
+
+    /**
+     * Where the attempt is actually persisted: `:core:payments`' in-flight
+     * record, keyed by MStore's application id. A pending payment saved by
+     * another application (Feast) is never resumed, overwritten or cleared by
+     * this checkout.
+     */
+    private val inFlightPayment = InFlightPayment(
+        store = object : PaymentStateStore {
+            override fun get(key: String): String? = handle[key]
+            override fun set(key: String, value: String?) {
+                handle[key] = value
+            }
+        },
+        applicationId = MSTORE_PAYMENT_APPLICATION_ID,
+    )
 
     /**
      * The exact breakdown the buyer accepted.
@@ -193,8 +206,7 @@ internal class CheckoutContinuation(private val handle: SavedStateHandle) {
     fun clearAttempt() {
         handle[KEY_ORDER_ID] = null
         handle[KEY_ORDER_NUMBER] = null
-        handle[KEY_ATTEMPT_ORDER] = null
-        handle[KEY_ATTEMPT_ID] = null
+        inFlightPayment.clear()
     }
 
     private companion object {
@@ -207,8 +219,6 @@ internal class CheckoutContinuation(private val handle: SavedStateHandle) {
         const val KEY_ATTEMPT_KEY = "checkout.attemptKey"
         const val KEY_ORDER_ID = "checkout.orderId"
         const val KEY_ORDER_NUMBER = "checkout.orderNumber"
-        const val KEY_ATTEMPT_ORDER = "checkout.attempt.orderId"
-        const val KEY_ATTEMPT_ID = "checkout.attempt.id"
         const val KEY_SUBTOTAL = "checkout.breakdown.subtotal"
         const val KEY_DISCOUNT = "checkout.breakdown.discount"
         const val KEY_SHIPPING = "checkout.breakdown.shipping"

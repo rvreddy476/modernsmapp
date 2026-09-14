@@ -1,9 +1,8 @@
-package com.us.android.payment
+package com.us.android.core.payments
 
 import android.app.Activity
 import android.util.Log
 import com.razorpay.Checkout
-import com.us.android.core.commerce.payment.PaymentAttempt
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -15,10 +14,10 @@ import javax.inject.Singleton
  *
  * Razorpay's SDK does not deliver its result to the caller. It calls back on
  * the **Activity**, which must implement `PaymentResultWithDataListener`. So
- * this launcher parks the pending callback and [com.us.android.MainActivity]
- * forwards the SDK's result into [deliver]. That indirection is the SDK's
- * shape, not a choice; keeping it in one place stops it leaking into the
- * Compose layer.
+ * this launcher parks the pending callback and the Activity — through
+ * [ActivityPaymentHost] — forwards the SDK's result into [deliver]. That
+ * indirection is the SDK's shape, not a choice; keeping it in one place stops
+ * it leaking into the Compose layer.
  *
  * ## C3-LB-4 — one flight, and a slot that cannot be stolen
  *
@@ -31,7 +30,7 @@ import javax.inject.Singleton
  * Two rules close it:
  *
  *  1. **One flight.** While a sheet is in flight, a second [open] is refused
- *     with [PaymentSheetOutcome.Unavailable] and does NOT touch the pending
+ *     with [PaymentOutcome.Unavailable] and does NOT touch the pending
  *     slot. Refusing is safe in a way that queueing is not: nothing was
  *     presented to the buyer, so no payment can have been taken, and the
  *     caller can say so plainly.
@@ -50,12 +49,12 @@ import javax.inject.Singleton
  * present, so a relayed amount cannot override it.
  */
 @Singleton
-class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
+class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher, PaymentResultSink {
 
     /** The attempt currently in flight, with the callback awaiting its result. */
     private class InFlight(
         val attempt: PaymentAttempt,
-        val onOutcome: (PaymentSheetOutcome) -> Unit,
+        val onOutcome: (PaymentOutcome) -> Unit,
     )
 
     private val lock = Any()
@@ -67,7 +66,7 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
     /**
      * Claims the single in-flight slot for [attempt].
      *
-     * Returns false — having already reported [PaymentSheetOutcome.Unavailable]
+     * Returns false — having already reported [PaymentOutcome.Unavailable]
      * to [onOutcome] — when another sheet is in flight. The check and the
      * claim happen under one lock, so two callers racing cannot both believe
      * the slot was free.
@@ -80,7 +79,7 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
      * without an Activity and an SDK. This IS the production state machine,
      * not a description of it.
      */
-    internal fun claim(attempt: PaymentAttempt, onOutcome: (PaymentSheetOutcome) -> Unit): Boolean {
+    internal fun claim(attempt: PaymentAttempt, onOutcome: (PaymentOutcome) -> Unit): Boolean {
         synchronized(lock) {
             val current = inFlight
             if (current == null) {
@@ -89,14 +88,14 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
             }
             Log.w(
                 TAG,
-                "refusing a second sheet for ${attempt.orderId}; " +
-                    "${current.attempt.orderId} is still in flight",
+                "refusing a second sheet for ${attempt.referenceId}; " +
+                    "${current.attempt.referenceId} is still in flight",
             )
         }
         // Reported OUTSIDE the lock, and to the SECOND caller: the first
         // callback is never touched.
         onOutcome(
-            PaymentSheetOutcome.Unavailable(
+            PaymentOutcome.Unavailable(
                 "A payment is already in progress. Finish or cancel it first.",
             ),
         )
@@ -106,9 +105,8 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
     override fun open(
         activity: Activity,
         attempt: PaymentAttempt,
-        session: Map<String, String>,
-        description: String,
-        onOutcome: (PaymentSheetOutcome) -> Unit,
+        session: PaymentSession,
+        onOutcome: (PaymentOutcome) -> Unit,
     ) {
         // ── Rule 1: one flight ────────────────────────────────────────
         //
@@ -116,9 +114,9 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
         // both believe the slot was free.
         if (!claim(attempt, onOutcome)) return
 
-        val keyId = session["key_id"].orEmpty()
-        val orderId = session["order_id"].orEmpty()
-        val provider = session["provider"].orEmpty()
+        val keyId = session.keyId
+        val orderId = session.providerOrderId
+        val provider = session.provider
 
         // Fail before presenting anything, so the app can say "we could not
         // open payment" rather than showing a sheet that will not work. Each
@@ -138,8 +136,8 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
                 )
         }
 
-        val amountMinor = session[SESSION_AMOUNT_MINOR]?.toLongOrNull()
-        if (amountMinor == null || amountMinor <= 0) {
+        val amountMinor = session.amountMinor
+        if (amountMinor <= 0) {
             return failToOpen(attempt, "This order has no payable amount.")
         }
 
@@ -148,11 +146,11 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
 
         val options = JSONObject().apply {
             put("name", MERCHANT_NAME)
-            put("description", description)
+            put("description", session.description)
             // Authoritative. With order_id present, Razorpay prices the sheet
             // from the ORDER, so the amount below cannot be used to underpay.
             put("order_id", orderId)
-            put("currency", session["currency"] ?: DEFAULT_CURRENCY)
+            put("currency", session.currency)
             put("amount", amountMinor)
             put("retry", JSONObject().put("enabled", false))
             // Sending the SDK's own telemetry is off: this flow already
@@ -180,7 +178,7 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
      */
     private fun failToOpen(attempt: PaymentAttempt, reason: String) {
         val callback = release(attempt) ?: return
-        callback(PaymentSheetOutcome.Unavailable(reason))
+        callback(PaymentOutcome.Unavailable(reason))
     }
 
     /**
@@ -189,7 +187,7 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
      * Returns null when the slot is empty or belongs to someone else — the
      * two cases that must be no-ops rather than misdeliveries.
      */
-    private fun release(attempt: PaymentAttempt?): ((PaymentSheetOutcome) -> Unit)? =
+    private fun release(attempt: PaymentAttempt?): ((PaymentOutcome) -> Unit)? =
         synchronized(lock) {
             val current = inFlight ?: return@synchronized null
             if (attempt != null && current.attempt != attempt) return@synchronized null
@@ -200,13 +198,13 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
     /**
      * Delivers a result from the Activity's SDK listener.
      *
-     * Called by [com.us.android.MainActivity]. The SDK does not tell us which
-     * attempt it is answering — it only ever runs one sheet — so the result
-     * goes to whatever is in flight, and the slot is cleared FIRST. A
-     * duplicate or late callback then finds an empty slot and is a no-op
-     * rather than a second trip through the checkout flow.
+     * Called by [ActivityPaymentHost]. The SDK does not tell us which attempt
+     * it is answering — it only ever runs one sheet — so the result goes to
+     * whatever is in flight, and the slot is cleared FIRST. A duplicate or late
+     * callback then finds an empty slot and is a no-op rather than a second
+     * trip through the checkout flow.
      */
-    fun deliver(outcome: PaymentSheetOutcome) {
+    override fun deliver(outcome: PaymentOutcome) {
         val callback = release(null)
         if (callback == null) {
             // Not an error: a duplicate callback, or one arriving after the
@@ -225,9 +223,9 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
      * so the next checkout can open, and guarantees the abandoned attempt's
      * callback can never fire against a later order.
      */
-    fun abandon(attempt: PaymentAttempt) {
+    override fun abandon(attempt: PaymentAttempt) {
         if (release(attempt) != null) {
-            Log.i(TAG, "abandoned the in-flight sheet for ${attempt.orderId}")
+            Log.i(TAG, "abandoned the in-flight sheet for ${attempt.referenceId}")
         }
     }
 
@@ -244,14 +242,11 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher {
          * outlived the product rename, and a sheet naming a merchant the
          * statement does not is exactly the mismatch a buyer reads as fraud.
          * Internal so a test can pin it.
+         *
+         * One Razorpay account, one registered name: a second product on this
+         * module (Feast) shows the same name unless the founder registers a
+         * second business, at which point this becomes part of the session.
          */
         const val MERCHANT_NAME = "Momentum Merchant"
-        const val DEFAULT_CURRENCY = "INR"
-
-        /**
-         * The amount is passed through the session map so the port stays free
-         * of commerce types. It is the SERVER's intent amount, relayed.
-         */
-        const val SESSION_AMOUNT_MINOR = "amount_minor"
     }
 }

@@ -1,4 +1,4 @@
-package com.us.android.payment
+package com.us.android.core.payments
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

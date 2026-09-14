@@ -1,6 +1,5 @@
-package com.us.android.payment
+package com.us.android.core.payments
 
-import com.us.android.core.commerce.payment.PaymentAttempt
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -17,6 +16,8 @@ import org.junit.Test
  * empty slot and was dropped. A double tap, a retry, or an Activity
  * recreation was enough to produce it.
  *
+ * Moved from `:app` with the launcher (2026-09-14); the cases are unchanged.
+ *
  * ## What this exercises, and what it cannot
  *
  * Every case here drives the launcher's REAL slot machine — `claim`,
@@ -31,15 +32,15 @@ import org.junit.Test
  */
 class PaymentLauncherOneFlightTest {
 
-    private val attemptA = PaymentAttempt(orderId = "order-A", id = "attempt-A")
-    private val attemptB = PaymentAttempt(orderId = "order-B", id = "attempt-B")
-    private val retryOfA = PaymentAttempt(orderId = "order-A", id = "attempt-A2")
+    private val attemptA = PaymentAttempt(applicationId = "mstore",referenceId = "order-A", id = "attempt-A")
+    private val attemptB = PaymentAttempt(applicationId = "mstore",referenceId = "order-B", id = "attempt-B")
+    private val retryOfA = PaymentAttempt(applicationId = "mstore",referenceId = "order-A", id = "attempt-A2")
 
     @Test
     fun `a second open is refused and does not steal the first callback`() {
         val launcher = RazorpayPaymentLauncher()
-        val toA = mutableListOf<PaymentSheetOutcome>()
-        val toB = mutableListOf<PaymentSheetOutcome>()
+        val toA = mutableListOf<PaymentOutcome>()
+        val toB = mutableListOf<PaymentOutcome>()
 
         assertTrue(launcher.claim(attemptA) { toA += it })
         assertFalse(
@@ -48,7 +49,7 @@ class PaymentLauncherOneFlightTest {
         )
 
         // B is told no, plainly...
-        assertTrue(toB.single() is PaymentSheetOutcome.Unavailable)
+        assertTrue(toB.single() is PaymentOutcome.Unavailable)
         // ...and A is untouched, still holding the slot and still awaiting.
         assertTrue("the first callback must not have fired", toA.isEmpty())
         assertEquals(
@@ -61,14 +62,14 @@ class PaymentLauncherOneFlightTest {
     @Test
     fun `the SDK result goes to the sheet that actually opened`() {
         val launcher = RazorpayPaymentLauncher()
-        val toA = mutableListOf<PaymentSheetOutcome>()
-        val toB = mutableListOf<PaymentSheetOutcome>()
+        val toA = mutableListOf<PaymentOutcome>()
+        val toB = mutableListOf<PaymentOutcome>()
 
         launcher.claim(attemptA) { toA += it }
         launcher.claim(attemptB) { toB += it }
         toB.clear() // discard B's refusal; the question is who gets the result
 
-        launcher.deliver(PaymentSheetOutcome.Succeeded("pay_1"))
+        launcher.deliver(PaymentOutcome.Succeeded("pay_1"))
 
         assertEquals("the result belongs to the sheet that opened", 1, toA.size)
         assertTrue("B never opened a sheet and must receive no SDK result", toB.isEmpty())
@@ -77,12 +78,12 @@ class PaymentLauncherOneFlightTest {
     @Test
     fun `a duplicate callback produces exactly one outcome`() {
         val launcher = RazorpayPaymentLauncher()
-        val outcomes = mutableListOf<PaymentSheetOutcome>()
+        val outcomes = mutableListOf<PaymentOutcome>()
 
         launcher.claim(attemptA) { outcomes += it }
-        launcher.deliver(PaymentSheetOutcome.Succeeded("pay_1"))
-        launcher.deliver(PaymentSheetOutcome.Succeeded("pay_1"))
-        launcher.deliver(PaymentSheetOutcome.Cancelled)
+        launcher.deliver(PaymentOutcome.Succeeded("pay_1"))
+        launcher.deliver(PaymentOutcome.Succeeded("pay_1"))
+        launcher.deliver(PaymentOutcome.Cancelled)
 
         assertEquals(
             "the slot is cleared before the callback fires, so redelivery is a no-op",
@@ -94,8 +95,8 @@ class PaymentLauncherOneFlightTest {
     @Test
     fun `a late callback after abandonment cannot reach a later checkout's callback`() {
         val launcher = RazorpayPaymentLauncher()
-        val toA = mutableListOf<PaymentSheetOutcome>()
-        val toB = mutableListOf<PaymentSheetOutcome>()
+        val toA = mutableListOf<PaymentOutcome>()
+        val toB = mutableListOf<PaymentOutcome>()
 
         // The buyer opens a sheet for A, then navigates away.
         launcher.claim(attemptA) { toA += it }
@@ -104,7 +105,7 @@ class PaymentLauncherOneFlightTest {
 
         // A later checkout opens for B and its sheet is the live one.
         launcher.claim(attemptB) { toB += it }
-        launcher.deliver(PaymentSheetOutcome.Failed(2, "late"))
+        launcher.deliver(PaymentOutcome.Failed(2, "late"))
 
         assertTrue("the abandoned attempt must not be resurrected", toA.isEmpty())
         // B receives the result because B's sheet is the one on screen — the
@@ -144,7 +145,7 @@ class PaymentLauncherOneFlightTest {
     fun `the slot is free again after a delivery`() {
         val launcher = RazorpayPaymentLauncher()
         launcher.claim(attemptA) { }
-        launcher.deliver(PaymentSheetOutcome.Cancelled)
+        launcher.deliver(PaymentOutcome.Cancelled)
 
         assertNull(launcher.inFlightAttempt())
         assertTrue(
@@ -156,7 +157,7 @@ class PaymentLauncherOneFlightTest {
     @Test
     fun `only one of many racing claims wins`() {
         val launcher = RazorpayPaymentLauncher()
-        val attempts = (1..32).map { PaymentAttempt("order-$it", "attempt-$it") }
+        val attempts = (1..32).map { PaymentAttempt(applicationId = "mstore","order-$it", "attempt-$it") }
         val won = java.util.concurrent.atomic.AtomicInteger()
 
         val threads = attempts.map { attempt ->

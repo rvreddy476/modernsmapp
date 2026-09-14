@@ -15,6 +15,10 @@ dependencies {
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
     implementation(projects.core.commerce)
+    // The payment sheet and the poll-until-the-server-says-so coordinator
+    // (2026-09-14). Checkout supplies the commerce PaymentStatusSource; the
+    // provider stays hidden behind the module's PaymentLauncher binding.
+    implementation(projects.core.payments)
     // Virtual try-on (2026-09-12): the licence gate, the try-on domain and the
     // camera surface. A CORE module, so this stays a legal edge — reaching
     // Banuba through :feature:post's reel studio would be the
