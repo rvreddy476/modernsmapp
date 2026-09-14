@@ -40,9 +40,13 @@ type Service struct {
 	// stubSettlement is set ONLY when boot selected the stub gateway. See
 	// WithStubSettlement.
 	stubSettlement bool
-	// recon is what the reconciler remembers between ticks: stub references
-	// already reported, and per-intent backoff after a provider error.
+	// recon is what the reconciler remembers between ticks: per-intent backoff
+	// after a provider error.
 	recon reconcileTracker
+	// failedAttemptWindow is how long an intent whose order has only failed
+	// attempts (or none) stays pending for a retry before the reconciler
+	// finalises it FAILED. Zero means config.DefaultFailedAttemptWindow.
+	failedAttemptWindow time.Duration
 }
 
 // WithStubSettlement lets VerifyIntent settle an intent, and must be wired

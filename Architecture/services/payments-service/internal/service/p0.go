@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atpost/payments-service/internal/config"
 	"github.com/atpost/payments-service/internal/gateway"
 	"github.com/atpost/payments-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -77,9 +78,18 @@ func (s *Service) ApplyWebhook(ctx context.Context, in WebhookInput) error {
 	switch in.EventType {
 	case "payment.captured", "order.paid":
 		newStatus = "succeeded"
-	case "payment.failed":
-		newStatus = "failed"
 	}
+	// `payment.failed` deliberately changes NOTHING on the intent.
+	//
+	// Razorpay lets a customer retry on the same order after a failed attempt.
+	// This used to finalise the intent FAILED on the first failure, and since
+	// failed never becomes succeeded, the retry's `payment.captured` was
+	// refused: the customer was charged and the order stayed failed. The
+	// attempt is now recorded — the provider inbox row written below carries
+	// the event type, order id and payment id, and a replay of it is still a
+	// duplicate — and the intent stays pending. Only the reconciler finalises
+	// FAILED, once the order has no captured or in-flight payment and has been
+	// quiet for the failed-attempt window (reconcileOnce). Nothing is published.
 
 	// B2: the amount and currency travel INTO the transaction. The check
 	// that used to sit below this call, after the commit, is gone — by then
@@ -358,7 +368,8 @@ func (s *Service) RunReconciler(ctx context.Context, interval, pendingAge time.D
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	slog.Info("payments: reconciler started", "interval", interval, "pending_age", pendingAge)
+	slog.Info("payments: reconciler started", "interval", interval, "pending_age", pendingAge,
+		"failed_attempt_window", s.failedAttemptWindowOrDefault())
 	for {
 		select {
 		case <-ctx.Done():
@@ -400,10 +411,20 @@ func (s *Service) RunReconciler(ctx context.Context, interval, pendingAge time.D
 // the outcome the webhook would have produced (reconcileOutcome), and applies
 // it through the webhook's own atomic transaction.
 //
-// Stub-gateway references (`order_stub_…`) were never provider objects: they
-// are skipped without a provider call and reported once per intent. A failing
-// lookup backs off per intent instead of being re-requested and re-logged
-// every tick, and "no payments yet" is not a failure at all.
+// Stub-gateway references (`order_stub_…`) were never provider objects, and
+// StalePending excludes them in SQL: they used to be selected and skipped
+// here, so a pile of dev leftovers filled the 50-row window and pushed real
+// stale intents out of it. A guard below still refuses to send one to the
+// provider. A failing lookup backs off per intent instead of being
+// re-requested and re-logged every tick.
+//
+// FAILED-ATTEMPT WINDOW — an order whose attempts all failed, or that has none,
+// is a candidate for FAILED, not a verdict: the customer may retry on the same
+// provider order. It is finalised only once the order has been quiet for the
+// window, measured from the later of the intent's creation and the latest
+// failed attempt recorded by the webhook. Until then it stays pending,
+// silently. A reference this tick had to repair is never failed on the same
+// tick.
 func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 	if s.provider == nil {
 		// MRC-2.6: without the provider port there is no lookup-by-key and
@@ -419,19 +440,8 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 	}
 	s.recon.forgetAllBut(stale)
 	now := time.Now()
+	window := s.failedAttemptWindowOrDefault()
 	for _, intent := range stale {
-		if gateway.IsStubOrderRef(intent.ProviderRef) {
-			// The stub gateway minted this id locally and no provider has ever
-			// heard of it, so there is nothing to ask. In stub mode such an
-			// intent settles through VerifyIntent (WithStubSettlement) and this
-			// reconciler does not run at all; next to a real provider it is a
-			// leftover, and it stays pending.
-			if s.recon.firstStubSkip(intent.ID) {
-				slog.Info("payments: reconciler skipping a stub-gateway order reference; no provider can resolve it",
-					"intent_id", intent.ID, "provider_order_id", intent.ProviderRef)
-			}
-			continue
-		}
 		if !s.recon.due(intent.ID, now) {
 			continue // backing off after an earlier failure
 		}
@@ -452,6 +462,16 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 			providerRef = recovered
 		}
 
+		if gateway.IsStubOrderRef(providerRef) {
+			// Defensive only: StalePending excludes stub references, so this is
+			// reachable only if that query regresses. The stub gateway minted
+			// this id locally and no provider has ever heard of it; it must
+			// never be sent to one.
+			slog.Error("payments: reconciler was handed a stub-gateway order reference; not sending it to the provider",
+				"intent_id", intent.ID)
+			continue
+		}
+
 		payments, err := s.provider.FetchOrderPayments(ctx, providerRef)
 		if err != nil {
 			s.recon.backOff(intent.ID, now, "payments: reconcile could not list the order's payments", err,
@@ -462,10 +482,38 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 
 		p, newStatus := reconcileOutcome(intent, providerRef, payments)
 		if newStatus == "" {
-			// No payments yet, or none that is terminal. Not a failure.
+			// A payment still in flight or authorized, or a capture that does
+			// not verify (alarmed inside reconcileOutcome). Not a failure.
 			slog.Debug("payments: stale intent has no terminal provider outcome yet",
 				"intent_id", intent.ID, "provider_order_id", providerRef, "payments", len(payments))
 			continue
+		}
+
+		eventID := "reconcile:" + p.ProviderPaymentID
+		eventType := "reconcile." + string(p.State)
+		if newStatus == "failed" {
+			if intent.ProviderRef == "" {
+				// The reference was repaired on this tick; nobody can have been
+				// told about it long enough ago to have finished retrying.
+				continue
+			}
+			elapsed, err := s.store.FailedAttemptWindowElapsed(ctx, intent.ID, providerRef, window)
+			if err != nil {
+				s.recon.backOff(intent.ID, now, "payments: reconcile could not check the failed-attempt window", err,
+					"provider_order_id", providerRef)
+				continue
+			}
+			if !elapsed {
+				// Every attempt failed (or there is none) but the customer may
+				// still retry on this order. Pending, and nothing is published.
+				slog.Debug("payments: stale intent has only failed attempts but is inside the retry window",
+					"intent_id", intent.ID, "provider_order_id", providerRef, "payments", len(payments),
+					"window", window)
+				continue
+			}
+			// One payment.failed per INTENT, whichever attempts the list holds.
+			eventID = "reconcile:failed:" + intent.ID.String()
+			eventType = "reconcile.failed"
 		}
 
 		// Exactly once, by the webhook's own machinery. ApplyWebhookAtomically
@@ -478,8 +526,8 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 		// into ErrDuplicateEvent.
 		_, err = s.store.ApplyWebhookAtomically(ctx, postgres.WebhookEffect{
 			Provider:          s.provider.Name(),
-			EventID:           "reconcile:" + p.ProviderPaymentID,
-			EventType:         "reconcile." + string(p.State),
+			EventID:           eventID,
+			EventType:         eventType,
 			ProviderOrderID:   providerRef,
 			ProviderPaymentID: p.ProviderPaymentID,
 			NewStatus:         newStatus,
@@ -509,17 +557,17 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 //	                     the same VerifyProviderMoney check inside its
 //	                     transaction and refuses a mismatch
 //	payment.authorized → no change; authorized is not captured
-//	payment.failed     → failed, but only when EVERY attempt on the order
-//	                     failed: an attempt still in flight or authorized may
-//	                     yet capture, and failed → succeeded is not a
-//	                     transition the state machine allows
+//	payment.failed     → no change on its own
 //
-// No payments at all means nobody has paid yet: pending.
+// "failed" is returned when EVERY attempt on the order failed, or there is no
+// attempt at all. That is a CANDIDATE: failed → succeeded is not a transition
+// the state machine allows, so the caller applies it only once the order has
+// been quiet for the failed-attempt window. An attempt still in flight or
+// authorized may yet capture, so any such attempt keeps the intent pending.
 func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, payments []gateway.ProviderPaymentState) (gateway.ProviderPaymentState, string) {
 	var (
 		captured   []gateway.ProviderPaymentState
 		lastFailed gateway.ProviderPaymentState
-		failed     int
 		unsettled  int
 	)
 	for _, p := range payments {
@@ -527,7 +575,6 @@ func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, pay
 		case gateway.StateCaptured:
 			captured = append(captured, p)
 		case gateway.StateFailed:
-			failed++
 			lastFailed = p
 		default:
 			unsettled++ // authorized, created/pending, refunded, unknown
@@ -562,10 +609,27 @@ func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, pay
 		// a reason to mark the intent failed.
 		return gateway.ProviderPaymentState{}, ""
 	}
-	if failed > 0 && unsettled == 0 && lastFailed.ProviderPaymentID != "" {
+	if unsettled == 0 {
+		// Every attempt failed, or none was made (lastFailed is then the zero
+		// value).
 		return lastFailed, "failed"
 	}
 	return gateway.ProviderPaymentState{}, ""
+}
+
+// WithFailedAttemptWindow sets how long an order with only failed attempts, or
+// none, stays pending for a retry before the reconciler finalises it FAILED.
+// main.go passes config.Resolve's validated PAYMENTS_FAILED_ATTEMPT_WINDOW.
+func (s *Service) WithFailedAttemptWindow(d time.Duration) *Service {
+	s.failedAttemptWindow = d
+	return s
+}
+
+func (s *Service) failedAttemptWindowOrDefault() time.Duration {
+	if s.failedAttemptWindow <= 0 {
+		return config.DefaultFailedAttemptWindow
+	}
+	return s.failedAttemptWindow
 }
 
 // ─── Reconciler memory between ticks ─────────────────────────────────
@@ -576,33 +640,17 @@ const (
 )
 
 // reconcileTracker is what the reconciler remembers between ticks, in memory:
-// which stub references it has already reported, and which intents are backing
-// off after a failure. Losing it on restart costs one log line and one early
-// retry per intent; the money state lives entirely in the database. The zero
-// value is ready to use.
+// which intents are backing off after a failure. Losing it on restart costs
+// one early retry per intent; the money state lives entirely in the database.
+// The zero value is ready to use.
 type reconcileTracker struct {
-	mu         sync.Mutex
-	stubLogged map[uuid.UUID]struct{}
-	failures   map[uuid.UUID]reconcileFailure
+	mu       sync.Mutex
+	failures map[uuid.UUID]reconcileFailure
 }
 
 type reconcileFailure struct {
 	attempts int
 	next     time.Time
-}
-
-// firstStubSkip reports true the first time a stub reference is seen.
-func (r *reconcileTracker) firstStubSkip(id uuid.UUID) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.stubLogged == nil {
-		r.stubLogged = map[uuid.UUID]struct{}{}
-	}
-	if _, seen := r.stubLogged[id]; seen {
-		return false
-	}
-	r.stubLogged[id] = struct{}{}
-	return true
 }
 
 // due reports whether an intent's backoff, if any, has elapsed.

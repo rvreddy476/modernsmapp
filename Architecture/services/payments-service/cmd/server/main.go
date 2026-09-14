@@ -190,8 +190,14 @@ func main() {
 	// The stub-settlement exception is wired from THIS service's own resolved
 	// mode, not from any caller's claim: ModeStub is selected only when there
 	// are no Razorpay credentials, and ENV=prod refuses it outright above.
+	//
+	// A failed payment attempt does not fail the intent: the customer may retry
+	// on the same provider order. The reconciler finalises FAILED only once the
+	// order has been quiet for PAYMENTS_FAILED_ATTEMPT_WINDOW (validated by
+	// config.Resolve above; 15m when unset).
 	svc := service.New(store, gw).WithProvider(provider).
-		WithStubSettlement(cfg.Mode == config.ModeStub)
+		WithStubSettlement(cfg.Mode == config.ModeStub).
+		WithFailedAttemptWindow(cfg.FailedAttemptWindow)
 
 	// A2: build the caller allowlist. Each calling service has its OWN
 	// public key and its OWN permitted operations and reference types, so

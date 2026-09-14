@@ -238,6 +238,13 @@ type staleIntent struct {
 // providerOrder == "" leaves the reference blank, which is the MRC-2 state.
 func seedStale(t *testing.T, amountMinor int64, currency, providerOrder string) staleIntent {
 	t.Helper()
+	return seedStaleAged(t, amountMinor, currency, providerOrder, 2*time.Hour)
+}
+
+// seedStaleAged is seedStale with the intent's age chosen by the caller, so a
+// test can place it inside or past the failed-attempt retry window.
+func seedStaleAged(t *testing.T, amountMinor int64, currency, providerOrder string, age time.Duration) staleIntent {
+	t.Helper()
 	si := staleIntent{
 		id:            uuid.New(),
 		providerOrder: providerOrder,
@@ -265,9 +272,10 @@ func seedStale(t *testing.T, amountMinor int64, currency, providerOrder string) 
 		     currency, method, status, provider, provider_ref, provider_order_id,
 		     owner_domain, idempotency_key, created_at)
 		VALUES ($1,$2,$3,'order',$4,$5,$6,$7,'upi','pending','razorpay',
-		        NULLIF($8,''), NULLIF($8,''), 'commerce', $9, NOW() - INTERVAL '2 hours')`,
+		        NULLIF($8,''), NULLIF($8,''), 'commerce', $9, NOW() - $10::interval)`,
 		si.id, uuid.New(), uuid.New(), si.referenceID,
-		float64(amountMinor)/100.0, amountMinor, currency, providerOrder, si.idemKey)
+		float64(amountMinor)/100.0, amountMinor, currency, providerOrder, si.idemKey,
+		fmt.Sprintf("%d seconds", int(age.Seconds())))
 	if err != nil {
 		t.Fatalf("seed stale intent: %v", err)
 	}
@@ -737,10 +745,12 @@ func TestReconcileReadsTheOrdersPaymentsAndSettlesExactlyOnce(t *testing.T) {
 	}
 }
 
-// An order nobody has paid against yet: pending, silent, no event.
+// An order nobody has paid against yet, still inside the retry window:
+// pending, silent, no event. (Past the window it fails; see
+// TestReconcileFailsAnOrderWithNoAttemptsPastTheWindowOnce.)
 func TestReconcileLeavesAnOrderWithNoPaymentsPendingWithoutComplaint(t *testing.T) {
 	ctx := context.Background()
-	si := seedStale(t, 118000, "INR", "order_nopay_"+uuid.NewString()[:8])
+	si := seedStaleAged(t, 118000, "INR", "order_nopay_"+uuid.NewString()[:8], 5*time.Minute)
 
 	stub := newRazorpayStub(t) // the order has an empty payments collection
 	logs := captureLogs(t)

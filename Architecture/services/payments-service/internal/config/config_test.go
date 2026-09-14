@@ -3,7 +3,58 @@ package config
 import (
 	"errors"
 	"testing"
+	"time"
 )
+
+// TestResolveFailedAttemptWindow pins PAYMENTS_FAILED_ATTEMPT_WINDOW: unset
+// means 15m, and anything that is not a positive duration refuses to boot in
+// either gateway mode.
+func TestResolveFailedAttemptWindow(t *testing.T) {
+	stub := func(window string) map[string]string {
+		return map[string]string{"PAYMENTS_ALLOW_STUB": "true", "PAYMENTS_FAILED_ATTEMPT_WINDOW": window}
+	}
+
+	t.Run("unset defaults to 15m", func(t *testing.T) {
+		cfg, err := Resolve(envMap(map[string]string{"PAYMENTS_ALLOW_STUB": "true"}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.FailedAttemptWindow != 15*time.Minute || DefaultFailedAttemptWindow != 15*time.Minute {
+			t.Fatalf("window = %v (default %v), want 15m", cfg.FailedAttemptWindow, DefaultFailedAttemptWindow)
+		}
+	})
+
+	for raw, want := range map[string]time.Duration{"30m": 30 * time.Minute, " 90s ": 90 * time.Second, "1h": time.Hour} {
+		t.Run("valid "+raw, func(t *testing.T) {
+			cfg, err := Resolve(envMap(stub(raw)))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.FailedAttemptWindow != want {
+				t.Fatalf("window = %v, want %v", cfg.FailedAttemptWindow, want)
+			}
+		})
+	}
+
+	for _, raw := range []string{"abc", "15", "0", "0s", "-5m"} {
+		t.Run("invalid "+raw, func(t *testing.T) {
+			cfg, err := Resolve(envMap(stub(raw)))
+			if !errors.Is(err, ErrInvalidFailedAttemptWindow) {
+				t.Fatalf("err = %v (config %+v), want ErrInvalidFailedAttemptWindow", err, cfg)
+			}
+		})
+	}
+
+	t.Run("invalid refuses to boot with razorpay credentials too", func(t *testing.T) {
+		_, err := Resolve(envMap(map[string]string{
+			"RAZORPAY_KEY_ID": "rzp_test_x", "RAZORPAY_KEY_SECRET": "s", "RAZORPAY_WEBHOOK_SECRET": "whsec",
+			"PAYMENTS_FAILED_ATTEMPT_WINDOW": "soon",
+		}))
+		if !errors.Is(err, ErrInvalidFailedAttemptWindow) {
+			t.Fatalf("err = %v, want ErrInvalidFailedAttemptWindow", err)
+		}
+	})
+}
 
 func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }

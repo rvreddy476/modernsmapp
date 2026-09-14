@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -254,8 +255,30 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		// Not an error: a late `captured` after a refund, or a repeat of a
 		// terminal state. Commit the inbox row so the provider stops
 		// retrying, and change nothing.
+		//
+		// One of these is money we owe back: a capture on an intent the
+		// reconciler already finalised FAILED, because the customer paid
+		// after the retry window closed. The intent is NOT revived —
+		// payment.failed has already gone out and commerce has released the
+		// order's stock — so the capture is recorded as needing a refund, in
+		// this transaction, before the inbox row commits. If that write
+		// fails, the whole event rolls back and the provider retries.
+		lateCaptureRecorded := false
+		if intent.Status == "failed" && e.NewStatus == "succeeded" {
+			lateCaptureRecorded, err = recordLateCaptureTx(ctx, tx, &intent, e)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
+		}
+		if lateCaptureRecorded {
+			slog.Error("payments: LATE CAPTURE ON A FAILED INTENT — the intent is not revived and a refund is required "+
+				"(recorded in payments.refund_required; not issued automatically)",
+				"intent_id", intent.ID, "provider", e.Provider, "provider_order_id", e.ProviderOrderID,
+				"provider_payment_id", lateCapturePaymentKey(e), "event_id", e.EventID,
+				"amount_minor", e.AmountMinor, "currency", e.Currency)
 		}
 		return &intent, nil
 	}
@@ -341,6 +364,53 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		return nil, err
 	}
 	return &intent, nil
+}
+
+// lateCapturePaymentKey is the refund_required dedupe key for a capture: the
+// provider payment id, or the event id when a payload carried none (the column
+// refuses a blank key).
+func lateCapturePaymentKey(e WebhookEffect) string {
+	if strings.TrimSpace(e.ProviderPaymentID) != "" {
+		return e.ProviderPaymentID
+	}
+	return "event:" + e.EventID
+}
+
+// recordLateCaptureTx writes the durable needs-refund marker for a capture on
+// a FAILED intent, inside the caller's transaction. It reports whether a NEW
+// marker was written.
+//
+// Dedupe is on (provider, provider_payment_id), not on the event: Razorpay
+// announces one capture as both payment.captured and order.paid, under
+// different event ids, and redelivers either. The inbox catches a redelivery
+// of the same event before this runs; the unique key catches the rest.
+//
+// No provider refund is issued here. Whether to refund late captures
+// automatically is an operator decision; this row is what they act on.
+func recordLateCaptureTx(ctx context.Context, tx pgx.Tx, intent *PaymentIntent, e WebhookEffect) (bool, error) {
+	key := lateCapturePaymentKey(e)
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO payments.refund_required
+		     (intent_id, provider, provider_order_id, provider_payment_id, event_id,
+		      amount_minor, currency, reason)
+		 VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),'late_capture_after_failed')
+		 ON CONFLICT (provider, provider_payment_id) DO NOTHING`,
+		intent.ID, e.Provider, e.ProviderOrderID, key, e.EventID, e.AmountMinor, e.Currency)
+	if err != nil {
+		return false, fmt.Errorf("payments: record late capture on failed intent %s: %w", intent.ID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil // this payment is already recorded as owed back
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO payments.payment_audit_log (intent_id, event, old_status, new_status, metadata)
+		 VALUES ($1,'late_capture_refund_required',$2,$2,$3)`,
+		intent.ID, intent.Status,
+		[]byte(fmt.Sprintf(`{"provider":%q,"event_id":%q,"provider_payment_id":%q,"amount_minor":%d}`,
+			e.Provider, e.EventID, key, e.AmountMinor))); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // transitionAllowed mirrors the state machine already enforced in
@@ -959,8 +1029,20 @@ func (s *Store) ApplyRefundWebhookAtomically(ctx context.Context, e WebhookEffec
 
 // ─── Reconciliation support ──────────────────────────────────────────
 
+// stubOrderRefPattern is a LIKE pattern matching every stub-gateway order
+// reference, with the prefix's underscores escaped (a bare `_` matches any
+// character).
+var stubOrderRefPattern = strings.ReplaceAll(gateway.StubOrderPrefix, "_", `\_`) + "%"
+
 // StalePending returns intents stuck in a non-terminal state past `age`, for
 // the reconciliation worker to resolve against the provider.
+//
+// Stub-gateway references are excluded HERE, not skipped by the caller. No
+// provider can resolve one, and when they were selected and then skipped they
+// filled the `limit` window oldest-first, so real stale intents behind them
+// were never reconciled. There is no stub provider column to filter on
+// (intents are stamped provider='razorpay' even on a stub deployment), so the
+// reference prefix is the discriminator.
 func (s *Store) StalePending(ctx context.Context, age time.Duration, limit int) ([]PaymentIntent, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, payer_id, payee_id, reference_type, reference_id,
@@ -970,9 +1052,10 @@ func (s *Store) StalePending(ctx context.Context, age time.Duration, limit int) 
 		   FROM payments.payment_intents
 		  WHERE status IN ('pending','processing')
 		    AND created_at < NOW() - $1::interval
+		    AND COALESCE(NULLIF(provider_order_id,''), provider_ref, '') NOT LIKE $3
 		  ORDER BY created_at
 		  LIMIT $2`,
-		fmt.Sprintf("%d seconds", int(age.Seconds())), limit)
+		fmt.Sprintf("%d seconds", int(age.Seconds())), limit, stubOrderRefPattern)
 	if err != nil {
 		return nil, err
 	}
@@ -989,6 +1072,36 @@ func (s *Store) StalePending(ctx context.Context, age time.Duration, limit int) 
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// FailedAttemptWindowElapsed reports whether an intent has been quiet for
+// `window`: created at least that long ago, AND no failed payment attempt on
+// its provider order recorded (by the payment.failed webhook, in
+// provider_events) more recently than that. A customer who retried a minute
+// ago is still retrying, however old the intent is.
+//
+// Computed against the database clock, the same clock StalePending and the
+// inbox's received_at use.
+func (s *Store) FailedAttemptWindowElapsed(ctx context.Context, intentID uuid.UUID, providerOrderID string, window time.Duration) (bool, error) {
+	var elapsed bool
+	err := s.db.QueryRow(ctx,
+		`SELECT GREATEST(i.created_at,
+		                 COALESCE((SELECT MAX(e.received_at)
+		                             FROM payments.provider_events e
+		                            WHERE e.provider_order_id = $2
+		                              AND e.event_type = 'payment.failed'),
+		                          i.created_at))
+		        <= NOW() - $3::interval
+		   FROM payments.payment_intents i
+		  WHERE i.id = $1`,
+		intentID, providerOrderID, fmt.Sprintf("%d milliseconds", window.Milliseconds())).Scan(&elapsed)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrIntentNotFound
+		}
+		return false, err
+	}
+	return elapsed, nil
 }
 
 // UnsettledRefundAge returns the age of the oldest refund that has not
