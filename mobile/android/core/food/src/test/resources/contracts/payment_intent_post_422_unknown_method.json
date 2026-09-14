@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PAYMENT_METHOD_INVALID",
+    "message": "payment method is invalid: payment method is not enabled for this launch: \"net_banking\" (allowed: card, upi)"
+  },
+  "meta": {}
+}

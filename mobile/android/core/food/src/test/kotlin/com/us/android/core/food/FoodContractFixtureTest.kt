@@ -6,6 +6,11 @@ import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.AcceptingDto
 import com.us.android.core.food.network.ComplianceDto
 import com.us.android.core.food.network.DeliveryAssignmentDto
+import com.us.android.core.food.network.FeastCartDto
+import com.us.android.core.food.network.FeastInvoiceDto
+import com.us.android.core.food.network.FeastOrderDto
+import com.us.android.core.food.network.OrderPaymentDto
+import com.us.android.core.food.network.PaymentIntentDto
 import com.us.android.core.food.network.DeliveryDocumentDto
 import com.us.android.core.food.network.DeliveryKycDto
 import com.us.android.core.food.network.DeliveryLocationDto
@@ -256,6 +261,104 @@ class FoodContractFixtureTest {
             coded("FOOD_DIGILOCKER_PROVIDER_FAILED", FoodError.Unexpected::class.java),
         "kyc_status_get_200.json" to data(DeliveryKycDto.serializer()) { kyc(it) },
         "kyc_status_get_404_no_profile.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        // ── Customer: cart, bill and pricing (Feast A5) ────────────────────
+        "cart_get_200_section_9_5.json" to data(FeastCartDto.serializer()) {
+            assertThat(it.totalsPaise?.finalAmountPaise).isEqualTo(Paise(64_912))
+            assertThat(it.taxesAndCharges?.charges?.map { c -> c.kind })
+                .containsExactly("PACKAGING", "PLATFORM_FEE", "DELIVERY_FEE").inOrder()
+            assertThat(it.taxesAndCharges?.taxes?.map { t -> t.liability })
+                .containsExactly("SUPPLIER", "ECO_SECTION_9_5").inOrder()
+            assertThat(it.taxesAndCharges?.totalTaxesAndChargesPaise).isEqualTo(Paise(8_912))
+            assertThat(it.taxesAndCharges?.taxes?.first()?.rates?.single()?.ratePercent).isEqualTo("18.00")
+            assertThat(it.items.single().addons.single().lineTotalPaise).isEqualTo(Paise(6_000))
+            assertThat(it.totals.taxTotal).isEqualTo(Paise(3_512))
+            assertThat(it.pricingError).isNull()
+        },
+        "cart_get_200_supplier_liable.json" to data(FeastCartDto.serializer()) {
+            assertThat(it.totalsPaise?.finalAmountPaise).isEqualTo(Paise(72_452))
+            assertThat(it.taxesAndCharges?.taxes?.first()?.liableParty).isEqualTo("RESTAURANT")
+            assertThat(it.items.single().taxAmountPaise).isEqualTo(Paise(10_080))
+        },
+        "cart_get_200_pricing_blocked.json" to data(FeastCartDto.serializer()) {
+            assertThat(it.taxesAndCharges).isNull()
+            assertThat(it.totalsPaise).isNull()
+            assertThat(it.pricingError?.code).isEqualTo("FOOD_RESTAURANT_TAX_CATEGORY_MISSING")
+            assertThat(it.pricingError?.message).isEqualTo("restaurant has no GST tax category and cannot take orders")
+        },
+
+        // ── Customer: orders ──────────────────────────────────────────────
+        "order_get_200.json" to data(FeastOrderDto.serializer()) {
+            assertThat(it.status).isEqualTo("CONFIRMED")
+            assertThat(it.money?.totalsPaise?.finalAmountPaise).isEqualTo(Paise(64_912))
+            assertThat(it.money?.taxesAndCharges?.totalTaxPaise).isEqualTo(Paise(3_512))
+            assertThat(it.deliveryCode).isNull()
+            assertThat(it.etaAt).isNull()
+            assertThat(it.items.single().lineTotalPaise).isEqualTo(Paise(50_000))
+            assertThat(it.history.single().toStatus).isEqualTo("PLACED")
+        },
+        "order_get_200_out_for_delivery.json" to data(FeastOrderDto.serializer()) {
+            assertThat(it.status).isEqualTo("OUT_FOR_DELIVERY")
+            assertThat(it.deliveryCode).isEqualTo("7390")
+            assertThat(it.etaAt).isEqualTo("2026-09-13T06:52:00Z")
+            assertThat(it.etaSource).isEqualTo("google")
+            assertThat(it.money).isNull()
+            assertThat(it.totals.finalAmount).isEqualTo(Paise(30_162))
+        },
+        "order_place_422_tax_category_missing.json" to
+            coded("FOOD_RESTAURANT_TAX_CATEGORY_MISSING", FoodError.InvalidField::class.java),
+        "order_place_503_platform_gstin_missing.json" to
+            coded("FOOD_PLATFORM_GSTIN_NOT_CONFIGURED", FoodError.Unexpected::class.java),
+        "invoice_get_200.json" to data(FeastInvoiceDto.serializer()) {
+            assertThat(it.sections.map { s -> s.issuer }).containsExactly("RESTAURANT", "PLATFORM").inOrder()
+            assertThat(it.sections.first().lines).hasSize(3)
+            assertThat(it.sections.last().issuerGstin).isEqualTo("29ZZZCZ9999Z1ZF")
+            assertThat(it.grandTotalPaise).isEqualTo(Paise(72_452))
+            assertThat(it.buyer.city).isEqualTo("Bengaluru")
+            assertThat(it.legacy).isFalse()
+        },
+
+        // ── Customer: payment ─────────────────────────────────────────────
+        "order_payment_get_200_confirming.json" to data(OrderPaymentDto.serializer()) {
+            assertThat(it.status).isEqualTo("confirming")
+            assertThat(it.refundStatus).isNull()
+            assertThat(it.amountMinor).isEqualTo(25_000L)
+        },
+        "order_payment_get_200_paid.json" to data(OrderPaymentDto.serializer()) {
+            assertThat(it.status).isEqualTo("paid")
+            assertThat(it.refundStatus).isNull()
+        },
+        "order_payment_get_200_failed.json" to data(OrderPaymentDto.serializer()) {
+            assertThat(it.status).isEqualTo("failed")
+        },
+        "order_payment_get_200_paid_refund_pending.json" to data(OrderPaymentDto.serializer()) {
+            assertThat(it.status).isEqualTo("paid")
+            assertThat(it.refundStatus).isEqualTo("pending")
+        },
+        "order_payment_get_404.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        "order_payment_get_409_not_online.json" to coded("FOOD_PAYMENT_NOT_ONLINE", FoodError.Unexpected::class.java),
+        "payment_intent_post_201_client_session.json" to data(PaymentIntentDto.serializer()) {
+            assertThat(it.clientSession).containsExactly(
+                "provider", "razorpay",
+                "order_id", "order_ContractRzp01",
+                "key_id", "rzp_test_ContractKey01",
+                "merchant_display_name", "Momentum Merchant",
+            )
+            assertThat(it.paymentIntent?.amountMinor).isEqualTo(25_000L)
+            assertThat(it.amount).isEqualTo(Paise(25_000))
+            assertThat(it.orderId).isEqualTo("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0030")
+        },
+        "payment_intent_post_201_client_session_no_merchant_name.json" to data(PaymentIntentDto.serializer()) {
+            assertThat(it.clientSession).doesNotContainKey("merchant_display_name")
+            assertThat(it.clientSession).containsKey("key_id")
+        },
+        "payment_intent_post_201_no_client_session.json" to data(PaymentIntentDto.serializer()) {
+            assertThat(it.clientSession).isNull()
+            assertThat(it.paymentIntent?.method).isEqualTo("card")
+        },
+        "payment_intent_post_422_cod.json" to coded("PAYMENT_METHOD_UNAVAILABLE", FoodError.InvalidField::class.java),
+        "payment_intent_post_422_unknown_method.json" to coded("PAYMENT_METHOD_INVALID", FoodError.InvalidField::class.java),
+        "payment_intent_post_422_wallet.json" to coded("PAYMENT_METHOD_UNAVAILABLE", FoodError.InvalidField::class.java),
+
         "submit_post_422_not_ready.json" to error {
             assertThat(it).isEqualTo(FoodError.NotReady(listOf("fssai_document", "payout_account")))
             val checklist = (it as FoodError.NotReady).checklist

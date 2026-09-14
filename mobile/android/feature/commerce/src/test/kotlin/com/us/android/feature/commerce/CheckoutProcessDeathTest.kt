@@ -33,8 +33,9 @@ import com.us.android.core.commerce.network.UpdateCartItemRequest
 import com.us.android.core.commerce.network.UpdateVariantRequest
 import com.us.android.core.commerce.network.VariantDto
 import com.us.android.core.commerce.payment.PaymentAttempt
-import com.us.android.core.commerce.payment.PaymentHandoff
-import com.us.android.core.commerce.payment.PaymentHandoffEvent
+import com.us.android.core.payments.PaymentHandoff
+import com.us.android.core.payments.PaymentHandoffEvent
+import com.us.android.feature.commerce.checkout.toSheetAttempt
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.commerce.checkout.CheckoutUiState
@@ -443,7 +444,7 @@ class CheckoutProcessDeathTest {
             val before = second.state.value
             handoff.publish(
                 PaymentHandoffEvent.Unavailable(
-                    PaymentAttempt("some-other-order", "some-other-attempt"),
+                    PaymentAttempt("some-other-order", "some-other-attempt").toSheetAttempt(),
                     "not ours",
                 ),
             )

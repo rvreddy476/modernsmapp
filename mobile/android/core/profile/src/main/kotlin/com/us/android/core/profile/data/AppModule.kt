@@ -24,7 +24,7 @@ enum class AppModule(
     COMMERCE("commerce", "Commerce", hasScreen = true),
     CHAT("chat", "Chat", hasScreen = true),
     DATING("dating", "Dating", hasScreen = false),
-    FOOD("food", "Food", hasScreen = false),
+    FOOD("food", "Food", hasScreen = true),
     QA("qa", "QA", hasScreen = false),
     POSTTUBE("posttube", "PostTube", hasScreen = true),
     ;

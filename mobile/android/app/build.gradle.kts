@@ -79,6 +79,8 @@ dependencies {
     // The commerce buyer journey: catalogue, product, cart, address, checkout,
     // payment handoff and orders.
     implementation(projects.feature.commerce)
+    // Feast customer ordering (A5). Only :app may depend on it (moduleGraphCheck (g)).
+    implementation(projects.feature.feast)
     // The payment attempt type the commerce routes carry.
     implementation(projects.core.commerce)
     // The payment sheet (2026-09-14). MainActivity is the ActivityPaymentHost

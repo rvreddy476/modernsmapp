@@ -1,0 +1,30 @@
+{
+  "data": {
+    "amount": 250,
+    "client_session": {
+      "provider": "razorpay",
+      "order_id": "order_ContractRzp01",
+      "key_id": "rzp_test_ContractKey01",
+      "merchant_display_name": "Momentum Merchant"
+    },
+    "currency": "INR",
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0034",
+    "method": "ONLINE",
+    "order_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0030",
+    "payment_intent": {
+      "amount_minor": 25000,
+      "currency": "INR",
+      "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0033",
+      "method": "upi",
+      "provider_ref": "order_ContractRzp01",
+      "reference_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0030",
+      "reference_type": "food_order",
+      "status": "pending"
+    },
+    "provider": "payments-service",
+    "provider_order_id": "order_ContractRzp01",
+    "provider_payment_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0033",
+    "status": "PENDING"
+  },
+  "meta": {}
+}

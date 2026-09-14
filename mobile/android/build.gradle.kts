@@ -67,6 +67,11 @@ tasks.register<Delete>("clean") {
  *   f. `:core:payments` never reaches a `:feature:*`, an application or
  *      `:core:commerce` — the payment sheet is product-neutral; products
  *      depend on it, never the reverse (2026-09-14).
+ *   g. `:app-kitchen` / `:app-rider` never reach `:feature:feast` — customer
+ *      ordering ships only in Momentum (Feast A5, 2026-09-15).
+ *   h. `:feature:feast` never reaches `:feature:commerce`, `:feature:kitchen`
+ *      or `:feature:rider`, even through a core module — Feast shares code
+ *      through `:core`, never through another product's feature (A5).
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -133,6 +138,20 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
                 it.startsWith(":feature:") || it == ":app" || it.startsWith(":app-") || it == ":core:commerce"
             }.forEach { dep ->
                 add(":core:payments must not depend on $dep (directly or transitively) — the payment sheet is product-neutral.")
+            }
+        }
+        // (g)
+        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+            if (":feature:feast" in reach(app)) {
+                add("$app must not depend on :feature:feast (directly or transitively) — customer ordering ships only in Momentum.")
+            }
+        }
+        // (h)
+        if (":feature:feast" in direct) {
+            reach(":feature:feast").filter {
+                it == ":feature:commerce" || it == ":feature:kitchen" || it == ":feature:rider"
+            }.forEach { dep ->
+                add(":feature:feast must not depend on $dep (directly or transitively) — Feast shares code through :core only.")
             }
         }
         // (d)
@@ -285,6 +304,43 @@ fun applicationBoundarySelfCheck(): List<String> {
             "payments -> a partner app, transitively",
             mapOf(":core:payments" to setOf(":core:y"), ":core:y" to setOf(":app-rider")),
             ":core:payments must not depend on :app-rider (directly or transitively)",
+        ),
+        // :feature:feast coverage (A5, 2026-09-15): rules (g) and (h), and the
+        // graph that must stay legal — Momentum shipping Feast beside MStore,
+        // Feast taking payments and food data through core modules only.
+        Triple(
+            "legal feast graph",
+            mapOf(
+                ":app" to setOf(":feature:feast", ":feature:commerce", ":core:payments"),
+                ":feature:feast" to setOf(":core:food", ":core:payments", ":core:realtime"),
+                ":feature:commerce" to setOf(":core:commerce", ":core:payments"),
+                ":app-kitchen" to setOf(":feature:kitchen", ":core:food"),
+                ":app-rider" to setOf(":feature:rider", ":core:food"),
+            ),
+            null,
+        ),
+        Triple("kitchen app -> feast", mapOf(":app-kitchen" to setOf(":feature:feast")), ":app-kitchen must not depend on :feature:feast"),
+        Triple("rider app -> feast", mapOf(":app-rider" to setOf(":feature:feast")), ":app-rider must not depend on :feature:feast"),
+        Triple(
+            "kitchen app -> feast, transitively",
+            mapOf(":app-kitchen" to setOf(":core:x"), ":core:x" to setOf(":feature:feast")),
+            ":app-kitchen must not depend on :feature:feast",
+        ),
+        Triple(
+            "rider app -> feast, transitively",
+            mapOf(":app-rider" to setOf(":feature:rider"), ":feature:rider" to setOf(":core:y"), ":core:y" to setOf(":feature:feast")),
+            ":app-rider must not depend on :feature:feast",
+        ),
+        Triple(
+            "feast -> commerce feature, transitively",
+            mapOf(":feature:feast" to setOf(":core:x"), ":core:x" to setOf(":feature:commerce")),
+            ":feature:feast must not depend on :feature:commerce",
+        ),
+        Triple("feast -> kitchen feature", mapOf(":feature:feast" to setOf(":feature:kitchen")), ":feature:feast must not depend on :feature:kitchen"),
+        Triple(
+            "feast -> rider feature, transitively",
+            mapOf(":feature:feast" to setOf(":core:food"), ":core:food" to setOf(":feature:rider")),
+            ":feature:feast must not depend on :feature:rider",
         ),
     )
     return cases.mapNotNull { (name, graph, expected) ->
@@ -496,9 +552,15 @@ tasks.register("moduleGraphCheck") {
     //      coordinator, scoped per application. Core, so no new phantom
     //      parent. Rules (e) and (f) keep it out of the partner apps and free
     //      of every product module.
+    // 45 = 44 + :feature:feast (Feast A5, 2026-09-15): customer food ordering
+    //      inside Momentum — restaurants, menu, cart with the server's taxes,
+    //      addresses, UPI/card payment confirmed by the server, live tracking,
+    //      history and invoice. Under the existing :feature phantom parent, so
+    //      no new parent is counted. Rules (g) and (h) keep it out of the
+    //      partner apps and off every other product's feature.
     // Still to add, one module at a time, to reach 47: :core:location,
-    // :core:kyc-ui, :feature:feast.
-    val expectedModuleCount = 44
+    // :core:kyc-ui.
+    val expectedModuleCount = 45
 
     doLast {
         val allViolations = buildList {

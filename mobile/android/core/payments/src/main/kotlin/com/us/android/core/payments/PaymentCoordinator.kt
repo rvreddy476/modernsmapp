@@ -28,8 +28,8 @@ import kotlin.coroutines.cancellation.CancellationException
  *    attempt and how far the buyer got — are persisted in its saved state
  *    ([InFlightPayment], keyed by application).
  *
- * A product joins the two with an attempt-scoped, consume-once event bus
- * (commerce's is `PaymentHandoff`). That split is what survives process death
+ * A product joins the two with the attempt-scoped, consume-once, per-application
+ * event bus in this module, [PaymentHandoff] (shared by MStore and Feast). That split is what survives process death
  * and app kill, exactly as Momentum commerce did before this module existed:
  * nothing here is in-memory state that has to outlive the process. After a
  * recreation the product reads its saved attempt and phase, asks its server,

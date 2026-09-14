@@ -7,13 +7,13 @@ import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.PaymentStatus
 import com.us.android.core.commerce.model.PriceBreakdown
 import com.us.android.core.commerce.payment.PaymentAttempt
-import com.us.android.core.commerce.payment.PaymentHandoff
-import com.us.android.core.commerce.payment.PaymentHandoffEvent
 import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.payments.PaymentConfirmation
 import com.us.android.core.payments.PaymentCoordinator
+import com.us.android.core.payments.PaymentHandoff
+import com.us.android.core.payments.PaymentHandoffEvent
 import com.us.android.core.payments.PaymentPollPolicy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -190,8 +190,11 @@ class CheckoutViewModel @Inject constructor(
         if (observingHandoff) return
         observingHandoff = true
         viewModelScope.launch {
-            handoff.events.collect { event ->
-                val mine = activeAttempt
+            // MStore's stream only: another application's ending is never
+            // delivered here, and the attempt check below — which includes the
+            // application — is the second line of that defence.
+            handoff.events(MSTORE_PAYMENT_APPLICATION_ID).collect { event ->
+                val mine = activeAttempt?.toSheetAttempt()
                 if (mine == null || event.attempt != mine) {
                     // Not ours. Someone else's order, or an earlier attempt at
                     // this one. Dropping it is the whole point: the server
@@ -212,11 +215,11 @@ class CheckoutViewModel @Inject constructor(
                 }
                 when (event) {
                     is PaymentHandoffEvent.SheetClosed ->
-                        onPaymentSheetReturned(event.orderId, orderNumber)
+                        onPaymentSheetReturned(event.referenceId, orderNumber)
 
                     is PaymentHandoffEvent.Unavailable ->
                         _state.value = CheckoutUiState.PaymentFailed(
-                            orderId = event.orderId,
+                            orderId = event.referenceId,
                             orderNumber = orderNumber,
                         )
                 }

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_NOT_FOUND",
+    "message": "not found"
+  },
+  "meta": {}
+}

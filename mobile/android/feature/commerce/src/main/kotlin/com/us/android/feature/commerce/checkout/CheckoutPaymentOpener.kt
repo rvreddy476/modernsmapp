@@ -4,11 +4,11 @@ import android.app.Activity
 import android.util.Log
 import com.us.android.core.commerce.model.PaymentHandle
 import com.us.android.core.commerce.payment.PaymentAttempt
-import com.us.android.core.commerce.payment.PaymentHandoff
-import com.us.android.core.commerce.payment.PaymentHandoffEvent
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.payments.PaymentCoordinator
+import com.us.android.core.payments.PaymentHandoff
+import com.us.android.core.payments.PaymentHandoffEvent
 import com.us.android.core.payments.PaymentSession
 import com.us.android.core.payments.PaymentSheetResult
 import kotlinx.coroutines.CoroutineScope
@@ -28,7 +28,7 @@ import com.us.android.core.payments.PaymentAttempt as SheetAttempt
  *     the client names an order, never an amount (LB-4);
  *  2. hand the server's `client_session` to the coordinator, so the
  *     publishable key is the one the provider order was created against;
- *  3. publish the outcome, whatever it is, onto [PaymentHandoff], so the
+ *  3. publish the outcome, whatever it is, onto :core:payments' [PaymentHandoff], so the
  *     checkout screen polls the server for the truth.
  *
  * Every path publishes exactly one event. A path that opened a sheet and then
@@ -61,7 +61,7 @@ class CheckoutPaymentOpener @Inject constructor(
                     Log.w(TAG, "could not open payment for $orderId: ${result.error}")
                     handoff.publish(
                         PaymentHandoffEvent.Unavailable(
-                            attempt = attempt,
+                            attempt = attempt.toSheetAttempt(),
                             reason = "We couldn't start the payment. Please try again.",
                         ),
                     )
@@ -76,7 +76,7 @@ class CheckoutPaymentOpener @Inject constructor(
                         // sheet cannot open, and saying so beats a spinner.
                         handoff.publish(
                             PaymentHandoffEvent.Unavailable(
-                                attempt = attempt,
+                                attempt = attempt.toSheetAttempt(),
                                 reason = "Payment isn't available for this order right now.",
                             ),
                         )
@@ -145,6 +145,6 @@ internal fun PaymentAttempt.toSheetAttempt(): SheetAttempt =
  */
 internal fun PaymentSheetResult.toHandoffEvent(attempt: PaymentAttempt): PaymentHandoffEvent =
     when (this) {
-        is PaymentSheetResult.Closed -> PaymentHandoffEvent.SheetClosed(attempt)
-        is PaymentSheetResult.Unavailable -> PaymentHandoffEvent.Unavailable(attempt, reason)
+        is PaymentSheetResult.Closed -> PaymentHandoffEvent.SheetClosed(attempt.toSheetAttempt())
+        is PaymentSheetResult.Unavailable -> PaymentHandoffEvent.Unavailable(attempt.toSheetAttempt(), reason)
     }

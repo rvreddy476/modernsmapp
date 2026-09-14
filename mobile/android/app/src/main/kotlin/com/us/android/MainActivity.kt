@@ -15,6 +15,7 @@ import com.us.android.core.notifications.NotificationPresenter
 import com.us.android.core.payments.ActivityPaymentHost
 import com.us.android.core.payments.PaymentResultSink
 import com.us.android.feature.commerce.checkout.CheckoutPaymentOpener
+import com.us.android.feature.feast.checkout.FeastPaymentOpener
 import com.us.android.navigation.MainViewModel
 import com.us.android.navigation.UsApp
 import com.us.android.push.PushDestinations
@@ -62,6 +63,10 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
     @Inject
     lateinit var paymentOpener: CheckoutPaymentOpener
 
+    /** Feast's opener: its own intent route, its own application id, the same sheet and bus. */
+    @Inject
+    lateinit var feastPaymentOpener: FeastPaymentOpener
+
     private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -99,6 +104,10 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
                     onAbandonPaymentSheet = { attempt ->
                         paymentOpener.abandon(attempt)
                     },
+                    onOpenFeastPayment = { request ->
+                        feastPaymentOpener.start(activity = this, scope = lifecycleScope, request = request)
+                    },
+                    onAbandonFeastPayment = { request -> feastPaymentOpener.abandon(request) },
                 )
             }
         }

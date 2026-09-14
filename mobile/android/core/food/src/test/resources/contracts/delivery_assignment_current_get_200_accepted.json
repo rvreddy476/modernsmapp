@@ -11,7 +11,37 @@
     "delivery_fee": 29,
     "delivery_partner_payout": 23.2,
     "created_at": "2026-09-13T06:30:00Z",
-    "pickup_code": "4821"
+    "pickup_code": "4821",
+    "delivery_fee_paise": 2900,
+    "delivery_partner_payout_paise": 2320,
+    "payout_paise": 2320,
+    "currency": "INR",
+    "restaurant": {
+      "name": "Test Kitchen",
+      "latitude": 12.9716,
+      "longitude": 77.5946,
+      "address_line1": "1 Test Lane",
+      "address_line2": "Near Test Park",
+      "city": "Bengaluru",
+      "phone": "08040000000"
+    },
+    "drop": {
+      "latitude": 12.978449,
+      "longitude": 77.640812,
+      "address_line1": "42 Lake View Road",
+      "address_line2": "Flat 3B",
+      "landmark": "Opp. City Park",
+      "city": "Bengaluru",
+      "postal_code": "560038",
+      "customer_first_name": "Asha",
+      "delivery_instructions": "Ring the bell twice"
+    },
+    "eta_at": "2026-09-13T06:52:00Z",
+    "eta_source": "google",
+    "navigation": {
+      "pickup_url": "https://www.google.com/maps/dir/?api=1\u0026destination=12.9716,77.5946\u0026travelmode=two-wheeler",
+      "drop_url": "https://www.google.com/maps/dir/?api=1\u0026destination=12.978449,77.640812\u0026travelmode=two-wheeler"
+    }
   },
   "meta": {}
 }

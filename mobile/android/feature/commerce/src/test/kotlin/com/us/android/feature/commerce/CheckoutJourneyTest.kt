@@ -34,8 +34,9 @@ import com.us.android.core.commerce.network.UpdateCartItemRequest
 import com.us.android.core.commerce.network.UpdateVariantRequest
 import com.us.android.core.commerce.network.VariantDto
 import com.us.android.core.commerce.payment.PaymentAttempt
-import com.us.android.core.commerce.payment.PaymentHandoff
-import com.us.android.core.commerce.payment.PaymentHandoffEvent
+import com.us.android.core.payments.PaymentHandoff
+import com.us.android.core.payments.PaymentHandoffEvent
+import com.us.android.feature.commerce.checkout.toSheetAttempt
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.commerce.checkout.CheckoutUiState
@@ -405,7 +406,7 @@ class CheckoutJourneyTest {
         // Order A's outcome, delayed, arriving now.
         handoff.publish(
             PaymentHandoffEvent.Unavailable(
-                PaymentAttempt("order-A", "attempt-A"),
+                PaymentAttempt("order-A", "attempt-A").toSheetAttempt(),
                 "someone else's failure",
             ),
         )
@@ -437,7 +438,7 @@ class CheckoutJourneyTest {
 
         handoff.publish(
             PaymentHandoffEvent.Unavailable(
-                PaymentAttempt(mine.orderId, "an-older-attempt"),
+                PaymentAttempt(mine.orderId, "an-older-attempt").toSheetAttempt(),
                 "stale",
             ),
         )
@@ -465,7 +466,7 @@ class CheckoutJourneyTest {
         dispatcher.scheduler.advanceUntilIdle()
 
         val mine = model.activePaymentAttempt()!!
-        handoff.publish(PaymentHandoffEvent.Unavailable(mine, "no session"))
+        handoff.publish(PaymentHandoffEvent.Unavailable(mine.toSheetAttempt(), "no session"))
         dispatcher.scheduler.advanceUntilIdle()
 
         assertTrue(
@@ -488,12 +489,12 @@ class CheckoutJourneyTest {
         dispatcher.scheduler.advanceUntilIdle()
 
         val mine = model.activePaymentAttempt()!!
-        handoff.publish(PaymentHandoffEvent.Unavailable(mine, "no session"))
+        handoff.publish(PaymentHandoffEvent.Unavailable(mine.toSheetAttempt(), "no session"))
         dispatcher.scheduler.advanceUntilIdle()
         val afterFirst = model.state.value
 
         // The same event replayed — what a rotation would deliver.
-        handoff.publish(PaymentHandoffEvent.SheetClosed(mine))
+        handoff.publish(PaymentHandoffEvent.SheetClosed(mine.toSheetAttempt()))
         dispatcher.scheduler.advanceUntilIdle()
 
         assertEquals(
@@ -518,7 +519,7 @@ class CheckoutJourneyTest {
         dispatcher.scheduler.advanceUntilIdle()
 
         val first = model.activePaymentAttempt()!!
-        handoff.publish(PaymentHandoffEvent.Unavailable(first, "no session"))
+        handoff.publish(PaymentHandoffEvent.Unavailable(first.toSheetAttempt(), "no session"))
         dispatcher.scheduler.advanceUntilIdle()
 
         model.retryPayment()

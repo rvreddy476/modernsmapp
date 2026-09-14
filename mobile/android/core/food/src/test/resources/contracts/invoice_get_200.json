@@ -1,0 +1,155 @@
+{
+  "data": {
+    "order_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+    "order_number": "FG1000000000001",
+    "invoice_date": "2026-09-13",
+    "place_of_supply_state": "29",
+    "buyer": {
+      "name": "Test Customer",
+      "address_line": "2 Test Road",
+      "city": "Bengaluru",
+      "state": "Karnataka"
+    },
+    "sections": [
+      {
+        "issuer": "RESTAURANT",
+        "title": "Tax invoice issued by the restaurant",
+        "invoice_number": "FR/2627/000001",
+        "issuer_name": "Test Kitchens LLP",
+        "issuer_gstin": "29ZZZPZ0000Z1Z6",
+        "lines": [
+          {
+            "ref": "item:0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0016",
+            "kind": "ITEM",
+            "description": "Paneer Tikka",
+            "sac": "996331",
+            "quantity": 2,
+            "unit_price_paise": 25000,
+            "supplied_by": "Test Kitchen",
+            "liability": "SUPPLIER",
+            "rate_bp": 1800,
+            "rate_percent": "18.00",
+            "discount_paise": 0,
+            "taxable_paise": 50000,
+            "cgst_paise": 4500,
+            "sgst_paise": 4500,
+            "igst_paise": 0,
+            "tax_paise": 9000,
+            "total_paise": 59000
+          },
+          {
+            "ref": "addon:0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0017",
+            "kind": "ADDON",
+            "description": "Extra cheese",
+            "sac": "996331",
+            "quantity": 2,
+            "unit_price_paise": 3000,
+            "supplied_by": "Test Kitchen",
+            "liability": "SUPPLIER",
+            "rate_bp": 1800,
+            "rate_percent": "18.00",
+            "discount_paise": 0,
+            "taxable_paise": 6000,
+            "cgst_paise": 540,
+            "sgst_paise": 540,
+            "igst_paise": 0,
+            "tax_paise": 1080,
+            "total_paise": 7080
+          },
+          {
+            "ref": "packaging",
+            "kind": "PACKAGING",
+            "description": "Packaging charges",
+            "sac": "996331",
+            "quantity": 1,
+            "unit_price_paise": 2000,
+            "supplied_by": "Test Kitchen",
+            "liability": "SUPPLIER",
+            "rate_bp": 1800,
+            "rate_percent": "18.00",
+            "discount_paise": 0,
+            "taxable_paise": 2000,
+            "cgst_paise": 180,
+            "sgst_paise": 180,
+            "igst_paise": 0,
+            "tax_paise": 360,
+            "total_paise": 2360
+          }
+        ],
+        "taxable_paise": 58000,
+        "cgst_paise": 5220,
+        "sgst_paise": 5220,
+        "igst_paise": 0,
+        "tax_paise": 10440,
+        "total_paise": 68440,
+        "notes": [
+          "The platform collects TCS under section 52 on this supply; the amount is not shown here."
+        ]
+      },
+      {
+        "issuer": "PLATFORM",
+        "title": "Tax invoice issued by the platform",
+        "invoice_number": "FP/2627/000001",
+        "issuer_name": "Feast (electronic commerce operator)",
+        "issuer_gstin": "29ZZZCZ9999Z1ZF",
+        "lines": [
+          {
+            "ref": "platform_fee",
+            "kind": "PLATFORM_FEE",
+            "description": "Platform fee",
+            "sac": "998599",
+            "quantity": 1,
+            "unit_price_paise": 500,
+            "supplied_by": "Feast (electronic commerce operator)",
+            "liability": "SUPPLIER",
+            "rate_bp": 1800,
+            "rate_percent": "18.00",
+            "discount_paise": 0,
+            "taxable_paise": 500,
+            "cgst_paise": 45,
+            "sgst_paise": 45,
+            "igst_paise": 0,
+            "tax_paise": 90,
+            "total_paise": 590
+          },
+          {
+            "ref": "delivery_fee",
+            "kind": "DELIVERY_FEE",
+            "description": "Delivery fee",
+            "sac": "996813",
+            "quantity": 1,
+            "unit_price_paise": 2900,
+            "supplied_by": "Feast (electronic commerce operator)",
+            "liability": "SUPPLIER",
+            "rate_bp": 1800,
+            "rate_percent": "18.00",
+            "discount_paise": 0,
+            "taxable_paise": 2900,
+            "cgst_paise": 261,
+            "sgst_paise": 261,
+            "igst_paise": 0,
+            "tax_paise": 522,
+            "total_paise": 3422
+          }
+        ],
+        "taxable_paise": 3400,
+        "cgst_paise": 306,
+        "sgst_paise": 306,
+        "igst_paise": 0,
+        "tax_paise": 612,
+        "total_paise": 4012,
+        "notes": []
+      }
+    ],
+    "grand_total_paise": 72452,
+    "currency": "INR",
+    "menu_prices_treated_as_exclusive": true,
+    "needs_adviser_confirmation": true,
+    "adviser_marker": "Tax rates pending adviser confirmation",
+    "legacy": false,
+    "notes": [
+      "Menu prices are treated as exclusive of GST; tax is added at checkout."
+    ]
+  },
+  "meta": {}
+}

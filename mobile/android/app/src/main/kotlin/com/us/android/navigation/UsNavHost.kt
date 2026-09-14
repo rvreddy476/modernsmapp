@@ -95,6 +95,9 @@ import com.us.android.feature.commerce.navigation.mSellerScreens
 import com.us.android.feature.commerce.navigation.mStoreScreens
 import com.us.android.feature.commerce.navigation.navigateToMSeller
 import com.us.android.feature.commerce.navigation.navigateToMStore
+import com.us.android.feature.feast.checkout.FeastPaymentRequest
+import com.us.android.feature.feast.navigation.feastScreens
+import com.us.android.feature.feast.navigation.navigateToFeast
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
@@ -258,6 +261,9 @@ fun UsNavHost(
     // entirely, and keeps :app's provider choice in one place.
     onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit = { _, _ -> },
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit = { _ -> },
+    // Feast's sheet, from the same Activity, stamped "feast" by :feature:feast.
+    onOpenFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
+    onAbandonFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
     navController: NavHostController = rememberNavController(),
 ) {
     val tabs = remember(shellState) {
@@ -371,7 +377,16 @@ fun UsNavHost(
             ) {
                 authDestinations(navController)
                 shellDestinations()
-                tabDestinations(navController, pool, launcher, onOpenPaymentSheet, onAbandonPaymentSheet, onOpenReel) {
+                tabDestinations(
+                    navController,
+                    pool,
+                    launcher,
+                    onOpenPaymentSheet,
+                    onAbandonPaymentSheet,
+                    onOpenFeastPayment,
+                    onAbandonFeastPayment,
+                    onOpenReel,
+                ) {
                     createScope = it
                 }
             }
@@ -549,6 +564,8 @@ private fun NavGraphBuilder.tabDestinations(
     // a lambda inside UsNavHost, so the parameter is not otherwise in scope.
     onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit,
+    onOpenFeastPayment: (FeastPaymentRequest) -> Unit,
+    onAbandonFeastPayment: (FeastPaymentRequest) -> Unit,
     /** A reel notification was tapped: the shell parks the id for Reels before the tab switch. */
     onOpenReel: (postId: String) -> Unit,
     /** A mini-app's "+" was pressed: the shell opens the Create sheet in that scope. */
@@ -649,6 +666,16 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenSeller = { navController.navigateToMSeller() },
     )
     mSellerScreens(navController = navController)
+
+    // Feast — customer food ordering (A5): restaurants → menu → cart →
+    // address → checkout → payment → live tracking, orders and invoices.
+    // Entered from the Explore launcher's Feast tile. Like MStore, the sheet
+    // opens from the Activity, so the two payment edges are supplied here.
+    feastScreens(
+        navController = navController,
+        onOpenPayment = onOpenFeastPayment,
+        onAbandonPayment = onAbandonFeastPayment,
+    )
 
     // The classic composer route stays registered for any older entry point;
     // the hub's Text tab embeds the same screen.
@@ -918,7 +945,8 @@ private fun NavGraphBuilder.exploreDestinations(
                     // other's header any more, and one person can open both.
                     LauncherApp.MSTORE -> navController.navigateToMStore()
                     LauncherApp.MSELLER -> navController.navigateToMSeller()
-                    LauncherApp.MATCH, LauncherApp.ASK, LauncherApp.FEAST -> Unit
+                    LauncherApp.FEAST -> navController.navigateToFeast()
+                    LauncherApp.MATCH, LauncherApp.ASK -> Unit
                 }
             },
         )
@@ -1040,6 +1068,8 @@ fun UsApp(
     pool: PlayerPool,
     onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit = { _, _ -> },
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit = { _ -> },
+    onOpenFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
+    onAbandonFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
 ) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val shellState by viewModel.shellState.collectAsStateWithLifecycle()
@@ -1055,6 +1085,8 @@ fun UsApp(
         callState = callState,
         onOpenPaymentSheet = onOpenPaymentSheet,
         onAbandonPaymentSheet = onAbandonPaymentSheet,
+        onOpenFeastPayment = onOpenFeastPayment,
+        onAbandonFeastPayment = onAbandonFeastPayment,
     )
 }
 

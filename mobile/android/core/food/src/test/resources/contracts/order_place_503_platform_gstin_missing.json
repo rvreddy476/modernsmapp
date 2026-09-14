@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_PLATFORM_GSTIN_NOT_CONFIGURED",
+    "message": "the platform GSTIN is not configured, so orders cannot be priced"
+  },
+  "meta": {}
+}

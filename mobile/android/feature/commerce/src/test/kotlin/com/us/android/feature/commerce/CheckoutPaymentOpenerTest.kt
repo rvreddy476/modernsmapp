@@ -5,7 +5,7 @@ import com.us.android.core.commerce.model.PaymentHandle
 import com.us.android.core.commerce.model.PaymentStatus
 import com.us.android.core.commerce.network.PaymentHandleDto
 import com.us.android.core.commerce.payment.PaymentAttempt
-import com.us.android.core.commerce.payment.PaymentHandoffEvent
+import com.us.android.core.payments.PaymentHandoffEvent
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.core.network.ApiEnvelope
@@ -50,10 +50,10 @@ class CheckoutPaymentOpenerTest {
     fun `every sheet ending reaches checkout as the event it always did`() {
         val sheet = attempt.toSheetAttempt()
         val expected = mapOf(
-            PaymentOutcome.Succeeded("pay_1") to PaymentHandoffEvent.SheetClosed(attempt),
-            PaymentOutcome.Failed(2, "network") to PaymentHandoffEvent.SheetClosed(attempt),
-            PaymentOutcome.Cancelled to PaymentHandoffEvent.SheetClosed(attempt),
-            PaymentOutcome.Unavailable("no session") to PaymentHandoffEvent.Unavailable(attempt, "no session"),
+            PaymentOutcome.Succeeded("pay_1") to PaymentHandoffEvent.SheetClosed(sheet),
+            PaymentOutcome.Failed(2, "network") to PaymentHandoffEvent.SheetClosed(sheet),
+            PaymentOutcome.Cancelled to PaymentHandoffEvent.SheetClosed(sheet),
+            PaymentOutcome.Unavailable("no session") to PaymentHandoffEvent.Unavailable(sheet, "no session"),
         )
         expected.forEach { (outcome, event) ->
             assertEquals("$outcome", event, outcome.toSheetResult(sheet).toHandoffEvent(attempt))
@@ -66,7 +66,7 @@ class CheckoutPaymentOpenerTest {
         assertEquals(SheetAttempt("mstore", "order-1", "attempt-1"), attempt.toSheetAttempt())
         assertEquals(attempt.toSheetAttempt(), attempt.toSheetAttempt())
         assertEquals(
-            PaymentHandoffEvent.Unavailable(attempt, "r"),
+            PaymentHandoffEvent.Unavailable(attempt.toSheetAttempt(), "r"),
             PaymentSheetResult.Unavailable(attempt.toSheetAttempt(), "r").toHandoffEvent(attempt),
         )
         assertEquals(

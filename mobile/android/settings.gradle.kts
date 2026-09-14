@@ -210,3 +210,4 @@ include(":app-rider")
 // depends on no :feature:*, no :app* and no :core:commerce, and the partner
 // apps may not depend on it — both enforced by moduleGraphCheck.
 include(":core:payments")
+include(":feature:feast")

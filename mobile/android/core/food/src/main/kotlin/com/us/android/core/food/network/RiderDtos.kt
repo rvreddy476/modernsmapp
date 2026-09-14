@@ -224,6 +224,49 @@ data class DeliveryAssignmentDto(
     @SerialName("created_at") val createdAt: String,
     /** Present only after the rider accepted and before pickup. Shown to the kitchen. */
     @SerialName("pickup_code") val pickupCode: String? = null,
+    // Added by food-service 610a2acd (rider navigation). Optional: the Rider
+    // screens do not read these yet; declared so the strict contract decode
+    // keeps pinning the wire.
+    @SerialName("delivery_fee_paise") val deliveryFeePaise: Paise? = null,
+    @SerialName("delivery_partner_payout_paise") val deliveryPartnerPayoutPaise: Paise? = null,
+    @SerialName("payout_paise") val payoutPaise: Paise? = null,
+    val currency: String? = null,
+    val restaurant: AssignmentRestaurantDto? = null,
+    /** Only from ACCEPTED until delivered or cancelled. */
+    val drop: AssignmentDropDto? = null,
+    @SerialName("eta_at") val etaAt: String? = null,
+    @SerialName("eta_source") val etaSource: String? = null,
+    val navigation: AssignmentNavigationDto? = null,
+)
+
+@Serializable
+data class AssignmentRestaurantDto(
+    val name: String = "",
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    @SerialName("address_line1") val addressLine1: String? = null,
+    @SerialName("address_line2") val addressLine2: String? = null,
+    val city: String? = null,
+    val phone: String? = null,
+)
+
+@Serializable
+data class AssignmentDropDto(
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    @SerialName("address_line1") val addressLine1: String? = null,
+    @SerialName("address_line2") val addressLine2: String? = null,
+    val landmark: String? = null,
+    val city: String? = null,
+    @SerialName("postal_code") val postalCode: String? = null,
+    @SerialName("customer_first_name") val customerFirstName: String? = null,
+    @SerialName("delivery_instructions") val deliveryInstructions: String? = null,
+)
+
+@Serializable
+data class AssignmentNavigationDto(
+    @SerialName("pickup_url") val pickupUrl: String? = null,
+    @SerialName("drop_url") val dropUrl: String? = null,
 )
 
 @Serializable

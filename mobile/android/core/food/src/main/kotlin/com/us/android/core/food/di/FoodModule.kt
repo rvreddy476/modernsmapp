@@ -1,5 +1,6 @@
 package com.us.android.core.food.di
 
+import com.us.android.core.food.network.FeastApi
 import com.us.android.core.food.network.FoodApi
 import com.us.android.core.food.network.KitchenApi
 import com.us.android.core.food.network.RiderApi
@@ -32,4 +33,9 @@ object FoodModule {
     @Provides
     @Singleton
     fun provideRiderApi(retrofit: Retrofit): RiderApi = retrofit.create(RiderApi::class.java)
+
+    /** The customer's discovery, cart, address, order, payment and invoice routes (Feast A5). */
+    @Provides
+    @Singleton
+    fun provideFeastApi(retrofit: Retrofit): FeastApi = retrofit.create(FeastApi::class.java)
 }
