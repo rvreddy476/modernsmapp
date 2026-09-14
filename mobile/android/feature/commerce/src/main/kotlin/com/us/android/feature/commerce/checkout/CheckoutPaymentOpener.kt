@@ -2,6 +2,7 @@ package com.us.android.feature.commerce.checkout
 
 import android.app.Activity
 import android.util.Log
+import com.us.android.core.commerce.model.PaymentHandle
 import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.commerce.payment.PaymentHandoff
 import com.us.android.core.commerce.payment.PaymentHandoffEvent
@@ -82,17 +83,7 @@ class CheckoutPaymentOpener @Inject constructor(
                         return@launch
                     }
 
-                    // The amount and currency travel with the session, from
-                    // the SERVER's intent. The client relays them; it does not
-                    // choose them, and Razorpay prices the sheet from the
-                    // order anyway.
-                    val session = PaymentSession.fromClientSession(
-                        applicationId = MSTORE_PAYMENT_APPLICATION_ID,
-                        clientSession = handle.clientSession,
-                        amountMinor = handle.amount.value,
-                        currency = handle.currency,
-                        description = "Order $orderNumber",
-                    )
+                    val session = handle.toPaymentSession(orderNumber)
 
                     payments.launch(
                         activity = activity,
@@ -119,6 +110,24 @@ class CheckoutPaymentOpener @Inject constructor(
         const val TAG = "CheckoutPayment"
     }
 }
+
+/**
+ * The sheet session for a server payment handle, stamped as MStore's.
+ *
+ * The amount and currency travel with the session, from the SERVER's intent.
+ * The client relays them; it does not choose them, and Razorpay prices the
+ * sheet from the order anyway. `merchant_display_name` is relayed as received
+ * (null from a server that omits it); the launcher cleans it and falls back.
+ */
+internal fun PaymentHandle.toPaymentSession(orderNumber: String): PaymentSession =
+    PaymentSession.fromClientSession(
+        applicationId = MSTORE_PAYMENT_APPLICATION_ID,
+        clientSession = clientSession,
+        amountMinor = amount.value,
+        currency = currency,
+        description = "Order $orderNumber",
+        merchantDisplayName = clientSession[PaymentSession.CLIENT_SESSION_MERCHANT_DISPLAY_NAME],
+    )
 
 /**
  * A commerce attempt, as the payment sheet sees it: MStore's application, the

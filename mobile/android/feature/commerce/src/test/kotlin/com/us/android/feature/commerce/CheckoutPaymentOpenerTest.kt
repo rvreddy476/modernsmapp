@@ -1,10 +1,15 @@
 package com.us.android.feature.commerce
 
 import androidx.lifecycle.SavedStateHandle
+import com.us.android.core.commerce.model.PaymentHandle
 import com.us.android.core.commerce.model.PaymentStatus
+import com.us.android.core.commerce.network.PaymentHandleDto
 import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.commerce.payment.PaymentHandoffEvent
 import com.us.android.core.commerce.repository.CommerceRepository
+import com.us.android.core.commerce.repository.CommerceResult
+import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.di.NetworkModule
 import com.us.android.core.payments.InFlightPayment
 import com.us.android.core.payments.PaymentOutcome
 import com.us.android.core.payments.PaymentSheetResult
@@ -16,10 +21,13 @@ import com.us.android.feature.commerce.checkout.CommercePaymentStatusSource
 import com.us.android.feature.commerce.checkout.MSTORE_PAYMENT_APPLICATION_ID
 import com.us.android.feature.commerce.checkout.toHandoffEvent
 import com.us.android.feature.commerce.checkout.toReading
+import com.us.android.feature.commerce.checkout.toPaymentSession
 import com.us.android.feature.commerce.checkout.toSheetAttempt
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import retrofit2.Response
 import com.us.android.core.payments.PaymentAttempt as SheetAttempt
 
 /**
@@ -66,6 +74,50 @@ class CheckoutPaymentOpenerTest {
             "mstore",
             CommercePaymentStatusSource(CommerceRepository(FakeCommerceApi())).applicationId,
         )
+    }
+
+    @Test
+    fun `the server's merchant_display_name reaches the payment session`() = runTest {
+        val handle = openPaymentReturning(
+            """{"provider":"razorpay","order_id":"order_x","key_id":"rzp_test_x","merchant_display_name":"Momentum Merchant"}""",
+        )
+
+        val session = handle.toPaymentSession(orderNumber = "MS-1")
+
+        assertEquals("Momentum Merchant", session.merchantDisplayName)
+        assertEquals("mstore", session.applicationId)
+        assertEquals("order_x", session.providerOrderId)
+        assertEquals("rzp_test_x", session.keyId)
+        assertEquals(204000L, session.amountMinor)
+        assertEquals("Order MS-1", session.description)
+    }
+
+    @Test
+    fun `an older server with no merchant_display_name still opens a session, with no name`() = runTest {
+        val handle = openPaymentReturning(
+            """{"provider":"razorpay","order_id":"order_x","key_id":"rzp_test_x"}""",
+        )
+
+        val session = handle.toPaymentSession(orderNumber = "MS-1")
+
+        assertNull(session.merchantDisplayName)
+        assertEquals("rzp_test_x", session.keyId)
+        assertEquals("order_x", session.providerOrderId)
+    }
+
+    /** The real repository over a wire body decoded with the app's real Json. */
+    private suspend fun openPaymentReturning(clientSession: String): PaymentHandle {
+        val body = NetworkModule.provideJson().decodeFromString(
+            PaymentHandleDto.serializer(),
+            """{"payment_intent_id":"pi_1","amount_minor":204000,"currency":"INR","status":"pending",
+                "client_session":$clientSession}""",
+        )
+        val api = object : FakeCommerceApi() {
+            override suspend fun openPayment(orderId: String): Response<ApiEnvelope<PaymentHandleDto>> =
+                Response.success(ApiEnvelope(data = body))
+        }
+        val result = CommerceRepository(api).openPayment("order-1")
+        return (result as CommerceResult.Success).value
     }
 
     @Test

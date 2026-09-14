@@ -76,7 +76,8 @@ data class PaymentAttempt(
  * What the provider SDK needs to open its sheet.
  *
  * Every provider field is server-sourced. payments-service creates the
- * provider order and returns `client_session {provider, order_id, key_id}` —
+ * provider order and returns `client_session {provider, order_id, key_id}`,
+ * plus an optional `merchant_display_name` from its per-application registry —
  * public fields only — through each domain's intent endpoint; the amount and
  * currency are the server intent's own figures, relayed. The client never
  * CHOOSES an amount (LB-4): with `order_id` present, Razorpay prices the sheet
@@ -98,6 +99,16 @@ data class PaymentSession(
     val currency: String,
     /** The line under the merchant name on the sheet, e.g. "Order MS-1042". */
     val description: String,
+    /**
+     * The merchant name the server's per-application registry chose for the
+     * sheet header (`client_session.merchant_display_name`), as received.
+     *
+     * Optional: the server omits the key when it has no name, and older
+     * servers never send it. The launcher cleans it (control characters out,
+     * trimmed, capped at 64) and falls back to the registered business name
+     * when nothing is left, so a raw or absent value here is safe.
+     */
+    val merchantDisplayName: String? = null,
 ) {
     init {
         PaymentApplication.requireValid(applicationId)
@@ -107,13 +118,16 @@ data class PaymentSession(
         const val CLIENT_SESSION_PROVIDER = "provider"
         const val CLIENT_SESSION_ORDER_ID = "order_id"
         const val CLIENT_SESSION_KEY_ID = "key_id"
+        const val CLIENT_SESSION_MERCHANT_DISPLAY_NAME = "merchant_display_name"
 
         /**
          * Builds a session from the server's `client_session` map plus the
          * intent's amount and currency.
          *
-         * Missing keys become empty strings, which the launcher refuses before
-         * presenting anything.
+         * Missing provider keys become empty strings, which the launcher
+         * refuses before presenting anything. [merchantDisplayName] defaults to
+         * the map's own `merchant_display_name`, and is null when the server
+         * sent none.
          */
         fun fromClientSession(
             applicationId: String,
@@ -121,6 +135,7 @@ data class PaymentSession(
             amountMinor: Long,
             currency: String,
             description: String,
+            merchantDisplayName: String? = clientSession[CLIENT_SESSION_MERCHANT_DISPLAY_NAME],
         ): PaymentSession = PaymentSession(
             applicationId = applicationId,
             provider = clientSession[CLIENT_SESSION_PROVIDER].orEmpty(),
@@ -129,6 +144,7 @@ data class PaymentSession(
             amountMinor = amountMinor,
             currency = currency,
             description = description,
+            merchantDisplayName = merchantDisplayName,
         )
     }
 }

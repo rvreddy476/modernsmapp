@@ -69,7 +69,24 @@ package com.us.android.core.payments
  *
  * The Feast checkout ViewModel then persists its attempt in an
  * `InFlightPayment(store, FEAST_PAYMENT_APPLICATION_ID)`, opens the sheet with
- * [PaymentCoordinator.launch] using a session and attempt stamped `feast`, and
+ * [PaymentCoordinator.launch] using a session and attempt stamped `feast` —
+ * passing the server's merchant name through, so the sheet header comes from
+ * the per-application registry rather than the launcher's fallback:
+ *
+ * ```kotlin
+ * val session = PaymentSession.fromClientSession(
+ *     applicationId = FEAST_PAYMENT_APPLICATION_ID,
+ *     clientSession = intent.clientSession, // food-service's client_session map
+ *     amountMinor = intent.amountMinor,
+ *     currency = intent.currency,
+ *     description = "Order ${order.number}",
+ *     // Optional; omitted by the server when empty. Null falls back to
+ *     // "Momentum Merchant" in the launcher.
+ *     merchantDisplayName = intent.clientSession[PaymentSession.CLIENT_SESSION_MERCHANT_DISPLAY_NAME],
+ * )
+ * ```
+ *
+ * and
  * on [PaymentSheetResult.Closed] (or after a process death with a sheet already
  * requested) collects
  * `coordinator.confirm(FEAST_PAYMENT_APPLICATION_ID, orderId, feastStatusSource)`.

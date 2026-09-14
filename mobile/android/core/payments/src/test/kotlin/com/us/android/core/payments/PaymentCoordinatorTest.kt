@@ -284,6 +284,34 @@ class PaymentCoordinatorTest {
 
         val empty = PaymentSession.fromClientSession(APP, emptyMap(), 1, "INR", "d")
         assertEquals("missing keys are empty, which the launcher refuses", "", empty.keyId + empty.providerOrderId)
+        assertEquals("an older server's session has no merchant name", null, built.merchantDisplayName)
+    }
+
+    @Test
+    fun `a session carries the server's merchant_display_name when there is one`() {
+        val withName = PaymentSession.fromClientSession(
+            applicationId = APP,
+            clientSession = mapOf(
+                "provider" to "razorpay",
+                "order_id" to "order_x",
+                "key_id" to "rzp_test_x",
+                "merchant_display_name" to "Momentum Merchant",
+            ),
+            amountMinor = 100,
+            currency = "INR",
+            description = "d",
+        )
+        assertEquals("Momentum Merchant", withName.merchantDisplayName)
+
+        val explicit = PaymentSession.fromClientSession(
+            applicationId = APP,
+            clientSession = mapOf("provider" to "razorpay", "order_id" to "order_x", "key_id" to "rzp_test_x"),
+            amountMinor = 100,
+            currency = "INR",
+            description = "d",
+            merchantDisplayName = "Feast Kitchens",
+        )
+        assertEquals("Feast Kitchens", explicit.merchantDisplayName)
     }
 
     internal companion object {

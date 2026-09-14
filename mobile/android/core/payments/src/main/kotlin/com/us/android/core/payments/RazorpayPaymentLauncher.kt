@@ -144,20 +144,7 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher, PaymentRe
         val checkout = Checkout()
         checkout.setKeyID(keyId)
 
-        val options = JSONObject().apply {
-            put("name", MERCHANT_NAME)
-            put("description", session.description)
-            // Authoritative. With order_id present, Razorpay prices the sheet
-            // from the ORDER, so the amount below cannot be used to underpay.
-            put("order_id", orderId)
-            put("currency", session.currency)
-            put("amount", amountMinor)
-            put("retry", JSONObject().put("enabled", false))
-            // Sending the SDK's own telemetry is off: this flow already
-            // reports its outcome to our server, which is the only party whose
-            // opinion of the payment counts.
-            put("send_sms_hash", false)
-        }
+        val options = checkoutOptions(session).toJsonObject()
 
         @Suppress("TooGenericExceptionCaught")
         try {
@@ -234,7 +221,7 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher, PaymentRe
         const val PROVIDER_RAZORPAY = "razorpay"
 
         /**
-         * The name on the Razorpay sheet's header.
+         * The name on the Razorpay sheet's header when the server names none.
          *
          * "Momentum Merchant" is the business name registered on the founder's
          * Razorpay account (decision, 12 Sep 2026). The sheet has to show the
@@ -243,10 +230,65 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher, PaymentRe
          * statement does not is exactly the mismatch a buyer reads as fraud.
          * Internal so a test can pin it.
          *
-         * One Razorpay account, one registered name: a second product on this
-         * module (Feast) shows the same name unless the founder registers a
-         * second business, at which point this becomes part of the session.
+         * Since 2026-09-14 the server's per-application registry supplies the
+         * name ([PaymentSession.merchantDisplayName]); this is the fallback for
+         * a server that omits it. See [merchantNameFor].
          */
-        const val MERCHANT_NAME = "Momentum Merchant"
+        const val DEFAULT_MERCHANT_NAME = "Momentum Merchant"
+
+        /** The longest merchant name shown. Matches the server's own cap. */
+        const val MERCHANT_NAME_MAX_LENGTH = 64
+
+        /**
+         * The name the sheet shows for [session].
+         *
+         * The server already trims and caps, but this string is rendered on a
+         * payment sheet, so the client cleans it again: control characters are
+         * removed, the rest is trimmed and capped at [MERCHANT_NAME_MAX_LENGTH]
+         * (never splitting a surrogate pair), and anything blank afterwards —
+         * including an absent name — becomes [DEFAULT_MERCHANT_NAME].
+         *
+         * Never log this alongside the key id.
+         */
+        fun merchantNameFor(session: PaymentSession): String {
+            val cleaned = session.merchantDisplayName
+                ?.filterNot { it.isISOControl() }
+                ?.trim()
+                ?.capAt(MERCHANT_NAME_MAX_LENGTH)
+                ?.trim()
+            return if (cleaned.isNullOrBlank()) DEFAULT_MERCHANT_NAME else cleaned
+        }
+
+        private fun String.capAt(max: Int): String {
+            if (length <= max) return this
+            val end = if (Character.isHighSurrogate(this[max - 1])) max - 1 else max
+            return substring(0, end)
+        }
+
+        /**
+         * The options handed to `Checkout.open`, as plain values so they can be
+         * checked without the Android `org.json` runtime. The key id is not
+         * here: it is set on the Checkout itself.
+         */
+        fun checkoutOptions(session: PaymentSession): Map<String, Any> = linkedMapOf(
+            "name" to merchantNameFor(session),
+            "description" to session.description,
+            // Authoritative. With order_id present, Razorpay prices the sheet
+            // from the ORDER, so the amount below cannot be used to underpay.
+            "order_id" to session.providerOrderId,
+            "currency" to session.currency,
+            "amount" to session.amountMinor,
+            "retry" to mapOf("enabled" to false),
+            // Sending the SDK's own telemetry is off: this flow already
+            // reports its outcome to our server, which is the only party whose
+            // opinion of the payment counts.
+            "send_sms_hash" to false,
+        )
+
+        private fun Map<*, *>.toJsonObject(): JSONObject = JSONObject().also { json ->
+            forEach { (key, value) ->
+                json.put(key as String, if (value is Map<*, *>) value.toJsonObject() else value)
+            }
+        }
     }
 }
