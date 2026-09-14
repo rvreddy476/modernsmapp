@@ -60,6 +60,55 @@ func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
+// TestResolveProductionRequiresServiceCallers pins the production rule (ENV=prod
+// exactly, as main.go always read it) and the boot guard: production with no
+// caller allowlist refuses to start; every other ENV boots without one.
+func TestResolveProductionRequiresServiceCallers(t *testing.T) {
+	razorpay := func(extra map[string]string) map[string]string {
+		m := map[string]string{
+			"RAZORPAY_KEY_ID": "rzp_test_x", "RAZORPAY_KEY_SECRET": "s", "RAZORPAY_WEBHOOK_SECRET": "whsec",
+			"INTERNAL_SERVICE_KEY": "k",
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	for _, callers := range []string{"", "   "} {
+		t.Run("production with SERVICE_CALLERS "+strconvQuote(callers)+" refuses to boot", func(t *testing.T) {
+			cfg, err := Resolve(envMap(razorpay(map[string]string{"ENV": "prod", "SERVICE_CALLERS": callers})))
+			if !errors.Is(err, ErrServiceCallersRequired) {
+				t.Fatalf("err = %v (config %+v), want ErrServiceCallersRequired", err, cfg)
+			}
+		})
+	}
+
+	t.Run("production with callers boots as production", func(t *testing.T) {
+		cfg, err := Resolve(envMap(razorpay(map[string]string{"ENV": "prod", "SERVICE_CALLERS": "commerce-service"})))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !cfg.Production {
+			t.Fatal("ENV=prod resolved as not production")
+		}
+	})
+
+	for _, env := range []string{"", "dev", "local", "staging", "production", "PROD"} {
+		t.Run("ENV "+strconvQuote(env)+" is not production and boots without callers", func(t *testing.T) {
+			cfg, err := Resolve(envMap(map[string]string{"ENV": env, "PAYMENTS_ALLOW_STUB": "true"}))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.Production {
+				t.Fatalf("ENV=%q resolved as production; the rule is ENV=prod exactly", env)
+			}
+		})
+	}
+}
+
+func strconvQuote(s string) string { return "\"" + s + "\"" }
+
 // TestResolve pins the boot rules. The important row is "razorpay creds +
 // stub flag + no webhook secret": before the extraction that combination
 // booted with signature verification off.

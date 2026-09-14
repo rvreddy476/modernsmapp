@@ -34,6 +34,13 @@ type Config struct {
 
 	InternalKey string
 
+	// Production is ENV=prod, the rule cmd/server/main.go has always used
+	// (env("ENV", "dev") == "prod"): a blank ENV, dev and staging are not
+	// production. In production PAYMENTS_ALLOW_STUB is refused (main.go),
+	// SERVICE_CALLERS is mandatory (ErrServiceCallersRequired) and the refund
+	// operator routes refuse the legacy internal key.
+	Production bool
+
 	// FailedAttemptWindow is how long an intent whose order has only failed
 	// payment attempts (or none) stays pending so the customer can retry on
 	// the same provider order. Only after the order has been quiet this long
@@ -59,6 +66,13 @@ var (
 	// default) would boot with signature verification switched off and
 	// accept forged payment.captured webhooks.
 	ErrWebhookSecretRequired = errors.New("RAZORPAY_WEBHOOK_SECRET is required when running with the Razorpay gateway")
+	// ErrServiceCallersRequired refuses a production boot with no caller
+	// allowlist. Without one the shared INTERNAL_SERVICE_KEY would be the only
+	// credential on /v1/payments/internal, every sibling service would hold
+	// every domain's authority, and the refund operator routes (which refuse
+	// that key in production) could not be reached by anyone.
+	ErrServiceCallersRequired = errors.New("SERVICE_CALLERS is required when ENV=prod: register each calling service " +
+		"(SERVICE_CALLER_<NAME>_KID, _PUBKEY, _OPS, _REFTYPES); the internal service key alone is not a production credential")
 )
 
 // Resolve reads the environment through getenv (os.Getenv in production,
@@ -73,13 +87,21 @@ var (
 // In every mode PAYMENTS_FAILED_ATTEMPT_WINDOW, when set, must parse as a
 // positive duration (ErrInvalidFailedAttemptWindow); unset means
 // DefaultFailedAttemptWindow.
+//
+// With ENV=prod, a blank SERVICE_CALLERS is ErrServiceCallersRequired. A
+// non-blank but invalid allowlist is refused by main.go's verifier build in
+// every environment.
 func Resolve(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		RazorpayKeyID:       getenv("RAZORPAY_KEY_ID"),
 		RazorpayKeySecret:   getenv("RAZORPAY_KEY_SECRET"),
 		WebhookSecret:       getenv("RAZORPAY_WEBHOOK_SECRET"),
 		InternalKey:         getenv("INTERNAL_SERVICE_KEY"),
+		Production:          getenv("ENV") == "prod",
 		FailedAttemptWindow: DefaultFailedAttemptWindow,
+	}
+	if cfg.Production && strings.TrimSpace(getenv("SERVICE_CALLERS")) == "" {
+		return Config{}, ErrServiceCallersRequired
 	}
 	if raw := strings.TrimSpace(getenv("PAYMENTS_FAILED_ATTEMPT_WINDOW")); raw != "" {
 		d, err := time.ParseDuration(raw)

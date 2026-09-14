@@ -94,6 +94,9 @@ type Handler struct {
 	verifier    *servicetoken.Verifier
 	provider    gateway.Provider
 	internalKey string
+	// production is main.go's ENV=prod rule (config.Config.Production). In
+	// production the refund operator routes refuse the legacy internal key.
+	production bool
 }
 
 func New(svc Service) *Handler {
@@ -120,6 +123,15 @@ func (h *Handler) WithProvider(p gateway.Provider) *Handler {
 // credential, and main.go warns accordingly.
 func (h *Handler) WithInternalKey(key string) *Handler {
 	h.internalKey = key
+	return h
+}
+
+// WithProduction tells the handler this deployment is production (ENV=prod).
+// It changes one thing: the refund operator routes require a service token and
+// refuse the legacy internal key (refuseLegacyKeyInProduction). Every other
+// route keeps its credential rules.
+func (h *Handler) WithProduction(production bool) *Handler {
+	h.production = production
 	return h
 }
 
@@ -179,9 +191,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 		internal.POST("/intents/:id/refund", h.requireOp(servicetoken.OpRefundCreate), h.InitiateRefund)
 
 		// Operator routes for refunds the worker parked in needs_attention
-		// (refund_admin.go). Same family gate; a token needs OpRefundAdmin.
-		internal.GET("/refunds/needs-attention", h.requireOp(OpRefundAdmin), h.ListRefundsNeedingAttention)
-		internal.POST("/refunds/:commandId/resolve", h.requireOp(OpRefundAdmin), h.ResolveRefundCommand)
+		// (refund_admin.go). Same family gate; a token needs OpRefundAdmin,
+		// and in production the legacy internal key is refused outright.
+		internal.GET("/refunds/needs-attention", h.refuseLegacyKeyInProduction(), h.requireOp(OpRefundAdmin), h.ListRefundsNeedingAttention)
+		internal.POST("/refunds/:commandId/resolve", h.refuseLegacyKeyInProduction(), h.requireOp(OpRefundAdmin), h.ResolveRefundCommand)
 
 		// A1: PATCH /intents/:id/status is REMOVED and must never return.
 		// It let a caller assert `succeeded` with no PSP proof and no

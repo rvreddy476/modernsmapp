@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -246,4 +247,195 @@ func TestRefundAdminRoutes_Resolve(t *testing.T) {
 		}
 		fake.resolveErr = nil
 	})
+}
+
+// errorCode returns the "code" of an API error body, wherever the envelope
+// nests it, or "" when there is none.
+func errorCode(t *testing.T, body []byte) string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return ""
+	}
+	var find func(any) string
+	find = func(n any) string {
+		switch x := n.(type) {
+		case map[string]any:
+			if s, ok := x["code"].(string); ok {
+				return s
+			}
+			for _, c := range x {
+				if s := find(c); s != "" {
+					return s
+				}
+			}
+		case []any:
+			for _, c := range x {
+				if s := find(c); s != "" {
+					return s
+				}
+			}
+		}
+		return ""
+	}
+	return find(v)
+}
+
+// In production the legacy internal key is not a credential on either operator
+// route: 403 SERVICE_TOKEN_REQUIRED, and nothing reaches the service.
+func TestRefundAdminRoutes_ProductionRefusesTheInternalKey(t *testing.T) {
+	fake := newFake()
+	caller := newRefundAdminCaller(t)
+	r := newRouter(t, fake, routerOpts{internalKey: testInternalKey, caller: &caller, production: true})
+	operator := uuid.New()
+
+	for _, tc := range []struct {
+		name, method, path string
+		body               []byte
+	}{
+		{"list", http.MethodGet, refundListPath + "?ref_type=food_order&limit=10", nil},
+		{"resolve", http.MethodPost, resolvePath(uuid.New()), testDataBody},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := do(r, tc.method, tc.path, tc.body, withKey(operator))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+			}
+			if got := errorCode(t, w.Body.Bytes()); got != CodeServiceTokenRequired {
+				t.Fatalf("code = %q, want %s; body=%s", got, CodeServiceTokenRequired, w.Body.String())
+			}
+		})
+	}
+	t.Run("a wrong key is still 401", func(t *testing.T) {
+		h := with(withKey(operator), map[string]string{"X-Internal-Service-Key": "not-the-key"})
+		if w := do(r, http.MethodGet, refundListPath, nil, h); w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", w.Code)
+		}
+	})
+	if len(fake.listFilters) != 0 || len(fake.resolveCalls) != 0 {
+		t.Fatalf("an internal-key request reached the service in production: lists=%d resolves=%d",
+			len(fake.listFilters), len(fake.resolveCalls))
+	}
+}
+
+// In production a token is still the credential, with the same op and domain rules.
+func TestRefundAdminRoutes_ProductionTokenRules(t *testing.T) {
+	fake := newFake()
+	caller := newRefundAdminCaller(t)
+	r := newRouter(t, fake, routerOpts{internalKey: testInternalKey, caller: &caller, production: true})
+	operator := uuid.New()
+
+	t.Run("a token without the refund admin operation is refused", func(t *testing.T) {
+		h := with(caller.header(t, servicetoken.OpRefundCreate), map[string]string{"X-User-Id": operator.String()})
+		for _, w := range []*httptest.ResponseRecorder{
+			do(r, http.MethodGet, refundListPath, nil, h),
+			do(r, http.MethodPost, resolvePath(uuid.New()), testDataBody, h),
+		} {
+			if w.Code != http.StatusForbidden || errorCode(t, w.Body.Bytes()) != "FORBIDDEN" {
+				t.Errorf("status = %d body=%s, want 403 FORBIDDEN", w.Code, w.Body.String())
+			}
+		}
+		if len(fake.listFilters) != 0 || len(fake.resolveCalls) != 0 {
+			t.Fatalf("a token without the operation reached the service: lists=%d resolves=%d",
+				len(fake.listFilters), len(fake.resolveCalls))
+		}
+	})
+	t.Run("a token cannot name a reference type outside its allowlist", func(t *testing.T) {
+		if w := do(r, http.MethodGet, refundListPath+"?ref_type=food_order", nil, caller.header(t, OpRefundAdmin)); w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", w.Code)
+		}
+	})
+	t.Run("a token with the operation lists its own domain", func(t *testing.T) {
+		w := do(r, http.MethodGet, refundListPath+"?ref_type=order", nil, caller.header(t, OpRefundAdmin))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+		}
+		if got := fake.listFilters[len(fake.listFilters)-1]; got.OwnerDomain != "commerce-service" {
+			t.Fatalf("filter = %+v, want owner commerce-service", got)
+		}
+	})
+	t.Run("a token with the operation resolves within its own domain", func(t *testing.T) {
+		h := with(caller.header(t, OpRefundAdmin), map[string]string{"X-User-Id": operator.String()})
+		w := do(r, http.MethodPost, resolvePath(uuid.New()), testDataBody, h)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+		}
+		got := fake.resolveCalls[len(fake.resolveCalls)-1]
+		if got.OwnerDomain != "commerce-service" || got.Credential != "service_token:commerce-service" {
+			t.Fatalf("resolve input = %+v", got)
+		}
+	})
+}
+
+// Outside production the legacy key keeps working on both operator routes; the
+// Feast dev seeder depends on it.
+func TestRefundAdminRoutes_DevAcceptsTheInternalKey(t *testing.T) {
+	fake := newFake()
+	caller := newRefundAdminCaller(t)
+	r := newRouter(t, fake, routerOpts{internalKey: testInternalKey, caller: &caller})
+	operator := uuid.New()
+
+	if w := do(r, http.MethodGet, refundListPath+"?ref_type=food_order", nil, withKey(uuid.Nil)); w.Code != http.StatusOK {
+		t.Fatalf("list: status = %d body=%s", w.Code, w.Body.String())
+	}
+	if got := fake.listFilters[len(fake.listFilters)-1]; got.OwnerDomain != "" {
+		t.Fatalf("list filter = %+v, want every domain", got)
+	}
+	if w := do(r, http.MethodPost, resolvePath(uuid.New()), testDataBody, withKey(operator)); w.Code != http.StatusOK {
+		t.Fatalf("resolve: status = %d body=%s", w.Code, w.Body.String())
+	}
+	if got := fake.resolveCalls[len(fake.resolveCalls)-1]; got.Credential != "internal_key" || got.OwnerDomain != "" {
+		t.Fatalf("resolve input = %+v", got)
+	}
+}
+
+// Production changes only the two operator routes. A legacy internal-key caller
+// on the rest of the /internal family gets exactly what it gets outside
+// production.
+func TestInternalRoutes_ProductionKeepsTheLegacyKeyElsewhere(t *testing.T) {
+	type step struct {
+		name   string
+		status int
+		code   string
+	}
+	run := func(production bool) []step {
+		fake := newFake()
+		caller := newCommerceCaller(t)
+		r := newRouter(t, fake, routerOpts{internalKey: testInternalKey, caller: &caller, production: production})
+		var out []step
+		record := func(name string, w *httptest.ResponseRecorder) {
+			out = append(out, step{name, w.Code, errorCode(t, w.Body.Bytes())})
+		}
+		refID := uuid.New()
+		create := []byte(`{"payer_id":"` + uuid.NewString() + `","payee_id":"` + uuid.NewString() +
+			`","reference_type":"order","reference_id":"` + refID.String() +
+			`","amount_minor":90000,"currency":"INR","method":"upi","idempotency_key":"legacy-create-1"}`)
+		w := do(r, http.MethodPost, "/v1/payments/internal/intents", create, withKey(uuid.Nil))
+		record("create", w)
+		var env struct {
+			Data struct {
+				ID uuid.UUID `json:"id"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &env)
+		id := env.Data.ID.String()
+		record("read", do(r, http.MethodGet, "/v1/payments/internal/intents/"+id, nil, withKey(uuid.Nil)))
+		record("list", do(r, http.MethodGet, "/v1/payments/internal/intents?ref_type=order&ref_id="+refID.String(), nil, withKey(uuid.Nil)))
+		record("refund", do(r, http.MethodPost, "/v1/payments/internal/intents/"+id+"/refund",
+			[]byte(`{"reason":"customer cancelled"}`), withKey(uuid.Nil)))
+		return out
+	}
+	dev, prod := run(false), run(true)
+	want := map[string]int{"create": http.StatusCreated, "read": http.StatusOK, "list": http.StatusOK, "refund": http.StatusAccepted}
+	if len(dev) != len(prod) {
+		t.Fatalf("dev ran %d steps, production %d", len(dev), len(prod))
+	}
+	for i := range prod {
+		if prod[i] != dev[i] {
+			t.Errorf("%s: production = %+v, dev = %+v; production must not change this route", prod[i].name, prod[i], dev[i])
+		}
+		if prod[i].status != want[prod[i].name] {
+			t.Errorf("%s: status = %d, want %d (code %q)", prod[i].name, prod[i].status, want[prod[i].name], prod[i].code)
+		}
+	}
 }

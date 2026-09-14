@@ -132,7 +132,9 @@ func main() {
 		slog.Error("payments: invalid boot configuration", "error", err)
 		os.Exit(1)
 	}
-	isProd := env("ENV", "dev") == "prod"
+	// ENV=prod, resolved once in config (a blank ENV is dev). Production also
+	// requires SERVICE_CALLERS (config.ErrServiceCallersRequired, above).
+	isProd := cfg.Production
 	if cfg.Mode == config.ModeStub && isProd {
 		slog.Error("payments: PAYMENTS_ALLOW_STUB must never be set when ENV=prod")
 		os.Exit(1)
@@ -217,7 +219,9 @@ func main() {
 		}
 	}
 
-	handler := nethttp.New(svc).WithProvider(provider)
+	// WithProduction: in production the refund operator routes refuse the
+	// legacy internal key and need a token carrying payments:refund.admin.
+	handler := nethttp.New(svc).WithProvider(provider).WithProduction(isProd)
 	if verifier != nil {
 		handler.WithServiceAuth(verifier)
 	}

@@ -182,6 +182,7 @@ type routerOpts struct {
 	webhookSecret string
 	internalKey   string
 	caller        *commerceCaller
+	production    bool
 }
 
 func newRouter(t *testing.T, fake *fakeService, o routerOpts) *gin.Engine {
@@ -198,6 +199,7 @@ func newRouter(t *testing.T, fake *fakeService, o routerOpts) *gin.Engine {
 	if o.caller != nil {
 		h.WithServiceAuth(o.caller.verifier)
 	}
+	h.WithProduction(o.production)
 	if err := h.RegisterRoutes(r); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}

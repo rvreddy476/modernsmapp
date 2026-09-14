@@ -7,14 +7,18 @@ package http
 //	     {"resolution":"refunded_manually"|"written_off"|"test_data","note":"…"}
 //
 // Credential: the family's own gate (requireServiceCredential). A service
-// token must carry OpRefundAdmin and is scoped to intents its domain owns; the
-// legacy internal key is admitted where main.go enabled it and sees every
-// domain. The resolving operator is named in X-User-Id, which is recorded on
-// the command and the audit row, never authorised against.
+// token must carry OpRefundAdmin and is scoped to intents its domain owns
+// (owner_domain = the token's issuer). The legacy internal key sees every
+// domain, so it is admitted on these two routes only outside production
+// (ENV=prod refuses it with 403 SERVICE_TOKEN_REQUIRED before any store
+// access); in local/dev it still works, which the Feast dev seeder relies on.
+// The resolving operator is named in X-User-Id, which is recorded on the
+// command and the audit row, never authorised against.
 
 import (
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,10 +35,36 @@ import (
 // parked refunds. A caller holds it only when SERVICE_CALLER_<NAME>_OPS says so.
 const OpRefundAdmin = "payments:refund.admin"
 
+// CodeServiceTokenRequired is the stable error code a production refund
+// operator route answers when the caller presented the legacy internal key.
+const CodeServiceTokenRequired = "SERVICE_TOKEN_REQUIRED"
+
 const (
 	maxResolutionNoteRunes = 1000
 	maxOperatorIDLen       = 200
 )
+
+// refuseLegacyKeyInProduction runs after requireServiceCredential and before
+// requireOp on the two operator routes. In production a legacy internal-key
+// caller is refused: the key is shared by every sibling service and sees every
+// domain, so it must not be able to write off or manually settle another
+// domain's refund. Nothing is read or written before the refusal. The WARN
+// names the route, never the key.
+func (h *Handler) refuseLegacyKeyInProduction() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if h.production && isLegacyCaller(c) {
+			slog.Warn("payments: refund operator route refused the internal service key in production; "+
+				"a service token carrying "+OpRefundAdmin+" is required",
+				"method", c.Request.Method, "route", c.FullPath())
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeServiceTokenRequired,
+				"this route requires a service token carrying "+OpRefundAdmin+
+					"; the internal service key is not accepted in production", nil)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
 
 // ListRefundsNeedingAttention GET /v1/payments/internal/refunds/needs-attention
 func (h *Handler) ListRefundsNeedingAttention(c *gin.Context) {

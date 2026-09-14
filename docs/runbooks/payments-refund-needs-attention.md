@@ -14,12 +14,95 @@ Each park also:
 - publishes one `payment.refund_failed` event on `social.events.v1` (contract below);
 - increments `payments_refund_parked_total{reason_code}`.
 
+## 0. How you authenticate
+
+The two operator routes (`GET …/refunds/needs-attention` and
+`POST …/refunds/:commandId/resolve`) are on the `/v1/payments/internal`
+family. Which credential works depends on the environment. payments-service
+treats `ENV=prod` as production, and nothing else (a blank `ENV`, `dev` and
+`staging` are not production):
+
+| Environment | Internal key (`X-Internal-Service-Key`) | Service token with `payments:refund.admin` |
+| --- | --- | --- |
+| local / dev / staging | Accepted. It sees every domain. | Accepted. It is scoped to its domain. |
+| production (`ENV=prod`) | **Refused** with `403 SERVICE_TOKEN_REQUIRED` before anything is read or written, plus one WARN log line. | Required. |
+
+The production refusal body is:
+
+```json
+{"error":{"code":"SERVICE_TOKEN_REQUIRED","message":"this route requires a service token carrying payments:refund.admin; the internal service key is not accepted in production"},"meta":{"request_id":"…"}}
+```
+
+Every other `/internal` route keeps its existing credential rules. In
+production, payments-service also refuses to start when `SERVICE_CALLERS` is
+empty.
+
+### Production: register a caller that holds `payments:refund.admin`
+
+1. **Pick the caller name.** A token only sees and resolves refunds on intents
+   whose `owner_domain` equals the token's issuer (`iss`). Food intents are
+   owned by `food-service` and commerce intents by `commerce-service`. A
+   caller registered under any other name lists nothing and gets `404` on
+   every resolve. `ref_types` does not widen this. It only limits which
+   `?ref_type=` values the caller may pass.
+2. **The founder generates the Ed25519 key pair** offline. The private key is
+   never pasted into chat, a ticket, a shell history or a values file. The
+   public key (base64) goes into the secret store (`atpost/prod/payments-service`)
+   under the caller's `…_pubkey` / `…_kid` entries, which the chart already maps
+   to `SERVICE_CALLER_<NAME>_PUBKEY` and `SERVICE_CALLER_<NAME>_KID`.
+3. **Grant the operation and reference types** in
+   `deploy/services/payments-service/values-prod.yaml` (these are not secret):
+
+   ```yaml
+   SERVICE_CALLERS: 'commerce-service,food-service'
+   SERVICE_CALLER_FOOD_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create,payments:refund.admin'
+   SERVICE_CALLER_FOOD_SERVICE_REFTYPES: 'food_order'
+   ```
+
+   The environment shape allows one key per caller name. Adding
+   `payments:refund.admin` to `food-service` therefore also lets the
+   food-service workload's own signing key mint operator tokens. Decide that
+   deliberately.
+4. Deploy. Boot logs `payments: registered service caller` with the caller's
+   `ops` and `ref_types`. It never logs a key.
+
+### The service-token header
+
+```
+X-Service-Authorization: Bearer <token>
+```
+
+`<token>` is a compact JWS: `base64url(header).base64url(claims).base64url(signature)`,
+signed with Ed25519 by the caller's private key:
+
+```json
+{"alg":"EdDSA","typ":"JWT","kid":"<the registered kid>"}
+{"iss":"food-service","sub":"<operator or caller>","aud":"payments",
+ "iat":…, "nbf":…, "exp":…, "jti":"<random>",
+ "scope":["payments:refund.admin"], "ref_types":["food_order"]}
+```
+
+- `aud` must be `payments`. `exp - iat` may be at most 5 minutes, so mint a
+  fresh token for each session of work.
+- The operation must be in both the token's `scope` and the caller's registered
+  `OPS`. A `?ref_type=` must be in both `ref_types` and `REFTYPES`.
+- `shared/servicetoken` `Signer.Mint(servicetoken.AudiencePayments, subject,
+  []string{"payments:refund.admin"}, []string{"food_order"}, 5*time.Minute)`
+  produces exactly this. Only the holder of the private key can mint.
+  payments-service verifies and never mints.
+- `X-User-Id` still names you on a resolve.
+
+A refusal of a token is a terse `403 FORBIDDEN` (wrong key, expired, missing
+operation or reference type). The reason is logged by payments-service as
+`payments: service token refused`.
+
 ## 1. List the parked refunds
 
-The routes are on the `/v1/payments/internal` family. Use the service's
-internal key (legacy callers) or a service token carrying
-`payments:refund.admin`. A token only sees intents its own domain owns. Read
-the key inside the command and never echo it:
+Outside production, the internal key works as below. Read it inside the
+command and never echo it. In production, send
+`-H "X-Service-Authorization: Bearer $TOKEN"` in place of the key header on
+this command and on the resolve in step 3. A token only sees intents its own
+domain owns.
 
 ```bash
 KEY=$(docker exec atpost_stack-payments-service-1 printenv INTERNAL_SERVICE_KEY)
