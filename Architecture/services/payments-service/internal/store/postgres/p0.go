@@ -75,6 +75,10 @@ var (
 	// provider order reference (N3). Two PSP orders exist for one local
 	// intent; that is a reconciliation break, not something to overwrite.
 	ErrProviderOrderConflict = errors.New("payments: intent already holds a different provider order")
+	// ErrProviderPaymentConflict means an intent already holds a DIFFERENT
+	// captured provider payment id. The refund worker refuses to refund
+	// either rather than overwrite one with the other.
+	ErrProviderPaymentConflict = errors.New("payments: intent already holds a different provider payment")
 	// ErrAmbiguousRefundTarget means a refund event's identifiers resolve to
 	// more than one intent, or to two different intents (N5). Crediting an
 	// arbitrary one refunds the wrong customer and leaves the right one
@@ -699,6 +703,81 @@ func (s *Store) MarkRefundAttemptFailed(ctx context.Context, id uuid.UUID, reaso
 	return err
 }
 
+// IntentProviderPaymentID returns the captured provider PAYMENT id recorded on
+// an intent, or "" when none is.
+//
+// ApplyWebhookAtomically writes it when a capture settles the intent, and the
+// reconciler goes through the same transaction. It is what a refund is placed
+// against: the intent's provider_ref is the provider ORDER.
+func (s *Store) IntentProviderPaymentID(ctx context.Context, intentID uuid.UUID) (string, error) {
+	var id string
+	err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(provider_payment_id,'') FROM payments.payment_intents WHERE id = $1`,
+		intentID).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrIntentNotFound
+		}
+		return "", err
+	}
+	return id, nil
+}
+
+// AttachProviderPaymentID records a captured payment id the refund worker
+// resolved from the provider, onto an intent that holds none, so the next
+// attempt skips the lookup.
+//
+// Same shape as SetProviderOrder: attaching the id already held is a converged
+// no-op, and a DIFFERENT one is ErrProviderPaymentConflict — never overwritten.
+func (s *Store) AttachProviderPaymentID(ctx context.Context, intentID uuid.UUID, paymentID string) error {
+	if strings.TrimSpace(paymentID) == "" {
+		return fmt.Errorf("payments: refusing to attach an empty provider payment id")
+	}
+	tag, err := s.db.Exec(ctx,
+		`UPDATE payments.payment_intents
+		    SET provider_payment_id = $2, updated_at = NOW()
+		  WHERE id = $1 AND COALESCE(provider_payment_id,'') = ''`,
+		intentID, paymentID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	existing, err := s.IntentProviderPaymentID(ctx, intentID)
+	if err != nil {
+		return err
+	}
+	if existing == paymentID {
+		return nil
+	}
+	return fmt.Errorf("%w: intent %s holds %q, refusing to attach %q",
+		ErrProviderPaymentConflict, intentID, existing, paymentID)
+}
+
+// ProviderRefundIDsOnOtherCommands returns the provider refund ids already
+// bound to an intent's OTHER refund commands, so one provider refund can never
+// settle two commands.
+func (s *Store) ProviderRefundIDsOnOtherCommands(ctx context.Context, intentID, commandID uuid.UUID) (map[string]bool, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT provider_refund_id FROM payments.refund_commands
+		  WHERE intent_id = $1 AND id <> $2 AND COALESCE(provider_refund_id,'') <> ''`,
+		intentID, commandID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	bound := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		bound[id] = true
+	}
+	return bound, rows.Err()
+}
+
 // ApplyProviderRefund settles a refund on a verified provider signal.
 //
 // Idempotent on (provider, provider_refund_id) so a redelivered refund
@@ -758,6 +837,23 @@ func applyProviderRefundTx(
 	if tag.RowsAffected() == 0 {
 		// Already credited under this provider refund id. The caller commits
 		// so the inbox row (if any) still lands.
+		//
+		// A command BOUND to this refund id that is still open is settled
+		// here — without a second credit and without a second event. That is
+		// the refund that reached the ledger before its command learned the
+		// id: the refund response was lost, the webhook credited it while the
+		// command was still `pending` (the settle below matches only
+		// `submitted`), and the provider later reported the payment already
+		// fully refunded. The refund worker binds the id and re-applies; this
+		// closes the command exactly once.
+		if _, err := tx.Exec(ctx,
+			`UPDATE payments.refund_commands
+			    SET status = 'succeeded', settled_at = NOW(), updated_at = NOW()
+			  WHERE provider_refund_id = $1 AND intent_id = $2
+			    AND status IN ('pending','submitted')`,
+			providerRefundID, intentID); err != nil {
+			return false, "", err
+		}
 		return false, "", nil
 	}
 

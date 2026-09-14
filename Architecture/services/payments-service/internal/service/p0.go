@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -260,13 +261,9 @@ func (s *Service) drainRefundCommands(ctx context.Context) {
 }
 
 func (s *Service) attemptRefund(ctx context.Context, c postgres.RefundCommand) {
-	if s.gateway == nil {
-		_ = s.store.MarkRefundAttemptFailed(ctx, c.ID, "gateway not configured", true)
-		return
-	}
 	intent, err := s.store.GetIntent(ctx, c.IntentID)
 	if err != nil || intent == nil {
-		_ = s.store.MarkRefundAttemptFailed(ctx, c.ID, "intent not found", true)
+		s.parkRefund(ctx, c, "intent not found")
 		return
 	}
 	providerOrder := intent.ProviderRef
@@ -274,31 +271,273 @@ func (s *Service) attemptRefund(ctx context.Context, c postgres.RefundCommand) {
 		// Nothing was ever charged at the provider (COD or wallet). There
 		// is no PSP refund to place; ops settles it out of band. Park it
 		// visibly rather than retrying forever.
-		_ = s.store.MarkRefundAttemptFailed(ctx, c.ID,
-			"intent has no provider reference; refund must be settled out of band", true)
+		s.parkRefund(ctx, c, "intent has no provider reference; refund must be settled out of band")
 		return
 	}
 
-	idem, ok := s.gateway.(gateway.IdempotentRefunder)
-	var (
-		res     gateway.GatewayRefund
-		callErr error
-	)
-	if ok {
-		// A6: provider-native idempotency. Razorpay honours
-		// X-Refund-Idempotency on refund creation, so a retry after an
-		// ambiguous timeout returns the ORIGINAL refund instead of making
-		// a second one.
-		res, callErr = idem.InitiateRefundIdempotent(ctx, providerOrder, c.AmountMinor, c.ProviderIdempotencyKey)
-	} else {
-		res, callErr = s.gateway.InitiateRefund(ctx, providerOrder, c.AmountMinor)
+	// A stub-gateway reference was never a provider object. It is decided
+	// before anything provider-shaped is touched, so no branch below can send
+	// one to a PSP.
+	if gateway.IsStubOrderRef(providerOrder) {
+		s.attemptStubRefund(ctx, c, intent)
+		return
 	}
-	if callErr != nil {
-		slog.Warn("payments: refund attempt failed; will retry",
-			"command_id", c.ID, "attempt", c.Attempts, "error", callErr)
-		// Never terminal on a transport error: an unreachable provider is
-		// exactly the case the durable command exists for.
-		_ = s.store.MarkRefundAttemptFailed(ctx, c.ID, callErr.Error(), false)
+
+	if s.provider == nil {
+		// A real provider reference on a deployment with no provider adapter
+		// (a stack moved from Razorpay back to the stub). The stub gateway
+		// would "refund" it without money moving; park it instead.
+		s.parkRefund(ctx, c,
+			"no provider adapter is configured, so a refund of a provider-captured payment cannot be placed")
+		return
+	}
+
+	// REFUND-BY-PAYMENT. providerOrder is the provider ORDER id. It used to be
+	// passed straight to POST /payments/{id}/refund, which Razorpay answers
+	// with 400 on every attempt, so no refund could ever succeed. A refund is
+	// placed against the captured PAYMENT.
+	paymentID, err := s.refundPaymentID(ctx, intent, providerOrder)
+	if err != nil {
+		s.refundAttemptFailed(ctx, c, "resolving the captured payment to refund", err)
+		return
+	}
+
+	// A6: provider-native idempotency. Razorpay honours X-Refund-Idempotency
+	// on refund creation, so a retry after an ambiguous timeout returns the
+	// ORIGINAL refund instead of making a second one. The key is the
+	// command's own, unchanged across attempts.
+	res, err := s.provider.Refund(ctx, paymentID,
+		gateway.Money{Minor: c.AmountMinor, Currency: c.Currency}, c.ProviderIdempotencyKey)
+	if err != nil {
+		if gateway.ClassifyRefundError(err) == gateway.RefundAlreadyRefunded {
+			s.settleAlreadyRefunded(ctx, c, intent, providerOrder, paymentID)
+			return
+		}
+		s.refundAttemptFailed(ctx, c, "placing the refund", err)
+		return
+	}
+	if err := s.store.MarkRefundSubmitted(ctx, c.ID, res.ProviderRefundID); err != nil {
+		slog.Warn("payments: could not mark refund submitted", "command_id", c.ID, "error", err)
+		return
+	}
+	// Settled later by the provider's refund webhook, which credits the ledger
+	// and publishes payment.refunded once.
+	slog.Info("payments: refund submitted to provider",
+		"command_id", c.ID, "provider_payment_id", paymentID,
+		"provider_refund_id", res.ProviderRefundID, "amount_minor", c.AmountMinor)
+}
+
+// errRefundUnresolvable marks a refund that cannot be placed as the data
+// stands: no captured payment matches the intent, more than one does, or the
+// intent already holds a different payment. Retrying changes none of that.
+var errRefundUnresolvable = errors.New("refund cannot be placed")
+
+// refundPaymentID returns the captured provider PAYMENT id to refund.
+//
+// The webhook stores it on the intent when a capture settles it
+// (ApplyWebhookAtomically writes provider_payment_id), and so does the
+// reconciler through the same transaction. An intent without one — settled
+// before that column was written — is resolved from the provider: the order's
+// payments are listed and the ONE captured (or already refunded) payment whose
+// money verifies against the intent is chosen, under the same
+// VerifyProviderMoney policy every money path uses. It is persisted, so the
+// next attempt skips the lookup.
+func (s *Service) refundPaymentID(ctx context.Context, intent *postgres.PaymentIntent, providerOrder string) (string, error) {
+	stored, err := s.store.IntentProviderPaymentID(ctx, intent.ID)
+	if err != nil {
+		return "", err
+	}
+	if stored != "" {
+		// Not re-checked here: an id that is really an order id is refused by
+		// the adapter before any request is made (gateway.ErrNotAPaymentID).
+		return stored, nil
+	}
+
+	payments, err := s.provider.FetchOrderPayments(ctx, providerOrder)
+	if err != nil {
+		return "", err
+	}
+	expected := gateway.Money{Minor: intent.AmountMinor(), Currency: intent.Currency}
+	var matched []string
+	for _, p := range payments {
+		// A fully refunded payment is included: Razorpay then refuses the
+		// refund as already complete, and that settles the command.
+		if p.State != gateway.StateCaptured && p.State != gateway.StateRefunded {
+			continue
+		}
+		if err := gateway.VerifyProviderMoney(gateway.MoneyCheck{
+			Operation:      "refund payment lookup for intent " + intent.ID.String(),
+			IdentifierKind: "provider payment id",
+			Identifier:     p.ProviderPaymentID,
+			Provider:       p.Amount,
+			Expected:       expected,
+		}); err != nil {
+			slog.Warn("payments: a captured payment on the order does not verify against the intent; not refunding it",
+				"intent_id", intent.ID, "provider_payment_id", p.ProviderPaymentID, "error", err)
+			continue
+		}
+		matched = append(matched, p.ProviderPaymentID)
+	}
+	switch len(matched) {
+	case 0:
+		return "", fmt.Errorf("%w: provider order %s has no captured payment matching the intent's %d %s (%d payment(s) listed)",
+			errRefundUnresolvable, providerOrder, expected.Minor, expected.Currency, len(payments))
+	case 1:
+	default:
+		return "", fmt.Errorf("%w: provider order %s has %d captured payments matching the intent (%s); refusing to choose one",
+			errRefundUnresolvable, providerOrder, len(matched), strings.Join(matched, ", "))
+	}
+
+	paymentID := matched[0]
+	switch err := s.store.AttachProviderPaymentID(ctx, intent.ID, paymentID); {
+	case errors.Is(err, postgres.ErrProviderPaymentConflict):
+		return "", fmt.Errorf("%w: %v", errRefundUnresolvable, err)
+	case err != nil:
+		// The lookup is still sound; only the shortcut for the next attempt
+		// is lost.
+		slog.Warn("payments: could not persist the looked-up provider payment id; the next attempt looks it up again",
+			"intent_id", intent.ID, "provider_payment_id", paymentID, "error", err)
+	default:
+		slog.Info("payments: resolved the captured payment to refund from the provider's order",
+			"intent_id", intent.ID, "provider_order_id", providerOrder, "provider_payment_id", paymentID)
+	}
+	return paymentID, nil
+}
+
+// settleAlreadyRefunded handles the provider refusing a refund because the
+// payment is already fully refunded — which is the outcome the command asked
+// for, typically a refund whose response was lost.
+//
+// It goes through the existing idempotent success path rather than beside it:
+// the refund that did it is found at the provider (a server-initiated provider
+// fetch), bound to the command, and applied through ApplyWebhook — the same
+// atomic inbox + ledger + outbox transaction a refund.processed webhook takes.
+// provider_refunds_applied dedupes on the refund id, so the ledger is credited
+// and payment.refunded published at most once, whether the real webhook came
+// before this, comes after it, or never comes.
+func (s *Service) settleAlreadyRefunded(ctx context.Context, c postgres.RefundCommand, intent *postgres.PaymentIntent, providerOrder, paymentID string) {
+	const step = "settling a refund the provider reports as already complete"
+	lister, ok := s.provider.(gateway.RefundLister)
+	if !ok {
+		s.parkRefund(ctx, c, fmt.Sprintf(
+			"provider %s reports payment %s fully refunded but cannot list its refunds to settle this command",
+			s.provider.Name(), paymentID))
+		return
+	}
+	refunds, err := lister.FetchPaymentRefunds(ctx, paymentID)
+	if err != nil {
+		s.refundAttemptFailed(ctx, c, step, err)
+		return
+	}
+	bound, err := s.store.ProviderRefundIDsOnOtherCommands(ctx, c.IntentID, c.ID)
+	if err != nil {
+		s.refundAttemptFailed(ctx, c, step, err)
+		return
+	}
+	var matched []gateway.ProviderRefund
+	for _, r := range refunds {
+		currency := strings.TrimSpace(r.Amount.Currency)
+		if r.State != gateway.StateRefunded || r.ProviderRefundID == "" || bound[r.ProviderRefundID] ||
+			r.Amount.Minor != c.AmountMinor || currency == "" ||
+			!strings.EqualFold(currency, strings.TrimSpace(intent.Currency)) {
+			continue
+		}
+		matched = append(matched, r)
+	}
+	if len(matched) != 1 {
+		s.parkRefund(ctx, c, fmt.Sprintf(
+			"provider reports payment %s fully refunded, but %d of its %d refund(s) are processed, unclaimed and match this command's %d %s; settle it by hand",
+			paymentID, len(matched), len(refunds), c.AmountMinor, intent.Currency))
+		return
+	}
+	r := matched[0]
+
+	if err := s.store.MarkRefundSubmitted(ctx, c.ID, r.ProviderRefundID); err != nil {
+		s.refundAttemptFailed(ctx, c, step, err)
+		return
+	}
+	// The provider name comes off the ROW, as the refund webhook's
+	// attribution matches on it.
+	provider, _, err := s.store.IntentProviderAndOrder(ctx, intent.ID)
+	if err != nil {
+		slog.Warn("payments: could not resolve the intent's provider; the command stays submitted and is retried",
+			"command_id", c.ID, "error", err)
+		return
+	}
+	err = s.ApplyWebhook(ctx, WebhookInput{
+		Provider:          provider,
+		EventID:           "refund_settle_" + r.ProviderRefundID,
+		EventType:         "refund.processed",
+		ProviderOrderID:   providerOrder,
+		ProviderPaymentID: paymentID,
+		ProviderRefundID:  r.ProviderRefundID,
+		AmountMinor:       r.Amount.Minor,
+		Currency:          r.Amount.Currency,
+	})
+	if err != nil && !errors.Is(err, ErrWebhookDuplicate) {
+		slog.Error("payments: settling an already-refunded payment failed; the command stays submitted and is retried",
+			"command_id", c.ID, "provider_refund_id", r.ProviderRefundID, "error", err)
+		return
+	}
+	slog.Info("payments: provider reported the payment already fully refunded; command settled by that refund",
+		"command_id", c.ID, "provider_payment_id", paymentID, "provider_refund_id", r.ProviderRefundID)
+}
+
+// refundAttemptFailed records a failed attempt: retried with backoff when the
+// provider may yet accept it, parked when it never will.
+func (s *Service) refundAttemptFailed(ctx context.Context, c postgres.RefundCommand, step string, err error) {
+	reason := step + ": " + gateway.RedactError(err)
+	if errors.Is(err, errRefundUnresolvable) || gateway.ClassifyRefundError(err) != gateway.RefundRetryable {
+		s.parkRefund(ctx, c, reason)
+		return
+	}
+	// Never terminal on a transport error, a 5xx or a 429: an unreachable
+	// provider is exactly the case the durable command exists for.
+	slog.Warn("payments: refund attempt failed; will retry",
+		"command_id", c.ID, "attempt", c.Attempts, "error", reason)
+	if merr := s.store.MarkRefundAttemptFailed(ctx, c.ID, reason, false); merr != nil {
+		slog.Warn("payments: could not record the failed refund attempt", "command_id", c.ID, "error", merr)
+	}
+}
+
+// parkRefund moves a command to `needs_attention`: it is no longer claimed, so
+// it is logged at ERROR exactly once, here. Nothing is published — no domain
+// event exists for a refund that could not be placed, and payment.refunded
+// would claim money moved that did not.
+func (s *Service) parkRefund(ctx context.Context, c postgres.RefundCommand, reason string) {
+	if err := s.store.MarkRefundAttemptFailed(ctx, c.ID, reason, true); err != nil {
+		slog.Warn("payments: could not park the refund command; it will be attempted again",
+			"command_id", c.ID, "error", err)
+		return
+	}
+	slog.Error("payments: REFUND NEEDS ATTENTION — parked and not retried; the money is still owed",
+		"command_id", c.ID, "intent_id", c.IntentID, "amount_minor", c.AmountMinor,
+		"attempt", c.Attempts, "reason", reason)
+}
+
+// attemptStubRefund refunds an intent the stub gateway minted.
+//
+// The stub's refund is synchronous and final (StubGateway.InitiateRefund
+// returns "processed" and makes no network call), so on a stub deployment it
+// is placed and settled here, exactly as before.
+//
+// On any other deployment — a real provider adapter, or no stub settlement —
+// the intent is PARKED, never sent. No provider has ever heard of an
+// `order_stub_…` reference and no money was ever captured for it, so there is
+// nothing a PSP could refund; and settling it as refunded would publish
+// payment.refunded for a refund that did not happen on this deployment's
+// provider. Parking leaves that decision, visibly, to an operator.
+func (s *Service) attemptStubRefund(ctx context.Context, c postgres.RefundCommand, intent *postgres.PaymentIntent) {
+	stub, isStub := s.gateway.(*gateway.StubGateway)
+	if !isStub || !s.stubSettlement {
+		s.parkRefund(ctx, c,
+			"intent was paid through the stub gateway (order_stub_ reference), so no provider holds this payment "+
+				"and nothing may be sent to one; settle it out of band")
+		return
+	}
+	res, err := stub.InitiateRefund(ctx, intent.ProviderRef, c.AmountMinor)
+	if err != nil {
+		s.refundAttemptFailed(ctx, c, "placing the stub refund", err)
 		return
 	}
 	if err := s.store.MarkRefundSubmitted(ctx, c.ID, res.ID); err != nil {

@@ -70,6 +70,9 @@ func (g *RazorpayGateway) VerifySignature(orderID, paymentID, signature string) 
 }
 
 func (g *RazorpayGateway) InitiateRefund(ctx context.Context, paymentID string, amount int64) (GatewayRefund, error) {
+	if err := guardPaymentPath("/payments/" + paymentID); err != nil {
+		return GatewayRefund{}, fmt.Errorf("razorpay: %w", err)
+	}
 	body, _ := json.Marshal(map[string]interface{}{"amount": amount})
 	url := fmt.Sprintf("%s/payments/%s/refund", razorpayBaseURL, paymentID)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -95,6 +98,9 @@ func (g *RazorpayGateway) InitiateRefund(ctx context.Context, paymentID string, 
 }
 
 func (g *RazorpayGateway) FetchPayment(ctx context.Context, paymentID string) (GatewayPayment, error) {
+	if err := guardPaymentPath("/payments/" + paymentID); err != nil {
+		return GatewayPayment{}, fmt.Errorf("razorpay: %w", err)
+	}
 	url := fmt.Sprintf("%s/payments/%s", razorpayBaseURL, paymentID)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	req.SetBasicAuth(g.keyID, g.keySecret)

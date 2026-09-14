@@ -196,6 +196,14 @@ type IdempotentRefunder interface {
 	InitiateRefundIdempotent(ctx context.Context, providerRef string, amountMinor int64, idempotencyKey string) (GatewayRefund, error)
 }
 
+// RefundLister is the optional interface an adapter implements when its
+// provider can list the refunds already made against one payment. The refund
+// worker reads it when the provider refuses a refund because the payment is
+// already fully refunded, to find the refund that settles the command.
+type RefundLister interface {
+	FetchPaymentRefunds(ctx context.Context, providerPaymentID string) ([]ProviderRefund, error)
+}
+
 // Sentinel errors so callers branch on capability rather than string match.
 var (
 	ErrCaptureNotSupported = errorString("gateway: provider auto-captures; manual capture is not available")

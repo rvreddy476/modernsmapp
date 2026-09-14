@@ -465,6 +465,11 @@ func normalizeRazorpayState(s string) State {
 }
 
 func (g *RazorpayProvider) do(ctx context.Context, method, path string, body any, headers map[string]string, out any) error {
+	// Before any request exists: an ORDER id on a /payments/ route is a 400 at
+	// Razorpay on every attempt, which is how no refund could ever succeed.
+	if err := guardPaymentPath(path); err != nil {
+		return fmt.Errorf("razorpay: %s %s: %w", method, path, err)
+	}
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -491,10 +496,13 @@ func (g *RazorpayProvider) do(ctx context.Context, method, path string, body any
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		// The body is returned so an operator can see the provider's own
-		// error, but it is never logged at the call sites that carry
-		// secrets — see the redaction rules in the handler.
-		return fmt.Errorf("razorpay: %s %s returned %d: %s", method, path, resp.StatusCode, string(raw))
+		// The body is kept so an operator can see the provider's own error,
+		// but it is never logged at the call sites that carry secrets — see
+		// the redaction rules in the handler. The typed error carries the
+		// decoded `error.{code,description,reason}` so a caller can tell a
+		// refusal that will never succeed from one worth retrying
+		// (ClassifyRefundError), and store a redacted copy (Redacted).
+		return newRazorpayError(method, path, resp.StatusCode, raw)
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -503,6 +511,55 @@ func (g *RazorpayProvider) do(ctx context.Context, method, path string, body any
 	}
 	return nil
 }
+
+// FetchPaymentRefunds lists the refunds made against one payment:
+// GET /v1/payments/{payment_id}/refunds.
+//
+// The refund worker reads it when Razorpay refuses a refund because the
+// payment is already fully refunded, to find the refund that settles the
+// command. Takes a PAYMENT id; an order id is refused before any request.
+func (g *RazorpayProvider) FetchPaymentRefunds(ctx context.Context, providerPaymentID string) ([]ProviderRefund, error) {
+	var out struct {
+		Items []struct {
+			ID        string `json:"id"`
+			PaymentID string `json:"payment_id"`
+			Amount    int64  `json:"amount"`
+			Currency  string `json:"currency"`
+			Status    string `json:"status"`
+		} `json:"items"`
+	}
+	if err := g.do(ctx, http.MethodGet, "/payments/"+url.PathEscape(providerPaymentID)+"/refunds", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	refunds := make([]ProviderRefund, 0, len(out.Items))
+	for _, it := range out.Items {
+		refunds = append(refunds, ProviderRefund{
+			ProviderRefundID:  it.ID,
+			ProviderPaymentID: it.PaymentID,
+			// Currency as stated, never defaulted (MRC-1).
+			Amount: Money{Minor: it.Amount, Currency: it.Currency},
+			State:  normalizeRazorpayRefundState(it.Status),
+		})
+	}
+	return refunds, nil
+}
+
+// normalizeRazorpayRefundState maps a refund entity's status. Only
+// `processed` means the money has gone back.
+func normalizeRazorpayRefundState(s string) State {
+	switch s {
+	case "processed":
+		return StateRefunded
+	case "pending":
+		return StatePending
+	case "failed":
+		return StateFailed
+	default:
+		return StateUnknown
+	}
+}
+
+var _ RefundLister = (*RazorpayProvider)(nil)
 
 // InitiateRefundIdempotent lets the legacy PaymentGateway-shaped refund
 // worker use the provider's native idempotency, bridging until every caller
