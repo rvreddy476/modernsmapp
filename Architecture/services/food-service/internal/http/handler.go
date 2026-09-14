@@ -237,14 +237,24 @@ func (h *Handler) ListCuisines(c *gin.Context) {
 }
 
 func (h *Handler) ListRestaurants(c *gin.Context) {
+	// Additive: optional lat/lng (both or neither) judge each restaurant for
+	// that point and rank serviceable first, then nearest.
+	near, ok := nearFromQuery(c)
+	if !ok {
+		return
+	}
 	restaurants, err := h.svc.ListRestaurants(c.Request.Context(), postgres.RestaurantFilter{
 		Query: c.Query("q"),
 		City:  c.Query("city"),
 		Limit: parseLimit(c.DefaultQuery("limit", "20")),
+		Near:  near,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FOOD_RESTAURANTS_FAILED", err.Error(), nil)
 		return
+	}
+	for i := range restaurants {
+		describeUnserviceable(&restaurants[i])
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": restaurants})
 }
@@ -270,7 +280,11 @@ func (h *Handler) GetRestaurant(c *gin.Context) {
 	if !ok {
 		return
 	}
-	restaurant, err := h.svc.GetRestaurant(c.Request.Context(), restaurantID)
+	near, ok := nearFromQuery(c)
+	if !ok {
+		return
+	}
+	restaurant, err := h.svc.GetRestaurant(c.Request.Context(), restaurantID, near)
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "FOOD_RESTAURANT_FAILED"
@@ -283,6 +297,7 @@ func (h *Handler) GetRestaurant(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, message, nil)
 		return
 	}
+	describeUnserviceable(&restaurant.RestaurantSummary)
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, restaurant)
 }
 
@@ -328,6 +343,12 @@ func (h *Handler) AddCartItem(c *gin.Context) {
 			AddonID  string `json:"addon_id"`
 			Quantity int    `json:"quantity"`
 		} `json:"addons"`
+		// Additive: an optional delivery point, address_id or lat/lng (not
+		// both). With one, the add is also refused out of range, with the same
+		// 422 codes and messages as POST /orders.
+		AddressID string   `json:"address_id"`
+		Lat       *float64 `json:"lat"`
+		Lng       *float64 `json:"lng"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -356,6 +377,10 @@ func (h *Handler) AddCartItem(c *gin.Context) {
 		}
 		addons = append(addons, postgres.CartAddonInput{AddonID: addonID, Quantity: a.Quantity})
 	}
+	addressID, near, ok := cartDeliveryPoint(c, body.AddressID, body.Lat, body.Lng)
+	if !ok {
+		return
+	}
 	cart, err := h.svc.AddCartItem(c.Request.Context(), userID, postgres.AddCartItemInput{
 		MenuItemID:      menuItemID,
 		VariantID:       variantID,
@@ -363,13 +388,16 @@ func (h *Handler) AddCartItem(c *gin.Context) {
 		ItemInstruction: body.ItemInstruction,
 		ClearExisting:   body.ClearExisting,
 		Addons:          addons,
+		AddressID:       addressID,
+		Near:            near,
 	})
 	if err != nil {
 		if errors.Is(err, postgres.ErrCartRestaurantConflict) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FOOD_CART_RESTAURANT_CONFLICT", "cart contains items from another restaurant", nil)
 			return
 		}
-		if errors.Is(err, postgres.ErrAddonInvalid) {
+		// Serviceability refusals answer exactly as POST /orders does.
+		if errors.Is(err, postgres.ErrAddonInvalid) || errors.Is(err, postgres.ErrCartAddressNotFound) || postgres.IsServiceabilityRefusal(err) {
 			writeKnownError(c, err)
 			return
 		}

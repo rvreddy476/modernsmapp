@@ -35,6 +35,7 @@ var lifecycleErrors = []errorMapping{
 	{postgres.ErrAddressLocationRequired, http.StatusUnprocessableEntity, "FOOD_ADDRESS_LOCATION_REQUIRED"},
 	{postgres.ErrRestaurantLocationMissing, http.StatusUnprocessableEntity, "FOOD_RESTAURANT_LOCATION_MISSING"},
 	{postgres.ErrAddonInvalid, http.StatusUnprocessableEntity, "FOOD_CART_ADDON_INVALID"},
+	{postgres.ErrCartAddressNotFound, http.StatusNotFound, "FOOD_NOT_FOUND"},
 
 	// Wave 1 B3 pricing through shared/gst.
 	{pricing.ErrCouponsDisabled, http.StatusUnprocessableEntity, "FOOD_COUPONS_DISABLED"},
@@ -60,16 +61,26 @@ var lifecycleErrors = []errorMapping{
 	{payments.ErrRefused, http.StatusBadGateway, "FOOD_PAYMENTS_REFUSED"},
 }
 
+// knownError is the mapping for err, when it is one of the sentinels above.
+// The restaurant list and detail use it for unserviceable_reason_code, so they
+// name a refusal exactly as POST /orders answers it.
+func knownError(err error) (errorMapping, bool) {
+	for _, m := range lifecycleErrors {
+		if errors.Is(err, m.target) {
+			return m, true
+		}
+	}
+	return errorMapping{}, false
+}
+
 // writeKnownError writes the mapped response and returns true when err is one
 // of the lifecycle sentinels, or pgx.ErrNoRows (404, without echoing driver
 // text). Otherwise it writes nothing and returns false so the caller keeps its
 // existing fallback.
 func writeKnownError(c *gin.Context, err error) bool {
-	for _, m := range lifecycleErrors {
-		if errors.Is(err, m.target) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, m.status, m.code, err.Error(), nil)
-			return true
-		}
+	if m, ok := knownError(err); ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, m.status, m.code, err.Error(), nil)
+		return true
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "FOOD_NOT_FOUND", "not found", nil)

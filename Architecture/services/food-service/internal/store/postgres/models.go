@@ -37,6 +37,22 @@ type RestaurantSummary struct {
 	Cuisines            []string  `json:"cuisines"`
 	EstimatedDelivery   string    `json:"estimated_delivery"`
 	DeliveryFeeEstimate float64   `json:"delivery_fee_estimate"`
+	// Additive (Feast customer app). IsOpenNow is the operating-hours schedule
+	// evaluated now in the restaurant zone, as on the partner operating-hours
+	// read (is_open stays the restaurant's own switch). NextOpensAt is the
+	// schedule's next opening, RFC 3339, when it is closed now and opens within
+	// a week.
+	IsOpenNow   bool    `json:"is_open_now"`
+	NextOpensAt *string `json:"next_opens_at,omitempty"`
+	// Set only when the request carried lat/lng: the shared serviceability
+	// rule's answer for that point (serviceability.go). The handler fills the
+	// reason code and message from Unserviceable with the mapping POST /orders
+	// uses, so both answer in the same words.
+	DistanceMeters          *int64 `json:"distance_meters,omitempty"`
+	Serviceable             *bool  `json:"serviceable,omitempty"`
+	UnserviceableReasonCode string `json:"unserviceable_reason_code,omitempty"`
+	UnserviceableMessage    string `json:"unserviceable_message,omitempty"`
+	Unserviceable           error  `json:"-"`
 }
 
 type RestaurantDetail struct {
@@ -79,6 +95,11 @@ type MenuItem struct {
 	BasePricePaise     int64      `json:"base_price_paise"`
 	DiscountPricePaise int64      `json:"discount_price_paise,omitempty"`
 	ImageMediaID       *uuid.UUID `json:"image_media_id,omitempty"`
+	// Customer menu only (GetMenu): the item's available variants and its
+	// add-on groups with their available add-ons, in the partner item read's
+	// shape. Nil on every partner route, so those responses are unchanged.
+	Variants    *[]MenuVariant    `json:"variants,omitempty"`
+	AddonGroups *[]MenuAddonGroup `json:"addon_groups,omitempty"`
 }
 
 type Cart struct {

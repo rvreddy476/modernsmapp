@@ -21,6 +21,9 @@ var (
 	ErrCartEmpty              = errors.New("cart is empty")
 	ErrCouponInvalid          = errors.New("coupon is invalid")
 	ErrIdempotencyInProgress  = errors.New("idempotent request is already in progress")
+	// ErrCartAddressNotFound: add-to-cart named an address_id that is not the
+	// caller's. HTTP 404 FOOD_NOT_FOUND, as POST /orders answers.
+	ErrCartAddressNotFound = errors.New("delivery address not found")
 )
 
 type AddCartItemInput struct {
@@ -32,6 +35,11 @@ type AddCartItemInput struct {
 	// Addons is the additive `addons` body field; validated against the
 	// menu item's add-on groups before anything is written.
 	Addons []CartAddonInput
+	// Optional delivery point (additive): AddressID (the caller's own address)
+	// or Near, never both. With either, the add is also refused for location
+	// and range; without, only for accepting and hours. Same rule as PlaceOrder.
+	AddressID *uuid.UUID
+	Near      *GeoPoint
 }
 
 type UpdateCartItemInput struct {
@@ -77,6 +85,21 @@ func (s *Store) AddCartItem(ctx context.Context, userID uuid.UUID, in AddCartIte
 		return nil, fmt.Errorf("menu item is unavailable")
 	}
 	if err := validateCartAddonsTx(ctx, tx, in.MenuItemID, in.Addons); err != nil {
+		return nil, err
+	}
+	to := pointOf(in.Near)
+	if in.AddressID != nil {
+		p, err := addressPointTx(ctx, tx, userID, *in.AddressID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrCartAddressNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		to = p
+	}
+	// The shared rule (serviceability.go), exactly as PlaceOrder applies it.
+	if _, _, err := s.checkServiceabilityTx(ctx, tx, restaurantID, to); err != nil {
 		return nil, err
 	}
 
@@ -389,8 +412,6 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 	var prepMins int
 	var commissionPct float64
 	var commissionBP int64
-	var active bool
-	var restLat, restLng *float64
 	if err := tx.QueryRow(ctx, `
 		SELECT name, jsonb_build_object(
 			'address_line1', address_line1,
@@ -401,34 +422,26 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			'postal_code', postal_code,
 			'latitude', latitude,
 			'longitude', longitude
-		), avg_preparation_minutes, commission_percentage::float8, ROUND(commission_percentage * 100)::bigint,
-		(status = 'ACTIVE' AND is_open = TRUE AND is_accepting_orders = TRUE),
-		latitude::float8, longitude::float8
+		), avg_preparation_minutes, commission_percentage::float8, ROUND(commission_percentage * 100)::bigint
 		FROM food.restaurants
 		WHERE id = $1
-	`, *cart.RestaurantID).Scan(&restaurantName, &restaurantAddressJSON, &prepMins, &commissionPct, &commissionBP, &active, &restLat, &restLng); err != nil {
+	`, *cart.RestaurantID).Scan(&restaurantName, &restaurantAddressJSON, &prepMins, &commissionPct, &commissionBP); err != nil {
 		return nil, err
 	}
-	if !active {
-		return nil, ErrRestaurantNotAccepting
-	}
-	// getAddressTx COALESCEs missing coordinates to 0, which would place the
-	// customer in the Gulf of Guinea; read the nullable columns directly.
-	var addrLat, addrLng *float64
-	if err := tx.QueryRow(ctx, `
-		SELECT latitude::float8, longitude::float8
-		FROM food.customer_addresses
-		WHERE id = $1 AND user_id = $2 AND is_deleted = FALSE
-	`, address.ID, userID).Scan(&addrLat, &addrLng); err != nil {
-		return nil, err
-	}
-	distanceKM, err := s.checkServiceabilityTx(ctx, tx, *cart.RestaurantID, restLat, restLng, addrLat, addrLng)
+	addr, err := addressPointTx(ctx, tx, userID, address.ID)
 	if err != nil {
 		return nil, err
 	}
+	// The shared rule (serviceability.go): accepting, locations, hours, range.
+	// Success means both points are known, so distance is set.
+	restaurant, distance, err := s.checkServiceabilityTx(ctx, tx, *cart.RestaurantID, addr)
+	if err != nil {
+		return nil, err
+	}
+	distanceKM := *distance
 	// B6 placement ETA = preparation + the restaurant-to-customer ride (Google
 	// when it priced exactly these points, haversine otherwise).
-	ride := s.placementLeg(pricedRide, routing.LatLng{Lat: *restLat, Lng: *restLng}, routing.LatLng{Lat: *addrLat, Lng: *addrLng})
+	ride := s.placementLeg(pricedRide, routing.LatLng{Lat: *restaurant.Lat, Lng: *restaurant.Lng}, routing.LatLng{Lat: *addr.Lat, Lng: *addr.Lng})
 
 	// Coupons only when switched on (checked on entry). A coupon discount is
 	// treated as restaurant-funded: it reduces the restaurant's taxable value

@@ -1,0 +1,33 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+    "name": "Test Kitchen",
+    "slug": "test-kitchen",
+    "description": "South Indian",
+    "city": "Bengaluru",
+    "state": "Karnataka",
+    "status": "ACTIVE",
+    "is_open": true,
+    "is_accepting_orders": true,
+    "avg_rating": 4.5,
+    "rating_count": 120,
+    "min_order_amount": 99,
+    "packaging_fee": 10,
+    "avg_preparation_minutes": 20,
+    "hero_image_url": "https://cdn.example.test/test-kitchen.jpg",
+    "cuisines": [
+      "North Indian",
+      "South Indian"
+    ],
+    "estimated_delivery": "32-42 min",
+    "delivery_fee_estimate": 29,
+    "is_open_now": true,
+    "phone": "08040000000",
+    "email": "kitchen@example.test",
+    "address_line": "1 Test Lane",
+    "postal_code": "560001",
+    "latitude": 12.9716,
+    "longitude": 77.5946
+  },
+  "meta": {}
+}

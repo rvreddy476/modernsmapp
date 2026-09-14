@@ -211,36 +211,138 @@ func riderPayoutForFee(deliveryFee float64) float64 {
 	return roundMoney(deliveryFee * riderPayoutShareOfDeliveryFee)
 }
 
-// checkServiceabilityTx enforces location, hours and range for PlaceOrder and
-// returns the restaurant->address distance. Missing coordinates fail closed.
-func (s *Store) checkServiceabilityTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID, restLat, restLng, addrLat, addrLng *float64) (float64, error) {
-	if restLat == nil || restLng == nil {
-		return 0, ErrRestaurantLocationMissing
-	}
-	if addrLat == nil || addrLng == nil {
-		return 0, ErrAddressLocationRequired
-	}
-
-	windows, err := loadHoursTx(ctx, tx, restaurantID)
-	if err != nil {
-		return 0, err
-	}
-	if !openAt(s.ordering.Now().In(s.ordering.Location), windows) {
-		return 0, ErrRestaurantOutsideHours
-	}
-
-	areas, err := loadServiceAreasTx(ctx, tx, restaurantID)
-	if err != nil {
-		return 0, err
-	}
-	if !addressServiceable(*restLat, *restLng, *addrLat, *addrLng, areas, s.ordering.DefaultDeliveryRadiusKM) {
-		return 0, ErrAddressOutOfRange
-	}
-	return geo.HaversineKM(*restLat, *restLng, *addrLat, *addrLng), nil
+// GeoPoint is a customer-supplied map position (the list's, the detail's and
+// add-to-cart's lat/lng), already validated by the handler.
+type GeoPoint struct {
+	Lat float64
+	Lng float64
 }
 
-func loadHoursTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID) ([]hoursWindow, error) {
-	return loadHours(ctx, tx, restaurantID)
+// deliveryPoint is where an order would go. A nil *deliveryPoint means no
+// address is known yet (add-to-cart without one): locations and range are then
+// not checked. Nil fields are an address saved without a map pin.
+type deliveryPoint struct {
+	Lat *float64
+	Lng *float64
+}
+
+func pointOf(g *GeoPoint) *deliveryPoint {
+	if g == nil {
+		return nil
+	}
+	lat, lng := g.Lat, g.Lng
+	return &deliveryPoint{Lat: &lat, Lng: &lng}
+}
+
+// serviceabilityFacts is everything the serviceability rule reads about one
+// restaurant. loadServiceabilityFacts is the only thing that builds it, so
+// PlaceOrder, add-to-cart, the restaurant list and the restaurant detail all
+// read the same columns the same way.
+type serviceabilityFacts struct {
+	// Active is status ACTIVE and is_open and is_accepting_orders.
+	Active  bool
+	Lat     *float64
+	Lng     *float64
+	Windows []hoursWindow
+	Areas   []serviceArea
+}
+
+// evaluateServiceability is THE serviceability rule, shared by PlaceOrder,
+// AddCartItem, ListRestaurants and GetRestaurant so the list can never promise
+// what placing the order refuses. Checks run in PlaceOrder's order: accepting,
+// restaurant location, address location, hours, range. With to == nil only
+// accepting and hours are checked. Missing coordinates fail closed.
+//
+// distanceKM is the straight-line restaurant->address distance whenever both
+// points are known, including on a refusal (the list shows it).
+func (c OrderingConfig) evaluateServiceability(now time.Time, f serviceabilityFacts, to *deliveryPoint) (distanceKM *float64, err error) {
+	if to != nil && f.Lat != nil && f.Lng != nil && to.Lat != nil && to.Lng != nil {
+		d := geo.HaversineKM(*f.Lat, *f.Lng, *to.Lat, *to.Lng)
+		distanceKM = &d
+	}
+	if !f.Active {
+		return distanceKM, ErrRestaurantNotAccepting
+	}
+	if to != nil {
+		if f.Lat == nil || f.Lng == nil {
+			return distanceKM, ErrRestaurantLocationMissing
+		}
+		if to.Lat == nil || to.Lng == nil {
+			return distanceKM, ErrAddressLocationRequired
+		}
+	}
+	if !openAt(now.In(c.Location), f.Windows) {
+		return distanceKM, ErrRestaurantOutsideHours
+	}
+	if to != nil && !addressServiceable(*f.Lat, *f.Lng, *to.Lat, *to.Lng, f.Areas, c.DefaultDeliveryRadiusKM) {
+		return distanceKM, ErrAddressOutOfRange
+	}
+	return distanceKM, nil
+}
+
+// IsServiceabilityRefusal reports whether err is one of the refusals
+// evaluateServiceability returns (each is a 422 in handler_errors.go).
+func IsServiceabilityRefusal(err error) bool {
+	for _, target := range []error{ErrRestaurantNotAccepting, ErrRestaurantLocationMissing, ErrAddressLocationRequired,
+		ErrRestaurantOutsideHours, ErrAddressOutOfRange} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkServiceabilityTx loads one restaurant's facts through q (a transaction
+// or the pool) and applies the shared rule. A restaurant that does not exist
+// is pgx.ErrNoRows.
+func (s *Store) checkServiceabilityTx(ctx context.Context, q hoursQuerier, restaurantID uuid.UUID, to *deliveryPoint) (*serviceabilityFacts, *float64, error) {
+	all, err := loadServiceabilityFacts(ctx, q, []uuid.UUID{restaurantID})
+	if err != nil {
+		return nil, nil, err
+	}
+	f, ok := all[restaurantID]
+	if !ok {
+		return nil, nil, pgx.ErrNoRows
+	}
+	distanceKM, err := s.ordering.evaluateServiceability(s.ordering.Now(), *f, to)
+	return f, distanceKM, err
+}
+
+// nextOpenAt is the first moment after now (already in the restaurant zone)
+// at which openAt becomes true, looking at most a week ahead. False when the
+// schedule is unrestricted, open now, or never opens.
+func nextOpenAt(now time.Time, windows []hoursWindow) (time.Time, bool) {
+	if len(windows) == 0 || openAt(now, windows) {
+		return time.Time{}, false
+	}
+	closedDay := map[int]bool{}
+	for _, w := range windows {
+		if w.Closed {
+			closedDay[w.Day] = true
+		}
+	}
+	y, m, d := now.Date()
+	for offset := 0; offset <= 7; offset++ {
+		weekday := int(time.Date(y, m, d+offset, 12, 0, 0, 0, now.Location()).Weekday())
+		if closedDay[weekday] {
+			continue
+		}
+		var best time.Time
+		found := false
+		for _, w := range windows {
+			if w.Closed || w.Day != weekday {
+				continue
+			}
+			at := time.Date(y, m, d+offset, w.Opens/3600, (w.Opens%3600)/60, w.Opens%60, 0, now.Location())
+			if at.After(now) && (!found || at.Before(best)) {
+				best, found = at, true
+			}
+		}
+		if found {
+			return best, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // hoursQuerier is a transaction or the pool.
@@ -249,43 +351,93 @@ type hoursQuerier interface {
 }
 
 func loadHours(ctx context.Context, q hoursQuerier, restaurantID uuid.UUID) ([]hoursWindow, error) {
+	all, err := loadHoursFor(ctx, q, []uuid.UUID{restaurantID})
+	if err != nil {
+		return nil, err
+	}
+	return all[restaurantID], nil
+}
+
+func loadHoursFor(ctx context.Context, q hoursQuerier, restaurantIDs []uuid.UUID) (map[uuid.UUID][]hoursWindow, error) {
 	rows, err := q.Query(ctx, `
-		SELECT day_of_week, EXTRACT(EPOCH FROM opens_at)::int, EXTRACT(EPOCH FROM closes_at)::int, is_closed
+		SELECT restaurant_id, day_of_week, EXTRACT(EPOCH FROM opens_at)::int, EXTRACT(EPOCH FROM closes_at)::int, is_closed
 		FROM food.restaurant_operating_hours
-		WHERE restaurant_id = $1
-	`, restaurantID)
+		WHERE restaurant_id = ANY($1::uuid[])
+	`, restaurantIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load operating hours: %w", err)
 	}
 	defer rows.Close()
-	var out []hoursWindow
+	out := map[uuid.UUID][]hoursWindow{}
 	for rows.Next() {
+		var id uuid.UUID
 		var w hoursWindow
-		if err := rows.Scan(&w.Day, &w.Opens, &w.Closes, &w.Closed); err != nil {
+		if err := rows.Scan(&id, &w.Day, &w.Opens, &w.Closes, &w.Closed); err != nil {
 			return nil, err
 		}
-		out = append(out, w)
+		out[id] = append(out[id], w)
 	}
 	return out, rows.Err()
 }
 
-func loadServiceAreasTx(ctx context.Context, tx pgx.Tx, restaurantID uuid.UUID) ([]serviceArea, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT center_latitude::float8, center_longitude::float8, radius_km::float8
+// loadServiceabilityFacts reads the facts for each restaurant that exists;
+// ids with no restaurant are absent from the map.
+func loadServiceabilityFacts(ctx context.Context, q hoursQuerier, restaurantIDs []uuid.UUID) (map[uuid.UUID]*serviceabilityFacts, error) {
+	out := make(map[uuid.UUID]*serviceabilityFacts, len(restaurantIDs))
+	if len(restaurantIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT id, (status = 'ACTIVE' AND is_open = TRUE AND is_accepting_orders = TRUE),
+			latitude::float8, longitude::float8
+		FROM food.restaurants
+		WHERE id = ANY($1::uuid[])
+	`, restaurantIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load restaurant serviceability: %w", err)
+	}
+	for rows.Next() {
+		var id uuid.UUID
+		f := &serviceabilityFacts{}
+		if err := rows.Scan(&id, &f.Active, &f.Lat, &f.Lng); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[id] = f
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	hours, err := loadHoursFor(ctx, q, restaurantIDs)
+	if err != nil {
+		return nil, err
+	}
+	areaRows, err := q.Query(ctx, `
+		SELECT restaurant_id, center_latitude::float8, center_longitude::float8, radius_km::float8
 		FROM food.restaurant_service_areas
-		WHERE restaurant_id = $1 AND is_active = TRUE
-	`, restaurantID)
+		WHERE restaurant_id = ANY($1::uuid[]) AND is_active = TRUE
+	`, restaurantIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load service areas: %w", err)
 	}
-	defer rows.Close()
-	var out []serviceArea
-	for rows.Next() {
+	defer areaRows.Close()
+	for areaRows.Next() {
+		var id uuid.UUID
 		var a serviceArea
-		if err := rows.Scan(&a.CenterLat, &a.CenterLng, &a.RadiusKM); err != nil {
+		if err := areaRows.Scan(&id, &a.CenterLat, &a.CenterLng, &a.RadiusKM); err != nil {
 			return nil, err
 		}
-		out = append(out, a)
+		if f, ok := out[id]; ok {
+			f.Areas = append(f.Areas, a)
+		}
 	}
-	return out, rows.Err()
+	if err := areaRows.Err(); err != nil {
+		return nil, err
+	}
+	for id, f := range out {
+		f.Windows = hours[id]
+	}
+	return out, nil
 }

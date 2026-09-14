@@ -32,7 +32,7 @@ import (
 type Store interface {
 	ListCuisines(ctx context.Context) ([]postgres.Cuisine, error)
 	ListRestaurants(ctx context.Context, filter postgres.RestaurantFilter) ([]postgres.RestaurantSummary, error)
-	GetRestaurant(ctx context.Context, id uuid.UUID) (*postgres.RestaurantDetail, error)
+	GetRestaurant(ctx context.Context, id uuid.UUID, near *postgres.GeoPoint) (*postgres.RestaurantDetail, error)
 	GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]postgres.MenuCategory, error)
 	GetCart(ctx context.Context, userID uuid.UUID) (*postgres.Cart, error)
 	AddCartItem(ctx context.Context, userID uuid.UUID, in postgres.AddCartItemInput) (*postgres.Cart, error)
@@ -430,8 +430,8 @@ func (s *Service) ListCuisines(ctx context.Context) ([]postgres.Cuisine, error) 
 	return s.store.ListCuisines(ctx)
 }
 
-func (s *Service) GetRestaurant(ctx context.Context, id uuid.UUID) (*postgres.RestaurantDetail, error) {
-	return s.store.GetRestaurant(ctx, id)
+func (s *Service) GetRestaurant(ctx context.Context, id uuid.UUID, near *postgres.GeoPoint) (*postgres.RestaurantDetail, error) {
+	return s.store.GetRestaurant(ctx, id, near)
 }
 
 func (s *Service) GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]postgres.MenuCategory, error) {

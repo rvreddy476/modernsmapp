@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_ADDRESS_OUT_OF_RANGE",
+    "message": "delivery address is outside the restaurant's delivery range"
+  },
+  "meta": {}
+}

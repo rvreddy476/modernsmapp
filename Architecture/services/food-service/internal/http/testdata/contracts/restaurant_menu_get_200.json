@@ -1,0 +1,79 @@
+{
+  "data": {
+    "categories": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0044",
+        "name": "Mains",
+        "sort_order": 1,
+        "items": [
+          {
+            "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0013",
+            "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+            "category_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0044",
+            "name": "Paneer Tikka",
+            "description": "Charred cottage cheese",
+            "food_type": "VEG",
+            "base_price": 250,
+            "discount_price": 225.5,
+            "image_url": "https://cdn.example.test/paneer-tikka.jpg",
+            "preparation_minutes": 20,
+            "is_available": true,
+            "is_recommended": true,
+            "tax_percentage": 5,
+            "base_price_paise": 25000,
+            "discount_price_paise": 22550,
+            "variants": [
+              {
+                "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0045",
+                "menu_item_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0013",
+                "name": "Half",
+                "price": 149.99,
+                "price_paise": 14999,
+                "is_available": true,
+                "sort_order": 1
+              }
+            ],
+            "addon_groups": [
+              {
+                "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0046",
+                "menu_item_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0013",
+                "name": "Extras",
+                "min_select": 0,
+                "max_select": 2,
+                "is_required": false,
+                "sort_order": 1,
+                "addons": [
+                  {
+                    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0014",
+                    "addon_group_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0046",
+                    "name": "Extra cheese",
+                    "price": 30,
+                    "price_paise": 3000,
+                    "is_available": true,
+                    "sort_order": 1
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0047",
+            "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+            "category_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0044",
+            "name": "Veg Thali",
+            "food_type": "VEG",
+            "base_price": 180,
+            "preparation_minutes": 15,
+            "is_available": false,
+            "is_recommended": false,
+            "tax_percentage": 5,
+            "base_price_paise": 18000,
+            "variants": [],
+            "addon_groups": []
+          }
+        ]
+      }
+    ]
+  },
+  "meta": {}
+}

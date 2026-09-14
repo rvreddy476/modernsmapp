@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "FOOD_LOCATION_REQUIRED",
+    "message": "lat and lng must be given together",
+    "details": {
+      "field": "lng"
+    }
+  },
+  "meta": {}
+}

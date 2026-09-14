@@ -50,7 +50,15 @@ type RestaurantFilter struct {
 	Query string
 	City  string
 	Limit int
+	// Near is the optional lat/lng pair: each restaurant is then judged by the
+	// shared serviceability rule for that point, and the list is ranked
+	// serviceable first, then nearest.
+	Near *GeoPoint
 }
+
+// nearCandidateLimit caps how many restaurants a near-me list judges before
+// ranking and applying the limit. Candidates are taken nearest first.
+const nearCandidateLimit = 200
 
 func (s *Store) ListCuisines(ctx context.Context) ([]Cuisine, error) {
 	rows, err := s.db.Query(ctx, `
@@ -100,7 +108,19 @@ func (s *Store) ListRestaurants(ctx context.Context, filter RestaurantFilter) ([
 			)
 		)`, len(args), len(args), len(args)))
 	}
-	args = append(args, limit)
+	orderBy := "r.is_open DESC, r.avg_rating DESC, r.rating_count DESC, r.name"
+	queryLimit := limit
+	if filter.Near != nil {
+		// Candidate order only: nearest first by a flat-earth approximation, so
+		// the cap keeps the closest restaurants. Serviceability, distance and
+		// the final order come from the shared rule (fillServiceability).
+		args = append(args, filter.Near.Lat, filter.Near.Lng)
+		orderBy = fmt.Sprintf(`(r.latitude IS NULL OR r.longitude IS NULL),
+			power(r.latitude::float8 - $%d, 2) + power((r.longitude::float8 - $%d) * cos(radians($%d)), 2), %s`,
+			len(args)-1, len(args), len(args)-1, orderBy)
+		queryLimit = nearCandidateLimit
+	}
+	args = append(args, queryLimit)
 
 	query := fmt.Sprintf(`
 		SELECT
@@ -133,9 +153,9 @@ func (s *Store) ListRestaurants(ctx context.Context, filter RestaurantFilter) ([
 			), '')
 		FROM food.restaurants r
 		WHERE %s
-		ORDER BY r.is_open DESC, r.avg_rating DESC, r.rating_count DESC, r.name
+		ORDER BY %s
 		LIMIT $%d
-	`, strings.Join(clauses, " AND "), len(args))
+	`, strings.Join(clauses, " AND "), orderBy, len(args))
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -151,10 +171,27 @@ func (s *Store) ListRestaurants(ctx context.Context, filter RestaurantFilter) ([
 		}
 		restaurants = append(restaurants, item)
 	}
-	return restaurants, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	all := make([]*RestaurantSummary, len(restaurants))
+	for i := range restaurants {
+		all[i] = &restaurants[i]
+	}
+	if err := s.fillServiceability(ctx, all, filter.Near); err != nil {
+		return nil, err
+	}
+	if filter.Near != nil {
+		rankByServiceability(restaurants)
+		if len(restaurants) > limit {
+			restaurants = restaurants[:limit]
+		}
+	}
+	return restaurants, nil
 }
 
-func (s *Store) GetRestaurant(ctx context.Context, id uuid.UUID) (*RestaurantDetail, error) {
+func (s *Store) GetRestaurant(ctx context.Context, id uuid.UUID, near *GeoPoint) (*RestaurantDetail, error) {
 	row := s.db.QueryRow(ctx, `
 		SELECT
 			r.id,
@@ -199,6 +236,9 @@ func (s *Store) GetRestaurant(ctx context.Context, id uuid.UUID) (*RestaurantDet
 		return nil, err
 	}
 	detail.RestaurantSummary = summary
+	if err := s.fillServiceability(ctx, []*RestaurantSummary{&detail.RestaurantSummary}, near); err != nil {
+		return nil, err
+	}
 	return &detail, nil
 }
 
@@ -269,7 +309,14 @@ func (s *Store) GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]MenuCate
 		}
 		categories[idx].Items = append(categories[idx].Items, item)
 	}
-	return categories, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := s.attachCustomerMenuExtras(ctx, categories); err != nil {
+		return nil, err
+	}
+	return categories, nil
 }
 
 type restaurantRow interface {
