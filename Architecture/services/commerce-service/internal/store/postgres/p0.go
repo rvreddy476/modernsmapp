@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/atpost/commerce-service/internal/money"
+	"github.com/atpost/shared/paymentevents"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -81,19 +82,49 @@ func (s *Store) ApplyPaymentSucceeded(ctx context.Context, e PaymentEvent) error
 	if _, err := tx.Exec(ctx, `SELECT set_config('commerce.actor_type', 'system', true)`); err != nil {
 		return err
 	}
+	return applyPaymentOnce(ctx, tx, e, func(ctx context.Context, tx pgx.Tx) error {
+		return applyPaymentSucceededTx(ctx, tx, e)
+	})
+}
 
+// paymentInbox is commerce's payment_event_inbox, the dedupe half of
+// paymentevents.ApplyOnce. The table has no currency column; commerce never
+// recorded one.
+type paymentInbox struct{}
+
+func (paymentInbox) Claim(ctx context.Context, tx pgx.Tx, c paymentevents.Claim) (bool, error) {
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO payment_event_inbox (event_id, event_type, intent_id, order_id, amount_minor)
 		 VALUES ($1,$2,NULLIF($3,''),$4,$5)
 		 ON CONFLICT (event_id) DO NOTHING`,
-		e.EventID, e.EventType, e.IntentID, e.OrderID, e.AmountMinor.Int64())
+		c.EventID, c.EventType, c.IntentID, c.ReferenceID, c.AmountMinor)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// applyPaymentOnce claims e's inbox row and runs effect in the same tx, then
+// commits. A row that already existed is ErrDuplicatePaymentEvt with nothing
+// written; any error rolls the inbox row back with the effect.
+func applyPaymentOnce(ctx context.Context, tx pgx.Tx, e PaymentEvent, effect func(context.Context, pgx.Tx) error) error {
+	claim := paymentevents.Claim{
+		EventID: e.EventID, EventType: e.EventType, IntentID: e.IntentID,
+		ReferenceID: e.OrderID, AmountMinor: e.AmountMinor.Int64(), Currency: e.Currency,
+	}
+	err := paymentevents.ApplyOnce(ctx, tx, paymentInbox{}, claim, effect)
+	if errors.Is(err, paymentevents.ErrDuplicate) {
+		return ErrDuplicatePaymentEvt
+	}
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrDuplicatePaymentEvt
-	}
+	return tx.Commit(ctx)
+}
 
+// applyPaymentSucceededTx is ApplyPaymentSucceeded after the inbox claim.
+// It never commits.
+func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) error {
 	var (
 		status     string
 		payStatus  string
@@ -103,7 +134,7 @@ func (s *Store) ApplyPaymentSucceeded(ctx context.Context, e PaymentEvent) error
 		intentID   *string
 		expiredAt  *time.Time
 	)
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`SELECT status, payment_status, COALESCE(final_amount_minor,0), currency_code,
 		        customer_user_id, payment_intent_id::text, reservation_expired_at
 		   FROM orders WHERE id = $1 FOR UPDATE`, e.OrderID).
@@ -115,24 +146,25 @@ func (s *Store) ApplyPaymentSucceeded(ctx context.Context, e PaymentEvent) error
 		return err
 	}
 
-	// LB-5 / C6: the full tuple, not just the amount.
-	if e.AmountMinor != totalMinor {
-		return fmt.Errorf("%w: event %s vs order %s", ErrAmountMismatch, e.AmountMinor, totalMinor)
+	// LB-5 / C6: the full tuple, not just the amount. Commerce compares only
+	// what the event states: a blank currency, nil payer or blank intent is
+	// not a mismatch (paymentevents.AllowUnstated).
+	boundIntent := ""
+	if intentID != nil {
+		boundIntent = *intentID
 	}
-	if e.Currency != "" && !equalFoldState(e.Currency, currency) {
-		return fmt.Errorf("%w: currency %s vs %s", ErrAmountMismatch, e.Currency, currency)
-	}
-	if e.PayerID != uuid.Nil && e.PayerID != customerID {
-		return fmt.Errorf("%w: payer is not the order's customer", ErrAmountMismatch)
-	}
-	if intentID != nil && e.IntentID != "" && *intentID != e.IntentID {
-		return fmt.Errorf("%w: intent does not belong to this order", ErrAmountMismatch)
+	if err := paymentevents.CheckCapture(
+		paymentevents.Expected{AmountMinor: totalMinor.Int64(), Currency: currency, PayerID: customerID, IntentID: boundIntent},
+		paymentevents.Observed{AmountMinor: e.AmountMinor.Int64(), Currency: e.Currency, PayerID: e.PayerID, IntentID: e.IntentID},
+		paymentevents.AllowUnstated,
+	); err != nil {
+		return fmt.Errorf("%w: %v", ErrAmountMismatch, err)
 	}
 
 	// Already paid — idempotent, and the inbox row above already made this
 	// a one-shot.
 	if payStatus == "paid" {
-		return tx.Commit(ctx)
+		return nil
 	}
 
 	// M-5: the reservation expired and the order was terminated, but the
@@ -161,7 +193,7 @@ func (s *Store) ApplyPaymentSucceeded(ctx context.Context, e PaymentEvent) error
 		}); err != nil {
 			return err
 		}
-		return tx.Commit(ctx)
+		return nil
 	}
 
 	// Commit the reservation into real stock. Failure aborts the whole
@@ -203,7 +235,7 @@ func (s *Store) ApplyPaymentSucceeded(ctx context.Context, e PaymentEvent) error
 	}); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // ApplyPaymentFailed releases the hold so the stock returns to sale.
@@ -220,42 +252,30 @@ func (s *Store) ApplyPaymentFailed(ctx context.Context, e PaymentEvent) error {
 	if _, err := tx.Exec(ctx, `SELECT set_config('commerce.actor_type', 'system', true)`); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx,
-		`INSERT INTO payment_event_inbox (event_id, event_type, intent_id, order_id, amount_minor)
-		 VALUES ($1,$2,NULLIF($3,''),$4,$5) ON CONFLICT (event_id) DO NOTHING`,
-		e.EventID, e.EventType, e.IntentID, e.OrderID, e.AmountMinor.Int64())
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrDuplicatePaymentEvt
-	}
-
-	var status string
-	if err := tx.QueryRow(ctx,
-		`SELECT status FROM orders WHERE id = $1 FOR UPDATE`, e.OrderID).Scan(&status); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrOrderNotFoundP0
+	return applyPaymentOnce(ctx, tx, e, func(ctx context.Context, tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(ctx,
+			`SELECT status FROM orders WHERE id = $1 FOR UPDATE`, e.OrderID).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrOrderNotFoundP0
+			}
+			return err
 		}
-		return err
-	}
-	if status != "payment_pending" {
-		return tx.Commit(ctx) // nothing to do
-	}
-	if err := releaseReservationsTx(ctx, tx, e.OrderID, "checkout_release_payment_failed"); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE orders SET status = 'payment_failed', payment_status = 'failed', updated_at = NOW()
-		  WHERE id = $1`, e.OrderID); err != nil {
-		return err
-	}
-	if err := enqueueOutboxTx(ctx, tx, "commerce.order.payment_failed", e.OrderID.String(), map[string]any{
-		"order_id": e.OrderID,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+		if status != "payment_pending" {
+			return nil // nothing to do; the inbox row still commits
+		}
+		if err := releaseReservationsTx(ctx, tx, e.OrderID, "checkout_release_payment_failed"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE orders SET status = 'payment_failed', payment_status = 'failed', updated_at = NOW()
+			  WHERE id = $1`, e.OrderID); err != nil {
+			return err
+		}
+		return enqueueOutboxTx(ctx, tx, "commerce.order.payment_failed", e.OrderID.String(), map[string]any{
+			"order_id": e.OrderID,
+		})
+	})
 }
 
 // ─── Reservation release and commit (LB-21, LB-23) ───────────────────

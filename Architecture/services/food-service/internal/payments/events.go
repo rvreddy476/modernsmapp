@@ -1,11 +1,9 @@
 package payments
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/atpost/shared/events"
+	"github.com/atpost/shared/paymentevents"
 	"github.com/atpost/shared/servicetoken"
 	"github.com/google/uuid"
 )
@@ -120,21 +118,18 @@ func Decide(o OrderSnapshot, ev Event) Decision {
 func decideSucceeded(o OrderSnapshot, ev Event) Decision {
 	// Every party and the amount are checked before state: a capture that does
 	// not match the order must never be recorded as "already paid" either.
-	if ev.AmountMinor != o.AmountMinor {
-		return mismatch("amount_minor %d != order %d", ev.AmountMinor, o.AmountMinor)
-	}
+	// Food requires the event to STATE its currency, payer and (once the order
+	// has one) intent.
 	orderCurrency := o.Currency
 	if orderCurrency == "" {
 		orderCurrency = "INR"
 	}
-	if ev.Currency == "" || !strings.EqualFold(ev.Currency, orderCurrency) {
-		return mismatch("currency %q != order %q", ev.Currency, orderCurrency)
-	}
-	if ev.PayerID == uuid.Nil || ev.PayerID != o.UserID {
-		return mismatch("payer %s is not the order's customer", ev.PayerID)
-	}
-	if o.IntentID != "" && ev.IntentID != o.IntentID {
-		return mismatch("intent %s is not the order's intent", ev.IntentID)
+	if err := paymentevents.CheckCapture(
+		paymentevents.Expected{AmountMinor: o.AmountMinor, Currency: orderCurrency, PayerID: o.UserID, IntentID: o.IntentID},
+		paymentevents.Observed{AmountMinor: ev.AmountMinor, Currency: ev.Currency, PayerID: ev.PayerID, IntentID: ev.IntentID},
+		paymentevents.RequireStated,
+	); err != nil {
+		return mismatch(err)
 	}
 	if moneyTaken[o.PaymentStatus] {
 		return Decision{Outcome: OutcomeAlreadyPaid, Detail: "payment already " + o.PaymentStatus}
@@ -161,11 +156,11 @@ func decideFailed(o OrderSnapshot) Decision {
 }
 
 func decideRefunded(o OrderSnapshot, ev Event) Decision {
-	if ev.AmountMinor <= 0 || ev.AmountMinor > o.AmountMinor {
-		return mismatch("refund amount_minor %d outside order %d", ev.AmountMinor, o.AmountMinor)
-	}
-	if o.IntentID != "" && ev.IntentID != o.IntentID {
-		return mismatch("refund intent %s is not the order's intent", ev.IntentID)
+	if err := paymentevents.CheckRefund(
+		paymentevents.Expected{AmountMinor: o.AmountMinor, IntentID: o.IntentID},
+		paymentevents.Observed{AmountMinor: ev.AmountMinor, IntentID: ev.IntentID},
+	); err != nil {
+		return mismatch(err)
 	}
 	if !refundable[o.PaymentStatus] {
 		return Decision{Outcome: OutcomeRefundIgnored, Detail: "payment is " + o.PaymentStatus}
@@ -179,6 +174,7 @@ func decideRefunded(o OrderSnapshot, ev Event) Decision {
 	return Decision{Outcome: OutcomeRefundIgnored, Detail: "refund status " + ev.Status}
 }
 
-func mismatch(format string, args ...any) Decision {
-	return Decision{Outcome: OutcomeAmountMismatch, Detail: fmt.Sprintf(format, args...)}
+// mismatch records a refused money check; the detail is the shared check's.
+func mismatch(err error) Decision {
+	return Decision{Outcome: OutcomeAmountMismatch, Detail: err.Error()}
 }

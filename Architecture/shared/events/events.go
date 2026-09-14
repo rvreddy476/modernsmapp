@@ -193,6 +193,7 @@ const (
 	EventPaymentSucceeded        = "payment.succeeded"
 	EventPaymentFailed           = "payment.failed"
 	EventPaymentRefunded         = "payment.refunded"
+	EventPaymentRefundFailed     = "payment.refund_failed" // refund parked in needs_attention; contract in shared/paymentevents
 	EventDisputeOpened           = "dispute.opened"
 	EventDisputeResolved         = "dispute.resolved"
 

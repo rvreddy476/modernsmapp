@@ -38,10 +38,14 @@ package consumers
 // not become a parked DLQ item after three attempts. Genuinely unprocessable
 // input is wrapped in kafka.Permanent by the handler below and reaches the
 // DLQ immediately; everything else is retried until PostgreSQL accepts it.
+//
+// Decoding and type dispatch are shared/paymentevents; the inbox, the money
+// check (paymentevents.CheckCapture) and the effect stay in the store.
+// payment.refund_failed is not consumed here: commerce's own refund worker
+// owns the command's fate.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,12 +55,14 @@ import (
 	"github.com/atpost/shared/events"
 	sharedkafka "github.com/atpost/shared/kafka"
 	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/paymentevents"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 // P0PaymentsConsumer applies payment events durably.
 type P0PaymentsConsumer struct {
+	paymentevents.NopHandler
 	store    *postgres.Store
 	consumer *sharedkafka.Consumer
 	obs      Observer
@@ -106,24 +112,6 @@ func NewP0PaymentsConsumer(
 func (c *P0PaymentsConsumer) Start(ctx context.Context) { c.consumer.Start(ctx) }
 func (c *P0PaymentsConsumer) Close() error              { return c.consumer.Close() }
 
-// paymentPayload mirrors what payments-service publishes.
-//
-// AmountMinor is the only amount field read. The deprecated float `amount`
-// mirror is deliberately NOT declared here: if it is not in the struct, no
-// future edit can accidentally start comparing against it.
-type paymentPayload struct {
-	ID            string      `json:"id"`
-	PayerID       string      `json:"payer_id"`
-	PayeeID       string      `json:"payee_id"`
-	ReferenceType string      `json:"reference_type"`
-	ReferenceID   string      `json:"reference_id"`
-	AmountMinor   money.Paise `json:"amount_minor"`
-	Currency      string      `json:"currency"`
-	Method        string      `json:"method"`
-	Status        string      `json:"status"`
-	ProviderRef   string      `json:"provider_ref,omitempty"`
-}
-
 func (c *P0PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope) error {
 	switch env.EventType {
 	case events.EventPaymentSucceeded, events.EventPaymentFailed, events.EventPaymentRefunded:
@@ -141,8 +129,8 @@ func (c *P0PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelo
 		return fmt.Errorf("payment event has no event_id")
 	}
 
-	var p paymentPayload
-	if err := json.Unmarshal(env.Payload, &p); err != nil {
+	err := paymentevents.Dispatch(ctx, env, c)
+	if errors.Is(err, paymentevents.ErrMalformed) {
 		// A malformed payload will never parse, so retrying forever is
 		// pointless — but it must be visible, not silently dropped the way
 		// the old handler dropped it with a Warn and a nil return.
@@ -150,11 +138,26 @@ func (c *P0PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelo
 			"event_type", env.EventType, "event_id", env.EventID, "error", err)
 		return sharedkafka.Permanent(fmt.Errorf("unprocessable payment event %s", env.EventID))
 	}
+	return err
+}
 
-	if env.EventType == events.EventPaymentRefunded {
-		return c.applyRefund(ctx, env, p)
-	}
+// OnSucceeded applies payment.succeeded.
+func (c *P0PaymentsConsumer) OnSucceeded(ctx context.Context, env *events.EventEnvelope, ev paymentevents.Succeeded) error {
+	return c.applyPayment(ctx, env, ev.Payment, c.store.ApplyPaymentSucceeded)
+}
 
+// OnFailed applies payment.failed.
+func (c *P0PaymentsConsumer) OnFailed(ctx context.Context, env *events.EventEnvelope, ev paymentevents.Failed) error {
+	return c.applyPayment(ctx, env, ev.Payment, c.store.ApplyPaymentFailed)
+}
+
+// OnRefunded settles a refund.
+func (c *P0PaymentsConsumer) OnRefunded(ctx context.Context, _ *events.EventEnvelope, ev paymentevents.Refunded) error {
+	return c.applyRefund(ctx, ev)
+}
+
+func (c *P0PaymentsConsumer) applyPayment(ctx context.Context, env *events.EventEnvelope, p paymentevents.Payment,
+	apply func(context.Context, postgres.PaymentEvent) error) error {
 	// Only order references concern commerce. food-service's intents share
 	// this topic, and applying one of those to an order would be exactly the
 	// cross-domain confusion D4 exists to prevent.
@@ -174,19 +177,13 @@ func (c *P0PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelo
 		EventType:   env.EventType,
 		IntentID:    p.ID,
 		OrderID:     orderID,
-		AmountMinor: p.AmountMinor,
+		AmountMinor: money.Paise(p.AmountMinor),
 		Currency:    p.Currency,
 		PayerID:     payerID,
 		ProviderRef: p.ProviderRef,
 	}
 
-	switch env.EventType {
-	case events.EventPaymentSucceeded:
-		err = c.store.ApplyPaymentSucceeded(ctx, ev)
-	case events.EventPaymentFailed:
-		err = c.store.ApplyPaymentFailed(ctx, ev)
-	}
-
+	err = apply(ctx, ev)
 	switch {
 	case err == nil:
 		if c.obs != nil {
@@ -233,7 +230,7 @@ func (c *P0PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelo
 	}
 }
 
-func (c *P0PaymentsConsumer) applyRefund(ctx context.Context, env *events.EventEnvelope, p paymentPayload) error {
+func (c *P0PaymentsConsumer) applyRefund(ctx context.Context, p paymentevents.Refunded) error {
 	// A refund event is keyed on the intent, because payments can refund an
 	// intent commerce did not initiate.
 	if p.ID == "" {

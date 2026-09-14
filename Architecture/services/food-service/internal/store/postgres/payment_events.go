@@ -8,6 +8,7 @@ import (
 
 	"github.com/atpost/food-service/internal/orderstate"
 	"github.com/atpost/food-service/internal/payments"
+	"github.com/atpost/shared/paymentevents"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -21,9 +22,10 @@ import (
 //  4. apply the effect (every order status change through transitionOrderTx);
 //  5. record the outcome on the inbox row; COMMIT.
 //
-// A mismatch commits the inbox row with no order effect, so it is recorded
-// once and not retried. Any error rolls back the inbox row with the rest, so a
-// retry is applied exactly once.
+// Steps 1 and 2-5 are paymentevents.ApplyOnce over paymentInbox, inside this
+// transaction. A mismatch commits the inbox row with no order effect, so it is
+// recorded once and not retried. Any error rolls back the inbox row with the
+// rest, so a retry is applied exactly once.
 func (s *Store) ApplyPaymentEvent(ctx context.Context, ev payments.Event) (payments.Applied, error) {
 	applied := payments.Applied{OrderID: ev.OrderID}
 	if strings.TrimSpace(ev.EventID) == "" {
@@ -35,23 +37,46 @@ func (s *Store) ApplyPaymentEvent(ctx context.Context, ev payments.Event) (payme
 	}
 	defer tx.Rollback(ctx)
 
+	claim := paymentevents.Claim{
+		EventID: ev.EventID, EventType: ev.EventType, IntentID: ev.IntentID,
+		ReferenceID: ev.OrderID, AmountMinor: ev.AmountMinor, Currency: ev.Currency,
+	}
+	err = paymentevents.ApplyOnce(ctx, tx, paymentInbox{}, claim, func(ctx context.Context, tx pgx.Tx) error {
+		return s.applyPaymentEffectTx(ctx, tx, ev, &applied)
+	})
+	switch {
+	case errors.Is(err, paymentevents.ErrDuplicate):
+		applied.Decision = payments.Decision{Outcome: payments.OutcomeDuplicate}
+		return applied, nil
+	case err != nil:
+		return applied, err
+	}
+	return applied, tx.Commit(ctx)
+}
+
+// paymentInbox is food.payment_event_inbox, the dedupe half of
+// paymentevents.ApplyOnce.
+type paymentInbox struct{}
+
+func (paymentInbox) Claim(ctx context.Context, tx pgx.Tx, c paymentevents.Claim) (bool, error) {
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO food.payment_event_inbox (event_id, event_type, intent_id, order_id, amount_minor, currency)
 		VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''))
 		ON CONFLICT (event_id) DO NOTHING
-	`, ev.EventID, ev.EventType, ev.IntentID, ev.OrderID, ev.AmountMinor, ev.Currency)
+	`, c.EventID, c.EventType, c.IntentID, c.ReferenceID, c.AmountMinor, c.Currency)
 	if err != nil {
-		return applied, fmt.Errorf("record payment event: %w", err)
+		return false, fmt.Errorf("record payment event: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		applied.Decision = payments.Decision{Outcome: payments.OutcomeDuplicate}
-		return applied, nil
-	}
+	return tag.RowsAffected() > 0, nil
+}
 
+// applyPaymentEffectTx is steps 2-5 for a freshly claimed event. It fills
+// applied and never commits; ApplyPaymentEvent does.
+func (s *Store) applyPaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments.Event, applied *payments.Applied) error {
 	snap := payments.OrderSnapshot{OrderID: ev.OrderID}
 	var paymentID *uuid.UUID
 	var deliveryFee float64
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT o.user_id, o.restaurant_id, o.status::text, o.payment_status::text,
 			COALESCE(o.final_amount_paise, ROUND(o.final_amount * 100)::bigint), o.delivery_fee::float8,
 			p.id, COALESCE(p.provider_payment_id, ''), COALESCE(btrim(p.currency::text), 'INR')
@@ -68,14 +93,12 @@ func (s *Store) ApplyPaymentEvent(ctx context.Context, ev payments.Event) (payme
 	`, ev.OrderID).Scan(&snap.UserID, &applied.RestaurantID, &snap.Status, &snap.PaymentStatus,
 		&snap.AmountMinor, &deliveryFee, &paymentID, &snap.IntentID, &snap.Currency)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Recorded and committed, so it is not retried.
 		applied.Decision = payments.Decision{Outcome: payments.OutcomeOrderNotFound, Detail: "no such food order"}
-		if err := recordInboxOutcomeTx(ctx, tx, ev.EventID, applied.Decision); err != nil {
-			return applied, err
-		}
-		return applied, tx.Commit(ctx)
+		return recordInboxOutcomeTx(ctx, tx, ev.EventID, applied.Decision)
 	}
 	if err != nil {
-		return applied, fmt.Errorf("read order for payment event: %w", err)
+		return fmt.Errorf("read order for payment event: %w", err)
 	}
 	applied.UserID = snap.UserID
 
@@ -99,12 +122,9 @@ func (s *Store) ApplyPaymentEvent(ctx context.Context, ev payments.Event) (payme
 		})
 	}
 	if err != nil {
-		return applied, fmt.Errorf("apply %s (%s): %w", ev.EventType, d.Outcome, err)
+		return fmt.Errorf("apply %s (%s): %w", ev.EventType, d.Outcome, err)
 	}
-	if err := recordInboxOutcomeTx(ctx, tx, ev.EventID, d); err != nil {
-		return applied, err
-	}
-	return applied, tx.Commit(ctx)
+	return recordInboxOutcomeTx(ctx, tx, ev.EventID, d)
 }
 
 func recordInboxOutcomeTx(ctx context.Context, tx pgx.Tx, eventID string, d payments.Decision) error {

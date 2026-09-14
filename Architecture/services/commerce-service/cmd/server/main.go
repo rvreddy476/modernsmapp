@@ -211,21 +211,26 @@ func main() {
 	// payments admits that only while its own legacy fallback is on — and
 	// a deployed environment refuses to start that way.
 	paymentsURL := env("PAYMENTS_SERVICE_URL", "http://payments-service:8102")
+	// Every intent and refund belongs to one payments application
+	// (PAYMENTS_APPLICATION_ID; name and default live in internal/payments).
+	paymentsApplicationID := payments.ApplicationIDFromEnv(os.Getenv)
 	var pmClient *payments.Client
 	if signingKey := os.Getenv("COMMERCE_SERVICE_TOKEN_KEY"); signingKey != "" {
-		pmClient, err = payments.NewP0Client(paymentsURL, env("COMMERCE_SERVICE_TOKEN_KID", ""), signingKey)
+		pmClient, err = payments.NewP0Client(paymentsURL, paymentsApplicationID, env("COMMERCE_SERVICE_TOKEN_KID", ""), signingKey)
 		if err != nil {
 			slog.Error("commerce: payments service-token client could not be built", "error", err)
 			os.Exit(1)
 		}
-		slog.Info("payments client ready (service-token auth)", "payments_url", paymentsURL)
+		slog.Info("payments client ready (service-token auth)", "payments_url", paymentsURL,
+			"application_id", paymentsApplicationID)
 	} else {
-		if classifyPIIEnvironment(os.Getenv("ENV")) != piiEnvLocal {
+		legacyAllowed := classifyPIIEnvironment(os.Getenv("ENV")) == piiEnvLocal
+		if !legacyAllowed {
 			slog.Error("commerce: COMMERCE_SERVICE_TOKEN_KEY is required in a deployed environment — " +
 				"the shared internal key is not a service identity (Commerce P0 A2)")
 			os.Exit(1)
 		}
-		pmClient, err = payments.NewInternalKeyClient(paymentsURL, internalKey)
+		pmClient, err = payments.NewInternalKeyClient(paymentsURL, paymentsApplicationID, internalKey, legacyAllowed)
 		if err != nil {
 			slog.Error("commerce: payments legacy client could not be built", "error", err)
 			os.Exit(1)

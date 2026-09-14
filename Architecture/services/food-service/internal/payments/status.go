@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/atpost/food-service/internal/orderstate"
+	"github.com/atpost/shared/paymentsclient"
 )
 
 // Customer payment states. There are exactly three.
@@ -85,12 +86,8 @@ func CustomerStatus(s CustomerPaymentSnapshot) (status, refundStatus string, err
 // ClientSession is what the Android app needs to open Razorpay Checkout.
 // It is a struct, not a map, so no field other than these three can ever be
 // relayed: the key_id is Razorpay's publishable identifier; the key secret is
-// never here.
-type ClientSession struct {
-	Provider string `json:"provider"`
-	OrderID  string `json:"order_id"`
-	KeyID    string `json:"key_id"`
-}
+// never here. It is the shared client's type.
+type ClientSession = paymentsclient.ClientSession
 
 // PublicClientSession extracts the relayable session from payments-service's
 // intent. It returns nil (the field is then omitted, exactly as commerce and
