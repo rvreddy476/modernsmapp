@@ -3,8 +3,17 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
+
+// StubOrderPrefix begins every order id the stub gateway mints. Such an id
+// was never a provider object, so nothing may send it to a real PSP.
+const StubOrderPrefix = "order_stub_"
+
+// IsStubOrderRef reports whether a provider order reference was minted by the
+// stub gateway rather than by a real provider.
+func IsStubOrderRef(ref string) bool { return strings.HasPrefix(ref, StubOrderPrefix) }
 
 // StubGateway is a mock payment gateway for development and testing.
 // It always returns success and generates fake IDs.
@@ -12,7 +21,7 @@ type StubGateway struct{}
 
 func (g *StubGateway) CreateOrder(_ context.Context, amount int64, currency, receipt string) (GatewayOrder, error) {
 	return GatewayOrder{
-		ID:       fmt.Sprintf("order_stub_%d", time.Now().UnixNano()),
+		ID:       fmt.Sprintf("%s%d", StubOrderPrefix, time.Now().UnixNano()),
 		Amount:   amount,
 		Currency: currency,
 		Receipt:  receipt,

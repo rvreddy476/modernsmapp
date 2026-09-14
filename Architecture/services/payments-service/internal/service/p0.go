@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/atpost/payments-service/internal/gateway"
@@ -390,6 +391,19 @@ func (s *Service) RunReconciler(ctx context.Context, interval, pendingAge time.D
 // loop's first statement was `if intent.ProviderRef == "" { continue }`. It is
 // now repaired by looking the order up under the intent's own deterministic
 // idempotency key.
+//
+// ORDER-PAYMENTS — the reference an intent holds is the provider ORDER id
+// (`order_…`), and this loop used to hand it to FetchPayment, which takes a
+// PAYMENT id. Razorpay answers GET /v1/payments/order_… with 400, so every tick
+// logged an error and a real payment whose webhook was lost was never
+// reconciled. It now lists the order's payments (FetchOrderPayments), chooses
+// the outcome the webhook would have produced (reconcileOutcome), and applies
+// it through the webhook's own atomic transaction.
+//
+// Stub-gateway references (`order_stub_…`) were never provider objects: they
+// are skipped without a provider call and reported once per intent. A failing
+// lookup backs off per intent instead of being re-requested and re-logged
+// every tick, and "no payments yet" is not a failure at all.
 func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 	if s.provider == nil {
 		// MRC-2.6: without the provider port there is no lookup-by-key and
@@ -403,14 +417,31 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 		slog.Warn("payments: reconciler query failed", "error", err)
 		return
 	}
+	s.recon.forgetAllBut(stale)
+	now := time.Now()
 	for _, intent := range stale {
+		if gateway.IsStubOrderRef(intent.ProviderRef) {
+			// The stub gateway minted this id locally and no provider has ever
+			// heard of it, so there is nothing to ask. In stub mode such an
+			// intent settles through VerifyIntent (WithStubSettlement) and this
+			// reconciler does not run at all; next to a real provider it is a
+			// leftover, and it stays pending.
+			if s.recon.firstStubSkip(intent.ID) {
+				slog.Info("payments: reconciler skipping a stub-gateway order reference; no provider can resolve it",
+					"intent_id", intent.ID, "provider_order_id", intent.ProviderRef)
+			}
+			continue
+		}
+		if !s.recon.due(intent.ID, now) {
+			continue // backing off after an earlier failure
+		}
+
 		providerRef := intent.ProviderRef
 		if providerRef == "" {
 			// MRC-2: repair the missing reference before anything else.
 			recovered, err := s.repairMissingProviderRef(ctx, intent)
 			if err != nil {
-				slog.Warn("payments: could not repair a blank provider reference",
-					"intent_id", intent.ID, "error", err)
+				s.recon.backOff(intent.ID, now, "payments: could not repair a blank provider reference", err)
 				continue
 			}
 			if recovered == "" {
@@ -421,41 +452,30 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 			providerRef = recovered
 		}
 
-		p, err := s.provider.FetchPayment(ctx, providerRef)
+		payments, err := s.provider.FetchOrderPayments(ctx, providerRef)
 		if err != nil {
-			slog.Warn("payments: reconcile fetch failed", "intent_id", intent.ID, "error", err)
+			s.recon.backOff(intent.ID, now, "payments: reconcile could not list the order's payments", err,
+				"provider_order_id", providerRef)
+			continue
+		}
+		s.recon.clearFailures(intent.ID)
+
+		p, newStatus := reconcileOutcome(intent, providerRef, payments)
+		if newStatus == "" {
+			// No payments yet, or none that is terminal. Not a failure.
+			slog.Debug("payments: stale intent has no terminal provider outcome yet",
+				"intent_id", intent.ID, "provider_order_id", providerRef, "payments", len(payments))
 			continue
 		}
 
-		newStatus := ""
-		switch p.State {
-		case gateway.StateCaptured:
-			newStatus = "succeeded"
-		case gateway.StateFailed:
-			newStatus = "failed"
-		default:
-			continue // still genuinely in flight
-		}
-
-		if newStatus == "succeeded" {
-			// MRC-1.2/1.3: the FULL tuple, or nothing. A capture we cannot
-			// verify is not a capture we may act on, and every one of these
-			// is a refusal rather than a defaulted value.
-			if err := verifyProviderTuple(intent, p); err != nil {
-				slog.Error("payments: RECONCILIATION REFUSED — provider tuple does not verify",
-					"intent_id", intent.ID,
-					"intent_minor", intent.AmountMinor(), "intent_currency", intent.Currency,
-					"provider_minor", p.Amount.Minor, "provider_currency", p.Amount.Currency,
-					"provider_payment_id", p.ProviderPaymentID,
-					"error", err)
-				continue
-			}
-		}
-
-		// Synthesise an inbox key so the reconciler is idempotent with the
-		// webhook: if the webhook later arrives for the same payment, its
-		// own event id is different but the status transition is already
-		// terminal and will be refused by the state machine.
+		// Exactly once, by the webhook's own machinery. ApplyWebhookAtomically
+		// takes the intent row FOR UPDATE, and writes the status change and the
+		// payment.succeeded / payment.failed outbox row in one transaction only
+		// when the state machine allows pending → terminal. A later real
+		// webhook (its own event id) or a concurrent tick therefore finds a
+		// terminal intent and publishes nothing; the synthesised inbox key
+		// additionally collapses two reconciler passes over the same payment
+		// into ErrDuplicateEvent.
 		_, err = s.store.ApplyWebhookAtomically(ctx, postgres.WebhookEffect{
 			Provider:          s.provider.Name(),
 			EventID:           "reconcile:" + p.ProviderPaymentID,
@@ -466,12 +486,183 @@ func (s *Service) reconcileOnce(ctx context.Context, pendingAge time.Duration) {
 			AmountMinor:       p.Amount.Minor,
 			Currency:          p.Amount.Currency,
 		})
-		if err != nil && !errors.Is(err, postgres.ErrDuplicateEvent) {
-			slog.Warn("payments: reconcile apply failed", "intent_id", intent.ID, "error", err)
+		switch {
+		case errors.Is(err, postgres.ErrDuplicateEvent):
+			continue
+		case err != nil:
+			s.recon.backOff(intent.ID, now, "payments: reconcile apply failed", err,
+				"provider_order_id", providerRef)
 			continue
 		}
 		slog.Info("payments: reconciled a stale intent",
 			"intent_id", intent.ID, "status", newStatus, "provider_payment_id", p.ProviderPaymentID)
+	}
+}
+
+// reconcileOutcome chooses what the webhook would have done with an order's
+// payments (oldest first). An empty status leaves the intent pending.
+//
+// It mirrors ApplyWebhook's event mapping:
+//
+//	payment.captured   → succeeded, and only on a capture whose full money
+//	                     tuple verifies against the intent — the webhook runs
+//	                     the same VerifyProviderMoney check inside its
+//	                     transaction and refuses a mismatch
+//	payment.authorized → no change; authorized is not captured
+//	payment.failed     → failed, but only when EVERY attempt on the order
+//	                     failed: an attempt still in flight or authorized may
+//	                     yet capture, and failed → succeeded is not a
+//	                     transition the state machine allows
+//
+// No payments at all means nobody has paid yet: pending.
+func reconcileOutcome(intent postgres.PaymentIntent, providerOrderID string, payments []gateway.ProviderPaymentState) (gateway.ProviderPaymentState, string) {
+	var (
+		captured   []gateway.ProviderPaymentState
+		lastFailed gateway.ProviderPaymentState
+		failed     int
+		unsettled  int
+	)
+	for _, p := range payments {
+		switch p.State {
+		case gateway.StateCaptured:
+			captured = append(captured, p)
+		case gateway.StateFailed:
+			failed++
+			lastFailed = p
+		default:
+			unsettled++ // authorized, created/pending, refunded, unknown
+		}
+	}
+
+	if len(captured) > 1 {
+		ids := make([]string, 0, len(captured))
+		for _, p := range captured {
+			ids = append(ids, p.ProviderPaymentID)
+		}
+		slog.Error("payments: MORE THAN ONE CAPTURED PAYMENT ON ONE ORDER — the extra capture needs a refund",
+			"intent_id", intent.ID, "provider_order_id", providerOrderID, "captured_payment_ids", ids)
+	}
+	for _, p := range captured {
+		// MRC-1.2/1.3: the FULL tuple, or nothing. A capture we cannot
+		// verify is not a capture we may act on, and every one of these is a
+		// refusal rather than a defaulted value.
+		if err := verifyProviderTuple(intent, p); err != nil {
+			slog.Error("payments: RECONCILIATION REFUSED — provider tuple does not verify",
+				"intent_id", intent.ID,
+				"intent_minor", intent.AmountMinor(), "intent_currency", intent.Currency,
+				"provider_minor", p.Amount.Minor, "provider_currency", p.Amount.Currency,
+				"provider_payment_id", p.ProviderPaymentID,
+				"error", err)
+			continue
+		}
+		return p, "succeeded"
+	}
+	if len(captured) > 0 {
+		// Money was captured but none of it verifies. That is an alarm, never
+		// a reason to mark the intent failed.
+		return gateway.ProviderPaymentState{}, ""
+	}
+	if failed > 0 && unsettled == 0 && lastFailed.ProviderPaymentID != "" {
+		return lastFailed, "failed"
+	}
+	return gateway.ProviderPaymentState{}, ""
+}
+
+// ─── Reconciler memory between ticks ─────────────────────────────────
+
+const (
+	reconcileBackoffBase = time.Minute
+	reconcileBackoffMax  = time.Hour
+)
+
+// reconcileTracker is what the reconciler remembers between ticks, in memory:
+// which stub references it has already reported, and which intents are backing
+// off after a failure. Losing it on restart costs one log line and one early
+// retry per intent; the money state lives entirely in the database. The zero
+// value is ready to use.
+type reconcileTracker struct {
+	mu         sync.Mutex
+	stubLogged map[uuid.UUID]struct{}
+	failures   map[uuid.UUID]reconcileFailure
+}
+
+type reconcileFailure struct {
+	attempts int
+	next     time.Time
+}
+
+// firstStubSkip reports true the first time a stub reference is seen.
+func (r *reconcileTracker) firstStubSkip(id uuid.UUID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stubLogged == nil {
+		r.stubLogged = map[uuid.UUID]struct{}{}
+	}
+	if _, seen := r.stubLogged[id]; seen {
+		return false
+	}
+	r.stubLogged[id] = struct{}{}
+	return true
+}
+
+// due reports whether an intent's backoff, if any, has elapsed.
+func (r *reconcileTracker) due(id uuid.UUID, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f, backingOff := r.failures[id]
+	return !backingOff || !now.Before(f.next)
+}
+
+// backOff records a failure and logs it once. The retry delay doubles per
+// consecutive failure — 1m, 2m, 4m … capped at 1h — and the warning fires only
+// when an attempt is actually made, so a provider outage yields a decaying
+// trickle of warnings rather than one per intent per tick.
+func (r *reconcileTracker) backOff(id uuid.UUID, now time.Time, msg string, err error, attrs ...any) {
+	r.mu.Lock()
+	if r.failures == nil {
+		r.failures = map[uuid.UUID]reconcileFailure{}
+	}
+	f := r.failures[id]
+	f.attempts++
+	shift := f.attempts - 1
+	if shift > 6 {
+		shift = 6
+	}
+	delay := reconcileBackoffBase << shift
+	if delay > reconcileBackoffMax {
+		delay = reconcileBackoffMax
+	}
+	f.next = now.Add(delay)
+	r.failures[id] = f
+	r.mu.Unlock()
+
+	slog.Warn(msg, append([]any{
+		"intent_id", id, "attempt", f.attempts, "retry_in", delay, "error", err,
+	}, attrs...)...)
+}
+
+func (r *reconcileTracker) clearFailures(id uuid.UUID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.failures, id)
+}
+
+// forgetAllBut drops backoff state for intents that are no longer stale, so
+// the map is bounded by the reconciler's window rather than by history.
+func (r *reconcileTracker) forgetAllBut(stale []postgres.PaymentIntent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.failures) == 0 {
+		return
+	}
+	keep := make(map[uuid.UUID]struct{}, len(stale))
+	for _, in := range stale {
+		keep[in.ID] = struct{}{}
+	}
+	for id := range r.failures {
+		if _, ok := keep[id]; !ok {
+			delete(r.failures, id)
+		}
 	}
 }
 

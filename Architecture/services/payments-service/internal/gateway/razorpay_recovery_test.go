@@ -232,3 +232,94 @@ func TestCashfreeClientSessionIsNilByDesign(t *testing.T) {
 		t.Fatalf("cashfree session = %v, want nil until payment_session_id is persisted", s)
 	}
 }
+
+// ─── FetchOrderPayments: the reconciler's lookup ─────────────────────
+//
+// An intent holds the ORDER id. FetchPayment takes a PAYMENT id, and Razorpay
+// answers GET /payments/{order_id} with 400 — so the reconciler must read the
+// order's payments collection instead.
+
+func TestFetchOrderPaymentsReadsTheOrdersPaymentsCollection(t *testing.T) {
+	var gotPath, gotQuery string
+	var authed bool
+	p := stubbed(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		_, _, authed = r.BasicAuth()
+		w.Header().Set("Content-Type", "application/json")
+		// Razorpay lists newest first.
+		_, _ = w.Write([]byte(`{"entity":"collection","count":2,"items":[
+			{"id":"pay_NEW","entity":"payment","order_id":"order_ABC","amount":118000,"currency":"INR","status":"captured","created_at":1700000200},
+			{"id":"pay_OLD","entity":"payment","order_id":"order_ABC","amount":118000,"currency":"INR","status":"failed","created_at":1700000100}]}`))
+	})
+
+	got, err := p.FetchOrderPayments(context.Background(), "order_ABC")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if gotPath != "/orders/order_ABC/payments" {
+		t.Fatalf("path = %q, want /orders/order_ABC/payments", gotPath)
+	}
+	if gotQuery != "" || !authed {
+		t.Fatalf("credentials must travel in the Basic auth header only (query %q, basic auth %v)", gotQuery, authed)
+	}
+	if len(got) != 2 {
+		t.Fatalf("payments = %d, want 2", len(got))
+	}
+	if got[0].ProviderPaymentID != "pay_OLD" || got[0].State != StateFailed {
+		t.Fatalf("first = %+v, want pay_OLD failed (oldest first)", got[0])
+	}
+	if got[1].ProviderPaymentID != "pay_NEW" || got[1].State != StateCaptured ||
+		got[1].ProviderOrderID != "order_ABC" || got[1].Amount != (Money{Minor: 118000, Currency: "INR"}) {
+		t.Fatalf("second = %+v, want pay_NEW captured 118000 INR on order_ABC", got[1])
+	}
+}
+
+func TestFetchOrderPaymentsTreatsAnEmptyCollectionAsNoPayments(t *testing.T) {
+	p := stubbed(t, jsonHandler(`{"entity":"collection","count":0,"items":[]}`))
+	got, err := p.FetchOrderPayments(context.Background(), "order_EMPTY")
+	if err != nil {
+		t.Fatalf("an order with no payments is not an error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("payments = %+v, want none", got)
+	}
+}
+
+func TestFetchOrderPaymentsSurfacesAProviderError(t *testing.T) {
+	p := stubbed(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"BAD_REQUEST_ERROR"}}`))
+	})
+	_, err := p.FetchOrderPayments(context.Background(), "order_BAD")
+	if err == nil {
+		t.Fatal("a 400 must be an error")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error leaks the key secret: %v", err)
+	}
+}
+
+func TestCashfreeFetchOrderPaymentsReadsTheOrdersPayments(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"cf_payment_id":885473311,"order_id":"ord_1","payment_amount":1180.00,` +
+			`"payment_currency":"INR","payment_status":"SUCCESS","payment_time":"2026-09-14T10:00:00+05:30"}]`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewCashfreeProvider("app", "sec", "wh")
+	c.baseURL, c.client = srv.URL, srv.Client()
+
+	got, err := c.FetchOrderPayments(context.Background(), "ord_1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if gotPath != "/orders/ord_1/payments" {
+		t.Fatalf("path = %q, want /orders/ord_1/payments", gotPath)
+	}
+	if len(got) != 1 || got[0].ProviderPaymentID != "885473311" || got[0].State != StateCaptured ||
+		got[0].Amount != (Money{Minor: 118000, Currency: "INR"}) {
+		t.Fatalf("payments = %+v, want one captured 118000 INR", got)
+	}
+}

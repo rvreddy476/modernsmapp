@@ -22,7 +22,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -58,10 +60,17 @@ func TestMain(m *testing.M) {
 
 // ─── A recorded Razorpay, served over HTTP ───────────────────────────
 
-// razorpayStub serves the two endpoints the recovery paths use:
+// razorpayStub serves the endpoints the recovery paths use, under the same
+// `/v1` prefix production's base URL carries:
 //
-//	GET /payments/{id}        → the payment fetch the reconciler reads
-//	GET /orders?receipt={key} → the idempotency-key lookup MRC-2 repairs by
+//	GET /v1/orders/{order_id}/payments → the order's payments, which the reconciler reads
+//	GET /v1/orders?receipt={key}       → the idempotency-key lookup MRC-2 repairs by
+//
+// `provider_ref` holds a Razorpay ORDER id. The reconciler used to send it to
+// GET /v1/payments/{id}, which Razorpay answers with 400 because an order id is
+// not a payment id, so every tick logged an error and a payment whose webhook
+// was lost was never reconciled. The stub answers that call the same way and
+// records it as a violation, which fails the test that made it.
 //
 // Bodies are raw JSON strings in Razorpay's documented shape, so the
 // assertions exercise the adapter's own decoder rather than a struct a test
@@ -69,28 +78,46 @@ func TestMain(m *testing.M) {
 type razorpayStub struct {
 	srv *httptest.Server
 
-	mu           sync.Mutex
-	paymentBody  string
-	ordersBody   string
-	paymentCalls int
-	orderCalls   int
-	paymentCode  int
-	ordersCode   int
+	mu sync.Mutex
+	// orderPayments maps an order id to the raw payment entities under it.
+	orderPayments     map[string][]string
+	ordersBody        string
+	orderPaymentCalls int
+	orderCalls        int
+	orderPaymentsCode int
+	ordersCode        int
+	paths             []string
+	violations        []string
 }
 
 func newRazorpayStub(t *testing.T) *razorpayStub {
 	t.Helper()
-	s := &razorpayStub{paymentCode: http.StatusOK, ordersCode: http.StatusOK}
+	s := &razorpayStub{
+		orderPayments:     map[string][]string{},
+		orderPaymentsCode: http.StatusOK,
+		ordersCode:        http.StatusOK,
+	}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		path := r.URL.Path
+		s.paths = append(s.paths, path)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/payments/"):
-			s.paymentCalls++
-			w.WriteHeader(s.paymentCode)
-			_, _ = w.Write([]byte(s.paymentBody))
-		case r.URL.Path == "/orders":
+		case strings.HasPrefix(path, "/v1/orders/") && strings.HasSuffix(path, "/payments"):
+			s.orderPaymentCalls++
+			orderID := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/orders/"), "/payments")
+			items := s.orderPayments[orderID]
+			w.WriteHeader(s.orderPaymentsCode)
+			_, _ = fmt.Fprintf(w, `{"entity":"collection","count":%d,"items":[%s]}`,
+				len(items), strings.Join(items, ","))
+		case strings.HasPrefix(path, "/v1/payments/"):
+			if strings.HasPrefix(strings.TrimPrefix(path, "/v1/payments/"), "order_") {
+				s.violations = append(s.violations, path)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"BAD_REQUEST_ERROR","description":"The id provided does not exist"}}`))
+		case path == "/v1/orders":
 			s.orderCalls++
 			w.WriteHeader(s.ordersCode)
 			_, _ = w.Write([]byte(s.ordersBody))
@@ -99,13 +126,26 @@ func newRazorpayStub(t *testing.T) *razorpayStub {
 		}
 	}))
 	t.Cleanup(s.srv.Close)
+	t.Cleanup(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if len(s.violations) > 0 {
+			t.Errorf("an ORDER id was fetched as a PAYMENT id: %v", s.violations)
+		}
+	})
 	return s
 }
 
+// setPayment records a payment as existing at Razorpay under the order its
+// body names, so GET /v1/orders/{order_id}/payments lists it.
 func (s *razorpayStub) setPayment(body string) {
+	var p struct {
+		OrderID string `json:"order_id"`
+	}
+	_ = json.Unmarshal([]byte(body), &p)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.paymentBody = body
+	s.orderPayments[p.OrderID] = append(s.orderPayments[p.OrderID], body)
 }
 
 func (s *razorpayStub) setOrders(body string) {
@@ -114,29 +154,65 @@ func (s *razorpayStub) setOrders(body string) {
 	s.ordersBody = body
 }
 
-func (s *razorpayStub) counts() (payments, orders int) {
+func (s *razorpayStub) setOrderPaymentsCode(code int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.paymentCalls, s.orderCalls
+	s.orderPaymentsCode = code
+}
+
+// counts reports how often the order-payments collection and the
+// receipt lookup were read.
+func (s *razorpayStub) counts() (orderPayments, orders int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.orderPaymentCalls, s.orderCalls
+}
+
+func (s *razorpayStub) requestedPaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.paths...)
+}
+
+// requireReadOrderPayments fails unless the reconciler read this order's
+// payments collection. Without it a refusal test passes trivially when the
+// lookup never reaches the provider at all.
+func (s *razorpayStub) requireReadOrderPayments(t *testing.T, orderID string) {
+	t.Helper()
+	want := "/v1/orders/" + orderID + "/payments"
+	for _, p := range s.requestedPaths() {
+		if p == want {
+			return
+		}
+	}
+	t.Fatalf("the reconciler never read %s; requests were %v", want, s.requestedPaths())
 }
 
 // provider returns the REAL Razorpay adapter pointed at the stub.
 func (s *razorpayStub) provider() *gateway.RazorpayProvider {
 	return gateway.NewRazorpayProvider("rzp_test", "secret", "whsec").
-		WithEndpoint(s.srv.URL, s.srv.Client())
+		WithEndpoint(s.srv.URL+"/v1", s.srv.Client())
 }
 
-// capturedPayment is a recorded Razorpay payment-fetch body.
-func capturedPayment(id, orderID string, amount int64, currency string) string {
+// rzpPayment is a recorded Razorpay payment entity. createdAt 0 omits it.
+func rzpPayment(id, orderID string, amount int64, currency, status string, createdAt int64) string {
 	m := map[string]any{
-		"id": id, "order_id": orderID, "amount": amount,
-		"status": "captured", "method": "upi",
+		"id": id, "entity": "payment", "order_id": orderID, "amount": amount,
+		"status": status, "method": "upi",
 	}
 	if currency != "" {
 		m["currency"] = currency
 	}
+	if createdAt > 0 {
+		m["created_at"] = createdAt
+	}
 	b, _ := json.Marshal(m)
 	return string(b)
+}
+
+// capturedPayment is a recorded captured Razorpay payment entity.
+func capturedPayment(id, orderID string, amount int64, currency string) string {
+	return rzpPayment(id, orderID, amount, currency, "captured", 0)
 }
 
 // orderList is a recorded Razorpay `GET /orders?receipt=` body.
@@ -317,6 +393,7 @@ func TestReconcileRefusesAMatchingAmountInTheWrongCurrency(t *testing.T) {
 	stub.setPayment(capturedPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "USD"))
 	svcWith(t, stub.provider()).reconcileOnce(ctx, time.Minute)
 
+	stub.requireReadOrderPayments(t, si.providerOrder)
 	requireNoTerminalEffect(t, si, "same amount in USD against an INR intent")
 }
 
@@ -330,6 +407,7 @@ func TestReconcileRefusesACaptureWithNoCurrency(t *testing.T) {
 	stub.setPayment(capturedPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "")) // field absent
 	svcWith(t, stub.provider()).reconcileOnce(ctx, time.Minute)
 
+	stub.requireReadOrderPayments(t, si.providerOrder)
 	requireNoTerminalEffect(t, si, "captured payment with no currency")
 }
 
@@ -341,6 +419,7 @@ func TestReconcileRefusesAWrongAmount(t *testing.T) {
 	stub.setPayment(capturedPayment("pay_"+uuid.NewString()[:12], si.providerOrder, 1, "INR"))
 	svcWith(t, stub.provider()).reconcileOnce(ctx, time.Minute)
 
+	stub.requireReadOrderPayments(t, si.providerOrder)
 	requireNoTerminalEffect(t, si, "1 paise against a 118000 paise intent")
 }
 
@@ -352,6 +431,7 @@ func TestReconcileRefusesAZeroAmount(t *testing.T) {
 	stub.setPayment(capturedPayment("pay_"+uuid.NewString()[:12], si.providerOrder, 0, "INR"))
 	svcWith(t, stub.provider()).reconcileOnce(ctx, time.Minute)
 
+	stub.requireReadOrderPayments(t, si.providerOrder)
 	requireNoTerminalEffect(t, si, "zero-amount capture")
 }
 
@@ -365,6 +445,7 @@ func TestReconcileRefusesACaptureWithNoPaymentID(t *testing.T) {
 	stub.setPayment(capturedPayment("", si.providerOrder, amt, "INR"))
 	svcWith(t, stub.provider()).reconcileOnce(ctx, time.Minute)
 
+	stub.requireReadOrderPayments(t, si.providerOrder)
 	requireNoTerminalEffect(t, si, "capture with no payment id")
 }
 
@@ -534,4 +615,246 @@ func TestReconcileCannotRepairWhenTheProviderHasNoLookup(t *testing.T) {
 		t.Fatalf("provider reference = %q; a provider with no lookup cannot repair one", got)
 	}
 	requireNoTerminalEffect(t, si, "provider without lookup-by-key")
+}
+
+// ─── The order-vs-payment lookup ─────────────────────────────────────
+//
+// provider_ref holds the Razorpay ORDER id. These pin the reconciler to the
+// order's payments collection, the outcome to the webhook's own status
+// mapping, and the effect to the webhook's exactly-once transaction.
+
+// logSink captures slog records so a test can assert what was (not) logged.
+type logSink struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func captureLogs(t *testing.T) *logSink {
+	t.Helper()
+	sink := &logSink{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(sink))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return sink
+}
+
+func (l *logSink) Enabled(context.Context, slog.Level) bool { return true }
+func (l *logSink) WithAttrs([]slog.Attr) slog.Handler       { return l }
+func (l *logSink) WithGroup(string) slog.Handler            { return l }
+func (l *logSink) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.recs = append(l.recs, r.Clone())
+	return nil
+}
+
+// atOrAbove returns the messages logged at `level` or louder.
+func (l *logSink) atOrAbove(level slog.Level) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, r := range l.recs {
+		if r.Level >= level {
+			out = append(out, r.Level.String()+" "+r.Message)
+		}
+	}
+	return out
+}
+
+// mentioning returns the messages carrying an attribute equal to value.
+func (l *logSink) mentioning(value string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, r := range l.recs {
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Value.String() == value {
+				out = append(out, r.Message)
+				return false
+			}
+			return true
+		})
+	}
+	return out
+}
+
+func requireOutboxEvents(t *testing.T, si staleIntent, eventType string, want int, when string) {
+	t.Helper()
+	if n := countBy(t,
+		`SELECT count(*) FROM payments.outbox_events WHERE event_type=$1 AND partition_key=$2`,
+		eventType, si.referenceID.String()); n != want {
+		t.Fatalf("%s: %d %s outbox row(s), want %d", when, n, eventType, want)
+	}
+}
+
+// The defect end to end: a captured payment under the order, its webhook lost.
+// The reconciler must read /v1/orders/{order_id}/payments, settle the intent,
+// and publish payment.succeeded exactly once, across a second tick AND the
+// real webhook turning up late under its own event id.
+func TestReconcileReadsTheOrdersPaymentsAndSettlesExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	const amt = 118000
+	si := seedStale(t, amt, "INR", "order_lostwh_"+uuid.NewString()[:8])
+	payID := "pay_" + uuid.NewString()[:12]
+
+	stub := newRazorpayStub(t)
+	stub.setPayment(capturedPayment(payID, si.providerOrder, amt, "INR"))
+	svc := svcWith(t, stub.provider())
+
+	svc.reconcileOnce(ctx, time.Minute)
+	stub.requireReadOrderPayments(t, si.providerOrder)
+	if s := statusOf(t, si.id); s != "succeeded" {
+		t.Fatalf("intent status = %q, want succeeded", s)
+	}
+	requireOutboxEvents(t, si, "payment.succeeded", 1, "after the first tick")
+
+	requestsAfterFirst := len(stub.requestedPaths())
+	svc.reconcileOnce(ctx, time.Minute)
+	requireOutboxEvents(t, si, "payment.succeeded", 1, "after a second tick")
+	if n := len(stub.requestedPaths()); n != requestsAfterFirst {
+		t.Fatalf("a second tick asked the provider about a settled intent (%d -> %d requests)",
+			requestsAfterFirst, n)
+	}
+
+	// The real webhook, delivered late under Razorpay's own event id.
+	err := svc.ApplyWebhook(ctx, WebhookInput{
+		Provider:          "razorpay",
+		EventID:           "evt_late_" + uuid.NewString()[:12],
+		EventType:         "payment.captured",
+		ProviderOrderID:   si.providerOrder,
+		ProviderPaymentID: payID,
+		AmountMinor:       amt,
+		Currency:          "INR",
+	})
+	if err != nil && !errors.Is(err, ErrWebhookDuplicate) {
+		t.Fatalf("late webhook: %v", err)
+	}
+	requireOutboxEvents(t, si, "payment.succeeded", 1, "after the late webhook")
+	if n := countBy(t,
+		`SELECT count(*) FROM payments.outbox_events WHERE partition_key=$1`,
+		si.referenceID.String()); n != 1 {
+		t.Fatalf("outbox rows of any type = %d, want exactly 1", n)
+	}
+}
+
+// An order nobody has paid against yet: pending, silent, no event.
+func TestReconcileLeavesAnOrderWithNoPaymentsPendingWithoutComplaint(t *testing.T) {
+	ctx := context.Background()
+	si := seedStale(t, 118000, "INR", "order_nopay_"+uuid.NewString()[:8])
+
+	stub := newRazorpayStub(t) // the order has an empty payments collection
+	logs := captureLogs(t)
+	svc := svcWith(t, stub.provider())
+	svc.reconcileOnce(ctx, time.Minute)
+	svc.reconcileOnce(ctx, time.Minute)
+
+	stub.requireReadOrderPayments(t, si.providerOrder)
+	requireNoTerminalEffect(t, si, "an order with no payments")
+	if loud := logs.atOrAbove(slog.LevelWarn); len(loud) > 0 {
+		t.Fatalf("no payments yet is not a failure, but the reconciler logged: %v", loud)
+	}
+}
+
+// A stub gateway's order reference was never a Razorpay object. It must not
+// reach the provider, must not change, and must not be logged every tick.
+func TestReconcileNeverSendsAStubReferenceToTheProvider(t *testing.T) {
+	ctx := context.Background()
+	const amt = 118000
+	si := seedStale(t, amt, "INR", fmt.Sprintf("order_stub_%d", time.Now().UnixNano()))
+
+	stub := newRazorpayStub(t)
+	// Even a "captured" payment under that id must not be consulted.
+	stub.setPayment(capturedPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "INR"))
+	logs := captureLogs(t)
+	svc := svcWith(t, stub.provider())
+	svc.reconcileOnce(ctx, time.Minute)
+	svc.reconcileOnce(ctx, time.Minute)
+
+	if paths := stub.requestedPaths(); len(paths) != 0 {
+		t.Fatalf("a stub order reference reached the provider: %v", paths)
+	}
+	requireNoTerminalEffect(t, si, "stub order reference")
+	if n := len(logs.mentioning(si.id.String())); n > 1 {
+		t.Fatalf("the stub skip was logged %d times across two ticks, want at most once", n)
+	}
+}
+
+// Mirrors the webhook: `payment.authorized` maps to no status change, so an
+// authorized-but-uncaptured payment leaves the intent pending.
+func TestReconcileLeavesAnAuthorizedPaymentPending(t *testing.T) {
+	ctx := context.Background()
+	const amt = 118000
+	si := seedStale(t, amt, "INR", "order_auth_"+uuid.NewString()[:8])
+
+	stub := newRazorpayStub(t)
+	stub.setPayment(rzpPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "INR", "authorized", 0))
+	svcWith(t, stub.provider()).reconcileOnce(ctx, time.Minute)
+
+	stub.requireReadOrderPayments(t, si.providerOrder)
+	requireNoTerminalEffect(t, si, "authorized, not captured")
+}
+
+// Mirrors the webhook's `payment.failed` → failed, but only when EVERY attempt
+// on the order failed.
+func TestReconcileFailsAnOrderWhosePaymentsAllFailed(t *testing.T) {
+	ctx := context.Background()
+	const amt = 118000
+	si := seedStale(t, amt, "INR", "order_allfail_"+uuid.NewString()[:8])
+
+	stub := newRazorpayStub(t)
+	stub.setPayment(rzpPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "INR", "failed", 1700000100))
+	stub.setPayment(rzpPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "INR", "failed", 1700000200))
+	svc := svcWith(t, stub.provider())
+	svc.reconcileOnce(ctx, time.Minute)
+	svc.reconcileOnce(ctx, time.Minute)
+
+	stub.requireReadOrderPayments(t, si.providerOrder)
+	if s := statusOf(t, si.id); s != "failed" {
+		t.Fatalf("intent status = %q, want failed", s)
+	}
+	requireOutboxEvents(t, si, "payment.failed", 1, "all attempts failed")
+	requireOutboxEvents(t, si, "payment.succeeded", 0, "all attempts failed")
+}
+
+// A customer's first attempt failed and the retry on the same order was
+// captured. The capture wins; nothing is published as failed.
+func TestReconcileSettlesACaptureThatFollowedAFailedAttempt(t *testing.T) {
+	ctx := context.Background()
+	const amt = 118000
+	si := seedStale(t, amt, "INR", "order_retry_"+uuid.NewString()[:8])
+
+	stub := newRazorpayStub(t)
+	stub.setPayment(rzpPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "INR", "failed", 1700000100))
+	stub.setPayment(rzpPayment("pay_"+uuid.NewString()[:12], si.providerOrder, amt, "INR", "captured", 1700000200))
+	svcWith(t, stub.provider()).reconcileOnce(ctx, time.Minute)
+
+	stub.requireReadOrderPayments(t, si.providerOrder)
+	if s := statusOf(t, si.id); s != "succeeded" {
+		t.Fatalf("intent status = %q, want succeeded", s)
+	}
+	requireOutboxEvents(t, si, "payment.succeeded", 1, "capture after a failed attempt")
+	requireOutboxEvents(t, si, "payment.failed", 0, "capture after a failed attempt")
+}
+
+// A provider error is retried with backoff, not re-requested and re-logged on
+// every tick.
+func TestReconcileBacksOffAProviderErrorInsteadOfLoggingEveryTick(t *testing.T) {
+	ctx := context.Background()
+	si := seedStale(t, 118000, "INR", "order_rzp5xx_"+uuid.NewString()[:8])
+
+	stub := newRazorpayStub(t)
+	stub.setOrderPaymentsCode(http.StatusBadGateway)
+	logs := captureLogs(t)
+	svc := svcWith(t, stub.provider())
+	for i := 0; i < 3; i++ {
+		svc.reconcileOnce(ctx, time.Minute)
+	}
+
+	if c, _ := stub.counts(); c != 1 {
+		t.Fatalf("the order's payments were requested %d times in three immediate ticks, want 1 (backoff)", c)
+	}
+	if loud := logs.atOrAbove(slog.LevelWarn); len(loud) != 1 {
+		t.Fatalf("logged %d warnings for one failing lookup across three ticks, want 1: %v", len(loud), loud)
+	}
+	requireNoTerminalEffect(t, si, "provider error")
 }

@@ -37,6 +37,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -286,6 +287,45 @@ func (g *CashfreeProvider) FetchByIdempotencyKey(ctx context.Context, key string
 	// Cashfree's order_id IS our idempotency key, so the lookup is the
 	// ordinary fetch.
 	return g.FetchPayment(ctx, key)
+}
+
+// FetchOrderPayments lists the payment attempts on a Cashfree order
+// (GET /orders/{order_id}/payments), oldest first. Dark like the rest of this
+// adapter; it exists so the port stays satisfiable by both providers.
+func (g *CashfreeProvider) FetchOrderPayments(ctx context.Context, providerOrderID string) ([]ProviderPaymentState, error) {
+	if providerOrderID == "" {
+		return nil, fmt.Errorf("cashfree: an order id is required to list its payments")
+	}
+	var out []struct {
+		CfPaymentID     json.RawMessage `json:"cf_payment_id"`
+		OrderID         string          `json:"order_id"`
+		PaymentAmount   json.Number     `json:"payment_amount"`
+		PaymentCurrency string          `json:"payment_currency"`
+		PaymentStatus   string          `json:"payment_status"`
+		PaymentTime     string          `json:"payment_time"`
+	}
+	if err := g.do(ctx, http.MethodGet, "/orders/"+url.PathEscape(providerOrderID)+"/payments", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ti, ei := time.Parse(time.RFC3339, out[i].PaymentTime)
+		tj, ej := time.Parse(time.RFC3339, out[j].PaymentTime)
+		return ei == nil && ej == nil && ti.Before(tj)
+	})
+	states := make([]ProviderPaymentState, 0, len(out))
+	for _, p := range out {
+		minor, err := minorFromMajorString(p.PaymentAmount.String())
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, ProviderPaymentState{
+			ProviderPaymentID: rawString(p.CfPaymentID),
+			ProviderOrderID:   p.OrderID,
+			Amount:            Money{Minor: minor, Currency: p.PaymentCurrency},
+			State:             normalizeCashfreeState(p.PaymentStatus),
+		})
+	}
+	return states, nil
 }
 
 // ─── plumbing ────────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -324,6 +325,34 @@ func (g *RazorpayProvider) FetchPayment(ctx context.Context, providerPaymentID s
 	return out.normalize(), nil
 }
 
+// FetchOrderPayments lists the payment attempts on an order:
+// GET /v1/orders/{order_id}/payments.
+//
+// The reconciler holds an ORDER id, and FetchPayment takes a PAYMENT id —
+// handing it an order id is a 400 from Razorpay, which is how a real payment
+// whose webhook was lost stayed pending for ever. An empty collection is the
+// normal answer for an order nobody has paid against yet, not an error.
+// Authentication is the same Basic header every call uses; nothing secret
+// goes into the URL.
+func (g *RazorpayProvider) FetchOrderPayments(ctx context.Context, providerOrderID string) ([]ProviderPaymentState, error) {
+	if providerOrderID == "" {
+		return nil, fmt.Errorf("razorpay: an order id is required to list its payments")
+	}
+	var out struct {
+		Items []razorpayPayment `json:"items"`
+	}
+	if err := g.do(ctx, http.MethodGet, "/orders/"+url.PathEscape(providerOrderID)+"/payments", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	// The port promises oldest first; Razorpay lists newest first.
+	sort.SliceStable(out.Items, func(i, j int) bool { return out.Items[i].CreatedAt < out.Items[j].CreatedAt })
+	states := make([]ProviderPaymentState, 0, len(out.Items))
+	for _, it := range out.Items {
+		states = append(states, it.normalize())
+	}
+	return states, nil
+}
+
 // FetchByIdempotencyKey recovers an order created by a call whose response
 // we never saw, by looking it up on the deterministic `receipt`.
 func (g *RazorpayProvider) FetchByIdempotencyKey(ctx context.Context, key string) (ProviderPaymentState, error) {
@@ -385,6 +414,8 @@ type razorpayPayment struct {
 	Amount   int64  `json:"amount"`
 	Currency string `json:"currency"`
 	Status   string `json:"status"`
+	// CreatedAt (unix seconds) orders an order's attempts oldest first.
+	CreatedAt int64 `json:"created_at"`
 }
 
 // normalize maps a fetched Razorpay payment onto the port's shape.

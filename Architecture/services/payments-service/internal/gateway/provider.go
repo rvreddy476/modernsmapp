@@ -152,9 +152,17 @@ type Provider interface {
 	// timeout cannot produce a second refund.
 	Refund(ctx context.Context, providerPaymentID string, amount Money, idempotencyKey string) (ProviderRefund, error)
 
-	// FetchPayment is the server-side source of truth used by
-	// reconciliation and by ambiguous-timeout recovery.
+	// FetchPayment is the server-side source of truth for ONE payment, by
+	// its PAYMENT id. It is not an order lookup: an intent's provider_ref is
+	// the ORDER id, and Razorpay answers GET /payments/{order_id} with 400.
 	FetchPayment(ctx context.Context, providerPaymentID string) (ProviderPaymentState, error)
+
+	// FetchOrderPayments lists every payment attempt made against a provider
+	// ORDER, oldest first. It is what stale-intent reconciliation reads,
+	// because the intent holds the order id and a lost webhook leaves no
+	// payment id behind. An order nobody has paid against returns an empty
+	// slice and no error.
+	FetchOrderPayments(ctx context.Context, providerOrderID string) ([]ProviderPaymentState, error)
 
 	// FetchByIdempotencyKey recovers the provider-side object created by a
 	// call whose response we never saw (A6). Providers that cannot look up
