@@ -1579,6 +1579,12 @@ services:
       # set the platform's real e-commerce-operator GSTIN, and outside
       # local/dev the service refuses to start without one.
       FOOD_PLATFORM_GSTIN: 29ZZZPZ0000Z1Z6
+      # PII sealing for restaurant PAN, payout accounts and rider documents.
+      # Dev-only random keys live in the gitignored Architecture/docker/.env;
+      # unset, those routes answer 503 PII_NOT_CONFIGURED. Never reuse a dev
+      # key in staging or production.
+      FOOD_PII_KEYS: ${FOOD_PII_KEYS:-}
+      FOOD_PII_LOOKUP_SALT: ${FOOD_PII_LOOKUP_SALT:-}
       # Rider DigiLocker return. The public base URL must be an origin the
       # PHONE's browser can reach (the gateway on the PC's LAN IP, or the dev
       # tunnel); localhost only works from this machine. The app link is the
