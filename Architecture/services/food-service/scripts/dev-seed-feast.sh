@@ -194,6 +194,17 @@ pick_media() {
     "select id from public.media_assets where file_type = 'image' and processing_status = 'ready' order by (uploader_id = '$1') desc, created_at limit 1"
 }
 
+# Write SQL, dev only: no route sets food.restaurants.sla_accept_seconds (CHECK
+# 30..1800, default 180). Three minutes is too short for someone accepting by
+# hand across several test phones, so the seeded kitchen alone gets 15 minutes.
+# Only the row this script owns (id + name) is touched.
+ACCEPT_SECONDS=900
+set_accept_window() {
+  docker exec "$PG_C" psql -U postgres -d app -tAqX -v ON_ERROR_STOP=1 -c \
+    "update food.restaurants set sla_accept_seconds = $ACCEPT_SECONDS where id = '$RID' and name = '$RESTAURANT_NAME' and sla_accept_seconds <> $ACCEPT_SECONDS" >/dev/null
+  log "accept window: ${ACCEPT_SECONDS}s"
+}
+
 # ─── Restaurant ─────────────────────────────────────────────────────────────
 RID='' RSTATUS='' RACCEPTING=''
 find_restaurant() {
@@ -402,6 +413,7 @@ seed_restaurant() {
   fi
   [ "$RSTATUS" = ACTIVE ] || die "restaurant ended $RSTATUS, expected ACTIVE"
   log "restaurant $RSTATUS, accepting orders: $RACCEPTING"
+  set_accept_window
 }
 
 # ─── Rider ──────────────────────────────────────────────────────────────────
@@ -531,6 +543,7 @@ seed_order() {
     [ -n "$RID" ] || die "no '$RESTAURANT_NAME' for the owner; run the full seed first"
     load_restaurant
     [ "$RSTATUS" = ACTIVE ] && [ "$RACCEPTING" = true ] || die "restaurant is $RSTATUS (accepting=$RACCEPTING); run the full seed first"
+    set_accept_window
     MUTATE=0
     ensure_menu
   fi
