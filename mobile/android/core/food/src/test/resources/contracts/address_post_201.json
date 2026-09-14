@@ -1,0 +1,20 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0042",
+    "user_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0010",
+    "label": "Home",
+    "receiver_name": "Test Customer",
+    "phone": "08040000001",
+    "address_line1": "2 Test Road",
+    "address_line2": "Flat 4",
+    "landmark": "Near Test Park",
+    "city": "Bengaluru",
+    "state": "Karnataka",
+    "country": "India",
+    "postal_code": "560001",
+    "latitude": 12.9824,
+    "longitude": 77.6045,
+    "is_default": true
+  },
+  "meta": {}
+}

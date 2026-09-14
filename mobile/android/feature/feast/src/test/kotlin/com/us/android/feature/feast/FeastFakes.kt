@@ -44,11 +44,18 @@ fun <T> ok(value: T): Response<ApiEnvelope<T>> = Response.success(ApiEnvelope(da
 fun <T> refused(status: Int, code: String, message: String): Response<ApiEnvelope<T>> =
     Response.error(status, """{"error":{"code":"$code","message":"$message"},"meta":{}}""".toResponseBody("application/json".toMediaType()))
 
+private fun fixtureText(name: String): String = File("../../core/food/src/test/resources/contracts/$name").readText()
+
 /** A golden fixture from :core:food's copies (byte-identical to food-service's), decoded as production does. */
-fun <T> fixture(name: String, serializer: KSerializer<T>): T {
-    val raw = File("../../core/food/src/test/resources/contracts/$name").readText()
-    return checkNotNull(testJson.decodeFromString(ApiEnvelope.serializer(serializer), raw).data)
-}
+fun <T> fixture(name: String, serializer: KSerializer<T>): T =
+    checkNotNull(testJson.decodeFromString(ApiEnvelope.serializer(serializer), fixtureText(name)).data)
+
+/** A golden error fixture served with its HTTP [status], exactly as the server wrote it. */
+fun <T> refusedWithFixture(status: Int, name: String): Response<ApiEnvelope<T>> =
+    Response.error(status, fixtureText(name).toResponseBody("application/json".toMediaType()))
+
+/** What the home screen asked the restaurant list for. */
+data class RestaurantListRequest(val query: String?, val city: String?, val lat: Double?, val lng: Double?)
 
 fun restaurant(
     id: String = "r-1",
@@ -98,9 +105,21 @@ class FakeFeastApi : FeastApi {
     var paymentReads = 0
         private set
 
-    override suspend fun restaurants(query: String?, city: String?, limit: Int?) = ok(ItemsDto(listOf(restaurant)))
+    /** The list the restaurant route serves; null serves [restaurant] alone. */
+    var restaurants: List<FeastRestaurantDto>? = null
+    val restaurantListRequests = mutableListOf<RestaurantListRequest>()
+    val restaurantDetailPoints = mutableListOf<Pair<Double?, Double?>>()
 
-    override suspend fun restaurant(restaurantId: String) = ok(restaurant)
+    override suspend fun restaurants(query: String?, city: String?, lat: Double?, lng: Double?, limit: Int?):
+        Response<ApiEnvelope<ItemsDto<FeastRestaurantDto>>> {
+        restaurantListRequests += RestaurantListRequest(query, city, lat, lng)
+        return ok(ItemsDto(restaurants ?: listOf(restaurant)))
+    }
+
+    override suspend fun restaurant(restaurantId: String, lat: Double?, lng: Double?): Response<ApiEnvelope<FeastRestaurantDto>> {
+        restaurantDetailPoints += lat to lng
+        return ok(restaurant)
+    }
 
     override suspend fun menu(restaurantId: String) = ok(menu)
 

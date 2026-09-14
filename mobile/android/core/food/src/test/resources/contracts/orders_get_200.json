@@ -1,0 +1,31 @@
+{
+  "data": {
+    "items": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+        "order_number": "FG1000000000001",
+        "user_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0010",
+        "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+        "restaurant_name": "Test Kitchen",
+        "status": "CONFIRMED",
+        "payment_status": "CAPTURED",
+        "payment_method": "ONLINE",
+        "totals": {
+          "item_subtotal": 500,
+          "addon_total": 60,
+          "packaging_fee": 20,
+          "tax_total": 35.12,
+          "delivery_fee": 29,
+          "platform_fee": 5,
+          "restaurant_discount": 0,
+          "coupon_discount": 0,
+          "final_amount": 649.12
+        },
+        "estimated_preparation_minutes": 20,
+        "estimated_delivery_minutes": 29,
+        "placed_at": "2026-09-13T06:30:00Z"
+      }
+    ]
+  },
+  "meta": {}
+}

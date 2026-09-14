@@ -1,0 +1,71 @@
+{
+  "data": {
+    "assignment": {
+      "created_at": "2026-09-13 06:45:00+00",
+      "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+      "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0048",
+      "status": "PICKED_UP"
+    },
+    "customer_location": {
+      "address_line1": "2 Test Road",
+      "city": "Bengaluru",
+      "latitude": 12.9824,
+      "longitude": 77.6045,
+      "state": "Karnataka"
+    },
+    "delivery_location": {
+      "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+      "latitude": 12.9751,
+      "longitude": 77.5988,
+      "recorded_at": "2026-09-13 06:55:00+00"
+    },
+    "estimated_delivery_minutes": 29,
+    "eta_at": "2026-09-13T07:05:00Z",
+    "eta_source": "haversine",
+    "order_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+    "order_number": "FG1000000000001",
+    "restaurant_location": {
+      "address_line1": "1 Test Lane",
+      "city": "Bengaluru",
+      "latitude": 12.9716,
+      "longitude": 77.5946,
+      "state": "Karnataka"
+    },
+    "status": "OUT_FOR_DELIVERY",
+    "timeline": [
+      {
+        "completed": true,
+        "created_at": "2026-09-13 06:30:00+00",
+        "from_status": "PAYMENT_PENDING",
+        "label": "Order confirmed",
+        "reason": "payment captured",
+        "to_status": "CONFIRMED"
+      },
+      {
+        "completed": true,
+        "created_at": "2026-09-13 06:33:00+00",
+        "from_status": "CONFIRMED",
+        "label": "Restaurant preparing",
+        "reason": "",
+        "to_status": "PREPARING"
+      },
+      {
+        "completed": true,
+        "created_at": "2026-09-13 06:48:00+00",
+        "from_status": "PREPARING",
+        "label": "Ready for pickup",
+        "reason": "",
+        "to_status": "READY_FOR_PICKUP"
+      },
+      {
+        "completed": true,
+        "created_at": "2026-09-13 06:52:00+00",
+        "from_status": "READY_FOR_PICKUP",
+        "label": "Out for delivery",
+        "reason": "",
+        "to_status": "OUT_FOR_DELIVERY"
+      }
+    ]
+  },
+  "meta": {}
+}

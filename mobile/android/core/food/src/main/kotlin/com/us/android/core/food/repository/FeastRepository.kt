@@ -2,6 +2,7 @@ package com.us.android.core.food.repository
 
 import com.us.android.core.food.network.AddCartItemRequest
 import com.us.android.core.food.network.CancelOrderRequest
+import com.us.android.core.food.network.DeliveryPoint
 import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastAddressRequest
 import com.us.android.core.food.network.FeastApi
@@ -41,11 +42,24 @@ class FeastRepository @Inject constructor(
     private val json: Json,
 ) {
 
-    suspend fun restaurants(query: String? = null, city: String? = null): FoodResult<List<FeastRestaurantDto>> =
-        call { api.restaurants(query?.takeIf { it.isNotBlank() }, city?.takeIf { it.isNotBlank() }, LIST_LIMIT) }
-            .map { it.items }
+    /** With [near], each restaurant is judged for that point and the server orders the list; keep its order. */
+    suspend fun restaurants(
+        query: String? = null,
+        city: String? = null,
+        near: DeliveryPoint? = null,
+    ): FoodResult<List<FeastRestaurantDto>> =
+        call {
+            api.restaurants(
+                query = query?.takeIf { it.isNotBlank() },
+                city = city?.takeIf { it.isNotBlank() },
+                lat = near?.latitude,
+                lng = near?.longitude,
+                limit = LIST_LIMIT,
+            )
+        }.map { it.items }
 
-    suspend fun restaurant(restaurantId: String): FoodResult<FeastRestaurantDto> = call { api.restaurant(restaurantId) }
+    suspend fun restaurant(restaurantId: String, near: DeliveryPoint? = null): FoodResult<FeastRestaurantDto> =
+        call { api.restaurant(restaurantId, near?.latitude, near?.longitude) }
 
     suspend fun menu(restaurantId: String): FoodResult<FeastMenuDto> = call { api.menu(restaurantId) }
 

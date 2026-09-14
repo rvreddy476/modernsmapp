@@ -10,12 +10,12 @@ import java.math.BigDecimal
 /*
  * Wire shapes for food-service's CUSTOMER routes (Feast A5, Momentum).
  *
- * Pinned by golden fixtures (strict decode in FoodContractFixtureTest): the
- * cart (FeastCartDto), order detail (FeastOrderDto), payment status
- * (OrderPaymentDto), payment intent (PaymentIntentDto) and invoice
- * (FeastInvoiceDto). Every other shape here — restaurants, menu, addresses,
- * tracking — has NO golden fixture on the server yet and is written from the
- * Go structs in store/postgres/models.go.
+ * Every shape here is pinned by a food-service golden fixture (strict decode in
+ * FoodContractFixtureTest): restaurants (list and detail, with and without a
+ * delivery point), the menu with variants and add-on groups, addresses, the
+ * cart and add-to-cart, orders (place, list, detail, cancel), tracking,
+ * payment status, payment intent and invoice. Production decoding stays
+ * lenient, so keys the server adds later default instead of failing.
  *
  * Money: every `*_paise` field is integer paise. The legacy float-rupee fields
  * (`totals`, `unit_price`, `line_total`, …) are decoded through
@@ -27,10 +27,16 @@ import java.math.BigDecimal
 // ── Discovery ──────────────────────────────────────────────────────────
 
 /**
- * `RestaurantSummary` / `RestaurantDetail`. There is no distance, no in-range
- * flag and no "why closed" message on this route (backend gap, A5): the only
- * serviceability the list can show is [isOpen], [isAcceptingOrders] and
- * [status]. Range is decided at `POST /orders` (422 FOOD_ADDRESS_OUT_OF_RANGE).
+ * `RestaurantSummary` / `RestaurantDetail`.
+ *
+ * [isOpenNow] is the operating-hours schedule evaluated now; [isOpen] is the
+ * restaurant's own switch. [nextOpensAt] (RFC 3339, IST) is sent only when the
+ * restaurant is closed and opens within a week.
+ *
+ * The serviceability keys ([distanceMeters], [serviceable],
+ * [unserviceableReasonCode], [unserviceableMessage]) are present ONLY when the
+ * request carried `lat`/`lng`. The reason codes and messages are the ones
+ * `POST /orders` refuses with.
  */
 @Serializable
 data class FeastRestaurantDto(
@@ -48,13 +54,31 @@ data class FeastRestaurantDto(
     @SerialName("rating_count") val ratingCount: Int = 0,
     @Serializable(with = RupeesAsPaiseSerializer::class)
     @SerialName("min_order_amount") val minOrderAmount: Paise = Paise.ZERO,
+    /** Legacy float rupees, decoded exactly. The cart states the real charge. */
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    @SerialName("packaging_fee") val packagingFee: Paise = Paise.ZERO,
     @SerialName("avg_preparation_minutes") val avgPreparationMinutes: Int = 0,
     @SerialName("hero_image_url") val heroImageUrl: String? = null,
     val cuisines: List<String> = emptyList(),
     @SerialName("estimated_delivery") val estimatedDelivery: String = "",
+    /** Legacy float rupees, decoded exactly. The cart states the real charge. */
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    @SerialName("delivery_fee_estimate") val deliveryFeeEstimate: Paise = Paise.ZERO,
+    /** Null from a server that predates the schedule read. */
+    @SerialName("is_open_now") val isOpenNow: Boolean? = null,
+    @SerialName("next_opens_at") val nextOpensAt: String? = null,
+    // With a delivery point only.
+    @SerialName("distance_meters") val distanceMeters: Long? = null,
+    val serviceable: Boolean? = null,
+    @SerialName("unserviceable_reason_code") val unserviceableReasonCode: String? = null,
+    @SerialName("unserviceable_message") val unserviceableMessage: String? = null,
     // Detail only.
+    val phone: String? = null,
+    val email: String? = null,
     @SerialName("address_line") val addressLine: String? = null,
     @SerialName("postal_code") val postalCode: String? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
 )
 
 /** `GET /restaurants/:id/menu` → `{categories: [...]}`. */
@@ -75,10 +99,12 @@ data class FeastMenuCategoryDto(
 /**
  * A customer menu item.
  *
- * [variants] and [addonGroups] are what the partner item read
- * (`menu_item_get_200.json`) carries. The CUSTOMER menu query does not select
- * them at c1b45af4 (store.go GetMenu), so today they arrive empty — a backend
- * gap reported with A5. The sheet renders them the moment the route sends them.
+ * The customer menu carries the item's AVAILABLE [variants] and its
+ * [addonGroups] with their AVAILABLE add-ons only. A required group can
+ * therefore arrive with no add-ons, and that item cannot be added.
+ *
+ * Money renders from the `*_paise` fields. [basePrice] and [discountPrice] are
+ * the legacy float-rupee siblings, decoded exactly and never rendered.
  */
 @Serializable
 data class FeastMenuItemDto(
@@ -89,12 +115,19 @@ data class FeastMenuItemDto(
     val description: String? = null,
     /** VEG, NON_VEG, EGG. */
     @SerialName("food_type") val foodType: String = "",
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    @SerialName("base_price") val basePrice: Paise = Paise.ZERO,
+    /** Omitted by the server when there is no discount. */
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    @SerialName("discount_price") val discountPrice: Paise = Paise.ZERO,
     @SerialName("base_price_paise") val basePricePaise: Paise = Paise.ZERO,
     @SerialName("discount_price_paise") val discountPricePaise: Paise? = null,
     @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("preparation_minutes") val preparationMinutes: Int = 0,
     @SerialName("is_available") val isAvailable: Boolean = false,
     @SerialName("is_recommended") val isRecommended: Boolean = false,
+    @Serializable(with = WireDecimalSerializer::class)
+    @SerialName("tax_percentage") val taxPercentage: BigDecimal = BigDecimal.ZERO,
     val variants: List<FeastVariantDto> = emptyList(),
     @SerialName("addon_groups") val addonGroups: List<FeastAddonGroupDto> = emptyList(),
 )
@@ -102,7 +135,11 @@ data class FeastMenuItemDto(
 @Serializable
 data class FeastVariantDto(
     val id: String,
+    @SerialName("menu_item_id") val menuItemId: String = "",
     val name: String = "",
+    /** Legacy float rupees, decoded exactly; render [pricePaise]. */
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    val price: Paise = Paise.ZERO,
     @SerialName("price_paise") val pricePaise: Paise = Paise.ZERO,
     @SerialName("is_available") val isAvailable: Boolean = true,
     @SerialName("sort_order") val sortOrder: Int = 0,
@@ -111,6 +148,7 @@ data class FeastVariantDto(
 @Serializable
 data class FeastAddonGroupDto(
     val id: String,
+    @SerialName("menu_item_id") val menuItemId: String = "",
     val name: String = "",
     @SerialName("min_select") val minSelect: Int = 0,
     @SerialName("max_select") val maxSelect: Int = 0,
@@ -122,7 +160,11 @@ data class FeastAddonGroupDto(
 @Serializable
 data class FeastAddonDto(
     val id: String,
+    @SerialName("addon_group_id") val addonGroupId: String = "",
     val name: String = "",
+    /** Legacy float rupees, decoded exactly; render [pricePaise]. */
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    val price: Paise = Paise.ZERO,
     @SerialName("price_paise") val pricePaise: Paise = Paise.ZERO,
     @SerialName("is_available") val isAvailable: Boolean = true,
     @SerialName("sort_order") val sortOrder: Int = 0,
@@ -130,6 +172,14 @@ data class FeastAddonDto(
 
 // ── Cart (golden: cart_get_200_*.json) ─────────────────────────────────
 
+/**
+ * `POST /cart/items` (handler.go AddCartItem).
+ *
+ * With [addressId] (or [lat] and [lng], never both: 422 FOOD_ADDRESS_INVALID)
+ * the server also refuses an address out of range, with the same 422 codes and
+ * messages as `POST /orders`. A closed or not-accepting restaurant is refused
+ * with 422 either way; another customer's address is 404 FOOD_NOT_FOUND.
+ */
 @Serializable
 data class AddCartItemRequest(
     @SerialName("menu_item_id") val menuItemId: String,
@@ -139,7 +189,15 @@ data class AddCartItemRequest(
     /** Replace a cart from another restaurant, after the customer agreed. */
     @SerialName("clear_existing") val clearExisting: Boolean = false,
     val addons: List<CartAddonRequest> = emptyList(),
-)
+    @SerialName("address_id") val addressId: String? = null,
+    val lat: Double? = null,
+    val lng: Double? = null,
+) {
+    init {
+        require((lat == null) == (lng == null)) { "lat and lng go together" }
+        require(addressId == null || lat == null) { "send address_id or lat/lng, not both" }
+    }
+}
 
 @Serializable
 data class CartAddonRequest(
@@ -304,6 +362,7 @@ data class PricingErrorDto(
 @Serializable
 data class FeastAddressDto(
     val id: String,
+    @SerialName("user_id") val userId: String? = null,
     val label: String? = null,
     @SerialName("receiver_name") val receiverName: String? = null,
     val phone: String? = null,
@@ -319,6 +378,20 @@ data class FeastAddressDto(
     val longitude: Double? = null,
     @SerialName("is_default") val isDefault: Boolean = false,
 )
+
+/** A point to judge serviceability against: `?lat=&lng=` on the restaurant routes. */
+data class DeliveryPoint(val latitude: Double, val longitude: Double)
+
+/** The address's pin, or null when it has none (the server omits a zero pin) or it is out of range. */
+fun FeastAddressDto.deliveryPoint(): DeliveryPoint? {
+    val lat = latitude ?: return null
+    val lng = longitude ?: return null
+    val valid = lat.isFinite() && lng.isFinite() && lat in -MAX_LATITUDE..MAX_LATITUDE && lng in -MAX_LONGITUDE..MAX_LONGITUDE
+    return if (valid && !(lat == 0.0 && lng == 0.0)) DeliveryPoint(lat, lng) else null
+}
+
+private const val MAX_LATITUDE = 90.0
+private const val MAX_LONGITUDE = 180.0
 
 /**
  * Create/update body. `latitude`/`longitude` matter: `POST /orders` refuses an
@@ -408,7 +481,7 @@ data class FeastOrderMoneyDto(
     @SerialName("needs_adviser_confirmation") val needsAdviserConfirmation: Boolean = false,
 )
 
-/** `GET /orders/:id/tracking` — a map on the server; no golden fixture. */
+/** `GET /orders/:id/tracking` — a map on the server (golden: order_tracking_get_200.json). */
 @Serializable
 data class FeastTrackingDto(
     @SerialName("order_id") val orderId: String = "",
@@ -420,6 +493,8 @@ data class FeastTrackingDto(
     @SerialName("delivery_location") val deliveryLocation: FeastPointDto? = null,
     @SerialName("customer_location") val customerLocation: FeastPointDto? = null,
     @SerialName("restaurant_location") val restaurantLocation: FeastPointDto? = null,
+    val assignment: FeastTrackingAssignmentDto? = null,
+    val timeline: List<FeastTimelineEventDto> = emptyList(),
 )
 
 @Serializable
@@ -428,6 +503,30 @@ data class FeastPointDto(
     val longitude: Double? = null,
     /** Postgres timestamp text on delivery_location. */
     @SerialName("recorded_at") val recordedAt: String? = null,
+    @SerialName("delivery_partner_id") val deliveryPartnerId: String? = null,
+    @SerialName("address_line1") val addressLine1: String? = null,
+    val city: String? = null,
+    val state: String? = null,
+)
+
+@Serializable
+data class FeastTrackingAssignmentDto(
+    val id: String = "",
+    @SerialName("delivery_partner_id") val deliveryPartnerId: String? = null,
+    val status: String = "",
+    /** Postgres timestamp text. */
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+@Serializable
+data class FeastTimelineEventDto(
+    @SerialName("from_status") val fromStatus: String? = null,
+    @SerialName("to_status") val toStatus: String = "",
+    val label: String = "",
+    val reason: String? = null,
+    val completed: Boolean = false,
+    /** Postgres timestamp text. */
+    @SerialName("created_at") val createdAt: String? = null,
 )
 
 // ── Payment (golden: order_payment_get_*.json, payment_intent_post_*.json) ──

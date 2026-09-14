@@ -27,6 +27,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -42,10 +43,13 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.food.model.Paise
+import com.us.android.core.food.model.toRupeeText
 import com.us.android.core.food.model.toShortRupeeText
 import com.us.android.core.food.network.FeastMenuItemDto
 import com.us.android.core.food.network.FeastRestaurantDto
 import com.us.android.feature.feast.home.CartBar
+import com.us.android.feature.feast.home.RestaurantCardModel
+import com.us.android.feature.feast.home.RestaurantRow
 import com.us.android.feature.feast.ui.FeastCard
 import com.us.android.feature.feast.ui.FeastScreen
 import com.us.android.feature.feast.ui.FoodTypeMark
@@ -57,6 +61,7 @@ import com.us.android.feature.feast.ui.QuantityStepper
 import com.us.android.feature.feast.ui.SectionLabel
 import com.us.android.feature.feast.ui.Tone
 import com.us.android.feature.feast.ui.listPadding
+import java.time.Instant
 
 @Composable
 @Suppress("LongMethod")
@@ -74,6 +79,8 @@ fun RestaurantScreen(
     state.sheet?.let { selection ->
         ItemSheet(
             selection = selection,
+            onSelectVariant = viewModel::selectVariant,
+            onToggleAddon = viewModel::toggleAddon,
             onChange = viewModel::updateSheet,
             onConfirm = viewModel::confirmSheet,
             onDismiss = viewModel::dismissSheet,
@@ -150,6 +157,9 @@ fun RestaurantScreen(
 
 @Composable
 private fun Header(restaurant: FeastRestaurantDto, serviceability: Serviceability) {
+    val card = remember(restaurant, serviceability) {
+        RestaurantCardModel.from(RestaurantRow(restaurant, serviceability), Instant.now())
+    }
     Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
         Text(
             text = restaurant.name,
@@ -161,13 +171,22 @@ private fun Header(restaurant: FeastRestaurantDto, serviceability: Serviceabilit
             .joinToString("  ·  ")
         if (sub.isNotBlank()) Text(sub, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), verticalAlignment = Alignment.CenterVertically) {
-            if (serviceability is Serviceability.Open) Pill("Open now", Tone.Positive) else Pill("Can't order right now", Tone.Danger)
+            if (card.enabled) Pill("Open now", Tone.Positive) else Pill(card.statusLabel, Tone.Danger)
+            card.distance?.let { Pill(it, Tone.Neutral) }
             if (restaurant.avgPreparationMinutes > 0) Pill("${restaurant.avgPreparationMinutes} min prep", Tone.Neutral)
             if (restaurant.minOrderAmount > Paise.ZERO) Pill("Min ${restaurant.minOrderAmount.toShortRupeeText()}", Tone.Neutral)
         }
         if (serviceability is Serviceability.Blocked) {
             FeastCard {
                 InfoNote(text = serviceability.message, tone = Tone.Danger)
+                card.opensAt?.let {
+                    Text(it, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    "You can still browse the menu.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
+                )
             }
         }
     }
@@ -231,14 +250,17 @@ private fun PriceLine(item: FeastMenuItemDto) {
 
 /**
  * Sizes (one) and add-ons (per group, within min/max). Each option shows its
- * own server price; the sheet adds nothing up — the cart shows the server's
- * figure once the item is in it.
+ * own `price_paise`; the button shows [ItemSelectionRules.total], an estimate
+ * in integer paise. The cart shows the server's figure once the item is in it,
+ * and the server validates every choice.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-@Suppress("LongMethod")
+@Suppress("LongMethod", "LongParameterList")
 private fun ItemSheet(
     selection: ItemSelection,
+    onSelectVariant: (String) -> Unit,
+    onToggleAddon: (String) -> Unit,
     onChange: (ItemSelection) -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
@@ -271,11 +293,11 @@ private fun ItemSheet(
                         label = variant.name,
                         price = variant.pricePaise.toShortRupeeText(),
                         enabled = variant.isAvailable,
-                        onClick = { onChange(selection.copy(variantId = variant.id)) },
+                        onClick = { onSelectVariant(variant.id) },
                     ) {
                         RadioButton(
                             selected = selection.variantId == variant.id,
-                            onClick = { onChange(selection.copy(variantId = variant.id)) },
+                            onClick = { onSelectVariant(variant.id) },
                             enabled = variant.isAvailable,
                             colors = RadioButtonDefaults.colors(selectedColor = UsTheme.extended.accentSolid),
                         )
@@ -283,32 +305,40 @@ private fun ItemSheet(
                 }
             }
             item.addonGroups.sortedBy { it.sortOrder }.forEach { group ->
+                val min = ItemSelectionRules.minimum(group)
                 val rule = when {
-                    group.isRequired || group.minSelect > 0 -> "Required · choose ${maxOf(group.minSelect, 1)}" +
-                        if (group.maxSelect > maxOf(group.minSelect, 1)) " to ${group.maxSelect}" else ""
+                    min > 0 -> "Required · choose $min" + if (group.maxSelect > min) " to ${group.maxSelect}" else ""
                     group.maxSelect > 0 -> "Optional · up to ${group.maxSelect}"
                     else -> "Optional"
                 }
                 SectionLabel(group.name) { Text(rule, style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.textDim) }
+                val available = group.addons.filter { it.isAvailable }
+                if (available.size < min) {
+                    InfoNote(text = "Not available right now", tone = Tone.Warning)
+                }
+                val chosenInGroup = group.addons.count { it.id in selection.addonIds }
                 group.addons.sortedBy { it.sortOrder }.forEach { addon ->
                     val checked = addon.id in selection.addonIds
-                    val toggle = {
-                        onChange(selection.copy(addonIds = if (checked) selection.addonIds - addon.id else selection.addonIds + addon.id))
-                    }
+                    // A full group refuses another pick; a one-choice group swaps instead.
+                    val full = !checked && group.maxSelect > 1 && chosenInGroup >= group.maxSelect
                     OptionRow(
                         label = addon.name,
                         price = "+ ${addon.pricePaise.toShortRupeeText()}",
-                        enabled = addon.isAvailable,
-                        onClick = toggle,
+                        enabled = addon.isAvailable && !full,
+                        onClick = { onToggleAddon(addon.id) },
                     ) {
                         Checkbox(
                             checked = checked,
-                            onCheckedChange = { toggle() },
-                            enabled = addon.isAvailable,
+                            onCheckedChange = { onToggleAddon(addon.id) },
+                            enabled = addon.isAvailable && !full,
                             colors = CheckboxDefaults.colors(checkedColor = UsTheme.extended.accentSolid),
                         )
                     }
                 }
+            }
+            val problem = ItemSelectionRules.problem(selection)
+            if (problem != null) {
+                InfoNote(text = problem, tone = Tone.Warning, modifier = Modifier.padding(top = UsTheme.spacing.m))
             }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.l),
@@ -323,9 +353,9 @@ private fun ItemSheet(
                 )
                 Spacer(Modifier.width(UsTheme.spacing.xxl))
                 UsButton(
-                    text = "Add to cart",
+                    text = "Add · ${ItemSelectionRules.total(selection).toRupeeText()}",
                     onClick = onConfirm,
-                    enabled = ItemSelectionRules.problem(selection) == null,
+                    enabled = problem == null,
                     modifier = Modifier.weight(1f),
                 )
             }

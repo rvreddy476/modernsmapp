@@ -11,9 +11,13 @@ import com.us.android.core.food.network.DeliveryOffersDto
 import com.us.android.core.food.network.DropAreaDto
 import com.us.android.core.food.network.DropSummaryDto
 import com.us.android.core.food.network.ItemsDto
+import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastCartDto
 import com.us.android.core.food.network.FeastInvoiceDto
+import com.us.android.core.food.network.FeastMenuDto
 import com.us.android.core.food.network.FeastOrderDto
+import com.us.android.core.food.network.FeastRestaurantDto
+import com.us.android.core.food.network.FeastTrackingDto
 import com.us.android.core.food.network.OrderPaymentDto
 import com.us.android.core.food.network.PaymentIntentDto
 import com.us.android.core.food.network.DeliveryDocumentDto
@@ -300,6 +304,77 @@ class FoodContractFixtureTest {
             coded("FOOD_DIGILOCKER_PROVIDER_FAILED", FoodError.Unexpected::class.java),
         "kyc_status_get_200.json" to data(DeliveryKycDto.serializer()) { kyc(it) },
         "kyc_status_get_404_no_profile.json" to error { assertThat(it).isEqualTo(FoodError.NotFound) },
+        // ── Customer: discovery, menu and addresses ─────────────────────────
+        "restaurants_get_200.json" to data(ItemsDto.serializer(FeastRestaurantDto.serializer())) {
+            assertThat(it.items.map { r -> r.name }).containsExactly("Test Kitchen", "Highway Dhaba", "Night Owl Biryani").inOrder()
+            assertThat(it.items.all { r -> r.serviceable == null && r.distanceMeters == null }).isTrue()
+            assertThat(it.items.first().isOpenNow).isTrue()
+            assertThat(it.items.first().packagingFee).isEqualTo(Paise(1_000))
+            assertThat(it.items.first().deliveryFeeEstimate).isEqualTo(Paise(2_900))
+            assertThat(it.items.last().isOpenNow).isFalse()
+            assertThat(it.items.last().nextOpensAt).isEqualTo("2026-09-13T18:00:00+05:30")
+        },
+        "restaurants_get_200_near.json" to data(ItemsDto.serializer(FeastRestaurantDto.serializer())) {
+            assertThat(it.items.map { r -> r.serviceable }).containsExactly(true, false, false).inOrder()
+            assertThat(it.items.map { r -> r.distanceMeters }).containsExactly(1_200L, 2_600L, 14_800L).inOrder()
+            assertThat(it.items[0].unserviceableReasonCode).isNull()
+            assertThat(it.items[1].unserviceableReasonCode).isEqualTo("FOOD_RESTAURANT_OUTSIDE_HOURS")
+            assertThat(it.items[2].unserviceableReasonCode).isEqualTo("FOOD_ADDRESS_OUT_OF_RANGE")
+            assertThat(it.items[2].unserviceableMessage).isEqualTo("delivery address is outside the restaurant's delivery range")
+        },
+        "restaurants_get_422_location_required.json" to error {
+            assertThat(it).isEqualTo(FoodError.InvalidField("FOOD_LOCATION_REQUIRED", "lng", "lat and lng must be given together"))
+        },
+        "restaurant_get_200.json" to data(FeastRestaurantDto.serializer()) {
+            assertThat(it.phone).isEqualTo("08040000000")
+            assertThat(it.email).isEqualTo("kitchen@example.test")
+            assertThat(it.latitude).isEqualTo(12.9716)
+            assertThat(it.longitude).isEqualTo(77.5946)
+            assertThat(it.addressLine).isEqualTo("1 Test Lane")
+            assertThat(it.serviceable).isNull()
+        },
+        "restaurant_get_200_near.json" to data(FeastRestaurantDto.serializer()) {
+            assertThat(it.serviceable).isTrue()
+            assertThat(it.distanceMeters).isEqualTo(1_200L)
+            assertThat(it.unserviceableMessage).isNull()
+        },
+        "restaurant_menu_get_200.json" to data(FeastMenuDto.serializer()) {
+            val items = it.categories.single().items
+            val paneer = items.first()
+            assertThat(paneer.basePricePaise).isEqualTo(Paise(25_000))
+            assertThat(paneer.discountPricePaise).isEqualTo(Paise(22_550))
+            assertThat(paneer.basePrice).isEqualTo(Paise(25_000))
+            assertThat(paneer.variants.single().pricePaise).isEqualTo(Paise(14_999))
+            assertThat(paneer.variants.single().price).isEqualTo(Paise(14_999))
+            assertThat(paneer.variants.single().menuItemId).isEqualTo(paneer.id)
+            val group = paneer.addonGroups.single()
+            assertThat(group.maxSelect).isEqualTo(2)
+            assertThat(group.menuItemId).isEqualTo(paneer.id)
+            assertThat(group.addons.single().pricePaise).isEqualTo(Paise(3_000))
+            assertThat(group.addons.single().addonGroupId).isEqualTo(group.id)
+            assertThat(items.last().isAvailable).isFalse()
+            assertThat(items.last().variants).isEmpty()
+        },
+        "addresses_get_200.json" to data(ItemsDto.serializer(FeastAddressDto.serializer())) {
+            assertThat(it.items.first().latitude).isEqualTo(12.9824)
+            assertThat(it.items.first().isDefault).isTrue()
+            assertThat(it.items.last().latitude).isNull()
+            assertThat(it.items.last().longitude).isNull()
+        },
+        "address_post_201.json" to data(FeastAddressDto.serializer()) {
+            assertThat(it.label).isEqualTo("Home")
+            assertThat(it.longitude).isEqualTo(77.6045)
+        },
+        "cart_item_post_201.json" to data(FeastCartDto.serializer()) {
+            assertThat(it.totalsPaise?.finalAmountPaise).isEqualTo(Paise(64_912))
+            assertThat(it.items.single().addons.single().addonId).isEqualTo("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0014")
+        },
+        "cart_item_post_422_out_of_range.json" to error {
+            assertThat(it).isEqualTo(
+                FoodError.InvalidField("FOOD_ADDRESS_OUT_OF_RANGE", null, "delivery address is outside the restaurant's delivery range"),
+            )
+        },
+
         // ── Customer: cart, bill and pricing (Feast A5) ────────────────────
         "cart_get_200_section_9_5.json" to data(FeastCartDto.serializer()) {
             assertThat(it.totalsPaise?.finalAmountPaise).isEqualTo(Paise(64_912))
@@ -342,6 +417,30 @@ class FoodContractFixtureTest {
             assertThat(it.etaSource).isEqualTo("google")
             assertThat(it.money).isNull()
             assertThat(it.totals.finalAmount).isEqualTo(Paise(30_162))
+        },
+        "order_place_201.json" to data(FeastOrderDto.serializer()) {
+            assertThat(it.status).isEqualTo("PAYMENT_PENDING")
+            assertThat(it.money?.totalsPaise?.finalAmountPaise).isEqualTo(Paise(64_912))
+            assertThat(it.history.single().toStatus).isEqualTo("PAYMENT_PENDING")
+        },
+        "orders_get_200.json" to data(ItemsDto.serializer(FeastOrderDto.serializer())) {
+            val order = it.items.single()
+            assertThat(order.status).isEqualTo("CONFIRMED")
+            assertThat(order.totals.finalAmount).isEqualTo(Paise(64_912))
+            assertThat(order.money).isNull()
+        },
+        "order_cancel_post_200.json" to data(FeastOrderDto.serializer()) {
+            assertThat(it.status).isEqualTo("CANCELLED_BY_CUSTOMER")
+            assertThat(it.history.map { h -> h.toStatus }).containsExactly("PAYMENT_PENDING", "CANCELLED_BY_CUSTOMER").inOrder()
+        },
+        "order_tracking_get_200.json" to data(FeastTrackingDto.serializer()) {
+            assertThat(it.status).isEqualTo("OUT_FOR_DELIVERY")
+            assertThat(it.deliveryLocation?.latitude).isEqualTo(12.9751)
+            assertThat(it.customerLocation?.addressLine1).isEqualTo("2 Test Road")
+            assertThat(it.restaurantLocation?.longitude).isEqualTo(77.5946)
+            assertThat(it.assignment?.status).isEqualTo("PICKED_UP")
+            assertThat(it.timeline.map { e -> e.toStatus }.last()).isEqualTo("OUT_FOR_DELIVERY")
+            assertThat(it.etaSource).isEqualTo("haversine")
         },
         "order_place_422_tax_category_missing.json" to
             coded("FOOD_RESTAURANT_TAX_CATEGORY_MISSING", FoodError.InvalidField::class.java),

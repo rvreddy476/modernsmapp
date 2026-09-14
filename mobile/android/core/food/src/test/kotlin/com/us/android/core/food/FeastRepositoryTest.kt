@@ -6,7 +6,10 @@ import com.us.android.core.food.model.toRupeeText
 import com.us.android.core.food.model.toShortRupeeText
 import com.us.android.core.food.network.AddCartItemRequest
 import com.us.android.core.food.network.CartAddonRequest
+import com.us.android.core.food.network.DeliveryPoint
+import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastApi
+import com.us.android.core.food.network.deliveryPoint
 import com.us.android.core.food.network.PlaceOrderRequest
 import com.us.android.core.food.repository.FeastRepository
 import com.us.android.core.food.repository.FoodError
@@ -93,6 +96,88 @@ class FeastRepositoryTest {
         assertThat(request.target).isEqualTo("/v1/food/cart/items")
         assertThat(request.body?.utf8())
             .isEqualTo("""{"menu_item_id":"m-1","quantity":2,"addons":[{"addon_id":"ad-1","quantity":1}]}""")
+    }
+
+    @Test
+    fun `the restaurant list sends the delivery point and keeps the server's order`() {
+        enqueue(fixture("restaurants_get_200_near.json"))
+
+        val result = runBlocking { repository.restaurants(near = DeliveryPoint(12.9824, 77.6045)) }
+
+        assertThat(server.takeRequest().target).isEqualTo("/v1/food/restaurants?lat=12.9824&lng=77.6045&limit=50")
+        assertThat((result as FoodResult.Success).value.map { it.name })
+            .containsExactly("Test Kitchen", "Night Owl Biryani", "Highway Dhaba").inOrder()
+    }
+
+    @Test
+    fun `without a point the list is the city listing and carries no lat or lng`() {
+        enqueue(fixture("restaurants_get_200.json"))
+
+        runBlocking { repository.restaurants(city = "Bengaluru") }
+
+        assertThat(server.takeRequest().target).isEqualTo("/v1/food/restaurants?city=Bengaluru&limit=50")
+    }
+
+    @Test
+    fun `restaurant detail sends the delivery point`() {
+        enqueue(fixture("restaurant_get_200_near.json"))
+
+        val result = runBlocking { repository.restaurant("r-1", DeliveryPoint(12.9824, 77.6045)) }
+
+        assertThat(server.takeRequest().target).isEqualTo("/v1/food/restaurants/r-1?lat=12.9824&lng=77.6045")
+        assertThat((result as FoodResult.Success).value.serviceable).isTrue()
+    }
+
+    @Test
+    fun `a half location is refused with the field the server names`() {
+        enqueue(fixture("restaurants_get_422_location_required.json"), code = 422)
+
+        val result = runBlocking { repository.restaurants() }
+
+        assertThat((result as FoodResult.Failure).error)
+            .isEqualTo(FoodError.InvalidField("FOOD_LOCATION_REQUIRED", "lng", "lat and lng must be given together"))
+    }
+
+    @Test
+    fun `adding to the cart sends the variant, the add-ons and the address`() {
+        enqueue(fixture("cart_item_post_201.json"), code = 201)
+
+        runBlocking {
+            repository.addToCart(
+                AddCartItemRequest(
+                    menuItemId = "m-1",
+                    quantity = 1,
+                    variantId = "v-1",
+                    addons = listOf(CartAddonRequest("ad-1", 1)),
+                    addressId = "a-1",
+                ),
+            )
+        }
+
+        assertThat(server.takeRequest().body?.utf8()).isEqualTo(
+            """{"menu_item_id":"m-1","quantity":1,"variant_id":"v-1","addons":[{"addon_id":"ad-1","quantity":1}],"address_id":"a-1"}""",
+        )
+    }
+
+    @Test
+    fun `an out-of-range add keeps the server's code and words`() {
+        enqueue(fixture("cart_item_post_422_out_of_range.json"), code = 422)
+
+        val result = runBlocking { repository.addToCart(AddCartItemRequest(menuItemId = "m-1", quantity = 1, addressId = "a-1")) }
+
+        val error = (result as FoodResult.Failure).error
+        assertThat(error.code).isEqualTo("FOOD_ADDRESS_OUT_OF_RANGE")
+        assertThat(error.serverMessage).isEqualTo("delivery address is outside the restaurant's delivery range")
+    }
+
+    @Test
+    fun `an address has a delivery point only when it is pinned`() {
+        val pinned = FeastAddressDto(id = "a-1", latitude = 12.9824, longitude = 77.6045)
+
+        assertThat(pinned.deliveryPoint()).isEqualTo(DeliveryPoint(12.9824, 77.6045))
+        assertThat(pinned.copy(latitude = null).deliveryPoint()).isNull()
+        assertThat(pinned.copy(latitude = 0.0, longitude = 0.0).deliveryPoint()).isNull()
+        assertThat(pinned.copy(latitude = 91.0).deliveryPoint()).isNull()
     }
 
     @Test

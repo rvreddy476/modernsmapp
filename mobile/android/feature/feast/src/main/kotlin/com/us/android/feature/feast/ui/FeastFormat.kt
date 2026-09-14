@@ -4,6 +4,7 @@ import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.FeastOrderDto
 import java.time.Duration
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
@@ -54,6 +55,38 @@ fun updatedText(at: Instant?, now: Instant): String? {
 fun distanceText(km: Double): String =
     if (km < 1.0) "${(km * METRES_PER_KM).toInt().coerceAtLeast(0)} m away" else String.format(Locale.ENGLISH, "%.1f km away", km)
 
+/** The server's straight-line `distance_meters` as "14.8 km" — one decimal, rounded half up, integer arithmetic. */
+fun distanceKmText(meters: Long): String {
+    val tenths = (meters.coerceAtLeast(0) + METRES_PER_TENTH_KM / 2) / METRES_PER_TENTH_KM
+    return "${tenths / TENTHS}.${tenths % TENTHS} km"
+}
+
+/**
+ * `next_opens_at` (RFC 3339) as "Opens at 6:00 PM" when that is today in India,
+ * "Opens tomorrow at 6:00 PM", or "Opens Tue at 6:00 PM"; null when absent or
+ * unreadable.
+ */
+fun opensAtText(nextOpensAt: String?, now: Instant): String? {
+    if (nextOpensAt.isNullOrBlank()) return null
+    val opens = try {
+        OffsetDateTime.parse(nextOpensAt).atZoneSameInstant(IST)
+    } catch (e: DateTimeParseException) {
+        return null
+    }
+    val today = now.atZone(IST).toLocalDate()
+    val time = OPENS_TIME_FORMAT.format(opens)
+    return when (opens.toLocalDate()) {
+        today -> "Opens at $time"
+        today.plusDays(1) -> "Opens tomorrow at $time"
+        else -> "Opens ${OPENS_DAY_FORMAT.format(opens)} at $time"
+    }
+}
+
+private val OPENS_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH)
+private val OPENS_DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE", Locale.ENGLISH)
+
 private const val JUST_NOW_SECONDS = 5
 private const val SECONDS_PER_MINUTE = 60
 private const val METRES_PER_KM = 1000
+private const val METRES_PER_TENTH_KM = 100L
+private const val TENTHS = 10

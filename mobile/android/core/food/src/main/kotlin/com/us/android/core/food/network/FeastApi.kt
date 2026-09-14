@@ -14,11 +14,9 @@ import retrofit2.http.Query
 /**
  * food-service's CUSTOMER routes — Feast inside Momentum (A5).
  *
- * Every route here exists in handler.go / handler_invoice.go at c1b45af4. The
- * shapes of the ones with golden fixtures are pinned by FoodContractFixtureTest;
- * the rest (restaurants, menu, addresses, order list, cancel, tracking) have NO
- * golden fixture yet, a backend gap reported with A5, so their DTOs decode
- * leniently like every other production read.
+ * Every route here exists in handler.go / handler_feast_customer.go /
+ * handler_invoice.go, and its shapes are pinned by food-service's golden
+ * fixtures (FoodContractFixtureTest). Production reads still decode leniently.
  *
  * Idempotency: `POST /orders` and `POST /orders/:id/payments/intents` REQUIRE an
  * `Idempotency-Key` header (400 IDEMPOTENCY_KEY_REQUIRED otherwise).
@@ -28,16 +26,27 @@ interface FeastApi {
 
     // Discovery
 
-    /** `q` and `city` are the only filters the route takes — there is no lat/lng. */
+    /**
+     * `lat`/`lng` are both or neither (422 FOOD_LOCATION_REQUIRED otherwise).
+     * With them, each restaurant carries distance and serviceability for that
+     * point, and the list is ordered serviceable first, then nearest.
+     */
     @GET("v1/food/restaurants")
     suspend fun restaurants(
         @Query("q") query: String? = null,
         @Query("city") city: String? = null,
+        @Query("lat") lat: Double? = null,
+        @Query("lng") lng: Double? = null,
         @Query("limit") limit: Int? = null,
     ): Response<ApiEnvelope<ItemsDto<FeastRestaurantDto>>>
 
+    /** `lat`/`lng` as on [restaurants]. */
     @GET("v1/food/restaurants/{restaurantId}")
-    suspend fun restaurant(@Path("restaurantId") restaurantId: String): Response<ApiEnvelope<FeastRestaurantDto>>
+    suspend fun restaurant(
+        @Path("restaurantId") restaurantId: String,
+        @Query("lat") lat: Double? = null,
+        @Query("lng") lng: Double? = null,
+    ): Response<ApiEnvelope<FeastRestaurantDto>>
 
     @GET("v1/food/restaurants/{restaurantId}/menu")
     suspend fun menu(@Path("restaurantId") restaurantId: String): Response<ApiEnvelope<FeastMenuDto>>

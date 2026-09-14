@@ -22,8 +22,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,16 +38,17 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.food.model.toRupeeText
-import com.us.android.feature.feast.restaurant.Serviceability
 import com.us.android.feature.feast.tracking.OrderTimeline
 import com.us.android.feature.feast.ui.FeastCard
 import com.us.android.feature.feast.ui.FeastScreen
+import com.us.android.feature.feast.ui.InfoNote
 import com.us.android.feature.feast.ui.LoadingPane
 import com.us.android.feature.feast.ui.MessagePane
 import com.us.android.feature.feast.ui.Pill
 import com.us.android.feature.feast.ui.SectionLabel
 import com.us.android.feature.feast.ui.Tone
 import com.us.android.feature.feast.ui.listPadding
+import java.time.Instant
 
 @Composable
 @Suppress("LongMethod", "LongParameterList")
@@ -192,17 +195,24 @@ private fun DeliverTo(label: String, line: String?, onClick: () -> Unit, modifie
     }
 }
 
+/**
+ * One restaurant. Unavailable ones are greyed with the server's reason, and
+ * still open so the customer can browse the menu.
+ */
 @Composable
 private fun RestaurantCard(row: RestaurantRow, onClick: () -> Unit) {
     val r = row.restaurant
-    val blocked = row.serviceability as? Serviceability.Blocked
+    val card = remember(row) { RestaurantCardModel.from(row, Instant.now()) }
     FeastCard(onClick = onClick) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.alpha(if (card.enabled) 1f else UNAVAILABLE_ALPHA),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Box(
                 modifier = Modifier
                     .size(56.dp)
                     .clip(RoundedCornerShape(UsTheme.radii.medium))
-                    .background(if (blocked == null) UsTheme.extended.ctaGradient else UsTheme.extended.launcher.feast.brush)
+                    .background(if (card.enabled) UsTheme.extended.ctaGradient else UsTheme.extended.launcher.feast.brush)
                     .border(1.dp, UsTheme.extended.borderSubtle, RoundedCornerShape(UsTheme.radii.medium)),
                 contentAlignment = Alignment.Center,
             ) {
@@ -222,23 +232,28 @@ private fun RestaurantCard(row: RestaurantRow, onClick: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (blocked != null) {
-                        Pill(if (r.isOpen) "Not accepting orders" else "Closed", Tone.Danger)
-                    } else {
-                        Pill("Open", Tone.Positive)
+                    Pill(card.statusLabel, if (card.enabled) Tone.Positive else Tone.Danger)
+                    card.distance?.let {
+                        Text(it, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary)
                     }
                     if (r.ratingCount > 0) {
                         Text("★ ${r.avgRating.setScale(1, java.math.RoundingMode.HALF_UP).toPlainString()}", style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary)
                     }
                     val eta = r.estimatedDelivery.ifBlank { if (r.avgPreparationMinutes > 0) "${r.avgPreparationMinutes} min" else "" }
-                    if (eta.isNotBlank()) {
+                    if (card.enabled && eta.isNotBlank()) {
                         Text(eta, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary)
                     }
                 }
             }
         }
+        card.unavailableMessage?.let { InfoNote(text = it, tone = Tone.Danger) }
+        card.opensAt?.let {
+            Text(it, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.textSecondary, fontWeight = FontWeight.SemiBold)
+        }
     }
 }
+
+private const val UNAVAILABLE_ALPHA = 0.55f
 
 @Composable
 internal fun CartBar(itemCount: Int, restaurant: String, total: String?, onClick: () -> Unit) {
