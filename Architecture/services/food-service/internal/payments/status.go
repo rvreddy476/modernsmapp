@@ -84,9 +84,10 @@ func CustomerStatus(s CustomerPaymentSnapshot) (status, refundStatus string, err
 }
 
 // ClientSession is what the Android app needs to open Razorpay Checkout.
-// It is a struct, not a map, so no field other than these three can ever be
-// relayed: the key_id is Razorpay's publishable identifier; the key secret is
-// never here. It is the shared client's type.
+// It is a struct, not a map, so no field other than the three checkout values
+// and the optional merchant name can ever be relayed: the key_id is Razorpay's
+// publishable identifier; the key secret is never here. It is the shared
+// client's type.
 type ClientSession = paymentsclient.ClientSession
 
 // PublicClientSession extracts the relayable session from payments-service's
@@ -94,6 +95,10 @@ type ClientSession = paymentsclient.ClientSession
 // payments-service omit it) when payments attached none (stub gateway,
 // Cashfree), when any of the three values is missing, or when the session's
 // order_id is not this intent's provider order.
+//
+// merchant_display_name is relayed trimmed and capped at 64 runes when
+// payments named one, and omitted (never "") when it did not. It never makes a
+// session valid or invalid.
 func (i *Intent) PublicClientSession() *ClientSession {
 	if i == nil || len(i.ClientSession) == 0 {
 		return nil
@@ -109,6 +114,7 @@ func (i *Intent) PublicClientSession() *ClientSession {
 	if cs.OrderID != i.ProviderRef {
 		return nil
 	}
+	cs.MerchantDisplayName = paymentsclient.NormalizeMerchantDisplayName(i.ClientSession["merchant_display_name"])
 	return &cs
 }
 

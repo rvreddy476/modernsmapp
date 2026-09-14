@@ -214,14 +214,15 @@ func TestDispatch_ReturnsHandlerError(t *testing.T) {
 
 func TestApplicationID_DecodedWhenPresentAndOptional(t *testing.T) {
 	r := &recorder{}
-	// Today's events carry no application_id: it decodes as empty.
+	// An event without application_id (from before payments-service stored it)
+	// decodes as empty.
 	if err := Dispatch(context.Background(), envelope(t, TypeSucceeded, intentRow("succeeded")), r); err != nil {
 		t.Fatal(err)
 	}
 	if r.succeeded[0].ApplicationID != "" {
 		t.Fatalf("absent application_id decoded as %q", r.succeeded[0].ApplicationID)
 	}
-	// Once payments-service stamps it, every type decodes it.
+	// payments-service stamps it on every type, and every type decodes it.
 	for _, typ := range []string{TypeSucceeded, TypeFailed, TypeRefunded, TypeRefundFailed} {
 		if err := Dispatch(context.Background(), envelope(t, typ, map[string]any{"id": "x", "application_id": "feast"}), r); err != nil {
 			t.Fatalf("%s: %v", typ, err)

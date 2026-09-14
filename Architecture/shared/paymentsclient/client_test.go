@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/atpost/shared/servicetoken"
 	"github.com/google/uuid"
@@ -106,21 +107,20 @@ func tokenClient(t *testing.T, f *fakePayments, mutate func(*Config)) *Client {
 }
 
 // echoIntent answers a create with the request echoed back, the way
-// payments-service does, plus a Razorpay session carrying values that must
-// never reach a caller.
+// payments-service does (application_id included), plus a Razorpay session
+// with the registry's merchant name and values that must never reach a caller.
 func echoIntent(c call) (int, any) {
 	out := map[string]any{}
 	for k, v := range c.body {
 		out[k] = v
 	}
-	// payments-service does not store application_id yet, so it never echoes it.
-	delete(out, "application_id")
 	out["id"] = tIntent
 	out["status"] = "pending"
 	out["provider_ref"] = "order_RZP1"
 	out["client_session"] = map[string]string{
 		"provider": "razorpay", "order_id": "order_RZP1", "key_id": "rzp_test_pub",
-		"key_secret": "sk_live_SECRET", "amount": "25000",
+		"merchant_display_name": "Momentum Merchant",
+		"key_secret":            "sk_live_SECRET", "amount": "25000",
 	}
 	return http.StatusCreated, out
 }
@@ -178,13 +178,12 @@ func TestCreateIntent_TokenHeaderAndBody(t *testing.T) {
 	}
 }
 
-// TestApplicationID_SentOnTheWire pins the wire choice for application_id:
-// it is SENT in the create-intent and refund bodies. payments-service binds
-// both with gin's ShouldBindJSON and never enables DisallowUnknownFields, so
-// the field is ignored there until it is stored. If payments ever starts
-// rejecting unknown fields, this test is the place that decision changes.
-// Reads decode application_id when payments echoes it and leave it empty
-// when it does not (today).
+// TestApplicationID_SentOnTheWire pins the wire contract for application_id:
+// it is SENT in the create-intent and refund bodies, where payments-service
+// stores it on the intent and the refund command, and the ApplicationID that
+// payments echoes on the created intent, the refund acceptance and an intent
+// read is decoded. (payments also stamps it on every payment event; see
+// paymentevents.)
 func TestApplicationID_SentOnTheWire(t *testing.T) {
 	f := newFake(t, "demo-service", "demo_ref", func(c call) (int, any) {
 		if strings.HasSuffix(c.path, "/refund") {
@@ -203,8 +202,8 @@ func TestApplicationID_SentOnTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ApplicationID != "" {
-		t.Fatalf("an intent payments did not stamp decoded application_id %q", created.ApplicationID)
+	if created.ApplicationID != tApp {
+		t.Fatalf("created intent application_id = %q, want the echoed %q", created.ApplicationID, tApp)
 	}
 	acc, err := c.Refund(ctx, tIntent, RefundRequest{ApplicationID: tApp, AmountMinor: 100, IdempotencyKey: "r"})
 	if err != nil {
@@ -250,7 +249,7 @@ func TestClientSession_OnlyPublicFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIntent: %v", err)
 	}
-	want := ClientSession{Provider: "razorpay", OrderID: "order_RZP1", KeyID: "rzp_test_pub"}
+	want := ClientSession{Provider: "razorpay", OrderID: "order_RZP1", KeyID: "rzp_test_pub", MerchantDisplayName: "Momentum Merchant"}
 	if intent.ClientSession == nil || *intent.ClientSession != want {
 		t.Fatalf("client_session = %+v", intent.ClientSession)
 	}
@@ -259,7 +258,8 @@ func TestClientSession_OnlyPublicFields(t *testing.T) {
 		t.Fatalf("intent JSON carries a non-public session value: %s", raw)
 	}
 	m := intent.ClientSession.AsMap()
-	if len(m) != 3 || m["provider"] != "razorpay" || m["order_id"] != "order_RZP1" || m["key_id"] != "rzp_test_pub" {
+	if len(m) != 4 || m["provider"] != "razorpay" || m["order_id"] != "order_RZP1" || m["key_id"] != "rzp_test_pub" ||
+		m["merchant_display_name"] != "Momentum Merchant" {
 		t.Fatalf("AsMap = %v", m)
 	}
 
@@ -273,6 +273,82 @@ func TestClientSession_OnlyPublicFields(t *testing.T) {
 	}
 	if bare.ClientSession != nil || bare.ClientSession.AsMap() != nil {
 		t.Fatalf("absent session decoded as %+v", bare.ClientSession)
+	}
+}
+
+// merchantAbsent marks a case where payments sends no merchant_display_name.
+const merchantAbsent = "\x00absent"
+
+// TestClientSession_MerchantDisplayName pins the optional merchant name: a
+// present name is relayed trimmed and capped at 64 runes (multi-byte safe); an
+// empty, blank or absent one leaves no merchant_display_name key at all, in
+// AsMap or in the session's JSON. Unknown upstream fields are still dropped.
+func TestClientSession_MerchantDisplayName(t *testing.T) {
+	multi := strings.Repeat("é", 35) + strings.Repeat("ನ", 35) // 70 runes, 175 bytes
+	for _, tc := range []struct {
+		name, sent, want string
+	}{
+		{"present", "Momentum Merchant", "Momentum Merchant"},
+		{"trimmed", " \tFeast by Momentum  ", "Feast by Momentum"},
+		{"empty", "", ""},
+		{"blank", "   ", ""},
+		{"absent", merchantAbsent, ""},
+		{"70 ascii cut to 64", strings.Repeat("m", 70), strings.Repeat("m", 64)},
+		{"70 multi-byte cut to 64 runes", multi, strings.Repeat("é", 35) + strings.Repeat("ನ", 29)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := map[string]string{
+				"provider": "razorpay", "order_id": "order_RZP1", "key_id": "rzp_test_pub",
+				"key_secret": "sk_live_SECRET", "amount": "25000", "customer_email": "a@example.com",
+			}
+			if tc.sent != merchantAbsent {
+				session["merchant_display_name"] = tc.sent
+			}
+			f := newFake(t, "demo-service", "demo_ref", func(call) (int, any) {
+				return http.StatusOK, map[string]any{"id": tIntent, "status": "pending", "client_session": session}
+			})
+			intent, err := tokenClient(t, f, nil).GetIntent(context.Background(), tIntent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if intent.ClientSession == nil || intent.ClientSession.MerchantDisplayName != tc.want {
+				t.Fatalf("session = %+v, want merchant %q", intent.ClientSession, tc.want)
+			}
+			m := intent.ClientSession.AsMap()
+			name, present := m["merchant_display_name"]
+			wantKeys := 3
+			if tc.want != "" {
+				wantKeys = 4
+			}
+			if len(m) != wantKeys || present != (tc.want != "") || name != tc.want {
+				t.Fatalf("AsMap = %v, want %d keys and merchant %q", m, wantKeys, tc.want)
+			}
+			if utf8.RuneCountInString(name) > MaxMerchantDisplayNameRunes || !utf8.ValidString(name) {
+				t.Fatalf("merchant name %q: %d runes, valid UTF-8 %v", name, utf8.RuneCountInString(name), utf8.ValidString(name))
+			}
+			raw, _ := json.Marshal(intent.ClientSession)
+			if strings.Contains(string(raw), "merchant_display_name") != (tc.want != "") {
+				t.Fatalf("session JSON = %s", raw)
+			}
+			for _, forbidden := range []string{"SECRET", "key_secret", "amount", "customer_email"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("session JSON carries %q: %s", forbidden, raw)
+				}
+				if _, ok := m[forbidden]; ok {
+					t.Fatalf("AsMap carries %q: %v", forbidden, m)
+				}
+			}
+		})
+	}
+
+	// A session built in code is normalized by AsMap too.
+	built := &ClientSession{Provider: "razorpay", OrderID: "o", KeyID: "k", MerchantDisplayName: "  "}
+	if m := built.AsMap(); len(m) != 3 {
+		t.Fatalf("blank merchant in AsMap = %v", m)
+	}
+	built.MerchantDisplayName = strings.Repeat("x", 100)
+	if m := built.AsMap(); len(m["merchant_display_name"]) != MaxMerchantDisplayNameRunes {
+		t.Fatalf("long merchant in AsMap = %d bytes", len(m["merchant_display_name"]))
 	}
 }
 

@@ -150,7 +150,9 @@ type Intent struct {
 	// provider name, its order handle and the PUBLISHABLE key. It comes from
 	// payments so the key always matches the one the provider order was
 	// created against; an app-compiled key could silently disagree. Only
-	// those three keys are ever present.
+	// those three keys are ever present, plus merchant_display_name when
+	// payments-service names the application's merchant (trimmed, at most 64
+	// runes; the key is omitted rather than sent empty).
 	//
 	// Absent when the provider cannot derive a session from the order id
 	// alone (Cashfree). The app then reports that it cannot open a sheet

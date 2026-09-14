@@ -24,15 +24,14 @@
 // whole app. CreateIntentRequest.ApplicationID and RefundRequest.ApplicationID
 // are required and must match ^[a-z][a-z0-9_]{1,31}$ (ValidateApplicationID);
 // the client refuses anything else before sending. Each service supplies its
-// id from its own configuration. Application settings will come from a
-// database registry that does not exist yet, so the ids in use are provisional.
+// id from its own configuration, and payments-service resolves it against the
+// application registry it owns (payments.applications: status, merchant
+// display name, enabled methods).
 //
 // Wire status: the client sends `application_id` in the create-intent and
-// refund bodies. payments-service does not store it yet. Its internal handlers
-// bind request bodies with gin's ShouldBindJSON, which ignores unknown fields,
-// so the field is accepted and dropped there today. The ApplicationID on the
-// read results (Intent, CallbackVerdict, RefundAccepted) is empty until
-// payments-service stores and echoes it.
+// refund bodies. payments-service stores it on the intent and on the refund
+// command, echoes it on the read results (Intent, CallbackVerdict,
+// RefundAccepted), and stamps it on every payment event (see paymentevents).
 //
 // # Authentication
 //
@@ -67,8 +66,9 @@
 // A 4xx error keeps at most 300 bytes of payments-service's own error body
 // (its JSON error envelope, not a provider body) so an operator can see why a
 // refund was refused. client_session is decoded into ClientSession, whose
-// only fields are the three public checkout values; anything else payments or
-// a provider adapter attaches (a key secret, an amount) is dropped at decode.
+// only fields are the three public checkout values and the optional merchant
+// display name; anything else payments or a provider adapter attaches (a key
+// secret, an amount) is dropped at decode.
 package paymentsclient
 
 import (
@@ -82,6 +82,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/atpost/shared/servicetoken"
 	"github.com/google/uuid"
@@ -282,22 +284,64 @@ func (c *Client) LegacyAuth() bool { return c != nil && c.signer == nil }
 // ReferenceType is the reference type this client is bound to.
 func (c *Client) ReferenceType() string { return c.cfg.ReferenceType }
 
+// MaxMerchantDisplayNameRunes caps the merchant name relayed to an app. The
+// payments registry allows up to 100 characters; a checkout sheet shows far
+// fewer, so a longer name is cut at a rune boundary.
+const MaxMerchantDisplayNameRunes = 64
+
 // ClientSession is what a client SDK needs to open checkout: the provider,
-// its order handle and the PUBLISHABLE key. It is a struct, not a map, so no
-// other value can be relayed; a key secret is never here.
+// its order handle, the PUBLISHABLE key and, optionally, the merchant name the
+// checkout sheet shows. It is a struct, not a map, so no other value can be
+// relayed; a key secret is never here.
 type ClientSession struct {
 	Provider string `json:"provider"`
 	OrderID  string `json:"order_id"`
 	KeyID    string `json:"key_id"`
+	// MerchantDisplayName is the application's merchant_display_name from the
+	// payments registry, trimmed and capped (NormalizeMerchantDisplayName).
+	// Empty when payments sent none, and then omitted from JSON and from AsMap
+	// so the app falls back to its own default name. It never decides whether
+	// a session is usable.
+	MerchantDisplayName string `json:"merchant_display_name,omitempty"`
+}
+
+// UnmarshalJSON decodes the public fields only (anything else payments or a
+// provider adapter attaches is dropped) and normalizes the merchant name.
+func (s *ClientSession) UnmarshalJSON(b []byte) error {
+	type wire ClientSession
+	var w wire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	*s = ClientSession(w)
+	s.MerchantDisplayName = NormalizeMerchantDisplayName(s.MerchantDisplayName)
+	return nil
+}
+
+// NormalizeMerchantDisplayName trims name and cuts it to
+// MaxMerchantDisplayNameRunes runes (never inside a multi-byte character),
+// trimming any whitespace the cut leaves at the end. It returns "" for a
+// blank name.
+func NormalizeMerchantDisplayName(name string) string {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) <= MaxMerchantDisplayNameRunes {
+		return name
+	}
+	return strings.TrimRightFunc(string([]rune(name)[:MaxMerchantDisplayNameRunes]), unicode.IsSpace)
 }
 
 // AsMap renders the session as the map shape commerce and food carry on
-// their own intent types: exactly the three public keys, or nil.
+// their own intent types: the three public keys, plus merchant_display_name
+// only when it is non-empty; or nil. The key is omitted, never sent as "".
 func (s *ClientSession) AsMap() map[string]string {
 	if s == nil {
 		return nil
 	}
-	return map[string]string{"provider": s.Provider, "order_id": s.OrderID, "key_id": s.KeyID}
+	m := map[string]string{"provider": s.Provider, "order_id": s.OrderID, "key_id": s.KeyID}
+	if name := NormalizeMerchantDisplayName(s.MerchantDisplayName); name != "" {
+		m["merchant_display_name"] = name
+	}
+	return m
 }
 
 // Intent is a payments-service intent as a caller sees it.
@@ -312,8 +356,8 @@ type Intent struct {
 	ReferenceID   uuid.UUID `json:"reference_id"`
 	PayerID       uuid.UUID `json:"payer_id"`
 	PayeeID       uuid.UUID `json:"payee_id"`
-	// ApplicationID is the application the intent belongs to. Empty until
-	// payments-service stores and echoes it.
+	// ApplicationID is the application the intent belongs to, as
+	// payments-service stored and echoes it.
 	ApplicationID string `json:"application_id,omitempty"`
 	// ClientSession is present only when payments-service has a provider
 	// adapter that can derive one (Razorpay). Absent for the stub gateway and
@@ -415,7 +459,8 @@ type CallbackVerdict struct {
 	PayeeID       uuid.UUID `json:"payee_id"`
 	ReferenceType string    `json:"reference_type"`
 	ReferenceID   uuid.UUID `json:"reference_id"`
-	// ApplicationID is empty until payments-service stores and echoes it.
+	// ApplicationID is the intent's application, echoed so a callback for
+	// another application's intent is refusable too.
 	ApplicationID string `json:"application_id,omitempty"`
 }
 
@@ -453,7 +498,8 @@ type RefundAccepted struct {
 	IntentID    uuid.UUID `json:"intent_id"`
 	AmountMinor int64     `json:"amount_minor"`
 	Status      string    `json:"status"`
-	// ApplicationID is empty until payments-service stores and echoes it.
+	// ApplicationID is the refund command's application, as payments-service
+	// stored and echoes it.
 	ApplicationID string `json:"application_id,omitempty"`
 }
 

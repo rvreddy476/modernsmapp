@@ -19,7 +19,8 @@ import (
 // TestP0Client_WireContract pins what commerce sends through the shared
 // client: a commerce-service token for the `order` reference type, the
 // order-derived idempotency key, integer paise, the application id, and a
-// client_session relayed as exactly the three public keys.
+// client_session relayed as exactly the three public keys plus the merchant
+// name.
 func TestP0Client_WireContract(t *testing.T) {
 	pub, priv, err := servicetoken.GenerateKeypair()
 	if err != nil {
@@ -53,7 +54,8 @@ func TestP0Client_WireContract(t *testing.T) {
 		bodies = append(bodies, body)
 		out := map[string]any{"id": intentID, "status": "pending", "amount_minor": 90000, "reference_type": "order",
 			"reference_id": orderID, "provider_ref": "order_RZP1",
-			"client_session": map[string]string{"provider": "razorpay", "order_id": "order_RZP1", "key_id": "rzp_test_pub", "key_secret": "SECRET"}}
+			"client_session": map[string]string{"provider": "razorpay", "order_id": "order_RZP1", "key_id": "rzp_test_pub",
+				"merchant_display_name": "Momentum Merchant", "key_secret": "SECRET"}}
 		if op == servicetoken.OpRefundCreate {
 			out = map[string]any{"command_id": uuid.New(), "intent_id": intentID, "amount_minor": 90000, "status": "pending"}
 		}
@@ -69,7 +71,8 @@ func TestP0Client_WireContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIntent: %v", err)
 	}
-	if intent.AmountMinor != money.Paise(90000) || len(intent.ClientSession) != 3 || intent.ClientSession["key_id"] != "rzp_test_pub" {
+	if intent.AmountMinor != money.Paise(90000) || len(intent.ClientSession) != 4 || intent.ClientSession["key_id"] != "rzp_test_pub" ||
+		intent.ClientSession["merchant_display_name"] != "Momentum Merchant" {
 		t.Fatalf("intent = %+v", intent)
 	}
 	if _, ok := intent.ClientSession["key_secret"]; ok {
@@ -90,6 +93,63 @@ func TestP0Client_WireContract(t *testing.T) {
 		if refund[k] != want {
 			t.Errorf("refund %s = %v, want %v", k, refund[k], want)
 		}
+	}
+}
+
+// TestP0Client_ClientSessionMerchantDisplayName pins the optional merchant
+// name commerce relays to the app: present is relayed trimmed and capped at 64
+// runes; empty, blank or absent leaves no merchant_display_name key at all.
+// Nothing else payments sends is relayed.
+func TestP0Client_ClientSessionMerchantDisplayName(t *testing.T) {
+	for _, tc := range []struct {
+		name, merchant, want string
+		send                 bool
+	}{
+		{"present", "Momentum Merchant", "Momentum Merchant", true},
+		{"trimmed", "  MStore by Momentum\n", "MStore by Momentum", true},
+		{"empty", "", "", true},
+		{"blank", " \t ", "", true},
+		{"absent", "", "", false},
+		{"70 ascii", strings.Repeat("m", 70), strings.Repeat("m", 64), true},
+		{"70 multi-byte", strings.Repeat("ಫ", 70), strings.Repeat("ಫ", 64), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			orderID := uuid.New()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				session := map[string]string{"provider": "razorpay", "order_id": "order_RZP1", "key_id": "rzp_test_pub",
+					"key_secret": "SECRET", "amount": "90000"}
+				if tc.send {
+					session["merchant_display_name"] = tc.merchant
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": uuid.New(), "status": "pending",
+					"amount_minor": 90000, "reference_type": "order", "reference_id": orderID, "provider_ref": "order_RZP1",
+					"client_session": session}})
+			}))
+			defer srv.Close()
+			c, err := NewInternalKeyClient(srv.URL, DefaultApplicationID, "k", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			intent, err := c.CreateIntent(context.Background(), CreateIntentInput{OrderID: orderID, PayerID: uuid.New(),
+				PayeeID: uuid.New(), AmountMinor: money.Paise(90000), Method: "upi"})
+			if err != nil {
+				t.Fatalf("CreateIntent: %v", err)
+			}
+			wantKeys := 3
+			if tc.want != "" {
+				wantKeys = 4
+			}
+			name, present := intent.ClientSession["merchant_display_name"]
+			if len(intent.ClientSession) != wantKeys || present != (tc.want != "") || name != tc.want {
+				t.Fatalf("client_session = %v, want %d keys and merchant %q", intent.ClientSession, wantKeys, tc.want)
+			}
+			raw, _ := json.Marshal(intent)
+			for _, forbidden := range []string{"SECRET", "key_secret", `"amount"`, `"merchant_display_name":""`} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("intent JSON carries %s: %s", forbidden, raw)
+				}
+			}
+		})
 	}
 }
 

@@ -697,9 +697,9 @@ func (h *Handler) GetIntent(c *gin.Context) {
 //
 // Migration 010: application_id and channel are echoed, and the session carries
 // the application's merchant_display_name from the registry — the name the
-// checkout sheet should show. It is additive: the shared client decodes only
-// provider, order_id and key_id today, and the Android launcher still uses its
-// own constant.
+// checkout sheet shows. The shared client relays it (trimmed, capped at 64
+// runes, omitted when empty) alongside provider, order_id and key_id, and the
+// Android launcher shows it, falling back to "Momentum Merchant" when absent.
 func (h *Handler) withClientSession(ctx context.Context, intent *postgres.PaymentIntent) map[string]any {
 	out := map[string]any{
 		"id":             intent.ID,

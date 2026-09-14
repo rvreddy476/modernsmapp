@@ -4,8 +4,7 @@
     "client_session": {
       "provider": "razorpay",
       "order_id": "order_ContractRzp01",
-      "key_id": "rzp_test_ContractKey01",
-      "merchant_display_name": "Momentum Merchant"
+      "key_id": "rzp_test_ContractKey01"
     },
     "currency": "INR",
     "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0034",

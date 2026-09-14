@@ -23,13 +23,12 @@
 //
 // # Applications
 //
-// Every payment belongs to one application (Feast, MStore, …). Each payload
-// below has an `application_id` field, populated once payments-service stores
-// application_id; today's events do not carry it and it decodes as empty. A
-// consumer can pass ForApplication to Dispatch to ignore events stamped with
-// another application. It is off unless passed, and even when passed an event
-// with no application_id is still delivered, so it changes nothing until
-// payments-service starts stamping events.
+// Every payment belongs to one application (Feast, MStore, …). payments-service
+// stores application_id on every intent and refund command (migration 010) and
+// stamps it on every payload below. A consumer can pass ForApplication to
+// Dispatch to ignore events stamped with another application. It is off unless
+// passed, and even when passed an event with no application_id (one published
+// before payments-service stored it) is still delivered.
 //
 // # payment.succeeded and payment.failed
 //
@@ -54,7 +53,8 @@
 //	refunded_amount_minor  total refunded so far
 //	owner_domain           the service that created the intent (omitted when empty)
 //	created_at, updated_at RFC 3339 timestamps
-//	application_id         populated once payments-service stores application_id
+//	application_id         the payment's application; empty only on an event
+//	                       published before payments-service stored it
 //
 // # payment.refunded
 //
@@ -73,7 +73,8 @@
 //	command_id             present only when manual: the refund command
 //	manual                 present and true only for an operator's manual
 //	                       resolution; no provider refund exists
-//	application_id         populated once payments-service stores application_id
+//	application_id         the payment's application; empty only on an event
+//	                       published before payments-service stored it
 //
 // # payment.refund_failed
 //
@@ -93,7 +94,8 @@
 //	                       bounded description; never a raw provider body,
 //	                       a credential or a signature
 //	status                 always needs_attention
-//	application_id         populated once payments-service stores application_id
+//	application_id         the payment's application; empty only on an event
+//	                       published before payments-service stored it
 package paymentevents
 
 import (
@@ -140,7 +142,8 @@ type Payment struct {
 	Method        string `json:"method"`
 	Status        string `json:"status"`
 	ProviderRef   string `json:"provider_ref,omitempty"`
-	// ApplicationID is populated once payments-service stores application_id.
+	// ApplicationID is the payment's application, stamped by payments-service.
+	// Empty only on an event published before payments-service stored it.
 	ApplicationID string `json:"application_id,omitempty"`
 }
 
@@ -162,7 +165,8 @@ type Refunded struct {
 	ReferenceID      string `json:"reference_id"`
 	CommandID        string `json:"command_id,omitempty"`
 	Manual           bool   `json:"manual,omitempty"`
-	// ApplicationID is populated once payments-service stores application_id.
+	// ApplicationID is the payment's application, stamped by payments-service.
+	// Empty only on an event published before payments-service stored it.
 	ApplicationID string `json:"application_id,omitempty"`
 }
 
@@ -187,7 +191,8 @@ type RefundFailed struct {
 	ReasonCode    string `json:"reason_code"`
 	Reason        string `json:"reason"`
 	Status        string `json:"status"`
-	// ApplicationID is populated once payments-service stores application_id.
+	// ApplicationID is the payment's application, stamped by payments-service.
+	// Empty only on an event published before payments-service stored it.
 	ApplicationID string `json:"application_id,omitempty"`
 }
 
@@ -232,8 +237,8 @@ func Only(eventTypes ...string) Option {
 
 // ForApplication ignores (nil, handler not called) an event whose
 // application_id is set and is not applicationID. An event without an
-// application_id, which is every event until payments-service stores it, is
-// still delivered. Without this option nothing is filtered by application.
+// application_id (one published before payments-service stored it) is still
+// delivered. Without this option nothing is filtered by application.
 func ForApplication(applicationID string) Option {
 	return func(c *dispatchConfig) { c.application = applicationID }
 }

@@ -108,8 +108,9 @@ func (s *Service) CreatePaymentIntent(ctx context.Context, userID, orderID uuid.
 	}
 	// Only public values reach the customer: the payments intent without its
 	// parties or raw session, and a client_session of exactly
-	// provider/order_id/key_id. No session from payments (stub gateway) means
-	// no client_session field, as commerce does.
+	// provider/order_id/key_id plus merchant_display_name when payments named
+	// one. No session from payments (stub gateway) means no client_session
+	// field, as commerce does.
 	intent["payment_intent"] = upstream.PublicIntent()
 	intent["provider_payment_id"] = upstream.ID.String()
 	intent["provider_order_id"] = upstream.ProviderRef

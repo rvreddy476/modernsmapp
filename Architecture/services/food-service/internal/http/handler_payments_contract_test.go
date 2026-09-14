@@ -102,13 +102,23 @@ func (c *payContractClient) Refund(context.Context, uuid.UUID, int64, string, st
 	return nil, fmt.Errorf("not used")
 }
 
-// ctRazorpaySession is what payments-service's Razorpay adapter sends, plus
-// fields that must be dropped.
+// ctRazorpaySession is what payments-service sends for a Razorpay intent (the
+// adapter's session plus the registry's merchant name), plus fields that must
+// be dropped.
 func ctRazorpaySession() map[string]string {
 	return map[string]string{
 		"provider": "razorpay", "order_id": ctProviderOrder, "key_id": ctRazorpayKeyID,
-		"key_secret": ctRazorpaySecret, "amount": "25000",
+		"merchant_display_name": "Momentum Merchant",
+		"key_secret":            ctRazorpaySecret, "amount": "25000",
 	}
+}
+
+// ctRazorpaySessionNoMerchant is that session when payments names no merchant
+// (the intent's application could not be read): the key is absent.
+func ctRazorpaySessionNoMerchant() map[string]string {
+	s := ctRazorpaySession()
+	delete(s, "merchant_display_name")
+	return s
 }
 
 func payState(orderStatus, paymentStatus, method string, applied bool) postgres.CustomerPaymentState {
@@ -125,8 +135,8 @@ func payContractRouter(st *payContractStore, pc *payContractClient) *gin.Engine 
 
 // b7Fixtures lists the fixtures this file owns, for the leak test.
 var b7Fixtures = []string{
-	"payment_intent_post_201_client_session", "payment_intent_post_201_no_client_session",
-	"payment_intent_post_422_cod", "payment_intent_post_422_wallet", "payment_intent_post_422_unknown_method",
+	"payment_intent_post_201_client_session", "payment_intent_post_201_client_session_no_merchant_name",
+	"payment_intent_post_201_no_client_session", "payment_intent_post_422_cod", "payment_intent_post_422_wallet", "payment_intent_post_422_unknown_method",
 	"order_payment_get_200_confirming", "order_payment_get_200_paid", "order_payment_get_200_paid_refund_pending",
 	"order_payment_get_200_failed", "order_payment_get_404", "order_payment_get_409_not_online",
 }
@@ -142,6 +152,9 @@ func TestPaymentIntentContracts(t *testing.T) {
 		reached bool
 	}{
 		{"payment_intent_post_201_client_session", `{"method":"upi"}`, ctRazorpaySession(), http.StatusCreated, true},
+		// No merchant name from payments: the session is still relayed, with
+		// no merchant_display_name key.
+		{"payment_intent_post_201_client_session_no_merchant_name", `{"method":"upi"}`, ctRazorpaySessionNoMerchant(), http.StatusCreated, true},
 		// The dev stub gateway attaches no session: the field is omitted.
 		{"payment_intent_post_201_no_client_session", `{"method":"card"}`, nil, http.StatusCreated, true},
 		{"payment_intent_post_422_cod", `{"method":"cod"}`, ctRazorpaySession(), http.StatusUnprocessableEntity, false},
@@ -161,8 +174,9 @@ func TestPaymentIntentContracts(t *testing.T) {
 	}
 }
 
-// The client_session is exactly provider/order_id/key_id, whatever payments
-// sends, and nothing secret appears anywhere in the response.
+// The client_session is exactly provider/order_id/key_id plus
+// merchant_display_name when payments names one, whatever else payments sends,
+// and nothing secret appears anywhere in the response.
 func TestPaymentIntentClientSessionIsExactlyPublic(t *testing.T) {
 	st := &payContractStore{}
 	rec := doJSON(payContractRouter(st, &payContractClient{session: ctRazorpaySession()}), http.MethodPost,
@@ -180,7 +194,8 @@ func TestPaymentIntentClientSessionIsExactlyPublic(t *testing.T) {
 	if err := json.Unmarshal(env.Data["client_session"], &session); err != nil {
 		t.Fatalf("client_session: %v (%s)", err, env.Data["client_session"])
 	}
-	want := map[string]string{"provider": "razorpay", "order_id": ctProviderOrder, "key_id": ctRazorpayKeyID}
+	want := map[string]string{"provider": "razorpay", "order_id": ctProviderOrder, "key_id": ctRazorpayKeyID,
+		"merchant_display_name": "Momentum Merchant"}
 	if len(session) != len(want) {
 		t.Fatalf("client_session = %v, want exactly %v", session, want)
 	}
@@ -203,6 +218,43 @@ func TestPaymentIntentClientSessionIsExactlyPublic(t *testing.T) {
 		"/v1/food/orders/"+ctPayOrder.String()+"/payments/intents", `{"method":"upi"}`, ctCustomer, false)
 	if rec.Code != http.StatusCreated || strings.Contains(rec.Body.String(), "client_session") {
 		t.Fatalf("mismatched session relayed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The merchant name is optional: absent or blank leaves no key (never ""),
+	// a long one is cut to 64 runes, and the session is relayed either way.
+	for _, tc := range []struct {
+		name, merchant, want string
+		send                 bool
+	}{
+		{"absent", "", "", false},
+		{"blank", "   ", "", true},
+		{"trimmed", "  Feast by Momentum ", "Feast by Momentum", true},
+		{"long", strings.Repeat("ನ", 70), strings.Repeat("ನ", 64), true},
+	} {
+		session := ctRazorpaySessionNoMerchant()
+		if tc.send {
+			session["merchant_display_name"] = tc.merchant
+		}
+		rec := doJSON(payContractRouter(&payContractStore{}, &payContractClient{session: session}), http.MethodPost,
+			"/v1/food/orders/"+ctPayOrder.String()+"/payments/intents", `{"method":"upi"}`, ctCustomer, false)
+		var env struct {
+			Data map[string]json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil || rec.Code != http.StatusCreated {
+			t.Fatalf("%s: %d %s", tc.name, rec.Code, rec.Body.String())
+		}
+		var got map[string]string
+		if err := json.Unmarshal(env.Data["client_session"], &got); err != nil {
+			t.Fatalf("%s: client_session: %v (%s)", tc.name, err, env.Data["client_session"])
+		}
+		wantKeys := 3
+		if tc.want != "" {
+			wantKeys = 4
+		}
+		name, present := got["merchant_display_name"]
+		if len(got) != wantKeys || present != (tc.want != "") || name != tc.want {
+			t.Fatalf("%s: client_session = %v, want %d keys and merchant %q", tc.name, got, wantKeys, tc.want)
+		}
 	}
 }
 

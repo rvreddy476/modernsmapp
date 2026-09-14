@@ -112,6 +112,57 @@ func TestPublicClientSession(t *testing.T) {
 	}
 }
 
+// The merchant name is relayed trimmed and capped when present, omitted when
+// empty or absent, and never changes whether a session is relayed.
+func TestPublicClientSession_MerchantDisplayName(t *testing.T) {
+	session := func(merchant string, send bool) *Intent {
+		s := map[string]string{"provider": "razorpay", "order_id": "order_RZP1", "key_id": "rzp_test_pub", "key_secret": "sk_SECRET"}
+		if send {
+			s["merchant_display_name"] = merchant
+		}
+		return &Intent{ID: uuid.New(), ProviderRef: "order_RZP1", ClientSession: s}
+	}
+	for _, tc := range []struct {
+		name, merchant, want string
+		send                 bool
+	}{
+		{"present", "Momentum Merchant", "Momentum Merchant", true},
+		{"trimmed", "\t Feast by Momentum  ", "Feast by Momentum", true},
+		{"empty", "", "", true},
+		{"blank", "   ", "", true},
+		{"absent", "", "", false},
+		{"70 ascii", strings.Repeat("m", 70), strings.Repeat("m", 64), true},
+		{"70 multi-byte", strings.Repeat("ನ", 70), strings.Repeat("ನ", 64), true},
+	} {
+		got := session(tc.merchant, tc.send).PublicClientSession()
+		if got == nil || got.MerchantDisplayName != tc.want {
+			t.Fatalf("%s: session = %+v, want merchant %q", tc.name, got, tc.want)
+		}
+		raw, _ := json.Marshal(got)
+		var keys map[string]string
+		_ = json.Unmarshal(raw, &keys)
+		name, present := keys["merchant_display_name"]
+		wantKeys := 3
+		if tc.want != "" {
+			wantKeys = 4
+		}
+		if len(keys) != wantKeys || present != (tc.want != "") || name != tc.want || strings.Contains(string(raw), "SECRET") {
+			t.Fatalf("%s: session JSON = %s", tc.name, raw)
+		}
+	}
+
+	// A merchant name never rescues an incomplete or mismatched session.
+	for name, s := range map[string]map[string]string{
+		"no key id":        {"provider": "razorpay", "order_id": "order_RZP1", "merchant_display_name": "Momentum Merchant"},
+		"only merchant":    {"merchant_display_name": "Momentum Merchant"},
+		"another order id": {"provider": "razorpay", "order_id": "order_OTHER", "key_id": "rzp_test_pub", "merchant_display_name": "Momentum Merchant"},
+	} {
+		if got := (&Intent{ID: uuid.New(), ProviderRef: "order_RZP1", ClientSession: s}).PublicClientSession(); got != nil {
+			t.Fatalf("%s: session = %+v, want nil", name, got)
+		}
+	}
+}
+
 func TestPublicIntentOmitsPartiesAndSession(t *testing.T) {
 	i := &Intent{ID: uuid.New(), PayerID: uuid.New(), PayeeID: uuid.New(), ProviderRef: "order_RZP1",
 		ClientSession: map[string]string{"key_secret": "sk_live_SECRET"}}

@@ -141,8 +141,9 @@ func (c *Client) LegacyAuth() bool { return c != nil && c.c.LegacyAuth() }
 func (c *Client) ApplicationID() string { return c.applicationID }
 
 // Intent is the payments-side intent as food sees it. ClientSession holds
-// only the three public checkout keys (the shared client drops anything
-// else); PublicClientSession applies food's further rules.
+// only the three public checkout keys and, when payments named one,
+// merchant_display_name (the shared client drops anything else);
+// PublicClientSession applies food's further rules.
 type Intent struct {
 	ID            uuid.UUID         `json:"id"`
 	Status        string            `json:"status"`
