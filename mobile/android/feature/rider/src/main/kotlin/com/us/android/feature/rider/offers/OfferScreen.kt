@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +22,7 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.rider.ui.CardHeading
 import com.us.android.feature.rider.ui.InfoNote
 import com.us.android.feature.rider.ui.LabeledValue
 import com.us.android.feature.rider.ui.LoadingPane
@@ -54,6 +57,7 @@ fun OfferScreen(onBack: () -> Unit, onAccepted: () -> Unit, viewModel: OfferView
             else -> Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(contentPadding(padding)),
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
@@ -76,10 +80,9 @@ fun OfferScreen(onBack: () -> Unit, onAccepted: () -> Unit, viewModel: OfferView
                             color = UsTheme.extended.textMuted,
                         )
                     }
-                    offer.distanceKm?.let { LabeledValue("Pickup distance", "${"%.1f".format(it)} km", emphasise = true) }
-                    LabeledValue("Order", offer.orderId.take(ORDER_ID_PREFIX).uppercase())
                 }
-                InfoNote("The restaurant, drop-off and your earning for this job show once you accept.")
+                OfferCard(OfferSummary.of(offer))
+                InfoNote("The exact drop-off address shows once you accept.")
                 UsButton(
                     text = "Accept job",
                     onClick = viewModel::accept,
@@ -93,4 +96,14 @@ fun OfferScreen(onBack: () -> Unit, onAccepted: () -> Unit, viewModel: OfferView
     }
 }
 
-private const val ORDER_ID_PREFIX = 8
+/** The offer's job detail. Built from [OfferSummary] only, so every arrival path shows the same card. */
+@Composable
+fun OfferCard(summary: OfferSummary, modifier: Modifier = Modifier) {
+    RiderCard(modifier = modifier) {
+        CardHeading(summary.title, summary.restaurantArea)
+        summary.pay?.let { LabeledValue("You earn", it, emphasise = true) }
+        summary.toRestaurant?.let { LabeledValue("To the restaurant", it) }
+        summary.tripDistance?.let { LabeledValue("Trip", it) }
+        summary.dropLocality?.let { LabeledValue("Drop area", it) }
+    }
+}

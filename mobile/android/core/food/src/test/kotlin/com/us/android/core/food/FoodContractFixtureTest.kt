@@ -6,6 +6,11 @@ import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.AcceptingDto
 import com.us.android.core.food.network.ComplianceDto
 import com.us.android.core.food.network.DeliveryAssignmentDto
+import com.us.android.core.food.network.DeliveryEarningsDto
+import com.us.android.core.food.network.DeliveryOffersDto
+import com.us.android.core.food.network.DropAreaDto
+import com.us.android.core.food.network.DropSummaryDto
+import com.us.android.core.food.network.ItemsDto
 import com.us.android.core.food.network.FeastCartDto
 import com.us.android.core.food.network.FeastInvoiceDto
 import com.us.android.core.food.network.FeastOrderDto
@@ -181,10 +186,44 @@ class FoodContractFixtureTest {
             assertThat(it.pickupCode).isEqualTo("4821")
             assertThat(it.deliveryFee).isEqualTo(Paise(2_900))
             assertThat(it.deliveryPartnerPayout).isEqualTo(Paise(2_320))
+            assertThat(it.payoutPaise).isEqualTo(Paise(2_320))
+            assertThat(it.restaurant?.phone).isEqualTo("08040000000")
+            assertThat(it.drop?.customerFirstName).isEqualTo("Asha")
+            assertThat(it.drop?.latitude).isEqualTo(12.978449)
+            assertThat(it.navigation?.pickupUrl).contains("destination=12.9716,77.5946")
+            assertThat(it.navigation?.dropUrl).contains("destination=12.978449,77.640812")
+            assertThat(it.dropSummary).isNull()
+            assertThat(it.etaAt).isEqualTo("2026-09-13T06:52:00Z")
         },
         "delivery_assignment_current_get_200_assigned.json" to data(DeliveryAssignmentDto.serializer()) {
             assertThat(it.status).isEqualTo("ASSIGNED")
             assertThat(it.pickupCode).isNull()
+            assertThat(it.drop).isNull()
+            assertThat(it.navigation?.pickupUrl).isNotEmpty()
+            assertThat(it.navigation?.dropUrl).isNull()
+        },
+        "delivery_offers_me_get_200.json" to data(DeliveryOffersDto.serializer()) {
+            val offer = checkNotNull(it.offers).single()
+            assertThat(offer.restaurant?.name).isEqualTo("Test Kitchen")
+            assertThat(offer.restaurant?.city).isEqualTo("Bengaluru")
+            assertThat(offer.dropArea).isEqualTo(DropAreaDto(latitude = 12.98, longitude = 77.64, locality = "Bengaluru"))
+            assertThat(offer.distanceToRestaurantMeters).isEqualTo(1_553L)
+            assertThat(offer.tripDistanceMeters).isEqualTo(5_065L)
+            assertThat(offer.payoutPaise).isEqualTo(Paise(2_320))
+            assertThat(offer.currency).isEqualTo("INR")
+        },
+        "delivery_history_get_200.json" to data(ItemsDto.serializer(DeliveryAssignmentDto.serializer())) {
+            assertThat(it.items.map { i -> i.status }).containsExactly("DELIVERED", "CANCELLED").inOrder()
+            assertThat(it.items.map { i -> i.payoutPaise }).containsExactly(Paise(2_320), Paise(2_840)).inOrder()
+            assertThat(it.items.first().dropSummary).isEqualTo(DropSummaryDto(city = "Bengaluru", locality = "Bengaluru"))
+            assertThat(it.items.all { i -> i.drop == null && i.navigation == null && i.pickupCode == null }).isTrue()
+        },
+        "delivery_earnings_get_200.json" to data(DeliveryEarningsDto.serializer()) {
+            assertThat(it.earningsTodayPaise).isEqualTo(Paise(5_160))
+            assertThat(it.totalEarningsPaise).isEqualTo(Paise(123_456))
+            assertThat(it.deliveriesToday).isEqualTo(2)
+            assertThat(it.totalDeliveries).isEqualTo(14)
+            assertThat(it.currency).isEqualTo("INR")
         },
         "delivery_location_post_200.json" to data(DeliveryLocationDto.serializer()) {
             assertThat(it.heading).isEqualTo(90.0)

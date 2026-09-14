@@ -29,6 +29,8 @@ internal object RiderFixtures {
         return FoodResult.Failure(FoodError.from(code, checkNotNull(envelope.error)))
     }
 
+    fun raw(name: String): String = File(coreFood, name).readText()
+
     fun names(prefix: String): List<String> =
         coreFood.listFiles { f -> f.name.startsWith(prefix) && f.name.endsWith(".json") }.orEmpty().map { it.name }.sorted()
 }

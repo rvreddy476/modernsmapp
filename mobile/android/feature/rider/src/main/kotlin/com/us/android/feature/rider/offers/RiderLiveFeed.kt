@@ -35,6 +35,8 @@ class RiderLiveFeed(
     private val tokenSource: RealtimeTokenSource,
     private val pollMillis: Long = POLL_MILLIS,
     private val reconcileMillis: Long = RECONCILE_MILLIS,
+    /** Every domain frame, before the refresh it triggers (e.g. to show a pushed offer at once). */
+    private val onMessage: (RealtimeEvent.Message) -> Unit = {},
 ) {
     private val _transport = MutableStateFlow(LiveTransport.CONNECTING)
     val transport: StateFlow<LiveTransport> = _transport.asStateFlow()
@@ -81,6 +83,7 @@ class RiderLiveFeed(
         try {
             subscribe(observed).collect { event ->
                 if (event is RealtimeEvent.Connected) _transport.value = LiveTransport.LIVE
+                if (event is RealtimeEvent.Message) onMessage(event)
                 refreshNow()
             }
         } catch (e: CancellationException) {

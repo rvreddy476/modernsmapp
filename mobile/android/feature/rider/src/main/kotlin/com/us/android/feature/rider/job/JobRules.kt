@@ -6,7 +6,6 @@ import com.us.android.core.food.repository.FoodError
 import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.RiderAssignmentStep
 import com.us.android.core.food.repository.code
-import java.net.URLEncoder
 
 /** Where the job stands, from the assignment's status (food-service deliveryTransitionAllowed). */
 enum class JobPhase {
@@ -116,33 +115,5 @@ sealed interface DeliveryCodeOutcome {
                 }
             }
         }
-    }
-}
-
-/** A place to navigate to. Coordinates are null when the server gave none (see JobLocations). */
-data class NavTarget(val label: String, val latitude: Double? = null, val longitude: Double? = null) {
-    val hasCoordinates: Boolean get() = latitude != null && longitude != null
-}
-
-/**
- * Hand-off to Google Maps. The app draws no map of its own (maps-compose is not
- * available offline); turn-by-turn belongs to Maps.
- */
-object NavigationHandoff {
-    const val MAPS_PACKAGE = "com.google.android.apps.maps"
-
-    /** Two-wheeler navigation (`mode=l`), straight into turn-by-turn. Null without coordinates. */
-    fun twoWheelerUri(target: NavTarget): String? {
-        val lat = target.latitude ?: return null
-        val lng = target.longitude ?: return null
-        return "google.navigation:q=$lat,$lng&mode=l"
-    }
-
-    /** The generic fallback any maps app handles: a pin, or a search by name when there are no coordinates. */
-    fun geoUri(target: NavTarget): String {
-        val label = URLEncoder.encode(target.label, "UTF-8")
-        val lat = target.latitude
-        val lng = target.longitude
-        return if (lat != null && lng != null) "geo:$lat,$lng?q=$lat,$lng($label)" else "geo:0,0?q=$label"
     }
 }

@@ -31,8 +31,8 @@ data class ActiveJobUiState(
     val loading: Boolean = true,
     val assignment: DeliveryAssignmentDto? = null,
     val actions: JobActions? = null,
-    val restaurant: NavTarget? = null,
-    val customer: NavTarget? = null,
+    /** Restaurant, customer (only while the assignment carries `drop`), pay, ETA and maps links. */
+    val details: JobDetails? = null,
     val busy: Boolean = false,
     val code: String = "",
     val codeError: String? = null,
@@ -56,7 +56,6 @@ data class ActiveJobUiState(
 class ActiveJobViewModel @Inject constructor(
     private val rider: RiderRepository,
     private val duty: RiderDuty,
-    private val locations: JobLocations,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ActiveJobUiState())
@@ -155,7 +154,7 @@ class ActiveJobViewModel @Inject constructor(
                 val assignment = result.value
                 if (assignment == null) {
                     duty.setOnJob(false)
-                    _state.update { it.copy(loading = false, assignment = null, actions = null) }
+                    _state.update { it.copy(loading = false, assignment = null, actions = null, details = null) }
                 } else {
                     apply(assignment)
                 }
@@ -164,7 +163,7 @@ class ActiveJobViewModel @Inject constructor(
         }
     }
 
-    private suspend fun apply(assignment: DeliveryAssignmentDto) {
+    private fun apply(assignment: DeliveryAssignmentDto) {
         val actions = JobActions.of(assignment)
         duty.setOnJob(actions.isActive)
         _state.update {
@@ -172,8 +171,7 @@ class ActiveJobViewModel @Inject constructor(
                 loading = false,
                 assignment = assignment,
                 actions = actions,
-                restaurant = locations.restaurant(assignment),
-                customer = locations.customer(assignment),
+                details = JobDetails.of(assignment),
             )
         }
     }

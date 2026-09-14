@@ -18,6 +18,8 @@ import com.us.android.feature.rider.location.DutyStatus
 import com.us.android.feature.rider.location.OfflineReason
 import com.us.android.feature.rider.location.RiderDuty
 import com.us.android.feature.rider.navigation.requireArg
+import com.us.android.feature.rider.money.RiderMoney
+import com.us.android.feature.rider.offers.LiveOffers
 import com.us.android.feature.rider.offers.LiveTransport
 import com.us.android.feature.rider.offers.RiderLiveFeed
 import com.us.android.feature.rider.offers.RiderRealtimeTopics
@@ -107,6 +109,8 @@ class HomeViewModel @Inject constructor(
         refresh = { refreshOffersAndJob() },
         subscribe = { source -> sseClient.connect(RiderRealtimeTopics.forRider(userId), source) },
         tokenSource = tokens.forScope(FoodRealtimeScope.Delivery),
+        // Show a pushed offer at once; the refresh the same frame triggers stays the authority.
+        onMessage = { message -> _state.update { it.copy(offers = LiveOffers.upsert(it.offers, message)) } },
     )
 
     private val _state = MutableStateFlow(HomeUiState())
@@ -222,7 +226,7 @@ class HomeViewModel @Inject constructor(
     private suspend fun loadEarnings() {
         val result = rider.earnings()
         if (result is FoodResult.Success) {
-            _state.update { it.copy(deliveriesToday = result.value.deliveriesToday, earningsToday = result.value.earningsToday) }
+            _state.update { it.copy(deliveriesToday = result.value.deliveriesToday, earningsToday = RiderMoney.earnedToday(result.value)) }
         }
     }
 }

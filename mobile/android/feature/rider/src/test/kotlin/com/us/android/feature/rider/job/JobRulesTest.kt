@@ -62,17 +62,6 @@ class JobRulesTest {
         assertThat(JobActions.of(accepted.copy(status = "DELIVERED")).isActive).isFalse()
     }
 
-    @Test
-    fun `navigation hands off two-wheeler directions, falling back to a geo pin or search`() {
-        val restaurant = NavTarget(label = "Test Kitchen", latitude = 12.9716, longitude = 77.5946)
-        assertThat(NavigationHandoff.twoWheelerUri(restaurant)).isEqualTo("google.navigation:q=12.9716,77.5946&mode=l")
-        assertThat(NavigationHandoff.geoUri(restaurant)).isEqualTo("geo:12.9716,77.5946?q=12.9716,77.5946(Test+Kitchen)")
-
-        val nameOnly = NavTarget(label = "Test Kitchen")
-        assertThat(NavigationHandoff.twoWheelerUri(nameOnly)).isNull()
-        assertThat(NavigationHandoff.geoUri(nameOnly)).isEqualTo("geo:0,0?q=Test+Kitchen")
-    }
-
     private fun assignment(name: String): DeliveryAssignmentDto =
         RiderFixtures.success(name, DeliveryAssignmentDto.serializer()).value
 }

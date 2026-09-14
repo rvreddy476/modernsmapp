@@ -12,7 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.feature.rider.money.RupeeFormat
+import com.us.android.feature.rider.money.RiderMoney
 import com.us.android.feature.rider.ui.CardHeading
 import com.us.android.feature.rider.ui.InfoNote
 import com.us.android.feature.rider.ui.LabeledValue
@@ -44,14 +44,14 @@ fun EarningsScreen(onBack: () -> Unit, viewModel: EarningsViewModel = hiltViewMo
                     RiderCard {
                         CardHeading("Today")
                         LabeledValue("Deliveries", earnings.deliveriesToday.toString())
-                        LabeledValue("Earned", RupeeFormat.format(earnings.earningsToday), emphasise = true)
+                        LabeledValue("Earned", RiderMoney.text(RiderMoney.earnedToday(earnings)), emphasise = true)
                     }
                 }
                 item {
                     RiderCard {
                         CardHeading("All time")
                         LabeledValue("Deliveries", earnings.totalDeliveries.toString())
-                        LabeledValue("Earned", RupeeFormat.format(earnings.totalEarnings), emphasise = true)
+                        LabeledValue("Earned", RiderMoney.text(RiderMoney.earnedTotal(earnings)), emphasise = true)
                     }
                 }
             }
@@ -59,13 +59,17 @@ fun EarningsScreen(onBack: () -> Unit, viewModel: EarningsViewModel = hiltViewMo
             if (state.history.isEmpty()) {
                 item { InfoNote("Your finished deliveries will be listed here.") }
             }
-            items(state.history, key = { it.id }) { job ->
+            items(state.history.map(HistoryRow::of), key = { it.id }) { row ->
                 RiderCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        CardHeading(job.restaurantName, "${job.orderNumber} · ${datePart(job.createdAt)}", modifier = Modifier.weight(1f))
-                        RiderPill(humanise(job.status), if (job.status == "DELIVERED") PillTone.Positive else PillTone.Neutral)
+                        CardHeading(
+                            row.restaurantName,
+                            listOfNotNull(row.orderNumber, datePart(row.createdAt), row.dropCity?.let { "to $it" }).joinToString(" · "),
+                            modifier = Modifier.weight(1f),
+                        )
+                        RiderPill(humanise(row.status), if (row.status == "DELIVERED") PillTone.Positive else PillTone.Neutral)
                     }
-                    LabeledValue("You earned", RupeeFormat.format(job.deliveryPartnerPayout))
+                    LabeledValue("You earned", row.pay)
                 }
             }
         }

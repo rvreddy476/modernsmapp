@@ -30,7 +30,7 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.food.repository.RiderAssignmentStep
-import com.us.android.feature.rider.money.RupeeFormat
+import com.us.android.feature.rider.money.RiderMoney
 import com.us.android.feature.rider.ui.CardHeading
 import com.us.android.feature.rider.ui.InfoNote
 import com.us.android.feature.rider.ui.LabeledValue
@@ -40,12 +40,13 @@ import com.us.android.feature.rider.ui.PillTone
 import com.us.android.feature.rider.ui.RiderCard
 import com.us.android.feature.rider.ui.RiderScreen
 import com.us.android.feature.rider.ui.contentPadding
+import java.time.ZoneId
 
 @Composable
 fun ActiveJobScreen(onBack: () -> Unit, onFinished: () -> Unit, viewModel: ActiveJobViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var navigationFailed by remember { mutableStateOf(false) }
+    var handOffFailure by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(viewModel) { viewModel.finishedEvents.collect { onFinished() } }
 
     if (state.confirmingRelease) {
@@ -61,9 +62,10 @@ fun ActiveJobScreen(onBack: () -> Unit, onFinished: () -> Unit, viewModel: Activ
     RiderScreen(title = "Current job", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
         val assignment = state.assignment
         val actions = state.actions
+        val details = state.details
         when {
             state.loading -> LoadingPane()
-            assignment == null || actions == null || !actions.isActive -> MessagePane(
+            assignment == null || actions == null || details == null || !actions.isActive -> MessagePane(
                 title = "No active job",
                 body = "Stay online — accepted offers show up here.",
                 icon = UsIcons.Package,
@@ -78,9 +80,10 @@ fun ActiveJobScreen(onBack: () -> Unit, onFinished: () -> Unit, viewModel: Activ
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 RiderCard {
-                    CardHeading(assignment.restaurantName, "Order ${assignment.orderNumber}")
-                    LabeledValue("You earn", RupeeFormat.format(assignment.deliveryPartnerPayout), emphasise = true)
+                    CardHeading(details.restaurantName, "Order ${assignment.orderNumber}")
+                    LabeledValue("You earn", RiderMoney.text(details.pay), emphasise = true)
                     LabeledValue("Step", stepLabel(actions.phase))
+                    details.etaText(ZoneId.systemDefault())?.let { LabeledValue("Customer ETA", it) }
                 }
 
                 actions.pickupCode?.let { code ->
@@ -97,31 +100,46 @@ fun ActiveJobScreen(onBack: () -> Unit, onFinished: () -> Unit, viewModel: Activ
                     }
                 }
 
-                if (actions.navigateToRestaurant) {
-                    val target = state.restaurant
-                    UsSecondaryButton(
-                        text = "Navigate to the restaurant",
-                        onClick = { navigationFailed = target == null || !context.handOffNavigation(target) },
-                        enabled = target != null,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (target != null && !target.hasCoordinates) {
-                        InfoNote("Maps searches by the restaurant's name — the app doesn't receive its exact location yet.")
+                RiderCard {
+                    CardHeading("Pickup", details.restaurantAddressLines.joinToString(", ").ifBlank { null })
+                    val pickup = details.navigation.pickup
+                    if (actions.navigateToRestaurant && pickup != null) {
+                        UsSecondaryButton(
+                            text = "Navigate to restaurant",
+                            onClick = { handOffFailure = if (context.openNavigation(pickup)) null else NO_MAPS },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (pickup.source == NavIntent.Source.NAME_SEARCH) {
+                            InfoNote("Maps searches by the restaurant's name — its exact location isn't on file.")
+                        }
+                    }
+                    details.restaurantPhone?.let { phone ->
+                        UsSecondaryButton(
+                            text = "Call restaurant",
+                            onClick = { handOffFailure = if (context.dialNumber(phone)) null else NO_DIALLER },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
-                if (actions.navigateToCustomer) {
-                    val target = state.customer
-                    UsSecondaryButton(
-                        text = "Navigate to the customer",
-                        onClick = { navigationFailed = target == null || !context.handOffNavigation(target) },
-                        enabled = target != null,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (target == null) {
-                        InfoNote("The customer's drop-off location isn't sent to the rider app yet. Use the order chat or call support.", tone = PillTone.Warning)
+
+                details.customer?.let { customer ->
+                    RiderCard {
+                        CardHeading(
+                            customer.firstName?.let { "Deliver to $it" } ?: "Drop-off",
+                            customer.addressLines.joinToString("\n").ifBlank { null },
+                        )
+                        customer.landmark?.let { LabeledValue("Landmark", it) }
+                        customer.instructions?.let { InfoNote("Instructions: $it") }
+                        details.navigation.drop?.let { drop ->
+                            UsSecondaryButton(
+                                text = "Navigate to customer",
+                                onClick = { handOffFailure = if (context.openNavigation(drop)) null else NO_MAPS },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
                     }
                 }
-                if (navigationFailed) InfoNote("No maps app could open this location.", tone = PillTone.Warning)
+                handOffFailure?.let { InfoNote(it, tone = PillTone.Warning) }
 
                 actions.step?.let { step ->
                     UsButton(text = stepButton(step), onClick = { viewModel.perform(step) }, loading = state.busy, modifier = Modifier.fillMaxWidth())
@@ -175,3 +193,6 @@ private fun stepButton(step: RiderAssignmentStep): String = when (step) {
     RiderAssignmentStep.ARRIVED_AT_CUSTOMER -> "I've arrived at the customer"
     RiderAssignmentStep.REJECT -> "Release this job"
 }
+
+private const val NO_MAPS = "No app on this phone can open maps. Install Google Maps, or use the address above."
+private const val NO_DIALLER = "No app on this phone can make calls."

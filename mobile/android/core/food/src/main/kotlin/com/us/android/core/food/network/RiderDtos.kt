@@ -12,14 +12,15 @@ import kotlinx.serialization.Serializable
  * delivery_offers.go, tracking_payments.go).
  *
  * Pinned STRICTLY by the golden fixtures copied into src/test/resources/contracts
- * where food-service has them (assignment, documents, location, verify-delivery,
- * DigiLocker, KYC status). Profile, offers and earnings have no goldens yet, so
- * those DTOs default every field.
+ * where food-service has them (assignment, offers, history, earnings, documents,
+ * location, verify-delivery, DigiLocker, KYC status). Profile has no golden yet,
+ * so that DTO defaults every field.
  *
  * MONEY: the assignment's `delivery_fee` / `delivery_partner_payout` and the
- * earnings summary are FLOAT RUPEES on the wire. They decode through
- * [RupeesAsPaiseSerializer] — decimal text to paise, never a Double. The float
- * wire is a backend gap reported with Feast A4, as it was for Kitchen in A3.
+ * earnings summary are still FLOAT RUPEES on the wire, decoded through
+ * [RupeesAsPaiseSerializer]. Since food-service 610a2acd every rider amount
+ * also has an integer `*_paise` sibling computed from NUMERIC in SQL; the Rider
+ * screens display those.
  */
 
 // Profile
@@ -174,8 +175,15 @@ data class DeliveryOffersDto(
 )
 
 /**
- * postgres.DeliveryOffer. Carries NO restaurant, address or payout — the offer
- * screen can show only distance and time left (a backend gap, reported).
+ * postgres.DeliveryOfferView (delivery_offers_me_get_200.json): the offer row
+ * plus the job detail a rider judges it by (food-service 610a2acd). The same
+ * shape is the realtime frame; a BATCH frame nests it under `offer` (see
+ * [DeliveryOfferPayload]).
+ *
+ * PRIVACY: an offer reaches several riders before anyone accepts, so it never
+ * carries the drop-off address, the customer's name or a phone. [dropArea] is
+ * snapped to a ~550 m grid. Every detail field is optional: when food-service
+ * cannot read the detail it sends the bare offer.
  */
 @Serializable
 data class DeliveryOfferDto(
@@ -190,6 +198,33 @@ data class DeliveryOfferDto(
     @SerialName("responded_at") val respondedAt: String? = null,
     @SerialName("reject_reason") val rejectReason: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
+    val restaurant: OfferRestaurantDto? = null,
+    @SerialName("drop_area") val dropArea: DropAreaDto? = null,
+    /** From the rider's last location ping, only while that ping is fresh. */
+    @SerialName("distance_to_restaurant_meters") val distanceToRestaurantMeters: Long? = null,
+    /** Restaurant to drop, straight line. Absent when either pin is unknown. */
+    @SerialName("trip_distance_meters") val tripDistanceMeters: Long? = null,
+    /** What the rider earns (a batch: all of it). */
+    @SerialName("payout_paise") val payoutPaise: Paise? = null,
+    val currency: String? = null,
+)
+
+@Serializable
+data class OfferRestaurantDto(
+    val id: String = "",
+    val name: String = "",
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    @SerialName("address_line1") val addressLine1: String? = null,
+    val city: String? = null,
+)
+
+/** Rounded to a 0.005 degree grid; [locality] is the city. Never an address. */
+@Serializable
+data class DropAreaDto(
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val locality: String? = null,
 )
 
 @Serializable
@@ -224,9 +259,9 @@ data class DeliveryAssignmentDto(
     @SerialName("created_at") val createdAt: String,
     /** Present only after the rider accepted and before pickup. Shown to the kitchen. */
     @SerialName("pickup_code") val pickupCode: String? = null,
-    // Added by food-service 610a2acd (rider navigation). Optional: the Rider
-    // screens do not read these yet; declared so the strict contract decode
-    // keeps pinning the wire.
+    // Added by food-service 610a2acd (rider navigation and money). Optional so
+    // an older payload still decodes; the Rider screens read money from the
+    // paise fields only, never from the float rupees above.
     @SerialName("delivery_fee_paise") val deliveryFeePaise: Paise? = null,
     @SerialName("delivery_partner_payout_paise") val deliveryPartnerPayoutPaise: Paise? = null,
     @SerialName("payout_paise") val payoutPaise: Paise? = null,
@@ -236,7 +271,16 @@ data class DeliveryAssignmentDto(
     val drop: AssignmentDropDto? = null,
     @SerialName("eta_at") val etaAt: String? = null,
     @SerialName("eta_source") val etaSource: String? = null,
+    /** Google Maps two-wheeler links on open jobs; `drop_url` only while [drop] is present. */
     val navigation: AssignmentNavigationDto? = null,
+    /** A closed job (history) keeps only where it went, never the address. */
+    @SerialName("drop_summary") val dropSummary: DropSummaryDto? = null,
+)
+
+@Serializable
+data class DropSummaryDto(
+    val city: String? = null,
+    val locality: String? = null,
 )
 
 @Serializable
@@ -281,7 +325,10 @@ data class VerifyDeliveryDto(
     val status: String,
 )
 
-/** `GET …/earnings` (a map server-side). Money in float rupees. */
+/**
+ * `GET …/earnings` (delivery_earnings_get_200.json, a map server-side). The
+ * float-rupee keys stay on the wire; screens read the `*_paise` siblings.
+ */
 @Serializable
 data class DeliveryEarningsDto(
     @SerialName("deliveries_today") val deliveriesToday: Int = 0,
@@ -290,4 +337,7 @@ data class DeliveryEarningsDto(
     @SerialName("total_deliveries") val totalDeliveries: Int = 0,
     @Serializable(with = RupeesAsPaiseSerializer::class)
     @SerialName("total_earnings") val totalEarnings: Paise = Paise.ZERO,
+    @SerialName("earnings_today_paise") val earningsTodayPaise: Paise? = null,
+    @SerialName("total_earnings_paise") val totalEarningsPaise: Paise? = null,
+    val currency: String? = null,
 )

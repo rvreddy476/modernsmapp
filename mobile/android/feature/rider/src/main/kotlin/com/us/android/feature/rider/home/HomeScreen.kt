@@ -44,9 +44,10 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.rider.job.JobActions
 import com.us.android.feature.rider.job.JobPhase
 import com.us.android.feature.rider.location.RiderLocationService
-import com.us.android.feature.rider.money.RupeeFormat
+import com.us.android.feature.rider.money.RiderMoney
 import com.us.android.feature.rider.offers.LiveTransport
 import com.us.android.feature.rider.offers.OfferCountdown
+import com.us.android.feature.rider.offers.OfferSummary
 import com.us.android.feature.rider.offers.OfferWindow
 import com.us.android.feature.rider.ui.CardHeading
 import com.us.android.feature.rider.ui.InfoNote
@@ -163,7 +164,9 @@ fun HomeScreen(
                             detail = "${job.restaurantName} · ${phaseLabel(actions.phase)}",
                             onClick = onOpenJob,
                             icon = UsIcons.Package,
-                        ) { RiderPill(RupeeFormat.format(job.deliveryPartnerPayout), PillTone.Positive) }
+                        ) {
+                            RiderMoney.jobPay(job)?.let { RiderPill(RiderMoney.text(it), PillTone.Positive) }
+                        }
                     }
                 }
             }
@@ -184,9 +187,14 @@ fun HomeScreen(
             items(state.offers, key = { it.id }) { offer ->
                 val window = OfferCountdown.of(offer.expiresAt).at(now)
                 if (window != OfferWindow.Expired) {
+                    val summary = OfferSummary.of(offer)
                     NavRow(
-                        title = "Delivery job",
-                        detail = offer.distanceKm?.let { "Pickup ${"%.1f".format(it)} km away" } ?: "Distance not given",
+                        title = listOfNotNull(summary.title, summary.pay).joinToString(" · "),
+                        detail = listOfNotNull(
+                            summary.dropLocality?.let { "To $it" },
+                            summary.tripDistance?.let { "trip $it" },
+                            summary.toRestaurant?.let { "pickup $it away" },
+                        ).joinToString(" · ").ifBlank { "Distance not given" },
                         onClick = { onOpenOffer(offer.id) },
                         icon = UsIcons.MapPin,
                     ) {
@@ -200,7 +208,7 @@ fun HomeScreen(
             item {
                 RiderCard {
                     LabeledValue("Deliveries today", state.deliveriesToday?.toString() ?: "—")
-                    LabeledValue("Earned today", state.earningsToday?.let(RupeeFormat::format) ?: "—", emphasise = true)
+                    LabeledValue("Earned today", RiderMoney.text(state.earningsToday), emphasise = true)
                 }
             }
             item { NavRow("Earnings", "Totals and past deliveries", onOpenEarnings, icon = UsIcons.CreditCard) }

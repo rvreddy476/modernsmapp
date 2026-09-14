@@ -1,0 +1,32 @@
+{
+  "data": {
+    "offers": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0025",
+        "order_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+        "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
+        "status": "pending",
+        "distance_km": 1.25,
+        "expires_at": "2026-09-13 06:30:25+00",
+        "created_at": "2026-09-13 06:30:00+00",
+        "restaurant": {
+          "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+          "name": "Test Kitchen",
+          "latitude": 12.9716,
+          "longitude": 77.5946,
+          "address_line1": "1 Test Lane",
+          "city": "Bengaluru"
+        },
+        "drop_area": {
+          "latitude": 12.98,
+          "longitude": 77.64,
+          "locality": "Bengaluru"
+        },
+        "distance_to_restaurant_meters": 1553,
+        "trip_distance_meters": 5065,
+        "payout_paise": 2320,
+        "currency": "INR"
+      }
+    ]
+  }
+}
