@@ -6,13 +6,15 @@
 # never registers users and never prints a key, token, DigiLocker code/state or
 # webhook signature. See scripts/README.md.
 #
-#   bash scripts/dev-seed-feast.sh [--order-only] [--owner ID] [--rider ID]
-#        [--customer ID] [--admin ID] [--food-url URL] [--payments-url URL]
+#   bash scripts/dev-seed-feast.sh [--order-only | --cleanup-only] [--owner ID]
+#        [--rider ID] [--customer ID] [--admin ID] [--food-url URL]
+#        [--payments-url URL]
 #
-# Secret handling: INTERNAL_SERVICE_KEY and RAZORPAY_WEBHOOK_SECRET are read
-# into shell variables with `docker exec ... printenv` and only ever reach
-# curl through its stdin config (-K -) or bash builtins (the HMAC below). They
-# never appear in a process argument list, a file or the output.
+# Secret handling: the food and payments INTERNAL_SERVICE_KEYs and
+# RAZORPAY_WEBHOOK_SECRET are read into shell variables with `docker exec ...
+# printenv` and only ever reach curl through its stdin config (-K -) or bash
+# builtins (the HMAC below). They never appear in a process argument list, a
+# file or the output.
 set -euo pipefail
 
 # ─── Defaults ───────────────────────────────────────────────────────────────
@@ -39,7 +41,9 @@ FSSAI=10099999000000
 DL_NUMBER=KA0120200000001 DL_MASK_TAIL=0001
 RC_NUMBER=MH12ZZ0000 RC_MASK_TAIL=0000
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+CLEANUP_ONLY=0
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -50,10 +54,15 @@ while [ $# -gt 0 ]; do
     --food-url) FOOD_URL=${2:?}; shift 2 ;;
     --payments-url) PAY_URL=${2:?}; shift 2 ;;
     --order-only) ORDER_ONLY=1; shift ;;
+    --cleanup-only) CLEANUP_ONLY=1; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage 2 ;;
   esac
 done
+if [ "$ORDER_ONLY" = 1 ] && [ "$CLEANUP_ONLY" = 1 ]; then
+  echo "ERROR: --order-only and --cleanup-only are mutually exclusive" >&2
+  exit 2
+fi
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*" >&2; }
@@ -534,10 +543,86 @@ seed_rider() {
   log "partner $PSTATUS, online: $PONLINE (not changed by this script)"
 }
 
+# ─── Parked refunds from earlier seeded orders ──────────────────────────────
+# The capture this script sends is simulated, so a refund of a seeded order can
+# never succeed at Razorpay: payments-service parks it in needs_attention (and
+# alarms). An unaccepted seeded order auto-rejects after the accept window and
+# requests exactly such a refund. Each run resolves the seeder's own parked
+# refunds as test_data through payments' operator route, and nothing else.
+#
+# A parked refund is this seeder's only when ALL hold: the intent's payer is
+# $CUSTOMER, the food order (read as that customer) is at the seeded kitchen,
+# and the captured payment id is the seeder's — `pay_devseed` + 7 hex (every run
+# since the tag), or the older 14 lowercase hex (a real Razorpay id is
+# mixed-case base62).
+SEED_PAY_RE='^pay_devseed[0-9a-f]{7}$'
+LEGACY_SEED_PAY_RE='^pay_[0-9a-f]{14}$'
+CLEANED=0 CLEAN_SKIPPED=0
+
+# pay METHOD PATH BODY — payments' /internal family with its internal key, which
+# is read here and handed to curl on stdin like every other secret.
+pay() {
+  local method=$1 path=$2 body=$3 pkey
+  pkey=$(docker exec "$PAY_C" printenv INTERNAL_SERVICE_KEY 2>/dev/null || true)
+  [ -n "$pkey" ] || die "payments-service has no INTERNAL_SERVICE_KEY"
+  local hdrs=("X-Internal-Service-Key: $pkey" "X-User-Id: $ADMIN" "Accept: application/json")
+  unset pkey
+  [ -n "$body" ] && hdrs+=("Content-Type: application/json")
+  http "$method" "$PAY_URL$path" "$body" "${hdrs[@]}"
+}
+
+cleanup_parked_refunds() {
+  step "Parked refunds from earlier seeded orders"
+  CLEANED=0 CLEAN_SKIPPED=0
+  if [ "$PAY_TEST" != yes ]; then
+    warn "payments-service is not on Razorpay test keys; refund commands left untouched"
+    return 0
+  fi
+  [ -n "$RID" ] || find_restaurant
+  if [ -z "$RID" ]; then
+    log "no '$RESTAURANT_NAME' yet, so no seeded orders to clean"
+    return 0
+  fi
+
+  local cursor='' query rows line cmd ref payer payid
+  local -a lines
+  while :; do
+    query="ref_type=food_order&limit=100"
+    [ -n "$cursor" ] && query+="&cursor=$cursor"
+    pay GET "/v1/payments/internal/refunds/needs-attention?$query" ''
+    check 200 || fail "list parked refunds (is payments-service on the build with the refund operator routes?)"
+    rows=$(jx "$BODY" "(select coalesce(string_agg(concat_ws(' ', e->>'id', coalesce(nullif(e->>'reference_id',''),'-'), coalesce(nullif(e->>'payer_id',''),'-'), coalesce(nullif(e->>'provider_payment_id',''),'-')), E'\n' order by e->>'created_at'), '') from jsonb_array_elements($(jarr '{data,items}')) e)")
+    cursor=$(jget "$BODY" '{data,next_cursor}')
+    lines=()
+    [ -n "$rows" ] && mapfile -t lines <<<"$rows"
+    for line in "${lines[@]}"; do
+      read -r cmd ref payer payid <<<"$line"
+      [[ $cmd =~ $UUID_RE ]] || continue
+      if [ "$payer" != "$CUSTOMER" ] || ! [[ $payid =~ $SEED_PAY_RE || $payid =~ $LEGACY_SEED_PAY_RE ]] || ! [[ $ref =~ $UUID_RE ]]; then
+        CLEAN_SKIPPED=$((CLEAN_SKIPPED + 1))
+        continue
+      fi
+      food GET "/v1/food/orders/$ref" "$CUSTOMER" ''
+      if ! check 200 || [ "$(jget "$BODY" '{data,restaurant_id}')" != "$RID" ]; then
+        CLEAN_SKIPPED=$((CLEAN_SKIPPED + 1))
+        continue
+      fi
+      pay POST "/v1/payments/internal/refunds/$cmd/resolve" '{"resolution":"test_data","note":"dev seed: simulated payment"}'
+      check 200 || fail "resolve parked refund $cmd as test_data"
+      if [ "$(jget "$BODY" '{data,replayed}')" = true ]; then
+        log "refund $cmd was already resolved ($(jget "$BODY" '{data,resolution}'))"
+      else
+        CLEANED=$((CLEANED + 1))
+      fi
+    done
+    [ -n "$cursor" ] || break
+  done
+  log "resolved $CLEANED parked refund(s) from seeded orders as test_data; left $CLEAN_SKIPPED that are not this seeder's"
+}
+
 # ─── Order ──────────────────────────────────────────────────────────────────
 OID='' ONUM='' OSTATUS='' OPAY='' OAMOUNT='' OBREACH=''
 seed_order() {
-  step "Order (customer $CUSTOMER)"
   if [ "$ORDER_ONLY" = 1 ]; then
     find_restaurant
     [ -n "$RID" ] || die "no '$RESTAURANT_NAME' for the owner; run the full seed first"
@@ -547,6 +632,9 @@ seed_order() {
     MUTATE=0
     ensure_menu
   fi
+  # Before a new order: resolve the parked refunds earlier seeded orders left.
+  cleanup_parked_refunds
+  step "Order (customer $CUSTOMER)"
 
   local addr
   food GET /v1/food/addresses "$CUSTOMER" ''
@@ -572,7 +660,7 @@ seed_order() {
   log "cart: Chicken Biryani (Full + Raita), Paneer Tikka"
 
   food POST /v1/food/orders "$CUSTOMER" \
-    "{\"address_id\":\"$addr\",\"payment_method\":\"upi\",\"customer_instruction\":\"Dev seed order\"}" idem
+    "{\"address_id\":\"$addr\",\"payment_method\":\"upi\",\"customer_instruction\":\"devseed-feast: Dev seed order\"}" idem
   check 201 200 || fail "place order"
   OID=$(jget "$BODY" '{data,id}')
   log "placed order $OID ($(jget "$BODY" '{data,status}'))"
@@ -596,7 +684,12 @@ seed_order() {
   secret=$(docker exec "$PAY_C" printenv RAZORPAY_WEBHOOK_SECRET 2>/dev/null || true)
   [ -n "$secret" ] || die "payments-service has no RAZORPAY_WEBHOOK_SECRET"
   evt="evt_devseed_$(openssl rand -hex 8)"
-  wbody="{\"entity\":\"event\",\"account_id\":\"acc_devseed\",\"event\":\"payment.captured\",\"contains\":[\"payment\"],\"payload\":{\"payment\":{\"entity\":{\"id\":\"pay_$(openssl rand -hex 7)\",\"entity\":\"payment\",\"amount\":$amount,\"currency\":\"${currency:-INR}\",\"status\":\"captured\",\"order_id\":\"$rzp_order\",\"method\":\"upi\",\"captured\":true}}},\"created_at\":$(date +%s)}"
+  # The captured payment id is the seeder's tag (pay_devseed + 7 hex): payments
+  # stores it on the intent, and cleanup_parked_refunds recognises it there.
+  local seed_pay
+  seed_pay="pay_devseed$(openssl rand -hex 4 | cut -c1-7)"
+  [[ $seed_pay =~ $SEED_PAY_RE ]] || die "could not build a tagged payment id"
+  wbody="{\"entity\":\"event\",\"account_id\":\"acc_devseed\",\"event\":\"payment.captured\",\"contains\":[\"payment\"],\"payload\":{\"payment\":{\"entity\":{\"id\":\"$seed_pay\",\"entity\":\"payment\",\"amount\":$amount,\"currency\":\"${currency:-INR}\",\"status\":\"captured\",\"order_id\":\"$rzp_order\",\"method\":\"upi\",\"captured\":true}}},\"created_at\":$(date +%s)}"
   sig=$(hmac_sha256_hex "$secret" "$wbody")
   unset secret
   http POST "$PAY_URL/v1/payments/webhook" "$wbody" "Content-Type: application/json" "X-Razorpay-Signature: $sig" "X-Razorpay-Event-Id: $evt"
@@ -630,6 +723,13 @@ seed_order() {
 
 # ─── Main ───────────────────────────────────────────────────────────────────
 echo "Feast dev seed — food-service $FOOD_URL (ENV=$FOOD_ENV), payments $PAY_URL (razorpay test keys: $PAY_TEST)"
+if [ "$CLEANUP_ONLY" = 1 ]; then
+  cleanup_parked_refunds
+  unset KEY
+  step "Summary"
+  printf '   %-11s resolved=%s (test_data)  not_this_seeders=%s\n' Refunds "$CLEANED" "$CLEAN_SKIPPED"
+  exit 0
+fi
 if [ "$ORDER_ONLY" = 0 ]; then
   seed_restaurant
   seed_rider
@@ -644,7 +744,14 @@ printf '   %-11s %s  id=%s  status=%s  accepting=%s\n' Restaurant "$RESTAURANT_N
 printf '   %-11s partner_id=%s  status=%s  online=%s\n' Rider "${PID:-none}" "${PSTATUS:-none}" "${PONLINE:-n/a}"
 printf '   %-11s id=%s  number=%s  status=%s  payment=%s\n' Order "$OID" "$ONUM" "$OSTATUS" "$OPAY"
 printf '   %-11s final_amount_paise=%s  seconds_to_breach=%s\n' '' "$OAMOUNT" "${OBREACH:-n/a}"
+printf '   %-11s resolved=%s parked refund(s) from earlier seeded orders (test_data); not_this_seeders=%s\n' Refunds "$CLEANED" "$CLEAN_SKIPPED"
 cat <<EOF
+
+Unaccepted seeded orders
+   A seeded order the kitchen does not accept within ${ACCEPT_SECONDS} s auto-rejects.
+   Its capture was simulated, so the refund it requests can never succeed and
+   payments-service parks it (needs_attention). The next run of this script,
+   or --cleanup-only, resolves those parked refunds as test_data.
 
 Next manual steps
    1. Feast Kitchen phone (call_a): open $RESTAURANT_NAME -> the order is in the
