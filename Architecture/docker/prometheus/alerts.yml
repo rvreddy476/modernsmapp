@@ -98,6 +98,28 @@ groups:
             exceeded 90% for 2 minutes
             (current: {{ $value | humanizePercentage }}).
 
+  - name: atpost_payments_alerts
+    rules:
+      # ── Refund Needs Attention ─────────────────────────────────────────
+      # payments-service parked a refund it can never place (the provider
+      # refused it, no captured payment matches, a stub intent on a real
+      # provider, …). The worker will not retry it: the money is still owed
+      # until an operator settles it and resolves the command. Every replica
+      # reports the same count, hence max.
+      - alert: PaymentsRefundNeedsAttention
+        expr: max by (job) (payments_refunds_needs_attention) > 0
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "payments-service has refunds parked in needs_attention"
+          description: >
+            {{ $value }} refund command(s) could not be placed and will not be
+            retried; the money is still owed. List them with
+            GET /v1/payments/internal/refunds/needs-attention and resolve each
+            with POST /v1/payments/internal/refunds/:commandId/resolve.
+          runbook_url: "docs/runbooks/payments-refund-needs-attention.md"
+
   - name: atpost_projection_alerts
     rules:
       # ── User Projection Drift ──────────────────────────────────────────

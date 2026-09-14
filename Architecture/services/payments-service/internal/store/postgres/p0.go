@@ -689,17 +689,15 @@ func (s *Store) MarkRefundSubmitted(ctx context.Context, id uuid.UUID, providerR
 // MarkRefundAttemptFailed records a transient provider failure. The command
 // stays claimable, so the retry worker tries again — the failure is never
 // swallowed the way the old code swallowed it.
-func (s *Store) MarkRefundAttemptFailed(ctx context.Context, id uuid.UUID, reason string, terminal bool) error {
-	status := "pending"
-	if terminal {
-		// needs_attention, not failed-and-forgotten: a refund we could not
-		// place is money we still owe, and it must page someone.
-		status = "needs_attention"
-	}
+//
+// A failure that will never succeed does not come through here: it is parked
+// by ParkRefundCommand, which writes payment.refund_failed in the same
+// transaction. There is deliberately no way to park without announcing it.
+func (s *Store) MarkRefundAttemptFailed(ctx context.Context, id uuid.UUID, reason string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE payments.refund_commands
-		    SET status = $3, last_error = $2, updated_at = NOW()
-		  WHERE id = $1 AND status IN ('pending','submitted')`, id, reason, status)
+		    SET status = 'pending', last_error = $2, updated_at = NOW()
+		  WHERE id = $1 AND status IN ('pending','submitted')`, id, reason)
 	return err
 }
 
@@ -1201,12 +1199,13 @@ func (s *Store) FailedAttemptWindowElapsed(ctx context.Context, intentID uuid.UU
 }
 
 // UnsettledRefundAge returns the age of the oldest refund that has not
-// settled, for the `refund pending age` alarm. Zero means none outstanding.
+// settled, for the `refund pending age` alarm. Zero means none outstanding. An
+// operator-resolved command is closed and does not count.
 func (s *Store) UnsettledRefundAge(ctx context.Context) (time.Duration, error) {
 	var secs *float64
 	err := s.db.QueryRow(ctx,
 		`SELECT EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))
-		   FROM payments.refund_commands WHERE status <> 'succeeded'`).Scan(&secs)
+		   FROM payments.refund_commands WHERE status NOT IN ('succeeded','resolved')`).Scan(&secs)
 	if err != nil {
 		return 0, err
 	}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/atpost/payments-service/internal/config"
 	"github.com/atpost/payments-service/internal/gateway"
+	"github.com/atpost/payments-service/internal/obs"
 	"github.com/atpost/payments-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -258,12 +259,15 @@ func (s *Service) drainRefundCommands(ctx context.Context) {
 	for _, c := range cmds {
 		s.attemptRefund(ctx, c)
 	}
+	// Every tick, including one with nothing due: a command resolved by an
+	// operator on another replica must lower this replica's gauge too.
+	s.refreshRefundAttentionGauge(ctx)
 }
 
 func (s *Service) attemptRefund(ctx context.Context, c postgres.RefundCommand) {
 	intent, err := s.store.GetIntent(ctx, c.IntentID)
 	if err != nil || intent == nil {
-		s.parkRefund(ctx, c, "intent not found")
+		s.parkRefund(ctx, c, RefundFailIntentNotFound, "intent not found")
 		return
 	}
 	providerOrder := intent.ProviderRef
@@ -271,7 +275,7 @@ func (s *Service) attemptRefund(ctx context.Context, c postgres.RefundCommand) {
 		// Nothing was ever charged at the provider (COD or wallet). There
 		// is no PSP refund to place; ops settles it out of band. Park it
 		// visibly rather than retrying forever.
-		s.parkRefund(ctx, c, "intent has no provider reference; refund must be settled out of band")
+		s.parkRefund(ctx, c, RefundFailNoProviderReference, "intent has no provider reference; refund must be settled out of band")
 		return
 	}
 
@@ -287,7 +291,7 @@ func (s *Service) attemptRefund(ctx context.Context, c postgres.RefundCommand) {
 		// A real provider reference on a deployment with no provider adapter
 		// (a stack moved from Razorpay back to the stub). The stub gateway
 		// would "refund" it without money moving; park it instead.
-		s.parkRefund(ctx, c,
+		s.parkRefund(ctx, c, RefundFailNoProviderAdapter,
 			"no provider adapter is configured, so a refund of a provider-captured payment cannot be placed")
 		return
 	}
@@ -384,14 +388,14 @@ func (s *Service) refundPaymentID(ctx context.Context, intent *postgres.PaymentI
 			errRefundUnresolvable, providerOrder, expected.Minor, expected.Currency, len(payments))
 	case 1:
 	default:
-		return "", fmt.Errorf("%w: provider order %s has %d captured payments matching the intent (%s); refusing to choose one",
-			errRefundUnresolvable, providerOrder, len(matched), strings.Join(matched, ", "))
+		return "", fmt.Errorf("%w: %w: provider order %s has %d captured payments matching the intent (%s); refusing to choose one",
+			errRefundUnresolvable, errAmbiguousPayment, providerOrder, len(matched), strings.Join(matched, ", "))
 	}
 
 	paymentID := matched[0]
 	switch err := s.store.AttachProviderPaymentID(ctx, intent.ID, paymentID); {
 	case errors.Is(err, postgres.ErrProviderPaymentConflict):
-		return "", fmt.Errorf("%w: %v", errRefundUnresolvable, err)
+		return "", fmt.Errorf("%w: %w: %v", errRefundUnresolvable, errAmbiguousPayment, err)
 	case err != nil:
 		// The lookup is still sound; only the shortcut for the next attempt
 		// is lost.
@@ -419,7 +423,7 @@ func (s *Service) settleAlreadyRefunded(ctx context.Context, c postgres.RefundCo
 	const step = "settling a refund the provider reports as already complete"
 	lister, ok := s.provider.(gateway.RefundLister)
 	if !ok {
-		s.parkRefund(ctx, c, fmt.Sprintf(
+		s.parkRefund(ctx, c, RefundFailAlreadyRefundedUnmatched, fmt.Sprintf(
 			"provider %s reports payment %s fully refunded but cannot list its refunds to settle this command",
 			s.provider.Name(), paymentID))
 		return
@@ -445,7 +449,7 @@ func (s *Service) settleAlreadyRefunded(ctx context.Context, c postgres.RefundCo
 		matched = append(matched, r)
 	}
 	if len(matched) != 1 {
-		s.parkRefund(ctx, c, fmt.Sprintf(
+		s.parkRefund(ctx, c, RefundFailAlreadyRefundedUnmatched, fmt.Sprintf(
 			"provider reports payment %s fully refunded, but %d of its %d refund(s) are processed, unclaimed and match this command's %d %s; settle it by hand",
 			paymentID, len(matched), len(refunds), c.AmountMinor, intent.Currency))
 		return
@@ -488,31 +492,38 @@ func (s *Service) settleAlreadyRefunded(ctx context.Context, c postgres.RefundCo
 func (s *Service) refundAttemptFailed(ctx context.Context, c postgres.RefundCommand, step string, err error) {
 	reason := step + ": " + gateway.RedactError(err)
 	if errors.Is(err, errRefundUnresolvable) || gateway.ClassifyRefundError(err) != gateway.RefundRetryable {
-		s.parkRefund(ctx, c, reason)
+		s.parkRefund(ctx, c, refundFailureCode(err), reason)
 		return
 	}
 	// Never terminal on a transport error, a 5xx or a 429: an unreachable
 	// provider is exactly the case the durable command exists for.
 	slog.Warn("payments: refund attempt failed; will retry",
 		"command_id", c.ID, "attempt", c.Attempts, "error", reason)
-	if merr := s.store.MarkRefundAttemptFailed(ctx, c.ID, reason, false); merr != nil {
+	if merr := s.store.MarkRefundAttemptFailed(ctx, c.ID, reason); merr != nil {
 		slog.Warn("payments: could not record the failed refund attempt", "command_id", c.ID, "error", merr)
 	}
 }
 
-// parkRefund moves a command to `needs_attention`: it is no longer claimed, so
-// it is logged at ERROR exactly once, here. Nothing is published — no domain
-// event exists for a refund that could not be placed, and payment.refunded
-// would claim money moved that did not.
-func (s *Service) parkRefund(ctx context.Context, c postgres.RefundCommand, reason string) {
-	if err := s.store.MarkRefundAttemptFailed(ctx, c.ID, reason, true); err != nil {
+// parkRefund moves a command to `needs_attention` and, in the same
+// transaction, publishes payment.refund_failed — never payment.refunded, which
+// would claim money moved that did not. It is no longer claimed, so it is
+// logged at ERROR and counted exactly once, here, and only by the call that
+// actually parked it. The alarm is payments_refunds_needs_attention.
+func (s *Service) parkRefund(ctx context.Context, c postgres.RefundCommand, code, reason string) {
+	parked, err := s.store.ParkRefundCommand(ctx, c.ID, code, reason)
+	if err != nil {
 		slog.Warn("payments: could not park the refund command; it will be attempted again",
 			"command_id", c.ID, "error", err)
 		return
 	}
+	if !parked {
+		// Settled, resolved or parked by someone else since it was claimed.
+		return
+	}
+	obs.RefundParked(code)
 	slog.Error("payments: REFUND NEEDS ATTENTION — parked and not retried; the money is still owed",
 		"command_id", c.ID, "intent_id", c.IntentID, "amount_minor", c.AmountMinor,
-		"attempt", c.Attempts, "reason", reason)
+		"attempt", c.Attempts, "reason_code", code, "reason", reason)
 }
 
 // attemptStubRefund refunds an intent the stub gateway minted.
@@ -530,7 +541,7 @@ func (s *Service) parkRefund(ctx context.Context, c postgres.RefundCommand, reas
 func (s *Service) attemptStubRefund(ctx context.Context, c postgres.RefundCommand, intent *postgres.PaymentIntent) {
 	stub, isStub := s.gateway.(*gateway.StubGateway)
 	if !isStub || !s.stubSettlement {
-		s.parkRefund(ctx, c,
+		s.parkRefund(ctx, c, RefundFailStubOnRealProvider,
 			"intent was paid through the stub gateway (order_stub_ reference), so no provider holds this payment "+
 				"and nothing may be sent to one; settle it out of band")
 		return

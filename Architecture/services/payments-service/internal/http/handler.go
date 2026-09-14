@@ -85,6 +85,8 @@ type Service interface {
 	IntentOwnerDomain(ctx context.Context, id uuid.UUID) (string, error)
 	ReleaseHold(ctx context.Context, intentID uuid.UUID, releasedBy string) error
 	ApplyWebhook(ctx context.Context, in service.WebhookInput) error
+	ListRefundsNeedingAttention(ctx context.Context, f postgres.NeedsAttentionFilter) ([]postgres.NeedsAttentionRefund, *postgres.RefundCursor, error)
+	ResolveRefundCommand(ctx context.Context, in postgres.ResolveRefundInput) (*postgres.RefundResolution, error)
 }
 
 type Handler struct {
@@ -175,6 +177,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 		internal.GET("/intents", h.requireOp(servicetoken.OpIntentRead), h.ListByReference)
 		internal.POST("/intents/:id/verify", h.requireOp(servicetoken.OpIntentRead), h.VerifyIntent)
 		internal.POST("/intents/:id/refund", h.requireOp(servicetoken.OpRefundCreate), h.InitiateRefund)
+
+		// Operator routes for refunds the worker parked in needs_attention
+		// (refund_admin.go). Same family gate; a token needs OpRefundAdmin.
+		internal.GET("/refunds/needs-attention", h.requireOp(OpRefundAdmin), h.ListRefundsNeedingAttention)
+		internal.POST("/refunds/:commandId/resolve", h.requireOp(OpRefundAdmin), h.ResolveRefundCommand)
 
 		// A1: PATCH /intents/:id/status is REMOVED and must never return.
 		// It let a caller assert `succeeded` with no PSP proof and no

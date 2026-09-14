@@ -33,6 +33,12 @@ type fakeService struct {
 	webhooks    []service.WebhookInput
 	refunds     []service.RefundRequest
 	verifyCalls int
+
+	// Parked-refund operator routes (refund_admin_test.go).
+	parked       []postgres.NeedsAttentionRefund
+	listFilters  []postgres.NeedsAttentionFilter
+	resolveCalls []postgres.ResolveRefundInput
+	resolveErr   error
 }
 
 func newFake() *fakeService {
