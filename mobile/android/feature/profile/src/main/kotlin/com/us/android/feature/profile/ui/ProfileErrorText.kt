@@ -1,6 +1,8 @@
 package com.us.android.feature.profile.ui
 
 import com.us.android.core.common.error.AppError
+import com.us.android.core.profile.data.EditProfileField
+import com.us.android.core.profile.data.ProfileIdentityRules
 
 /**
  * Turns a typed [AppError] into something a person can act on.
@@ -49,6 +51,15 @@ internal object ProfileErrorText {
         is AppError.InvalidRequest -> "Some details weren't accepted. Check them and try again."
         else -> "We couldn't save your changes. Nothing was lost — try again."
     }
+
+    /**
+     * A save refused with one of profile-service's 422 field codes, as the
+     * field to mark and its inline message. The code survives [AppError]
+     * mapping on [AppError.Unknown]; any other error, or a code this client
+     * does not model, is null and falls back to [forSave].
+     */
+    fun fieldForSave(error: AppError): Pair<EditProfileField, String>? =
+        (error as? AppError.Unknown)?.code?.let(ProfileIdentityRules::fieldErrorForCode)
 
     /**
      * Whether re-running the same request could plausibly succeed.

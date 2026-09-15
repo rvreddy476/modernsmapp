@@ -49,11 +49,11 @@ import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.EditableProfile
+import com.us.android.core.profile.data.ProfileIdentityRules
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.photoeditor.rememberPhotoEditor
 import java.io.File
-import java.time.LocalDate
 
 /**
  * Edit-profile screen — stateful entry point.
@@ -359,13 +359,17 @@ private fun EditProfileFields(
                 keyboardType = spec.keyboardType,
             )
         }
+        // The calendar itself refuses what the server would: nothing after
+        // the 18th birthday in India today, nothing before 1900-01-01.
         UsDatePickerField(
             value = state.form.dateOfBirth,
             onValueChange = { onFieldChange(EditProfileField.DATE_OF_BIRTH, it) },
             label = "Date of birth",
+            errorText = state.errorFor(EditProfileField.DATE_OF_BIRTH),
             enabled = !state.isSaving,
-            maxDate = LocalDate.now(),
-            minDate = LocalDate.now().minusYears(MAX_PROFILE_AGE_YEARS),
+            maxDate = state.latestBirthDate,
+            minDate = ProfileIdentityRules.EARLIEST_DATE_OF_BIRTH,
+            initialDisplayedDate = state.latestBirthDate,
         )
         UsChoiceRow(
             options = GENDER_OPTIONS,
@@ -461,7 +465,6 @@ private val GENDER_OPTIONS = listOf(
     UsChoice("other", "Other"),
 )
 
-private const val MAX_PROFILE_AGE_YEARS = 120L
 private const val PERCENT_SCALE = 100L
 private const val PROFILE_COVER_HEIGHT_DP = 128
 

@@ -1,11 +1,13 @@
 package com.us.android.feature.profile.ui
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.ProfileApi
+import com.us.android.core.profile.data.ProfileClock
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.profile.data.dto.FollowRequestDto
 import com.us.android.core.profile.data.dto.GraphStatusDto
@@ -22,6 +24,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Rule
 import org.junit.Test
+import java.time.Instant
+import java.time.LocalDate
 
 class EditProfileViewModelTest {
 
@@ -109,8 +113,11 @@ class EditProfileViewModelTest {
         }
     }
 
+    /** 00:30 IST on 2026-09-15 — still the 14th in UTC. */
+    private val clock = ProfileClock { Instant.parse("2026-09-14T19:00:00Z") }
+
     private fun viewModel(api: FakeApi) =
-        EditProfileViewModel(ProfileRepository(api, ErrorMapper(json)))
+        EditProfileViewModel(ProfileRepository(api, ErrorMapper(json)), clock)
 
     private fun editingState(vm: EditProfileViewModel) =
         vm.state.value as EditProfileUiState.Editing
@@ -367,5 +374,157 @@ class EditProfileViewModelTest {
         val state = editingState(vm)
         assertThat(state.message).isNull()
         assertThat(state.form.location).isEqualTo("Hyderabad")
+    }
+
+    // ── Identity fields: profile-service's 422 rules ────────────────────
+
+    @Test
+    fun `a first name with digits blocks the request and marks the field`() = runTest {
+        val api = FakeApi()
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.FIRST_NAME, "Raj2")
+
+        vm.save()
+
+        assertThat(editingState(vm).errorFor(EditProfileField.FIRST_NAME)).isNotNull()
+        assertThat(api.calls).doesNotContain("updateProfile")
+    }
+
+    @Test
+    fun `a 51 character first name blocks the request`() = runTest {
+        val api = FakeApi()
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.FIRST_NAME, "a".repeat(51))
+
+        vm.save()
+
+        assertThat(editingState(vm).errorFor(EditProfileField.FIRST_NAME)).isEqualTo("Use 50 characters or fewer")
+        assertThat(api.calls).doesNotContain("updateProfile")
+    }
+
+    @Test
+    fun `a 50 character first name is sent`() = runTest {
+        val api = FakeApi()
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.FIRST_NAME, "a".repeat(50))
+
+        vm.save()
+
+        assertThat(requireNotNull(api.lastUpdate).firstName).isEqualTo("a".repeat(50))
+    }
+
+    /** OAuth and older accounts have no first name; the form still sends "" and that must save. */
+    @Test
+    fun `an empty first name with none stored still saves`() = runTest {
+        val api = FakeApi().apply { ownProfile = ApiEnvelope(FakeApi.LOADED.copy(firstName = "")) }
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.LOCATION, "Hyderabad")
+
+        vm.save()
+
+        assertThat(requireNotNull(api.lastUpdate).firstName).isEmpty()
+        assertThat(editingState(vm).fieldErrors).isEmpty()
+    }
+
+    /**
+     * The legacy-name finding. profile-service validates `first_name` on every
+     * save that sends it, changed or not, and this form always sends it — so a
+     * stored name from before the rules blocks every save. The client says so
+     * on the field rather than hiding it or silently dropping the key.
+     */
+    @Test
+    fun `an unchanged out-of-policy stored first name blocks the save and says why`() = runTest {
+        val api = FakeApi().apply { ownProfile = ApiEnvelope(FakeApi.LOADED.copy(firstName = "Agent 007")) }
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.LOCATION, "Hyderabad")
+
+        vm.save()
+
+        assertThat(editingState(vm).errorFor(EditProfileField.FIRST_NAME)).contains("saved first name must be updated")
+        assertThat(api.calls).doesNotContain("updateProfile")
+    }
+
+    @Test
+    fun `the date of birth picker stops at the 18th birthday today in India`() = runTest {
+        assertThat(editingState(viewModel(FakeApi())).latestBirthDate).isEqualTo(LocalDate.of(2008, 9, 15))
+    }
+
+    @Test
+    fun `an under-18 date of birth blocks the request and marks the field`() = runTest {
+        val api = FakeApi()
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.DATE_OF_BIRTH, "2008-09-16")
+
+        vm.save()
+
+        assertThat(editingState(vm).errorFor(EditProfileField.DATE_OF_BIRTH))
+            .isEqualTo("You must be at least 18 years old")
+        assertThat(api.calls).doesNotContain("updateProfile")
+    }
+
+    /** The server skips an unchanged DOB, so the client must not block on one either. */
+    @Test
+    fun `an unchanged out-of-policy date of birth does not block other edits`() = runTest {
+        val api = FakeApi().apply { ownProfile = ApiEnvelope(FakeApi.LOADED.copy(dob = "2015-01-01T00:00:00Z")) }
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.LOCATION, "Hyderabad")
+
+        vm.save()
+
+        assertThat(requireNotNull(api.lastUpdate).dob).isEqualTo("2015-01-01T00:00:00Z")
+    }
+
+    @Test
+    fun `each server field refusal is marked on its field`() = runTest {
+        val expected = mapOf(
+            "FIRST_NAME_INVALID" to EditProfileField.FIRST_NAME,
+            "DOB_INVALID" to EditProfileField.DATE_OF_BIRTH,
+            "DOB_REQUIRED" to EditProfileField.DATE_OF_BIRTH,
+            "DOB_IN_FUTURE" to EditProfileField.DATE_OF_BIRTH,
+            "DOB_TOO_EARLY" to EditProfileField.DATE_OF_BIRTH,
+            "DOB_UNDER_MINIMUM_AGE" to EditProfileField.DATE_OF_BIRTH,
+            "DOB_MISMATCH_REGISTRATION" to EditProfileField.DATE_OF_BIRTH,
+        )
+
+        expected.forEach { (code, field) ->
+            val api = FakeApi().apply { updateResult = ApiEnvelope(error = ApiErrorBody(code = code)) }
+            val vm = viewModel(api)
+            vm.onFieldChange(EditProfileField.LOCATION, "Hyderabad")
+
+            vm.save()
+
+            val state = editingState(vm)
+            assertWithMessage(code).that(state.errorFor(field)).isNotNull()
+            assertWithMessage(code).that(state.saved).isFalse()
+            assertWithMessage(code).that(state.form.location).isEqualTo("Hyderabad")
+        }
+    }
+
+    @Test
+    fun `a registration mismatch says how far the date can move`() = runTest {
+        val api = FakeApi().apply {
+            updateResult = ApiEnvelope(error = ApiErrorBody(code = "DOB_MISMATCH_REGISTRATION"))
+        }
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.DATE_OF_BIRTH, "1995-01-01")
+
+        vm.save()
+
+        assertThat(editingState(vm).errorFor(EditProfileField.DATE_OF_BIRTH)).isEqualTo(
+            "Date of birth can only be corrected by up to a year from the one you signed up with",
+        )
+    }
+
+    @Test
+    fun `an unknown server code falls back to the generic message`() = runTest {
+        val api = FakeApi().apply { updateResult = ApiEnvelope(error = ApiErrorBody(code = "SOMETHING_NEW")) }
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.LOCATION, "Hyderabad")
+
+        vm.save()
+
+        val state = editingState(vm)
+        assertThat(state.fieldErrors).isEmpty()
+        assertThat(state.message?.text).isEqualTo("We couldn't save your changes. Nothing was lost — try again.")
     }
 }

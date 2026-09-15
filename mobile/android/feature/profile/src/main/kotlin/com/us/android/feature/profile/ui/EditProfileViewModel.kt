@@ -8,6 +8,8 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.EditableProfile
+import com.us.android.core.profile.data.ProfileClock
+import com.us.android.core.profile.data.ProfileIdentityRules
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +31,7 @@ import javax.inject.Inject
 @HiltViewModel
 class EditProfileViewModel @Inject constructor(
     private val repository: ProfileRepository,
+    private val clock: ProfileClock,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<EditProfileUiState>(EditProfileUiState.Loading)
@@ -60,6 +63,9 @@ class EditProfileViewModel @Inject constructor(
                     _state.value = EditProfileUiState.Editing(
                         original = snapshot,
                         form = snapshot,
+                        latestBirthDate = ProfileIdentityRules.latestEligibleBirthDate(
+                            ProfileIdentityRules.todayInIndia(clock),
+                        ),
                     )
                 }
             }
@@ -93,18 +99,12 @@ class EditProfileViewModel @Inject constructor(
         val current = _state.value as? EditProfileUiState.Editing ?: return
         if (!current.canSave) return
 
-        val errors = validate(current.form)
+        val errors = validate(current.form, current.original)
         if (errors.isNotEmpty()) {
             // A summary alongside the inline markers: on a form this tall the
             // offending field is often scrolled out of view, so an inline
             // error alone reads as "the button did nothing".
-            _state.value = current.copy(
-                fieldErrors = errors,
-                message = UsMessage(
-                    text = "Some details need fixing — check the highlighted fields.",
-                    type = UsMessageType.Error,
-                ),
-            )
+            _state.value = current.copy(fieldErrors = errors, message = FIX_FIELDS_MESSAGE)
             return
         }
 
@@ -132,8 +132,15 @@ class EditProfileViewModel @Inject constructor(
 
                     // The form is left exactly as the user typed it. A rejected
                     // request changed nothing server-side, so retrying sends
-                    // the same complete snapshot again.
-                    is AppResult.Failure -> editing.copy(
+                    // the same complete snapshot again. A 422 field refusal
+                    // (first name, date of birth) is marked on its field.
+                    is AppResult.Failure -> ProfileErrorText.fieldForSave(result.error)?.let { fieldError ->
+                        editing.copy(
+                            isSaving = false,
+                            fieldErrors = editing.fieldErrors + fieldError,
+                            message = FIX_FIELDS_MESSAGE,
+                        )
+                    } ?: editing.copy(
                         isSaving = false,
                         message = UsMessage(
                             text = ProfileErrorText.forSave(result.error),
@@ -156,17 +163,36 @@ class EditProfileViewModel @Inject constructor(
     /**
      * Client-side pre-flight.
      *
-     * Every rule below is CLIENT-ONLY. The capture found no server-side
-     * validation on any of these fields — `{}` was accepted with a `200` — so
-     * nothing here is mirroring a backend gate the way registration does.
-     * They exist to catch input that would be stored happily and then fail to
-     * render, or that the user plainly did not mean.
+     * First name and date of birth mirror profile-service's identity-field
+     * rules exactly ([ProfileIdentityRules]); a mismatch there is a 422. The
+     * rest are client pre-flight for fields the server checks more loosely or
+     * not at all — they catch input that would be stored happily and then fail
+     * to render, or that the user plainly did not mean.
      *
-     * Blank is never an error. The server permits every one of these fields to
-     * be empty, real accounts reach that state, and rejecting it would make
-     * clearing a field impossible on the only screen that can clear it.
+     * Blank is not an error on the other fields: the server permits them
+     * empty, and this is the only screen that can clear them. A first name is
+     * the exception — a stored one cannot be cleared.
      */
-    private fun validate(form: EditableProfile): Map<EditProfileField, String> = buildMap {
+    private fun validate(form: EditableProfile, original: EditableProfile): Map<EditProfileField, String> = buildMap {
+        ProfileIdentityRules.validateFirstNameChange(form.firstName, original.firstName)?.let { error ->
+            // The server re-validates a first name on EVERY save, changed or
+            // not, so a stored name from before these rules blocks the whole
+            // form. Say so, rather than marking a field the user never touched
+            // with no explanation.
+            put(
+                EditProfileField.FIRST_NAME,
+                if (form.firstName == original.firstName) {
+                    "${error.message}. Your saved first name must be updated before changes can be saved."
+                } else {
+                    error.message
+                },
+            )
+        }
+        ProfileIdentityRules.validateDateOfBirthChange(
+            value = form.dateOfBirth,
+            stored = original.dateOfBirth,
+            today = ProfileIdentityRules.todayInIndia(clock),
+        )?.let { put(EditProfileField.DATE_OF_BIRTH, it.message) }
         PROFILE_TEXT_LIMITS.forEach { (field, limit) ->
             if (form.value(field).length > limit) {
                 put(field, "Use $limit characters or fewer")
@@ -203,9 +229,14 @@ class EditProfileViewModel @Inject constructor(
         const val MAX_CTA_LABEL = 40
         const val MAX_STATUS_EMOJI_CODEPOINTS = 4
 
+        val FIX_FIELDS_MESSAGE = UsMessage(
+            text = "Some details need fixing — check the highlighted fields.",
+            type = UsMessageType.Error,
+        )
+
+        /** First name is absent on purpose: [ProfileIdentityRules] owns it (50, not 80). */
         val PROFILE_TEXT_LIMITS = listOf(
             EditProfileField.DISPLAY_NAME to MAX_DISPLAY_NAME,
-            EditProfileField.FIRST_NAME to MAX_SHORT_TEXT,
             EditProfileField.LAST_NAME to MAX_SHORT_TEXT,
             EditProfileField.PREFERRED_NAME to MAX_SHORT_TEXT,
             EditProfileField.PRONOUNS to MAX_SHORT_TEXT,

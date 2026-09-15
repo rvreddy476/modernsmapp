@@ -8,6 +8,7 @@
 package com.us.android.core.profile.data
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.test.runTest
@@ -223,6 +224,27 @@ class EditProfileContractTest {
         val result = repository.updateProfile(CAPTURED_SNAPSHOT)
 
         assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+    }
+
+    /**
+     * profile-service's field refusal: 422, `error.code` the field code,
+     * `error.details.field` the field. The code must survive mapping so the
+     * form can mark the field instead of showing a generic failure.
+     */
+    @Test
+    fun `a 422 field refusal keeps its code`() = runTest {
+        enqueue(
+            422,
+            """{"error":{"code":"DOB_MISMATCH_REGISTRATION","message":"date of birth cannot differ by more than a year from the one given at registration","details":{"field":"dob"}}}""",
+        )
+
+        val result = repository.updateProfile(CAPTURED_SNAPSHOT)
+
+        val error = (result as AppResult.Failure).error
+        assertThat(error).isInstanceOf(AppError.Unknown::class.java)
+        assertThat((error as AppError.Unknown).code).isEqualTo("DOB_MISMATCH_REGISTRATION")
+        assertThat(error.statusCode).isEqualTo(422)
+        assertThat(ProfileIdentityRules.fieldErrorForCode(error.code)?.first).isEqualTo(EditProfileField.DATE_OF_BIRTH)
     }
 
     @Test

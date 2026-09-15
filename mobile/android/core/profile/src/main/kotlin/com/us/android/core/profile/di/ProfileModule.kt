@@ -13,6 +13,7 @@ import com.us.android.core.profile.data.ModulePreferencesCache
 import com.us.android.core.profile.data.NotificationSettingsApi
 import com.us.android.core.profile.data.PrivacySettingsApi
 import com.us.android.core.profile.data.ProfileApi
+import com.us.android.core.profile.data.ProfileClock
 import com.us.android.core.profile.data.ProfileDetailsApi
 import com.us.android.core.profile.data.WellbeingApi
 import com.us.android.core.profile.data.WellbeingGuardCache
@@ -75,6 +76,10 @@ object ProfileModule {
     fun provideModulePreferencesCache(
         cache: DataStoreModulePreferencesCache,
     ): ModulePreferencesCache = cache
+
+    /** The edit-profile date-of-birth checks read "today" in India from this. */
+    @Provides
+    fun provideProfileClock(): ProfileClock = ProfileClock.System
 }
 
 /**

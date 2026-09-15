@@ -4,6 +4,9 @@ import androidx.compose.runtime.Immutable
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.EditableProfile
+import com.us.android.core.profile.data.ProfileClock
+import com.us.android.core.profile.data.ProfileIdentityRules
+import java.time.LocalDate
 
 /**
  * Everything the edit-profile screen renders, as one immutable value.
@@ -67,6 +70,14 @@ sealed interface EditProfileUiState {
         val message: UsMessage? = null,
         /** Set once the server has stored the snapshot. Drives navigation. */
         val saved: Boolean = false,
+        /**
+         * The latest date of birth the picker allows: 18 years before today
+         * in Asia/Kolkata. The view model sets it from its clock; the default
+         * only serves previews.
+         */
+        val latestBirthDate: LocalDate = ProfileIdentityRules.latestEligibleBirthDate(
+            ProfileIdentityRules.todayInIndia(ProfileClock.System),
+        ),
     ) : EditProfileUiState {
 
         /** True when the form differs from what was loaded. */
