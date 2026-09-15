@@ -1983,6 +1983,12 @@ services:
       # Lane D2: birth date and first name come from identity-profile's
       # internal read (/internal/v1/profiles/users/:id/identity), not the client.
       IDENTITY_PROFILE_SERVICE_URL: http://identity-profile:8098
+      # Duplicate open matches at boot: ENV is unset here, so this stack is
+      # NOT local/dev to the service — boot refuses while duplicates exist
+      # unless this is true. Review with scripts/count-duplicate-matches.sql.
+      DATING_DEDUPE_OPEN_MATCHES: ${DATING_DEDUPE_OPEN_MATCHES:-false}
+      # Days a declined sender stays away from the decliner (1-365).
+      DATING_DECLINE_COOLDOWN_DAYS: ${DATING_DECLINE_COOLDOWN_DAYS:-30}
     ports:
       - "8112:8112"
     depends_on:

@@ -836,12 +836,23 @@ CREATE INDEX IF NOT EXISTS idx_dating_device_fp_user
 --   stale spark can never re-match a pair.
 -- dating_spark_ledger: one row per new spark, never deleted by revoke,
 --   unmatch or block, so the 24h spark limit cannot be reset by revoking.
--- uq_dating_matches_open_pair: at most one open match per pair. Existing
---   duplicates are closed first (keeping the one with a conversation, then
---   the most recently active); closed_by stays NULL on those rows.
+-- uq_dating_matches_open_pair: at most one open match per pair. This file
+--   never closes duplicates: it creates the index only when none exist, so a
+--   duplicate can never fail boot here. The service's boot step
+--   (service.ReconcileOpenMatchDuplicates) counts them, closes the extras
+--   through the match close path (close_reason 'duplicate', one
+--   dating.match.closed each; outside local/dev only with
+--   DATING_DEDUPE_OPEN_MATCHES=true) and then ensures the index with the
+--   same DDL (store.OpenPairIndexDDL). scripts/count-duplicate-matches.sql
+--   counts them read-only.
+-- close_reason: why a match closed — 'unmatch', 'block' or 'duplicate'. NULL
+--   on rows closed before the column existed.
+-- idx_dating_sparks_declined_pair: the decline cooldown lookups (spark
+--   create, the deck, the mutual check); partial, so only declined rows.
 -- ---------------------------------------------------------------------------
-ALTER TABLE dating_sparks  ADD COLUMN IF NOT EXISTS declined_at TIMESTAMPTZ;
-ALTER TABLE dating_matches ADD COLUMN IF NOT EXISTS closed_at   TIMESTAMPTZ;
+ALTER TABLE dating_sparks  ADD COLUMN IF NOT EXISTS declined_at  TIMESTAMPTZ;
+ALTER TABLE dating_matches ADD COLUMN IF NOT EXISTS closed_at    TIMESTAMPTZ;
+ALTER TABLE dating_matches ADD COLUMN IF NOT EXISTS close_reason TEXT;
 
 CREATE TABLE IF NOT EXISTS dating_spark_ledger (
     from_user_id UUID        NOT NULL,
@@ -850,22 +861,21 @@ CREATE TABLE IF NOT EXISTS dating_spark_ledger (
 CREATE INDEX IF NOT EXISTS idx_dating_spark_ledger_sender
     ON dating_spark_ledger(from_user_id, sent_at DESC);
 
-WITH ranked AS (
-    SELECT id,
-           row_number() OVER (
-               PARTITION BY user_a, user_b
-               ORDER BY (conversation_id IS NOT NULL) DESC,
-                        COALESCE(last_message_at, matched_at) DESC,
-                        id) AS rn
-    FROM dating_matches
-    WHERE status IN ('matched','conversing','quiet')
-)
-UPDATE dating_matches m
-SET status = 'closed', closed_at = COALESCE(m.closed_at, now())
-FROM ranked r
-WHERE m.id = r.id AND r.rn > 1;
+CREATE INDEX IF NOT EXISTS idx_dating_sparks_declined_pair
+    ON dating_sparks(from_user_id, to_user_id, declined_at)
+    WHERE declined_at IS NOT NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_dating_matches_open_pair
-    ON dating_matches(user_a, user_b)
-    WHERE status IN ('matched','conversing','quiet');
+DO $$
+BEGIN
+    IF to_regclass('uq_dating_matches_open_pair') IS NULL AND NOT EXISTS (
+        SELECT 1 FROM dating_matches
+        WHERE status IN ('matched','conversing','quiet')
+        GROUP BY user_a, user_b
+        HAVING COUNT(*) > 1
+    ) THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_dating_matches_open_pair
+            ON dating_matches(user_a, user_b)
+            WHERE status IN ('matched','conversing','quiet');
+    END IF;
+END $$;
 

@@ -222,6 +222,10 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		// profile reveals nothing.
 		incognitoVisiblePredicate("p", "$1"),
 	}
+	// Decline cooldown: a candidate who declined one of the viewer's sparks
+	// stays out of the viewer's deck for the cooldown. One-directional.
+	args = append(args, s.declineCutoff())
+	where = append(where, `NOT `+recentDeclinePredicate("$1", "p.user_id", fmt.Sprintf("$%d::timestamptz", len(args))))
 	if q.VerifiedOnly {
 		// §P1-3 verified-only filter: viewer-side toggle. Phone-only
 		// trust is treated as "not verified" — must be selfie or

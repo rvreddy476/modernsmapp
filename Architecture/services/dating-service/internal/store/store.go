@@ -14,11 +14,14 @@ import (
 // Store wraps a pgxpool and exposes per-aggregate methods (profiles, tunes, …).
 type Store struct {
 	db *pgxpool.Pool
+	// declineCooldown is how long a decline keeps the sender away from the
+	// decliner (see DeclineCooldown in sparks.go).
+	declineCooldown time.Duration
 }
 
 // New returns a Store backed by the given pool.
 func New(db *pgxpool.Pool) *Store {
-	return &Store{db: db}
+	return &Store{db: db, declineCooldown: DeclineCooldown}
 }
 
 // --- Domain models ---------------------------------------------------------

@@ -286,10 +286,10 @@ func (s *Store) BlockUserAndSever(ctx context.Context, userID, targetUserID uuid
 	a, b := canonicalPair(userID, targetUserID)
 	rows, err := tx.Query(ctx, `
         UPDATE dating_matches
-        SET status = 'closed', closed_by = $3, closed_at = now()
+        SET status = 'closed', closed_by = $3, closed_at = now(), close_reason = $4
         WHERE user_a = $1 AND user_b = $2
           AND status IN ('matched','conversing','quiet')
-        RETURNING `+matchSelectCols, a, b, userID)
+        RETURNING `+matchSelectCols, a, b, userID, CloseReasonBlock)
 	if err != nil {
 		return nil, fmt.Errorf("close matches on block: %w", err)
 	}

@@ -37,6 +37,52 @@ var ErrSparkRateLimited = errors.New("rate_limited: spark limit reached")
 // SparkQuotaWindow is the rolling window the spark limit counts over.
 const SparkQuotaWindow = 24 * time.Hour
 
+// DeclineCooldown is the default time a decline keeps its sender away from
+// the decliner: the sender cannot spark them, does not see them in the deck,
+// and their sparks do not count toward a mutual match. The recipient is
+// unaffected. Overridable with DATING_DECLINE_COOLDOWN_DAYS (1-365).
+const DeclineCooldown = 30 * 24 * time.Hour
+
+// SetDeclineCooldown overrides the decline cooldown; d <= 0 keeps the current
+// value. Boot validates the environment value before calling it.
+func (s *Store) SetDeclineCooldown(d time.Duration) {
+	if d > 0 {
+		s.declineCooldown = d
+	}
+}
+
+// DeclineCooldownDuration returns the cooldown in effect.
+func (s *Store) DeclineCooldownDuration() time.Duration {
+	if s.declineCooldown <= 0 {
+		return DeclineCooldown
+	}
+	return s.declineCooldown
+}
+
+func (s *Store) declineCutoff() time.Time {
+	return time.Now().Add(-s.DeclineCooldownDuration())
+}
+
+// recentDeclinePredicate is true when `recipient` declined a spark from
+// `sender` after the cutoff expression. Uses idx_dating_sparks_declined_pair.
+func recentDeclinePredicate(sender, recipient, cutoff string) string {
+	return `EXISTS (SELECT 1 FROM dating_sparks dcl
+	    WHERE dcl.from_user_id = ` + sender + ` AND dcl.to_user_id = ` + recipient + `
+	      AND dcl.declined_at IS NOT NULL AND dcl.declined_at > ` + cutoff + `)`
+}
+
+// HasRecentDecline reports whether recipientID declined any spark from
+// senderID within the decline cooldown.
+func (s *Store) HasRecentDecline(ctx context.Context, senderID, recipientID uuid.UUID) (bool, error) {
+	var declined bool
+	err := s.db.QueryRow(ctx, `SELECT `+recentDeclinePredicate("$1::uuid", "$2::uuid", "$3::timestamptz"),
+		senderID, recipientID, s.declineCutoff()).Scan(&declined)
+	if err != nil {
+		return false, fmt.Errorf("check recent decline: %w", err)
+	}
+	return declined, nil
+}
+
 const sparkSelectCols = `id, from_user_id, to_user_id, target_kind, target_ref, note, created_at, declined_at`
 
 // rowQuerier is satisfied by both the pool and a transaction.
@@ -270,8 +316,9 @@ func (s *Store) DeclineSpark(ctx context.Context, id, recipientID uuid.UUID) (*S
 }
 
 // HasReverseSparks reports true if user b has Sparked user a with interest
-// that still counts: not declined, and created after the pair's last match
-// closure or expiry. Used by the spark service to detect mutual interest.
+// that still counts: not declined, created after the pair's last match
+// closure or expiry, and a has not declined any spark from b within the
+// decline cooldown. Used by the spark service to detect mutual interest.
 func (s *Store) HasReverseSparks(ctx context.Context, a, b uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `
@@ -280,7 +327,8 @@ func (s *Store) HasReverseSparks(ctx context.Context, a, b uuid.UUID) (bool, err
             WHERE sp.from_user_id = $2 AND sp.to_user_id = $1
               AND sp.declined_at IS NULL
               AND sp.created_at > `+pairLastClosedSQL("$1::uuid", "$2::uuid")+`
-        )`, a, b).Scan(&exists)
+        ) AND NOT `+recentDeclinePredicate("$2::uuid", "$1::uuid", "$3::timestamptz"),
+		a, b, s.declineCutoff()).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("has reverse sparks: %w", err)
 	}

@@ -297,11 +297,14 @@ func (s *Service) CloseMatch(ctx context.Context, matchID, closedBy uuid.UUID) e
 	if closedBy != m.UserA && closedBy != m.UserB {
 		return fmt.Errorf("forbidden: only a participant may close this match")
 	}
-	if err := s.store.CloseMatch(ctx, matchID, closedBy); err != nil {
+	closed, err := s.store.CloseMatchWithReason(ctx, matchID, closedBy, store.CloseReasonUnmatch, nil)
+	if err != nil {
 		return err
 	}
 	if s.producer != nil {
-		_ = s.producer.PublishMatchClosed(ctx, matchID, closedBy, m.UserA, m.UserB)
+		if perr := s.producer.PublishMatchClosed(ctx, closed.ID, closedBy, closed.UserA, closed.UserB); perr != nil {
+			slog.Warn("publish match.closed after unmatch failed; match closed", "match_id", closed.ID, "error", perr)
+		}
 	}
 	return nil
 }

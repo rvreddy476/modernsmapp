@@ -315,34 +315,195 @@ func collectMatches(rows pgx.Rows) ([]*Match, error) {
 	return out, rows.Err()
 }
 
+// Close reasons recorded in dating_matches.close_reason.
+const (
+	CloseReasonUnmatch   = "unmatch"
+	CloseReasonBlock     = "block"
+	CloseReasonDuplicate = "duplicate"
+)
+
+// SystemActorID is closed_by for closures no user asked for (the duplicate
+// open-match cleanup).
+var SystemActorID = uuid.Nil
+
 // CloseMatch (unmatch) sets status='closed', records the actor and the
 // time, and in the same transaction deletes both users' sparks toward each
 // other, so re-matching needs two fresh sparks.
 func (s *Store) CloseMatch(ctx context.Context, matchID, closedBy uuid.UUID) error {
+	_, err := s.CloseMatchWithReason(ctx, matchID, closedBy, CloseReasonUnmatch, nil)
+	return err
+}
+
+// CloseMatchWithReason is the match close path. It closes one open match
+// (status, closed_by, closed_at, close_reason) and returns the closed row.
+//
+//   - unmatch: also deletes the pair's sparks both ways.
+//   - duplicate: closes only while another open match for the same pair
+//     remains (so the last open match is never closed) and keeps the sparks,
+//     which belong to the match that stays open.
+//
+// beforeCommit, when non-nil, runs inside the transaction after the update;
+// an error rolls the close back. The duplicate cleanup publishes
+// dating.match.closed there, so a failed publish leaves the row open for the
+// next boot instead of closing it silently.
+func (s *Store) CloseMatchWithReason(ctx context.Context, matchID, closedBy uuid.UUID, reason string, beforeCommit func(*Match) error) (*Match, error) {
+	guard := `status NOT IN ('closed','expired')`
+	switch reason {
+	case CloseReasonUnmatch:
+	case CloseReasonDuplicate:
+		guard = `status IN ` + openMatchStatuses + ` AND EXISTS (
+            SELECT 1 FROM dating_matches o
+            WHERE o.user_a = dating_matches.user_a AND o.user_b = dating_matches.user_b
+              AND o.id <> dating_matches.id AND o.status IN ` + openMatchStatuses + `)`
+	default:
+		return nil, fmt.Errorf("invalid: unsupported close reason %q", reason)
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin close match: %w", err)
+		return nil, fmt.Errorf("begin close match: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var a, b uuid.UUID
-	err = tx.QueryRow(ctx, `
+	m, err := scanMatch(tx.QueryRow(ctx, `
         UPDATE dating_matches
-        SET status = 'closed', closed_by = $2, closed_at = now()
-        WHERE id = $1 AND status NOT IN ('closed','expired')
-        RETURNING user_a, user_b`, matchID, closedBy).Scan(&a, &b)
+        SET status = 'closed', closed_by = $2, closed_at = now(), close_reason = $3
+        WHERE id = $1 AND `+guard+`
+        RETURNING `+matchSelectCols, matchID, closedBy, reason))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrMatchNotFound
+		if errors.Is(err, ErrMatchNotFound) {
+			return nil, ErrMatchNotFound
 		}
-		return fmt.Errorf("close match: %w", err)
+		return nil, fmt.Errorf("close match: %w", err)
 	}
-	if _, err := deleteSparksBetween(ctx, tx, a, b); err != nil {
-		return err
+	if reason == CloseReasonUnmatch {
+		if _, err := deleteSparksBetween(ctx, tx, m.UserA, m.UserB); err != nil {
+			return nil, err
+		}
+	}
+	if beforeCommit != nil {
+		if err := beforeCommit(m); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit close match: %w", err)
+		return nil, fmt.Errorf("commit close match: %w", err)
 	}
-	return nil
+	return m, nil
+}
+
+// --- Duplicate open matches --------------------------------------------------
+
+// OpenPairIndexName is the partial unique index allowing one open match per pair.
+const OpenPairIndexName = "uq_dating_matches_open_pair"
+
+// OpenPairIndexDDL creates OpenPairIndexName. database/setup.sql carries the
+// same statement inside a guard that skips it while duplicates exist
+// (TestOpenPairIndexDDLMatchesSetupSQL keeps the two identical).
+const OpenPairIndexDDL = `CREATE UNIQUE INDEX IF NOT EXISTS uq_dating_matches_open_pair
+            ON dating_matches(user_a, user_b)
+            WHERE status IN ('matched','conversing','quiet')`
+
+// DuplicateOpenMatchCounts describes pairs holding more than one open match.
+// Groups is the number of such pairs; ExtraRows the open rows beyond one per
+// pair (the rows the cleanup would close).
+type DuplicateOpenMatchCounts struct {
+	Groups    int
+	ExtraRows int
+}
+
+// CountDuplicateOpenMatches counts duplicate open-match groups and extra rows.
+// scripts/count-duplicate-matches.sql runs the same aggregate.
+func (s *Store) CountDuplicateOpenMatches(ctx context.Context) (DuplicateOpenMatchCounts, error) {
+	var c DuplicateOpenMatchCounts
+	err := s.db.QueryRow(ctx, `
+        SELECT COUNT(*)::int, COALESCE(SUM(open_count - 1), 0)::int
+        FROM (
+            SELECT COUNT(*) AS open_count
+            FROM dating_matches
+            WHERE status IN `+openMatchStatuses+`
+            GROUP BY user_a, user_b
+            HAVING COUNT(*) > 1
+        ) dup`).Scan(&c.Groups, &c.ExtraRows)
+	if err != nil {
+		return DuplicateOpenMatchCounts{}, fmt.Errorf("count duplicate open matches: %w", err)
+	}
+	return c, nil
+}
+
+// ListDuplicateOpenMatchExtras returns up to limit open matches that are NOT
+// the one kept for their pair. Keep rule: the match with a conversation, then
+// the most recent activity (last_message_at, else matched_at), then the
+// lowest id.
+func (s *Store) ListDuplicateOpenMatchExtras(ctx context.Context, limit int) ([]*Match, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(ctx, `
+        WITH ranked AS (
+            SELECT id,
+                   row_number() OVER (
+                       PARTITION BY user_a, user_b
+                       ORDER BY (conversation_id IS NOT NULL) DESC,
+                                COALESCE(last_message_at, matched_at) DESC,
+                                id) AS rn
+            FROM dating_matches
+            WHERE status IN `+openMatchStatuses+`
+        )
+        SELECT `+matchSelectCols+`
+        FROM dating_matches
+        WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+        ORDER BY user_a, user_b, id
+        LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list duplicate open matches: %w", err)
+	}
+	return collectMatches(rows)
+}
+
+// OpenPairIndexExists reports whether OpenPairIndexName exists.
+func (s *Store) OpenPairIndexExists(ctx context.Context) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, OpenPairIndexName).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check open pair index: %w", err)
+	}
+	return exists, nil
+}
+
+// EnsureOpenPairIndex creates OpenPairIndexName when missing and reports
+// whether this call created it. Fails (unique violation) if a duplicate
+// open match exists, so callers close duplicates first.
+func (s *Store) EnsureOpenPairIndex(ctx context.Context) (bool, error) {
+	exists, err := s.OpenPairIndexExists(ctx)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+	if _, err := s.db.Exec(ctx, OpenPairIndexDDL); err != nil {
+		return false, fmt.Errorf("create %s: %w", OpenPairIndexName, err)
+	}
+	return true, nil
+}
+
+// openMatchDedupeLockKey is the advisory lock serialising the boot cleanup
+// across replicas.
+const openMatchDedupeLockKey int64 = 0x0da7_1d0b_0001
+
+// LockOpenMatchDedupe takes a session advisory lock so only one replica runs
+// the duplicate cleanup at a time. The returned func releases it.
+func (s *Store) LockOpenMatchDedupe(ctx context.Context) (func(), error) {
+	conn, err := s.db.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire dedupe lock connection: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, openMatchDedupeLockKey); err != nil {
+		conn.Release()
+		return nil, fmt.Errorf("take dedupe lock: %w", err)
+	}
+	return func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, openMatchDedupeLockKey)
+		conn.Release()
+	}, nil
 }
 
 // ExtendMatch pushes the expires_at out by `days`. Premium-only at the

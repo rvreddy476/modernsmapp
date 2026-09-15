@@ -162,6 +162,14 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	if err := s.requireNotBlocked(ctx, fromUserID, toUserID); err != nil {
 		return nil, nil, err
 	}
+	// Decline cooldown: a sender whose spark the recipient declined within
+	// the cooldown gets the same refusal, so the decline is never revealed.
+	// One-directional: the decliner can still spark the sender.
+	if declined, err := s.store.HasRecentDecline(ctx, fromUserID, toUserID); err != nil {
+		return nil, nil, err
+	} else if declined {
+		return nil, nil, ErrCandidateUnavailable
+	}
 
 	// Lane D3: the rolling spark allowance is enforced in the same
 	// transaction as the insert.
@@ -227,10 +235,16 @@ func (s *Service) RevokeSpark(ctx context.Context, sparkID, ownerID uuid.UUID) e
 
 // DeclineSpark lets the recipient decline a spark aimed at them. Idempotent.
 // It emits nothing, so the sender is never notified; anyone other than the
-// recipient gets store.ErrSparkNotFound.
+// recipient gets store.ErrSparkNotFound. The decline starts the decline
+// cooldown, so the recipient also leaves the sender's cached deck.
 func (s *Service) DeclineSpark(ctx context.Context, sparkID, recipientID uuid.UUID) (*store.Spark, error) {
 	if sparkID == uuid.Nil || recipientID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: spark id and recipient required")
 	}
-	return s.store.DeclineSpark(ctx, sparkID, recipientID)
+	sp, err := s.store.DeclineSpark(ctx, sparkID, recipientID)
+	if err != nil {
+		return nil, err
+	}
+	s.removeFromCachedDeck(ctx, sp.FromUserID, recipientID)
+	return sp, nil
 }

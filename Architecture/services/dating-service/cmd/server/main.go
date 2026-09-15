@@ -61,6 +61,19 @@ func main() {
 		slog.Error("dating-service: service-token configuration is invalid", "error", err)
 		os.Exit(1)
 	}
+	// Duplicate open matches: local/dev closes them at boot; elsewhere only
+	// with DATING_DEDUPE_OPEN_MATCHES=true (else boot refuses with counts).
+	dedupePolicy, err := datinghttp.ResolveOpenMatchDedupePolicy(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	// Decline cooldown (DATING_DECLINE_COOLDOWN_DAYS, 1-365, default 30).
+	declineCooldown, err := datinghttp.ResolveDeclineCooldown(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
 
 	port := env("HTTP_PORT", "8112")
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -133,6 +146,8 @@ func main() {
 	}))
 
 	datingStore := store.New(dbPool)
+	datingStore.SetDeclineCooldown(declineCooldown)
+	slog.Info("decline cooldown configured", "cooldown", declineCooldown)
 	datingSvc := service.New(datingStore, rdb)
 
 	graphProvider := matcher.NewHTTPGraphProvider(
@@ -153,6 +168,19 @@ func main() {
 	producer := datingevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
 	datingSvc.SetProducer(producer)
 	slog.Info("kafka producer initialized", "topic", kafkaTopic)
+
+	// Count duplicate open matches, close them through the match close path
+	// (each emits dating.match.closed) when the policy allows, then ensure
+	// uq_dating_matches_open_pair. Runs before any consumer, sweeper or HTTP
+	// route can form or close a match.
+	dedupeReport, err := datingSvc.ReconcileOpenMatchDuplicates(ctx, dedupePolicy)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err,
+			"duplicate_groups", dedupeReport.Groups, "extra_rows", dedupeReport.ExtraRows, "closed", dedupeReport.Closed)
+		os.Exit(1)
+	}
+	slog.Info("open match uniqueness ready", "duplicate_groups", dedupeReport.Groups,
+		"closed", dedupeReport.Closed, "index_created", dedupeReport.IndexCreated)
 
 	// Sprint 3: message-service client for the match-formation saga.
 	datingSvc.SetMessageClient(service.NewHTTPMessageClient())

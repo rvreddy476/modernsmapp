@@ -155,6 +155,25 @@ func TestD3Contracts(t *testing.T) {
 		}
 		rec = contractDo(r, http.MethodPost, "/v1/dating/sparks", sparkBody(blocker, "p1"), blocked)
 		assertContract(t, rec, http.StatusNotFound, "spark_create_404_candidate_unavailable", map[uuid.UUID]string{blocked: "<sender>", blocker: "<recipient>"})
+
+		// A decline within the cooldown answers exactly the same too.
+		sender, decliner := uuid.New(), uuid.New()
+		mustSeedActiveProfile(t, st, sender)
+		mustSeedActiveProfile(t, st, decliner)
+		sp, err := st.CreateSpark(ctx, sender, decliner, "photo", "0", "")
+		if err != nil {
+			t.Fatalf("seed spark: %v", err)
+		}
+		if _, err := st.DeclineSpark(ctx, sp.ID, decliner); err != nil {
+			t.Fatalf("decline: %v", err)
+		}
+		rec = contractDo(r, http.MethodPost, "/v1/dating/sparks", sparkBody(decliner, "p1"), sender)
+		assertContract(t, rec, http.StatusNotFound, "spark_create_404_candidate_unavailable", map[uuid.UUID]string{sender: "<sender>", decliner: "<recipient>"})
+		// One-directional: the decliner can still spark the sender.
+		rec = contractDo(r, http.MethodPost, "/v1/dating/sparks", sparkBody(sender, "p1"), decliner)
+		if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+			t.Fatalf("decliner spark to the sender: status %d body %s", rec.Code, rec.Body.String())
+		}
 	})
 
 	t.Run("spark_create_429_rate_limited", func(t *testing.T) {

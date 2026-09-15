@@ -42,6 +42,10 @@ env:
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # Birth date + first name source (required outside local/dev; boot refuses without it).
   IDENTITY_PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  # Boot refuses while duplicate open matches exist. Review them with
+  # services/dating-service/scripts/count-duplicate-matches.sql, set "true"
+  # for ONE deploy to close them (each emits dating.match.closed), then back.
+  DATING_DEDUPE_OPEN_MATCHES: "false"
 
 ingress:
   enabled: false
