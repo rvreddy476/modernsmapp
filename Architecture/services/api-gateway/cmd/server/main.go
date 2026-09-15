@@ -328,7 +328,11 @@ func main() {
 	// prefixes closed until a client exists: unreviewed surface is attack
 	// surface. The services keep running because other services call them
 	// internally. See docs/adr/adr-dormant-products.md.
-	dormantProducts := dormantProductsFromEnv(os.Getenv)
+	dormantProducts, dormantErr := dormantProductsFromEnv(os.Getenv, tokenPolicy.Production)
+	if dormantErr != nil {
+		slog.Error("refusing to start: invalid dormant-product pilot allowlist", "error", dormantErr)
+		os.Exit(1)
+	}
 
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handleProbe(w, r, len(routes)) {
@@ -529,6 +533,12 @@ var trustedIdentityHeaders = []string{
 	"X-Admin-Role",
 	"X-Device-Id",
 	"X-Internal-Service-Key",
+	// dating-service takes X-Admin-Id as the audit actor on /v1/dating/admin
+	// and X-Internal-Key as the credential on its internal moderation scan.
+	// The gateway sets neither, so a client copy could only ever be a forgery:
+	// an admin action attributed to someone else, or a guessed internal key.
+	"X-Admin-Id",
+	"X-Internal-Key",
 	// Module 3 LB-3: the graph write-source label.
 	//
 	// graph-service refuses a mutating request whose source is not an approved
@@ -544,9 +554,18 @@ var trustedIdentityHeaders = []string{
 // bare `server` rule) and would be missing from a clean checkout.
 const graphWriteSourceHeader = edgeheaders.GraphWriteSourceHeader
 
+// stripInboundIdentityHeaders matches names case-insensitively. Header.Del
+// only removes the canonical spelling, so a map key such as "X-Admin-ID" set
+// outside the wire parser would survive it and still be forwarded.
 func stripInboundIdentityHeaders(r *http.Request) {
-	for _, h := range trustedIdentityHeaders {
-		r.Header.Del(h)
+	for name := range r.Header {
+		canonical := http.CanonicalHeaderKey(name)
+		for _, h := range trustedIdentityHeaders {
+			if canonical == http.CanonicalHeaderKey(h) {
+				delete(r.Header, name)
+				break
+			}
+		}
 	}
 }
 
@@ -625,6 +644,9 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		if userID != "" {
 			r.Header.Set("X-User-Id", userID)
 			r.Header.Set("X-Verified-User-Id", userID)
+			// Gates inside the gateway read identity from the context, which
+			// nothing but this line can set, rather than from a header.
+			r = r.WithContext(context.WithValue(r.Context(), verifiedUserIDKey{}, userID))
 		}
 		if scopes != "" {
 			r.Header.Set("X-Scopes", scopes)
@@ -880,39 +902,117 @@ func env(key, fallback string) string {
 type dormantProduct struct {
 	prefixes []string
 	enabled  bool
+	// pilotUsers lets these verified user ids through while the product is
+	// closed. Nil or empty lets nobody through.
+	pilotUsers map[string]struct{}
+}
+
+// verifiedUserIDKey is the context key for the user id taken from a verified
+// token. Only jwtExtractMiddleware sets it; a client cannot.
+type verifiedUserIDKey struct{}
+
+// verifiedUserID is the caller's verified user id, or "" when anonymous.
+func verifiedUserID(r *http.Request) string {
+	id, _ := r.Context().Value(verifiedUserIDKey{}).(string)
+	return id
 }
 
 // dormantProductsFromEnv reads each product's own flag. One flag per product:
 // a shared flag couples launches, so opening one product would open the rest.
-func dormantProductsFromEnv(getenv func(string) string) []dormantProduct {
+// production decides whether an invalid pilot allowlist entry refuses boot.
+func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dormantProduct, error) {
 	flag := func(key string) bool { return strings.EqualFold(getenv(key), "true") }
+	datingPilot, err := parsePilotUserIDs("DATING_PILOT_USER_IDS", getenv("DATING_PILOT_USER_IDS"), production)
+	if err != nil {
+		return nil, err
+	}
 	return []dormantProduct{
 		{prefixes: []string{"/v1/groups", "/v1/communities"}, enabled: flag("DORMANT_PRODUCTS_ENABLED")},
 		// Mopedu (rider-service): the only caller is an iOS screen whose
 		// request body the server rejects and whose result it discards.
 		{prefixes: []string{"/v1/rider"}, enabled: flag("RIDER_PUBLIC_ENABLED")},
-	}
+		// Dating (Pulse): every route, admin included, was reachable
+		// anonymously because the gateway stamps the internal key on all
+		// traffic. Closed except to an internal pilot while it is rebuilt.
+		{prefixes: []string{"/v1/dating"}, enabled: flag("DATING_PUBLIC_ENABLED"), pilotUsers: datingPilot},
+	}, nil
 }
 
-// closedDormantPrefixes lists the prefixes of every product not yet opened.
-func closedDormantPrefixes(products []dormantProduct) []string {
-	var closed []string
-	for _, p := range products {
-		if !p.enabled {
-			closed = append(closed, p.prefixes...)
+// parsePilotUserIDs reads a comma-separated list of UUIDs. It fails closed:
+// unset or empty means nobody. An invalid entry refuses boot in production;
+// elsewhere it is dropped with a warning and the valid entries still apply.
+func parsePilotUserIDs(key, raw string, production bool) (map[string]struct{}, error) {
+	users := map[string]struct{}{}
+	var invalid []string
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if !isUUID(entry) {
+			invalid = append(invalid, entry)
+			continue
+		}
+		users[strings.ToLower(entry)] = struct{}{}
+	}
+	if len(invalid) > 0 {
+		if production {
+			return nil, fmt.Errorf("%s has invalid entries %q: each must be a UUID", key, invalid)
+		}
+		slog.Warn("ignoring invalid pilot allowlist entries", "key", key, "invalid", invalid)
+	}
+	return users, nil
+}
+
+// isUUID reports whether s is a hyphenated 8-4-4-4-12 hex UUID.
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+				return false
+			}
 		}
 	}
-	return closed
+	return true
+}
+
+// pilotAllows reports whether a verified user id is on the product's pilot
+// allowlist. Anonymous callers and empty allowlists are never allowed.
+func (p dormantProduct) pilotAllows(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	_, ok := p.pilotUsers[strings.ToLower(userID)]
+	return ok
 }
 
 // serveDormantProductGate answers 404 for a closed dormant product's public
-// prefix. 404 rather than 503: an edge client should not learn that a product
-// exists behind a closed door, which is the same reasoning as the
-// forbidden-path backstop below the route match. Internal service-to-service
-// calls do not pass through here.
+// prefix, unless the verified caller is on that product's pilot allowlist.
+// 404 rather than 503: an edge client should not learn that a product exists
+// behind a closed door, which is the same reasoning as the forbidden-path
+// backstop below the route match. Internal service-to-service calls do not
+// pass through here. It must run after jwtExtractMiddleware.
 func serveDormantProductGate(w http.ResponseWriter, r *http.Request, products []dormantProduct) bool {
-	for _, p := range closedDormantPrefixes(products) {
-		if r.URL.Path == p || strings.HasPrefix(r.URL.Path, p+"/") {
+	for _, p := range products {
+		if p.enabled {
+			continue
+		}
+		for _, prefix := range p.prefixes {
+			if r.URL.Path != prefix && !strings.HasPrefix(r.URL.Path, prefix+"/") {
+				continue
+			}
+			if p.pilotAllows(verifiedUserID(r)) {
+				return false
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))

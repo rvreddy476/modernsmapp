@@ -111,6 +111,41 @@ func TestGatewayHonoursScopesFromVerifiedToken(t *testing.T) {
 	}
 }
 
+// dating-service trusts X-Admin-Id as the audit actor on /v1/dating/admin and
+// X-Internal-Key as the credential on its internal moderation scan. The
+// gateway sets neither, so any client copy must be stripped. The check reads
+// the raw headers, not trustedIdentityHeaders, so dropping a name from that
+// list fails here.
+func TestGatewayStripsHeadersDatingTrusts(t *testing.T) {
+	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
+	token := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, map[string]any{
+		"user_id": "11111111-1111-4111-8111-111111111111",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}, keys.activeSecret)
+
+	for _, authed := range []bool{false, true} {
+		var upstream http.Header
+		mw := jwtExtractMiddleware(keys, devTestPolicy(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream = r.Header.Clone()
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/v1/dating/admin/reports/x/resolve", nil)
+		if authed {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		req.Header.Set("X-Admin-Id", "33333333-3333-4333-8333-333333333333")
+		req.Header["X-Admin-ID"] = []string{"33333333-3333-4333-8333-333333333333"}
+		req.Header.Set("X-Internal-Key", "guessed-key")
+		mw.ServeHTTP(httptest.NewRecorder(), req)
+
+		for name, values := range upstream {
+			switch http.CanonicalHeaderKey(name) {
+			case "X-Admin-Id", "X-Internal-Key":
+				t.Errorf("authenticated=%v: client %s=%q reached upstream", authed, name, values)
+			}
+		}
+	}
+}
+
 // Module 3 LB-3 — the graph write-source label must be stripped like any other
 // trusted header, and re-stamped by the gateway on graph routes.
 //

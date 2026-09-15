@@ -39,6 +39,10 @@ env:
   # Mopedu's /v1/rider stays closed at the edge until a working client ships.
   # See docs/adr/adr-dormant-products.md.
   RIDER_PUBLIC_ENABLED: "false"
+  # Dating's /v1/dating stays closed at the edge. The pilot allowlist is empty
+  # on purpose: empty lets nobody through. See docs/adr/adr-dormant-products.md.
+  DATING_PUBLIC_ENABLED: "false"
+  DATING_PILOT_USER_IDS: ""
   # ── Module 3 SR-1: edge token identity ──────────────────────────────────
   # APP_ENV is what the gateway reads to decide whether to apply production
   # token rules. It is set explicitly here rather than relying on ENV so the
