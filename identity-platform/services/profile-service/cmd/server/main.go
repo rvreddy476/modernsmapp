@@ -30,6 +30,16 @@ func main() {
 	logger := logging.New("profile-service")
 	slog.SetDefault(logger)
 
+	// Fail-closed boot rule for INTERNAL_SERVICE_KEY. Outside APP_ENV /
+	// ENVIRONMENT / ENV local or dev, a missing or blank key refuses to start
+	// instead of serving every route unauthenticated. Checked before any
+	// dependency is dialled. See http.ResolveInternalKey.
+	internalKey, internalKeyWarning, internalKeyErr := http.ResolveInternalKey(os.Getenv)
+	if internalKeyErr != nil {
+		logger.Error("refusing to start", "err", internalKeyErr)
+		os.Exit(1)
+	}
+
 	// Phase F3.7 — tracing init. See auth-service main.go for the
 	// full rationale; same pattern across all identity services.
 	tracerProvider, _ := tracepkg.InitTracer(
@@ -135,11 +145,11 @@ func main() {
 	// Audit UC1: wire the internal-service-key gate. Without this,
 	// X-User-Id is effectively a public header — every other audit
 	// closed the same gap; this is the matching identity-platform fix.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		profileHandler.WithInternalKey(key)
+	if internalKey != "" {
+		profileHandler.WithInternalKey(internalKey)
 		logger.Info("profile-service: internal-service-key gate enabled")
 	} else {
-		logger.Warn("profile-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+		logger.Warn(internalKeyWarning)
 	}
 
 	// Module 3 SR-4 — block enforcement on profile surfaces.

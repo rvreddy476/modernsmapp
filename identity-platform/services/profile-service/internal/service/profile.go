@@ -40,6 +40,13 @@ func (s *Service) CreateProfile(ctx context.Context, userID uuid.UUID, firstName
 	return s.store.CreateProfile(ctx, userID, displayName, firstName, lastName, dob, gender)
 }
 
+// GetIdentityBasics reads a user's registration first name and date of birth
+// for the internal identity route. Never cached: the Redis profile card is
+// read by public surfaces, and this value is only for service callers.
+func (s *Service) GetIdentityBasics(ctx context.Context, userID uuid.UUID) (*store.IdentityBasics, error) {
+	return s.store.GetIdentityBasics(ctx, userID)
+}
+
 // ---------------------------------------------------------------
 // Profile read / update
 // ---------------------------------------------------------------

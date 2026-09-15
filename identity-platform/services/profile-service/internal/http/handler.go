@@ -113,6 +113,9 @@ type ProfileService interface {
 	// Account lifecycle (auth-service 30-day deletion flow). See
 	// internal/purge and internal/http/hidden_denial_gate.go.
 	IsHidden(ctx context.Context, userID uuid.UUID) (bool, error)
+	// Internal identity read (dating lane D2). Service callers only; see
+	// internal_identity.go.
+	GetIdentityBasics(ctx context.Context, userID uuid.UUID) (*store.IdentityBasics, error)
 }
 
 func New(svc ProfileService, logger *slog.Logger) *Handler {
@@ -125,6 +128,11 @@ func New(svc ProfileService, logger *slog.Logger) *Handler {
 func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.HandlerFunc) {
 	if h.internalKey != "" {
 		r.Use(RequireInternalServiceKey(h.internalKey))
+		// Internal identity read (dating lane D2). Outside /v1/ on purpose: the
+		// gateway proxies /v1/profiles/* and stamps the internal key on the way,
+		// so only a path it does not route can be service-only. It carries its
+		// own guard rather than relying on the engine-wide key check above.
+		r.GET(InternalIdentityPath, requireInternalServiceCaller(h.internalKey), h.GetInternalIdentityBasics)
 	}
 	v1 := r.Group("/v1/profiles")
 	{

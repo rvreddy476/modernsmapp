@@ -31,8 +31,16 @@ var SchemaRequirements = []schemaguard.Requirement{
 			// serve empty strings that look like a user who filled nothing in,
 			// rather than failing — wrong in the direction nobody notices.
 			"first_name", "last_name", "gender",
+			// The fallback DOB for the internal identity read.
+			"dob",
 		},
 	},
+
+	// Internal identity read (identity_basics.go). Both owned by auth-service.
+	// Asserted here because a renamed column would otherwise surface as a 500
+	// on the read dating-service gates adults on, not as a refusal to start.
+	{Table: "auth.users", Columns: []string{"user_id", "account_status"}},
+	{Table: "auth.registration_consents", Columns: []string{"user_id", "declared_dob", "accepted_at"}},
 
 	{Table: "profile.user_about", Columns: []string{"section", "item_id", "data", "visibility"}},
 	{Table: "profile.user_links", Columns: []string{"platform", "url", "sort_order"}},
