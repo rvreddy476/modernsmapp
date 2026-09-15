@@ -211,3 +211,12 @@ include(":app-rider")
 // apps may not depend on it — both enforced by moduleGraphCheck.
 include(":core:payments")
 include(":feature:feast")
+
+// Dating (Pulse) — Wave 3 (2026-09-16).
+//
+// :feature:dating is the dating product inside Momentum: onboarding with consent,
+// photos and the blink-twice selfie video, the Pulse deck, sparks, matches,
+// safety, Premium passes through :core:payments, privacy and data rights. Only
+// :app depends on it; moduleGraphCheck keeps it out of the partner apps and off
+// every other :feature:*.
+include(":feature:dating")

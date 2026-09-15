@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "id": "<match>",
+      "user_a": "<user_a>",
+      "user_b": "<user_b>",
+      "status": "matched",
+      "conversation_id": "<conversation>",
+      "spark_target": {
+        "target_kind": "photo",
+        "target_ref": "0"
+      },
+      "matched_at": "<timestamp>",
+      "expires_at": "<timestamp>"
+    }
+  ]
+}

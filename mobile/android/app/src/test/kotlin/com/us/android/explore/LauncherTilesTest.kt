@@ -80,6 +80,14 @@ class LauncherTilesTest {
         assertThat(AppModule.POSTTUBE.hasScreen).isTrue()
     }
 
+    /** Dating has a screen since 2026-09-16 (Wave 3): the Match tile opens, it is not "Soon". */
+    @Test
+    fun `match opens rather than promising`() {
+        val match = launcherTiles().single { it.app == LauncherApp.MATCH }
+        assertThat(match.soon).isFalse()
+        assertThat(AppModule.DATING.hasScreen).isTrue()
+    }
+
     @Test
     fun `the soon message names the app`() {
         assertThat(comingSoonMessage(LauncherApp.MATCH)).isEqualTo("Match is coming soon")

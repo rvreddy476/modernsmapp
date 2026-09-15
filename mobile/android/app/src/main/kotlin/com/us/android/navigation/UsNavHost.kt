@@ -95,9 +95,16 @@ import com.us.android.feature.commerce.navigation.mSellerScreens
 import com.us.android.feature.commerce.navigation.mStoreScreens
 import com.us.android.feature.commerce.navigation.navigateToMSeller
 import com.us.android.feature.commerce.navigation.navigateToMStore
+import com.us.android.feature.dating.navigation.datingScreens
+import com.us.android.feature.dating.navigation.navigateToDating
+import com.us.android.feature.dating.navigation.navigateToDatingMatch
+import com.us.android.feature.dating.navigation.navigateToDatingSparks
+import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.feast.checkout.FeastPaymentRequest
 import com.us.android.feature.feast.navigation.feastScreens
 import com.us.android.feature.feast.navigation.navigateToFeast
+import com.us.android.push.DatingPushTarget
+import com.us.android.push.PushDestinations
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
@@ -264,6 +271,9 @@ fun UsNavHost(
     // Feast's sheet, from the same Activity, stamped "feast" by :feature:feast.
     onOpenFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
     onAbandonFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
+    // Dating Premium's sheet, from the same Activity, stamped "dating" by :feature:dating.
+    onOpenDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
+    onAbandonDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
     navController: NavHostController = rememberNavController(),
 ) {
     val tabs = remember(shellState) {
@@ -385,6 +395,8 @@ fun UsNavHost(
                     onAbandonPaymentSheet,
                     onOpenFeastPayment,
                     onAbandonFeastPayment,
+                    onOpenDatingPayment,
+                    onAbandonDatingPayment,
                     onOpenReel,
                 ) {
                     createScope = it
@@ -492,6 +504,17 @@ private fun NavHostController.openPushDestination(
         // missed-call tap opens the history.
         "incoming_call", "incoming_video_call" -> navigateToCallSurface()
         "missed_call" -> navigateToCallHistory()
+        // Dating (Wave 3): a spark opens incoming sparks; a match opens the
+        // match; a message opens the match and continues into its chat.
+        PushDestinations.TYPE_DATING_SPARK,
+        PushDestinations.TYPE_DATING_MATCH,
+        PushDestinations.TYPE_DATING_MESSAGE,
+        PushDestinations.TYPE_DATING_FIRST_MESSAGE,
+        -> when (val target = PushDestinations.datingTargetOf(destination)) {
+            DatingPushTarget.IncomingSparks -> navigateToDatingSparks()
+            is DatingPushTarget.Match -> navigateToDatingMatch(target.matchId, openChat = target.openChat)
+            null -> Unit
+        }
         else -> Unit // not a chat push; existing surfaces handle their own
     }
 }
@@ -566,6 +589,8 @@ private fun NavGraphBuilder.tabDestinations(
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit,
     onOpenFeastPayment: (FeastPaymentRequest) -> Unit,
     onAbandonFeastPayment: (FeastPaymentRequest) -> Unit,
+    onOpenDatingPayment: (DatingPaymentRequest) -> Unit,
+    onAbandonDatingPayment: (DatingPaymentRequest) -> Unit,
     /** A reel notification was tapped: the shell parks the id for Reels before the tab switch. */
     onOpenReel: (postId: String) -> Unit,
     /** A mini-app's "+" was pressed: the shell opens the Create sheet in that scope. */
@@ -675,6 +700,18 @@ private fun NavGraphBuilder.tabDestinations(
         navController = navController,
         onOpenPayment = onOpenFeastPayment,
         onAbandonPayment = onAbandonFeastPayment,
+    )
+
+    // Dating (Wave 3): the gate (pilot allowlist → onboarding → selfie) then
+    // Pulse, sparks, matches, safety, Premium and privacy. Entered from the
+    // Explore launcher's Match tile. A match's chat is created server-side, so
+    // Dating only hands :app a conversation id; the Premium sheet opens from
+    // the Activity like Feast's.
+    datingScreens(
+        navController = navController,
+        onOpenChat = { conversationId, title -> navController.navigateToChatThread(conversationId, title) },
+        onOpenPayment = onOpenDatingPayment,
+        onAbandonPayment = onAbandonDatingPayment,
     )
 
     // The classic composer route stays registered for any older entry point;
@@ -946,7 +983,8 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.MSTORE -> navController.navigateToMStore()
                     LauncherApp.MSELLER -> navController.navigateToMSeller()
                     LauncherApp.FEAST -> navController.navigateToFeast()
-                    LauncherApp.MATCH, LauncherApp.ASK -> Unit
+                    LauncherApp.MATCH -> navController.navigateToDating()
+                    LauncherApp.ASK -> Unit
                 }
             },
         )
@@ -1070,6 +1108,8 @@ fun UsApp(
     onAbandonPaymentSheet: (attempt: PaymentAttempt) -> Unit = { _ -> },
     onOpenFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
     onAbandonFeastPayment: (FeastPaymentRequest) -> Unit = { _ -> },
+    onOpenDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
+    onAbandonDatingPayment: (DatingPaymentRequest) -> Unit = { _ -> },
 ) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val shellState by viewModel.shellState.collectAsStateWithLifecycle()
@@ -1087,6 +1127,8 @@ fun UsApp(
         onAbandonPaymentSheet = onAbandonPaymentSheet,
         onOpenFeastPayment = onOpenFeastPayment,
         onAbandonFeastPayment = onAbandonFeastPayment,
+        onOpenDatingPayment = onOpenDatingPayment,
+        onAbandonDatingPayment = onAbandonDatingPayment,
     )
 }
 

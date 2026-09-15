@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "CONSENT_REQUIRED",
+    "message": "explicit consent is required first: PUT /v1/dating/consents/biometric_selfie {\"granted\": true}",
+    "details": {
+      "consent_type": "biometric_selfie",
+      "policy_version": "v1.0-2026-04-29"
+    }
+  },
+  "meta": {}
+}

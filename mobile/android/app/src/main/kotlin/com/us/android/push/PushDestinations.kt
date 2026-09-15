@@ -67,7 +67,51 @@ class PushDestinations @Inject constructor() {
         }
 
         private const val JOIN_SEGMENTS = 3
+
+        // Dating pushes (notification-service dating_consumer.go / chat_consumer.go).
+        const val TYPE_DATING_SPARK = "dating.spark.created"
+        const val TYPE_DATING_MATCH = "dating.match.formed"
+        const val TYPE_DATING_MESSAGE = "dating.match.new_message"
+        const val TYPE_DATING_FIRST_MESSAGE = "dating.match.first_message"
+
+        /**
+         * Where a dating push lands, or null when it is not one / carries no
+         * usable id. Pure string work, like [joinCodeOf].
+         *
+         *  - a spark opens the incoming sparks list;
+         *  - a formed match opens that match (its `deep_link`
+         *    `/dating/matches/{match_id}`, else `entity_id`, which is the match id);
+         *  - a message opens the match and continues into its chat. Only the
+         *    deep link is trusted here: the two consumers put DIFFERENT ids in
+         *    `entity_id` (a match id or a conversation id).
+         */
+        fun datingTargetOf(destination: PushDestination): DatingPushTarget? = when (destination.type) {
+            TYPE_DATING_SPARK -> DatingPushTarget.IncomingSparks
+            TYPE_DATING_MATCH ->
+                (datingMatchIdOf(destination.deepLink) ?: destination.entityId.trim().takeIf { it.isNotEmpty() })
+                    ?.let { DatingPushTarget.Match(it, openChat = false) }
+            TYPE_DATING_MESSAGE, TYPE_DATING_FIRST_MESSAGE ->
+                datingMatchIdOf(destination.deepLink)?.let { DatingPushTarget.Match(it, openChat = true) }
+            else -> null
+        }
+
+        /** The id in `/dating/matches/{id}` (query and fragment ignored); null for anything else. */
+        fun datingMatchIdOf(deepLink: String?): String? {
+            val path = deepLink?.trim()?.substringBefore('?')?.substringBefore('#') ?: return null
+            val segments = path.split('/').filter { it.isNotBlank() }
+            if (segments.size != MATCH_SEGMENTS || segments[0] != "dating" || segments[1] != "matches") return null
+            return segments[2]
+        }
+
+        private const val MATCH_SEGMENTS = 3
     }
+}
+
+/** Where a dating notification tap lands. */
+sealed interface DatingPushTarget {
+    data object IncomingSparks : DatingPushTarget
+
+    data class Match(val matchId: String, val openChat: Boolean) : DatingPushTarget
 }
 
 /** The routing triple a chat push carries. Ids only — never content. */

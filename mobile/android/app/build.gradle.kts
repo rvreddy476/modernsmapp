@@ -81,6 +81,8 @@ dependencies {
     implementation(projects.feature.commerce)
     // Feast customer ordering (A5). Only :app may depend on it (moduleGraphCheck (g)).
     implementation(projects.feature.feast)
+    // Dating (Wave 3). Only :app may depend on it (moduleGraphCheck (i)).
+    implementation(projects.feature.dating)
     // The payment attempt type the commerce routes carry.
     implementation(projects.core.commerce)
     // The payment sheet (2026-09-14). MainActivity is the ActivityPaymentHost

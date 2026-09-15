@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "CANDIDATE_UNAVAILABLE",
+    "message": "this person is not available"
+  },
+  "meta": {}
+}

@@ -31,6 +31,12 @@ enum class NotificationChannelSpec(
      * notification's FLAG_INSISTENT and the in-app alert player.
      */
     val alertSound: Boolean = false,
+    /**
+     * Hides the notification's content on a secure lock screen (the channel's
+     * lockscreen visibility is PRIVATE). For a channel whose mere content —
+     * who sparked you — is private.
+     */
+    val privateOnLockScreen: Boolean = false,
 ) {
     /**
      * Ringing calls. HIGH so it can interrupt, and the only channel entitled
@@ -135,6 +141,21 @@ enum class NotificationChannelSpec(
         description = "Shown while you are online and sharing your location",
         importance = NotificationManager.IMPORTANCE_LOW,
     ),
+
+    /**
+     * Dating (Wave 3, 2026-09-16): a new spark, a match, a message from a
+     * match. Its own channel so someone can silence dating without silencing
+     * chat, and the reverse. DEFAULT, not HIGH: a spark is not a call, and the
+     * importance can never be raised later — the user can raise it themselves.
+     * PRIVATE on the lock screen: who is sparking you is nobody else's business.
+     */
+    DATING(
+        id = "dating",
+        title = "Dating",
+        description = "New sparks, matches and messages from your matches",
+        importance = NotificationManager.IMPORTANCE_DEFAULT,
+        privateOnLockScreen = true,
+    ),
     ;
 
     companion object {
@@ -156,6 +177,8 @@ enum class NotificationChannelSpec(
             SOCIAL,
             NEW_VIDEOS,
             ACCOUNT,
+            // Dating ships only in Momentum (Wave 3, 2026-09-16).
+            DATING,
         )
 
         /**
@@ -191,6 +214,9 @@ enum class NotificationChannelSpec(
                 manager.createNotificationChannel(
                     NotificationChannel(spec.id, spec.title, spec.importance).apply {
                         description = spec.description
+                        if (spec.privateOnLockScreen) {
+                            lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+                        }
                         if (spec.alertSound) {
                             // Alarm tone where the device has one. A null URI
                             // passed to setSound would SILENCE the channel, so
@@ -230,6 +256,9 @@ enum class NotificationChannelSpec(
             // to SOCIAL, so muting likes muted uploads too.
             "creator_uploaded_video", "creator_uploaded_flick" -> NEW_VIDEOS
             "account", "security" -> ACCOUNT
+            // What notification-service's dating and chat consumers emit
+            // (dating_consumer.go, chat_consumer.go), Wave 3 2026-09-16.
+            "dating.spark.created", "dating.match.formed", "dating.match.new_message", "dating.match.first_message" -> DATING
             else -> SOCIAL
         }
     }

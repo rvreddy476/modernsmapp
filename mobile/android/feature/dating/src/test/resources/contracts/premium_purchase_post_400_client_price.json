@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "CLIENT_PRICE_REFUSED",
+    "message": "prices come from the premium catalogue; do not send amount, price or currency"
+  },
+  "meta": {}
+}

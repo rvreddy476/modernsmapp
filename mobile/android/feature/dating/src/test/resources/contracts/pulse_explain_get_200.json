@@ -1,0 +1,21 @@
+{
+  "data": {
+    "reasons": [
+      {
+        "kind": "distance",
+        "detail": "Less than 5 km away, inside your distance preference."
+      },
+      {
+        "kind": "age_match",
+        "detail": "They're 30. Your age filter is set to show everyone 18+."
+      },
+      {
+        "kind": "gender_pref",
+        "detail": "Their gender matches your \"<gender>\" preference."
+      }
+    ],
+    "distance_bucket": "lt_5_km",
+    "distance_label": "\u003c 5 km",
+    "is_promoted": false
+  }
+}

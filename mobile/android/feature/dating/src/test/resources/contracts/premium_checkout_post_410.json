@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "PREMIUM_SUBSCRIPTIONS_REMOVED",
+    "message": "Premium subscriptions were removed; buy a one-off pass or Boost with POST /v1/dating/premium/purchases",
+    "details": {
+      "catalogue": "/v1/dating/premium/catalogue",
+      "moved_to": "/v1/dating/premium/purchases"
+    }
+  },
+  "meta": {}
+}

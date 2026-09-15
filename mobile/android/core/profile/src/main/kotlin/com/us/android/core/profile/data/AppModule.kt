@@ -23,7 +23,7 @@ enum class AppModule(
     REELS("reels", "Reels", hasScreen = true),
     COMMERCE("commerce", "Commerce", hasScreen = true),
     CHAT("chat", "Chat", hasScreen = true),
-    DATING("dating", "Dating", hasScreen = false),
+    DATING("dating", "Dating", hasScreen = true),
     FOOD("food", "Food", hasScreen = true),
     QA("qa", "QA", hasScreen = false),
     POSTTUBE("posttube", "PostTube", hasScreen = true),

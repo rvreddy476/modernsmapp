@@ -154,6 +154,18 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
                 add(":feature:feast must not depend on $dep (directly or transitively) — Feast shares code through :core only.")
             }
         }
+        // (i)
+        listOf(":app-kitchen", ":app-rider").filter { it in direct }.forEach { app ->
+            if (":feature:dating" in reach(app)) {
+                add("$app must not depend on :feature:dating (directly or transitively) — Dating ships only in Momentum.")
+            }
+        }
+        // (j)
+        if (":feature:dating" in direct) {
+            reach(":feature:dating").filter { it.startsWith(":feature:") && it != ":feature:dating" }.forEach { dep ->
+                add(":feature:dating must not depend on $dep (directly or transitively) — Dating shares code through :core only.")
+            }
+        }
         // (d)
         listOf(":feature:kitchen", ":feature:rider").filter { it in direct }.forEach { feature ->
             if (":core:facear" in reach(feature)) {
@@ -341,6 +353,33 @@ fun applicationBoundarySelfCheck(): List<String> {
             "feast -> rider feature, transitively",
             mapOf(":feature:feast" to setOf(":core:food"), ":core:food" to setOf(":feature:rider")),
             ":feature:feast must not depend on :feature:rider",
+        ),
+        // :feature:dating coverage (Wave 3, 2026-09-16): rules (i) and (j), and
+        // the graph that must stay legal — Momentum shipping Dating beside Feast
+        // and MStore, Dating reaching media and payments through core only.
+        Triple(
+            "legal dating graph",
+            mapOf(
+                ":app" to setOf(":feature:dating", ":feature:feast", ":feature:chat", ":core:payments"),
+                ":feature:dating" to setOf(":core:media", ":core:payments", ":core:network"),
+                ":core:media" to setOf(":core:network"),
+                ":feature:feast" to setOf(":core:food", ":core:payments"),
+                ":app-kitchen" to setOf(":feature:kitchen", ":core:food"),
+                ":app-rider" to setOf(":feature:rider", ":core:food", ":core:media"),
+            ),
+            null,
+        ),
+        Triple("kitchen app -> dating", mapOf(":app-kitchen" to setOf(":feature:dating")), ":app-kitchen must not depend on :feature:dating"),
+        Triple(
+            "rider app -> dating, transitively",
+            mapOf(":app-rider" to setOf(":feature:rider"), ":feature:rider" to setOf(":core:y"), ":core:y" to setOf(":feature:dating")),
+            ":app-rider must not depend on :feature:dating",
+        ),
+        Triple("dating -> chat feature", mapOf(":feature:dating" to setOf(":feature:chat")), ":feature:dating must not depend on :feature:chat"),
+        Triple(
+            "dating -> feast feature, transitively",
+            mapOf(":feature:dating" to setOf(":core:x"), ":core:x" to setOf(":feature:feast")),
+            ":feature:dating must not depend on :feature:feast",
         ),
     )
     return cases.mapNotNull { (name, graph, expected) ->
@@ -558,9 +597,15 @@ tasks.register("moduleGraphCheck") {
     //      history and invoice. Under the existing :feature phantom parent, so
     //      no new parent is counted. Rules (g) and (h) keep it out of the
     //      partner apps and off every other product's feature.
-    // Still to add, one module at a time, to reach 47: :core:location,
+    // 46 = 45 + :feature:dating (Dating Wave 3, 2026-09-16): the dating product
+    //      inside Momentum — onboarding with consent, photos and the
+    //      blink-twice selfie video, Pulse, sparks, matches, safety, Premium
+    //      passes through :core:payments, privacy and data rights. Under the
+    //      existing :feature phantom parent, so no new parent is counted. Rules
+    //      (i) and (j) keep it out of the partner apps and off every other feature.
+    // Still to add, one module at a time, to reach 48: :core:location,
     // :core:kyc-ui.
-    val expectedModuleCount = 45
+    val expectedModuleCount = 46
 
     doLast {
         val allViolations = buildList {
