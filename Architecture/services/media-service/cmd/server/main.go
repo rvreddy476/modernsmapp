@@ -266,9 +266,16 @@ func main() {
 		var analyzer processing.LivenessAnalyzer
 		switch faceSettings.Backend {
 		case processing.FaceBackendMock:
+			// ResolveFaceCompareSettings already refused mock outside
+			// local/dev; checked again here because the mock passes unmarked
+			// media and stamps test markers into prepared dating photos.
+			if !processing.IsLocalDevEnv(os.Getenv) {
+				slog.Error("media-service: MEDIA_FACE_COMPARE_BACKEND=mock is refused unless ENV is local, dev or development")
+				os.Exit(1)
+			}
 			comparer = processing.NewMockFaceComparer()
 			analyzer = processing.NewMockLivenessAnalyzer()
-			slog.Warn("media-service: face comparison and liveness use the MOCK provider (local/dev only; only marker-carrying test media can pass)")
+			slog.Warn("media-service: face comparison and liveness use the MOCK provider (local/dev only; unmarked media is the uploader's one face, ATPOST test markers force failures)")
 		default:
 			client, cerr := sharedRekognition.Client(ctx, faceSettings.Region)
 			if cerr != nil {

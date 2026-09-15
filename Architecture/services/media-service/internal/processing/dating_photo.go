@@ -56,6 +56,15 @@ type DatingImage struct {
 	Blurred  RenderedImage
 }
 
+// DatingImageStamper may add test data to a prepared image before it is
+// stored. Only MockFaceComparer implements it (local/dev; the mock is refused
+// elsewhere). The dating photo service calls it only when the wired face
+// counter implements it, so with Rekognition the prepared bytes are exactly
+// what PrepareDatingImage rendered.
+type DatingImageStamper interface {
+	StampPreparedDatingImage(uploaded []byte, img *DatingImage)
+}
+
 // PrepareDatingImage renders the metadata-free original, the rendition
 // ladder and the blurred variant.
 func PrepareDatingImage(data []byte) (*DatingImage, error) {

@@ -203,6 +203,12 @@ func (s *DatingPhotoService) Prepare(ctx context.Context, requester, mediaID uui
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrDatingPhotoUnsupported, err)
 		}
+		// Local/dev mock only: carry the upload's face test marker onto the
+		// re-encoded renditions. Rekognition does not implement the stamper,
+		// so production stores exactly what PrepareDatingImage rendered.
+		if stamper, ok := s.faces.(processing.DatingImageStamper); ok {
+			stamper.StampPreparedDatingImage(raw, img)
+		}
 		if err := s.storePrepared(ctx, m, variants, img); err != nil {
 			return nil, err
 		}

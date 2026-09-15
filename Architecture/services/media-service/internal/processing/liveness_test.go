@@ -284,15 +284,31 @@ func TestCountBlinks(t *testing.T) {
 	}
 }
 
-func TestMockLivenessAnalyzer_NeverPassesArbitraryUploads(t *testing.T) {
+func TestMockLivenessAnalyzer_UnmarkedPassesAndMarkersFail(t *testing.T) {
 	m := NewMockLivenessAnalyzer()
 	ctx := context.Background()
 	cfg := DefaultLivenessConfig()
-	ref := []byte(MockFaceMarker + "faces=1:subject=asha")
-	res, err := m.AnalyzeLiveness(ctx, []byte("a real selfie video"), ref, cfg)
-	if err != nil || res.Reason != FaceReasonNoFace || res.BlinksDetected != 0 {
-		t.Fatalf("arbitrary video = %+v, %v", res, err)
+
+	// Dev rule: a real recording against the same account's unmarked photo
+	// is the uploader blinking RequiredBlinks times.
+	res, err := m.AnalyzeLiveness(ctx, []byte("a real selfie video"), []byte("a real photo"), cfg)
+	if err != nil || res.Reason != "" || res.BlinksDetected != cfg.RequiredBlinks || res.Similarity != 99 ||
+		!res.SingleFace || !res.SameFaceAcrossFrames {
+		t.Fatalf("unmarked video vs unmarked photo = %+v, %v; want a pass", res, err)
 	}
+	three := cfg
+	three.RequiredBlinks = 3
+	if res, _ := m.AnalyzeLiveness(ctx, []byte("video"), []byte("photo"), three); res.Reason != "" || res.BlinksDetected != 3 {
+		t.Fatalf("unmarked with 3 required = %+v", res)
+	}
+	if res, _ := m.AnalyzeLiveness(ctx, []byte("video"), []byte(MockFaceMarker+"faces=1:subject=someone-else"), cfg); res.Reason != "" || res.Similarity != 10 {
+		t.Fatalf("unmarked video vs different-face photo = %+v; want similarity 10", res)
+	}
+	if res, _ := m.AnalyzeLiveness(ctx, []byte("video"), []byte(MockFaceMarker+"faces=0"), cfg); res.Reason != FaceReasonNoFace {
+		t.Fatalf("unmarked video vs no-face photo = %+v; want NO_FACE", res)
+	}
+
+	ref := []byte(MockFaceMarker + "faces=1:subject=asha")
 	cases := []struct {
 		marker     string
 		wantReason string
@@ -302,6 +318,8 @@ func TestMockLivenessAnalyzer_NeverPassesArbitraryUploads(t *testing.T) {
 		{"blinks=2:faces=1:subject=asha", "", 2, 99},
 		{"blinks=3:faces=1:subject=asha:similarity=85", "", 3, 85},
 		{"blinks=1:faces=1:subject=asha", LivenessReasonNotEnoughBlinks, 1, 0},
+		{"blinks=0:faces=1:subject=asha", LivenessReasonNotEnoughBlinks, 0, 0},
+		{"blinks=2:faces=0:subject=asha", FaceReasonNoFace, 0, 0},
 		{"blinks=2:faces=1:subject=ravi", "", 2, 10},
 		{"blinks=2:faces=2:subject=asha", FaceReasonMultipleFaces, 0, 0},
 		{"blinks=2:faces=1:subject=asha:changed=1", LivenessReasonFaceChanged, 0, 0},

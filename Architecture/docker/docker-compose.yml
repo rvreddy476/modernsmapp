@@ -825,11 +825,13 @@ services:
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       # Lane D5: internal blink liveness + face comparison for dating selfie
       # verification (POST /internal/v1/media/faces/liveness and /compare).
-      # The mock is refused unless ENV is local/dev and passes only media
-      # carrying the ATPOST-LIVENESS-TEST / ATPOST-FACE-TEST markers
-      # (internal/processing/liveness.go, face_compare.go), so a real
-      # recording never passes locally. ENV is read only by that rule and the
-      # production checks here.
+      # The mock is refused unless ENV is local/dev. Unmarked media counts as
+      # the uploader's single face (a video blinks twice), so a real phone
+      # photo and recording pass locally; the ATPOST-LIVENESS-TEST /
+      # ATPOST-FACE-TEST markers force the failure codes, and dating photo
+      # prepare carries a face marker through the re-encode
+      # (internal/processing/liveness.go, face_compare.go). ENV is read only
+      # by that rule and the production checks here.
       ENV: local
       MEDIA_FACE_COMPARE_ENABLED: ${MEDIA_FACE_COMPARE_ENABLED:-true}
       MEDIA_FACE_COMPARE_BACKEND: ${MEDIA_FACE_COMPARE_BACKEND:-mock}

@@ -489,11 +489,16 @@ func (a *RekognitionLivenessAnalyzer) compare(ctx context.Context, source, targe
 //
 //	ATPOST-LIVENESS-TEST:v1:blinks=<n>:faces=<n>:subject=<id>[:duration_ms=<n>][:changed=1][:similarity=<0-100>]
 //
-// The reference image carries the face-compare marker (MockFaceMarker). The
-// mock is deterministic and NOT permissive: a video without the marker has no
-// face and no blinks, so an arbitrary upload never passes; the declared blink
-// count is held to RequiredBlinks; the reference must hold one face with the
-// same subject or similarity is 10. Refused outside ENV local/dev.
+// The reference image follows the face-compare rule (MockFaceMarker). The
+// mock is deterministic. Its dev rule: a video WITHOUT the marker is one face
+// of MockFaceUploaderSubject blinking exactly RequiredBlinks times for 3 s,
+// so a real phone recording passes against the same account's unmarked (or
+// subject=uploader) photo. Negative tests use an explicit marker: blinks=1
+// (NOT_ENOUGH_BLINKS), faces=0 / faces=2 (NO_FACE / MULTIPLE_FACES),
+// changed=1 (FACE_CHANGED), duration_ms over the limit (VIDEO_TOO_LONG), or a
+// subject different from the reference's (similarity 10). The reference must
+// hold one face with the same subject or similarity is 10. Refused outside
+// ENV local/dev.
 const MockLivenessMarker = "ATPOST-LIVENESS-TEST:v1:"
 
 // MockLivenessAnalyzer is the local/dev LivenessAnalyzer.
@@ -544,7 +549,11 @@ func (*MockLivenessAnalyzer) AnalyzeLiveness(ctx context.Context, video, referen
 	cfg = cfg.normalized()
 	m, ok := parseMarker(video, MockLivenessMarker)
 	if !ok {
-		return LivenessResult{Reason: FaceReasonNoFace}, nil
+		m = map[string]string{
+			"blinks":  strconv.Itoa(cfg.RequiredBlinks),
+			"faces":   "1",
+			"subject": MockFaceUploaderSubject,
+		}
 	}
 	res := LivenessResult{DurationMs: markerInt(m, "duration_ms", 3000)}
 	if res.DurationMs > cfg.LongestAcceptedMs() {

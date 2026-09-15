@@ -177,6 +177,13 @@ type datingFixture struct {
 // an ImageDescription holding datingGPSSecret) and a face test marker.
 func datingJPEG(t *testing.T) []byte {
 	t.Helper()
+	return datingJPEGWithComment(t, processing.MockFaceMarker+"faces=1:subject=owner\n")
+}
+
+// datingJPEGWithComment is datingJPEG with its COM segment holding comment
+// (no COM segment when empty).
+func datingJPEGWithComment(t *testing.T, comment string) []byte {
+	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 900, 600))
 	for y := 0; y < 600; y++ {
 		for x := 0; x < 900; x++ {
@@ -213,10 +220,12 @@ func datingJPEG(t *testing.T) []byte {
 	app1 := []byte{0xFF, 0xE1, 0, 0}
 	binary.BigEndian.PutUint16(app1[2:], uint16(len(payload)+2))
 	app1 = append(app1, payload...)
-	comment := processing.MockFaceMarker + "faces=1:subject=owner\n"
-	com := []byte{0xFF, 0xFE, 0, 0}
-	binary.BigEndian.PutUint16(com[2:], uint16(len(comment)+2))
-	com = append(com, comment...)
+	var com []byte
+	if comment != "" {
+		com = []byte{0xFF, 0xFE, 0, 0}
+		binary.BigEndian.PutUint16(com[2:], uint16(len(comment)+2))
+		com = append(com, comment...)
+	}
 	raw := enc.Bytes()
 	out := append([]byte{}, raw[:2]...)
 	out = append(out, app1...)
@@ -389,21 +398,10 @@ func TestDatingPhotoPrepare_BlurredVariantAndServedBytesStripped(t *testing.T) {
 	}
 
 	// Every object a dating photo URL can point at is free of EXIF/GPS and
-	// of the uploaded comment.
-	served := map[string]string{"blurred": blurKey, "full": fullKey, "original": f.store.assets[f.photo].StorageKey}
-	for _, v := range f.store.variants[f.photo] {
-		served[v.Name] = v.ObjectKey
-	}
-	for name, key := range served {
-		data := f.blobs.objects[key]
-		if len(data) == 0 {
-			t.Fatalf("%s (%s) was not stored", name, key)
-		}
-		if processing.JPEGHasMetadata(data) || bytes.Contains(data, []byte(datingGPSSecret)) ||
-			bytes.Contains(data, []byte("Exif")) || bytes.Contains(data, []byte("ATPOST-")) {
-			t.Fatalf("served %s bytes still carry EXIF/GPS or comments", name)
-		}
-	}
+	// of the uploaded comment. The fixture wires the local mock face
+	// provider, which appends its rebuilt face marker after the JPEG's EOI
+	// (never inside the image, never on the blurred variant).
+	assertServedDatingBytes(t, f, f.photo, "\n"+processing.MockFaceMarker+"faces=1:subject=owner\n")
 	blurred, err := jpeg.Decode(bytes.NewReader(f.blobs.objects[blurKey]))
 	if err != nil || blurred.Bounds().Dx() > 240 || blurred.Bounds().Dy() > 240 {
 		t.Fatalf("blurred decode = %v, %v; want a small JPEG", err, blurred)

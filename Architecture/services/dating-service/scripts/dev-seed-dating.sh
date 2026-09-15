@@ -32,9 +32,9 @@
 #                 passed by the mock scanner, after their objects exist.
 #   [blob-media]  object bytes go to the local MinIO with `mc` inside the minio
 #                 container, using that container's own root credentials.
-#   [blob-marker] dating's photo prepare re-encodes the original, which strips
-#                 the mock face marker; the marked placeholder is written back
-#                 so the mock liveness check can compare faces.
+#                 The placeholder photo carries a mock face marker; media's
+#                 photo prepare carries it onto the re-encoded renditions, so
+#                 the mock liveness check matches it to the selfie video.
 #   [sql-read]    read-only lookups: which media rows exist; verification counts.
 #   [sql-reset]   --reset deletes dating rows by deterministic id (the profile
 #                 DELETE route is a soft delete that a re-seed cannot undo).
@@ -529,20 +529,6 @@ seed_photos() {
   log "photos attached: $PHOTOS_ATTACHED"
 }
 
-MARKERS=0
-restore_markers() {
-  step "Mock face marker on prepared photos [blob-marker]"
-  local slug i=0
-  for slug in "${ALL[@]}"; do
-    i=$((i + 1))
-    [ "${STATUS[$slug]}" = pending_selfie ] && needs_onboarding "$slug" || continue
-    stage_photo "$slug" "$i"
-    MARKERS=$((MARKERS + 1))
-  done
-  upload_stage
-  log "markers restored: $MARKERS"
-}
-
 SELFIES=0
 seed_selfies() {
   step "Selfie (consent, blink challenge, liveness)"
@@ -702,7 +688,6 @@ fi
 seed_profiles
 seed_media
 seed_photos
-restore_markers
 seed_selfies
 seed_social
 verify
@@ -710,7 +695,7 @@ KEY=''
 
 step "Summary"
 printf '   %-16s created=%s reused=%s (20 synthetic + call_a/call_b)\n' Profiles "$CREATED" "$REUSED"
-printf '   %-16s media_rows=%s photos_attached=%s markers_restored=%s selfies_passed=%s\n' Onboarding "$MEDIA_INSERTED" "$PHOTOS_ATTACHED" "$MARKERS" "$SELFIES"
+printf '   %-16s media_rows=%s photos_attached=%s selfies_passed=%s\n' Onboarding "$MEDIA_INSERTED" "$PHOTOS_ATTACHED" "$SELFIES"
 printf '   %-16s sent=%s already_present=%s\n' Sparks "$SPARKS_SENT" "$SPARKS_KEPT"
 printf '   %-16s report=%s panic=%s\n' "Admin seeds" "${REPORT_STATE:-skipped}" "${PANIC_STATE:-skipped}"
 printf '   %-16s all=%s seeded=%s\n' "Active profiles" "${V_ACTIVE% *}" "${V_ACTIVE#* }"

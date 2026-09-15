@@ -73,16 +73,29 @@ func faceCountReason(n int) string {
 //
 //	ATPOST-FACE-TEST:v1:faces=<n>:subject=<id>[:similarity=<0-100>]
 //
-// The mock is deterministic and deliberately NOT permissive:
-//   - an image without the marker has zero faces (NO_FACE), so arbitrary
-//     real photos never match;
-//   - faces=0 / faces>1 produce NO_FACE / MULTIPLE_FACES;
+// The mock is deterministic. Its dev rule:
+//   - an image WITHOUT the marker holds exactly one face whose subject is
+//     MockFaceUploaderSubject. Every caller compares media owned by one
+//     requester (FaceCompareService checks ownership first), so that constant
+//     is in effect the uploader's own stable identity: a phone photo and a
+//     phone selfie video from the same account match, with no marker;
+//   - faces=0 / faces>1 produce NO_FACE / MULTIPLE_FACES (the "no face" and
+//     "group photo" test markers);
 //   - two single-face images match (similarity 99, or the source marker's
 //     similarity=) only when their subject ids are equal; different
-//     subjects score 10.
+//     subjects score 10 (the "different face" test marker is any other
+//     subject=, e.g. subject=someone-else). A marker without subject= never
+//     matches.
+//
+// Dating photo prepare re-encodes the image, which drops the marker; the
+// mock carries it onto the prepared renditions (StampPreparedDatingImage).
 //
 // It is refused outside ENV local/dev/development (ResolveFaceCompareSettings).
 const MockFaceMarker = "ATPOST-FACE-TEST:v1:"
+
+// MockFaceUploaderSubject is the subject of an image or video that carries no
+// test marker. A marker may name it to match unmarked media.
+const MockFaceUploaderSubject = "uploader"
 
 // MockFaceComparer is the local/dev FaceComparer. See MockFaceMarker.
 type MockFaceComparer struct{}
@@ -99,11 +112,20 @@ type mockFace struct {
 	similarity float64 // < 0 when absent
 }
 
+// parseMockFace applies the dev rule: no marker is the uploader's one face.
 func parseMockFace(img []byte) mockFace {
+	if f, ok := findMockFace(img); ok {
+		return f
+	}
+	return mockFace{faces: 1, subject: MockFaceUploaderSubject, similarity: -1}
+}
+
+// findMockFace reads the explicit marker; ok is false when there is none.
+func findMockFace(img []byte) (mockFace, bool) {
 	out := mockFace{similarity: -1}
 	i := bytes.Index(img, []byte(MockFaceMarker))
 	if i < 0 {
-		return out
+		return out, false
 	}
 	rest := img[i+len(MockFaceMarker):]
 	if end := bytes.IndexAny(rest, "\x00\r\n \t"); end >= 0 {
@@ -127,7 +149,71 @@ func parseMockFace(img []byte) mockFace {
 			}
 		}
 	}
-	return out
+	return out, true
+}
+
+// maxMockSubjectLen bounds a carried subject id.
+const maxMockSubjectLen = 64
+
+// line rebuilds a canonical marker from the parsed fields. Nothing is copied
+// from the upload: the subject keeps only [A-Za-z0-9._@+-], so the line can
+// never hold EXIF, GPS or other uploaded bytes.
+func (f mockFace) line() []byte {
+	var b strings.Builder
+	b.WriteString("\n" + MockFaceMarker + "faces=" + strconv.Itoa(f.faces))
+	if subject := sanitizeMockSubject(f.subject); subject != "" {
+		b.WriteString(":subject=" + subject)
+	}
+	if f.similarity >= 0 {
+		b.WriteString(":similarity=" + strconv.FormatFloat(f.similarity, 'f', -1, 64))
+	}
+	b.WriteString("\n")
+	return []byte(b.String())
+}
+
+func sanitizeMockSubject(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= maxMockSubjectLen {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '@', r == '+', r == '-':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// StampPreparedDatingImage implements DatingImageStamper, for the mock only.
+//
+// PrepareDatingImage re-encodes the upload, which removes an explicit face
+// test marker; without it a "different face" or "no face" test photo would
+// fall back to the uploader's face after prepare and the negative tests would
+// pass by accident, while a seeded subject would stop matching its video.
+// When the upload carried a marker, the canonical line (mockFace.line) is
+// appended after the JPEG's end-of-image marker on the original and on every
+// rendition the face routes can read. Bytes after EOI are not an APPn or COM
+// segment: decoders ignore them, JPEGHasMetadata still reports false, and the
+// line holds only the parsed fields. The blurred variant is never stamped. An
+// upload without a marker is left byte-for-byte as prepared.
+func (*MockFaceComparer) StampPreparedDatingImage(uploaded []byte, img *DatingImage) {
+	if img == nil {
+		return
+	}
+	f, ok := findMockFace(uploaded)
+	if !ok {
+		return
+	}
+	line := f.line()
+	stamp := func(r *RenderedImage) {
+		r.Bytes = append(append(make([]byte, 0, len(r.Bytes)+len(line)), r.Bytes...), line...)
+	}
+	stamp(&img.Original)
+	for i := range img.Variants {
+		stamp(&img.Variants[i])
+	}
 }
 
 // CompareFaces implements FaceComparer.
@@ -271,15 +357,16 @@ type FaceCounter interface {
 	CountFaces(ctx context.Context, image []byte) (int, error)
 }
 
-// CountFaces implements FaceCounter. An image without the test marker has no
-// deterministic answer, so the mock reports unavailable rather than 0: a real
-// photo uploaded locally is never sent to review for "no face" by the mock.
+// CountFaces implements FaceCounter with the mock's dev rule: an image
+// without the test marker holds one face (the uploader's), so a real phone
+// photo uploaded locally is not sent to review for "no face"; faces=0 in a
+// marker still reports 0.
 func (*MockFaceComparer) CountFaces(ctx context.Context, img []byte) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrFaceCompareUnavailable, err)
 	}
-	if !bytes.Contains(img, []byte(MockFaceMarker)) {
-		return 0, fmt.Errorf("%w: no face test marker", ErrFaceCompareUnavailable)
+	if len(img) == 0 {
+		return 0, fmt.Errorf("%w: empty image", ErrFaceCompareUnavailable)
 	}
 	return parseMockFace(img).faces, nil
 }

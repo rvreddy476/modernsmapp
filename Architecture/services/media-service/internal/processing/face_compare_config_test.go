@@ -31,6 +31,11 @@ func TestResolveFaceCompareSettings_MockRefusedOutsideLocalDev(t *testing.T) {
 		{"ENV": "test"},
 		{"ENV": "dev", "DEPLOY_ENV": "production"},
 		{"ENV": "local", "APP_ENV": "staging"},
+		{"ENV": "development", "ENVIRONMENT": "prod"},
+		{"ENV": "dev", "DEPLOY_ENV": "staging"},
+		{"ENV": "localhost"},
+		{"ENV": "dev-prod"},
+		{"DEPLOY_ENV": "local"},
 	} {
 		m := map[string]string{}
 		for k, v := range base {
