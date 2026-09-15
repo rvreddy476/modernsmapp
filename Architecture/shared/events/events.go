@@ -371,6 +371,8 @@ const (
 	EventDatingBlockCreated          = "dating.block.created"
 	EventDatingPremiumSubscribed     = "dating.premium.subscribed"
 	EventDatingPremiumExpired        = "dating.premium.expired"
+	// Lane P2: about 3 days before a Premium pass expires, once per purchase.
+	EventDatingPremiumExpiringSoon = "dating.premium.expiring_soon"
 	// Sprint 4 — moderation (shadow + strict). Layer 1 = regex, Layer 2 = LLM.
 	EventDatingModerationLayer1Result    = "dating.moderation.layer1.result"
 	EventDatingModerationLayer2Requested = "dating.moderation.layer2.requested"
