@@ -93,6 +93,8 @@ var adminRoutes = []struct{ method, path, body string }{
 	{http.MethodPost, "/v1/dating/admin/reports/" + uuid.NewString() + "/action", `{"action":"dismiss"}`},
 	{http.MethodGet, "/v1/dating/admin/safety/panic", ""},
 	{http.MethodPost, "/v1/dating/admin/safety/panic/" + uuid.NewString() + "/ack", ""},
+	{http.MethodGet, "/v1/dating/admin/safety/panic/" + uuid.NewString(), ""},
+	{http.MethodPost, "/v1/dating/admin/safety/panic/" + uuid.NewString() + "/resolve", `{"note":"x"}`},
 	{http.MethodGet, "/v1/dating/admin/photos/pending", ""},
 	{http.MethodGet, "/v1/dating/admin/audit", ""},
 	{http.MethodGet, "/v1/dating/admin/risk", ""},

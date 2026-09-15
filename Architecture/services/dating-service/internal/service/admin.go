@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -20,10 +23,69 @@ func (s *Service) ListReports(ctx context.Context, status, category string, limi
 	return s.store.ListReports(ctx, status, category, limit, offset)
 }
 
-// ListPanicEvents returns recent dating_safety_events of kind 'panic'
-// across all users for the on-call queue.
-func (s *Service) ListPanicEvents(ctx context.Context, limit int) ([]*store.SafetyEvent, error) {
-	return s.store.ListPanicEvents(ctx, limit)
+// ListPanicIncidents is the on-call queue: paginated, optionally one status,
+// and never coordinates (lane D8).
+func (s *Service) ListPanicIncidents(ctx context.Context, status string, limit, offset int) ([]*store.PanicIncidentSummary, error) {
+	return s.store.ListPanicIncidents(ctx, status, limit, offset)
+}
+
+// maxPanicResolutionNoteChars bounds a resolve note.
+const maxPanicResolutionNoteChars = 1000
+
+// GetPanicIncidentForAdmin returns one incident with its full-precision
+// location. Every view writes a "panic_viewed" dating_admin_audit row
+// FIRST; if the audit cannot be written the coordinates are not returned
+// (a location read with no trail never happens).
+func (s *Service) GetPanicIncidentForAdmin(ctx context.Context, adminID, incidentID uuid.UUID) (*store.PanicIncident, error) {
+	if adminID == uuid.Nil {
+		return nil, errAdminActorRequired
+	}
+	inc, err := s.store.GetPanicIncident(ctx, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.InsertAdminAudit(ctx, &store.AdminAuditEntry{
+		ActorAdminID:   adminID,
+		Action:         "panic_viewed",
+		TargetUserID:   inc.UserID,
+		TargetResource: "panic_incident:" + incidentID.String(),
+	}); err != nil {
+		return nil, fmt.Errorf("audit panic incident view: %w", err)
+	}
+	return inc, nil
+}
+
+// ResolvePanic closes an incident with a note and audits it ("panic_resolved",
+// the note in internal_notes). Resolving a resolved incident is a no-op.
+func (s *Service) ResolvePanic(ctx context.Context, adminID, incidentID uuid.UUID, note string) (*store.PanicIncident, error) {
+	if adminID == uuid.Nil {
+		return nil, errAdminActorRequired
+	}
+	note = strings.TrimSpace(note)
+	if utf8.RuneCountInString(note) > maxPanicResolutionNoteChars {
+		return nil, fmt.Errorf("invalid: note must be at most %d characters", maxPanicResolutionNoteChars)
+	}
+	inc, resolved, err := s.store.ResolvePanicIncident(ctx, incidentID, adminID, note)
+	if err != nil {
+		if errors.Is(err, store.ErrPanicAlreadyResolved) {
+			return inc, nil
+		}
+		return nil, err
+	}
+	if !resolved {
+		return inc, nil
+	}
+	if aerr := s.store.InsertAdminAudit(ctx, &store.AdminAuditEntry{
+		ActorAdminID:   adminID,
+		Action:         "panic_resolved",
+		TargetUserID:   inc.UserID,
+		TargetResource: "panic_incident:" + incidentID.String(),
+		InternalNotes:  note,
+	}); aerr != nil {
+		slog.Error("admin audit: insert failed for ResolvePanic",
+			"panic_id", incidentID, "actor_admin_id", adminID, "error", aerr)
+	}
+	return inc, nil
 }
 
 // ListPendingPhotos returns photos awaiting moderation, oldest-first.
@@ -68,10 +130,13 @@ func (s *Service) ListAdminAudit(ctx context.Context, f store.AdminAuditFilter, 
 //	            restoring the user's remembered onboarding step (or
 //	            'paused' if they had paused) — never a skipped step
 //
-// targetUserID is required for review + restrict + suspend + reinstate.
-// Every profile change goes through store.TransitionProfileStatus as the
-// admin actor; a refused edge (e.g. reinstating a profile that is not
-// held) fails the action before the report changes.
+// targetUserID is optional: every action applies to the report's own
+// target, and a targetUserID naming anyone else is refused with
+// ErrReportTargetMismatch before anything changes (lane D8 — a report id
+// can never be used to act on a different user). Every profile change goes
+// through store.TransitionProfileStatus as the admin actor; a refused edge
+// (e.g. reinstating a profile that is not held) fails the action before the
+// report changes.
 func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUserID uuid.UUID, action string) (string, error) {
 	if adminID == uuid.Nil {
 		return "", errAdminActorRequired
@@ -101,10 +166,16 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 		return "", errInvalidAdminAction
 	}
 
+	report, err := s.store.GetReportByID(ctx, reportID)
+	if err != nil {
+		return "", err
+	}
+	if targetUserID != uuid.Nil && targetUserID != report.TargetID {
+		return "", ErrReportTargetMismatch
+	}
+	targetUserID = report.TargetID
+
 	if profileEvent != "" {
-		if targetUserID == uuid.Nil {
-			return "", errInvalidAdminAction
-		}
 		if _, err := s.store.TransitionProfileStatus(ctx, targetUserID, profileEvent, store.ProfileActorAdmin); err != nil {
 			return "", err
 		}
@@ -121,15 +192,12 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 	// We need the reporter_id to scope the user-facing notification, so
 	// re-read the row. The store layer enforces SetReportStatus has
 	// landed; a missing row at this point is a race we log + skip.
-	if s.producer != nil {
-		if report, rerr := s.store.GetReportByID(ctx, reportID); rerr != nil {
-			slog.Warn("publish report.status_updated: lookup reporter failed",
-				"report_id", reportID, "error", rerr)
-		} else if report != nil {
-			if perr := s.producer.PublishReportStatusUpdated(ctx, reportID, report.ReporterID, newStatus); perr != nil {
-				slog.Warn("publish report.status_updated failed",
-					"report_id", reportID, "status", newStatus, "error", perr)
-			}
+	// A reporter purged since filing holds a subject token, not an account:
+	// nobody to notify.
+	if s.producer != nil && !report.ReporterAnonymised {
+		if perr := s.producer.PublishReportStatusUpdated(ctx, reportID, report.ReporterID, newStatus); perr != nil {
+			slog.Warn("publish report.status_updated failed",
+				"report_id", reportID, "status", newStatus, "error", perr)
 		}
 	}
 

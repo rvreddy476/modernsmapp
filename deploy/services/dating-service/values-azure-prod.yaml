@@ -34,6 +34,8 @@ externalSecret:
     remoteRef: jwt_secret_previous
   - secretKey: JWT_KID_PREVIOUS
     remoteRef: jwt_kid_previous
+  - secretKey: DATING_EVIDENCE_HMAC_KEY
+    remoteRef: dating_evidence_hmac_key
   secretStoreName: azure-key-vault
 env:
   ENV: prod
@@ -48,6 +50,12 @@ env:
   DATING_PHOTO_RECHECK_ENABLED: 'true'
   DATING_PHOTO_RECHECK_INTERVAL_HOURS: '24'
   DIGILOCKER_MODE: disabled
+  # Lane D8: grievance link, graph connection check, evidence retention, limits.
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  DATING_EVIDENCE_RETENTION_DAYS: '180'
+  DATING_PANIC_DAILY_LIMIT: '5'
+  DATING_REPORT_DAILY_LIMIT: '10'
 ingress:
   enabled: false
 pdb:

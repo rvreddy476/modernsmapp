@@ -65,6 +65,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET(InternalProfilePreviewPath, h.requireServiceCaller(OpProfilePreview), h.GetProfilePreview)
 	r.POST(InternalFirstMessagePath, h.requireServiceCaller(OpMatchFirstMessage), h.MatchFirstMessage)
 	r.GET(InternalRiskPath, h.requireServiceCaller(OpRiskRead), h.GetAccountRisk)
+	// Lane D8 — notification-service's paging context for one panic incident.
+	r.GET(InternalPanicNotifyContextPath, h.requireServiceCaller(OpSafetyPanicNotify), h.GetPanicNotifyContext)
 
 	// Everything else sits behind the internal-service-key gate.
 	v1 := r.Group("")
@@ -172,7 +174,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Sprint 4 — Safety center (spec §15).
 		dating.POST("/safety/panic", h.PostPanic)
+		// Lane D8 — trusted contacts (max 3; accepted connection or current
+		// match) and live location to a trusted contact or current match.
+		dating.GET("/safety/trusted-contacts", h.ListTrustedContacts)
+		dating.PUT("/safety/trusted-contacts/:contactId", h.PutTrustedContact)
+		dating.DELETE("/safety/trusted-contacts/:contactId", h.DeleteTrustedContact)
 		dating.POST("/safety/share-location", h.PostShareLocation)
+		dating.DELETE("/safety/share-location/:id", h.DeleteShareLocation)
+		dating.GET("/safety/shared-locations/:id", h.GetSharedLocation)
 		dating.POST("/safety/meet", h.PostScheduleMeet)
 		dating.POST("/safety/meet/:id/check-in", h.PostMeetCheckIn)
 		dating.POST("/safety/block", h.PostBlock)
@@ -204,12 +213,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		admin := dating.Group("/admin", h.requireAdmin())
 		admin.GET("/reports", h.ListReports)
 		admin.POST("/reports/:id/action", h.ActOnReport)
-		admin.GET("/safety/panic", h.ListPanicEvents)
-		// Phase 1 follow-up — admin acknowledgement flips
-		// acknowledged_at on the panic safety_event row, writes the
-		// audit row and emits dating.safety.panic.acknowledged so the
-		// user sees support has triaged their alert.
+		// Lane D8 — the panic queue is paginated and carries no
+		// coordinates; the point is only in the single-incident detail,
+		// and every detail view is audited.
+		admin.GET("/safety/panic", h.ListPanicIncidents)
+		admin.GET("/safety/panic/:id", h.GetPanicIncident)
+		// Acknowledge moves open → acknowledged, writes the audit row and
+		// emits dating.safety.panic.acknowledged so the user sees support
+		// has triaged their alert; resolve closes it with a note (audited).
 		admin.POST("/safety/panic/:id/ack", h.AcknowledgePanic)
+		admin.POST("/safety/panic/:id/resolve", h.ResolvePanic)
 		admin.GET("/photos/pending", h.ListPendingPhotos)
 		// Lane D5 — selfie review queue (borderline similarity, high-risk
 		// first attempts) and the moderator decision.
@@ -333,6 +346,46 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	}
 	if errors.Is(err, service.ErrSparkNoteRefused) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SPARK_NOTE_REFUSED", "spark notes cannot contain phone numbers, email addresses or links", nil)
+		return
+	}
+	// Lane D8: reports, trusted contacts, live location and meets.
+	if errors.Is(err, service.ErrInvalidReportReason) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REPORT_REASON", "reason must be one of the report reason codes",
+			map[string]any{"allowed": store.ReportReasons})
+		return
+	}
+	if errors.Is(err, store.ErrReportEvidenceInvalid) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REPORT_EVIDENCE", strings.TrimPrefix(err.Error(), "invalid: "), nil)
+		return
+	}
+	if errors.Is(err, store.ErrReportRateLimited) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "REPORT_RATE_LIMITED", "report limit reached; try again later",
+			map[string]any{"window_hours": int(store.ReportQuotaWindow.Hours())})
+		return
+	}
+	if errors.Is(err, service.ErrReportTargetMismatch) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REPORT_TARGET_MISMATCH", err.Error(), nil)
+		return
+	}
+	if errors.Is(err, service.ErrTrustedContactNotEligible) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TRUSTED_CONTACT_NOT_ELIGIBLE", err.Error(), nil)
+		return
+	}
+	if errors.Is(err, store.ErrTrustedContactLimit) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "TRUSTED_CONTACT_LIMIT", "you already have the maximum number of trusted contacts",
+			map[string]any{"max": store.MaxTrustedContacts})
+		return
+	}
+	if errors.Is(err, service.ErrConnectionCheckUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "CONNECTION_CHECK_UNAVAILABLE", "could not confirm the connection; try again shortly", nil)
+		return
+	}
+	if errors.Is(err, service.ErrShareRecipientNotAllowed) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "SHARE_RECIPIENT_NOT_ALLOWED", err.Error(), nil)
+		return
+	}
+	if errors.Is(err, service.ErrMeetRequiresMatch) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MEET_REQUIRES_MATCH", err.Error(), nil)
 		return
 	}
 	msg := err.Error()

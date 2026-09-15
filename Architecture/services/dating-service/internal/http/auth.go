@@ -57,6 +57,8 @@ const (
 	OpMatchFirstMessage = "dating:match.first_message"
 	OpRiskRead          = "dating:risk.read"
 	OpModerationScan    = "dating:moderation.scan"
+	// OpSafetyPanicNotify reads a panic incident's paging context (lane D8).
+	OpSafetyPanicNotify = "dating:safety.panic_notify"
 )
 
 // The /v1/dating/internal family. Paths contain "/internal/" so the
@@ -66,6 +68,9 @@ const (
 	InternalProfilePreviewPath = "/v1/dating/internal/profile/:userId/preview"
 	InternalFirstMessagePath   = "/v1/dating/internal/matches/:id/first-message"
 	InternalRiskPath           = "/v1/dating/internal/risk/:userId"
+	// InternalPanicNotifyContextPath serves notification-service the first
+	// name and trusted contacts for one panic incident (lane D8).
+	InternalPanicNotifyContextPath = "/v1/dating/internal/safety/panic/:id/notify-context"
 )
 
 // Stable error codes callers can branch on.

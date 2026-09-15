@@ -67,18 +67,24 @@ func (s *Store) UpsertDeviceFingerprint(ctx context.Context, userID uuid.UUID, f
 	return nil
 }
 
-// CountUsersByFingerprint returns the number of DISTINCT user_ids that
-// have ever been observed using the supplied fingerprint. Drives the
-// device-reuse risk signal.
+// CountUsersByFingerprint returns the number of DISTINCT accounts that
+// have ever been observed using the supplied fingerprint: live user_ids
+// plus purged accounts whose hashed fingerprint was retained (lane D8), so
+// deleting an account and signing up again on the same device still counts
+// as reuse. Drives the device-reuse risk signal.
 func (s *Store) CountUsersByFingerprint(ctx context.Context, fingerprint string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
 	}
 	var n int
 	err := s.db.QueryRow(ctx, `
-        SELECT COUNT(DISTINCT user_id)
-        FROM dating_device_fingerprints
-        WHERE fingerprint = $1`, fingerprint).Scan(&n)
+        SELECT (SELECT COUNT(DISTINCT user_id)
+                FROM dating_device_fingerprints
+                WHERE fingerprint = $1)
+             + (SELECT COUNT(DISTINCT subject_token)
+                FROM dating_retained_risk_signals
+                WHERE kind = 'device_fingerprint' AND value_hash = $2)`,
+		fingerprint, s.HashSignal(RetainedSignalDeviceFingerprint, fingerprint)).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count users by fingerprint: %w", err)
 	}

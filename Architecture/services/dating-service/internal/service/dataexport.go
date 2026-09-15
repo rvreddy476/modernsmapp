@@ -404,14 +404,22 @@ func (s *Service) PurgeProfile(ctx context.Context, userID uuid.UUID) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("invalid: user_id required")
 	}
-	rows, err := s.store.PurgeUserData(ctx, userID)
+	out, err := s.store.PurgeUserDataWithOutcome(ctx, userID)
 	if err != nil {
 		return err
 	}
 	if s.producer != nil {
+		// Lane D8: every match the purge closed emits dating.match.closed
+		// so chat-service closes the conversation (by match_id).
+		for _, m := range out.ClosedMatches {
+			if perr := s.producer.PublishMatchClosed(ctx, m.ID, userID, m.UserA, m.UserB); perr != nil {
+				slog.Error("publish match.closed after purge failed; match closed", "match_id", m.ID, "error", perr)
+			}
+		}
 		_ = s.producer.PublishProfilePurged(ctx, userID, "dpdp_grace_expired")
 	}
-	slog.Info("dpdp purge complete", "user_id", userID, "rows_affected", rows)
+	slog.Info("dpdp purge complete", "user_id", userID, "rows_affected", out.RowsAffected,
+		"matches_closed", len(out.ClosedMatches))
 	return nil
 }
 

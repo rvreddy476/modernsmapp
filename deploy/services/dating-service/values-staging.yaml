@@ -33,6 +33,10 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    # Lane D8: evidence HMAC key (>= 32 bytes). Boot refuses without it; create
+    # dating_evidence_hmac_key in the secret store before deploying. Never rotate
+    # casually: a new key unlinks previously retained evidence.
+    - { secretKey: DATING_EVIDENCE_HMAC_KEY, remoteRef: dating_evidence_hmac_key }
     # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
     # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
 
@@ -59,6 +63,14 @@ env:
   # refuses the mock outside local/dev; switch to http once the partner
   # credentials (DIGILOCKER_BASE_URL / DIGILOCKER_API_KEY) are in the store.
   DIGILOCKER_MODE: disabled
+  # Lane D8: grievance link per report (required outside local/dev), trusted
+  # contacts checked against graph connections, evidence retention after a
+  # purge, and the panic / report limits.
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  DATING_EVIDENCE_RETENTION_DAYS: "180"
+  DATING_PANIC_DAILY_LIMIT: "5"
+  DATING_REPORT_DAILY_LIMIT: "10"
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

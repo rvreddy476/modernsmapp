@@ -161,22 +161,20 @@ func TestAuthzIT_PanicAck_Audited(t *testing.T) {
 	env := setupAuthzIT(t)
 	ctx := context.Background()
 	user := uuid.New()
-	if err := env.st.RecordSafetyEvent(ctx, user, "panic", map[string]any{"d1": true}); err != nil {
+	out, err := env.st.RecordPanicIncident(ctx, store.RecordPanicParams{UserID: user, Source: store.PanicSourcePanic})
+	if err != nil {
 		t.Fatalf("seed panic: %v", err)
 	}
-	var panicID uuid.UUID
-	if err := env.pool.QueryRow(ctx, `SELECT id FROM dating_safety_events WHERE user_id=$1 AND kind='panic'`, user).Scan(&panicID); err != nil {
-		t.Fatal(err)
-	}
+	panicID := out.Incident.ID
 	admin := uuid.New()
 	assertAdminGate(t, env, http.MethodPost, "/v1/dating/admin/safety/panic/"+panicID.String()+"/ack", "", admin, "superadmin")
 
-	rows := auditFor(t, env.st, "safety_event:"+panicID.String())
+	rows := auditFor(t, env.st, "panic_incident:"+panicID.String())
 	if len(rows) != 1 || rows[0].ActorAdminID != admin || rows[0].Action != "panic_acknowledged" || rows[0].TargetUserID != user {
 		t.Fatalf("panic audit rows=%d actor=%v, want 1 panic_acknowledged row by %s for %s", len(rows), actorOf(rows), admin, user)
 	}
 	var ackBy uuid.UUID
-	if err := env.pool.QueryRow(ctx, `SELECT acknowledged_by FROM dating_safety_events WHERE id=$1`, panicID).Scan(&ackBy); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT acknowledged_by FROM dating_panic_incidents WHERE id=$1`, panicID).Scan(&ackBy); err != nil {
 		t.Fatal(err)
 	}
 	if ackBy != admin {

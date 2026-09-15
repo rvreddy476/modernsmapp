@@ -428,27 +428,60 @@ func (s *Store) ListExpiredSoftDeletes(ctx context.Context, graceDays int, limit
 	return out, rows.Err()
 }
 
-// PurgeUserData hard-deletes every row owned by userID across the dating
-// schema. Conversation history is preserved (the message-service owns it),
-// but vouches are revoked, sparks/stashes/passes/photos/prompts/tune/
-// preferences/safety_events are deleted, matches are anonymised, and the
+// CloseReasonAccountPurged closes a match whose participant was purged.
+const CloseReasonAccountPurged = "account_purged"
+
+// PurgeOutcome is what a purge did, for logging and event emission.
+type PurgeOutcome struct {
+	RowsAffected int64
+	// SubjectToken replaced the user id in every retained row.
+	SubjectToken uuid.UUID
+	// ClosedMatches were open when the purge ran, with their original
+	// participant ids, so the caller emits dating.match.closed after commit.
+	ClosedMatches []*Match
+}
+
+// PurgeUserData runs PurgeUserDataWithOutcome and returns the row count.
+func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, error) {
+	out, err := s.PurgeUserDataWithOutcome(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	return out.RowsAffected, nil
+}
+
+// PurgeUserDataWithOutcome erases userID's dating data in one transaction.
+// Conversation history is preserved (the message-service owns it), vouches
+// are revoked, sparks/stashes/passes/photos/prompts/tune/preferences/
+// safety_events/meets/trusted contacts/location shares are deleted, and the
 // profile row itself is dropped.
 //
-// DPDP §15.8 — payment_intents are deleted; payment_events are kept for
-// audit but their user link is removed via FK cascade since intent goes
-// away.
+// Lane D8 — evidence other people depend on is retained, keyed by the
+// user's stable subject token (store.SubjectToken) and bounded by the
+// evidence retention window:
+//   - account risk, profile status, device fingerprints and IPs are copied
+//     HMAC-hashed into dating_retained_risk_signals (ban evasion still hits);
+//   - reports against the user are kept; reports by the user are kept with
+//     the reporter replaced by the token;
+//   - panic incidents are kept with the user replaced by the token;
+//   - matches are closed (returned for dating.match.closed) and the user is
+//     replaced by the token in every match row.
 //
-// Returns the count of high-level rows affected for logging.
-func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, error) {
+// DPDP §15.8 — payment_intents are deleted; payment_events are kept for
+// audit but their user link is removed.
+func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) (*PurgeOutcome, error) {
 	if userID == uuid.Nil {
-		return 0, fmt.Errorf("invalid: user_id required")
+		return nil, fmt.Errorf("invalid: user_id required")
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("begin purge tx: %w", err)
+		return nil, fmt.Errorf("begin purge tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	out := &PurgeOutcome{SubjectToken: s.SubjectToken(userID)}
+	token := out.SubjectToken
+	retentionSecs := s.EvidenceRetention().Seconds()
 	var rowsAffected int64
 	exec := func(stmt string, args ...any) error {
 		tag, err := tx.Exec(ctx, stmt, args...)
@@ -459,57 +492,83 @@ func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, err
 		return nil
 	}
 
+	// 0) Retain hashed risk signals before steps below delete their sources
+	//    (the profile here; risk and fingerprints in PurgeUserAuxiliary).
+	retained, err := s.retainRiskSignalsTx(ctx, tx, userID, token)
+	if err != nil {
+		return nil, err
+	}
+	rowsAffected += retained
+
 	// 1) Photos, prompts, tune, preferences (cascade-OK siblings).
 	if err := exec(`DELETE FROM dating_photos       WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_prompts      WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_tunes        WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_preferences  WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_echo_cache   WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// 2) Sparks (sent + received). Stashes and passes (this user's only).
 	if err := exec(`DELETE FROM dating_sparks   WHERE from_user_id = $1 OR to_user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_stashes  WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_passes   WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_blocks   WHERE user_id = $1 OR blocked_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_spark_ledger WHERE from_user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_location_changes WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_explain_ledger WHERE viewer_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	// 3) Matches: we DO NOT delete the rows because the other party may
-	//    still see the match in their inbox. Anonymise: the deleted user
-	//    becomes a sentinel uuid with first_name="Deleted user" surfaced
-	//    by the profile preview lookup. The match record itself stays.
-	//    We DO close any active matches so the other side stops being
-	//    surfaced as conversational.
+	// 3) Matches: the rows stay (the other party's history), but every
+	//    open match is closed first — returned so the caller emits
+	//    dating.match.closed and chat closes the conversation — and then
+	//    the purged user is replaced by their subject token in every row,
+	//    re-ordering the pair so user_a < user_b still holds.
+	rows, err := tx.Query(ctx, `
+        UPDATE dating_matches
+        SET status = 'closed', closed_by = $1, closed_at = now(), close_reason = $2
+        WHERE (user_a = $1 OR user_b = $1) AND status IN `+openMatchStatuses+`
+        RETURNING `+matchSelectCols, userID, CloseReasonAccountPurged)
+	if err != nil {
+		return nil, fmt.Errorf("purge step: close matches: %w", err)
+	}
+	closed, err := collectMatches(rows)
+	if err != nil {
+		return nil, fmt.Errorf("purge step: close matches: %w", err)
+	}
+	out.ClosedMatches = closed
+	rowsAffected += int64(len(closed))
 	if err := exec(`
         UPDATE dating_matches
-        SET status = 'closed', closed_by = $1, closed_at = now()
-        WHERE (user_a = $1 OR user_b = $1) AND status NOT IN ('closed','expired')`, userID); err != nil {
-		return 0, err
+        SET user_a = LEAST(CASE WHEN user_a = $1 THEN $2::uuid ELSE user_a END,
+                           CASE WHEN user_b = $1 THEN $2::uuid ELSE user_b END),
+            user_b = GREATEST(CASE WHEN user_a = $1 THEN $2::uuid ELSE user_a END,
+                              CASE WHEN user_b = $1 THEN $2::uuid ELSE user_b END),
+            closed_by = CASE WHEN closed_by = $1 THEN $2::uuid ELSE closed_by END,
+            anonymised_at = COALESCE(anonymised_at, now())
+        WHERE user_a = $1 OR user_b = $1`, userID, token); err != nil {
+		return nil, err
 	}
 
 	// 4) Vouches: outstanding entries (sent or received) are revoked.
@@ -517,24 +576,53 @@ func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, err
         UPDATE dating_vouches
         SET status = 'revoked', decided_at = COALESCE(decided_at, now())
         WHERE (voucher_id = $1 OR vouchee_id = $1) AND status NOT IN ('revoked','declined')`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	// 5) Safety events, meets, reports.
+	// 5) Safety: history, meets, trusted contacts and live shares go.
+	//    Evidence stays (lane D8): reports against the user are kept,
+	//    reports by the user keep the report with the reporter replaced by
+	//    the token, and panic incidents keep the incident under the token.
+	//    All of it is deleted by the retention sweeper after retain_until.
 	if err := exec(`DELETE FROM dating_safety_events WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_meets         WHERE user_id = $1 OR with_user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
-	if err := exec(`DELETE FROM dating_reports       WHERE reporter_id = $1 OR target_id = $1`, userID); err != nil {
-		return 0, err
+	if err := exec(`DELETE FROM dating_trusted_contacts WHERE user_id = $1 OR contact_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_location_shares WHERE user_id = $1 OR recipient_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`
+        UPDATE dating_reports
+        SET retain_until = GREATEST(COALESCE(retain_until, now()), now() + make_interval(secs => $2))
+        WHERE target_id = $1`, userID, retentionSecs); err != nil {
+		return nil, err
+	}
+	if err := exec(`
+        UPDATE dating_reports
+        SET reporter_id = $2,
+            reporter_anonymised_at = COALESCE(reporter_anonymised_at, now()),
+            retain_until = GREATEST(COALESCE(retain_until, now()), now() + make_interval(secs => $3))
+        WHERE reporter_id = $1`, userID, token, retentionSecs); err != nil {
+		return nil, err
+	}
+	if err := exec(`
+        UPDATE dating_panic_incidents
+        SET user_id = $2,
+            anonymised_at = COALESCE(anonymised_at, now()),
+            retain_until = GREATEST(COALESCE(retain_until, now()), now() + make_interval(secs => $3))
+        WHERE user_id = $1`, userID, token, retentionSecs); err != nil {
+		return nil, err
 	}
 
 	// 6) Verifications. The Aadhaar number was never stored; we drop the
 	//    row so digilocker_ref + selfie_score are gone.
 	if err := exec(`DELETE FROM dating_verifications WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// 7) Premium: delete the subscription row. Payment events are kept for
@@ -544,13 +632,13 @@ func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, err
                     WHERE payment_intent_id IN (
                         SELECT id FROM dating_payment_intents WHERE user_id = $1
                     )`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_payment_intents WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := exec(`DELETE FROM dating_premium_subscriptions WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// 8) Consent log + completed exports — keep audit row count for the
@@ -558,16 +646,17 @@ func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, err
 	//    it's the proof we collected consent at all; we delete exports
 	//    because the blob has expired.
 	if err := exec(`DELETE FROM dating_data_exports WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// 9) Hard-delete the profile row.
 	if err := exec(`DELETE FROM dating_profiles WHERE user_id = $1`, userID); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit purge: %w", err)
+		return nil, fmt.Errorf("commit purge: %w", err)
 	}
-	return rowsAffected, nil
+	out.RowsAffected = rowsAffected
+	return out, nil
 }

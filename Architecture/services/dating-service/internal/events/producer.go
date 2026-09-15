@@ -343,12 +343,15 @@ func (p *Producer) PublishVerificationCompleted(ctx context.Context, userID uuid
 
 // --- Safety events (Sprint 4) ----------------------------------------------
 
+// SafetyPanicPayload is dating.safety.panic (lane D8). It NEVER carries
+// coordinates or client context: responders read the point from the audited
+// admin detail route, and notification-service reads the trusted-contact
+// context from dating's service-only notify-context route.
 type SafetyPanicPayload struct {
-	UserID    string         `json:"user_id"`
-	Latitude  *float64       `json:"latitude,omitempty"`
-	Longitude *float64       `json:"longitude,omitempty"`
-	Context   map[string]any `json:"context,omitempty"`
-	FiredAt   time.Time      `json:"fired_at"`
+	IncidentID  string    `json:"incident_id"`
+	UserID      string    `json:"user_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	HasLocation bool      `json:"has_location"`
 }
 
 type SafetyLocationSharedPayload struct {
@@ -396,10 +399,10 @@ type BlockCreatedPayload struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func (p *Producer) PublishSafetyPanic(ctx context.Context, userID uuid.UUID, lat, lng *float64, contextMeta map[string]any) error {
+func (p *Producer) PublishSafetyPanic(ctx context.Context, incidentID, userID uuid.UUID, createdAt time.Time, hasLocation bool) error {
 	return p.publish(ctx, events.EventDatingSafetyPanic, &userID, SafetyPanicPayload{
-		UserID: userID.String(), Latitude: lat, Longitude: lng,
-		Context: contextMeta, FiredAt: time.Now(),
+		IncidentID: incidentID.String(), UserID: userID.String(),
+		CreatedAt: createdAt.UTC(), HasLocation: hasLocation,
 	})
 }
 

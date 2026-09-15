@@ -31,15 +31,80 @@ func (h *Handler) ListReports(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items, "limit": limit, "offset": offset}, nil)
 }
 
-// ListPanicEvents — GET /v1/dating/admin/safety/panic?limit=
-func (h *Handler) ListPanicEvents(c *gin.Context) {
-	limit := parseIntQuery(c, "limit", 100, 200)
-	items, err := h.svc.ListPanicEvents(c.Request.Context(), limit)
+// ListPanicIncidents — GET /v1/dating/admin/safety/panic?status=&limit=&offset=
+//
+// The on-call queue (lane D8): paginated, filterable by open / acknowledged
+// / resolved, and never coordinates — each row says only has_location.
+func (h *Handler) ListPanicIncidents(c *gin.Context) {
+	status := c.Query("status")
+	limit := parseIntQuery(c, "limit", 50, 200)
+	offset := parseIntQuery(c, "offset", 0, 100000)
+	items, err := h.svc.ListPanicIncidents(c.Request.Context(), status, limit, offset)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items, "limit": limit}, nil)
+	resp := gin.H{"items": items, "limit": limit, "offset": offset}
+	if len(items) == limit {
+		resp["next_offset"] = offset + limit
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// GetPanicIncident — GET /v1/dating/admin/safety/panic/:id
+//
+// One incident with its full-precision location and client context. Every
+// view is audited ("panic_viewed", actor = the admin's X-User-Id); if the
+// audit cannot be written the response is refused.
+func (h *Handler) GetPanicIncident(c *gin.Context) {
+	adminID, ok := adminActor(c)
+	if !ok {
+		return
+	}
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	inc, err := h.svc.GetPanicIncidentForAdmin(c.Request.Context(), adminID, id)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, inc, nil)
+}
+
+// resolvePanicRequest is the body of POST /v1/dating/admin/safety/panic/:id/resolve.
+type resolvePanicRequest struct {
+	Note string `json:"note"`
+}
+
+// ResolvePanic — POST /v1/dating/admin/safety/panic/:id/resolve
+//
+// Body: {note?}. Closes the incident (acknowledging it too when skipped)
+// and audits "panic_resolved" with the note. Idempotent. The response
+// carries no coordinates.
+func (h *Handler) ResolvePanic(c *gin.Context) {
+	adminID, ok := adminActor(c)
+	if !ok {
+		return
+	}
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	var body resolvePanicRequest
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+			return
+		}
+	}
+	inc, err := h.svc.ResolvePanic(c.Request.Context(), adminID, id, body.Note)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "RESOLVE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"status": inc.Status, "resolved_at": inc.ResolvedAt}, nil)
 }
 
 // ListPendingPhotos — GET /v1/dating/admin/photos/pending?limit=
@@ -61,12 +126,13 @@ type actOnReportRequest struct {
 
 // ActOnReport — POST /v1/dating/admin/reports/:id/action
 // Body: {action, target_user_id?}. Allowed actions: dismiss /
-// resolved / warn / review / restrict / suspend / reinstate. Review,
-// restrict, suspend + reinstate require target_user_id and move the
-// reported user through the profile status machine (pending_review /
-// restricted / suspended, or back to their remembered step), which
-// fires deck-cache invalidation downstream. A refused edge returns 409
-// PROFILE_TRANSITION_NOT_ALLOWED.
+// resolved / warn / review / restrict / suspend / reinstate. Every action
+// applies to the report's own target; a target_user_id naming anyone else
+// is refused with 409 REPORT_TARGET_MISMATCH before anything changes.
+// Review, restrict, suspend + reinstate move the reported user through the
+// profile status machine (pending_review / restricted / suspended, or back
+// to their remembered step), which fires deck-cache invalidation
+// downstream. A refused edge returns 409 PROFILE_TRANSITION_NOT_ALLOWED.
 //
 // The dating_admin_audit actor is the admin's gateway-derived X-User-Id
 // (requireAdmin). No actor → the action is refused.

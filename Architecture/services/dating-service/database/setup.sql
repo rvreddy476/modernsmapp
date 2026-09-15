@@ -1108,3 +1108,174 @@ BEGIN
 END
 $d7$;
 
+
+-- ---------------------------------------------------------------------------
+-- Lane D8 — safety and moderation.
+--
+-- dating_panic_incidents: one row per incident. A panic or a meet check-in
+--   "help" inside the dedupe window of the user's last unresolved incident
+--   updates that incident (trigger_count, last_triggered_at, newest point).
+--   The full-precision location lives ONLY here: it is served by the audited
+--   admin detail route and, when the user opted in, to their trusted
+--   contacts through the service-only notify context. suspected_abuse marks
+--   an incident over the daily limit: recorded, never paged. After an account
+--   purge user_id holds the stable anonymised subject token and retain_until
+--   bounds how long the incident is kept.
+-- dating_trusted_contacts: at most three per user; each was an accepted
+--   connection or a current match when added.
+-- dating_location_shares: a live share to one recipient (trusted contact or
+--   current match), exact point, hard expiry. Stopping clears the point; the
+--   retention sweeper clears expired points and deletes old rows.
+-- dating_reports: fixed reason codes on new rows (NOT VALID keeps legacy
+--   rows), evidence references, the auto-block marker, the trust-safety
+--   grievance link with its retry bookkeeping, and retain_until once a party
+--   is purged (a purged reporter is replaced by their subject token).
+-- dating_retained_risk_signals: HMAC-hashed account risk and device signals
+--   kept after a purge so ban evasion is still detected; deleted after
+--   retain_until.
+-- dating_matches.anonymised_at: the purged participant was replaced by their
+--   subject token.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_panic_incidents (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id            UUID        NOT NULL,
+    source             TEXT        NOT NULL CHECK (source IN ('panic','meet_checkin','legacy')),
+    meet_id            UUID,
+    latitude           DOUBLE PRECISION,
+    longitude          DOUBLE PRECISION,
+    context            JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    trigger_count      INT         NOT NULL DEFAULT 1,
+    first_triggered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_triggered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    status             TEXT        NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','acknowledged','resolved')),
+    suspected_abuse    BOOLEAN     NOT NULL DEFAULT false,
+    acknowledged_at    TIMESTAMPTZ,
+    acknowledged_by    UUID,
+    resolved_at        TIMESTAMPTZ,
+    resolved_by        UUID,
+    resolution_note    TEXT,
+    legacy_event_id    UUID UNIQUE,
+    anonymised_at      TIMESTAMPTZ,
+    retain_until       TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_panic_incidents_user
+    ON dating_panic_incidents(user_id, last_triggered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_panic_incidents_status
+    ON dating_panic_incidents(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_panic_incidents_retain
+    ON dating_panic_incidents(retain_until) WHERE retain_until IS NOT NULL;
+
+-- Legacy panic rows in dating_safety_events carried the coordinates in
+-- details. Copy each into an incident once, then strip the coordinates.
+INSERT INTO dating_panic_incidents (user_id, source, latitude, longitude, context,
+    first_triggered_at, last_triggered_at, created_at, status,
+    acknowledged_at, acknowledged_by, legacy_event_id)
+SELECT e.user_id, 'legacy',
+       CASE WHEN jsonb_typeof(e.details->'latitude') = 'number'
+             AND jsonb_typeof(e.details->'longitude') = 'number'
+            THEN (e.details->>'latitude')::double precision END,
+       CASE WHEN jsonb_typeof(e.details->'latitude') = 'number'
+             AND jsonb_typeof(e.details->'longitude') = 'number'
+            THEN (e.details->>'longitude')::double precision END,
+       COALESCE(CASE WHEN jsonb_typeof(e.details) = 'object'
+                     THEN e.details - 'latitude' - 'longitude' END, '{}'::jsonb),
+       e.created_at, e.created_at, e.created_at,
+       CASE WHEN e.acknowledged_at IS NULL THEN 'open' ELSE 'acknowledged' END,
+       e.acknowledged_at, e.acknowledged_by, e.id
+FROM dating_safety_events e
+WHERE e.kind = 'panic'
+ON CONFLICT (legacy_event_id) DO NOTHING;
+UPDATE dating_safety_events
+SET details = details - 'latitude' - 'longitude'
+WHERE kind = 'panic' AND jsonb_typeof(details) = 'object'
+  AND (details ? 'latitude' OR details ? 'longitude');
+
+CREATE TABLE IF NOT EXISTS dating_trusted_contacts (
+    user_id                 UUID        NOT NULL,
+    contact_id              UUID        NOT NULL,
+    share_location_on_panic BOOLEAN     NOT NULL DEFAULT false,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, contact_id),
+    CHECK (user_id <> contact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_trusted_contacts_contact
+    ON dating_trusted_contacts(contact_id);
+
+CREATE TABLE IF NOT EXISTS dating_location_shares (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        UUID        NOT NULL,
+    recipient_id   UUID        NOT NULL,
+    recipient_kind TEXT        NOT NULL CHECK (recipient_kind IN ('trusted_contact','match')),
+    latitude       DOUBLE PRECISION,
+    longitude      DOUBLE PRECISION,
+    expires_at     TIMESTAMPTZ NOT NULL,
+    stopped_at     TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (user_id <> recipient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_location_shares_recipient
+    ON dating_location_shares(recipient_id, expires_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_location_shares_user
+    ON dating_location_shares(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_location_shares_expires
+    ON dating_location_shares(expires_at);
+
+ALTER TABLE dating_reports
+    ADD COLUMN IF NOT EXISTS evidence                  JSONB   NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS auto_blocked              BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS grievance_id              UUID,
+    ADD COLUMN IF NOT EXISTS grievance_attempts        INT     NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS grievance_next_attempt_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS grievance_last_error      TEXT,
+    ADD COLUMN IF NOT EXISTS reporter_anonymised_at    TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS retain_until              TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_dating_reports_reporter_created
+    ON dating_reports(reporter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_reports_grievance_pending
+    ON dating_reports(grievance_next_attempt_at)
+    WHERE grievance_id IS NULL AND grievance_next_attempt_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_reports_retain
+    ON dating_reports(retain_until) WHERE retain_until IS NOT NULL;
+DO $d8$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'dating_reports_reason_chk'
+                     AND conrelid = 'dating_reports'::regclass) THEN
+        ALTER TABLE dating_reports ADD CONSTRAINT dating_reports_reason_chk
+            CHECK (category IN ('harassment','fake_profile','underage','nudity',
+                                'scam','hate','violence','spam','other')) NOT VALID;
+    END IF;
+END
+$d8$;
+
+CREATE TABLE IF NOT EXISTS dating_retained_risk_signals (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_token   UUID        NOT NULL,
+    kind            TEXT        NOT NULL CHECK (kind IN ('account','device_fingerprint','ip')),
+    value_hash      TEXT        NOT NULL,
+    risk_score      INT,
+    risk_level      TEXT,
+    profile_status  TEXT,
+    reports_against INT,
+    first_seen_at   TIMESTAMPTZ,
+    last_seen_at    TIMESTAMPTZ,
+    retained_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    retain_until    TIMESTAMPTZ NOT NULL,
+    UNIQUE (subject_token, kind, value_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_retained_risk_signals_hash
+    ON dating_retained_risk_signals(kind, value_hash);
+CREATE INDEX IF NOT EXISTS idx_dating_retained_risk_signals_retain
+    ON dating_retained_risk_signals(retain_until);
+
+ALTER TABLE dating_matches ADD COLUMN IF NOT EXISTS anonymised_at TIMESTAMPTZ;
+-- dating_panic_incidents.page_required / paged_at: a page that never reached
+-- Kafka is re-published by the sweeper (service.RepublishUnpagedPanics).
+ALTER TABLE dating_panic_incidents
+    ADD COLUMN IF NOT EXISTS page_required BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS paged_at      TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_dating_panic_incidents_unpaged
+    ON dating_panic_incidents(created_at) WHERE page_required AND paged_at IS NULL;

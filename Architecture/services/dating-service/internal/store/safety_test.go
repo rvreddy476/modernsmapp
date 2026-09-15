@@ -108,13 +108,13 @@ func TestCreateReport_PersistsRow(t *testing.T) {
 	}
 }
 
-func TestCreateLiveLocationShare(t *testing.T) {
+func TestCreateLocationShare(t *testing.T) {
 	s, cleanup := safetyTestStore(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
 	ensureProfileForTest(t, s, a)
 	ensureProfileForTest(t, s, b)
-	share, err := s.CreateLiveLocationShare(context.Background(), a, b, 30)
+	share, err := s.CreateLocationShare(context.Background(), a, b, ShareRecipientMatch, 12.97, 77.59, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

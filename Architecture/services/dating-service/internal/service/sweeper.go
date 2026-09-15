@@ -161,4 +161,28 @@ func (s *Service) runSweeperOnce(ctx context.Context, cfg SweeperConfig) {
 	} else if n > 0 {
 		slog.Info("sweeper: account risks recomputed", "count", n)
 	}
+
+	// 6. Lane D8: re-publish panic pages that never reached Kafka.
+	if n, err := s.RepublishUnpagedPanics(ctx, cfg.BatchLimit); err != nil {
+		slog.Error("sweeper: RepublishUnpagedPanics failed", "error", err)
+	} else if n > 0 {
+		slog.Warn("sweeper: panic pages re-published", "count", n)
+	}
+
+	// 7. Lane D8: link reports to trust-safety grievances (retries).
+	if n, err := s.LinkPendingReportGrievances(ctx, cfg.BatchLimit); err != nil {
+		slog.Warn("sweeper: LinkPendingReportGrievances failed", "error", err)
+	} else if n > 0 {
+		slog.Info("sweeper: report grievances linked", "count", n)
+	}
+
+	// 8. Lane D8: delete evidence past its retention window and clear
+	// expired live-location points.
+	if res, err := s.store.DeleteExpiredEvidence(ctx, cfg.BatchLimit); err != nil {
+		slog.Warn("sweeper: DeleteExpiredEvidence failed", "error", err)
+	} else if res.Total() > 0 {
+		slog.Info("sweeper: expired evidence removed", "reports", res.Reports,
+			"panic_incidents", res.PanicIncidents, "risk_signals", res.RiskSignals,
+			"location_points", res.LocationPointsExpired, "location_shares", res.LocationSharesDeleted)
+	}
 }

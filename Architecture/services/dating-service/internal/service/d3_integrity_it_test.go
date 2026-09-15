@@ -355,7 +355,7 @@ func TestD3_BlockedPairIsInvisibleEverywhere(t *testing.T) {
 	}
 
 	// Safety surfaces.
-	if _, err := svc.ShareLocation(ctx, a, LocationShareRequest{ContactID: b, DurationMinutes: 30}); !errors.Is(err, ErrCandidateUnavailable) {
+	if _, err := svc.ShareLocation(ctx, a, LocationShareRequest{RecipientID: b, DurationMinutes: 30, Latitude: floatPtr(12.97), Longitude: floatPtr(77.59)}); !errors.Is(err, ErrCandidateUnavailable) {
 		t.Fatalf("share location across a block: err=%v", err)
 	}
 	if _, err := svc.ScheduleMeet(ctx, a, MeetRequest{WithUserID: b, When: time.Now().Add(time.Hour)}); !errors.Is(err, ErrCandidateUnavailable) {

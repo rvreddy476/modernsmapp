@@ -108,6 +108,32 @@ func main() {
 		slog.Error("dating-service: refusing to start", "error", err)
 		os.Exit(1)
 	}
+	// Lane D8: panic / report / live-location limits (DATING_PANIC_*,
+	// DATING_REPORT_DAILY_LIMIT, DATING_LOCATION_SHARE_MAX_MINUTES), the
+	// evidence key and retention window (DATING_EVIDENCE_*; the key is
+	// required outside local/dev) and the trust-safety grievance link
+	// (TRUST_SAFETY_SERVICE_URL, required outside local/dev).
+	safetyCfg, err := datinghttp.ResolveSafetyConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	evidenceKey, evidenceRetention, evidenceWarning, err := datinghttp.ResolveEvidenceConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if evidenceWarning != "" {
+		slog.Warn(evidenceWarning)
+	}
+	trustSafetyURL, trustSafetyWarning, err := datinghttp.ResolveTrustSafetyURL(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if trustSafetyWarning != "" {
+		slog.Warn(trustSafetyWarning)
+	}
 
 	port := env("HTTP_PORT", "8112")
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -188,6 +214,26 @@ func main() {
 		"location_change_min_interval", locationCfg.LocationChangeMinInterval,
 		"location_changes_per_day", locationCfg.LocationChangesPerDay,
 		"explain_daily_limit", locationCfg.ExplainDailyLimit)
+
+	datingStore.SetEvidenceKey(evidenceKey)
+	datingStore.SetEvidenceRetention(evidenceRetention)
+	datingSvc.SetSafetyConfig(safetyCfg)
+	if trustSafetyURL != "" {
+		if internalKey == "" {
+			slog.Warn("dating-service: TRUST_SAFETY_SERVICE_URL is set but INTERNAL_SERVICE_KEY is not — " +
+				"trust-safety will refuse the grievance link and reports stay pending")
+		}
+		datingSvc.SetTrustSafetyClient(service.NewHTTPTrustSafetyClient(trustSafetyURL, internalKey, nil))
+	}
+	if graphURL := strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")); graphURL != "" {
+		datingSvc.SetConnectionChecker(service.NewHTTPConnectionChecker(graphURL, internalKey, nil))
+	} else {
+		slog.Warn("dating-service: GRAPH_SERVICE_URL not set — only current matches can be added as trusted contacts")
+	}
+	slog.Info("safety configured",
+		"panic_dedupe_window", safetyCfg.PanicDedupeWindow, "panic_daily_limit", safetyCfg.PanicDailyLimit,
+		"report_daily_limit", safetyCfg.ReportDailyLimit, "location_share_max", safetyCfg.LocationShareMax,
+		"evidence_retention", evidenceRetention, "trust_safety_url", trustSafetyURL)
 
 	graphProvider := matcher.NewHTTPGraphProvider(
 		os.Getenv("GRAPH_SERVICE_URL"),

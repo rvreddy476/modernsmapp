@@ -21,6 +21,11 @@ type Store struct {
 	// requests (lane D7, location.go).
 	locationLimits    LocationChangeLimits
 	explainDailyLimit int
+	// evidenceKey keys subject tokens and retained signal hashes;
+	// evidenceRetention bounds retained evidence after a purge (lane D8,
+	// evidence.go).
+	evidenceKey       []byte
+	evidenceRetention time.Duration
 }
 
 // New returns a Store backed by the given pool.
@@ -30,6 +35,7 @@ func New(db *pgxpool.Pool) *Store {
 		declineCooldown:   DeclineCooldown,
 		locationLimits:    DefaultLocationChangeLimits(),
 		explainDailyLimit: DefaultExplainDailyLimit,
+		evidenceRetention: DefaultEvidenceRetention,
 	}
 }
 

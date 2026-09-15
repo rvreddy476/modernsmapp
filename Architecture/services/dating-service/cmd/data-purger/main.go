@@ -32,6 +32,7 @@ import (
 
 	"github.com/atpost/dating-service/database"
 	datingevents "github.com/atpost/dating-service/internal/events"
+	datinghttp "github.com/atpost/dating-service/internal/http"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/o11y/logging"
@@ -74,7 +75,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Lane D8: the purge replaces the user with their subject token in
+	// retained evidence. The key and window must match dating-service's, or
+	// the purger would write tokens the server cannot link.
+	evidenceKey, evidenceRetention, evidenceWarning, err := datinghttp.ResolveEvidenceConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-data-purger: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if evidenceWarning != "" {
+		slog.Warn(evidenceWarning)
+	}
+
 	st := store.New(pool)
+	st.SetEvidenceKey(evidenceKey)
+	st.SetEvidenceRetention(evidenceRetention)
 	svc := service.New(st, nil)
 
 	dialer, err := transport.KafkaDialerFromEnv()

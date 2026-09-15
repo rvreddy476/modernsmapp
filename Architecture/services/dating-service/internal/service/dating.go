@@ -50,6 +50,12 @@ type Service struct {
 	// only in local/dev without IDENTITY_PROFILE_SERVICE_URL, where the
 	// interim client lock-once rule applies (see UpsertProfile).
 	identityClient IdentityBasicsClient
+	// Lane D8 — safety limits, the trust-safety grievance link and the
+	// graph connection check for trusted contacts.
+	safetyCfg    SafetyConfig
+	safetyCfgSet bool
+	trustSafety  TrustSafetyClient
+	connections  ConnectionChecker
 
 	// Sprint 6 — moderation-strict feature-flag cache (60s TTL). The mutex
 	// is held for the cache read/write only; flag fetches happen outside.

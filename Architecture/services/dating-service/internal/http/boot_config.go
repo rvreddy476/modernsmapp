@@ -299,3 +299,115 @@ func ResolveLocationPrivacyConfig(getenv func(string) string) (service.LocationP
 	}
 	return cfg, nil
 }
+
+// envIntIn reads a whole number in [lo, hi]; blank keeps *dst.
+func envIntIn(getenv func(string) string, key string, lo, hi int, dst *int) error {
+	raw := strings.TrimSpace(getenv(key))
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < lo || n > hi {
+		return fmt.Errorf("%s must be a whole number from %d to %d, got %q", key, lo, hi, raw)
+	}
+	*dst = n
+	return nil
+}
+
+// ResolveSafetyConfig reads the lane D8 limits:
+//
+//	DATING_PANIC_DEDUPE_SECONDS        30-900, default 120 (same incident)
+//	DATING_PANIC_DAILY_LIMIT           1-50,   default 5 (rolling 24h; above it
+//	                                   an incident is suspected abuse, not paged)
+//	DATING_REPORT_DAILY_LIMIT          1-100,  default 10 per reporter (rolling 24h)
+//	DATING_LOCATION_SHARE_MAX_MINUTES  15-480, default 120
+//
+// Any malformed value is an error, on which main refuses to start.
+func ResolveSafetyConfig(getenv func(string) string) (service.SafetyConfig, error) {
+	cfg := service.DefaultSafetyConfig()
+	secs := int(cfg.PanicDedupeWindow / time.Second)
+	if err := envIntIn(getenv, "DATING_PANIC_DEDUPE_SECONDS", 30, 900, &secs); err != nil {
+		return cfg, err
+	}
+	cfg.PanicDedupeWindow = time.Duration(secs) * time.Second
+	if err := envIntIn(getenv, "DATING_PANIC_DAILY_LIMIT", 1, 50, &cfg.PanicDailyLimit); err != nil {
+		return cfg, err
+	}
+	if err := envIntIn(getenv, "DATING_REPORT_DAILY_LIMIT", 1, 100, &cfg.ReportDailyLimit); err != nil {
+		return cfg, err
+	}
+	maxMinutes := int(cfg.LocationShareMax / time.Minute)
+	if err := envIntIn(getenv, "DATING_LOCATION_SHARE_MAX_MINUTES", 15, 480, &maxMinutes); err != nil {
+		return cfg, err
+	}
+	cfg.LocationShareMax = time.Duration(maxMinutes) * time.Minute
+	if cfg.LocationShareDefault > cfg.LocationShareMax {
+		cfg.LocationShareDefault = cfg.LocationShareMax
+	}
+	return cfg, nil
+}
+
+// MinEvidenceKeyBytes is the shortest DATING_EVIDENCE_HMAC_KEY accepted.
+const MinEvidenceKeyBytes = 32
+
+// Evidence retention bounds for DATING_EVIDENCE_RETENTION_DAYS.
+const (
+	MinEvidenceRetentionDays     = 30
+	MaxEvidenceRetentionDays     = 3650
+	DefaultEvidenceRetentionDays = 180
+)
+
+// ResolveEvidenceConfig reads the lane D8 evidence settings:
+//
+//	DATING_EVIDENCE_HMAC_KEY        secret, at least 32 bytes. Keys the stable
+//	                                subject token that replaces a purged user's
+//	                                id in retained evidence and the hashes of
+//	                                retained device/IP signals. Required unless
+//	                                ENV is local/dev; changing it breaks the
+//	                                link between old and new retained rows.
+//	DATING_EVIDENCE_RETENTION_DAYS  30-3650, default 180.
+//
+// In local/dev an unset key returns a nil key and a warning (the store's
+// development key applies). A set but short key is refused everywhere.
+func ResolveEvidenceConfig(getenv func(string) string) (key []byte, retention time.Duration, warning string, err error) {
+	days := DefaultEvidenceRetentionDays
+	if err := envIntIn(getenv, "DATING_EVIDENCE_RETENTION_DAYS", MinEvidenceRetentionDays, MaxEvidenceRetentionDays, &days); err != nil {
+		return nil, 0, "", err
+	}
+	retention = time.Duration(days) * 24 * time.Hour
+	raw := strings.TrimSpace(getenv("DATING_EVIDENCE_HMAC_KEY"))
+	if raw != "" {
+		if len(raw) < MinEvidenceKeyBytes {
+			return nil, 0, "", fmt.Errorf("DATING_EVIDENCE_HMAC_KEY must be at least %d bytes", MinEvidenceKeyBytes)
+		}
+		return []byte(raw), retention, "", nil
+	}
+	env := strings.TrimSpace(getenv("ENV"))
+	if !IsLocalEnv(env) {
+		return nil, 0, "", fmt.Errorf("DATING_EVIDENCE_HMAC_KEY is required unless ENV is local or dev (ENV=%q): "+
+			"without it retained evidence is keyed by a public development key", env)
+	}
+	return nil, retention, "dating-service: DATING_EVIDENCE_HMAC_KEY not set (ENV=" + env + ") — " +
+		"retained evidence uses the development key. Local/dev only.", nil
+}
+
+// ResolveTrustSafetyURL reads TRUST_SAFETY_SERVICE_URL, the base of the
+// internal grievance route every report links through. Required unless ENV
+// is local/dev (where unset leaves reports pending for the retry worker);
+// a set but malformed URL is refused everywhere.
+func ResolveTrustSafetyURL(getenv func(string) string) (baseURL, warning string, err error) {
+	raw := strings.TrimSpace(getenv("TRUST_SAFETY_SERVICE_URL"))
+	if raw == "" {
+		env := strings.TrimSpace(getenv("ENV"))
+		if !IsLocalEnv(env) {
+			return "", "", fmt.Errorf("TRUST_SAFETY_SERVICE_URL is required unless ENV is local or dev (ENV=%q): "+
+				"without it no dating report gets a grievance", env)
+		}
+		return "", "dating-service: TRUST_SAFETY_SERVICE_URL not set (ENV=" + env + ") — reports stay pending for the grievance retry worker. Local/dev only.", nil
+	}
+	u, perr := url.Parse(raw)
+	if perr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", "", fmt.Errorf("TRUST_SAFETY_SERVICE_URL must be an absolute http(s) URL")
+	}
+	return strings.TrimRight(raw, "/"), "", nil
+}

@@ -150,7 +150,7 @@ var profileEventActors = map[ProfileEvent][]ProfileActor{
 	ProfileEventPhotoRevoked:   {ProfileActorSystem, ProfileActorAdmin},
 	ProfileEventPause:          {ProfileActorUser, ProfileActorLifecycle},
 	ProfileEventUnpause:        {ProfileActorUser, ProfileActorLifecycle},
-	ProfileEventReview:         {ProfileActorAdmin},
+	ProfileEventReview:         {ProfileActorAdmin, ProfileActorSystem}, // system: an underage report (service.Report, lane D8)
 	ProfileEventRestrict:       {ProfileActorAdmin, ProfileActorSystem}, // system: under-18 identity birth date (service.UpsertProfile)
 	ProfileEventSuspend:        {ProfileActorAdmin},
 	ProfileEventReinstate:      {ProfileActorAdmin},
@@ -194,6 +194,8 @@ func OnboardingEventFrom(step string) (ProfileEvent, bool) {
 //	any non-deleted → restricted                       system (under-18 identity
 //	                                                   birth date); a no-op on a
 //	                                                   suspended or restricted row
+//	any non-deleted → pending_review                   system (underage report);
+//	                                                   same no-op rule
 //	held → remembered step (or paused if flagged)      admin
 //	any → deleted                                      user | system | lifecycle
 func NextProfileStatus(cur ProfileStatusState, ev ProfileEvent, actor ProfileActor) (ProfileStatusState, error) {
