@@ -345,8 +345,13 @@ func (s *Store) UpdateProfile(ctx context.Context, userID uuid.UUID, p UpdatePro
 	return scanProfile(s.db.QueryRow(ctx, `
 		UPDATE profile.profiles
 		SET display_name = $2, bio = $3, avatar_media_id = COALESCE($4, avatar_media_id), cover_media_id = COALESCE($5, cover_media_id),
-			first_name = $6, last_name = $7, preferred_name = $8, pronouns = $9,
-			gender = $10, dob = $11, username = $12,
+			-- first_name and dob: nil means "leave it alone". Before this, a PUT
+			-- that omitted dob (the Android edit screen with a blank date) or a
+			-- handle change (which never carries either field) wrote NULL over
+			-- both. Neither field can be cleared through this statement; the
+			-- service validates any value that is supplied.
+			first_name = COALESCE($6, first_name), last_name = $7, preferred_name = $8, pronouns = $9,
+			gender = $10, dob = COALESCE($11, dob), username = $12,
 			category = $13, profession = $14, website = $15, location = $16,
 			-- NOT NULL columns wrapped in COALESCE: omitting the field in the
 			-- request should mean "leave it alone", not "blow up with 23502".

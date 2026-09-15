@@ -22,13 +22,35 @@ type Service struct {
 	producer *events.Producer
 	cfg      *config.Config
 	log      *slog.Logger
+	// profiles is the store slice UpdateProfile reads and writes through.
+	// *store.Store in production; a fake in unit tests.
+	profiles ProfileWriteStore
+	now      func() time.Time
+}
+
+// ProfileWriteStore is what a validated profile write needs from storage.
+type ProfileWriteStore interface {
+	GetProfile(ctx context.Context, userID uuid.UUID) (*store.Profile, error)
+	GetRegistrationDOB(ctx context.Context, userID uuid.UUID) (*time.Time, error)
+	UpdateProfile(ctx context.Context, userID uuid.UUID, params store.UpdateProfileParams) (*store.Profile, error)
 }
 
 func New(s *store.Store, rdb *redis.Client, producer *events.Producer, cfg *config.Config, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger}
+	return &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger, profiles: s, now: time.Now}
+}
+
+// WithProfileWriteStore replaces the storage behind UpdateProfile and the
+// clock its age rule reads. For tests that drive the real validation without
+// a database.
+func (s *Service) WithProfileWriteStore(w ProfileWriteStore, now func() time.Time) *Service {
+	s.profiles = w
+	if now != nil {
+		s.now = now
+	}
+	return s
 }
 
 // CreateProfile handles profile creation from UserRegistered event.
@@ -36,6 +58,23 @@ func (s *Service) CreateProfile(ctx context.Context, userID uuid.UUID, firstName
 	displayName := firstName + " " + lastName
 	if displayName == " " {
 		displayName = "User " + userID.String()[:8]
+	}
+	// auth-service gates registration on the same rule, so a refusal here
+	// means a malformed or stale event. The profile is still created — a
+	// dropped UserRegistered would leave an account with no profile — but
+	// without the DOB, which the internal identity read then sources from the
+	// registration consent row instead. The value itself is never logged.
+	if dob != "" {
+		born, err := ParseProfileDOB(dob)
+		if err == nil {
+			err = CheckProfileDOB(born, s.now())
+		}
+		if err != nil {
+			fe, _ := IsFieldError(err)
+			s.log.Warn("registration event carried an invalid date of birth; profile created without it",
+				"user_id", userID, "code", fe.Code)
+			dob = ""
+		}
 	}
 	return s.store.CreateProfile(ctx, userID, displayName, firstName, lastName, dob, gender)
 }
@@ -134,15 +173,36 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 		params.Username = &trimmed
 	}
 
-	p, err := s.store.UpdateProfile(ctx, userID, params)
+	dobChange, err := s.checkIdentityFields(ctx, userID, &params)
 	if err != nil {
 		return nil, err
 	}
 
+	p, err := s.profiles.UpdateProfile(ctx, userID, params)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, errors.New("profile not found")
+	}
+
+	if dobChange != nil {
+		// Years only. A full date of birth is an identity-verification answer
+		// and never goes to logs.
+		oldYear := 0
+		if dobChange.old != nil {
+			oldYear = dobChange.old.Year()
+		}
+		s.log.Info("profile date of birth changed",
+			"user_id", userID, "old_year", oldYear, "new_year", dobChange.new.Year())
+	}
+
 	// Invalidate caches
-	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
-	if p.Username != nil {
-		s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", *p.Username))
+	if s.rdb != nil {
+		s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
+		if p.Username != nil {
+			s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", *p.Username))
+		}
 	}
 
 	// Publish profile updated event
@@ -157,8 +217,10 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 	if p.Username != nil {
 		usernameStr = *p.Username
 	}
-	if err := s.producer.PublishUserProfileUpdated(ctx, userID, usernameStr, p.DisplayName, p.Bio, p.AvatarMediaID, fnPtr, lnPtr); err != nil {
-		s.log.Warn("failed to publish profile updated event", "err", err, "user_id", userID)
+	if s.producer != nil {
+		if err := s.producer.PublishUserProfileUpdated(ctx, userID, usernameStr, p.DisplayName, p.Bio, p.AvatarMediaID, fnPtr, lnPtr); err != nil {
+			s.log.Warn("failed to publish profile updated event", "err", err, "user_id", userID)
+		}
 	}
 
 	return p, nil

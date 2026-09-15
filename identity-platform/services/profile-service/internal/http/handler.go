@@ -402,7 +402,9 @@ type UpdateProfileRequest struct {
 	PreferredName *string    `json:"preferred_name"`
 	Pronouns      *string    `json:"pronouns"`
 	Gender        *string    `json:"gender"`
-	DoB           *time.Time `json:"dob"`
+	// Presence-aware: absent leaves the stored DOB alone; a present null or
+	// "" is refused (DOB_REQUIRED) rather than clearing it. See profileDOBField.
+	DoB profileDOBField `json:"dob"`
 	// SR-4: `username` is NOT settable here.
 	//
 	// A handle is an identity claim, not a display preference. Changing it
@@ -452,6 +454,10 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE", "Profile details are invalid", problems, nil)
 		return
 	}
+	dob, err := req.DoB.resolve()
+	if writeFieldError(c, err) {
+		return
+	}
 	req.Website = normalizeProfileURL(req.Website)
 	if req.CTAURL != nil && strings.TrimSpace(*req.CTAURL) != "" {
 		normalized := normalizeProfileURL(*req.CTAURL)
@@ -473,7 +479,7 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 		PreferredName: req.PreferredName,
 		Pronouns:      req.Pronouns,
 		Gender:        req.Gender,
-		DoB:           req.DoB,
+		DoB:           dob,
 		// SR-4: Username is intentionally not carried here — PUT /me/handle is
 		// the only path that may change a handle. Passing nil leaves it unchanged.
 		Username:          nil,
@@ -494,6 +500,9 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 	}
 
 	p, err := h.svc.UpdateProfile(c.Request.Context(), userID, params)
+	if writeFieldError(c, err) {
+		return
+	}
 	if err != nil {
 		h.log.Error("failed to update profile", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)

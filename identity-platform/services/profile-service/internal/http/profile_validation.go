@@ -3,9 +3,72 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"github.com/atpost/identity-profile-service/internal/service"
+	"github.com/atpost/identity-shared/api"
+	"github.com/gin-gonic/gin"
 )
+
+// profileDOBField is the wire form of `dob` on PUT /v1/profiles/me.
+//
+// It was *time.Time, which could not tell an absent field from an explicit
+// null (both decoded to nil, and the store then wrote NULL), and which only
+// parsed RFC3339, so the obvious "YYYY-MM-DD" was a 400. UnmarshalJSON runs
+// only when the key is present, including for a literal null.
+type profileDOBField struct {
+	present bool
+	raw     json.RawMessage
+}
+
+func (f *profileDOBField) UnmarshalJSON(b []byte) error {
+	f.present = true
+	f.raw = append(json.RawMessage(nil), b...)
+	return nil
+}
+
+// resolve returns nil for an absent field, the parsed date for a valid one,
+// and a *service.FieldError otherwise.
+func (f profileDOBField) resolve() (*time.Time, error) {
+	if !f.present {
+		return nil, nil
+	}
+	required := &service.FieldError{Field: "dob", Code: service.CodeDOBRequired,
+		Message: "date of birth cannot be removed; omit the field to leave it unchanged"}
+	if string(f.raw) == "null" {
+		return nil, required
+	}
+	var s string
+	if err := json.Unmarshal(f.raw, &s); err != nil {
+		return nil, &service.FieldError{Field: "dob", Code: service.CodeDOBInvalid,
+			Message: "date of birth must be a string in YYYY-MM-DD format"}
+	}
+	if strings.TrimSpace(s) == "" {
+		return nil, required
+	}
+	born, err := service.ParseProfileDOB(s)
+	if err != nil {
+		return nil, err
+	}
+	return &born, nil
+}
+
+// writeFieldError renders a validation failure as 422 in the standard
+// envelope — error.code is the stable field code, error.details.field names
+// the field — and reports whether it wrote. Any other error is left to the
+// caller.
+func writeFieldError(c *gin.Context, err error) bool {
+	fe, ok := service.IsFieldError(err)
+	if !ok {
+		return false
+	}
+	api.Error(c.Writer, http.StatusUnprocessableEntity, fe.Code, fe.Message,
+		map[string]any{"field": fe.Field}, nil)
+	return true
+}
 
 const (
 	maxDisplayName      = 80

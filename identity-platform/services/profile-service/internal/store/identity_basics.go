@@ -75,6 +75,31 @@ const identityBasicsQuery = `
 	  AND COALESCE(u.account_status, 'active') NOT IN ('deactivated', 'pending_deletion', 'purged')
 	  AND NOT EXISTS (SELECT 1 FROM profile.hidden_profiles h WHERE h.user_id = p.user_id)`
 
+const registrationDOBQuery = `
+	SELECT declared_dob
+	FROM auth.registration_consents
+	WHERE user_id = $1 AND declared_dob IS NOT NULL
+	ORDER BY accepted_at ASC, id ASC
+	LIMIT 1`
+
+// GetRegistrationDOB returns the date of birth declared at registration, or
+// nil when the account has no consent row carrying one (it predates consent
+// capture, or signed up through OAuth, which records no DOB). Same row choice
+// as identityBasicsQuery: the earliest declaration wins, so a later
+// re-acceptance cannot move it. No account-status filter: this backs the
+// owner's own profile write, not a read served to another service.
+func (s *Store) GetRegistrationDOB(ctx context.Context, userID uuid.UUID) (*time.Time, error) {
+	var dob time.Time
+	err := s.db.QueryRow(ctx, registrationDOBQuery, userID).Scan(&dob)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &dob, nil
+}
+
 // GetIdentityBasics returns nil, nil for an unknown or withheld account.
 func (s *Store) GetIdentityBasics(ctx context.Context, userID uuid.UUID) (*IdentityBasics, error) {
 	var (
