@@ -50,6 +50,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *store.Store, func()) {
 		}
 	}
 	st := store.New(pool)
+	st.SetPII(testPII(t)) // lane D9
 	svc := service.New(st, nil)
 	svc.SetMessageClient(&stubMessageClient{})
 

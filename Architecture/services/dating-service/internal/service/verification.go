@@ -325,6 +325,10 @@ func (s *Service) CreateSelfieChallenge(ctx context.Context, userID uuid.UUID) (
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: userID required")
 	}
+	// Lane D9: the liveness / face check is biometric processing.
+	if err := s.requireConsent(ctx, userID, ConsentBiometricSelfie); err != nil {
+		return nil, err
+	}
 	if _, err := s.store.GetProfile(ctx, userID); err != nil {
 		return nil, err
 	}
@@ -357,6 +361,10 @@ func (s *Service) CreateSelfieChallenge(ctx context.Context, userID uuid.UUID) (
 func (s *Service) SubmitSelfie(ctx context.Context, userID, videoMediaID, challengeID uuid.UUID) (*SelfieFlowResult, error) {
 	if userID == uuid.Nil || videoMediaID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: user and video_media_id required")
+	}
+	// Lane D9: no check runs after the biometric consent is withdrawn.
+	if err := s.requireConsent(ctx, userID, ConsentBiometricSelfie); err != nil {
+		return nil, err
 	}
 	if challengeID == uuid.Nil {
 		return nil, store.ErrSelfieChallengeInvalid
@@ -542,6 +550,10 @@ func (s *Service) ReviewSelfie(ctx context.Context, adminID, userID uuid.UUID, d
 	}
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: user id required")
+	}
+	// Lane D9: a withdrawn biometric consent stops a pending check too.
+	if err := s.requireConsent(ctx, userID, ConsentBiometricSelfie); err != nil {
+		return nil, err
 	}
 	var approve bool
 	switch decision {

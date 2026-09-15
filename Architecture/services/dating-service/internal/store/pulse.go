@@ -28,6 +28,9 @@ type CandidateProfile struct {
 	Longitude         *float64
 	LocationGeohash   *string
 	Community         *string
+	// communitySealed is the sealed community as scanned (lane D9), opened
+	// into Community for the deck's same-community cap only.
+	communitySealed []byte
 	BlurMode          bool
 	TrustTier         string
 	LastActiveAt      time.Time
@@ -141,7 +144,7 @@ func (e *EchoCache) CommunitySlugs() []string {
 const candidateSelectCols = `
     p.user_id, p.first_name, p.intent, p.bio, p.gender, p.birth_date,
     p.city, p.country, p.latitude, p.longitude, p.location_geohash,
-    p.community, p.blur_mode, p.trust_tier, p.last_active_at, p.language_prefs,
+    p.community, p.community_sealed, p.blur_mode, p.trust_tier, p.last_active_at, p.language_prefs,
     t.lifestyle_rhythm, t.conversation_style, t.faith_weight, t.family_weight,
     t.region_weight, t.family_plans_axis, t.education_axis,
     -- Lane D6: the approved primary photo's id and visibility, never its
@@ -331,7 +334,7 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 
 	out := make([]CandidateProfile, 0, limit)
 	for rows.Next() {
-		c, err := scanCandidate(rows)
+		c, err := s.scanCandidate(ctx, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -350,12 +353,23 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	return out, rows.Err()
 }
 
-func scanCandidate(row pgx.Row) (*CandidateProfile, error) {
+// scanCandidate scans a candidate and opens its sealed community (lane D9).
+func (s *Store) scanCandidate(ctx context.Context, row pgx.Row) (*CandidateProfile, error) {
+	c, err := scanCandidateRow(row)
+	if err != nil {
+		return nil, err
+	}
+	c.Community = s.openSensitive(ctx, c.communitySealed, c.Community, "community")
+	c.communitySealed = nil
+	return c, nil
+}
+
+func scanCandidateRow(row pgx.Row) (*CandidateProfile, error) {
 	c := &CandidateProfile{}
 	err := row.Scan(
 		&c.UserID, &c.FirstName, &c.Intent, &c.Bio, &c.Gender, &c.BirthDate,
 		&c.City, &c.Country, &c.Latitude, &c.Longitude, &c.LocationGeohash,
-		&c.Community, &c.BlurMode, &c.TrustTier, &c.LastActiveAt, &c.LanguagePrefs,
+		&c.Community, &c.communitySealed, &c.BlurMode, &c.TrustTier, &c.LastActiveAt, &c.LanguagePrefs,
 		&c.LifestyleRhythm, &c.ConversationStyle, &c.FaithWeight, &c.FamilyWeight,
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
 		&c.PrimaryPhotoID, &c.PrimaryPhotoVisibility, &c.SparkedViewer,
@@ -389,7 +403,7 @@ func (s *Store) GetCandidateForViewer(ctx context.Context, viewerID, userID uuid
           AND p.profile_status NOT IN ('suspended','deleted')
           AND NOT `+blockedPairPredicate("$1::uuid", "p.user_id")+`
           AND `+incognitoVisiblePredicate("p", "$1::uuid"), viewerID, userID)
-	return scanCandidate(row)
+	return s.scanCandidate(ctx, row)
 }
 
 // --- Echo cache ------------------------------------------------------------

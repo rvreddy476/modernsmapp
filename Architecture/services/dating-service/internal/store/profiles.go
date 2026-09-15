@@ -59,9 +59,23 @@ const profileSelectCols = `
     occupation, education, drinking, smoking, exercise, diet,
     wants_children, family_plans, blur_mode, visible_to_public, paused,
     language_prefs, trust_tier, profile_status, created_at, updated_at, deleted_at,
-    first_name, prior_status, dob_source, first_name_source`
+    first_name, prior_status, dob_source, first_name_source,
+    religion_sealed, community_sealed`
 
-func scanProfile(row pgx.Row) (*Profile, error) {
+// scanProfile scans a profile and opens its sealed fields (lane D9). A row
+// the backfill has not reached yet still reads its legacy plaintext.
+func (s *Store) scanProfile(ctx context.Context, row pgx.Row) (*Profile, error) {
+	p, err := scanProfileRow(row)
+	if err != nil {
+		return nil, err
+	}
+	p.Religion = s.openSensitive(ctx, p.religionSealed, p.Religion, "religion")
+	p.Community = s.openSensitive(ctx, p.communitySealed, p.Community, "community")
+	p.religionSealed, p.communitySealed = nil, nil
+	return p, nil
+}
+
+func scanProfileRow(row pgx.Row) (*Profile, error) {
 	p := &Profile{}
 	err := row.Scan(
 		&p.UserID, &p.Intent, &p.Bio, &p.Gender, &p.BirthDate, &p.City, &p.State, &p.Country,
@@ -70,6 +84,7 @@ func scanProfile(row pgx.Row) (*Profile, error) {
 		&p.WantsChildren, &p.FamilyPlans, &p.BlurMode, &p.VisibleToPublic, &p.Paused,
 		&p.LanguagePrefs, &p.TrustTier, &p.ProfileStatus, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 		&p.FirstName, &p.PriorStatus, &p.DOBSource, &p.FirstNameSource,
+		&p.religionSealed, &p.communitySealed,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -86,7 +101,7 @@ func (s *Store) GetProfile(ctx context.Context, userID uuid.UUID) (*Profile, err
         SELECT `+profileSelectCols+`
         FROM dating_profiles
         WHERE user_id = $1 AND deleted_at IS NULL`, userID)
-	return scanProfile(row)
+	return s.scanProfile(ctx, row)
 }
 
 // UpsertProfile inserts a new profile or updates an existing one in place.
@@ -108,6 +123,18 @@ func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertPro
 		if lat, lng, err = ValidateLocation(p.Latitude, p.Longitude); err != nil {
 			return nil, err
 		}
+	}
+
+	// Lane D9: religion and community are sealed before the transaction; a
+	// blank value clears the field. Without keys a non-blank value is refused
+	// (ErrPIINotConfigured) and nothing is written.
+	religionBlob, religionSet, err := s.sealOptionalSensitive(ctx, p.Religion)
+	if err != nil {
+		return nil, err
+	}
+	communityBlob, communitySet, err := s.sealOptionalSensitive(ctx, p.Community)
+	if err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -141,6 +168,14 @@ func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertPro
 
 	// Step 3: one UPDATE carrying every other non-nil column.
 	cols, vals := profileAssignments(p)
+	if religionSet {
+		cols = append(cols, "religion_sealed", "religion")
+		vals = append(vals, religionBlob, nil)
+	}
+	if communitySet {
+		cols = append(cols, "community_sealed", "community")
+		vals = append(vals, communityBlob, nil)
+	}
 	if len(cols) > 0 {
 		sets := make([]string, 0, len(cols)+1)
 		args := make([]any, 0, len(vals)+1)
@@ -197,12 +232,8 @@ func profileAssignments(p UpsertProfileParams) ([]string, []any) {
 	if p.HeightCm != nil {
 		add("height_cm", *p.HeightCm)
 	}
-	if p.Religion != nil {
-		add("religion", *p.Religion)
-	}
-	if p.Community != nil {
-		add("community", *p.Community)
-	}
+	// religion / community: never here (lane D9, UpsertProfile writes the
+	// sealed columns and clears the plaintext ones).
 	if p.Occupation != nil {
 		add("occupation", *p.Occupation)
 	}
@@ -628,6 +659,24 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 	// 7) Premium: delete the subscription row. Payment events are kept for
 	//    audit but their FK to dating_payment_intents goes away when the
 	//    intents do; we explicitly NULL the link via SET NULL update.
+	// Lane D9: raw provider payloads carry the payer's contact details and
+	// notes naming the user. They are redacted (the audit row, provider event
+	// id and type stay) before the intent link goes: every event linked
+	// through the user's intents, naming one of their order or subscription
+	// ids, or naming the user id.
+	if err := exec(`
+        UPDATE dating_payment_events e
+        SET payload = jsonb_build_object('redacted', true, 'reason', 'account_purged')
+        WHERE NOT (jsonb_typeof(e.payload) = 'object' AND e.payload ? 'redacted')
+          AND (e.payment_intent_id IN (SELECT id FROM dating_payment_intents WHERE user_id = $1)
+               OR e.payload::text LIKE '%' || $1::text || '%'
+               OR EXISTS (SELECT 1 FROM dating_payment_intents pi
+                          WHERE pi.user_id = $1 AND e.payload::text LIKE '%' || pi.razorpay_order_id || '%')
+               OR EXISTS (SELECT 1 FROM dating_premium_subscriptions ps
+                          WHERE ps.user_id = $1 AND ps.razorpay_subscription_id IS NOT NULL
+                            AND e.payload::text LIKE '%' || ps.razorpay_subscription_id || '%'))`, userID); err != nil {
+		return nil, err
+	}
 	if err := exec(`UPDATE dating_payment_events SET payment_intent_id = NULL
                     WHERE payment_intent_id IN (
                         SELECT id FROM dating_payment_intents WHERE user_id = $1

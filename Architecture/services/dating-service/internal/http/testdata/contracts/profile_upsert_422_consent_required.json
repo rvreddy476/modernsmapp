@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "CONSENT_REQUIRED",
+    "message": "explicit consent is required first: PUT /v1/dating/consents/sensitive_religion {\"granted\": true}",
+    "details": {
+      "consent_type": "sensitive_religion",
+      "policy_version": "v1.0-2026-04-29"
+    }
+  },
+  "meta": {}
+}

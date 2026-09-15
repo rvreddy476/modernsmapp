@@ -1,0 +1,25 @@
+{
+  "data": {
+    "current_policy_version": "v1.0-2026-04-29",
+    "consents": [
+      {
+        "consent_type": "sensitive_religion",
+        "granted": false
+      },
+      {
+        "consent_type": "sensitive_community",
+        "granted": false,
+        "policy_version": "v1.0-2026-04-29",
+        "updated_at": "<timestamp>"
+      },
+      {
+        "consent_type": "biometric_selfie",
+        "granted": false
+      },
+      {
+        "consent_type": "echoes",
+        "granted": false
+      }
+    ]
+  }
+}

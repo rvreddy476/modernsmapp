@@ -39,6 +39,15 @@ type Meet struct {
 	CheckedInAt   *time.Time `json:"checked_in_at,omitempty"`
 	NoShowAt      *time.Time `json:"no_show_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
+
+	// locationSealed is the sealed venue point as scanned (lane D9).
+	locationSealed []byte
+}
+
+// openMeetPoint opens a scanned meet's sealed venue point (lane D9).
+func (s *Store) openMeetPoint(ctx context.Context, m *Meet) {
+	s.openPoint(ctx, m.locationSealed, &m.Latitude, &m.Longitude, "dating_meets")
+	m.locationSealed = nil
 }
 
 // ErrMeetNotFound is returned when no meet matches the lookup.
@@ -85,16 +94,22 @@ func (s *Store) ScheduleMeet(ctx context.Context, userID, withUserID uuid.UUID, 
 	if venue != "" {
 		venuePtr = &venue
 	}
-	var latPtr, lngPtr *float64
+	// Lane D9: the venue point is sealed; without keys a meet with a point
+	// is refused (ErrPIINotConfigured).
+	var pointBlob []byte
 	if lat != 0 || lng != 0 {
-		latPtr, lngPtr = &lat, &lng
+		blob, err := s.pii.SealPoint(ctx, lat, lng)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		pointBlob = blob
 	}
 	var id uuid.UUID
 	err := s.db.QueryRow(ctx, `
-        INSERT INTO dating_meets (user_id, with_user_id, scheduled_at, venue, latitude, longitude)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO dating_meets (user_id, with_user_id, scheduled_at, venue, location_sealed)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id`,
-		userID, withUserID, when, venuePtr, latPtr, lngPtr).Scan(&id)
+		userID, withUserID, when, venuePtr, pointBlob).Scan(&id)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("schedule meet: %w", err)
 	}
@@ -125,12 +140,12 @@ func (s *Store) MeetCheckIn(ctx context.Context, meetID, userID uuid.UUID, statu
 // GetMeet returns one row by id.
 func (s *Store) GetMeet(ctx context.Context, id uuid.UUID) (*Meet, error) {
 	row := s.db.QueryRow(ctx, `
-        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude, location_sealed,
                check_in_status, checked_in_at, no_show_at, created_at
         FROM dating_meets WHERE id = $1`, id)
 	m := &Meet{}
 	if err := row.Scan(
-		&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+		&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude, &m.locationSealed,
 		&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -138,6 +153,7 @@ func (s *Store) GetMeet(ctx context.Context, id uuid.UUID) (*Meet, error) {
 		}
 		return nil, fmt.Errorf("scan meet: %w", err)
 	}
+	s.openMeetPoint(ctx, m)
 	return m, nil
 }
 
@@ -296,7 +312,7 @@ func (s *Store) ClaimMeetsDueForReminder(ctx context.Context, leadMin, leadMax t
             FOR UPDATE SKIP LOCKED
         )
         RETURNING id, user_id, with_user_id, scheduled_at, venue,
-                  latitude, longitude, check_in_status, checked_in_at,
+                  latitude, longitude, location_sealed, check_in_status, checked_in_at,
                   no_show_at, created_at
     `, now.Add(leadMin), now.Add(leadMax), limit)
 	if err != nil {
@@ -308,11 +324,12 @@ func (s *Store) ClaimMeetsDueForReminder(ctx context.Context, leadMin, leadMax t
 		m := &Meet{}
 		if err := rows.Scan(
 			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue,
-			&m.Latitude, &m.Longitude, &m.CheckInStatus, &m.CheckedInAt,
+			&m.Latitude, &m.Longitude, &m.locationSealed, &m.CheckInStatus, &m.CheckedInAt,
 			&m.NoShowAt, &m.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan claimed meet: %w", err)
 		}
+		s.openMeetPoint(ctx, m)
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -342,7 +359,7 @@ func (s *Store) ClaimMeetsMissedCheckIn(ctx context.Context, gracePeriod time.Du
             FOR UPDATE SKIP LOCKED
         )
         RETURNING id, user_id, with_user_id, scheduled_at, venue,
-                  latitude, longitude, check_in_status, checked_in_at,
+                  latitude, longitude, location_sealed, check_in_status, checked_in_at,
                   no_show_at, created_at
     `, cutoff, limit)
 	if err != nil {
@@ -354,11 +371,12 @@ func (s *Store) ClaimMeetsMissedCheckIn(ctx context.Context, gracePeriod time.Du
 		m := &Meet{}
 		if err := rows.Scan(
 			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue,
-			&m.Latitude, &m.Longitude, &m.CheckInStatus, &m.CheckedInAt,
+			&m.Latitude, &m.Longitude, &m.locationSealed, &m.CheckInStatus, &m.CheckedInAt,
 			&m.NoShowAt, &m.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan claimed meet: %w", err)
 		}
+		s.openMeetPoint(ctx, m)
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -442,7 +460,7 @@ func (s *Store) ListMeetsForReminder(ctx context.Context, now time.Time, limit i
 		limit = 100
 	}
 	rows, err := s.db.Query(ctx, `
-        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude, location_sealed,
                check_in_status, checked_in_at, no_show_at, created_at
         FROM dating_meets
         WHERE scheduled_at > $1
@@ -462,11 +480,12 @@ func (s *Store) ListMeetsForReminder(ctx context.Context, now time.Time, limit i
 	for rows.Next() {
 		m := &Meet{}
 		if err := rows.Scan(
-			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude, &m.locationSealed,
 			&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+		s.openMeetPoint(ctx, m)
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -482,7 +501,7 @@ func (s *Store) ListMeetsForMissedCheckIn(ctx context.Context, now time.Time, li
 		limit = 100
 	}
 	rows, err := s.db.Query(ctx, `
-        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude, location_sealed,
                check_in_status, checked_in_at, no_show_at, created_at
         FROM dating_meets
         WHERE scheduled_at < $1
@@ -502,11 +521,12 @@ func (s *Store) ListMeetsForMissedCheckIn(ctx context.Context, now time.Time, li
 	for rows.Next() {
 		m := &Meet{}
 		if err := rows.Scan(
-			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude, &m.locationSealed,
 			&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+		s.openMeetPoint(ctx, m)
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -520,7 +540,7 @@ func (s *Store) PendingMeetsForCheckin(ctx context.Context, before time.Time, li
 		limit = 100
 	}
 	rows, err := s.db.Query(ctx, `
-        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude, location_sealed,
                check_in_status, checked_in_at, no_show_at, created_at
         FROM dating_meets
         WHERE scheduled_at < $1
@@ -536,11 +556,12 @@ func (s *Store) PendingMeetsForCheckin(ctx context.Context, before time.Time, li
 	for rows.Next() {
 		m := &Meet{}
 		if err := rows.Scan(
-			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude, &m.locationSealed,
 			&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+		s.openMeetPoint(ctx, m)
 		out = append(out, m)
 	}
 	return out, rows.Err()

@@ -205,6 +205,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Sprint 5 — DPDP data export (§15.8).
 		dating.POST("/data-export", h.PostDataExport)
 		dating.GET("/data-export/me", h.GetMyDataExports)
+		// Lane D9 — the finished export, sealed at rest, owner only.
+		dating.GET("/data-export/:id/download", h.GetDataExportDownload)
+
+		// Lane D9 — explicit consent for sensitive data (religion, community,
+		// the biometric selfie check, Echoes). Withdrawal clears what it
+		// covered; the history is in the data export.
+		dating.GET("/consents", h.GetConsents)
+		dating.PUT("/consents/:type", h.PutConsent)
 
 		// §P0-8 admin queues for the /admin/dating console. The
 		// gateway does NOT admin-gate these paths (they have no
@@ -288,6 +296,25 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	// flow rather than dumping the raw message.
 	if errors.Is(err, service.ErrUnderage) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "AGE_REQUIRED", err.Error(), nil)
+		return
+	}
+	// Lane D9: a sensitive field or the biometric check without consent, an
+	// unknown consent type, and a sealing write without keys (local/dev).
+	var consentRequired *service.ConsentRequiredError
+	if errors.As(err, &consentRequired) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "CONSENT_REQUIRED",
+			"explicit consent is required first: PUT /v1/dating/consents/"+consentRequired.ConsentType+` {"granted": true}`,
+			map[string]any{"consent_type": consentRequired.ConsentType, "policy_version": consentRequired.PolicyVersion})
+		return
+	}
+	if errors.Is(err, service.ErrUnknownConsentType) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CONSENT_TYPE", "unknown consent type",
+			map[string]any{"allowed": service.ConsentTypes})
+		return
+	}
+	if errors.Is(err, store.ErrPIINotConfigured) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "PII_NOT_CONFIGURED",
+			"this data cannot be stored right now", nil)
 		return
 	}
 	// Lane D2: identity could not confirm the birth date for a profile that

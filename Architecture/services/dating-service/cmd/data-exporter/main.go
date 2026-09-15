@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/atpost/dating-service/database"
+	"github.com/atpost/dating-service/internal/datingpii"
 	datingevents "github.com/atpost/dating-service/internal/events"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
@@ -74,6 +75,14 @@ func main() {
 	}
 
 	st := store.New(pool)
+	// Lane D9: the export opens sealed fields for the owner and is itself
+	// stored sealed. Keys are required unless ENV is local/dev/development.
+	piiCrypto, err := datingpii.FromEnv(ctx, os.Getenv)
+	if err != nil {
+		slog.Error("dating-data-exporter: refusing to start: PII sealing is not configured", "error", err)
+		os.Exit(1)
+	}
+	st.SetPII(piiCrypto)
 	svc := service.New(st, nil)
 
 	dialer, err := transport.KafkaDialerFromEnv()
@@ -85,8 +94,18 @@ func main() {
 	producer := datingevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, dialer)
 	defer func() { _ = producer.Close() }()
 	svc.SetDataExportPublisher(producer)
-	svc.SetExportStorageClient(newHTTPMediaExportStorage())
-	svc.SetNotificationClient(newHTTPNotificationClient())
+	storage, err := exportStorageFromEnv(os.Getenv, st)
+	if err != nil {
+		slog.Error("dating-data-exporter: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	svc.SetExportStorageClient(storage)
+	// The dating.data.export.ready event always goes out. The direct HTTP
+	// notification is opt-in: notification-service has no
+	// /v1/notifications/internal/dispatch route today.
+	if strings.TrimSpace(os.Getenv("NOTIFICATION_SERVICE_URL")) != "" {
+		svc.SetNotificationClient(newHTTPNotificationClient())
+	}
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  kafkaBrokers,

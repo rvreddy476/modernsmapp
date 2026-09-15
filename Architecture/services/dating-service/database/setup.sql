@@ -1279,3 +1279,56 @@ ALTER TABLE dating_panic_incidents
     ADD COLUMN IF NOT EXISTS paged_at      TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_dating_panic_incidents_unpaged
     ON dating_panic_incidents(created_at) WHERE page_required AND paged_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Lane D9 — PII sealing and data rights.
+--
+-- Sensitive values are sealed with shared/pii (internal/datingpii; keys
+-- DATING_PII_KEYS / DATING_PII_LOOKUP_SALT) into the *_sealed columns and the
+-- plaintext columns are left NULL. Rows written before D9 are sealed at boot
+-- by store.BackfillSealedPII (batched, idempotent) and reads fall back to the
+-- plaintext column until then.
+--
+--   dating_profiles.religion / community        -> religion_sealed / community_sealed
+--   dating_panic_incidents.latitude / longitude -> location_sealed ("lat,lng")
+--   dating_location_shares.latitude / longitude -> location_sealed
+--   dating_meets.latitude / longitude           -> location_sealed
+--   dating_device_fingerprints.fingerprint / ip -> *_sealed plus *_lookup, a
+--     salted HMAC used only for the exact-value counts behind the device-reuse
+--     and IP-velocity risk signals.
+--
+-- NOT sealed: dating_profiles.latitude / longitude hold the D7 point snapped
+-- to 0.01 degree, which SQL distance and geohash queries compute on.
+--
+-- dating_data_exports.payload_sealed: the finished export, sealed, served to
+-- its owner by GET /v1/dating/data-export/:id/download until it expires.
+-- idx_dating_consent_log_user_type: latest consent per type.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles
+    ADD COLUMN IF NOT EXISTS religion_sealed  BYTEA,
+    ADD COLUMN IF NOT EXISTS community_sealed BYTEA;
+ALTER TABLE dating_panic_incidents ADD COLUMN IF NOT EXISTS location_sealed BYTEA;
+ALTER TABLE dating_location_shares ADD COLUMN IF NOT EXISTS location_sealed BYTEA;
+ALTER TABLE dating_meets           ADD COLUMN IF NOT EXISTS location_sealed BYTEA;
+ALTER TABLE dating_device_fingerprints
+    ADD COLUMN IF NOT EXISTS fingerprint_sealed BYTEA,
+    ADD COLUMN IF NOT EXISTS fingerprint_lookup TEXT,
+    ADD COLUMN IF NOT EXISTS ip_sealed          BYTEA,
+    ADD COLUMN IF NOT EXISTS ip_lookup          TEXT;
+DO $d9$
+BEGIN
+    IF (SELECT attnotnull FROM pg_attribute
+        WHERE attrelid = 'dating_device_fingerprints'::regclass AND attname = 'fingerprint') THEN
+        ALTER TABLE dating_device_fingerprints ALTER COLUMN fingerprint DROP NOT NULL;
+    END IF;
+END
+$d9$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dating_device_fp_user_lookup
+    ON dating_device_fingerprints(user_id, fingerprint_lookup);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_lookup
+    ON dating_device_fingerprints(fingerprint_lookup);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_ip_lookup_recent
+    ON dating_device_fingerprints(ip_lookup, last_seen_at DESC);
+ALTER TABLE dating_data_exports ADD COLUMN IF NOT EXISTS payload_sealed BYTEA;
+CREATE INDEX IF NOT EXISTS idx_dating_consent_log_user_type
+    ON dating_consent_log(user_id, consent_type, created_at DESC);

@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "INVALID_CONSENT_TYPE",
+    "message": "unknown consent type",
+    "details": {
+      "allowed": [
+        "sensitive_religion",
+        "sensitive_community",
+        "biometric_selfie",
+        "echoes"
+      ]
+    }
+  },
+  "meta": {}
+}

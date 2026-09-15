@@ -96,6 +96,7 @@ func newD3Svc(t *testing.T) (*Service, *store.Store, *recordingWriter) {
 	t.Cleanup(pool.Close)
 	ensureSchemaForTest(t, pool)
 	st := store.New(pool)
+	st.SetPII(testPII(t)) // lane D9
 	var rdb *redis.Client
 	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
 		rdb = redis.NewClient(&redis.Options{Addr: addr, DB: 15})

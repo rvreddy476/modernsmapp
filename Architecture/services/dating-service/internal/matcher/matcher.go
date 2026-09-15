@@ -103,7 +103,9 @@ func Score(ctx context.Context, vc ViewerContext, cand *store.CandidateProfile, 
 		{kind: "community", value: graph, weight: WeightGraph, summary: graphSummary(graph)},
 		{kind: "qa_topic", value: content, weight: WeightContent, summary: contentSummary(vc.EchoCache, candEcho)},
 		{kind: "intent", value: intent, weight: WeightIntent, summary: intentSummary(viewerIntent(vc), cand.Intent)},
-		{kind: "recency", value: recency, weight: WeightRecency, summary: "Recently active on AtPost"},
+		// Lane D9: "Recently active" is never said about someone who hides
+		// last active (the score term itself is unchanged).
+		{kind: "recency", value: recencyReasonValue(cand, recency), weight: WeightRecency, summary: "Recently active on AtPost"},
 		{kind: "proximity", value: proximity, weight: WeightProximity, summary: proximitySummary(band, located)},
 		{kind: "trust", value: trust, weight: WeightTrust, summary: trustSummary(cand.TrustTier)},
 		{kind: "diversity", value: diversity, weight: WeightDiversity, summary: "Brings something fresh to your day"},
@@ -367,27 +369,40 @@ func intentSummary(a, b string) string {
 
 // --- recency ---------------------------------------------------------------
 
-// recencyFreshness uses an exponential decay tuned to:
-//
-//	7d  -> ~1.0
-//	30d -> ~0.6
-//	90d -> ~0.2
-//
-// Solve k from 0.6 = exp(-k * (30-7)/(90-7)*scale)... we match by tuning
-// against the 30/90 anchor: lambda = -ln(0.2)/90 ≈ 0.0179.
+// Recency buckets (Dating plan lane D9). The recency term is a constant per
+// bucket, never a per-day decay, and it is the same for every candidate
+// whether or not they hide last active: a finer term would let deck position
+// reveal a hidden last-active time.
+const (
+	RecencyFullBoostDays    = 7   // active within 7 days: full boost
+	RecencyPartialBoostDays = 30  // 8–30 days: the partial boost
+	RecencyPartialBoost     = 0.6 // was the old decay's value near 30 days
+)
+
+// recencyFreshness returns 1.0 for last active within RecencyFullBoostDays
+// (a future time counts as now), RecencyPartialBoost up to
+// RecencyPartialBoostDays, and 0 for older or never.
 func recencyFreshness(lastActiveAt time.Time) float64 {
 	if lastActiveAt.IsZero() {
 		return 0
 	}
 	days := time.Since(lastActiveAt).Hours() / 24
-	if days < 0 {
-		days = 0
-	}
-	if days <= 7 {
+	switch {
+	case days <= RecencyFullBoostDays:
 		return 1.0
+	case days <= RecencyPartialBoostDays:
+		return RecencyPartialBoost
+	default:
+		return 0
 	}
-	const lambda = 0.0179
-	return clamp01(math.Exp(-lambda * (days - 7)))
+}
+
+// recencyReasonValue drops the recency reason for a hidden last-active time.
+func recencyReasonValue(cand *store.CandidateProfile, recency float64) float64 {
+	if cand.HideLastActive {
+		return 0
+	}
+	return recency
 }
 
 // --- proximity -------------------------------------------------------------

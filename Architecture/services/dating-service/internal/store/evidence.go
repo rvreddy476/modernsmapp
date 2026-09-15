@@ -130,8 +130,12 @@ func (s *Store) retainRiskSignalsTx(ctx context.Context, tx pgx.Tx, userID, toke
 		fingerprint, ip string
 		first, last     time.Time
 	}
+	// Lane D9: the raw values are sealed; they are opened here only to derive
+	// the same retained hash CountUsersByFingerprint computes from a live
+	// request. A sealed row that cannot be opened fails the purge rather
+	// than losing the ban-evasion signal.
 	rows, err := tx.Query(ctx, `
-        SELECT fingerprint, COALESCE(ip, ''), first_seen_at, last_seen_at
+        SELECT fingerprint, fingerprint_sealed, ip, ip_sealed, first_seen_at, last_seen_at
         FROM dating_device_fingerprints WHERE user_id = $1`, userID)
 	if err != nil {
 		return 0, fmt.Errorf("read fingerprints to retain: %w", err)
@@ -139,9 +143,19 @@ func (s *Store) retainRiskSignalsTx(ctx context.Context, tx pgx.Tx, userID, toke
 	var fps []fpRow
 	for rows.Next() {
 		var r fpRow
-		if err := rows.Scan(&r.fingerprint, &r.ip, &r.first, &r.last); err != nil {
+		var fpPlain, ipPlain *string
+		var fpSealed, ipSealed []byte
+		if err := rows.Scan(&fpPlain, &fpSealed, &ipPlain, &ipSealed, &r.first, &r.last); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan fingerprint to retain: %w", err)
+		}
+		if r.fingerprint, err = s.openDeviceSignal(ctx, fpSealed, fpPlain); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("open fingerprint to retain: %w", err)
+		}
+		if r.ip, err = s.openDeviceSignal(ctx, ipSealed, ipPlain); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("open ip to retain: %w", err)
 		}
 		fps = append(fps, r)
 	}
@@ -166,8 +180,10 @@ func (s *Store) retainRiskSignalsTx(ctx context.Context, tx pgx.Tx, userID, toke
 		return nil
 	}
 	for _, r := range fps {
-		if err := insert(RetainedSignalDeviceFingerprint, r.fingerprint, r.first, r.last); err != nil {
-			return 0, err
+		if r.fingerprint != "" {
+			if err := insert(RetainedSignalDeviceFingerprint, r.fingerprint, r.first, r.last); err != nil {
+				return 0, err
+			}
 		}
 		if r.ip != "" {
 			if err := insert(RetainedSignalIP, r.ip, r.first, r.last); err != nil {
@@ -232,10 +248,10 @@ func (s *Store) DeleteExpiredEvidence(ctx context.Context, limit int) (EvidenceS
 		return out, fmt.Errorf("sweep retained risk signals: %w", err)
 	}
 	if err := run(&out.LocationPointsExpired, `
-        UPDATE dating_location_shares SET latitude = NULL, longitude = NULL
+        UPDATE dating_location_shares SET latitude = NULL, longitude = NULL, location_sealed = NULL
         WHERE id IN (
             SELECT id FROM dating_location_shares
-            WHERE expires_at <= now() AND latitude IS NOT NULL LIMIT $1)`, limit); err != nil {
+            WHERE expires_at <= now() AND (latitude IS NOT NULL OR location_sealed IS NOT NULL) LIMIT $1)`, limit); err != nil {
 		return out, fmt.Errorf("sweep expired location points: %w", err)
 	}
 	if err := run(&out.LocationSharesDeleted, `

@@ -27,6 +27,12 @@ externalSecret:
     remoteRef: jwt_kid
   - secretKey: DATING_EVIDENCE_HMAC_KEY
     remoteRef: dating_evidence_hmac_key
+  # Lane D9: PII sealing keys; server and data exporter refuse to boot
+  # without them. Create both in the key vault before deploying.
+  - secretKey: DATING_PII_KEYS
+    remoteRef: dating_pii_keys
+  - secretKey: DATING_PII_LOOKUP_SALT
+    remoteRef: dating_pii_lookup_salt
   secretStoreName: azure-key-vault
 env:
   ENV: staging
@@ -47,5 +53,25 @@ env:
   DATING_EVIDENCE_RETENTION_DAYS: '180'
   DATING_PANIC_DAILY_LIMIT: '5'
   DATING_REPORT_DAILY_LIMIT: '10'
+# Lane D9: the data exporter as the worker (same image, /data-exporter).
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: atpoststaging454350.azurecr.io/atpost/dating-service
+    tag: "3bf3601cca56c71a9eb4c556a964f316260115eb" # keep equal to image.tag
+  command: ["/data-exporter"]
+  env:
+    KAFKA_GROUP_ID: dating-data-exporter
+    DATING_EXPORT_STORAGE: database
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  scratchSizeLimit: 64Mi
+  terminationGracePeriodSeconds: 60
 ingress:
   enabled: false

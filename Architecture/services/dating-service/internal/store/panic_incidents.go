@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,6 +65,9 @@ type PanicIncident struct {
 	ResolutionNote   *string        `json:"resolution_note,omitempty"`
 	Anonymised       bool           `json:"anonymised"`
 	CreatedAt        time.Time      `json:"created_at"`
+
+	// locationSealed is the sealed point as scanned (lane D9).
+	locationSealed []byte
 }
 
 // HasLocation reports whether the incident holds a point.
@@ -93,15 +97,26 @@ type PanicIncidentSummary struct {
 const panicIncidentCols = `id, user_id, source, meet_id, latitude, longitude, context,
     trigger_count, first_triggered_at, last_triggered_at, status, suspected_abuse,
     acknowledged_at, acknowledged_by, resolved_at, resolved_by, resolution_note,
-    anonymised_at IS NOT NULL, created_at`
+    anonymised_at IS NOT NULL, created_at, location_sealed`
 
-func scanPanicIncident(row pgx.Row) (*PanicIncident, error) {
+// scanPanicIncident scans an incident and opens its sealed point (lane D9).
+func (s *Store) scanPanicIncident(ctx context.Context, row pgx.Row) (*PanicIncident, error) {
+	p, err := scanPanicIncidentRow(row)
+	if err != nil {
+		return nil, err
+	}
+	s.openPoint(ctx, p.locationSealed, &p.Latitude, &p.Longitude, "dating_panic_incidents")
+	p.locationSealed = nil
+	return p, nil
+}
+
+func scanPanicIncidentRow(row pgx.Row) (*PanicIncident, error) {
 	p := &PanicIncident{}
 	var raw []byte
 	if err := row.Scan(&p.ID, &p.UserID, &p.Source, &p.MeetID, &p.Latitude, &p.Longitude, &raw,
 		&p.TriggerCount, &p.FirstTriggeredAt, &p.LastTriggeredAt, &p.Status, &p.SuspectedAbuse,
 		&p.AcknowledgedAt, &p.AcknowledgedBy, &p.ResolvedAt, &p.ResolvedBy, &p.ResolutionNote,
-		&p.Anonymised, &p.CreatedAt); err != nil {
+		&p.Anonymised, &p.CreatedAt, &p.locationSealed); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrPanicNotFound
 		}
@@ -154,6 +169,17 @@ func (s *Store) RecordPanicIncident(ctx context.Context, p RecordPanicParams) (*
 	if (p.Latitude == nil) != (p.Longitude == nil) {
 		p.Latitude, p.Longitude = nil, nil
 	}
+	// Lane D9: the exact point is sealed. Without keys (local/dev only) the
+	// incident is still recorded and paged, without its point.
+	var pointBlob []byte
+	if p.Latitude != nil && p.Longitude != nil {
+		blob, err := s.pii.SealPoint(ctx, *p.Latitude, *p.Longitude)
+		if err != nil {
+			slog.Warn("dating panic: point not sealed; recording the incident without it", "user_id", p.UserID, "error", err)
+		} else {
+			pointBlob = blob
+		}
+	}
 	window := p.DedupeWindow
 	if window <= 0 {
 		window = DefaultPanicDedupeWindow
@@ -190,16 +216,17 @@ func (s *Store) RecordPanicIncident(ctx context.Context, p RecordPanicParams) (*
         FOR UPDATE`, p.UserID, window.Seconds()).Scan(&existing)
 	switch {
 	case err == nil:
-		inc, err := scanPanicIncident(tx.QueryRow(ctx, `
+		inc, err := s.scanPanicIncident(ctx, tx.QueryRow(ctx, `
             UPDATE dating_panic_incidents
             SET trigger_count     = trigger_count + 1,
                 last_triggered_at = now(),
-                latitude  = CASE WHEN $2::float8 IS NOT NULL THEN $2::float8 ELSE latitude END,
-                longitude = CASE WHEN $2::float8 IS NOT NULL THEN $3::float8 ELSE longitude END,
-                context   = context || $4::jsonb,
-                meet_id   = COALESCE(meet_id, $5)
+                location_sealed = COALESCE($2::bytea, location_sealed),
+                latitude  = CASE WHEN $2::bytea IS NOT NULL THEN NULL ELSE latitude END,
+                longitude = CASE WHEN $2::bytea IS NOT NULL THEN NULL ELSE longitude END,
+                context   = context || $3::jsonb,
+                meet_id   = COALESCE(meet_id, $4)
             WHERE id = $1
-            RETURNING `+panicIncidentCols, existing, p.Latitude, p.Longitude, ctxJSON, p.MeetID))
+            RETURNING `+panicIncidentCols, existing, pointBlob, ctxJSON, p.MeetID))
 		if err != nil {
 			return nil, fmt.Errorf("update panic incident: %w", err)
 		}
@@ -220,12 +247,12 @@ func (s *Store) RecordPanicIncident(ctx context.Context, p RecordPanicParams) (*
 		return nil, fmt.Errorf("count panic incidents: %w", err)
 	}
 	suspected := recent >= limit
-	inc, err := scanPanicIncident(tx.QueryRow(ctx, `
+	inc, err := s.scanPanicIncident(ctx, tx.QueryRow(ctx, `
         INSERT INTO dating_panic_incidents
-            (user_id, source, meet_id, latitude, longitude, context, suspected_abuse, page_required)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+            (user_id, source, meet_id, location_sealed, context, suspected_abuse, page_required)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
         RETURNING `+panicIncidentCols,
-		p.UserID, p.Source, p.MeetID, p.Latitude, p.Longitude, ctxJSON, suspected, !suspected))
+		p.UserID, p.Source, p.MeetID, pointBlob, ctxJSON, suspected, !suspected))
 	if err != nil {
 		return nil, fmt.Errorf("insert panic incident: %w", err)
 	}
@@ -273,7 +300,7 @@ func (s *Store) ListPanicIncidentsAwaitingPage(ctx context.Context, maxAge time.
 	defer rows.Close()
 	var out []*PanicIncident
 	for rows.Next() {
-		inc, err := scanPanicIncident(rows)
+		inc, err := s.scanPanicIncident(ctx, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -287,7 +314,7 @@ func (s *Store) GetPanicIncident(ctx context.Context, id uuid.UUID) (*PanicIncid
 	if id == uuid.Nil {
 		return nil, ErrPanicNotFound
 	}
-	return scanPanicIncident(s.db.QueryRow(ctx,
+	return s.scanPanicIncident(ctx, s.db.QueryRow(ctx,
 		`SELECT `+panicIncidentCols+` FROM dating_panic_incidents WHERE id = $1`, id))
 }
 
@@ -307,7 +334,8 @@ func (s *Store) ListPanicIncidents(ctx context.Context, status string, limit, of
 	}
 	rows, err := s.db.Query(ctx, `
         SELECT id, user_id, source, meet_id, trigger_count, first_triggered_at, last_triggered_at,
-               status, suspected_abuse, (latitude IS NOT NULL AND longitude IS NOT NULL),
+               status, suspected_abuse,
+               (location_sealed IS NOT NULL OR (latitude IS NOT NULL AND longitude IS NOT NULL)),
                acknowledged_at, resolved_at, anonymised_at IS NOT NULL, created_at
         FROM dating_panic_incidents
         WHERE ($1 = '' OR status = $1)
@@ -338,7 +366,7 @@ func (s *Store) AcknowledgePanicIncident(ctx context.Context, id, adminID uuid.U
 	if id == uuid.Nil {
 		return nil, false, fmt.Errorf("invalid: panic_id required")
 	}
-	inc, err := scanPanicIncident(s.db.QueryRow(ctx, `
+	inc, err := s.scanPanicIncident(ctx, s.db.QueryRow(ctx, `
         UPDATE dating_panic_incidents
         SET status = 'acknowledged', acknowledged_at = now(), acknowledged_by = $2
         WHERE id = $1 AND status = 'open'
@@ -367,7 +395,7 @@ func (s *Store) ResolvePanicIncident(ctx context.Context, id, adminID uuid.UUID,
 	if note != "" {
 		notePtr = &note
 	}
-	inc, err := scanPanicIncident(s.db.QueryRow(ctx, `
+	inc, err := s.scanPanicIncident(ctx, s.db.QueryRow(ctx, `
         UPDATE dating_panic_incidents
         SET status = 'resolved', resolved_at = now(), resolved_by = $2, resolution_note = $3,
             acknowledged_at = COALESCE(acknowledged_at, now()),

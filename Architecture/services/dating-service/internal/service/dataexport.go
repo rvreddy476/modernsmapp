@@ -144,6 +144,11 @@ type UserDataExport struct {
 	Subscription     *store.PremiumSubscription  `json:"subscription,omitempty"`
 	PaymentHistory   []ExportedPaymentIntent     `json:"payment_history,omitempty"`
 	ConsentLog       []*store.ConsentEntry       `json:"consent_log,omitempty"`
+	// Lane D9 (dataexport_d9.go).
+	ReportsFiled   []ExportedReportFiled   `json:"reports_filed,omitempty"`
+	ReportsAgainst []ExportedReportAgainst `json:"reports_against,omitempty"`
+	PanicIncidents []ExportedPanicIncident `json:"panic_incidents,omitempty"`
+	Meets          []ExportedMeet          `json:"meets,omitempty"`
 }
 
 // ExportedSpark is the redacted Spark shape — counterparty is just an id.
@@ -329,6 +334,9 @@ func (s *Service) BuildExportPayload(ctx context.Context, userID uuid.UUID) ([]b
 	if consent, err := s.store.ListConsentForUser(ctx, userID); err == nil {
 		out.ConsentLog = consent
 	}
+	if err := s.addSafetyRecords(ctx, userID, out); err != nil {
+		return nil, fmt.Errorf("export safety records: %w", err)
+	}
 
 	buf, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -339,7 +347,7 @@ func (s *Service) BuildExportPayload(ctx context.Context, userID uuid.UUID) ([]b
 
 // profileForExport reads the (possibly soft-deleted) profile row.
 func (s *Service) profileForExport(ctx context.Context, userID uuid.UUID) (*store.Profile, error) {
-	p, err := s.store.GetProfile(ctx, userID)
+	p, err := s.store.GetProfileForExport(ctx, userID)
 	if err == nil {
 		return p, nil
 	}
@@ -408,6 +416,9 @@ func (s *Service) PurgeProfile(ctx context.Context, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	// Lane D9: the user's deck, other viewers' decks showing them, and their
+	// boost keys (purge_d9.go).
+	s.dropUserCaches(ctx, userID)
 	if s.producer != nil {
 		// Lane D8: every match the purge closed emits dating.match.closed
 		// so chat-service closes the conversation (by match_id).

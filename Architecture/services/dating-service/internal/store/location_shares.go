@@ -40,15 +40,29 @@ type LocationShare struct {
 	ExpiresAt     time.Time  `json:"expires_at"`
 	StoppedAt     *time.Time `json:"stopped_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
+
+	// locationSealed is the sealed point as scanned (lane D9).
+	locationSealed []byte
 }
 
 const locationShareCols = `id, user_id, recipient_id, recipient_kind, latitude, longitude,
-    expires_at, stopped_at, created_at`
+    expires_at, stopped_at, created_at, location_sealed`
 
-func scanLocationShare(row pgx.Row) (*LocationShare, error) {
+// scanLocationShare scans a share and opens its sealed point (lane D9).
+func (s *Store) scanLocationShare(ctx context.Context, row pgx.Row) (*LocationShare, error) {
+	l, err := scanLocationShareRow(row)
+	if err != nil {
+		return nil, err
+	}
+	s.openPoint(ctx, l.locationSealed, &l.Latitude, &l.Longitude, "dating_location_shares")
+	l.locationSealed = nil
+	return l, nil
+}
+
+func scanLocationShareRow(row pgx.Row) (*LocationShare, error) {
 	l := &LocationShare{}
 	if err := row.Scan(&l.ShareID, &l.UserID, &l.RecipientID, &l.RecipientKind, &l.Latitude, &l.Longitude,
-		&l.ExpiresAt, &l.StoppedAt, &l.CreatedAt); err != nil {
+		&l.ExpiresAt, &l.StoppedAt, &l.CreatedAt, &l.locationSealed); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrLocationShareNotFound
 		}
@@ -90,10 +104,15 @@ func (s *Store) CreateLocationShare(ctx context.Context, userID, recipientID uui
 	if ttl <= 0 {
 		return nil, fmt.Errorf("invalid: share duration must be positive")
 	}
-	share, err := scanLocationShare(s.db.QueryRow(ctx, `
-        INSERT INTO dating_location_shares (user_id, recipient_id, recipient_kind, latitude, longitude, expires_at)
-        VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))
-        RETURNING `+locationShareCols, userID, recipientID, kind, lat, lng, ttl.Seconds()))
+	// Lane D9: the exact point is sealed; without keys the share is refused.
+	pointBlob, err := s.pii.SealPoint(ctx, lat, lng)
+	if err != nil {
+		return nil, err
+	}
+	share, err := s.scanLocationShare(ctx, s.db.QueryRow(ctx, `
+        INSERT INTO dating_location_shares (user_id, recipient_id, recipient_kind, location_sealed, expires_at)
+        VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))
+        RETURNING `+locationShareCols, userID, recipientID, kind, pointBlob, ttl.Seconds()))
 	if err != nil {
 		return nil, fmt.Errorf("create location share: %w", err)
 	}
@@ -116,13 +135,13 @@ func (s *Store) GetLocationShareForRecipient(ctx context.Context, shareID, recip
 	if shareID == uuid.Nil || recipientID == uuid.Nil {
 		return nil, ErrLocationShareNotFound
 	}
-	return scanLocationShare(s.db.QueryRow(ctx, `
+	return s.scanLocationShare(ctx, s.db.QueryRow(ctx, `
         SELECT `+locationShareCols+`
         FROM dating_location_shares ls
         WHERE ls.id = $1 AND ls.recipient_id = $2
           AND ls.stopped_at IS NULL
           AND ls.expires_at > now()
-          AND ls.latitude IS NOT NULL AND ls.longitude IS NOT NULL
+          AND (ls.location_sealed IS NOT NULL OR (ls.latitude IS NOT NULL AND ls.longitude IS NOT NULL))
           AND NOT `+blockedPairPredicate("ls.user_id", "ls.recipient_id"), shareID, recipientID))
 }
 
@@ -132,9 +151,9 @@ func (s *Store) StopLocationShare(ctx context.Context, shareID, userID uuid.UUID
 	if shareID == uuid.Nil || userID == uuid.Nil {
 		return nil, ErrLocationShareNotFound
 	}
-	return scanLocationShare(s.db.QueryRow(ctx, `
+	return s.scanLocationShare(ctx, s.db.QueryRow(ctx, `
         UPDATE dating_location_shares
-        SET stopped_at = COALESCE(stopped_at, now()), latitude = NULL, longitude = NULL
+        SET stopped_at = COALESCE(stopped_at, now()), latitude = NULL, longitude = NULL, location_sealed = NULL
         WHERE id = $1 AND user_id = $2
         RETURNING `+locationShareCols, shareID, userID))
 }

@@ -39,6 +39,13 @@ externalSecret:
     # dating_evidence_hmac_key in the secret store before deploying. Never rotate
     # casually: a new key unlinks previously retained evidence.
     - { secretKey: DATING_EVIDENCE_HMAC_KEY, remoteRef: dating_evidence_hmac_key }
+    # Lane D9: PII sealing keys. The server and the data exporter refuse to
+    # boot without them; create dating_pii_keys ("v1:<base64 32-byte key>")
+    # and dating_pii_lookup_salt (>= 16 random bytes) in the secret store
+    # before deploying. Never drop a key version: rows sealed under it become
+    # unreadable. Rotate by appending ",v2:<key>".
+    - { secretKey: DATING_PII_KEYS, remoteRef: dating_pii_keys }
+    - { secretKey: DATING_PII_LOOKUP_SALT, remoteRef: dating_pii_lookup_salt }
 
 env:
   ENV: prod
@@ -71,6 +78,30 @@ env:
   DATING_EVIDENCE_RETENTION_DAYS: "180"
   DATING_PANIC_DAILY_LIMIT: "5"
   DATING_REPORT_DAILY_LIMIT: "10"
+
+# Lane D9: the DPDP data exporter (cmd/data-exporter) as the chart's worker.
+# It ships in the dating-service image, so the repository is the server's and
+# the command selects the binary. CI must set worker.image.tag to the same sha
+# as image.tag. Same env and secrets as the server (DATING_PII_* required).
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/dating-service'
+    tag: latest # CI overrides via --set worker.image.tag=<sha>
+  command: ["/data-exporter"]
+  env:
+    KAFKA_GROUP_ID: dating-data-exporter
+    DATING_EXPORT_STORAGE: database
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  scratchSizeLimit: 64Mi
+  terminationGracePeriodSeconds: 60
 
 ingress:
   enabled: false

@@ -79,6 +79,10 @@ func setupSelfieHTTP(t *testing.T) *selfieHTTPEnv {
 func seedSelfieUser(t *testing.T, st *store.Store, id uuid.UUID, approvePhoto bool) {
 	t.Helper()
 	ctx := context.Background()
+	// Lane D9: the biometric check needs explicit consent.
+	if _, err := st.SetConsent(ctx, id, service.ConsentBiometricSelfie, true, "test"); err != nil {
+		t.Fatalf("seed selfie consent: %v", err)
+	}
 	intent, gender, city, interested := "casual", "female", "Hyderabad", "male"
 	if _, err := st.UpsertProfile(ctx, id, store.UpsertProfileParams{Intent: &intent, Gender: &gender, City: &city}); err != nil {
 		t.Fatalf("seed profile: %v", err)

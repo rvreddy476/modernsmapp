@@ -25,7 +25,9 @@ func safetyTestStore(t *testing.T) (*Store, func()) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	return New(pool), func() { pool.Close() }
+	st := New(pool)
+	st.SetPII(testPII(t)) // lane D9: meet and share points are sealed
+	return st, func() { pool.Close() }
 }
 
 func TestRecordSafetyEvent_PersistsBeforeReturn(t *testing.T) {

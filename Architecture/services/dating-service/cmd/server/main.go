@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/dating-service/database"
+	"github.com/atpost/dating-service/internal/datingpii"
 	"github.com/atpost/dating-service/internal/digilocker"
 	datingevents "github.com/atpost/dating-service/internal/events"
 	datinghttp "github.com/atpost/dating-service/internal/http"
@@ -126,6 +127,20 @@ func main() {
 	if evidenceWarning != "" {
 		slog.Warn(evidenceWarning)
 	}
+	// Lane D9: sealing keys for religion, community, exact points, device
+	// signals and export blobs. DATING_PII_KEYS ("v1:<base64 32-byte
+	// key>[,v2:<key>]") and DATING_PII_LOOKUP_SALT are required unless ENV is
+	// local/dev/development; locally without them the routes that must seal
+	// answer 503 PII_NOT_CONFIGURED instead of ever writing plaintext.
+	piiCrypto, err := datingpii.FromEnv(context.Background(), os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start: PII sealing is not configured", "error", err)
+		os.Exit(1)
+	}
+	if piiCrypto == nil {
+		slog.Warn("dating-service: DATING_PII_KEYS / DATING_PII_LOOKUP_SALT unset (local/dev) — " +
+			"sensitive profile fields, live location shares and meet points answer 503 PII_NOT_CONFIGURED")
+	}
 	trustSafetyURL, trustSafetyWarning, err := datinghttp.ResolveTrustSafetyURL(os.Getenv)
 	if err != nil {
 		slog.Error("dating-service: refusing to start", "error", err)
@@ -217,6 +232,22 @@ func main() {
 
 	datingStore.SetEvidenceKey(evidenceKey)
 	datingStore.SetEvidenceRetention(evidenceRetention)
+	datingStore.SetPII(piiCrypto)
+	if piiCrypto != nil {
+		// Seal rows written before D9 and clear their plaintext. Batched and
+		// idempotent; reads fall back to plaintext until it finishes, so it
+		// runs beside startup rather than delaying readiness.
+		go func() {
+			res, err := datingStore.BackfillSealedPII(ctx, 200)
+			if err != nil {
+				slog.Error("dating-service: PII backfill stopped; some plaintext remains until the next boot", "error", err)
+				return
+			}
+			slog.Info("dating-service: PII backfill complete", "profiles", res.Profiles,
+				"panic_incidents", res.PanicIncidents, "location_shares", res.LocationShares,
+				"meets", res.Meets, "device_fingerprints", res.DeviceFingerprints)
+		}()
+	}
 	datingSvc.SetSafetyConfig(safetyCfg)
 	if trustSafetyURL != "" {
 		if internalKey == "" {

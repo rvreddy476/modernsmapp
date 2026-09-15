@@ -87,6 +87,10 @@ func seedPendingSelfie(t *testing.T, st *store.Store, id uuid.UUID) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
 	seedBasicsProfile(t, st, id)
+	// Lane D9: the biometric check needs explicit consent.
+	if _, err := st.SetConsent(ctx, id, ConsentBiometricSelfie, true, "test"); err != nil {
+		t.Fatalf("seed selfie consent: %v", err)
+	}
 	primary := uuid.New()
 	photo, err := st.CreatePhoto(ctx, id, store.CreatePhotoParams{MediaID: primary, IsPrimary: true, Visibility: "public"})
 	if err != nil {
@@ -252,6 +256,10 @@ func TestSelfie_PrimaryPhotoNotApproved409(t *testing.T) {
 	seedBasicsProfile(t, st, noPhoto)
 
 	for name, id := range map[string]uuid.UUID{"pending photo": pendingPhoto, "no photo": noPhoto} {
+		// Lane D9: consent is checked first; with it, the photo gate answers.
+		if _, err := st.SetConsent(ctx, id, ConsentBiometricSelfie, true, "test"); err != nil {
+			t.Fatalf("%s consent: %v", name, err)
+		}
 		if _, err := svc.CreateSelfieChallenge(ctx, id); !errors.Is(err, ErrPrimaryPhotoNotApproved) {
 			t.Fatalf("%s challenge: err=%v, want ErrPrimaryPhotoNotApproved", name, err)
 		}

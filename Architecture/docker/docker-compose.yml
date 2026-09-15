@@ -2037,6 +2037,13 @@ services:
       # Aadhaar (DigiLocker) is optional. ENV is unset here, so the mock is
       # refused; set ENV=local and DIGILOCKER_MODE=mock to exercise it.
       DIGILOCKER_MODE: ${DIGILOCKER_MODE:-disabled}
+      # Lane D9: sealing keys for religion, community, exact panic / share /
+      # meet points, device fingerprints and IPs, and export blobs. Dev-only
+      # random keys live in the gitignored Architecture/docker/.env. ENV is
+      # unset here, so boot REFUSES without them. Never reuse a dev key in
+      # staging or production.
+      DATING_PII_KEYS: ${DATING_PII_KEYS:-}
+      DATING_PII_LOOKUP_SALT: ${DATING_PII_LOOKUP_SALT:-}
     ports:
       - "8112:8112"
     depends_on:
@@ -2051,6 +2058,37 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+
+  # Lane D9: the DPDP data exporter (same image, cmd/data-exporter). Consumes
+  # dating.data.export.requested from dating-events, stores the finished
+  # export sealed on its row and emits dating.data.export.ready; the owner
+  # downloads it from GET /v1/dating/data-export/:id/download.
+  dating-data-exporter:
+    build:
+      context: ..
+      dockerfile: services/dating-service/Dockerfile
+    command: ["/data-exporter"]
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      POSTGRES_DSN: *app_postgres_dsn
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: dating-events
+      KAFKA_GROUP_ID: dating-data-exporter
+      DATING_EXPORT_STORAGE: database
+      DATING_PII_KEYS: ${DATING_PII_KEYS:-}
+      DATING_PII_LOOKUP_SALT: ${DATING_PII_LOOKUP_SALT:-}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_started }
+      dating-service: { condition: service_started }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
 
 volumes:
   pgdata:

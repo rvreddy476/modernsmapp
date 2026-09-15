@@ -52,6 +52,7 @@ func setupAuthzIT(t *testing.T) *authzEnv {
 		t.Fatalf("bootstrap schema: %v", err)
 	}
 	st := store.New(pool)
+	st.SetPII(testPII(t)) // lane D9
 	svc := service.New(st, nil)
 	svc.SetMessageClient(&stubMessageClient{})
 

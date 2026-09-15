@@ -379,7 +379,7 @@ func (s *Store) TransitionProfileStatus(ctx context.Context, userID uuid.UUID, e
 		}
 	}
 
-	out, err := scanProfile(tx.QueryRow(ctx, `
+	out, err := s.scanProfile(ctx, tx.QueryRow(ctx, `
         SELECT `+profileSelectCols+`
         FROM dating_profiles
         WHERE user_id = $1`, userID))

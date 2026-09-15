@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/atpost/dating-service/database"
+	"github.com/atpost/dating-service/internal/datingpii"
 	datingevents "github.com/atpost/dating-service/internal/events"
 	datinghttp "github.com/atpost/dating-service/internal/http"
 	"github.com/atpost/dating-service/internal/service"
@@ -38,6 +39,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/transport"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -90,7 +92,30 @@ func main() {
 	st := store.New(pool)
 	st.SetEvidenceKey(evidenceKey)
 	st.SetEvidenceRetention(evidenceRetention)
-	svc := service.New(st, nil)
+	// Lane D9: device fingerprints and IPs are sealed; the purge opens them
+	// to write the same retained hashes the server computes. Required unless
+	// ENV is local/dev/development.
+	piiCrypto, err := datingpii.FromEnv(ctx, os.Getenv)
+	if err != nil {
+		slog.Error("dating-data-purger: refusing to start: PII sealing is not configured", "error", err)
+		os.Exit(1)
+	}
+	st.SetPII(piiCrypto)
+	// Lane D9: the purge drops the user's deck caches and every deck showing
+	// them. Without REDIS_ADDR those expire on their own TTL instead.
+	var rdb *redis.Client
+	if addr := strings.TrimSpace(os.Getenv("REDIS_ADDR")); addr != "" {
+		client, err := transport.NewRedisClientFromEnv(addr)
+		if err != nil {
+			slog.Error("dating-data-purger: redis client", "error", err)
+			os.Exit(1)
+		}
+		defer client.Close()
+		rdb = client
+	} else {
+		slog.Warn("dating-data-purger: REDIS_ADDR not set — purged users stay in cached decks until they expire")
+	}
+	svc := service.New(st, rdb)
 
 	dialer, err := transport.KafkaDialerFromEnv()
 	if err != nil {

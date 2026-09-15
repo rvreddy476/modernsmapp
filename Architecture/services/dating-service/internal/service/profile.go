@@ -203,6 +203,11 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 	if p.Intent != nil && !validIntent(*p.Intent) {
 		return nil, fmt.Errorf("invalid: intent must be one of casual|serious|marriage")
 	}
+	// Lane D9: religion and community need explicit consent (422
+	// CONSENT_REQUIRED), checked before anything is written.
+	if err := s.requireSensitiveProfileConsent(ctx, userID, p); err != nil {
+		return nil, err
+	}
 	// Lane D7: a malformed location is refused before anything is written.
 	if p.Latitude != nil || p.Longitude != nil {
 		if _, _, err := store.ValidateLocation(p.Latitude, p.Longitude); err != nil {

@@ -84,28 +84,94 @@ func TestIntentAlignmentMatrix(t *testing.T) {
 	}
 }
 
-func TestRecencyFreshness_Decay(t *testing.T) {
+func TestRecencyFreshness_Buckets(t *testing.T) {
 	now := time.Now()
+	day := 24 * time.Hour
 	cases := []struct {
-		name     string
-		ago      time.Duration
-		minScore float64
-		maxScore float64
+		name string
+		ago  time.Duration
+		want float64
 	}{
-		{"7d", 7 * 24 * time.Hour, 0.99, 1.01},
-		{"30d", 30 * 24 * time.Hour, 0.55, 0.70},
-		{"90d", 90 * 24 * time.Hour, 0.15, 0.25},
+		{"now", 0, 1},
+		{"future (clock skew)", -day, 1},
+		{"1d", day, 1},
+		{"6d", 6 * day, 1},
+		{"just under 7d", 7*day - time.Hour, 1},
+		{"8d", 8 * day, RecencyPartialBoost},
+		{"29d", 29 * day, RecencyPartialBoost},
+		{"31d", 31 * day, 0},
+		{"90d", 90 * day, 0},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := recencyFreshness(now.Add(-c.ago))
-			if got < c.minScore || got > c.maxScore {
-				t.Errorf("recencyFreshness(%v) = %v, want in [%v, %v]", c.ago, got, c.minScore, c.maxScore)
-			}
-		})
+		if got := recencyFreshness(now.Add(-c.ago)); got != c.want {
+			t.Errorf("%s: recencyFreshness = %v, want exactly %v", c.name, got, c.want)
+		}
 	}
 	if recencyFreshness(time.Time{}) != 0 {
-		t.Error("zero time should yield 0 score")
+		t.Error("never active should yield 0")
+	}
+}
+
+// recencyScore scores one fixed candidate that differs only in last active.
+func recencyScore(t *testing.T, ago time.Duration, hidden bool) (float64, []MatchReason) {
+	t.Helper()
+	lat, lon, cLat, cLon := 17.39, 78.49, 17.41, 78.49
+	cand := &store.CandidateProfile{
+		UserID:         uuid.MustParse("00000000-0000-4000-8000-00000000d9a1"),
+		Intent:         "casual",
+		Latitude:       &cLat,
+		Longitude:      &cLon,
+		TrustTier:      "selfie",
+		LastActiveAt:   time.Now().Add(-ago),
+		HideLastActive: hidden,
+	}
+	vc := ViewerContext{
+		UserID:        uuid.MustParse("00000000-0000-4000-8000-00000000d9a2"),
+		Latitude:      &lat,
+		Longitude:     &lon,
+		GraphProvider: NewStaticGraphProvider(),
+	}
+	score, reasons, err := Score(context.Background(), vc, cand, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return score, reasons
+}
+
+func TestScore_RecencyIsBucketedNotPerDay(t *testing.T) {
+	day := 24 * time.Hour
+	one, _ := recencyScore(t, 1*day, false)
+	six, _ := recencyScore(t, 6*day, false)
+	if one != six {
+		t.Fatalf("last active 1 vs 6 days ago scored %v vs %v, want exactly equal", one, six)
+	}
+	ten, _ := recencyScore(t, 10*day, false)
+	twentyNine, _ := recencyScore(t, 29*day, false)
+	if ten != twentyNine {
+		t.Fatalf("last active 10 vs 29 days ago scored %v vs %v, want exactly equal (same bucket)", ten, twentyNine)
+	}
+	nine, _ := recencyScore(t, 9*day, false)
+	if six == nine {
+		t.Fatalf("last active 6 vs 9 days ago scored the same %v, want the buckets to differ", six)
+	}
+	old, _ := recencyScore(t, 31*day, false)
+	if twentyNine == old {
+		t.Fatalf("last active 29 vs 31 days ago scored the same %v, want the buckets to differ", old)
+	}
+}
+
+func TestScore_HiddenLastActiveScoresSameAsVisible(t *testing.T) {
+	for _, ago := range []time.Duration{time.Hour, 3 * 24 * time.Hour, 12 * 24 * time.Hour, 45 * 24 * time.Hour} {
+		visible, _ := recencyScore(t, ago, false)
+		hidden, reasons := recencyScore(t, ago, true)
+		if visible != hidden {
+			t.Fatalf("last active %v: hidden scored %v, visible %v; want exactly equal", ago, hidden, visible)
+		}
+		for _, r := range reasons {
+			if r.Kind == "recency" {
+				t.Fatalf("last active %v: a hidden profile carries the %q reason", ago, r.Summary)
+			}
+		}
 	}
 }
 

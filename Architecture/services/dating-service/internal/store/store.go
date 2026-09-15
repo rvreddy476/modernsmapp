@@ -7,6 +7,7 @@ package store
 import (
 	"time"
 
+	"github.com/atpost/dating-service/internal/datingpii"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -26,6 +27,9 @@ type Store struct {
 	// evidence.go).
 	evidenceKey       []byte
 	evidenceRetention time.Duration
+	// pii seals religion, community, exact points and device signals (lane
+	// D9, pii.go). Nil only in local/dev without DATING_PII_KEYS.
+	pii *datingpii.Crypto
 }
 
 // New returns a Store backed by the given pool.
@@ -89,6 +93,10 @@ type Profile struct {
 	// "client" (locked after first set). See BasicsSource* in profiles.go.
 	DOBSource       *string `json:"dob_source,omitempty"`
 	FirstNameSource *string `json:"first_name_source,omitempty"`
+
+	// Sealed religion / community as scanned (lane D9); opened into Religion
+	// and Community by Store.scanProfile and never serialised.
+	religionSealed, communitySealed []byte
 }
 
 // Profile status constants (§P1-1). Centralised to avoid string drift

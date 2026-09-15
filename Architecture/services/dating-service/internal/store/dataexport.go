@@ -154,7 +154,7 @@ func (s *Store) FailDataExport(ctx context.Context, id uuid.UUID) error {
 func (s *Store) ExpireOldExports(ctx context.Context) (int64, error) {
 	tag, err := s.db.Exec(ctx, `
         UPDATE dating_data_exports
-        SET status = 'expired', download_url = NULL
+        SET status = 'expired', download_url = NULL, payload_sealed = NULL
         WHERE status = 'ready'
           AND download_expires_at IS NOT NULL
           AND download_expires_at < now()`)

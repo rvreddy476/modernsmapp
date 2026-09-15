@@ -149,7 +149,9 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 // last_active_at, km figures in match reasons) is never read back; it expires
 // on its own TTL.
 func (s *Service) cacheKey(viewerID uuid.UUID) string {
-	return fmt.Sprintf("dating:pulse:today:v2:%s", viewerID.String())
+	// v3 (lane D9): decks ranked with the old per-day recency decay are never
+	// served again; they expire on their TTL under the v2 key.
+	return fmt.Sprintf("dating:pulse:today:v3:%s", viewerID.String())
 }
 
 func (s *Service) readPulseCache(ctx context.Context, viewerID uuid.UUID) *PulseResponse {
