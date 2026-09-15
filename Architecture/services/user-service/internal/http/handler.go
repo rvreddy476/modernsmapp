@@ -23,7 +23,13 @@ import (
 )
 
 type Handler struct {
-	svc              *service.Service
+	svc *service.Service
+	// users backs the user-object reads (GetUser, GetUserByUsername, GetMe).
+	// It is svc in production; tests substitute an in-memory reader.
+	users userReader
+	// verifier admits sibling services to private profile fields. Nil admits
+	// none. See profile_visibility.go.
+	verifier         serviceTokenVerifier
 	store            *store.Store
 	graphURL         string
 	presenceStore    *presence.Store
@@ -41,7 +47,7 @@ func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *
 	if graphURL == "" {
 		graphURL = "http://graph-service:8083"
 	}
-	h := &Handler{svc: svc, store: st, graphURL: graphURL, presenceStore: presenceStore}
+	h := &Handler{svc: svc, users: svc, store: st, graphURL: graphURL, presenceStore: presenceStore}
 	h.graphClient = httpclient.NewWithBreaker(5*time.Second, "user->graph")
 	h.pageAdmins = map[string]bool{}
 	for _, id := range strings.Split(os.Getenv("PAGES_ADMIN_USER_IDS"), ",") {
@@ -298,7 +304,7 @@ func (h *Handler) GetUser(c *gin.Context) {
 		return
 	}
 
-	u, err := h.svc.GetUser(c.Request.Context(), userID)
+	u, err := h.users.GetUser(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -308,7 +314,9 @@ func (h *Handler) GetUser(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, u, nil)
+	// Private fields (first/last name, dob, gender) go to the owner or a
+	// service-token caller only. See profile_visibility.go.
+	api.JSON(c.Writer, http.StatusOK, h.profileFor(c, u), nil)
 }
 
 func (h *Handler) GetUserByUsername(c *gin.Context) {
@@ -318,7 +326,7 @@ func (h *Handler) GetUserByUsername(c *gin.Context) {
 		return
 	}
 
-	u, err := h.svc.GetUserByUsername(c.Request.Context(), username)
+	u, err := h.users.GetUserByUsername(c.Request.Context(), username)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -328,7 +336,8 @@ func (h *Handler) GetUserByUsername(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, u, nil)
+	// Same rule as GetUser: the owner is whoever the handle resolves to.
+	api.JSON(c.Writer, http.StatusOK, h.profileFor(c, u), nil)
 }
 
 func (h *Handler) GetMe(c *gin.Context) {
@@ -337,9 +346,14 @@ func (h *Handler) GetMe(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
-	userID, _ := uuid.Parse(userIDStr)
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
 
-	u, err := h.svc.GetUser(c.Request.Context(), userID)
+	// /me is the owner by construction, so it returns every field.
+	u, err := h.users.GetUser(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch profile", nil)
 		return

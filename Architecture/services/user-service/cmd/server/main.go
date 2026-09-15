@@ -226,6 +226,19 @@ func main() {
 	if internalKey == "" {
 		slog.Warn("user-service: INTERNAL_SERVICE_KEY not set — /internal/* routes are unauthenticated")
 	}
+	// Private profile fields (first/last name, dob, gender) on
+	// GET /v1/users/:userId and /by-username go to the owner, or to a sibling
+	// service holding a token for users:profile.read_private. The internal key
+	// is not enough: the gateway injects it on anonymous requests too.
+	serviceCallers, err := http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("refusing to start: invalid SERVICE_CALLERS", "error", err)
+		os.Exit(1)
+	}
+	if serviceCallers != nil {
+		userHandler.WithServiceAuth(serviceCallers)
+		slog.Info("user-service: service-token callers registered for private profile reads", "callers", serviceCallers.Callers())
+	}
 
 	// 8. Kafka Consumer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()
