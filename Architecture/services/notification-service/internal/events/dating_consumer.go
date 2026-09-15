@@ -131,6 +131,12 @@ func (c *Consumer) handleDatingEvent(ctx context.Context, envelope events.EventE
 		return true, c.handleDatingDataExportReady(ctx, envelope.Payload)
 	case events.EventChatDatingMessageNew:
 		return true, c.handleChatDatingMessageNew(ctx, envelope.Payload)
+	// Lane D8 — panic pages responders and trusted contacts; a live
+	// location share notifies its recipient (dating_safety.go).
+	case events.EventDatingSafetyPanic:
+		return true, c.handleDatingSafetyPanic(ctx, envelope.Payload)
+	case events.EventDatingSafetyLocationShared:
+		return true, c.handleDatingSafetyLocationShared(ctx, envelope.Payload)
 	case events.EventDatingMatchFormed,
 		events.EventDatingMatchClosed,
 		events.EventDatingMatchQuiet,
@@ -145,8 +151,6 @@ func (c *Consumer) handleDatingEvent(ctx context.Context, envelope events.EventE
 		events.EventDatingVouchRevoked,
 		events.EventDatingUserBlocked,
 		events.EventDatingVerificationSubmitted,
-		events.EventDatingSafetyPanic,
-		events.EventDatingSafetyLocationShared,
 		events.EventDatingSafetyMeetScheduled,
 		events.EventDatingSafetyMeetCheckin,
 		events.EventDatingSafetyMeetNoShow,

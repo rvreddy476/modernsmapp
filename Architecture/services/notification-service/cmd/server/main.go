@@ -20,6 +20,7 @@ import (
 	"github.com/atpost/notification-service/internal/subscribers"
 	"github.com/atpost/notification-service/internal/workers"
 	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/identityroles"
 	"github.com/atpost/shared/mailer"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -333,6 +334,30 @@ func main() {
 		notifSvc,
 		kafkaDialer,
 	)
+	// Dating plan lane D8: panic paging. Responders are staff user ids set
+	// by operators (identity has no "users holding role X" route); each is
+	// re-checked against identity's internal roles read when
+	// IDENTITY_AUTH_URL is set. With none configured every panic raises a
+	// critical ops alert (notify_meta.ops_alerts) and an ERROR log.
+	responderIDs, invalidResponders := events.ParseResponderIDs(os.Getenv("DATING_SAFETY_RESPONDER_USER_IDS"))
+	if len(invalidResponders) > 0 {
+		slog.Error("DATING_SAFETY_RESPONDER_USER_IDS has invalid entries; they are ignored", "count", len(invalidResponders))
+	}
+	var responderDir *events.ResponderDirectory
+	if identityURL := strings.TrimSpace(os.Getenv("IDENTITY_AUTH_URL")); identityURL != "" {
+		responderDir = events.NewResponderDirectory(responderIDs, identityroles.NewClient(identityURL, internalKey, "notification-service"))
+	} else {
+		responderDir = events.NewResponderDirectory(responderIDs, nil)
+		if len(responderIDs) > 0 {
+			slog.Warn("IDENTITY_AUTH_URL not set: dating safety responders are paged without a role check")
+		}
+	}
+	if len(responderIDs) == 0 {
+		slog.Error("DATING_SAFETY_RESPONDER_USER_IDS is empty: dating panics page NO responder (ops alert + ERROR log only)")
+	}
+	datingConsumer.WithDatingSafety(events.NewDatingSafetyAdapter(notifSvc, responderDir, os.Getenv("DATING_SAFETY_OPS_EMAIL")))
+	slog.Info("dating safety paging configured", "responders", len(responderIDs),
+		"ops_email_configured", strings.TrimSpace(os.Getenv("DATING_SAFETY_OPS_EMAIL")) != "")
 	go datingConsumer.Start(ctx)
 	slog.Info("kafka dating consumer started", "topic", datingTopic)
 

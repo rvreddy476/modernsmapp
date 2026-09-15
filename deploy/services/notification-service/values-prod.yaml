@@ -47,6 +47,14 @@ env:
   # service then refuses to start without working push credentials.
   CALL_PUSH_REQUIRED: "false"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Dating lane D8 panic paging. DATING_SAFETY_RESPONDER_USER_IDS: comma-separated
+  # staff user ids, each re-checked for admin/moderator in identity. Empty pages
+  # no responder: every panic then raises a critical ops alert (DECISION PENDING:
+  # name the responder owner and fill this in before launch).
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  DATING_SAFETY_RESPONDER_USER_IDS: ""
+  DATING_SAFETY_OPS_EMAIL: ""
 
 ingress:
   enabled: false

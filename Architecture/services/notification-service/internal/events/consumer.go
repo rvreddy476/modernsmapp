@@ -50,6 +50,9 @@ type Consumer struct {
 	graph   *graph.Client // optional — follower fan-out for live-started
 	// fanout is the durable subscriber upload pipeline (Module 1 P0-3).
 	fanout subscriberFanout
+	// datingSafety pages responders and trusted contacts for dating panics
+	// (Dating plan lane D8, dating_safety.go). Nil: panics log at ERROR.
+	datingSafety datingSafetyDeps
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry

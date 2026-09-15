@@ -30,5 +30,10 @@ env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Dating lane D8 panic paging (responder ids pending a named owner).
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  DATING_SAFETY_RESPONDER_USER_IDS: ''
+  DATING_SAFETY_OPS_EMAIL: ''
 ingress:
   enabled: false
