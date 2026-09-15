@@ -33,6 +33,10 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Dating plan lane D8: dating-service opens a grievance per dating
+	// report. Service callers only (user identity headers are refused).
+	r.POST(DatingReportGrievancePath, h.LinkDatingReportGrievance)
+
 	v1 := r.Group("/v1/reports")
 	{
 		v1.POST("", h.FileReport)
