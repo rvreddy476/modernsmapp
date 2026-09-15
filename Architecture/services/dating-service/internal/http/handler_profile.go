@@ -118,12 +118,10 @@ func (h *Handler) DeleteProfile(c *gin.Context) {
 }
 
 // GetProfilePreview returns a tiny shape suitable for cross-service name
-// lookups (Sprint 3 — notification-service consumer). Internal-only:
-// requires X-Internal-Service-Key.
+// lookups (Sprint 3 — notification-service consumer).
+// GET /v1/dating/internal/profile/:userId/preview, registered behind
+// requireServiceCaller(OpProfilePreview).
 func (h *Handler) GetProfilePreview(c *gin.Context) {
-	if !verifyInternalKey(c) {
-		return
-	}
 	userID, ok := parseUUID(c, "userId")
 	if !ok {
 		return
@@ -141,4 +139,21 @@ func (h *Handler) GetProfilePreview(c *gin.Context) {
 		"user_id":    userID,
 		"first_name": first,
 	}, nil)
+}
+
+// GetProfilePreviewLegacy — GET /v1/dating/profile/:userId/preview.
+//
+// Retired path, kept for ONE release because notification-service still
+// calls it with the internal key. A request carrying a gateway-set user
+// identity is a proxied user and gets 410 pointing at the internal path;
+// a request without one must hold a service credential and is served.
+func (h *Handler) GetProfilePreviewLegacy(c *gin.Context) {
+	if hasGatewayIdentity(c) {
+		movedTo(InternalProfilePreviewPath)(c)
+		return
+	}
+	if !h.authorizeServiceCaller(c, OpProfilePreview) {
+		return
+	}
+	h.GetProfilePreview(c)
 }

@@ -31,6 +31,26 @@ import (
 func main() {
 	logging.Init(logging.Config{ServiceName: "dating-service"})
 
+	// D1 fail-closed boot: without INTERNAL_SERVICE_KEY every /v1/dating
+	// route would accept a spoofed X-User-Id, so refuse to start unless ENV
+	// is local/dev (a blank ENV is not). Checked before any dependency is
+	// dialled so a misconfigured pod fails fast.
+	internalKey, keyWarning, err := datinghttp.ResolveInternalKey(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if keyWarning != "" {
+		slog.Warn(keyWarning)
+	}
+	// Service-token callers of /v1/dating/internal (SERVICE_CALLERS). Absent
+	// → the legacy internal key is the only service credential there.
+	serviceCallers, err := datinghttp.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: service-token configuration is invalid", "error", err)
+		os.Exit(1)
+	}
+
 	port := env("HTTP_PORT", "8112")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
@@ -206,13 +226,18 @@ func main() {
 	// inbound X-Internal-Service-Key from public clients and injects the
 	// trusted one before forwarding, so dating-service is reachable only
 	// via the gateway. Without this, anyone reaching the pod could spoof
-	// X-User-Id and impersonate any user. Empty key keeps the dev loop
-	// unblocked but emits a loud warning.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		datingHandler.WithInternalKey(key)
+	// X-User-Id and impersonate any user. An empty key reaches here only
+	// under ENV local/dev (ResolveInternalKey above).
+	if internalKey != "" {
+		datingHandler.WithInternalKey(internalKey)
 		slog.Info("dating-service: internal-service-key gate enabled")
+	}
+	if serviceCallers != nil {
+		datingHandler.WithServiceAuth(serviceCallers)
+		slog.Info("dating-service: service-token callers registered for /v1/dating/internal", "callers", serviceCallers.Callers())
 	} else {
-		slog.Warn("dating-service: INTERNAL_SERVICE_KEY not set — every /v1/dating/* endpoint is unauthenticated. DO NOT run this configuration in production.")
+		slog.Warn("dating-service: SERVICE_CALLERS not set — /v1/dating/internal accepts only the legacy internal key " +
+			"(from requests without a user identity). Register callers to move them to service tokens.")
 	}
 
 	// P0-9: match-saga reconciler. Sweeps every 60s for matches stuck

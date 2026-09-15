@@ -253,9 +253,15 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 // store layer — a second ack returns the row with acked=false and the
 // service does not re-emit.
 //
-// adminID is the gateway-injected actor (may be uuid.Nil). The audit
-// row in dating_admin_audit is left to the caller / handler.
+// adminID is the admin's gateway-derived user id; uuid.Nil is refused.
+// The acknowledgement that lands writes one dating_admin_audit row
+// (action "panic_acknowledged"); a replayed ack writes none. As with the
+// other admin actions, an audit insert failure is logged but does not
+// roll back the acknowledgement.
 func (s *Service) AcknowledgePanic(ctx context.Context, panicID, adminID uuid.UUID) error {
+	if adminID == uuid.Nil {
+		return errAdminActorRequired
+	}
 	if panicID == uuid.Nil {
 		return fmt.Errorf("invalid: panic_id required")
 	}
@@ -275,12 +281,18 @@ func (s *Service) AcknowledgePanic(ctx context.Context, panicID, adminID uuid.UU
 		// on replay. If we ever see (row, false, nil) treat the same.
 		return nil
 	}
+	entry := &store.AdminAuditEntry{
+		ActorAdminID:   adminID,
+		Action:         "panic_acknowledged",
+		TargetUserID:   event.UserID,
+		TargetResource: "safety_event:" + panicID.String(),
+	}
+	if aerr := s.store.InsertAdminAudit(ctx, entry); aerr != nil {
+		slog.Error("admin audit: insert failed for AcknowledgePanic",
+			"panic_id", panicID, "user_id", event.UserID, "actor_admin_id", adminID, "error", aerr)
+	}
 	if s.producer != nil {
-		ackBy := ""
-		if adminID != uuid.Nil {
-			ackBy = adminID.String()
-		}
-		if perr := s.producer.PublishSafetyPanicAcknowledged(ctx, event.UserID, ackBy); perr != nil {
+		if perr := s.producer.PublishSafetyPanicAcknowledged(ctx, event.UserID, adminID.String()); perr != nil {
 			// Persist already succeeded; surface to slog but don't
 			// fail the admin click. Convention follows the rest of the
 			// safety code path.

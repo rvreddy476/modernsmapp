@@ -21,10 +21,9 @@ import (
 // AdminAuditEntry is one row of dating_admin_audit.
 //
 // Field semantics:
-//   - ActorAdminID — the X-Admin-Id header value the gateway injected.
-//     uuid.Nil is allowed (the service-layer wiring logs a warning when
-//     the header is missing rather than failing the action) so the
-//     audit trail never has a hole on the action itself.
+//   - ActorAdminID — the admin's gateway-derived X-User-Id (dating-service
+//     HTTP requireAdmin). The service layer refuses an admin action with
+//     no actor, so every row names an accountable admin.
 //   - Action       — short verb such as "report_dismiss", "report_warn",
 //     "report_restrict", "report_suspend", "photo_approved",
 //     "photo_rejected". Free-form by design so future admin tools can

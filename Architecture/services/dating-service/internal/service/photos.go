@@ -81,9 +81,8 @@ func (s *Service) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) er
 // On rejection, publishes dating.photo.moderation_rejected so the
 // notification consumer can push a user-facing notice.
 //
-// adminID is the X-Admin-Id header value the gateway injects on
-// admin-scope traffic. uuid.Nil is accepted with a slog.Warn so the
-// action never bounces because of a missing header. Every call
+// adminID is the admin's gateway-derived user id (the HTTP layer's
+// requireAdmin). uuid.Nil is refused before the photo changes. Every call
 // writes one row to dating_admin_audit after the photo flip lands;
 // an audit insert failure is logged but does NOT roll back the
 // moderation action. PHASE_0_TEST_PLANS.md §P0-8 acceptance test D.
@@ -92,6 +91,9 @@ func (s *Service) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) er
 // (profile lifecycle — wire pending_photo → pending_selfie) +
 // §P0-8 (audit trail) in dating/PRODUCTION_GAP_ANALYSIS.md.
 func (s *Service) SetPhotoModerationStatus(ctx context.Context, adminID, photoID uuid.UUID, status, rejectReason string) (*store.Photo, error) {
+	if adminID == uuid.Nil {
+		return nil, errAdminActorRequired
+	}
 	photo, err := s.store.SetPhotoModerationStatus(ctx, photoID, status, rejectReason)
 	if err != nil {
 		return nil, err
@@ -125,10 +127,6 @@ func (s *Service) SetPhotoModerationStatus(ctx context.Context, adminID, photoID
 		}
 	}
 
-	if adminID == uuid.Nil {
-		slog.Warn("admin audit: actor id missing on SetPhotoModerationStatus",
-			"photo_id", photoID, "status", status, "user_id", photo.UserID)
-	}
 	entry := &store.AdminAuditEntry{
 		ActorAdminID:   adminID,
 		Action:         "photo_" + status,

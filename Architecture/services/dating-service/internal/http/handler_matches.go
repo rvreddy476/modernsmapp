@@ -5,7 +5,6 @@ package http
 import (
 	"errors"
 	"net/http"
-	"os"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/api"
@@ -96,14 +95,13 @@ func (h *Handler) ExtendMatch(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"extended": true, "extra_days": 7}, nil)
 }
 
-// MatchFirstMessage — POST /v1/dating/matches/:id/first-message
-// Internal-only endpoint called by the message-service consumer when a
-// message is sent in a dating-match conversation. Authenticated by the
-// X-Internal-Service-Key header (env: INTERNAL_SERVICE_KEY).
+// MatchFirstMessage — POST /v1/dating/internal/matches/:id/first-message
+// Service-only endpoint for the chat/message consumer when a message is
+// sent in a dating-match conversation. Registered behind
+// requireServiceCaller(OpMatchFirstMessage): a service token or the legacy
+// internal key, and never a request carrying a gateway user identity. The
+// old /v1/dating/matches/:id/first-message path answers 410.
 func (h *Handler) MatchFirstMessage(c *gin.Context) {
-	if !verifyInternalKey(c) {
-		return
-	}
 	matchID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -129,20 +127,4 @@ func (h *Handler) MatchFirstMessage(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"recorded": true}, nil)
-}
-
-// verifyInternalKey checks the X-Internal-Service-Key header against the
-// configured INTERNAL_SERVICE_KEY env var. When the env var is unset the
-// endpoint is locked (returns 401) so a missing config doesn't open a hole.
-func verifyInternalKey(c *gin.Context) bool {
-	expected := os.Getenv("INTERNAL_SERVICE_KEY")
-	if expected == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "internal endpoint disabled", nil)
-		return false
-	}
-	if c.GetHeader("X-Internal-Service-Key") != expected {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "invalid internal key", nil)
-		return false
-	}
-	return true
 }

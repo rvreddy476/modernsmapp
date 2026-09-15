@@ -9,33 +9,11 @@ package http
 
 import (
 	"net/http"
-	"os"
 
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
-
-// internalKeyFromHeader returns the X-Internal-Key header for s2s auth.
-func internalKeyFromHeader(c *gin.Context) string {
-	return c.GetHeader("X-Internal-Key")
-}
-
-// requireInternalAuth gates internal endpoints. If INTERNAL_SERVICE_KEY is
-// unset (typical local dev) the gate is open. In production the env var
-// must be set and the caller must include it.
-func requireInternalAuth(c *gin.Context) bool {
-	expected := os.Getenv("INTERNAL_SERVICE_KEY")
-	if expected == "" {
-		return true
-	}
-	got := internalKeyFromHeader(c)
-	if got != expected {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "internal auth required", nil)
-		return false
-	}
-	return true
-}
 
 // scanRequest is the body for the layer-1 endpoint.
 type scanRequest struct {
@@ -49,8 +27,12 @@ type scanRequest struct {
 //
 // Internal-only. Response includes a "shadow_mode" flag so the caller can
 // confirm it must NOT act on action_taken in shadow.
+//
+// Same service-caller check as the internal family (authorizeServiceCaller):
+// X-Internal-Service-Key (the old X-Internal-Key header is gone), fails
+// closed when no key is configured, and refuses a gateway user identity.
 func (h *Handler) PostScanMessage(c *gin.Context) {
-	if !requireInternalAuth(c) {
+	if !h.authorizeServiceCaller(c, OpModerationScan) {
 		return
 	}
 	var body scanRequest

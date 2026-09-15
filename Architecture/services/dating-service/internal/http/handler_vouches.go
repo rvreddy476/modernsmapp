@@ -115,14 +115,21 @@ func (h *Handler) RevokeVouch(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "revoked"}, nil)
 }
 
-// ListVouchesFor — GET /v1/dating/vouches/for/:userId.
-// Returns the public-displayable (status='accepted') subset by default.
+// ListVouchesFor — GET /v1/dating/vouches/for/:userId[?status=].
+//
+// Anyone other than the vouchee sees ONLY the public-displayable
+// (status='accepted') subset; their ?status= is ignored, so pending and
+// declined vouches never leak. The vouchee (gateway-set X-User-Id equal to
+// :userId) may filter by any status and defaults to accepted.
 func (h *Handler) ListVouchesFor(c *gin.Context) {
 	target, ok := parseUUID(c, "userId")
 	if !ok {
 		return
 	}
-	status := c.DefaultQuery("status", "accepted")
+	status := "accepted"
+	if viewer, err := uuid.Parse(c.GetHeader(headerUserID)); err == nil && viewer == target {
+		status = c.DefaultQuery("status", "accepted")
+	}
 	out, err := h.svc.ListVouchesFor(c.Request.Context(), target, status)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")

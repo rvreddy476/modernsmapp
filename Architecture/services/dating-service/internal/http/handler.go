@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -17,6 +18,10 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// verifier admits service tokens on the /v1/dating/internal family
+	// (auth.go). Nil leaves the legacy internal key as the only service
+	// credential there.
+	verifier *servicetoken.Verifier
 }
 
 func New(svc *service.Service) *Handler {
@@ -30,8 +35,13 @@ func New(svc *service.Service) *Handler {
 // directly could spoof X-User-Id and impersonate any user — the
 // P0-2 finding in PRODUCTION_GAP_ANALYSIS.md.
 //
-// Empty key disables the gate (dev-loop only); main.go emits a loud
-// warning at startup when the env var isn't set.
+// The key does NOT identify the caller: the gateway injects it on every
+// proxied request, user or anonymous. Admin routes additionally require a
+// gateway-set admin scope (requireAdmin) and the internal family requires a
+// service credential with no user identity (requireServiceCaller).
+//
+// Empty key disables the gate. main.go refuses to boot without a key unless
+// ENV is local/dev (ResolveInternalKey).
 func (h *Handler) WithInternalKey(key string) *Handler {
 	h.internalKey = key
 	return h
@@ -43,6 +53,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// gateway forwards it untouched, and Razorpay itself cannot carry
 	// the internal key. Register it outside the v1 group.
 	r.POST("/v1/dating/premium/webhook", h.PostWebhook)
+
+	// Service-only family. Outside the key group on purpose: a service-token
+	// caller does not carry the internal key. Each route requires a service
+	// credential (token, or the legacy key) and refuses any request carrying
+	// a gateway-set user identity. The "/internal/" segment also puts these
+	// behind the gateway's admin-scope gate for anything proxied.
+	r.GET(InternalProfilePreviewPath, h.requireServiceCaller(OpProfilePreview), h.GetProfilePreview)
+	r.POST(InternalFirstMessagePath, h.requireServiceCaller(OpMatchFirstMessage), h.MatchFirstMessage)
+	r.GET(InternalRiskPath, h.requireServiceCaller(OpRiskRead), h.GetAccountRisk)
 
 	// Everything else sits behind the internal-service-key gate.
 	v1 := r.Group("")
@@ -56,10 +75,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.PATCH("/profile/intent", h.PatchIntent)
 		dating.POST("/profile/pause", h.PostPause)
 		dating.DELETE("/profile", h.DeleteProfile)
-		// Internal-only: minimal profile preview for cross-service name
-		// lookups (notification-service uses this for "<first_name>
-		// Sparked your photo" titles).
-		dating.GET("/profile/:userId/preview", h.GetProfilePreview)
+		// LEGACY path of the profile preview (moved to
+		// InternalProfilePreviewPath). Kept for one release for
+		// notification-service's internal-key call: served only when no
+		// gateway user identity is present, 410 otherwise.
+		dating.GET("/profile/:userId/preview", h.GetProfilePreviewLegacy)
 
 		// §P1-3 — Privacy controls (incognito, hide_last_active,
 		// approximate_location, verified_only_filter,
@@ -81,11 +101,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/photos", h.CreatePhoto)
 		dating.PATCH("/photos/:id", h.UpdatePhoto)
 		dating.DELETE("/photos/:id", h.DeletePhoto)
-		// Internal-only: admin / content-scanner moderation flip.
-		// Drives deck-cache invalidation + profile-state transition
-		// + photo.moderation_rejected event. Same internal-key gate
-		// as the rest of /v1/dating/*.
-		dating.POST("/photos/:id/moderation", h.SetPhotoModerationStatus)
+		// Admin / moderator moderation flip. Drives deck-cache
+		// invalidation + profile-state transition +
+		// photo.moderation_rejected event. Requires the admin scope, so a
+		// user cannot approve their own photo.
+		dating.POST("/photos/:id/moderation", h.requireAdmin(), h.SetPhotoModerationStatus)
 
 		dating.GET("/prompts/catalog", h.GetPromptCatalog)
 		dating.GET("/prompts", h.ListPrompts)
@@ -119,8 +139,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/matches/:id", h.GetMatch)
 		dating.POST("/matches/:id/close", h.CloseMatch)
 		dating.POST("/matches/:id/extend", h.ExtendMatch)
-		// Internal-only (called by message-service consumer)
-		dating.POST("/matches/:id/first-message", h.MatchFirstMessage)
+		// Moved to InternalFirstMessagePath; 410 for one release.
+		dating.POST("/matches/:id/first-message", movedTo(InternalFirstMessagePath))
 
 		// Sprint 4 — Verification (Aadhaar via DigiLocker + selfie face match).
 		// DPDP Act compliant — see PULSE_DATING_SPEC.md §15.8
@@ -163,29 +183,27 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/data-export", h.PostDataExport)
 		dating.GET("/data-export/me", h.GetMyDataExports)
 
-		// §P0-8 admin queues. Same internal-key gate; the api-gateway
-		// adds an admin-scope check before forwarding these paths.
-		// Read-side scaffolds for the /admin/dating console.
-		dating.GET("/admin/reports", h.ListReports)
-		dating.POST("/admin/reports/:id/action", h.ActOnReport)
-		dating.GET("/admin/safety/panic", h.ListPanicEvents)
+		// §P0-8 admin queues for the /admin/dating console. The
+		// gateway does NOT admin-gate these paths (they have no
+		// "/internal/" segment), so dating checks the gateway-set
+		// scopes itself: every route requires admin|moderator|superadmin.
+		admin := dating.Group("/admin", h.requireAdmin())
+		admin.GET("/reports", h.ListReports)
+		admin.POST("/reports/:id/action", h.ActOnReport)
+		admin.GET("/safety/panic", h.ListPanicEvents)
 		// Phase 1 follow-up — admin acknowledgement flips
-		// acknowledged_at on the panic safety_event row and emits
-		// dating.safety.panic.acknowledged so the user sees support
-		// has triaged their alert.
-		dating.POST("/admin/safety/panic/:id/ack", h.AcknowledgePanic)
-		dating.GET("/admin/photos/pending", h.ListPendingPhotos)
+		// acknowledged_at on the panic safety_event row, writes the
+		// audit row and emits dating.safety.panic.acknowledged so the
+		// user sees support has triaged their alert.
+		admin.POST("/safety/panic/:id/ack", h.AcknowledgePanic)
+		admin.GET("/photos/pending", h.ListPendingPhotos)
 		// §P0-8 — append-only audit log surface for the console.
-		dating.GET("/admin/audit", h.ListAdminAudit)
+		admin.GET("/audit", h.ListAdminAudit)
+		// §P0-7 Phase A — fake-account risk queue.
+		admin.GET("/risk", h.ListAccountRisks)
 
-		// §P0-7 Phase A — fake-account risk scoring.
-		// Admin queue read-side; the future /admin/dating console
-		// will surface flagged users on these endpoints.
-		dating.GET("/admin/risk", h.ListAccountRisks)
-		// Internal cross-service lookup. Other services
-		// (api-gateway, commerce, message) call this before
-		// allowing a sensitive action. Same internal-key gate.
-		dating.GET("/risk/:userId", h.GetAccountRisk)
+		// Moved to InternalRiskPath; 410 for one release.
+		dating.GET("/risk/:userId", movedTo(InternalRiskPath))
 	}
 }
 

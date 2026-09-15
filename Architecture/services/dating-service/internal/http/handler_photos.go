@@ -99,21 +99,24 @@ func (h *Handler) UpdatePhoto(c *gin.Context) {
 }
 
 // SetPhotoModerationStatus — POST /v1/dating/photos/:id/moderation
-// Internal-only: gated by the same internal-service-key as the rest
-// of dating-service. Body: {status: "approved"|"rejected"|"pending",
-// reason?: string}. Triggers deck-cache invalidation + profile-state
-// transition + (on rejection) photo.moderation_rejected event.
+// Admin / moderator only (requireAdmin): a plain user holding the
+// gateway-injected key gets 403, so nobody approves their own photo.
+// Body: {status: "approved"|"rejected"|"pending", reason?: string}.
+// Triggers deck-cache invalidation + profile-state transition + (on
+// rejection) photo.moderation_rejected event.
 //
-// The X-Admin-Id header (gateway-injected on admin-scope traffic) is
-// forwarded to the service layer so dating_admin_audit captures who
-// took the action. Missing header → uuid.Nil + slog.Warn (the action
-// still lands). PRODUCTION_GAP_ANALYSIS.md §P0-8.
+// dating_admin_audit records the admin's gateway-derived X-User-Id as
+// the actor; no actor → refused. PRODUCTION_GAP_ANALYSIS.md §P0-8.
 type setPhotoModerationRequest struct {
 	Status string `json:"status" binding:"required"`
 	Reason string `json:"reason"`
 }
 
 func (h *Handler) SetPhotoModerationStatus(c *gin.Context) {
+	adminID, ok := adminActor(c)
+	if !ok {
+		return
+	}
 	photoID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -123,7 +126,6 @@ func (h *Handler) SetPhotoModerationStatus(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	adminID := getAdminID(c)
 	photo, err := h.svc.SetPhotoModerationStatus(c.Request.Context(), adminID, photoID, body.Status, body.Reason)
 	if err != nil {
 		if errors.Is(err, store.ErrPhotoNotFound) {

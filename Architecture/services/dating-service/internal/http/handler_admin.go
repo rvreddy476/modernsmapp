@@ -1,7 +1,6 @@
 package http
 
 import (
-	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -12,10 +11,11 @@ import (
 )
 
 // Admin read-side handlers for /admin/dating console (PRODUCTION_GAP_
-// ANALYSIS.md §P0-8). All routes sit inside the v1 group so the
-// shared internal-service-key gate already applies — the gateway
-// also enforces an admin-scope check before forwarding to these
-// paths, so reaching this handler implies the caller is admin.
+// ANALYSIS.md §P0-8). Every route is registered behind requireAdmin
+// (auth.go): the gateway does NOT admin-gate /v1/dating/admin, so the
+// internal key proves nothing and dating checks the gateway-set scopes
+// itself. Mutating handlers record the admitted admin's X-User-Id as the
+// audit actor (adminActor); X-Admin-Id is never read.
 
 // ListReports — GET /v1/dating/admin/reports?status=&category=&limit=&offset=
 func (h *Handler) ListReports(c *gin.Context) {
@@ -66,11 +66,13 @@ type actOnReportRequest struct {
 // profile_status (pending_review / restricted / suspended), which
 // fires deck-cache invalidation downstream.
 //
-// The X-Admin-Id header (gateway-injected on admin-scope traffic) is
-// forwarded to the service layer so the dating_admin_audit row
-// captures who took the action. Missing / invalid header is logged
-// and replaced with uuid.Nil rather than failing the action.
+// The dating_admin_audit actor is the admin's gateway-derived X-User-Id
+// (requireAdmin). No actor → the action is refused.
 func (h *Handler) ActOnReport(c *gin.Context) {
+	adminID, ok := adminActor(c)
+	if !ok {
+		return
+	}
 	reportID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -89,7 +91,6 @@ func (h *Handler) ActOnReport(c *gin.Context) {
 		}
 		targetID = parsed
 	}
-	adminID := getAdminID(c)
 	newStatus, err := h.svc.ActOnReport(c.Request.Context(), adminID, reportID, targetID, body.Action)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "ACTION_FAILED")
@@ -106,16 +107,18 @@ func (h *Handler) ActOnReport(c *gin.Context) {
 // request" in-app. Idempotent: second ack hits the already-acked
 // branch in the store and short-circuits without re-emitting.
 //
-// admin-scope (gateway-enforced) + internal-key gated. X-Admin-Id
-// flows through as the acknowledged_by actor; missing header is
-// logged + falls through with uuid.Nil (mirrors ActOnReport's
-// fallback so a missing header never bounces an on-call response).
+// Admin scope required (requireAdmin). The admin's gateway-derived
+// X-User-Id is the acknowledged_by actor and the dating_admin_audit
+// actor; no actor → the acknowledgement is refused.
 func (h *Handler) AcknowledgePanic(c *gin.Context) {
+	adminID, ok := adminActor(c)
+	if !ok {
+		return
+	}
 	panicID, ok := parseUUID(c, "id")
 	if !ok {
 		return
 	}
-	adminID := getAdminID(c)
 	if err := h.svc.AcknowledgePanic(c.Request.Context(), panicID, adminID); err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "ACK_FAILED")
 		return
@@ -157,30 +160,6 @@ func (h *Handler) ListAdminAudit(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items, "limit": limit, "offset": offset}, nil)
-}
-
-// getAdminID reads the gateway-injected X-Admin-Id header. Missing
-// or malformed value returns uuid.Nil and emits a warn-level log —
-// admin actions never bounce on a missing header (the action lands
-// + the audit row records actor_admin_id = '00000000-...'). Mirrors
-// the same fallback semantics across the rest of the service.
-func getAdminID(c *gin.Context) uuid.UUID {
-	raw := c.GetHeader("X-Admin-Id")
-	if raw == "" {
-		raw = c.GetHeader("X-Admin-ID")
-	}
-	if raw == "" {
-		slog.Warn("admin handler: missing X-Admin-Id header",
-			"path", c.FullPath(), "request_id", c.GetHeader("X-Request-Id"))
-		return uuid.Nil
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		slog.Warn("admin handler: invalid X-Admin-Id header",
-			"path", c.FullPath(), "raw", raw, "error", err)
-		return uuid.Nil
-	}
-	return id
 }
 
 // parseIntQuery reads a positive int query param, clamped to [1, max]

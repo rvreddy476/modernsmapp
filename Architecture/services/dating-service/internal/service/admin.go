@@ -46,12 +46,11 @@ func (s *Service) ListAdminAudit(ctx context.Context, f store.AdminAuditFilter, 
 // failing one leg shouldn't strand the other. Returns the new
 // report status the caller renders back to the admin UI.
 //
-// adminID is the X-Admin-Id header value forwarded by the gateway;
-// uuid.Nil is accepted (we slog.Warn rather than failing the action)
-// so the admin click never bounces because of a missing header. The
-// audit row goes into dating_admin_audit append-only after the
-// action lands. A failed audit insert is logged but does NOT roll
-// back the admin action.
+// adminID is the admin's gateway-derived user id (the HTTP layer's
+// requireAdmin). uuid.Nil is refused before anything changes: an admin
+// action with no accountable actor never lands. The audit row goes into
+// dating_admin_audit append-only after the action lands. A failed audit
+// insert is logged but does NOT roll back the admin action.
 //
 // Allowed `action` values:
 //
@@ -68,6 +67,9 @@ func (s *Service) ListAdminAudit(ctx context.Context, f store.AdminAuditFilter, 
 //
 // targetUserID is required for review + restrict + suspend.
 func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUserID uuid.UUID, action string) (string, error) {
+	if adminID == uuid.Nil {
+		return "", errAdminActorRequired
+	}
 	var newStatus string
 	var profileStatus string
 	switch action {
@@ -122,10 +124,6 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 		}
 	}
 
-	if adminID == uuid.Nil {
-		slog.Warn("admin audit: actor id missing on ActOnReport",
-			"report_id", reportID, "action", action, "target_user_id", targetUserID)
-	}
 	entry := &store.AdminAuditEntry{
 		ActorAdminID:   adminID,
 		Action:         "report_" + action,
@@ -146,3 +144,7 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 // generic error and the HTTP handler maps the "invalid: " prefix to
 // 400 via respondServiceError.
 var errInvalidAdminAction = fmt.Errorf("invalid: unknown admin action; allowed values are dismiss|resolved|warn|review|restrict|suspend")
+
+// errAdminActorRequired refuses an admin mutation with no actor. The
+// "forbidden: " prefix maps to 403 in respondServiceError.
+var errAdminActorRequired = fmt.Errorf("forbidden: admin actor required")
