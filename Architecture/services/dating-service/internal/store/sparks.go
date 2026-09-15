@@ -64,15 +64,32 @@ func (s *Store) declineCutoff() time.Time {
 }
 
 // recentDeclinePredicate is true when `recipient` declined a spark from
-// `sender` after the cutoff expression. Uses idx_dating_sparks_declined_pair.
+// `sender` after the cutoff expression and has not lifted that decline since.
+// It is the one decline-cooldown rule: spark create (HasRecentDecline), the
+// deck (FetchCandidates) and mutual-match counting (HasReverseSparks) all use
+// it. Uses idx_dating_sparks_declined_pair.
 func recentDeclinePredicate(sender, recipient, cutoff string) string {
 	return `EXISTS (SELECT 1 FROM dating_sparks dcl
 	    WHERE dcl.from_user_id = ` + sender + ` AND dcl.to_user_id = ` + recipient + `
-	      AND dcl.declined_at IS NOT NULL AND dcl.declined_at > ` + cutoff + `)`
+	      AND dcl.declined_at IS NOT NULL AND dcl.declined_at > ` + cutoff + `
+	      AND NOT ` + declineLiftedPredicate("dcl", sender, recipient) + `)`
+}
+
+// declineLiftedPredicate is true when `recipient` (the decliner) has a spark
+// toward `sender` created after the decline row `dcl` was declined: sparking
+// the person you declined lifts the cooldown. Computed from the sparks
+// themselves, so there is no flag to drift. A spark made before the decline,
+// or a repeat of one (its created_at is kept), does not lift it; revoking
+// the lifting spark, with no other later spark, restores the cooldown.
+func declineLiftedPredicate(dcl, sender, recipient string) string {
+	return `EXISTS (SELECT 1 FROM dating_sparks lift
+	    WHERE lift.from_user_id = ` + recipient + ` AND lift.to_user_id = ` + sender + `
+	      AND lift.created_at > ` + dcl + `.declined_at)`
 }
 
 // HasRecentDecline reports whether recipientID declined any spark from
-// senderID within the decline cooldown.
+// senderID within the decline cooldown and has not lifted it by sparking
+// senderID since.
 func (s *Store) HasRecentDecline(ctx context.Context, senderID, recipientID uuid.UUID) (bool, error) {
 	var declined bool
 	err := s.db.QueryRow(ctx, `SELECT `+recentDeclinePredicate("$1::uuid", "$2::uuid", "$3::timestamptz"),
@@ -317,8 +334,9 @@ func (s *Store) DeclineSpark(ctx context.Context, id, recipientID uuid.UUID) (*S
 
 // HasReverseSparks reports true if user b has Sparked user a with interest
 // that still counts: not declined, created after the pair's last match
-// closure or expiry, and a has not declined any spark from b within the
-// decline cooldown. Used by the spark service to detect mutual interest.
+// closure or expiry, and a has no unlifted decline of b's sparks within the
+// decline cooldown. A declined spark never counts, even once a lifts the
+// decline by sparking b. Used by the spark service to detect mutual interest.
 func (s *Store) HasReverseSparks(ctx context.Context, a, b uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `

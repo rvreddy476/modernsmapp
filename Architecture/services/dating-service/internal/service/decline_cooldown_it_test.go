@@ -1,7 +1,9 @@
 // Decline cooldown: within it the declined sender cannot spark the decliner
 // (the ordinary CANDIDATE_UNAVAILABLE), does not see them in the deck, and no
 // match forms from their sparks; the decliner is unaffected; after it all is
-// as before. Skipped without TEST_PG_DSN; cached-deck checks need REDIS_ADDR.
+// as before. The decliner sparking the sender after the decline lifts it; the
+// declined spark itself never counts toward a match. Skipped without
+// TEST_PG_DSN; cached-deck checks need REDIS_ADDR.
 package service
 
 import (
@@ -96,14 +98,14 @@ func TestDeclineCooldown_SenderRefusedAndOffDeckThenRestored(t *testing.T) {
 		}
 	}
 
-	// One-directional: the decliner can still spark the sender, and no match
-	// forms from the declined sender's interest.
+	// One-directional: the decliner can still spark the sender (which lifts
+	// the cooldown), and the declined spark alone forms no match.
 	_, mid, err := svc.CreateSpark(ctx, decliner, sender, "prompt", "back", "")
 	if err != nil {
 		t.Fatalf("the decliner could not spark the sender: %v", err)
 	}
 	if mid != nil || openMatchesBetween(t, st, sender, decliner) != 0 {
-		t.Fatalf("a match formed within the cooldown (match %v)", mid)
+		t.Fatalf("a match formed from a declined spark (match %v)", mid)
 	}
 
 	// After the cooldown everything behaves as before.
@@ -120,34 +122,169 @@ func TestDeclineCooldown_SenderRefusedAndOffDeckThenRestored(t *testing.T) {
 	}
 }
 
-func TestDeclineCooldown_NoMatchFromDeclinedSenderWithinCooldown(t *testing.T) {
+// While a decline is unlifted, the declined sender's other, undeclined sparks
+// do not count toward a match. Without lifting, the decliner reaches the
+// mutual check only by repeating a spark made before the decline. A new spark
+// lifts it, and then the sender's undeclined spark forms the match.
+func TestDeclineCooldown_NoMatchUntilLiftedThenUndeclinedSparkCounts(t *testing.T) {
 	svc, st, _ := newD3Svc(t)
+	pool := itPool(t)
 	ctx := context.Background()
-	a, b := uuid.New(), uuid.New()
+	a, b := uuid.New(), uuid.New() // a sparks, b declines
 	seedActiveProfile(t, st, a)
 	seedActiveProfile(t, st, b)
 
-	photo, _, err := svc.CreateSpark(ctx, a, b, "photo", "0", "")
+	// Seeded in the store so no match forms while setting up.
+	early, err := st.CreateSpark(ctx, b, a, "photo", "0", "")
+	if err != nil {
+		t.Fatalf("early b spark: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE dating_sparks SET created_at = now() - INTERVAL '1 hour' WHERE id = $1`, early.ID); err != nil {
+		t.Fatalf("age early spark: %v", err)
+	}
+	photo, err := st.CreateSpark(ctx, a, b, "photo", "0", "")
 	if err != nil {
 		t.Fatalf("spark photo: %v", err)
 	}
-	if _, _, err := svc.CreateSpark(ctx, a, b, "prompt", "p1", ""); err != nil {
+	if _, err := st.CreateSpark(ctx, a, b, "prompt", "p1", ""); err != nil {
 		t.Fatalf("spark prompt: %v", err)
 	}
 	if _, err := svc.DeclineSpark(ctx, photo.ID, b); err != nil {
 		t.Fatalf("decline: %v", err)
 	}
-	// b declined one of a's sparks; a's other, undeclined spark must not let
-	// b's spark form a match during the cooldown.
 	_, mid, err := svc.CreateSpark(ctx, b, a, "photo", "0", "")
+	if err != nil {
+		t.Fatalf("decliner repeat spark: %v", err)
+	}
+	if mid != nil || openMatchesBetween(t, st, a, b) != 0 {
+		t.Fatalf("match %v formed from a declined sender's sparks while the decline is unlifted", mid)
+	}
+
+	_, mid, err = svc.CreateSpark(ctx, b, a, "prompt", "new", "")
+	if err != nil {
+		t.Fatalf("decliner new spark: %v", err)
+	}
+	if mid == nil || openMatchesBetween(t, st, a, b) != 1 {
+		t.Fatalf("after the lift, a's undeclined spark and b's new spark formed no match (match %v)", mid)
+	}
+}
+
+// A declines B, B is refused; A sparks B (any item) and the cooldown lifts:
+// A is back in B's fresh and cached deck, B's declined spark alone forms no
+// match, and B's next spark succeeds and forms one.
+func TestDeclineCooldown_LiftedWhenDeclinerSparksBack(t *testing.T) {
+	svc, st, _ := newD3Svc(t)
+	ctx := context.Background()
+	gender := "dl-" + uuid.NewString()[:8]
+	sender, decliner := uuid.New(), uuid.New()
+	seedActiveProfile(t, st, sender)
+	seedActiveProfile(t, st, decliner)
+	if _, err := st.UpsertProfile(ctx, decliner, store.UpsertProfileParams{Gender: &gender}); err != nil {
+		t.Fatalf("set gender: %v", err)
+	}
+	if _, err := st.UpsertPreferences(ctx, sender, store.UpsertPreferencesParams{InterestedInGender: &gender}); err != nil {
+		t.Fatalf("set preference: %v", err)
+	}
+	deck := func() *PulseResponse {
+		t.Helper()
+		resp, err := svc.computePulseToday(ctx, sender)
+		if err != nil {
+			t.Fatalf("deck: %v", err)
+		}
+		return resp
+	}
+
+	sp, _, err := svc.CreateSpark(ctx, sender, decliner, "photo", "0", "")
+	if err != nil {
+		t.Fatalf("spark: %v", err)
+	}
+	if _, err := svc.DeclineSpark(ctx, sp.ID, decliner); err != nil {
+		t.Fatalf("decline: %v", err)
+	}
+	if _, _, err := svc.CreateSpark(ctx, sender, decliner, "prompt", "p1", ""); !errors.Is(err, ErrCandidateUnavailable) {
+		t.Fatalf("sender spark after the decline: err=%v, want ErrCandidateUnavailable", err)
+	}
+	within := deck()
+	if deckHas(within, decliner) {
+		t.Fatalf("decliner in the sender's deck within the cooldown")
+	}
+	if svc.rdb != nil {
+		svc.writePulseCache(ctx, sender, within)
+	}
+
+	_, mid, err := svc.CreateSpark(ctx, decliner, sender, "prompt", "hello", "")
 	if err != nil {
 		t.Fatalf("decliner spark: %v", err)
 	}
-	if mid != nil {
-		t.Fatalf("match %s formed from a declined sender's sparks within the cooldown", mid)
+	if mid != nil || openMatchesBetween(t, st, sender, decliner) != 0 {
+		t.Fatalf("the sender's declined spark alone formed a match (match %v)", mid)
 	}
-	if n := openMatchesBetween(t, st, a, b); n != 0 {
-		t.Fatalf("%d open matches within the cooldown", n)
+	if svc.rdb != nil {
+		if cached := svc.readPulseCache(ctx, sender); cached != nil {
+			t.Fatalf("sender's cached deck survived the lift (%d cards)", len(cached.Data))
+		}
+	}
+	if !deckHas(deck(), decliner) {
+		t.Fatalf("decliner still off the sender's deck after the lift")
+	}
+
+	_, mid, err = svc.CreateSpark(ctx, sender, decliner, "prompt", "p1", "")
+	if err != nil {
+		t.Fatalf("sender spark after the lift: %v", err)
+	}
+	if mid == nil || openMatchesBetween(t, st, sender, decliner) != 1 {
+		t.Fatalf("sender's spark after the lift formed no match (match %v)", mid)
+	}
+}
+
+// A block after the lift still blocks everything, whichever side blocks.
+func TestDeclineCooldown_BlockAfterLiftStillBlocks(t *testing.T) {
+	svc, st, _ := newD3Svc(t)
+	ctx := context.Background()
+	for _, senderBlocks := range []bool{false, true} {
+		gender := "dl-" + uuid.NewString()[:8]
+		sender, decliner := uuid.New(), uuid.New()
+		seedActiveProfile(t, st, sender)
+		seedActiveProfile(t, st, decliner)
+		if _, err := st.UpsertProfile(ctx, decliner, store.UpsertProfileParams{Gender: &gender}); err != nil {
+			t.Fatalf("set gender: %v", err)
+		}
+		if _, err := st.UpsertPreferences(ctx, sender, store.UpsertPreferencesParams{InterestedInGender: &gender}); err != nil {
+			t.Fatalf("set preference: %v", err)
+		}
+		sp, _, err := svc.CreateSpark(ctx, sender, decliner, "photo", "0", "")
+		if err != nil {
+			t.Fatalf("spark: %v", err)
+		}
+		if _, err := svc.DeclineSpark(ctx, sp.ID, decliner); err != nil {
+			t.Fatalf("decline: %v", err)
+		}
+		if _, _, err := svc.CreateSpark(ctx, decliner, sender, "prompt", "hello", ""); err != nil {
+			t.Fatalf("lifting spark: %v", err)
+		}
+		if resp, err := svc.computePulseToday(ctx, sender); err != nil || !deckHas(resp, decliner) {
+			t.Fatalf("lift did not restore the deck (err %v)", err)
+		}
+
+		blocker, blocked := decliner, sender
+		if senderBlocks {
+			blocker, blocked = sender, decliner
+		}
+		if err := svc.Block(ctx, blocker, blocked); err != nil {
+			t.Fatalf("block: %v", err)
+		}
+		if _, _, err := svc.CreateSpark(ctx, sender, decliner, "prompt", "p1", ""); !errors.Is(err, ErrCandidateUnavailable) {
+			t.Fatalf("senderBlocks=%v: sender spark after block: err=%v, want ErrCandidateUnavailable", senderBlocks, err)
+		}
+		if _, _, err := svc.CreateSpark(ctx, decliner, sender, "prompt", "again", ""); !errors.Is(err, ErrCandidateUnavailable) {
+			t.Fatalf("senderBlocks=%v: decliner spark after block: err=%v, want ErrCandidateUnavailable", senderBlocks, err)
+		}
+		if resp, err := svc.computePulseToday(ctx, sender); err != nil || deckHas(resp, decliner) {
+			t.Fatalf("senderBlocks=%v: decliner in the sender's deck after a block (err %v)", senderBlocks, err)
+		}
+		if n := openMatchesBetween(t, st, sender, decliner); n != 0 {
+			t.Fatalf("senderBlocks=%v: %d open matches after a block", senderBlocks, n)
+		}
 	}
 }
 

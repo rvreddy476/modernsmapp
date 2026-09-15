@@ -164,11 +164,21 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	}
 	// Decline cooldown: a sender whose spark the recipient declined within
 	// the cooldown gets the same refusal, so the decline is never revealed.
-	// One-directional: the decliner can still spark the sender.
+	// One-directional: the decliner can still spark the sender, and doing so
+	// lifts the cooldown (see store.HasRecentDecline).
 	if declined, err := s.store.HasRecentDecline(ctx, fromUserID, toUserID); err != nil {
 		return nil, nil, err
 	} else if declined {
 		return nil, nil, ErrCandidateUnavailable
+	}
+	// Is the actor the decliner in a live cooldown toward the recipient? If
+	// so this spark lifts it, and the recipient's cached deck (built without
+	// the actor) is dropped once the spark is stored. A failed lookup drops
+	// it anyway: a spare recompute is cheaper than hiding the actor for 24h.
+	liftsDecline, lerr := s.store.HasRecentDecline(ctx, toUserID, fromUserID)
+	if lerr != nil {
+		slog.Warn("decline lift lookup failed", "from_user_id", fromUserID, "to_user_id", toUserID, "error", lerr)
+		liftsDecline = true
 	}
 
 	// Lane D3: the rolling spark allowance is enforced in the same
@@ -176,6 +186,9 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	sp, err := s.store.CreateSparkWithQuota(ctx, fromUserID, toUserID, targetKind, targetRef, note, s.sparkDailyLimit(ctx, fromUserID))
 	if err != nil {
 		return nil, nil, err
+	}
+	if liftsDecline {
+		s.InvalidatePulseCache(ctx, toUserID)
 	}
 
 	// Always emit spark.created.

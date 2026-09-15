@@ -174,6 +174,12 @@ func TestD3Contracts(t *testing.T) {
 		if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
 			t.Fatalf("decliner spark to the sender: status %d body %s", rec.Code, rec.Body.String())
 		}
+		// That spark lifts the cooldown: the sender's next spark succeeds and
+		// meets the decliner's to form a match.
+		rec = contractDo(r, http.MethodPost, "/v1/dating/sparks", sparkBody(decliner, "p2"), sender)
+		if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"matched":true`) {
+			t.Fatalf("sender spark after the lift: status %d body %s; want 201 with a match", rec.Code, rec.Body.String())
+		}
 	})
 
 	t.Run("spark_create_429_rate_limited", func(t *testing.T) {

@@ -219,3 +219,89 @@ func TestDeclineCooldown_DeckExcludesDeclinerOneWay(t *testing.T) {
 		t.Fatalf("a 40-day cooldown override does not exclude a 31-day-old decline")
 	}
 }
+
+// The decliner sparking the declined sender AFTER the decline, on any item,
+// lifts the cooldown for spark create, the deck and the mutual count. A spark
+// made before the decline, or a repeat of it, does not.
+func TestDeclineCooldown_LiftedOnlyByDeclinerSparkAfterDecline(t *testing.T) {
+	s, cleanup := statusITStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	declinerGender := "dl-" + uuid.NewString()[:8]
+	sender, decliner := uuid.New(), uuid.New()
+	seedDiscoverableProfile(t, s, sender, "dl-"+uuid.NewString()[:8])
+	seedDiscoverableProfile(t, s, decliner, declinerGender)
+
+	cooling := func() bool {
+		t.Helper()
+		ok, err := s.HasRecentDecline(ctx, sender, decliner)
+		if err != nil {
+			t.Fatalf("has recent decline: %v", err)
+		}
+		return ok
+	}
+	inDeck := func() bool {
+		t.Helper()
+		out, err := s.FetchCandidates(ctx, CandidateQuery{ViewerID: sender, GenderFilter: declinerGender, Limit: 50})
+		if err != nil {
+			t.Fatalf("fetch candidates: %v", err)
+		}
+		return containsCandidate(out, decliner)
+	}
+	senderCounts := func() bool {
+		t.Helper()
+		ok, err := s.HasReverseSparks(ctx, decliner, sender)
+		if err != nil {
+			t.Fatalf("has reverse sparks: %v", err)
+		}
+		return ok
+	}
+
+	// The decliner sparked the sender's photo an hour before the decline.
+	early, err := s.CreateSpark(ctx, decliner, sender, "photo", "0", "")
+	if err != nil {
+		t.Fatalf("early spark: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dating_sparks SET created_at = now() - INTERVAL '1 hour' WHERE id = $1`, early.ID); err != nil {
+		t.Fatalf("age early spark: %v", err)
+	}
+	sp, err := s.CreateSpark(ctx, sender, decliner, "photo", "0", "")
+	if err != nil {
+		t.Fatalf("spark: %v", err)
+	}
+	if _, err := s.DeclineSpark(ctx, sp.ID, decliner); err != nil {
+		t.Fatalf("decline: %v", err)
+	}
+	// An undeclined spark from the sender, written straight to the store.
+	if _, err := s.CreateSpark(ctx, sender, decliner, "prompt", "other", ""); err != nil {
+		t.Fatalf("other sender spark: %v", err)
+	}
+	if !cooling() || inDeck() || senderCounts() {
+		t.Fatalf("a spark made before the decline lifted it: cooling=%v inDeck=%v senderCounts=%v", cooling(), inDeck(), senderCounts())
+	}
+	// Repeating the pre-decline spark is not a new spark.
+	if _, err := s.CreateSpark(ctx, decliner, sender, "photo", "0", ""); err != nil {
+		t.Fatalf("repeat early spark: %v", err)
+	}
+	if !cooling() || inDeck() || senderCounts() {
+		t.Fatalf("repeating a pre-decline spark lifted the decline")
+	}
+
+	// A spark on a different item after the decline lifts it.
+	if _, err := s.CreateSpark(ctx, decliner, sender, "prompt", "p1", ""); err != nil {
+		t.Fatalf("lifting spark: %v", err)
+	}
+	if cooling() {
+		t.Fatalf("HasRecentDecline still true after the decliner sparked the sender")
+	}
+	if !inDeck() {
+		t.Fatalf("decliner still off the sender's deck after the lift")
+	}
+	if !senderCounts() {
+		t.Fatalf("the sender's undeclined spark does not count toward a match after the lift")
+	}
+	// The lift is one pair, one direction: nothing else changed.
+	if ok, err := s.HasRecentDecline(ctx, decliner, sender); err != nil || ok {
+		t.Fatalf("HasRecentDecline(decliner, sender) = %v, %v; want false", ok, err)
+	}
+}
