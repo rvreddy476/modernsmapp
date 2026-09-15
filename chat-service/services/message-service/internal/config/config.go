@@ -34,6 +34,7 @@ type Config struct {
 	SocialKafkaGroupID   string
 	DatingKafkaTopic     string
 	DatingKafkaGroupID   string
+	DatingServiceURL     string
 }
 
 func Load() *Config {
@@ -70,6 +71,9 @@ func Load() *Config {
 		// gate refuses subsequent messages.
 		DatingKafkaTopic:   getEnv("DATING_KAFKA_TOPIC", "dating-events"),
 		DatingKafkaGroupID: getEnv("DATING_KAFKA_GROUP_ID", "chat-service-dating"),
+		// Dating lane D4: first-message notifications go to
+		// /v1/dating/internal/matches/{id}/first-message on this base.
+		DatingServiceURL: getEnv("DATING_SERVICE_URL", "http://dating-service:8112"),
 	}
 }
 

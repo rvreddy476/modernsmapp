@@ -52,6 +52,8 @@ env:
   # directory above — pointing this at user-service silently breaks policy
   # refresh (it answers 200 with an empty body on the settings route).
   IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8082
+  # Dating first-message notifications (chat → dating internal route).
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 

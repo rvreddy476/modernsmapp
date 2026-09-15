@@ -46,16 +46,25 @@ type datingProfilePreview struct {
 	FirstName string `json:"first_name"`
 }
 
+// datingPreviewPathFmt is dating-service's service-only preview route (Dating
+// lane D1). The old /v1/dating/profile/:userId/preview is kept for one release
+// only; the internal family refuses any request carrying X-User-Id.
+const datingPreviewPathFmt = "/v1/dating/internal/profile/%s/preview"
+
 // getPreview returns the user's first name; empty string on any error.
 func (c *datingClient) getFirstName(ctx context.Context, userID string) string {
 	if c == nil || userID == "" {
 		return ""
 	}
-	url := fmt.Sprintf("%s/v1/dating/profile/%s/preview", c.baseURL, userID)
+	url := c.baseURL + fmt.Sprintf(datingPreviewPathFmt, userID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return ""
 	}
+	// Service credential only — never an end-user identity header.
+	// TODO(dating-service-tokens): send X-Service-Authorization (audience
+	// "dating", scope "dating:profile.preview") once notification-service
+	// holds a signing key registered in dating's SERVICE_CALLERS.
 	if c.internalKey != "" {
 		req.Header.Set("X-Internal-Service-Key", c.internalKey)
 	}
@@ -67,11 +76,19 @@ func (c *datingClient) getFirstName(ctx context.Context, userID string) string {
 	if resp.StatusCode >= 400 {
 		return ""
 	}
-	var direct datingProfilePreview
-	if err := json.NewDecoder(resp.Body).Decode(&direct); err == nil && direct.FirstName != "" {
-		return direct.FirstName
+	// dating-service answers with the shared {"data": {...}} envelope; a bare
+	// object is accepted too.
+	var envelope struct {
+		Data *datingProfilePreview `json:"data"`
+		datingProfilePreview
 	}
-	return ""
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return ""
+	}
+	if envelope.Data != nil && envelope.Data.FirstName != "" {
+		return envelope.Data.FirstName
+	}
+	return envelope.FirstName
 }
 
 // handleDatingEvent is the dispatch entry point invoked from the main

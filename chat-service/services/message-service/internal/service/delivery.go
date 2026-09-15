@@ -156,6 +156,12 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 				return fmt.Errorf("queue dating message event: %w", err)
 			}
 		}
+		// Dating lane D4: the conversation's first delivered message obliges
+		// one notification to dating-service (later messages are no-ops).
+		// Only a local Postgres write here; the call itself is the worker's.
+		if err := s.enqueueDatingFirstMessage(ctx, intent); err != nil {
+			return fmt.Errorf("queue dating first-message notification: %w", err)
+		}
 	}
 
 	if intent.FirstRequest {

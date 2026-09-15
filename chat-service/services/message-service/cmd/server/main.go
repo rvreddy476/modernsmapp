@@ -125,6 +125,7 @@ func main() {
 	svc.SetGraphService(cfg.GraphServiceURL)
 	svc.SetMediaService(cfg.MediaServiceURL)
 	svc.SetInviteLinkBaseURL(cfg.InviteLinkBaseURL)
+	svc.SetDatingService(cfg.DatingServiceURL)
 	// Scoped-room entitlement issuance (production chat pass §5.3). Shared
 	// with ws-gateway; empty disables issuance and the personal channel
 	// remains the only delivery path.
@@ -164,6 +165,9 @@ func main() {
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)
 	go svc.StartMessageDeliveryRepairWorker(ctx)
+	// Dating lane D4: tells dating-service a dating conversation got its
+	// first message (durable, retried; never on the send path).
+	go svc.StartDatingFirstMessageWorker(ctx)
 	// Blocker-2 final correction: drains durable revocation intents so a
 	// committed sever's deny marker reaches Redis even when the arming
 	// process crashed or Redis was down — never dependent on client retries.

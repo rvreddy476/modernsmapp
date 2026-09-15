@@ -97,6 +97,7 @@ func (s *ConversationStore) PurgeUser(ctx context.Context, userID uuid.UUID) err
 		`DELETE FROM chat.revocation_intents WHERE user_id = $1`,
 		`DELETE FROM chat.direct_conversation_keys WHERE user_a = $1 OR user_b = $1`,
 		`DELETE FROM chat.message_delivery_intents WHERE sender_id = $1`,
+		`DELETE FROM chat.dating_first_message_notifications WHERE actor_id = $1`,
 		`UPDATE chat.conversations SET last_message_sender = NULL WHERE last_message_sender = $1`,
 		`DELETE FROM chat.conversation_members WHERE user_id = $1`,
 		`DELETE FROM chat.user_profiles WHERE user_id = $1`,

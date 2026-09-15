@@ -1093,6 +1093,9 @@ services:
       IDENTITY_KAFKA_GROUP_ID: chat-service-identity
       GRAPH_SERVICE_URL: http://graph-service:8083
       MEDIA_SERVICE_URL: http://media-service:8087
+      # Dating lane D4: first message in a dating conversation is reported to
+      # /v1/dating/internal/matches/{id}/first-message (internal key).
+      DATING_SERVICE_URL: http://dating-service:8112
       # Production chat pass: owner-issued conversation-room entitlements
       # (shared HMAC with chat-ws-gateway).
       CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}

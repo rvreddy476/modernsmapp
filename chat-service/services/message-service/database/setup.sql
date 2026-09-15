@@ -443,3 +443,24 @@ CREATE TABLE IF NOT EXISTS chat.group_invite_links (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_group_invite_links_live
     ON chat.group_invite_links(conversation_id) WHERE revoked_at IS NULL;
+
+-- ===== 007: dating first-message notification (Dating lane D4, 2026-09-15) =====
+-- One durable obligation per dating conversation to tell dating-service the
+-- conversation got its first message, so the match stops expiring. See
+-- migrations/007_dating_first_message_notifications.sql.
+CREATE TABLE IF NOT EXISTS chat.dating_first_message_notifications (
+    conversation_id UUID PRIMARY KEY REFERENCES chat.conversations(id) ON DELETE CASCADE,
+    match_id        UUID NOT NULL,
+    actor_id        UUID NOT NULL,
+    message_id      UUID NOT NULL,
+    attempt_count   INT NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_status     INT,
+    last_error      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivered_at    TIMESTAMPTZ,
+    terminal_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dating_first_message_due
+    ON chat.dating_first_message_notifications(next_attempt_at)
+    WHERE delivered_at IS NULL AND terminal_at IS NULL;

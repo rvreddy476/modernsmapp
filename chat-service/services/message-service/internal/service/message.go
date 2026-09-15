@@ -228,7 +228,10 @@ type Service struct {
 	inviteLinkBaseURL  string
 	internalServiceKey string
 	entitlementSecret  string
-	httpClient         *http.Client
+	// datingServiceURL is where the first-message worker reports dating
+	// conversations' first messages (Dating lane D4).
+	datingServiceURL string
+	httpClient       *http.Client
 }
 
 var (
