@@ -879,3 +879,68 @@ BEGIN
     END IF;
 END $$;
 
+-- ---------------------------------------------------------------------------
+-- Lane D5 — server-side selfie verification (blink liveness).
+--
+-- The client asks for a challenge (instruction "blink_twice", at most
+-- max_duration_ms), records a short video, uploads it through media-service
+-- and submits its media id with the challenge. dating asks media-service
+-- (internal route, no user identity) to find two blinks by one consistent
+-- face and compare that face with the approved primary photo. No face
+-- embedding is stored or accepted anywhere.
+--
+-- dating_verifications.selfie_status: pending | pending_review | passed | failed
+--   selfie_score    rounded 0-100 similarity (older rows: a 0-1 cosine)
+--   selfie_provider provider that produced it (rekognition | mock)
+--   selfie_media_id the blink video that was checked
+--   selfie_blinks   blinks media-service counted in it
+--   selfie_review_* why it went to a moderator, who decided, when
+-- dating_selfie_challenges: instruction + max duration, 10-minute expiry,
+--   used once.
+-- dating_selfie_attempts: one row per consumed challenge. The attempt limit
+--   counts these whatever their outcome ('error' = no verdict).
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_provider      TEXT;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_media_id      UUID;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_blinks        INT;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_review_reason TEXT;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_reviewed_by   UUID;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_reviewed_at   TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_dating_verifications_selfie_review
+    ON dating_verifications(selfie_at)
+    WHERE selfie_status = 'pending_review';
+
+CREATE TABLE IF NOT EXISTS dating_selfie_challenges (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID        NOT NULL,
+    instruction     TEXT        NOT NULL,
+    max_duration_ms INT         NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    used_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dating_selfie_challenges_user
+    ON dating_selfie_challenges(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS dating_selfie_attempts (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID             NOT NULL,
+    challenge_id    UUID             NOT NULL,
+    video_media_id  UUID             NOT NULL,
+    instruction     TEXT             NOT NULL,
+    outcome         TEXT             NOT NULL DEFAULT 'submitted'
+        CHECK (outcome IN ('submitted','passed','failed','pending_review','error')),
+    similarity      DOUBLE PRECISION,
+    blinks_detected INT,
+    frames_analysed INT,
+    provider        TEXT,
+    reason          TEXT,
+    review_decision TEXT CHECK (review_decision IN ('approved','rejected')),
+    reviewed_by     UUID,
+    reviewed_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    decided_at      TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dating_selfie_attempts_user
+    ON dating_selfie_attempts(user_id, created_at DESC);
+

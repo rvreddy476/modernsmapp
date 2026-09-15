@@ -244,8 +244,14 @@ func TestD3Store_PassCooldownExcludesFromDeck(t *testing.T) {
 		t.Fatalf("candidate still excluded after the %s cooldown", PassCooldown)
 	}
 	rearmed, err := s.RecordPass(ctx, viewer, candidate, "")
-	if err != nil || time.Since(rearmed) > time.Minute {
-		t.Fatalf("pass after the cooldown did not re-arm: %v %v", rearmed, err)
+	if err != nil {
+		t.Fatalf("pass after the cooldown: %v", err)
+	}
+	// Judge "fresh" on the database clock that stamped passed_at, never the
+	// test host's: the Docker VM clock can drift from the Windows host.
+	var fresh bool
+	if err := s.db.QueryRow(ctx, `SELECT $1::timestamptz > now() - INTERVAL '1 minute'`, rearmed).Scan(&fresh); err != nil || !fresh {
+		t.Fatalf("pass after the cooldown did not re-arm: passed_at=%v fresh=%v err=%v", rearmed, fresh, err)
 	}
 	if containsCandidate(deck(), candidate) {
 		t.Fatalf("re-armed pass does not exclude the candidate")

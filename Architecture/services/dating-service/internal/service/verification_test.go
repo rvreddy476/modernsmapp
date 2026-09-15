@@ -6,11 +6,16 @@
 //     accept one anywhere — there is no parameter for it).
 //   - Mock DigiLocker happy path persists the assertion + bumps trust.
 //   - Expired/invalid PKCE state is rejected.
-//   - Selfie pass/fail thresholds work and trust tier never demotes.
+//   - With DIGILOCKER_MODE=disabled (no client) the Aadhaar flow answers
+//     ErrAadhaarDisabled instead of issuing a state it can never redeem.
+//
+// Lane D5 selfie verification tests live in selfie_verification_it_test.go
+// (integration) and face_compare_client_test.go (the media-service call).
 package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -22,19 +27,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// fakeMediaClient lets the selfie tests inject a known embedding.
-type fakeMediaClient struct {
-	stored []float64
-	err    error
-}
-
-func (f *fakeMediaClient) GetEmbedding(_ context.Context, _ uuid.UUID) ([]float64, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.stored, nil
-}
-
 func newVerificationSvc(t *testing.T) (*Service, *store.Store, *redis.Client, func()) {
 	t.Helper()
 	dsn := os.Getenv("TEST_PG_DSN")
@@ -44,6 +36,9 @@ func newVerificationSvc(t *testing.T) (*Service, *store.Store, *redis.Client, fu
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+	}
+	if !strings.HasSuffix(cfg.ConnConfig.Database, "_test") {
+		t.Fatalf("refusing to run against database %q: name must end in _test", cfg.ConnConfig.Database)
 	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
@@ -68,6 +63,7 @@ func TestStartAadhaarFlow_GeneratesAuthorizeURL(t *testing.T) {
 	}
 	uid := uuid.New()
 	seedProfile(t, st, uid)
+	svc.SetDigiLockerClient(digilocker.NewMockClient())
 	out, err := svc.StartAadhaarFlow(context.Background(), uid)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -133,77 +129,14 @@ func TestCompleteAadhaarFlow_RejectsExpiredState(t *testing.T) {
 	}
 }
 
-func TestCompleteSelfieFlow_PassAndFailThresholds(t *testing.T) {
-	svc, st, _, cleanup := newVerificationSvc(t)
-	defer cleanup()
-	uid := uuid.New()
-	seedProfile(t, st, uid)
-	// Seed a primary photo so the selfie has something to compare against.
-	mediaID := uuid.New()
-	if _, err := st.CreatePhoto(context.Background(), uid, store.CreatePhotoParams{MediaID: mediaID, IsPrimary: true}); err != nil {
-		t.Fatalf("seed photo: %v", err)
+// DIGILOCKER_MODE=disabled wires no client: both legs refuse cleanly.
+func TestAadhaarFlow_DisabledWithoutClient(t *testing.T) {
+	svc := New(nil, nil)
+	if _, err := svc.StartAadhaarFlow(context.Background(), uuid.New()); !errors.Is(err, ErrAadhaarDisabled) {
+		t.Fatalf("start without a client: err=%v, want ErrAadhaarDisabled", err)
 	}
-
-	// Identical embeddings → cosine = 1.0, definitely passes.
-	stored := []float64{1, 0, 0, 0}
-	svc.SetMediaServiceClient(&fakeMediaClient{stored: stored})
-	res, err := svc.CompleteSelfieFlow(context.Background(), uid, []float64{1, 0, 0, 0})
-	if err != nil {
-		t.Fatalf("happy: %v", err)
-	}
-	if !res.Passed {
-		t.Fatalf("expected pass")
-	}
-	if res.TrustTier != "selfie" {
-		t.Fatalf("expected tier selfie, got %s", res.TrustTier)
-	}
-
-	// Orthogonal vectors → cosine = 0, fails.
-	res, err = svc.CompleteSelfieFlow(context.Background(), uid, []float64{0, 1, 0, 0})
-	if err != nil {
-		t.Fatalf("fail path: %v", err)
-	}
-	if res.Passed {
-		t.Fatalf("expected fail with orthogonal embedding")
-	}
-}
-
-func TestCompleteSelfieFlow_DoesNotDemoteFromAadhaar(t *testing.T) {
-	svc, st, _, cleanup := newVerificationSvc(t)
-	defer cleanup()
-	uid := uuid.New()
-	seedProfile(t, st, uid)
-	if _, err := st.CreatePhoto(context.Background(), uid, store.CreatePhotoParams{MediaID: uuid.New(), IsPrimary: true}); err != nil {
-		t.Fatalf("seed photo: %v", err)
-	}
-	// Pre-promote to aadhaar.
-	if err := st.RecordAadhaarVerification(context.Background(), uid, "ref-1", "h"); err != nil {
-		t.Fatalf("seed aadhaar: %v", err)
-	}
-	if err := st.UpdateTrustTier(context.Background(), uid, "aadhaar"); err != nil {
-		t.Fatalf("seed tier: %v", err)
-	}
-
-	svc.SetMediaServiceClient(&fakeMediaClient{stored: []float64{1, 0, 0}})
-	res, err := svc.CompleteSelfieFlow(context.Background(), uid, []float64{1, 0, 0})
-	if err != nil {
-		t.Fatalf("flow: %v", err)
-	}
-	// Should still report aadhaar.
-	if res.TrustTier != "aadhaar" {
-		t.Fatalf("expected aadhaar after selfie pass, got %s", res.TrustTier)
-	}
-}
-
-func TestCompleteSelfieFlow_NoPrimaryPhoto(t *testing.T) {
-	svc, st, _, cleanup := newVerificationSvc(t)
-	defer cleanup()
-	uid := uuid.New()
-	seedProfile(t, st, uid)
-	svc.SetMediaServiceClient(&fakeMediaClient{stored: []float64{1, 0, 0}})
-	_, err := svc.CompleteSelfieFlow(context.Background(), uid, []float64{1, 0, 0})
-	if err == nil || !strings.Contains(err.Error(), "no primary photo") {
-		t.Fatalf("expected no-primary error, got %v", err)
+	if _, err := svc.CompleteAadhaarFlow(context.Background(), uuid.New(), "code", "state"); !errors.Is(err, ErrAadhaarDisabled) {
+		t.Fatalf("callback without a client: err=%v, want ErrAadhaarDisabled", err)
 	}
 }
 

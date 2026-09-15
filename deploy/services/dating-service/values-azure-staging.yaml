@@ -32,5 +32,7 @@ env:
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   IDENTITY_PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
   DATING_DEDUPE_OPEN_MATCHES: 'false'
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  DIGILOCKER_MODE: disabled
 ingress:
   enabled: false

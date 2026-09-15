@@ -13,16 +13,17 @@ import (
 // cron worker and the platform purge consumer. These two methods cover what
 // it deliberately leaves alone.
 
-// PurgeUserAuxiliary removes account-risk and device-fingerprint rows in one
-// transaction. dating_consent_log and dating_admin_audit are regulatory
-// audit and are retained. Idempotent; missing tables are skipped.
+// PurgeUserAuxiliary removes account-risk, device-fingerprint and selfie
+// challenge/attempt rows (lane D5) in one transaction. dating_consent_log and
+// dating_admin_audit are regulatory audit and are retained. Idempotent;
+// missing tables are skipped.
 func (s *Store) PurgeUserAuxiliary(ctx context.Context, userID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("purge aux: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	for _, t := range []string{"dating_account_risk", "dating_device_fingerprints"} {
+	for _, t := range []string{"dating_account_risk", "dating_device_fingerprints", "dating_selfie_challenges", "dating_selfie_attempts"} {
 		var oid *uint32
 		if err := tx.QueryRow(ctx, `SELECT to_regclass($1)::oid`, "public."+t).Scan(&oid); err != nil {
 			return fmt.Errorf("purge aux: probe %s: %w", t, err)

@@ -26,7 +26,10 @@ type Service struct {
 	graphProvider        matcher.GraphProvider
 	msgClient            MessageServiceClient
 	digilockerClient     digilocker.Client
-	mediaClient          MediaServiceClient
+	// Lane D5 — media-service blink liveness for the required selfie check,
+	// and its bars/limits (zero value = DefaultSelfieConfig).
+	livenessClient       LivenessClient
+	selfieCfg            SelfieConfig
 	graphServiceClient   GraphServiceClient
 	communityClient      CommunityServiceClient
 	flagsClient          FeatureFlagsClient

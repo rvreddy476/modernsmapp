@@ -84,9 +84,10 @@ type RekognitionScanner struct {
 	blocked       map[string]bool
 }
 
-// NewRekognitionScanner builds a scanner using the default AWS credential
-// chain (IRSA in cluster).
-func NewRekognitionScanner(ctx context.Context, region string, cfg RekognitionConfig) (*RekognitionScanner, error) {
+// NewRekognitionClient builds the Rekognition client shared by the content
+// scanner and the face comparer (lane D5): the default AWS credential chain
+// (IRSA in cluster) for region, with credentials resolved eagerly.
+func NewRekognitionClient(ctx context.Context, region string) (*rekognition.Client, error) {
 	if region == "" {
 		return nil, fmt.Errorf("rekognition: region is required")
 	}
@@ -99,7 +100,48 @@ func NewRekognitionScanner(ctx context.Context, region string, cfg RekognitionCo
 	if _, err := awsCfg.Credentials.Retrieve(ctx); err != nil {
 		return nil, fmt.Errorf("rekognition: no usable AWS credentials (expected IRSA web identity): %w", err)
 	}
-	return newRekognitionScannerWithAPI(rekognition.NewFromConfig(awsCfg), cfg), nil
+	return rekognition.NewFromConfig(awsCfg), nil
+}
+
+// NewRekognitionScanner builds a scanner using the default AWS credential
+// chain (IRSA in cluster).
+func NewRekognitionScanner(ctx context.Context, region string, cfg RekognitionConfig) (*RekognitionScanner, error) {
+	client, err := NewRekognitionClient(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	return NewRekognitionScannerFromClient(client, cfg), nil
+}
+
+// NewRekognitionScannerFromClient builds a scanner on an existing client, so
+// the server can share one client between scanning and face comparison.
+func NewRekognitionScannerFromClient(client *rekognition.Client, cfg RekognitionConfig) *RekognitionScanner {
+	return newRekognitionScannerWithAPI(client, cfg)
+}
+
+// SharedRekognition builds one Rekognition client on first use and hands the
+// same client to every caller in the process (scanner + face comparer).
+// Not safe for concurrent first use; main calls it during boot only.
+type SharedRekognition struct {
+	client *rekognition.Client
+	region string
+}
+
+// Client returns the shared client, building it for region on first use. A
+// later call for a different region is an error rather than a silent reuse.
+func (s *SharedRekognition) Client(ctx context.Context, region string) (*rekognition.Client, error) {
+	if s.client != nil {
+		if region != s.region {
+			return nil, fmt.Errorf("rekognition: client already built for region %q, asked for %q", s.region, region)
+		}
+		return s.client, nil
+	}
+	c, err := NewRekognitionClient(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	s.client, s.region = c, region
+	return c, nil
 }
 
 func newRekognitionScannerWithAPI(api rekognitionAPI, cfg RekognitionConfig) *RekognitionScanner {

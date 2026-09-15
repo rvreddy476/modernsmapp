@@ -74,6 +74,26 @@ func main() {
 		slog.Error("dating-service: refusing to start", "error", err)
 		os.Exit(1)
 	}
+	// Lane D5: selfie bars (DATING_SELFIE_*), the media-service address for
+	// face comparison, and DIGILOCKER_MODE (mock refused outside local/dev).
+	selfieCfg, err := datinghttp.ResolveSelfieConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	mediaServiceURL, err := datinghttp.ResolveMediaServiceURL(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	digilockerMode, digilockerWarning, err := datinghttp.ResolveDigiLockerMode(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if digilockerWarning != "" {
+		slog.Warn(digilockerWarning)
+	}
 
 	port := env("HTTP_PORT", "8112")
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -186,23 +206,36 @@ func main() {
 	datingSvc.SetMessageClient(service.NewHTTPMessageClient())
 	slog.Info("message-service client initialized")
 
-	// Sprint 4: media-service embedding fetch (selfie face match).
-	datingSvc.SetMediaServiceClient(service.NewHTTPMediaClient())
+	// Lane D5: required selfie verification. media-service's internal
+	// liveness route (internal key, no user identity headers) counts the
+	// blinks in the uploaded video, checks one consistent face and compares
+	// it with the approved primary photo.
+	datingSvc.SetSelfieConfig(selfieCfg)
+	if internalKey == "" {
+		slog.Warn("dating-service: INTERNAL_SERVICE_KEY not set — media-service will refuse the liveness check and selfie verification answers 503")
+	}
+	datingSvc.SetLivenessClient(service.NewHTTPLivenessClient(mediaServiceURL, internalKey, nil))
+	slog.Info("selfie verification configured", "media_service_url", mediaServiceURL,
+		"pass_threshold", selfieCfg.PassThreshold, "review_threshold", selfieCfg.ReviewThreshold,
+		"max_attempts_per_day", selfieCfg.MaxAttemptsPerDay, "required_blinks", selfieCfg.RequiredBlinks,
+		"max_video_ms", selfieCfg.MaxVideoDurationMs)
 
-	// Sprint 4: DigiLocker partner client. Default mode is "mock" for
-	// safety; production must explicitly set DIGILOCKER_MODE=http.
+	// Optional Aadhaar via DigiLocker. DIGILOCKER_MODE (ResolveDigiLockerMode
+	// above): http, mock (local/dev only) or disabled.
 	// DPDP Act compliant — see PULSE_DATING_SPEC.md §15.8
-	switch strings.ToLower(env("DIGILOCKER_MODE", "mock")) {
-	case "http":
+	switch digilockerMode {
+	case datinghttp.DigiLockerModeHTTP:
 		datingSvc.SetDigiLockerClient(digilocker.NewHTTPClient(
 			os.Getenv("DIGILOCKER_BASE_URL"),
 			os.Getenv("DIGILOCKER_API_KEY"),
 			env("DIGILOCKER_SANDBOX", "true") == "true",
 		))
 		slog.Info("digilocker http client initialized")
-	default:
+	case datinghttp.DigiLockerModeMock:
 		datingSvc.SetDigiLockerClient(digilocker.NewMockClient())
-		slog.Info("digilocker mock client initialized (set DIGILOCKER_MODE=http for production)")
+		slog.Warn("digilocker MOCK client initialized (local/dev only)")
+	default:
+		slog.Info("digilocker disabled — Aadhaar routes answer 503 AADHAAR_DISABLED")
 	}
 
 	// Sprint 4: graph + community clients for vouching eligibility checks.

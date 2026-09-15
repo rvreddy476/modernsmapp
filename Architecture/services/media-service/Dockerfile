@@ -20,6 +20,10 @@ COPY services /services
 RUN go build -mod=vendor -o /server ./services/media-service/cmd/server/main.go
 
 FROM alpine:3.19
+# Lane D5: blink liveness samples the uploaded selfie video with ffmpeg/ffprobe
+# (same package as Dockerfile.worker). Also what the server's extract-frame
+# route (processing.ExtractFrames) already shells out to.
+RUN apk add --no-cache ffmpeg
 WORKDIR /
 COPY --from=builder /server /server
 CMD ["/server"]

@@ -17,6 +17,9 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// faceCompare backs the internal face comparison route (lane D5,
+	// face_compare_handler.go). Nil leaves the route unregistered.
+	faceCompare *service.FaceCompareService
 }
 
 func New(svc *service.Service) *Handler {

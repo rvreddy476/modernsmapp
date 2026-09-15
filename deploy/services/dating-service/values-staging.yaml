@@ -46,6 +46,13 @@ env:
   # services/dating-service/scripts/count-duplicate-matches.sql, set "true"
   # for ONE deploy to close them (each emits dating.match.closed), then back.
   DATING_DEDUPE_OPEN_MATCHES: "false"
+  # Lane D5: the required selfie is compared by media-service's internal
+  # face compare route (internal key, no user identity).
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  # Aadhaar via DigiLocker is optional. Boot refuses without a mode and
+  # refuses the mock outside local/dev; switch to http once the partner
+  # credentials (DIGILOCKER_BASE_URL / DIGILOCKER_API_KEY) are in the store.
+  DIGILOCKER_MODE: disabled
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

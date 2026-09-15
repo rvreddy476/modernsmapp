@@ -58,6 +58,11 @@ env:
   MEDIA_SCANNER_ENABLED: "true"
   MEDIA_SCANNER_ALLOW_STUB: "false"
   MEDIA_SCANNER_BACKEND: rekognition
+  # Lane D5: internal face comparison for dating selfie verification, on the
+  # same IRSA Rekognition client. The role needs rekognition:DetectFaces and
+  # rekognition:CompareFaces, or every comparison answers 503.
+  MEDIA_FACE_COMPARE_ENABLED: "true"
+  MEDIA_FACE_COMPARE_BACKEND: rekognition
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
   CHAT_MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098

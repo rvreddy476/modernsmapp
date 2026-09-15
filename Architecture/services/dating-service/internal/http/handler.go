@@ -147,10 +147,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Moved to InternalFirstMessagePath; 410 for one release.
 		dating.POST("/matches/:id/first-message", movedTo(InternalFirstMessagePath))
 
-		// Sprint 4 — Verification (Aadhaar via DigiLocker + selfie face match).
+		// Sprint 4 — Verification (Aadhaar via DigiLocker, optional).
 		// DPDP Act compliant — see PULSE_DATING_SPEC.md §15.8
 		dating.POST("/verification/aadhaar/start", h.StartAadhaar)
 		dating.POST("/verification/aadhaar/callback", h.AadhaarCallback)
+		// Lane D5 — required selfie, decided server-side: a single-use
+		// liveness challenge, then {media_id, challenge_id}.
+		dating.POST("/verification/selfie/challenge", h.CreateSelfieChallenge)
 		dating.POST("/verification/selfie", h.SubmitSelfie)
 
 		// Sprint 4 — Vouching (spec §15).
@@ -202,6 +205,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// user sees support has triaged their alert.
 		admin.POST("/safety/panic/:id/ack", h.AcknowledgePanic)
 		admin.GET("/photos/pending", h.ListPendingPhotos)
+		// Lane D5 — selfie review queue (borderline similarity, high-risk
+		// first attempts) and the moderator decision.
+		admin.GET("/verification/selfie/pending", h.ListSelfieReviews)
+		admin.POST("/verification/selfie/:userId/review", h.ReviewSelfie)
 		// §P0-8 — append-only audit log surface for the console.
 		admin.GET("/audit", h.ListAdminAudit)
 		// §P0-7 Phase A — fake-account risk queue.

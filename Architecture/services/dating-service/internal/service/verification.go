@@ -1,10 +1,18 @@
-// Verification service — Aadhaar/DigiLocker + selfie face match.
+// Verification service — Aadhaar/DigiLocker + server-side blink selfie.
 //
 // DPDP Act compliant — see PULSE_DATING_SPEC.md §15.8
 // Aadhaar number is NEVER stored or logged. The service touches only:
 //   - DigiLocker assertion id (digilocker_ref)
 //   - SHA-256 hash of the document-type label
 //   - Verification timestamp
+//
+// Selfie verification (lane D5) is REQUIRED before a profile reaches
+// 'active'. It is decided server-side from an uploaded video: the client
+// requests a "blink_twice" challenge, records a short video, uploads it to
+// media-service and submits {challenge_id, video_media_id}; media-service
+// counts the blinks, checks one consistent face and compares it with the
+// approved primary photo. Client-computed embeddings are refused (410) and
+// no embedding is stored.
 //
 // Trust tiers step up phone -> selfie -> aadhaar; never demote.
 package service
@@ -13,12 +21,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
-	"net/http"
 	"net/url"
 	"os"
 	"time"
@@ -42,33 +48,15 @@ type AadhaarFlowResult struct {
 	IssuedAt  time.Time `json:"issued_at"`
 }
 
-// SelfieFlowResult is returned by CompleteSelfieFlow.
-type SelfieFlowResult struct {
-	Passed     bool    `json:"passed"`
-	Score      float64 `json:"score"`
-	TrustTier  string  `json:"trust_tier"`
-	Threshold  float64 `json:"threshold"`
-}
+// ErrAadhaarDisabled: DIGILOCKER_MODE=disabled (no partner client wired).
+// Aadhaar is optional; the selfie is the required step.
+var ErrAadhaarDisabled = errors.New("aadhaar verification is not enabled on this deployment")
 
-// MediaServiceClient fetches the primary photo embedding for selfie match.
-// Wire from main.go; tests inject a fake.
-type MediaServiceClient interface {
-	GetEmbedding(ctx context.Context, mediaID uuid.UUID) ([]float64, error)
-}
-
-// SetDigiLockerClient injects the partner client. main.go selects HTTP vs
-// Mock via DIGILOCKER_MODE.
+// SetDigiLockerClient injects the partner client. main.go selects HTTP, mock
+// (local/dev only) or none via DIGILOCKER_MODE.
 func (s *Service) SetDigiLockerClient(c digilocker.Client) {
 	s.digilockerClient = c
 }
-
-// SetMediaServiceClient injects the media-service embedding fetcher.
-func (s *Service) SetMediaServiceClient(c MediaServiceClient) {
-	s.mediaClient = c
-}
-
-// SelfieMatchThreshold is the cosine-similarity bar. >= passes.
-const SelfieMatchThreshold = 0.75
 
 // digilockerStateTTL is the spec-required PKCE state lifetime (10 min).
 const digilockerStateTTL = 10 * time.Minute
@@ -93,6 +81,9 @@ func generateState() (string, error) {
 func (s *Service) StartAadhaarFlow(ctx context.Context, userID uuid.UUID) (*AadhaarFlowStart, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: userID required")
+	}
+	if s.digilockerClient == nil {
+		return nil, ErrAadhaarDisabled
 	}
 	clientID := os.Getenv("DIGILOCKER_CLIENT_ID")
 	redirectURI := os.Getenv("DIGILOCKER_REDIRECT_URI")
@@ -138,6 +129,9 @@ func (s *Service) CompleteAadhaarFlow(ctx context.Context, userID uuid.UUID, cod
 	if code == "" || state == "" {
 		return nil, fmt.Errorf("invalid: code and state required")
 	}
+	if s.digilockerClient == nil {
+		return nil, ErrAadhaarDisabled
+	}
 	if s.rdb != nil {
 		stored, err := s.rdb.Get(ctx, stateKey(state)).Result()
 		if err != nil {
@@ -153,9 +147,6 @@ func (s *Service) CompleteAadhaarFlow(ctx context.Context, userID uuid.UUID, cod
 		if err := s.rdb.Del(ctx, stateKey(state)).Err(); err != nil {
 			slog.Warn("clear state key", "error", err)
 		}
-	}
-	if s.digilockerClient == nil {
-		return nil, fmt.Errorf("digilocker client not configured")
 	}
 	assertion, err := s.digilockerClient.ExchangeCode(ctx, code, state)
 	if err != nil {
@@ -183,167 +174,410 @@ func (s *Service) CompleteAadhaarFlow(ctx context.Context, userID uuid.UUID, cod
 	}, nil
 }
 
-// CompleteSelfieFlow scores the user's submitted selfie embedding against
-// the primary profile photo embedding (looked up via media-service). On
-// pass, trust_tier moves phone->selfie (or stays at aadhaar if already
-// there). dating.verification.completed is emitted on pass only.
-func (s *Service) CompleteSelfieFlow(ctx context.Context, userID uuid.UUID, embedding []float64) (*SelfieFlowResult, error) {
-	if userID == uuid.Nil {
-		return nil, fmt.Errorf("invalid: userID required")
+// ── Selfie verification (lane D5, blink liveness) ───────────────────────────
+
+// Selfie thresholds and limits. Similarity is media-service's 0-100 score.
+const (
+	DefaultSelfiePassThreshold   = 90.0
+	DefaultSelfieReviewThreshold = 80.0
+	DefaultSelfieMaxAttempts     = 5
+	DefaultSelfieRequiredBlinks  = 2
+	DefaultSelfieMaxVideoMs      = 4000
+	// SelfieChallengeTTL is how long a liveness challenge stays usable.
+	SelfieChallengeTTL = 10 * time.Minute
+	// selfieChallengesPerAttempt caps issued challenges at this multiple of
+	// the attempt limit per window, so issuance cannot grow without bound.
+	selfieChallengesPerAttempt = 4
+)
+
+// SelfieInstructionBlinkTwice is the challenge instruction.
+const SelfieInstructionBlinkTwice = store.SelfieInstructionBlinkTwice
+
+// Client-facing reason codes. The internal reason for a moderator review is
+// kept for moderators and never returned to the user.
+const (
+	SelfieReasonNoFace          = "NO_FACE"
+	SelfieReasonMultipleFaces   = "MULTIPLE_FACES"
+	SelfieReasonFaceChanged     = "FACE_CHANGED"
+	SelfieReasonLowQuality      = "LOW_QUALITY"
+	SelfieReasonNotEnoughBlinks = "NOT_ENOUGH_BLINKS"
+	SelfieReasonNoMatch         = "NO_MATCH"
+	SelfieReasonManualReview    = "MANUAL_REVIEW"
+
+	mediaReasonVideoTooLong   = "VIDEO_TOO_LONG"
+	selfieReviewBorderline    = "BORDERLINE_SIMILARITY"
+	selfieReviewHighRiskFirst = "HIGH_RISK_FIRST_ATTEMPT"
+	selfieFailLowSimilarity   = "LOW_SIMILARITY"
+)
+
+// SelfieConfig holds the decision bars and limits.
+//
+//	not one consistent face (NO_FACE, MULTIPLE_FACES, FACE_CHANGED,
+//	LOW_QUALITY)                                   → failed
+//	blinks < RequiredBlinks                        → failed NOT_ENOUGH_BLINKS
+//	similarity >= PassThreshold                    → passed (pending_review
+//	                                                  for a high-risk
+//	                                                  account's first attempt)
+//	ReviewThreshold <= similarity < PassThreshold  → pending_review
+//	similarity < ReviewThreshold                   → failed NO_MATCH
+//	video longer than media-service allows         → refused (no verdict)
+type SelfieConfig struct {
+	PassThreshold      float64
+	ReviewThreshold    float64
+	MaxAttemptsPerDay  int
+	RequiredBlinks     int
+	MaxVideoDurationMs int
+}
+
+// DefaultSelfieConfig is 90 / 80 / 5 per 24h / 2 blinks / 4000 ms.
+func DefaultSelfieConfig() SelfieConfig {
+	return SelfieConfig{
+		PassThreshold:      DefaultSelfiePassThreshold,
+		ReviewThreshold:    DefaultSelfieReviewThreshold,
+		MaxAttemptsPerDay:  DefaultSelfieMaxAttempts,
+		RequiredBlinks:     DefaultSelfieRequiredBlinks,
+		MaxVideoDurationMs: DefaultSelfieMaxVideoMs,
 	}
-	if len(embedding) == 0 {
-		return nil, fmt.Errorf("invalid: embedding required")
+}
+
+// SetSelfieConfig installs the selfie bars (boot_config.ResolveSelfieConfig).
+// An invalid config is replaced by the defaults rather than weakening them.
+func (s *Service) SetSelfieConfig(c SelfieConfig) {
+	if c.PassThreshold <= 0 || c.PassThreshold > 100 || c.ReviewThreshold <= 0 ||
+		c.ReviewThreshold >= c.PassThreshold || c.MaxAttemptsPerDay <= 0 ||
+		c.RequiredBlinks < 1 || c.MaxVideoDurationMs <= 0 {
+		slog.Warn("selfie config rejected; using defaults", "config", c)
+		c = DefaultSelfieConfig()
 	}
+	s.selfieCfg = c
+}
+
+// SelfieSettings returns the active selfie configuration.
+func (s *Service) SelfieSettings() SelfieConfig {
+	if s.selfieCfg.MaxAttemptsPerDay == 0 {
+		return DefaultSelfieConfig()
+	}
+	return s.selfieCfg
+}
+
+var (
+	// ErrPrimaryPhotoNotApproved: no primary photo, or it is not yet
+	// moderation-approved. The selfie is compared only against an approved
+	// photo.
+	ErrPrimaryPhotoNotApproved = errors.New("primary photo is not moderation-approved")
+	// ErrSelfieSameAsPrimaryPhoto: the submitted media is the primary photo.
+	ErrSelfieSameAsPrimaryPhoto = errors.New("the selfie video must be a new recording, not the primary profile photo")
+	// ErrSelfieMediaNotFound: media-service does not know the video (or the
+	// primary photo) as the caller's ready media.
+	ErrSelfieMediaNotFound = errors.New("selfie media not found")
+	// ErrSelfieVideoUnsupported: media-service cannot analyse the upload.
+	ErrSelfieVideoUnsupported = errors.New("selfie video cannot be analysed")
+	// ErrSelfieVideoTooLong: the recording is longer than allowed.
+	ErrSelfieVideoTooLong = errors.New("selfie video is longer than allowed")
+	// ErrFaceCompareUnavailable: no liveness result (media-service or the
+	// provider unavailable). Never treated as pass or fail.
+	ErrFaceCompareUnavailable = errors.New("selfie liveness check is unavailable")
+)
+
+// SelfieChallengeResponse is returned by CreateSelfieChallenge.
+type SelfieChallengeResponse struct {
+	ChallengeID   uuid.UUID `json:"challenge_id"`
+	Instruction   string    `json:"instruction"`
+	MaxDurationMs int       `json:"max_duration_ms"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}
+
+// SelfieFlowResult is returned by SubmitSelfie and ReviewSelfie. The raw
+// similarity is deliberately not returned, so a client cannot tune an upload
+// against the score.
+type SelfieFlowResult struct {
+	Status            string `json:"status"` // passed | failed | pending_review
+	Passed            bool   `json:"passed"`
+	Reason            string `json:"reason,omitempty"`
+	TrustTier         string `json:"trust_tier,omitempty"`
+	ProfileStatus     string `json:"profile_status,omitempty"`
+	AttemptsRemaining int    `json:"attempts_remaining"`
+}
+
+// approvedPrimaryPhoto returns the user's primary photo when it is approved.
+func (s *Service) approvedPrimaryPhoto(ctx context.Context, userID uuid.UUID) (*store.Photo, error) {
 	photos, err := s.store.ListPhotos(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("load photos: %w", err)
 	}
-	var primaryMedia uuid.UUID
-	for _, p := range photos {
-		if p.IsPrimary {
-			primaryMedia = p.MediaID
-			break
+	for i := range photos {
+		if !photos[i].IsPrimary {
+			continue
 		}
+		if photos[i].ModerationStatus != "approved" {
+			return nil, ErrPrimaryPhotoNotApproved
+		}
+		return &photos[i], nil
 	}
-	if primaryMedia == uuid.Nil {
-		return nil, fmt.Errorf("invalid: no primary photo to compare against")
+	return nil, ErrPrimaryPhotoNotApproved
+}
+
+// CreateSelfieChallenge issues a single-use "blink_twice" challenge (10
+// minute expiry, max_duration_ms recording) for the caller. Refused when the
+// primary photo is not approved, the selfie already passed or is in review,
+// or the attempt limit is used up.
+func (s *Service) CreateSelfieChallenge(ctx context.Context, userID uuid.UUID) (*SelfieChallengeResponse, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: userID required")
 	}
-	if s.mediaClient == nil {
-		return nil, fmt.Errorf("media client not configured")
+	if _, err := s.store.GetProfile(ctx, userID); err != nil {
+		return nil, err
 	}
-	stored, err := s.mediaClient.GetEmbedding(ctx, primaryMedia)
+	if _, err := s.approvedPrimaryPhoto(ctx, userID); err != nil {
+		return nil, err
+	}
+	cfg := s.SelfieSettings()
+	ch, err := s.store.CreateSelfieChallenge(ctx, userID, SelfieInstructionBlinkTwice, cfg.MaxVideoDurationMs,
+		SelfieChallengeTTL, cfg.MaxAttemptsPerDay, cfg.MaxAttemptsPerDay*selfieChallengesPerAttempt)
 	if err != nil {
-		return nil, fmt.Errorf("media embedding: %w", err)
+		return nil, err
 	}
-	if len(stored) == 0 {
-		return nil, fmt.Errorf("not_found: no embedding stored for primary photo")
+	return &SelfieChallengeResponse{ChallengeID: ch.ID, Instruction: ch.Instruction,
+		MaxDurationMs: ch.MaxDurationMs, ExpiresAt: ch.ExpiresAt.UTC()}, nil
+}
+
+// SubmitSelfie verifies an uploaded blink video against the approved primary
+// photo.
+//
+// Order: profile exists → primary photo approved (409) and not the submitted
+// media → under a per-user lock, not already passed / in review (409),
+// attempt limit (429), challenge consumed (400) and attempt recorded →
+// media-service liveness (404 / 422 / 503 / over-long video leave an 'error'
+// attempt) → decision (see SelfieConfig):
+//
+//   - passed: selfie_status=passed, trust tier ≥ selfie, and pending_selfie →
+//     active through TransitionProfileStatus (advanceOnboarding);
+//   - pending_review: a moderator decides (ReviewSelfie);
+//   - failed: selfie_status=failed; the profile stays pending_selfie.
+func (s *Service) SubmitSelfie(ctx context.Context, userID, videoMediaID, challengeID uuid.UUID) (*SelfieFlowResult, error) {
+	if userID == uuid.Nil || videoMediaID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: user and video_media_id required")
 	}
-	score := cosineSimilarity(embedding, stored)
-	passed := score >= SelfieMatchThreshold
-	status := "failed"
-	if passed {
-		status = "passed"
+	if challengeID == uuid.Nil {
+		return nil, store.ErrSelfieChallengeInvalid
 	}
-	if err := s.store.RecordSelfieAttempt(ctx, userID, score, status); err != nil {
-		return nil, fmt.Errorf("persist selfie attempt: %w", err)
+	if _, err := s.store.GetProfile(ctx, userID); err != nil {
+		return nil, err
 	}
-	tier := "phone"
-	if passed {
-		// Bump to selfie unless the user is already aadhaar.
-		v, _ := s.store.GetVerification(ctx, userID)
-		if v != nil && v.AadhaarStatus != nil && *v.AadhaarStatus == "verified" {
-			tier = "aadhaar"
-		} else {
-			if err := s.store.UpdateTrustTier(ctx, userID, "selfie"); err != nil {
-				return nil, fmt.Errorf("bump trust tier: %w", err)
-			}
-			tier = "selfie"
+	primary, err := s.approvedPrimaryPhoto(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if primary.MediaID == videoMediaID {
+		return nil, ErrSelfieSameAsPrimaryPhoto
+	}
+	cfg := s.SelfieSettings()
+	start, err := s.store.BeginSelfieAttempt(ctx, userID, challengeID, videoMediaID, cfg.MaxAttemptsPerDay)
+	if err != nil {
+		return nil, err
+	}
+	remaining := cfg.MaxAttemptsPerDay - start.UsedInWindow
+	if remaining < 0 {
+		remaining = 0
+	}
+	noVerdict := func(cause error, reason string) error {
+		if ferr := s.store.FinishSelfieAttempt(ctx, userID, start.AttemptID, videoMediaID,
+			store.SelfieDecision{Outcome: store.SelfieOutcomeError, Reason: reason}); ferr != nil {
+			slog.Warn("selfie: record error outcome failed", "user_id", userID, "attempt_id", start.AttemptID, "error", ferr)
 		}
+		return cause
+	}
+	if s.livenessClient == nil {
+		return nil, noVerdict(ErrFaceCompareUnavailable, "LIVENESS_CLIENT_NOT_CONFIGURED")
+	}
+	res, err := s.livenessClient.CheckLiveness(ctx, LivenessRequest{
+		VideoMediaID:     videoMediaID,
+		ReferenceMediaID: primary.MediaID,
+		RequesterUserID:  userID,
+	})
+	switch {
+	case errors.Is(err, ErrSelfieMediaNotFound):
+		return nil, noVerdict(ErrSelfieMediaNotFound, "MEDIA_NOT_FOUND")
+	case errors.Is(err, ErrSelfieVideoUnsupported):
+		return nil, noVerdict(ErrSelfieVideoUnsupported, "VIDEO_UNSUPPORTED")
+	case err != nil:
+		slog.Warn("selfie: liveness unavailable", "user_id", userID, "attempt_id", start.AttemptID, "error", err)
+		return nil, noVerdict(ErrFaceCompareUnavailable, "PROVIDER_UNAVAILABLE")
+	case res.Reason == mediaReasonVideoTooLong:
+		return nil, noVerdict(ErrSelfieVideoTooLong, mediaReasonVideoTooLong)
+	}
+
+	reviewFirst := start.PriorVerdicts == 0 && s.selfieHighRisk(ctx, userID)
+	decision, clientReason := decideSelfie(cfg, res, reviewFirst)
+	if err := s.store.FinishSelfieAttempt(ctx, userID, start.AttemptID, videoMediaID, decision); err != nil {
+		return nil, fmt.Errorf("persist selfie outcome: %w", err)
+	}
+	slog.Info("selfie verification decided", "user_id", userID, "attempt_id", start.AttemptID,
+		"outcome", decision.Outcome, "reason", decision.Reason, "blinks", res.BlinksDetected, "provider", decision.Provider)
+
+	out := &SelfieFlowResult{Status: decision.Outcome, Reason: clientReason, AttemptsRemaining: remaining}
+	switch decision.Outcome {
+	case store.SelfieOutcomePassed:
+		out.Passed = true
+		out.TrustTier = s.completeSelfiePass(ctx, userID)
+	case store.SelfieOutcomePendingReview:
 		if s.producer != nil {
-			if perr := s.producer.PublishVerificationCompleted(ctx, userID, "selfie", tier); perr != nil {
-				slog.Warn("publish verification.completed failed", "error", perr)
+			if perr := s.producer.PublishVerificationSubmitted(ctx, userID, "selfie"); perr != nil {
+				slog.Warn("publish verification.submitted failed", "error", perr)
 			}
 		}
-		// §P1-1: selfie pass graduates pending_selfie -> active through
-		// the status machine. A restricted/suspended profile keeps its
-		// hold (only its remembered step advances). Best-effort: a
-		// failure here is logged but doesn't block the user.
-		if _, err := s.advanceOnboarding(ctx, userID); err != nil && !errors.Is(err, store.ErrProfileNotFound) {
-			slog.Warn("profile state: advance onboarding after selfie failed", "user_id", userID, "error", err)
+	default:
+		if s.producer != nil {
+			if perr := s.producer.PublishVerificationRejected(ctx, userID, "selfie"); perr != nil {
+				slog.Warn("publish verification.rejected failed", "error", perr)
+			}
 		}
+	}
+	if p, err := s.store.GetProfile(ctx, userID); err == nil && p != nil {
+		out.ProfileStatus = p.ProfileStatus
+		if out.TrustTier == "" {
+			out.TrustTier = p.TrustTier
+		}
+	}
+	return out, nil
+}
+
+// decideSelfie maps a liveness result to an outcome. It returns the decision
+// to persist and the reason code shown to the client.
+func decideSelfie(cfg SelfieConfig, res *LivenessResult, reviewFirst bool) (store.SelfieDecision, string) {
+	blinks, frames := res.BlinksDetected, res.FramesAnalysed
+	d := store.SelfieDecision{Provider: res.Provider, Blinks: &blinks, FramesAnalysed: &frames}
+	fail := func(reason string) (store.SelfieDecision, string) {
+		d.Outcome, d.Reason = store.SelfieOutcomeFailed, reason
+		return d, reason
+	}
+	switch res.Reason {
+	case SelfieReasonNoFace, SelfieReasonMultipleFaces, SelfieReasonFaceChanged, SelfieReasonLowQuality:
+		return fail(res.Reason)
+	}
+	switch {
+	case !res.SingleFace:
+		return fail(SelfieReasonMultipleFaces)
+	case !res.SameFaceAcrossFrames:
+		return fail(SelfieReasonFaceChanged)
+	case res.Reason == SelfieReasonNotEnoughBlinks || res.BlinksDetected < cfg.RequiredBlinks:
+		return fail(SelfieReasonNotEnoughBlinks)
+	case res.Reason != "":
+		// An unknown reason from media-service is never a pass.
+		return fail(SelfieReasonLowQuality)
+	}
+	sim := math.Round(res.Similarity)
+	if sim < 0 {
+		sim = 0
+	}
+	if sim > 100 {
+		sim = 100
+	}
+	d.Similarity = &sim
+	switch {
+	case sim >= cfg.PassThreshold && reviewFirst:
+		d.Outcome, d.Reason = store.SelfieOutcomePendingReview, selfieReviewHighRiskFirst
+		return d, SelfieReasonManualReview
+	case sim >= cfg.PassThreshold:
+		d.Outcome = store.SelfieOutcomePassed
+		return d, ""
+	case sim >= cfg.ReviewThreshold:
+		d.Outcome, d.Reason = store.SelfieOutcomePendingReview, selfieReviewBorderline
+		return d, SelfieReasonManualReview
+	default:
+		d.Outcome, d.Reason = store.SelfieOutcomeFailed, selfieFailLowSimilarity
+		return d, SelfieReasonNoMatch
+	}
+}
+
+// selfieHighRisk reports whether the account's risk level keeps its first
+// selfie from passing automatically. A failed lookup counts as high risk.
+func (s *Service) selfieHighRisk(ctx context.Context, userID uuid.UUID) bool {
+	level, err := s.GetUserRiskLevel(ctx, userID)
+	if err != nil {
+		slog.Warn("selfie: risk lookup failed; treating as high risk", "user_id", userID, "error", err)
+		return true
+	}
+	switch level {
+	case "", store.RiskLevelAllow, store.RiskLevelReduceReach:
+		return false
+	}
+	return true
+}
+
+// completeSelfiePass bumps the trust tier (never demoting aadhaar), emits
+// verification.completed and graduates pending_selfie → active through the
+// status machine. A restricted/suspended profile keeps its hold (only its
+// remembered step advances). Returns the resulting trust tier.
+func (s *Service) completeSelfiePass(ctx context.Context, userID uuid.UUID) string {
+	tier := "selfie"
+	v, _ := s.store.GetVerification(ctx, userID)
+	if v != nil && v.AadhaarStatus != nil && *v.AadhaarStatus == "verified" {
+		tier = "aadhaar"
+	} else if err := s.store.UpdateTrustTier(ctx, userID, "selfie"); err != nil {
+		slog.Warn("selfie: bump trust tier failed", "user_id", userID, "error", err)
+	}
+	if s.producer != nil {
+		if perr := s.producer.PublishVerificationCompleted(ctx, userID, "selfie", tier); perr != nil {
+			slog.Warn("publish verification.completed failed", "error", perr)
+		}
+	}
+	if _, err := s.advanceOnboarding(ctx, userID); err != nil && !errors.Is(err, store.ErrProfileNotFound) {
+		slog.Warn("profile state: advance onboarding after selfie failed", "user_id", userID, "error", err)
+	}
+	return tier
+}
+
+// ListSelfieReviews is the moderator queue (GET /v1/dating/admin/verification/selfie/pending).
+func (s *Service) ListSelfieReviews(ctx context.Context, limit int) ([]*store.SelfieReview, error) {
+	return s.store.ListPendingSelfieReviews(ctx, limit)
+}
+
+// ReviewSelfie applies a moderator decision to a selfie in review.
+// decision is "approve" (same as a pass: active through the writer) or
+// "reject" (same as a fail). The admin action is audited.
+func (s *Service) ReviewSelfie(ctx context.Context, adminID, userID uuid.UUID, decision, note string) (*SelfieFlowResult, error) {
+	if adminID == uuid.Nil {
+		return nil, fmt.Errorf("forbidden: admin actor required")
+	}
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: user id required")
+	}
+	var approve bool
+	switch decision {
+	case "approve":
+		approve = true
+	case "reject":
+	default:
+		return nil, fmt.Errorf("invalid: decision must be approve or reject")
+	}
+	if err := s.store.ResolveSelfieReview(ctx, userID, adminID, approve); err != nil {
+		return nil, err
+	}
+	entry := &store.AdminAuditEntry{
+		ActorAdminID:   adminID,
+		Action:         "selfie_review_" + decision,
+		TargetUserID:   userID,
+		TargetResource: "selfie_verification:" + userID.String(),
+		Reason:         note,
+	}
+	if err := s.store.InsertAdminAudit(ctx, entry); err != nil {
+		slog.Error("admin audit: insert failed for ReviewSelfie", "user_id", userID, "actor_admin_id", adminID, "error", err)
+	}
+	out := &SelfieFlowResult{Status: store.SelfieStatusFailed}
+	if approve {
+		out.Status, out.Passed = store.SelfieStatusPassed, true
+		out.TrustTier = s.completeSelfiePass(ctx, userID)
 	} else if s.producer != nil {
-		// §P1-6 notification surface: explicit verification.rejected push.
 		if perr := s.producer.PublishVerificationRejected(ctx, userID, "selfie"); perr != nil {
 			slog.Warn("publish verification.rejected failed", "error", perr)
 		}
 	}
-	return &SelfieFlowResult{
-		Passed:    passed,
-		Score:     score,
-		TrustTier: tier,
-		Threshold: SelfieMatchThreshold,
-	}, nil
+	if p, err := s.store.GetProfile(ctx, userID); err == nil && p != nil {
+		out.ProfileStatus = p.ProfileStatus
+		if out.TrustTier == "" {
+			out.TrustTier = p.TrustTier
+		}
+	}
+	return out, nil
 }
-
-// cosineSimilarity computes the cosine of two equal-length float64 vectors.
-// If lengths differ we use the shared prefix length; if either is all-zero
-// we return 0.
-func cosineSimilarity(a, b []float64) float64 {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	if n == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := 0; i < n; i++ {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	denom := math.Sqrt(normA) * math.Sqrt(normB)
-	if denom == 0 {
-		return 0
-	}
-	return dot / denom
-}
-
-// httpMediaClient is the production MediaServiceClient.
-type httpMediaClient struct {
-	baseURL string
-	client  *http.Client
-	apiKey  string
-}
-
-// NewHTTPMediaClient configures from MEDIA_SERVICE_URL + INTERNAL_SERVICE_KEY.
-func NewHTTPMediaClient() MediaServiceClient {
-	base := os.Getenv("MEDIA_SERVICE_URL")
-	if base == "" {
-		base = "http://media-service:8095"
-	}
-	return &httpMediaClient{
-		baseURL: base,
-		client:  &http.Client{Timeout: 4 * time.Second},
-		apiKey:  os.Getenv("INTERNAL_SERVICE_KEY"),
-	}
-}
-
-// GetEmbedding calls media-service GET /v1/media/embedding/:mediaId.
-func (c *httpMediaClient) GetEmbedding(ctx context.Context, mediaID uuid.UUID) ([]float64, error) {
-	if mediaID == uuid.Nil {
-		return nil, fmt.Errorf("invalid: media id required")
-	}
-	url := fmt.Sprintf("%s/v1/media/embedding/%s", c.baseURL, mediaID.String())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	if c.apiKey != "" {
-		req.Header.Set("X-Internal-Key", c.apiKey)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("media-service unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("not_found: embedding")
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("media-service status %d", resp.StatusCode)
-	}
-	var envelope struct {
-		Data struct {
-			Embedding []float64 `json:"embedding"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return nil, fmt.Errorf("decode embedding: %w", err)
-	}
-	return envelope.Data.Embedding, nil
-}
-

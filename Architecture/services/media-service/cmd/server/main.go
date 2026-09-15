@@ -120,7 +120,10 @@ func main() {
 	// 5. Dependencies
 	pgStore := postgres.New(dbPool)
 	mediaCfg := config.Load()
-	mediaScanner, err := buildMediaScanner(ctx)
+	// One Rekognition client (same loader + IRSA chain) for the content
+	// scanner and, when enabled, lane D5 face comparison.
+	sharedRekognition := &processing.SharedRekognition{}
+	mediaScanner, err := buildMediaScanner(ctx, sharedRekognition)
 	if err != nil {
 		slog.Error("failed to configure image scanner", "error", err)
 		os.Exit(1)
@@ -243,6 +246,51 @@ func main() {
 	}
 	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey)
 
+	// Dating plan lane D5: internal face comparison for selfie verification
+	// (POST /internal/v1/media/faces/compare). Off unless
+	// MEDIA_FACE_COMPARE_ENABLED=true; when on, boot refuses without a real
+	// provider outside local/dev, without AWS_REGION/IRSA for Rekognition, or
+	// without INTERNAL_SERVICE_KEY (processing.ResolveFaceCompareSettings).
+	faceSettings, err := processing.ResolveFaceCompareSettings(os.Getenv)
+	if err != nil {
+		slog.Error("media-service: face comparison configuration refused", "error", err)
+		os.Exit(1)
+	}
+	if faceSettings.Enabled {
+		var comparer processing.FaceComparer
+		var analyzer processing.LivenessAnalyzer
+		switch faceSettings.Backend {
+		case processing.FaceBackendMock:
+			comparer = processing.NewMockFaceComparer()
+			analyzer = processing.NewMockLivenessAnalyzer()
+			slog.Warn("media-service: face comparison and liveness use the MOCK provider (local/dev only; only marker-carrying test media can pass)")
+		default:
+			client, cerr := sharedRekognition.Client(ctx, faceSettings.Region)
+			if cerr != nil {
+				slog.Error("media-service: face comparison needs a Rekognition client", "error", cerr)
+				os.Exit(1)
+			}
+			// Blink liveness samples the uploaded video with ffmpeg/ffprobe
+			// (installed in the server image, as in the worker image).
+			if ferr := processing.RequireFFmpeg(); ferr != nil {
+				slog.Error("media-service: blink liveness needs ffmpeg", "error", ferr)
+				os.Exit(1)
+			}
+			comparer = processing.NewRekognitionFaceComparer(client)
+			analyzer = processing.NewRekognitionLivenessAnalyzer(client, processing.FFmpegFrameSampler{})
+		}
+		faceCompare := service.NewFaceCompareService(pgStore, blobStore, comparer, faceSettings.MatchThreshold).
+			WithLiveness(analyzer, faceSettings.Liveness)
+		mediaHandler.WithFaceCompare(faceCompare)
+		slog.Info("media-service: face comparison and blink liveness enabled", "backend", comparer.Name(),
+			"match_threshold", faceSettings.MatchThreshold, "compare_path", mediaHttp.FaceComparePath,
+			"liveness_path", mediaHttp.LivenessPath, "sample_fps", faceSettings.Liveness.SampleFPS,
+			"max_frames", faceSettings.Liveness.MaxFrames, "max_duration_ms", faceSettings.Liveness.MaxDurationMs,
+			"eyes_open_confidence", faceSettings.Liveness.EyesOpenConfidence, "required_blinks", faceSettings.Liveness.RequiredBlinks)
+	} else {
+		slog.Info("media-service: face comparison disabled (MEDIA_FACE_COMPARE_ENABLED is not true)")
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -259,6 +307,7 @@ func main() {
 	mediaHandler.RegisterResumableRoutes(r, authMW)
 	mediaHandler.RegisterSlotRoutes(r, authMW)
 	mediaHandler.RegisterStudioRoutes(r, authMW)
+	mediaHandler.RegisterFaceCompareRoutes(r)
 
 	// 10. Graceful shutdown
 	if err := server.Run(r, server.Config{
@@ -395,7 +444,7 @@ func buildBlobStore(endpoint, accessKey, secretKey, bucket string, useSSL bool, 
 	return blob.NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket, useSSL, publicEndpoint)
 }
 
-func buildMediaScanner(ctx context.Context) (processing.Scanner, error) {
+func buildMediaScanner(ctx context.Context, shared *processing.SharedRekognition) (processing.Scanner, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("MEDIA_SCANNER_BACKEND")))
 	if backend == "rekognition" {
 		if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
@@ -404,9 +453,13 @@ func buildMediaScanner(ctx context.Context) (processing.Scanner, error) {
 		if isProductionEnv() && (os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") == "" || os.Getenv("AWS_ROLE_ARN") == "") {
 			return nil, fmt.Errorf("production Rekognition requires AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN; node-role fallback is forbidden")
 		}
-		return processing.NewRekognitionScanner(ctx, os.Getenv("AWS_REGION"), processing.RekognitionConfig{
+		client, err := shared.Client(ctx, os.Getenv("AWS_REGION"))
+		if err != nil {
+			return nil, err
+		}
+		return processing.NewRekognitionScannerFromClient(client, processing.RekognitionConfig{
 			MinConfidence: 80,
-		})
+		}), nil
 	}
 	if isProductionEnv() {
 		return nil, fmt.Errorf("production requires MEDIA_SCANNER_BACKEND=rekognition")

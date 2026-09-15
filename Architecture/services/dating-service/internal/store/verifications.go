@@ -57,15 +57,19 @@ func scanVerification(row pgx.Row) (*Verification, error) {
 }
 
 // RecordSelfieAttempt upserts the selfie verification outcome for userID.
-// status must be one of: pending | passed | failed.
+// status must be one of: pending | pending_review | passed | failed.
+//
+// Lane D5: the runtime selfie flow writes through BeginSelfieAttempt /
+// FinishSelfieAttempt (selfie_verification.go). This direct writer remains
+// for seeding test fixtures and data repair.
 func (s *Store) RecordSelfieAttempt(ctx context.Context, userID uuid.UUID, score float64, status string) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("invalid: user_id required")
 	}
 	switch status {
-	case "pending", "passed", "failed":
+	case SelfieStatusPending, SelfieStatusPendingReview, SelfieStatusPassed, SelfieStatusFailed:
 	default:
-		return fmt.Errorf("invalid: selfie status must be pending|passed|failed")
+		return fmt.Errorf("invalid: selfie status must be pending|pending_review|passed|failed")
 	}
 	_, err := s.db.Exec(ctx, `
         INSERT INTO dating_verifications (user_id, selfie_status, selfie_score, selfie_at)

@@ -815,6 +815,16 @@ services:
       KAFKA_BROKERS: redpanda:9092
       MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Lane D5: internal blink liveness + face comparison for dating selfie
+      # verification (POST /internal/v1/media/faces/liveness and /compare).
+      # The mock is refused unless ENV is local/dev and passes only media
+      # carrying the ATPOST-LIVENESS-TEST / ATPOST-FACE-TEST markers
+      # (internal/processing/liveness.go, face_compare.go), so a real
+      # recording never passes locally. ENV is read only by that rule and the
+      # production checks here.
+      ENV: local
+      MEDIA_FACE_COMPARE_ENABLED: ${MEDIA_FACE_COMPARE_ENABLED:-true}
+      MEDIA_FACE_COMPARE_BACKEND: ${MEDIA_FACE_COMPARE_BACKEND:-mock}
       POST_SERVICE_URL: http://post-service:8084
       CHAT_MESSAGE_SERVICE_URL: http://chat-message-service:8092
       PROFILE_SERVICE_URL: http://identity-profile:8098
@@ -1989,6 +1999,12 @@ services:
       DATING_DEDUPE_OPEN_MATCHES: ${DATING_DEDUPE_OPEN_MATCHES:-false}
       # Days a declined sender stays away from the decliner (1-365).
       DATING_DECLINE_COOLDOWN_DAYS: ${DATING_DECLINE_COOLDOWN_DAYS:-30}
+      # Lane D5: the required blink selfie is checked by media-service's
+      # internal liveness route.
+      MEDIA_SERVICE_URL: http://media-service:8087
+      # Aadhaar (DigiLocker) is optional. ENV is unset here, so the mock is
+      # refused; set ENV=local and DIGILOCKER_MODE=mock to exercise it.
+      DIGILOCKER_MODE: ${DIGILOCKER_MODE:-disabled}
     ports:
       - "8112:8112"
     depends_on:

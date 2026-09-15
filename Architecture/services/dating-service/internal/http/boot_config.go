@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -9,6 +10,127 @@ import (
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 )
+
+// ResolveSelfieConfig reads the lane D5 selfie verification bars:
+//
+//	DATING_SELFIE_PASS_THRESHOLD        1-100, default 90
+//	DATING_SELFIE_REVIEW_THRESHOLD      1-100, default 80, below the pass bar
+//	DATING_SELFIE_MAX_ATTEMPTS_PER_DAY  1-50,  default 5 (rolling 24h)
+//	DATING_SELFIE_REQUIRED_BLINKS       1-5,   default 2
+//	DATING_SELFIE_MAX_VIDEO_MS          1000-10000, default 4000 (told to the
+//	                                    client in the challenge; keep equal to
+//	                                    media-service MEDIA_LIVENESS_MAX_DURATION_MS)
+//
+// Any malformed or inconsistent value is an error, on which main refuses to
+// start (never a silently weaker bar).
+func ResolveSelfieConfig(getenv func(string) string) (service.SelfieConfig, error) {
+	cfg := service.DefaultSelfieConfig()
+	num := func(key string, lo, hi float64, dst *float64) error {
+		raw := strings.TrimSpace(getenv(key))
+		if raw == "" {
+			return nil
+		}
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil || f < lo || f > hi {
+			return fmt.Errorf("%s must be a number from %g to %g, got %q", key, lo, hi, raw)
+		}
+		*dst = f
+		return nil
+	}
+	if err := num("DATING_SELFIE_PASS_THRESHOLD", 1, 100, &cfg.PassThreshold); err != nil {
+		return cfg, err
+	}
+	if err := num("DATING_SELFIE_REVIEW_THRESHOLD", 1, 100, &cfg.ReviewThreshold); err != nil {
+		return cfg, err
+	}
+	if cfg.ReviewThreshold >= cfg.PassThreshold {
+		return cfg, fmt.Errorf("DATING_SELFIE_REVIEW_THRESHOLD (%g) must be below DATING_SELFIE_PASS_THRESHOLD (%g)",
+			cfg.ReviewThreshold, cfg.PassThreshold)
+	}
+	if raw := strings.TrimSpace(getenv("DATING_SELFIE_MAX_ATTEMPTS_PER_DAY")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 50 {
+			return cfg, fmt.Errorf("DATING_SELFIE_MAX_ATTEMPTS_PER_DAY must be a whole number from 1 to 50, got %q", raw)
+		}
+		cfg.MaxAttemptsPerDay = n
+	}
+	if raw := strings.TrimSpace(getenv("DATING_SELFIE_REQUIRED_BLINKS")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 5 {
+			return cfg, fmt.Errorf("DATING_SELFIE_REQUIRED_BLINKS must be a whole number from 1 to 5, got %q", raw)
+		}
+		cfg.RequiredBlinks = n
+	}
+	if raw := strings.TrimSpace(getenv("DATING_SELFIE_MAX_VIDEO_MS")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1000 || n > 10000 {
+			return cfg, fmt.Errorf("DATING_SELFIE_MAX_VIDEO_MS must be a whole number from 1000 to 10000, got %q", raw)
+		}
+		cfg.MaxVideoDurationMs = n
+	}
+	return cfg, nil
+}
+
+// DefaultMediaServiceURL is media-service's in-cluster address (port 8087).
+const DefaultMediaServiceURL = "http://media-service:8087"
+
+// ResolveMediaServiceURL reads MEDIA_SERVICE_URL (default
+// DefaultMediaServiceURL). A set but malformed URL is refused.
+func ResolveMediaServiceURL(getenv func(string) string) (string, error) {
+	raw := strings.TrimSpace(getenv("MEDIA_SERVICE_URL"))
+	if raw == "" {
+		return DefaultMediaServiceURL, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("MEDIA_SERVICE_URL must be an absolute http(s) URL")
+	}
+	return strings.TrimRight(raw, "/"), nil
+}
+
+// DIGILOCKER_MODE values.
+const (
+	DigiLockerModeHTTP     = "http"
+	DigiLockerModeMock     = "mock"
+	DigiLockerModeDisabled = "disabled"
+)
+
+// ResolveDigiLockerMode applies food-service's DIGILOCKER_MODE rule to the
+// optional Aadhaar step: http | mock | disabled. Unset means mock in
+// local/dev (with a warning) and is refused elsewhere; mock is refused unless
+// ENV is local/dev/development (a blank ENV is not local); http needs
+// DIGILOCKER_BASE_URL and DIGILOCKER_API_KEY. disabled answers the Aadhaar
+// routes with 503 AADHAAR_DISABLED.
+func ResolveDigiLockerMode(getenv func(string) string) (mode, warning string, err error) {
+	env := strings.TrimSpace(getenv("ENV"))
+	mode = strings.ToLower(strings.TrimSpace(getenv("DIGILOCKER_MODE")))
+	switch mode {
+	case "":
+		if !IsLocalEnv(env) {
+			return "", "", fmt.Errorf("DIGILOCKER_MODE is required unless ENV is local or dev (ENV=%q): set http or disabled", env)
+		}
+		return DigiLockerModeMock, "dating-service: DIGILOCKER_MODE not set (ENV=" + env + ") — using the DigiLocker mock. Local/dev only.", nil
+	case DigiLockerModeMock:
+		if !IsLocalEnv(env) {
+			return "", "", fmt.Errorf("DIGILOCKER_MODE=mock is refused unless ENV is local, dev or development (ENV=%q)", env)
+		}
+		return mode, "dating-service: DigiLocker mock client active (ENV=" + env + "). Local/dev only.", nil
+	case DigiLockerModeHTTP:
+		var missing []string
+		for _, k := range []string{"DIGILOCKER_BASE_URL", "DIGILOCKER_API_KEY"} {
+			if strings.TrimSpace(getenv(k)) == "" {
+				missing = append(missing, k)
+			}
+		}
+		if len(missing) > 0 {
+			return "", "", fmt.Errorf("DIGILOCKER_MODE=http needs %s", strings.Join(missing, ", "))
+		}
+		return mode, "", nil
+	case DigiLockerModeDisabled:
+		return mode, "", nil
+	}
+	return "", "", fmt.Errorf("unknown DIGILOCKER_MODE %q (want http, mock or disabled)", mode)
+}
 
 // ResolveOpenMatchDedupePolicy reads DATING_DEDUPE_OPEN_MATCHES and ENV for
 // the boot cleanup of duplicate open matches. Local/dev (IsLocalEnv) always
