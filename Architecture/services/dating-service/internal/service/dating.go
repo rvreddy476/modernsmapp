@@ -37,8 +37,9 @@ type Service struct {
 	dataExportPublisher  DataExportPublisher
 	notificationClient   NotificationClient
 	storageClient        ExportStorageClient
-	// Lane D2 — identity birth date + first name. Nil until an identity
-	// route exposes them service-to-service (see IdentityBasicsClient).
+	// Lane D2 — identity birth date + first name (HTTPIdentityClient). Nil
+	// only in local/dev without IDENTITY_PROFILE_SERVICE_URL, where the
+	// interim client lock-once rule applies (see UpsertProfile).
 	identityClient IdentityBasicsClient
 
 	// Sprint 6 — moderation-strict feature-flag cache (60s TTL). The mutex

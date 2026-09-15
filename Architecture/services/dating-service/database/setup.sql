@@ -546,7 +546,9 @@ END $$;
 -- prior_status: the onboarding step remembered while a profile is paused,
 --   held (pending_review / restricted / suspended) or deleted. Unpause and
 --   admin reinstate restore exactly this step.
--- dob_source / first_name_source: 'identity' or the interim 'client'.
+-- dob_source: 'identity_registration' / 'identity_profile' (identity-profile's
+--   internal read), 'identity' (origin unrecorded) or the interim 'client'.
+-- first_name_source: 'identity' or the interim 'client'.
 -- Only store.TransitionProfileStatus writes profile_status / prior_status /
 -- paused at runtime (profile_status_scan_test.go).
 -- ---------------------------------------------------------------------------
@@ -560,7 +562,8 @@ BEGIN
         CHECK (prior_status IS NULL OR prior_status IN ('draft','pending_photo','pending_selfie','active'));
     ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_dob_source_chk;
     ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_dob_source_chk
-        CHECK (dob_source IS NULL OR dob_source IN ('identity','client'));
+        CHECK (dob_source IS NULL OR dob_source IN
+               ('identity','identity_registration','identity_profile','client'));
     ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_first_name_source_chk;
     ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_first_name_source_chk
         CHECK (first_name_source IS NULL OR first_name_source IN ('identity','client'));

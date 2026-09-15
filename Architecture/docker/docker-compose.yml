@@ -1980,6 +1980,9 @@ services:
       KAFKA_BROKERS: redpanda:9092
       KAFKA_TOPIC: dating-events
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Lane D2: birth date and first name come from identity-profile's
+      # internal read (/internal/v1/profiles/users/:id/identity), not the client.
+      IDENTITY_PROFILE_SERVICE_URL: http://identity-profile:8098
     ports:
       - "8112:8112"
     depends_on:

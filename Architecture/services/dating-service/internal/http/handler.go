@@ -264,6 +264,13 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "AGE_REQUIRED", err.Error(), nil)
 		return
 	}
+	// Lane D2: identity could not confirm the birth date for a profile that
+	// has none locked yet, so the client's value is not trusted instead.
+	if errors.Is(err, service.ErrIdentityUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+			"identity service is unavailable; try again shortly", nil)
+		return
+	}
 	// Lane D2: the status machine refused the edge (e.g. pausing a deleted
 	// profile, reinstating one that is not held). Stable code for clients.
 	if errors.Is(err, store.ErrProfileTransitionNotAllowed) {

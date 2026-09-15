@@ -41,22 +41,36 @@ func ageYears(birthDate time.Time, at time.Time) int {
 	return store.AgeOn(birthDate, at)
 }
 
-// IdentityBasics is what identity holds for a user from registration.
+// ErrIdentityUnavailable is returned by UpsertProfile when identity cannot be
+// read (timeout, 5xx, misconfiguration) and the profile has no birth date
+// locked yet, so there is nothing trustworthy to gate on. Maps to 503
+// IDENTITY_UNAVAILABLE.
+var ErrIdentityUnavailable = errors.New("identity service unavailable: birth date cannot be confirmed")
+
+// Identity dob_source values on the wire (identity-profile's internal read).
+const (
+	IdentityDOBSourceRegistration = "registration"
+	IdentityDOBSourceProfile      = "profile"
+	IdentityDOBSourceNone         = "none"
+)
+
+// IdentityBasics is what identity holds for a user.
 type IdentityBasics struct {
+	// Found is false when identity answered 404: unknown user, or an account
+	// that is deactivated, pending deletion, purged or hidden.
+	Found     bool
 	FirstName string
-	BirthDate time.Time
+	// BirthDate is nil when DOBSource is "none".
+	BirthDate *time.Time
+	// DOBSource: registration | profile | none.
+	DOBSource string
 }
 
-// IdentityBasicsClient reads a user's registration birth date and first
-// name service-to-service.
-//
-// Lane D2: no identity route returns DOB to a service caller today, so no
-// production implementation is wired. Without one, UpsertProfile runs the
-// interim rule: the client birth date is accepted once, then locked
-// (dob_source=client), and the client first name is recorded as
-// first_name_source=client. Wiring a client makes identity authoritative:
-// its birth date and first name replace client values and the client
-// birth_date field has no effect.
+// IdentityBasicsClient reads a user's birth date and first name
+// service-to-service. HTTPIdentityClient (identity_client.go) is the
+// production implementation, wired in main when IDENTITY_PROFILE_SERVICE_URL
+// is set. Implementations return Found=false (not an error) for "no
+// identity", wrap ErrIdentityTransient / ErrIdentityMisconfigured otherwise.
 type IdentityBasicsClient interface {
 	GetIdentityBasics(ctx context.Context, userID uuid.UUID) (*IdentityBasics, error)
 }
@@ -154,13 +168,28 @@ func (s *Service) GetProfile(ctx context.Context, userID uuid.UUID) (*store.Prof
 
 // UpsertProfile creates or updates the caller's profile.
 //
-// Birth date and first name (lane D2):
-//   - identity client wired: identity's values are stored (dob_source /
-//     first_name_source = identity) and the client birth_date has no effect;
-//     an under-18 identity birth date is refused.
-//   - interim (no client): the first client birth_date is stored as
-//     dob_source=client and locked — later values are ignored. The client
-//     first_name is stored as first_name_source=client.
+// Birth date and first name (lane D2), per identity's answer:
+//
+//	identity dob_source registration / profile
+//	    identity's birth date is authoritative: stored as
+//	    identity_registration / identity_profile and it replaces any other
+//	    value on file (a locked client one included); a client birth_date
+//	    has no effect.
+//	identity dob_source none, or 404
+//	    interim rule: the first client birth_date is stored as
+//	    dob_source=client and locked; later values are ignored.
+//	identity unreachable / misconfigured
+//	    no birth date on file yet → ErrIdentityUnavailable (503), the client
+//	    value is not trusted; a birth date already on file → proceed on it.
+//
+// First name: identity's non-empty first_name is stored as
+// first_name_source=identity; otherwise the client first_name as client,
+// which never replaces an identity name.
+//
+// Under 18 by the effective birth date is ErrUnderage. When identity's birth
+// date replaces one on an existing profile and is under 18, the new birth
+// date is recorded and the profile restricted (system actor) before
+// ErrUnderage is returned; a new profile is refused with nothing written.
 //
 // After the write the profile is walked forward through every onboarding
 // step its evidence supports (advanceOnboarding).
@@ -178,21 +207,22 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 		prior = nil
 	}
 
-	var identity *IdentityBasics
-	if s.identityClient != nil {
-		identity, err = s.identityClient.GetIdentityBasics(ctx, userID)
-		if err != nil {
-			return nil, fmt.Errorf("identity basics: %w", err)
-		}
-		if identity == nil || identity.BirthDate.IsZero() {
-			return nil, ErrUnderage
-		}
+	dobLocked := prior != nil && prior.BirthDate != nil
+	identity, err := s.identityBasicsFor(ctx, userID, dobLocked)
+	if err != nil {
+		return nil, err
 	}
 
 	// P0-5: the profile needs an 18+ birth date. Refused before anything
 	// is written.
 	dob, dobSource := effectiveBirthDate(prior, p.BirthDate, identity)
-	if dob == nil || ageYears(*dob, time.Now()) < MinDatingAgeYears {
+	if dob == nil {
+		return nil, ErrUnderage
+	}
+	if ageYears(*dob, time.Now()) < MinDatingAgeYears {
+		if existed && store.IsIdentityBirthDateSource(dobSource) {
+			return nil, s.restrictUnderageProfile(ctx, userID, *dob, dobSource)
+		}
 		return nil, ErrUnderage
 	}
 
@@ -204,7 +234,7 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 			return nil, err
 		}
 	}
-	if identity != nil && strings.TrimSpace(identity.FirstName) != "" {
+	if identity != nil && identity.Found && strings.TrimSpace(identity.FirstName) != "" {
 		if _, err := s.store.SetProfileFirstName(ctx, userID, strings.TrimSpace(identity.FirstName), store.BasicsSourceIdentity); err != nil {
 			return nil, err
 		}
@@ -235,13 +265,59 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 	return out, nil
 }
 
+// identityBasicsFor asks identity for the user's basics. It returns nil (no
+// identity answer to apply) when no client is wired or identity answered 404.
+// A failed read is ErrIdentityUnavailable while no birth date is locked on the
+// profile; once one is, the save proceeds on it.
+func (s *Service) identityBasicsFor(ctx context.Context, userID uuid.UUID, dobLocked bool) (*IdentityBasics, error) {
+	if s.identityClient == nil {
+		return nil, nil
+	}
+	b, err := s.identityClient.GetIdentityBasics(ctx, userID)
+	if err != nil {
+		if dobLocked {
+			slog.Warn("dating profile: identity read failed; keeping the birth date on file",
+				"user_id", userID, "error", err)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: %v", ErrIdentityUnavailable, err)
+	}
+	if b == nil || !b.Found {
+		return nil, nil
+	}
+	return b, nil
+}
+
+// restrictUnderageProfile records identity's under-18 birth date on an
+// existing profile and restricts it through the status writer (system actor;
+// a no-op on a suspended or restricted row). Returns ErrUnderage, or the
+// write error.
+func (s *Service) restrictUnderageProfile(ctx context.Context, userID uuid.UUID, dob time.Time, source string) error {
+	if _, err := s.store.SetProfileBirthDate(ctx, userID, dob, source); err != nil {
+		return err
+	}
+	if _, err := s.store.TransitionProfileStatus(ctx, userID, store.ProfileEventRestrict, store.ProfileActorSystem); err != nil &&
+		!errors.Is(err, store.ErrProfileTransitionNotAllowed) && !errors.Is(err, store.ErrProfileNotFound) {
+		return err
+	}
+	slog.Warn("dating profile: identity birth date is under 18; profile restricted", "user_id", userID)
+	s.InvalidatePulseCache(ctx, userID)
+	s.InvalidateDecksForCandidate(ctx, userID)
+	return ErrUnderage
+}
+
 // effectiveBirthDate picks the birth date to gate on and where to write it
 // from. An empty source means nothing is written (a birth date already on
-// file is locked).
+// file is locked). identity is nil when there is no identity answer.
 func effectiveBirthDate(prior *store.Profile, client *time.Time, identity *IdentityBasics) (*time.Time, string) {
-	if identity != nil {
-		d := identity.BirthDate
-		return &d, store.BasicsSourceIdentity
+	if identity != nil && identity.Found && identity.BirthDate != nil {
+		d := *identity.BirthDate
+		switch identity.DOBSource {
+		case IdentityDOBSourceRegistration:
+			return &d, store.BasicsSourceIdentityRegistration
+		case IdentityDOBSourceProfile:
+			return &d, store.BasicsSourceIdentityProfile
+		}
 	}
 	if prior != nil && prior.BirthDate != nil {
 		return prior.BirthDate, ""

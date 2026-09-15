@@ -66,8 +66,9 @@ type Profile struct {
 	// paused, held (pending_review / restricted / suspended) or deleted.
 	// Written only by TransitionProfileStatus.
 	PriorStatus *string `json:"prior_status,omitempty"`
-	// DOBSource records where BirthDate came from: "identity" or the
-	// interim "client" (locked after first set).
+	// DOBSource records where BirthDate came from: "identity_registration",
+	// "identity_profile", "identity" (origin unrecorded) or the interim
+	// "client" (locked after first set). See BasicsSource* in profiles.go.
 	DOBSource       *string `json:"dob_source,omitempty"`
 	FirstNameSource *string `json:"first_name_source,omitempty"`
 }

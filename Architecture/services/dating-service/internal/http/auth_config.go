@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/atpost/shared/servicetoken"
@@ -39,6 +40,35 @@ func ResolveInternalKey(getenv func(string) string) (key, warning string, err er
 	}
 	return "", "dating-service: INTERNAL_SERVICE_KEY not set (ENV=" + strings.TrimSpace(env) + ") — " +
 		"/v1/dating routes are not key-gated and the internal family admits service tokens only. Local/dev only.", nil
+}
+
+// ErrIdentityProfileURLRequired is returned by ResolveIdentityProfileURL when
+// the service would otherwise boot trusting the client's birth date outside
+// local/dev.
+var ErrIdentityProfileURLRequired = errors.New("IDENTITY_PROFILE_SERVICE_URL is required unless ENV is local or dev: " +
+	"without it dating takes birth date and first name from the dating client")
+
+// ResolveIdentityProfileURL applies the D1-style boot rule to
+// IDENTITY_PROFILE_SERVICE_URL (identity-profile's internal identity read).
+// It returns the base URL (trailing slash trimmed); a non-empty warning when
+// the service may boot without one (local/dev only, the interim client rule
+// applies); or an error, on which main refuses to start. A set but malformed
+// URL is refused in every environment.
+func ResolveIdentityProfileURL(getenv func(string) string) (baseURL, warning string, err error) {
+	raw := strings.TrimSpace(getenv("IDENTITY_PROFILE_SERVICE_URL"))
+	if raw != "" {
+		u, perr := url.Parse(raw)
+		if perr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return "", "", fmt.Errorf("IDENTITY_PROFILE_SERVICE_URL must be an absolute http(s) URL")
+		}
+		return strings.TrimRight(raw, "/"), "", nil
+	}
+	env := getenv("ENV")
+	if !IsLocalEnv(env) {
+		return "", "", fmt.Errorf("%w (ENV=%q)", ErrIdentityProfileURLRequired, env)
+	}
+	return "", "dating-service: IDENTITY_PROFILE_SERVICE_URL not set (ENV=" + strings.TrimSpace(env) + ") — " +
+		"birth date and first name come from the dating client under the interim lock-once rule. Local/dev only.", nil
 }
 
 // ServiceCallersFromEnv builds the service-token verifier for the

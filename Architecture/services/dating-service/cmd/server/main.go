@@ -43,6 +43,17 @@ func main() {
 	if keyWarning != "" {
 		slog.Warn(keyWarning)
 	}
+	// Lane D2: birth date + first name come from identity-profile. Outside
+	// local/dev the URL is required; in local/dev an empty URL keeps the
+	// interim client lock-once rule.
+	identityProfileURL, identityWarning, err := datinghttp.ResolveIdentityProfileURL(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if identityWarning != "" {
+		slog.Warn(identityWarning)
+	}
 	// Service-token callers of /v1/dating/internal (SERVICE_CALLERS). Absent
 	// → the legacy internal key is the only service credential there.
 	serviceCallers, err := datinghttp.ServiceCallersFromEnv(os.Getenv)
@@ -129,6 +140,15 @@ func main() {
 		os.Getenv("COMMUNITY_SERVICE_URL"),
 	)
 	datingSvc.SetGraphProvider(graphProvider)
+
+	if identityProfileURL != "" {
+		if internalKey == "" {
+			slog.Warn("dating-service: IDENTITY_PROFILE_SERVICE_URL is set but INTERNAL_SERVICE_KEY is not — " +
+				"identity will refuse every read and new profiles will get 503 IDENTITY_UNAVAILABLE")
+		}
+		datingSvc.SetIdentityBasicsClient(service.NewHTTPIdentityClient(identityProfileURL, internalKey, slog.Default()))
+		slog.Info("identity-profile client initialized", "url", identityProfileURL)
+	}
 
 	producer := datingevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
 	datingSvc.SetProducer(producer)

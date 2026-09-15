@@ -280,6 +280,11 @@ func TestSetProfileBirthDate_ClientLocksIdentityWins(t *testing.T) {
 		{"second client value is ignored", 1990, BasicsSourceClient, false, 1995, BasicsSourceClient},
 		{"identity replaces client", 1992, BasicsSourceIdentity, true, 1992, BasicsSourceIdentity},
 		{"client never replaces identity", 1980, BasicsSourceClient, false, 1992, BasicsSourceIdentity},
+		{"identity_profile replaces identity", 1993, BasicsSourceIdentityProfile, true, 1993, BasicsSourceIdentityProfile},
+		{"client never replaces identity_profile", 1970, BasicsSourceClient, false, 1993, BasicsSourceIdentityProfile},
+		{"identity_registration replaces identity_profile", 1994, BasicsSourceIdentityRegistration, true, 1994, BasicsSourceIdentityRegistration},
+		{"same identity_registration value is a no-op", 1994, BasicsSourceIdentityRegistration, false, 1994, BasicsSourceIdentityRegistration},
+		{"client never replaces identity_registration", 1971, BasicsSourceClient, false, 1994, BasicsSourceIdentityRegistration},
 	}
 	for _, st := range steps {
 		changed, err := s.SetProfileBirthDate(ctx, user, d(st.year), st.source)

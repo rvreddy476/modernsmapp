@@ -39,6 +39,7 @@ env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  IDENTITY_PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
 ingress:
   enabled: false
 pdb:

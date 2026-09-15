@@ -140,7 +140,7 @@ var profileEventActors = map[ProfileEvent][]ProfileActor{
 	ProfileEventPause:          {ProfileActorUser, ProfileActorLifecycle},
 	ProfileEventUnpause:        {ProfileActorUser, ProfileActorLifecycle},
 	ProfileEventReview:         {ProfileActorAdmin},
-	ProfileEventRestrict:       {ProfileActorAdmin},
+	ProfileEventRestrict:       {ProfileActorAdmin, ProfileActorSystem}, // system: under-18 identity birth date (service.UpsertProfile)
 	ProfileEventSuspend:        {ProfileActorAdmin},
 	ProfileEventReinstate:      {ProfileActorAdmin},
 	ProfileEventDelete:         {ProfileActorUser, ProfileActorSystem, ProfileActorLifecycle},
@@ -180,6 +180,9 @@ func OnboardingEventFrom(step string) (ProfileEvent, bool) {
 //	paused → remembered step                           user | lifecycle
 //	held + pause/unpause → same hold, flag only        user | lifecycle
 //	any non-deleted → pending_review|restricted|suspended  admin
+//	any non-deleted → restricted                       system (under-18 identity
+//	                                                   birth date); a no-op on a
+//	                                                   suspended or restricted row
 //	held → remembered step (or paused if flagged)      admin
 //	any → deleted                                      user | system | lifecycle
 func NextProfileStatus(cur ProfileStatusState, ev ProfileEvent, actor ProfileActor) (ProfileStatusState, error) {
@@ -248,6 +251,12 @@ func NextProfileStatus(cur ProfileStatusState, ev ProfileEvent, actor ProfileAct
 		return refuse()
 
 	case ProfileEventReview, ProfileEventRestrict, ProfileEventSuspend:
+		if actor == ProfileActorSystem &&
+			(cur.Status == ProfileStatusSuspended || cur.Status == ProfileStatusRestricted) {
+			// The system's age restriction never softens a suspension a
+			// moderator imposed, and is idempotent on a restricted row.
+			return cur, nil
+		}
 		if IsOnboardingStatus(cur.Status) || cur.Status == ProfileStatusPaused || isHoldStatus(cur.Status) {
 			return ProfileStatusState{Status: holdForEvent[ev], Prior: base, Paused: cur.Paused}, nil
 		}

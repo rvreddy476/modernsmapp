@@ -296,3 +296,36 @@ func Example_profileTransition() {
 	fmt.Println(st)
 	// Output: suspended<active
 }
+
+// TestProfileRestrict_SystemActor: the system may restrict (under-18 identity
+// birth date) but never softens a suspension, is idempotent on a restricted
+// row, and cannot touch a deleted one. Admin behaviour is unchanged.
+func TestProfileRestrict_SystemActor(t *testing.T) {
+	cases := []struct {
+		from  string
+		actor ProfileActor
+		want  string
+	}{
+		{"active", ProfileActorSystem, "restricted<active"},
+		{"draft", ProfileActorSystem, "restricted<draft"},
+		{"paused<active+p", ProfileActorSystem, "restricted<active+p"},
+		{"pending_review<active", ProfileActorSystem, "restricted<active"},
+		{"suspended<active", ProfileActorSystem, "suspended<active"},
+		{"restricted<active", ProfileActorSystem, "restricted<active"},
+		{"suspended<active", ProfileActorAdmin, "restricted<active"},
+	}
+	for _, tc := range cases {
+		got, err := NextProfileStatus(parseState(tc.from), ProfileEventRestrict, tc.actor)
+		if err != nil || got.String() != tc.want {
+			t.Errorf("restrict by %s from %s = %s, %v; want %s", tc.actor, tc.from, got, err, tc.want)
+		}
+	}
+	if _, err := NextProfileStatus(parseState("deleted<active+p"), ProfileEventRestrict, ProfileActorSystem); !errors.Is(err, ErrProfileTransitionNotAllowed) {
+		t.Errorf("restrict by system from deleted: err=%v, want ErrProfileTransitionNotAllowed", err)
+	}
+	for _, actor := range []ProfileActor{ProfileActorUser, ProfileActorLifecycle} {
+		if _, err := NextProfileStatus(parseState("active"), ProfileEventRestrict, actor); !errors.Is(err, ErrProfileTransitionActor) {
+			t.Errorf("restrict by %s: err=%v, want ErrProfileTransitionActor", actor, err)
+		}
+	}
+}

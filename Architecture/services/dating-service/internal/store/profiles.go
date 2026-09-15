@@ -213,33 +213,55 @@ func profileAssignments(p UpsertProfileParams) ([]string, []any) {
 }
 
 // Where a profile's birth date / first name came from.
+//
+// first_name_source is "identity" or "client". dob_source is one of the
+// identity sources or "client":
+//   - identity_registration: identity's registration date of birth.
+//   - identity_profile: identity had no registration date of birth and served
+//     the one on the identity profile (founder decision, lane D2 wiring).
+//   - identity: identity-sourced, origin not recorded (test seeds and any
+//     value written before the registration/profile split).
+//   - client: the interim rule, accepted once from the dating client, then
+//     locked.
 const (
-	BasicsSourceIdentity = "identity"
-	BasicsSourceClient   = "client"
+	BasicsSourceIdentity             = "identity"
+	BasicsSourceIdentityRegistration = "identity_registration"
+	BasicsSourceIdentityProfile      = "identity_profile"
+	BasicsSourceClient               = "client"
 )
 
+// IsIdentityBirthDateSource reports whether source is one of the identity
+// birth date sources (which always replace a client value).
+func IsIdentityBirthDateSource(source string) bool {
+	switch source {
+	case BasicsSourceIdentity, BasicsSourceIdentityRegistration, BasicsSourceIdentityProfile:
+		return true
+	}
+	return false
+}
+
 // SetProfileBirthDate records the birth date. An identity-sourced value
-// always wins (replacing a client value). A client value is written only
-// while no birth date is on file, so it locks after first set. Reports
-// whether the row changed.
+// always wins (replacing a client value or an older identity value). A client
+// value is written only while no birth date is on file, so it locks after
+// first set. Reports whether the row changed.
 func (s *Store) SetProfileBirthDate(ctx context.Context, userID uuid.UUID, dob time.Time, source string) (bool, error) {
 	var stmt string
-	switch source {
-	case BasicsSourceIdentity:
+	switch {
+	case IsIdentityBirthDateSource(source):
 		stmt = `
         UPDATE dating_profiles
-        SET birth_date = $2::date, dob_source = 'identity', updated_at = now()
+        SET birth_date = $2::date, dob_source = $3::text, updated_at = now()
         WHERE user_id = $1 AND deleted_at IS NULL
-          AND (birth_date IS DISTINCT FROM $2::date OR dob_source IS DISTINCT FROM 'identity')`
-	case BasicsSourceClient:
+          AND (birth_date IS DISTINCT FROM $2::date OR dob_source IS DISTINCT FROM $3::text)`
+	case source == BasicsSourceClient:
 		stmt = `
         UPDATE dating_profiles
-        SET birth_date = $2::date, dob_source = 'client', updated_at = now()
+        SET birth_date = $2::date, dob_source = $3::text, updated_at = now()
         WHERE user_id = $1 AND deleted_at IS NULL AND birth_date IS NULL`
 	default:
 		return false, fmt.Errorf("invalid: unknown birth date source %q", source)
 	}
-	tag, err := s.db.Exec(ctx, stmt, userID, dob)
+	tag, err := s.db.Exec(ctx, stmt, userID, dob, source)
 	if err != nil {
 		return false, fmt.Errorf("set birth date: %w", err)
 	}

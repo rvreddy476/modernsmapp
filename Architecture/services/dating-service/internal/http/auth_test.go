@@ -354,3 +354,35 @@ func TestServiceCallersFromEnv_RefusesIncompleteCallers(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveIdentityProfileURL_BootRule: outside local/dev the service
+// refuses to boot without IDENTITY_PROFILE_SERVICE_URL; local/dev boots with a
+// warning (interim client rule); a malformed URL is refused everywhere.
+func TestResolveIdentityProfileURL_BootRule(t *testing.T) {
+	envOf := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	for _, env := range []string{"", "prod", "production", "staging", "qa"} {
+		_, _, err := ResolveIdentityProfileURL(envOf(map[string]string{"ENV": env}))
+		if !errors.Is(err, ErrIdentityProfileURLRequired) {
+			t.Errorf("ENV=%q without URL: err=%v, want ErrIdentityProfileURLRequired (boot refused)", env, err)
+		}
+	}
+	for _, env := range []string{"local", "dev", "development", "DEV"} {
+		u, warning, err := ResolveIdentityProfileURL(envOf(map[string]string{"ENV": env}))
+		if err != nil || u != "" || warning == "" {
+			t.Errorf("ENV=%q without URL: url=%q warning=%q err=%v, want boot allowed with a warning", env, u, warning, err)
+		}
+	}
+	u, warning, err := ResolveIdentityProfileURL(envOf(map[string]string{
+		"ENV": "prod", "IDENTITY_PROFILE_SERVICE_URL": " http://identity-profile-service.atpost.svc.cluster.local:8098/ ",
+	}))
+	if err != nil || warning != "" || u != "http://identity-profile-service.atpost.svc.cluster.local:8098" {
+		t.Errorf("prod with URL: url=%q warning=%q err=%v", u, warning, err)
+	}
+	for _, bad := range []string{"identity-profile:8098", "ftp://identity-profile:8098", "http://", "/internal"} {
+		for _, env := range []string{"dev", "prod"} {
+			if _, _, err := ResolveIdentityProfileURL(envOf(map[string]string{"ENV": env, "IDENTITY_PROFILE_SERVICE_URL": bad})); err == nil {
+				t.Errorf("ENV=%s URL=%q: want a configuration error", env, bad)
+			}
+		}
+	}
+}
