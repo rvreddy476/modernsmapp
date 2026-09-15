@@ -133,10 +133,10 @@ Script: `Architecture/services/dating-service/scripts/dev-seed-dating.sh`. It re
 
 Know before you seed:
 - **Pushes reach the pilot phones.** Every new spark and match emits the normal events, so they notify call_a and call_b.
-- **Matches have no chat conversation right now.** chat message-service answers `401 Missing bearer token` to dating-service's `POST /v1/chat/conversations/dating-match`. Its JWT middleware is installed on the whole router (`chat-service/services/message-service/cmd/server/main.go`), so it refuses the call before the handler's internal-key check runs. Every match stays `matched` with no `conversation_id`, and dating's saga reconciler retries every minute, logging `match saga retry failed`. This is a chat-service fix; the seeder cannot work around it.
+- **Chat conversations are created by dating-service** through the service-only route `POST /internal/v1/chat/conversations/dating-match` (internal key, refused with any user identity). A match without a `conversation_id` is retried every minute by dating's saga reconciler, so a fresh seed gets its conversations within about a minute.
 - A match expires after 7 days unless someone sends the first message.
 - Today's deck holds at most **7 cards**: the top scores, with at most 3 per intent and 2 per community. Nearer profiles usually fill it, so `km_10_25` and `gt_25_km` may not appear even though they are seeded.
-- **Mock selfie on dev.** Photo prepare re-encodes the image, which strips the mock face marker. The mock liveness check then answers `NO_FACE` for *any* photo attached through the app. The seeder writes its marked placeholder back; a phone walkthrough on dev will fail the selfie until that is fixed. Use selfie review (3.2) to pass a tester by hand.
+- **Mock selfie on dev.** The mock treats an unmarked photo or video as the uploader's own single face (a video blinks twice), so a real phone photo plus a blink recording passes. Test markers still force `NO_FACE`, `MULTIPLE_FACES`, a different face or `NOT_ENOUGH_BLINKS`, and photo prepare carries the marker through its re-encode.
 - These steps have no service route and write directly, dev only: media rows, MinIO objects, deck-cache drops, and the reset deletes. The script header marks each one.
 
 ---
@@ -386,8 +386,6 @@ Nothing beyond the internal pilot opens until every **blocking** row is done.
 | 15 | Grievance officer details for the IT Rules surface | founder | before public launch |
 
 Engineering gaps found so far (not founder actions, tracked here so launch does not miss them):
-- chat message-service refuses dating's conversation call (`401 Missing bearer token`), so no match gets a chat (section 2).
-- Mock selfie fails for every app-attached photo on dev: prepare strips the mock marker (section 2).
 - No admin route to hold a profile without a report (section 5). Moderators cannot view the selfie video (3.2).
 - trust-safety's purge deletes grievances filed by the purged user, which undoes retention. Pre-D8 reports have no grievance backfill.
 - Staging/prod: count duplicate open matches before the first deploy (`scripts/count-duplicate-matches.sql`; `DATING_DEDUPE_OPEN_MATCHES` for one deploy). Count legacy photos whose media is not the owner's (the recheck rejects them).

@@ -34,7 +34,7 @@ type MessageServiceClient interface {
 }
 
 // CreateConversationRequest is the body sent to chat-service's
-// /v1/chat/conversations/dating-match endpoint. The participants list
+// /internal/v1/chat/conversations/dating-match endpoint. The participants list
 // is the matched pair; ContextID carries the dating match_id so the
 // chat side can be idempotent on retries.
 type CreateConversationRequest struct {
@@ -91,7 +91,9 @@ func (c *httpMessageClient) CreateConversation(ctx context.Context, body CreateC
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-	url := c.baseURL + "/v1/chat/conversations/dating-match"
+	// Service-only chat route: outside the gateway's /v1/chat prefix, and
+	// refused by chat if any user identity header is present.
+	url := c.baseURL + "/internal/v1/chat/conversations/dating-match"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
 	if err != nil {
 		return nil, err

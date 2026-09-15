@@ -125,6 +125,10 @@ func (s *ConversationStore) MarkConversationAsRequest(ctx context.Context, conve
 // match_id via the partial unique index — concurrent saga retries
 // receive the same conversation_id. P0-3 in
 // dating/PRODUCTION_GAP_ANALYSIS.md.
+// ErrDatingMatchPairMismatch is returned when a match_id already has a
+// conversation whose members are not the requested pair.
+var ErrDatingMatchPairMismatch = errors.New("dating match conversation belongs to a different pair")
+
 func (s *ConversationStore) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error) {
 	if userA == userB {
 		return uuid.Nil, false, errors.New("dating-match conversation requires two distinct users")
@@ -150,6 +154,19 @@ func (s *ConversationStore) CreateDatingMatchConversation(ctx context.Context, u
 		WHERE source_app = 'dating' AND match_id = $1
 		LIMIT 1`, matchID).Scan(&conversationID)
 	if err == nil {
+		// Idempotent only for the SAME pair. A member outside the pair means
+		// this match_id already names someone else's conversation; never hand
+		// it out. (A subset is fine: purge deletes a user's member rows.)
+		var foreignMember bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM chat.conversation_members
+			               WHERE conversation_id = $1 AND user_id NOT IN ($2, $3))`,
+			conversationID, userA, userB).Scan(&foreignMember); err != nil {
+			return uuid.Nil, false, err
+		}
+		if foreignMember {
+			return uuid.Nil, false, ErrDatingMatchPairMismatch
+		}
 		return conversationID, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
