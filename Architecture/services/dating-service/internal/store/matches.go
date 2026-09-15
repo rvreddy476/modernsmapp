@@ -676,14 +676,15 @@ func (s *Store) RecordFirstMessage(ctx context.Context, matchID uuid.UUID, at ti
 	return nil
 }
 
-// IsPremium reports whether the user holds a non-expired premium row.
+// IsPremium reports whether the user holds an unexpired pass. Lane P2: a NULL
+// expires_at is never "forever" (the column is NOT NULL and this compares it).
 func (s *Store) IsPremium(ctx context.Context, userID uuid.UUID) (bool, error) {
 	var ok bool
 	err := s.db.QueryRow(ctx, `
         SELECT EXISTS (
             SELECT 1 FROM dating_premium_subscriptions
             WHERE user_id = $1
-              AND (expires_at IS NULL OR expires_at > now())
+              AND expires_at > now()
         )`, userID).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("is premium: %w", err)

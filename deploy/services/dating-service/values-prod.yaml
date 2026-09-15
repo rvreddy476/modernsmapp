@@ -46,6 +46,20 @@ externalSecret:
     # unreadable. Rotate by appending ",v2:<key>".
     - { secretKey: DATING_PII_KEYS, remoteRef: dating_pii_keys }
     - { secretKey: DATING_PII_LOOKUP_SALT, remoteRef: dating_pii_lookup_salt }
+    # Lane P2: dating-service's payments-service token (Premium passes and
+    # Boost) is NOT enabled yet. Without it the purchase route answers 503
+    # PREMIUM_UNAVAILABLE; boot is not refused. To enable, in this order:
+    #   1. the founder generates the ed25519 key: the private half (base64
+    #      32-byte seed) goes to dating_service_token_key and the kid to
+    #      dating_service_token_kid in this secret store; the public half and
+    #      the same kid go to payments-service (caller_dating_pubkey /
+    #      caller_dating_kid);
+    #   2. enable payments-service first (its values file: uncomment its two
+    #      lines, then add dating-service to its SERVICE_CALLERS);
+    #   3. uncomment the two lines below.
+    # Enabling here before step 1 fails the secret sync.
+    # - { secretKey: DATING_SERVICE_TOKEN_KEY, remoteRef: dating_service_token_key }
+    # - { secretKey: DATING_SERVICE_TOKEN_KID, remoteRef: dating_service_token_kid }
 
 env:
   ENV: prod

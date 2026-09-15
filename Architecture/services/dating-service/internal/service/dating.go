@@ -12,7 +12,6 @@ import (
 	"github.com/atpost/dating-service/internal/digilocker"
 	datingevents "github.com/atpost/dating-service/internal/events"
 	"github.com/atpost/dating-service/internal/matcher"
-	"github.com/atpost/dating-service/internal/payments"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/httpclient"
 	"github.com/redis/go-redis/v9"
@@ -41,7 +40,10 @@ type Service struct {
 	flagsClient          FeatureFlagsClient
 	moderationLLM        ModerationLLMClient
 	// Sprint 5 — premium + DPDP wiring.
-	razorpay             payments.Client
+	// Lane P2 — payments-service client for premium purchases (nil: 503
+	// PREMIUM_UNAVAILABLE) and whether ENV is local/dev.
+	premiumPayments PremiumPaymentsClient
+	premiumLocalEnv bool
 	consentPolicyVersion string
 	dataExportPublisher  DataExportPublisher
 	notificationClient   NotificationClient

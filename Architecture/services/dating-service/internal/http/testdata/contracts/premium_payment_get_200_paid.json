@@ -1,0 +1,11 @@
+{
+  "data": {
+    "purchase_id": "<purchase>",
+    "product": "boost",
+    "status": "paid",
+    "amount_minor": 4900,
+    "currency": "INR",
+    "refund_status": null,
+    "updated_at": "<timestamp>"
+  }
+}

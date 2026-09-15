@@ -74,7 +74,6 @@ func newDataExportSvcForTest(t *testing.T) (*Service, *store.Store, func()) {
 		t.Fatalf("connect: %v", err)
 	}
 	st := store.New(pool)
-	_ = st.SeedPremiumPlans(context.Background())
 	return New(st, nil), st, func() { pool.Close() }
 }
 

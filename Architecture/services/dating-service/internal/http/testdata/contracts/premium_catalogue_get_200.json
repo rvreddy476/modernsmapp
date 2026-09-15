@@ -1,0 +1,49 @@
+{
+  "data": {
+    "products": [
+      {
+        "id": "pass_30d",
+        "kind": "pass",
+        "name": "Premium pass, 30 days",
+        "amount_minor": 39900,
+        "currency": "INR",
+        "duration_days": 30,
+        "features": [
+          "match_extend",
+          "daily_boost"
+        ]
+      },
+      {
+        "id": "pass_90d",
+        "kind": "pass",
+        "name": "Premium pass, 90 days",
+        "amount_minor": 99900,
+        "currency": "INR",
+        "duration_days": 90,
+        "features": [
+          "match_extend",
+          "daily_boost"
+        ]
+      },
+      {
+        "id": "pass_365d",
+        "kind": "pass",
+        "name": "Premium pass, 365 days",
+        "amount_minor": 249900,
+        "currency": "INR",
+        "duration_days": 365,
+        "features": [
+          "match_extend",
+          "daily_boost"
+        ]
+      },
+      {
+        "id": "boost",
+        "kind": "boost",
+        "name": "Boost",
+        "amount_minor": 4900,
+        "currency": "INR"
+      }
+    ]
+  }
+}

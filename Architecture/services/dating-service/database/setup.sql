@@ -1332,3 +1332,90 @@ CREATE INDEX IF NOT EXISTS idx_dating_device_fp_ip_lookup_recent
 ALTER TABLE dating_data_exports ADD COLUMN IF NOT EXISTS payload_sealed BYTEA;
 CREATE INDEX IF NOT EXISTS idx_dating_consent_log_user_type
     ON dating_consent_log(user_id, consent_type, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Lane P2 — Premium passes and Boost through payments-service
+-- ---------------------------------------------------------------------------
+--
+-- Premium is one-off purchases only: a pass of 30, 90 or 365 days, or one
+-- Boost token (founder decision 2026-09-16; no subscription, no auto-renew).
+-- Prices come from the server-side catalogue (internal/payments/catalogue.go)
+-- and are stored on the purchase; payments-service owns the money.
+--
+-- The Razorpay tables above (dating_premium_plans, dating_payment_intents,
+-- dating_payment_events) are READ-ONLY now: no code writes them except the
+-- purge, which redacts raw payloads (lane D9). The data export still reads
+-- dating_payment_intents.
+--
+-- dating_premium_subscriptions is the pass entitlement, one row per user.
+-- expires_at is NOT NULL: a NULL used to mean "forever" to IsPremium. Rows
+-- that relied on it are closed at their start (inactive) before the
+-- constraint is set; the dev database held none on 2026-09-16.
+UPDATE dating_premium_subscriptions SET expires_at = started_at WHERE expires_at IS NULL;
+ALTER TABLE dating_premium_subscriptions ALTER COLUMN expires_at SET NOT NULL;
+
+-- One row per purchase. The (user_id, idempotency_key) pair makes
+-- POST /v1/dating/premium/purchases idempotent. granted_seconds /
+-- revoked_seconds and boost_granted / boost_revoked record what the purchase
+-- gave and what refunds took back, so a refund revokes exactly this
+-- purchase's time or token. pass_expires_at is the user's pass expiry right
+-- after this purchase was granted.
+CREATE TABLE IF NOT EXISTS dating_premium_purchases (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 UUID NOT NULL,
+    product                 TEXT NOT NULL
+        CHECK (product IN ('pass_30d','pass_90d','pass_365d','boost')),
+    amount_minor            BIGINT NOT NULL CHECK (amount_minor > 0),
+    currency                TEXT NOT NULL DEFAULT 'INR' CHECK (currency = 'INR'),
+    method                  TEXT NOT NULL CHECK (method IN ('upi','card')),
+    idempotency_key         TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+    payment_intent_id       UUID,
+    provider_ref            TEXT,
+    status                  TEXT NOT NULL DEFAULT 'created'
+        CHECK (status IN ('created','confirming','paid','failed','refunded','partially_refunded')),
+    granted_seconds         BIGINT NOT NULL DEFAULT 0 CHECK (granted_seconds >= 0),
+    revoked_seconds         BIGINT NOT NULL DEFAULT 0 CHECK (revoked_seconds >= 0 AND revoked_seconds <= granted_seconds),
+    boost_granted           BOOLEAN NOT NULL DEFAULT false,
+    boost_revoked           BOOLEAN NOT NULL DEFAULT false,
+    refunded_minor          BIGINT NOT NULL DEFAULT 0 CHECK (refunded_minor >= 0 AND refunded_minor <= amount_minor),
+    pass_expires_at         TIMESTAMPTZ,
+    expiry_reminder_sent_at TIMESTAMPTZ,
+    paid_at                 TIMESTAMPTZ,
+    failed_at               TIMESTAMPTZ,
+    refunded_at             TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_premium_purchases_user
+    ON dating_premium_purchases(user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dating_premium_purchases_intent
+    ON dating_premium_purchases(payment_intent_id) WHERE payment_intent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_premium_purchases_reminder_due
+    ON dating_premium_purchases(user_id, paid_at DESC)
+    WHERE product <> 'boost' AND status IN ('paid','partially_refunded');
+
+-- The dedupe half of paymentevents.ApplyOnce: one row per applied payments
+-- event, committed in the same transaction as the entitlement change. outcome
+-- and detail record what the event did (granted, amount_mismatch, …).
+CREATE TABLE IF NOT EXISTS dating_payment_inbox (
+    event_id     TEXT PRIMARY KEY,
+    event_type   TEXT NOT NULL,
+    intent_id    TEXT,
+    purchase_id  UUID NOT NULL,
+    amount_minor BIGINT NOT NULL,
+    currency     TEXT,
+    outcome      TEXT,
+    detail       TEXT,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_payment_inbox_purchase
+    ON dating_payment_inbox(purchase_id, event_type);
+
+-- Purchased Boost tokens. A paid Boost adds one; POST /pulse/boost spends one;
+-- a full refund of an unused token takes it back.
+CREATE TABLE IF NOT EXISTS dating_boost_balances (
+    user_id    UUID PRIMARY KEY,
+    balance    INT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

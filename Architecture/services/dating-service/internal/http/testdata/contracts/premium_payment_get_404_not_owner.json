@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PURCHASE_NOT_FOUND",
+    "message": "purchase not found"
+  },
+  "meta": {}
+}

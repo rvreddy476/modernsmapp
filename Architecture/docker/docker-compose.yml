@@ -2044,6 +2044,17 @@ services:
       # staging or production.
       DATING_PII_KEYS: ${DATING_PII_KEYS:-}
       DATING_PII_LOOKUP_SALT: ${DATING_PII_LOOKUP_SALT:-}
+      # Lane P2: Premium passes and Boost are paid through payments-service
+      # (application dating, reference type dating_premium). The dev-only
+      # Ed25519 seed and kid live in the gitignored .env, and the matching
+      # SERVICE_CALLER_DATING_SERVICE_PUBKEY / KID feed payments-service above,
+      # with dating-service listed in its SERVICE_CALLERS (.env). Without the
+      # key the purchase route answers 503 PREMIUM_UNAVAILABLE; boot is not
+      # refused. ENV is unset here, so an intent with no checkout session (the
+      # stub gateway) is refused.
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      DATING_SERVICE_TOKEN_KEY: ${DATING_SERVICE_TOKEN_KEY:-}
+      DATING_SERVICE_TOKEN_KID: ${DATING_SERVICE_TOKEN_KID:-}
     ports:
       - "8112:8112"
     depends_on:

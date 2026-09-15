@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -203,13 +204,6 @@ func main() {
 	}
 	slog.Info("dating schema ready")
 
-	// Sprint 5: seed the premium plan catalogue. Idempotent.
-	if err := store.New(dbPool).SeedPremiumPlans(ctx); err != nil {
-		slog.Error("failed to seed premium plans", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("premium plans seeded")
-
 	httpMetrics := metrics.NewHTTPMetrics("dating-service")
 	dbMetrics := metrics.NewDBPoolMetrics("dating-service", "postgres")
 	go collectDBPoolStats(ctx, dbPool, dbMetrics)
@@ -365,20 +359,20 @@ func main() {
 		slog.Info("llm moderation mock client initialized (set LLM_MODERATION_URL for production)")
 	}
 
-	// Sprint 5: Razorpay client. Default mode is "mock" for safety;
-	// production must explicitly set RAZORPAY_MODE=http.
-	switch strings.ToLower(env("RAZORPAY_MODE", "mock")) {
-	case "http":
-		datingSvc.SetRazorpayClient(payments.NewHTTPClient(
-			os.Getenv("RAZORPAY_KEY_ID"),
-			os.Getenv("RAZORPAY_KEY_SECRET"),
-			os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
-			os.Getenv("RAZORPAY_BASE_URL"),
-		))
-		slog.Info("razorpay http client initialized")
+	// Lane P2: Premium passes and Boost are paid through payments-service
+	// (application dating, reference type dating_premium) with dating's
+	// service token. Without DATING_SERVICE_TOKEN_KEY / KID the purchase route
+	// answers 503 PREMIUM_UNAVAILABLE; boot is NOT refused. There is no mock:
+	// outside local/dev an intent without a checkout session is refused.
+	premiumClient, err := payments.ClientFromEnv(os.Getenv)
+	switch {
+	case errors.Is(err, payments.ErrNotConfigured):
+		slog.Warn("dating-service: DATING_SERVICE_TOKEN_KEY / DATING_SERVICE_TOKEN_KID unset — premium purchases answer 503 PREMIUM_UNAVAILABLE")
+	case err != nil:
+		slog.Error("dating-service: premium payments client is misconfigured — premium purchases answer 503 PREMIUM_UNAVAILABLE", "error", err)
 	default:
-		datingSvc.SetRazorpayClient(payments.NewMockClient())
-		slog.Info("razorpay mock client initialized (set RAZORPAY_MODE=http for production)")
+		datingSvc.SetPremiumPayments(premiumClient, os.Getenv("ENV"))
+		slog.Info("dating-service: premium payments client initialized", "application", payments.ApplicationID)
 	}
 
 	// Sprint 5: DPDP wiring. Producer doubles as the export-event publisher
@@ -387,6 +381,17 @@ func main() {
 	if v := os.Getenv("DPDP_POLICY_VERSION"); v != "" {
 		datingSvc.SetConsentPolicyVersion(v)
 	}
+
+	// Lane P2: passes and Boost are granted and revoked only by
+	// payments-service events (payment.succeeded / failed / refunded for
+	// application dating, reference type dating_premium), applied once through
+	// dating_payment_inbox in the entitlement's transaction.
+	paymentConsumerCtx, cancelPaymentConsumer := context.WithCancel(ctx)
+	defer cancelPaymentConsumer()
+	paymentConsumer := payments.NewConsumer(datingStore, kafkaBrokers, nil, datingSvc.OnPremiumPaymentApplied)
+	defer paymentConsumer.Close()
+	go paymentConsumer.Start(paymentConsumerCtx)
+	slog.Info("dating-service: premium payment consumer started", "group", payments.ConsumerGroup, "topic", payments.Topic)
 
 	consumer := datingevents.NewConsumerWithDialer(kafkaBrokers, "dating-service-consumer", datingStore, kafkaDialer)
 	consumer.SetLayer2Processor(datingSvc)

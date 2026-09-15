@@ -43,34 +43,32 @@ func boostTokenKey(userID uuid.UUID) string {
 	return "dating:boost:token:" + userID.String()
 }
 
-// grantBoostToken is called from the premium service after a successful
-// boost_49 purchase. Stored in Redis with no TTL so the user can redeem at
-// their leisure.
-func (s *Service) grantBoostToken(ctx context.Context, userID uuid.UUID) error {
-	if s.rdb == nil {
-		// No Redis — degrade gracefully but log loudly: this means the
-		// user paid but cannot redeem until Redis is back.
-		slog.Warn("boost token: redis unavailable; token not granted", "user_id", userID)
-		return fmt.Errorf("redis unavailable")
-	}
-	if err := s.rdb.Set(ctx, boostTokenKey(userID), "1", 0).Err(); err != nil {
-		return fmt.Errorf("set boost token: %w", err)
-	}
-	return nil
-}
-
 // RequestBoost is the entrypoint for POST /v1/dating/pulse/boost.
 //
 // Decision tree:
-//   - User holds a one-shot boost token → consume it, grant boost.
-//   - User is premium AND has not boosted in 24h → grant boost, set rate gate.
+//   - User holds a purchased Boost token (dating_boost_balances, lane P2) →
+//     spend it, grant boost.
+//   - User holds a legacy Redis boost token (Sprint 5 mock purchases) →
+//     consume it, grant boost.
+//   - User holds an active pass AND has not boosted in 24h → grant boost, set
+//     rate gate.
 //   - Otherwise → forbidden.
 func (s *Service) RequestBoost(ctx context.Context, userID uuid.UUID) (*BoostResult, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: user_id required")
 	}
 
-	// 1) one-shot boost token redemption (free users who bought boost_49).
+	// 1) a purchased Boost token, granted only by a payments event.
+	spent, err := s.store.ConsumeBoostToken(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if spent {
+		s.applyBoostToCache(ctx, userID)
+		return &BoostResult{Granted: true, ExtraCount: boostExtraCount, Source: "boost_token"}, nil
+	}
+
+	// 1b) a legacy one-shot Redis token.
 	if s.rdb != nil {
 		consumed, err := s.rdb.Del(ctx, boostTokenKey(userID)).Result()
 		if err != nil && !errors.Is(err, redis.Nil) {

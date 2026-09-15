@@ -185,4 +185,12 @@ func (s *Service) runSweeperOnce(ctx context.Context, cfg SweeperConfig) {
 			"panic_incidents", res.PanicIncidents, "risk_signals", res.RiskSignals,
 			"location_points", res.LocationPointsExpired, "location_shares", res.LocationSharesDeleted)
 	}
+
+	// 9. Lane P2: "your pass expires soon", about 3 days ahead, once per
+	// purchase (claimed with a stamp on the purchase row).
+	if n, err := s.SendPremiumExpiryReminders(ctx, cfg.BatchLimit); err != nil {
+		slog.Warn("sweeper: SendPremiumExpiryReminders failed", "error", err)
+	} else if n > 0 {
+		slog.Info("sweeper: premium expiry reminders sent", "count", n)
+	}
 }

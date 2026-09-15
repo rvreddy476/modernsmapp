@@ -491,12 +491,31 @@ func (p *Producer) PublishModerationLayer2Result(ctx context.Context, payload Mo
 	return p.publish(ctx, events.EventDatingModerationLayer2Result, nil, payload)
 }
 
-// --- Premium events (Sprint 5) ---------------------------------------------
+// --- Premium events (lane P2) -----------------------------------------------
 //
-// PremiumSubscribed fires after a successful Razorpay payment.captured /
-// subscription.charged that we have already deduped via
-// dating_payment_events. PremiumExpired fires when subscription.completed
-// or subscription.halted arrives.
+// PremiumSubscribed fires after the payment consumer committed a pass grant
+// from a payment.succeeded event (plan_id is the product, e.g. pass_30d).
+// PremiumExpired fires when a refund leaves the pass expired.
+// PremiumExpiringSoon fires about 3 days before a pass expires, once per
+// purchase. notification-service has no handler for it yet.
+
+type PremiumExpiringSoonPayload struct {
+	UserID     string    `json:"user_id"`
+	PurchaseID string    `json:"purchase_id"`
+	Product    string    `json:"product"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+func (p *Producer) PublishPremiumExpiringSoon(ctx context.Context, userID, purchaseID uuid.UUID, product string, expiresAt time.Time) error {
+	return p.publish(ctx, events.EventDatingPremiumExpiringSoon, &userID, PremiumExpiringSoonPayload{
+		UserID:     userID.String(),
+		PurchaseID: purchaseID.String(),
+		Product:    product,
+		ExpiresAt:  expiresAt.UTC(),
+		OccurredAt: time.Now(),
+	})
+}
 
 type PremiumSubscribedPayload struct {
 	UserID       string    `json:"user_id"`

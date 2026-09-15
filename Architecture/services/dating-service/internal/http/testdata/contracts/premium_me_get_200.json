@@ -1,0 +1,23 @@
+{
+  "data": {
+    "is_premium": true,
+    "pass": {
+      "product": "pass_30d",
+      "active": true,
+      "expires_at": "<timestamp>"
+    },
+    "entitlements": [
+      {
+        "feature": "match_extend",
+        "active": true,
+        "expires_at": "<timestamp>"
+      },
+      {
+        "feature": "daily_boost",
+        "active": true,
+        "expires_at": "<timestamp>"
+      }
+    ],
+    "boost_balance": 1
+  }
+}

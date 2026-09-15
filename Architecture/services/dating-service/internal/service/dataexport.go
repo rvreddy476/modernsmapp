@@ -143,6 +143,10 @@ type UserDataExport struct {
 	SafetyEvents     []ExportedSafetyEvent       `json:"safety_events,omitempty"`
 	Subscription     *store.PremiumSubscription  `json:"subscription,omitempty"`
 	PaymentHistory   []ExportedPaymentIntent     `json:"payment_history,omitempty"`
+	// Lane P2: premium passes and Boost bought through payments-service, and
+	// the unspent Boost balance.
+	PremiumPurchases []*store.PremiumPurchase `json:"premium_purchases,omitempty"`
+	BoostBalance     *int                     `json:"boost_balance,omitempty"`
 	ConsentLog       []*store.ConsentEntry       `json:"consent_log,omitempty"`
 	// Lane D9 (dataexport_d9.go).
 	ReportsFiled   []ExportedReportFiled   `json:"reports_filed,omitempty"`
@@ -330,6 +334,13 @@ func (s *Service) BuildExportPayload(ctx context.Context, userID uuid.UUID) ([]b
 				Status: p.Status, Source: p.Source, CreatedAt: p.CreatedAt, PaidAt: p.PaidAt,
 			})
 		}
+	}
+	if purchases, err := s.store.ListPremiumPurchasesForUser(ctx, userID); err == nil {
+		out.PremiumPurchases = purchases
+	}
+	if ent, err := s.store.GetPremiumEntitlement(ctx, userID); err == nil && ent.BoostBalance > 0 {
+		balance := ent.BoostBalance
+		out.BoostBalance = &balance
 	}
 	if consent, err := s.store.ListConsentForUser(ctx, userID); err == nil {
 		out.ConsentLog = consent

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PREMIUM_UNAVAILABLE",
+    "message": "premium purchases are unavailable right now"
+  },
+  "meta": {}
+}

@@ -689,6 +689,15 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 	if err := exec(`DELETE FROM dating_premium_subscriptions WHERE user_id = $1`, userID); err != nil {
 		return nil, err
 	}
+	// Lane P2: premium purchases and the Boost balance go with the account.
+	// payments-service keeps the financial record; the dating_payment_inbox
+	// rows name only a purchase id and stay as the dedupe log.
+	if err := exec(`DELETE FROM dating_premium_purchases WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
+	if err := exec(`DELETE FROM dating_boost_balances WHERE user_id = $1`, userID); err != nil {
+		return nil, err
+	}
 
 	// 8) Consent log + completed exports — keep audit row count for the
 	//    DPDP regulator but anonymise. We retain the consent log because

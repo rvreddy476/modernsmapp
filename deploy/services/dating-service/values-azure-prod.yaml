@@ -42,6 +42,16 @@ externalSecret:
     remoteRef: dating_pii_keys
   - secretKey: DATING_PII_LOOKUP_SALT
     remoteRef: dating_pii_lookup_salt
+  # Lane P2: dating-service's payments-service token is NOT enabled yet (the
+  # purchase route answers 503 PREMIUM_UNAVAILABLE; boot is not refused).
+  # Enable in this order: store dating_service_token_key (base64 ed25519 seed)
+  # and dating_service_token_kid in the key vault, and the matching public key
+  # and kid for payments-service; enable payments-service first (its lines,
+  # then dating-service in its SERVICE_CALLERS); then uncomment below.
+  # - secretKey: DATING_SERVICE_TOKEN_KEY
+  #   remoteRef: dating_service_token_key
+  # - secretKey: DATING_SERVICE_TOKEN_KID
+  #   remoteRef: dating_service_token_kid
   secretStoreName: azure-key-vault
 env:
   ENV: prod

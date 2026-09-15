@@ -1,54 +1,133 @@
-// HTTP handlers for /v1/dating/premium/*. Sprint 5 — see PULSE_DATING_SPEC.md
-// §14 (premium tier).
-//
-// CRITICAL RULES #4 — the webhook handler is unauthenticated by user; it is
-// authenticated by the Razorpay signature in the X-Razorpay-Signature
-// header. Idempotency is enforced inside the service layer via
-// dating_payment_events.razorpay_event_id (UNIQUE).
+// HTTP handlers for /v1/dating/premium/* (lane P2): one-off passes and Boost
+// paid through payments-service. The Razorpay checkout, cancel and webhook
+// routes are gone; checkout and cancel answer 410 so an old client learns why.
 package http
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 
+	"github.com/atpost/dating-service/internal/payments"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/api"
+	"github.com/atpost/shared/paymentmethod"
 	"github.com/gin-gonic/gin"
 )
 
-// GetPlans — GET /v1/dating/premium/plans.
-func (h *Handler) GetPlans(c *gin.Context) {
-	plans, err := h.svc.ListPlans(c.Request.Context())
-	if err != nil {
-		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, plans, nil)
+// Premium error codes.
+const (
+	CodePremiumUnavailable         = "PREMIUM_UNAVAILABLE"
+	CodePremiumPaymentsUnavailable = "PREMIUM_PAYMENTS_UNAVAILABLE"
+	CodePremiumPaymentsRefused     = "PREMIUM_PAYMENTS_REFUSED"
+	CodeClientPriceRefused         = "CLIENT_PRICE_REFUSED"
+	CodeInvalidProduct             = "INVALID_PRODUCT"
+	CodePaymentMethodInvalid       = "PAYMENT_METHOD_INVALID"
+	CodeIdempotencyKeyRequired     = "IDEMPOTENCY_KEY_REQUIRED"
+	CodeIdempotencyKeyReused       = "IDEMPOTENCY_KEY_REUSED"
+	CodePurchaseIntentConflict     = "PURCHASE_INTENT_CONFLICT"
+	CodePurchaseNotFound           = "PURCHASE_NOT_FOUND"
+	CodeSubscriptionsRemoved       = "PREMIUM_SUBSCRIPTIONS_REMOVED"
+	CodePlansMoved                 = "PREMIUM_PLANS_MOVED"
+)
+
+// maxPurchaseBody bounds the purchase request body.
+const maxPurchaseBody = 4 << 10
+
+// GetPremiumCatalogue — GET /v1/dating/premium/catalogue.
+func (h *Handler) GetPremiumCatalogue(c *gin.Context) {
+	api.JSON(c.Writer, http.StatusOK, gin.H{"products": h.svc.PremiumCatalogue()}, nil)
 }
 
-// PostCheckout — POST /v1/dating/premium/checkout.
-func (h *Handler) PostCheckout(c *gin.Context) {
+// purchaseBody is the purchase request. The price fields are declared ONLY so
+// their presence can be refused: a price comes from the catalogue, never from
+// the client.
+type purchaseBody struct {
+	Product        string `json:"product"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Method         string `json:"method"`
+
+	AmountMinor json.RawMessage `json:"amount_minor"`
+	Amount      json.RawMessage `json:"amount"`
+	Price       json.RawMessage `json:"price"`
+	PriceMinor  json.RawMessage `json:"price_minor"`
+	Currency    json.RawMessage `json:"currency"`
+}
+
+func (b purchaseBody) carriesPrice() bool {
+	for _, v := range []json.RawMessage{b.AmountMinor, b.Amount, b.Price, b.PriceMinor, b.Currency} {
+		if len(v) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// PostPremiumPurchase — POST /v1/dating/premium/purchases
+// {product, idempotency_key, method?}. 201 with {purchase, client_session}
+// for a new purchase, 200 for a repeat of the same key.
+func (h *Handler) PostPremiumPurchase(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
-	var body service.CheckoutRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, maxPurchaseBody+1))
+	if err != nil || len(raw) > maxPurchaseBody {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "request body is unreadable or too large", nil)
 		return
 	}
-	out, err := h.svc.Checkout(c.Request.Context(), userID, body)
+	var body purchaseBody
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"body must be JSON with product, idempotency_key and optionally method", nil)
+		return
+	}
+	if body.carriesPrice() {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, CodeClientPriceRefused,
+			"prices come from the premium catalogue; do not send amount, price or currency", nil)
+		return
+	}
+	if body.IdempotencyKey == "" {
+		body.IdempotencyKey = c.GetHeader("Idempotency-Key")
+	}
+	out, created, err := h.svc.CreatePremiumPurchase(c.Request.Context(), userID, service.PremiumPurchaseInput{
+		Product: body.Product, IdempotencyKey: body.IdempotencyKey, Method: body.Method,
+	})
 	if err != nil {
-		if errors.Is(err, store.ErrPlanNotFound) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "plan not found", nil)
-			return
-		}
-		respondServiceError(c, err, http.StatusInternalServerError, "CHECKOUT_FAILED")
+		writePremiumError(c, err, "PREMIUM_PURCHASE_FAILED")
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, out, nil)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	api.JSON(c.Writer, status, out, nil)
+}
+
+// GetPremiumPurchasePayment — GET /v1/dating/premium/purchases/:id/payment.
+// {purchase_id, product, status: confirming|paid|failed, amount_minor,
+// currency, refund_status, updated_at}. Another user's purchase is the same
+// 404 as a missing one.
+func (h *Handler) GetPremiumPurchasePayment(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	purchaseID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	out, err := h.svc.PremiumPurchasePayment(c.Request.Context(), userID, purchaseID)
+	if err != nil {
+		writePremiumError(c, err, "PREMIUM_PAYMENT_STATUS_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
 
 // GetMyPremium — GET /v1/dating/premium/me.
@@ -65,65 +144,58 @@ func (h *Handler) GetMyPremium(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
 
-// PostCancelPremium — POST /v1/dating/premium/cancel.
-func (h *Handler) PostCancelPremium(c *gin.Context) {
-	userID, ok := getUserID(c)
-	if !ok {
-		return
-	}
-	if err := h.svc.CancelSubscription(c.Request.Context(), userID); err != nil {
-		if errors.Is(err, store.ErrSubscriptionNotFound) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "no active subscription", nil)
-			return
-		}
-		respondServiceError(c, err, http.StatusInternalServerError, "CANCEL_FAILED")
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"cancelled": true}, nil)
+// premiumSubscriptionsRemoved answers the retired Razorpay subscription
+// routes (checkout, cancel): 410 with a stable code.
+func premiumSubscriptionsRemoved(c *gin.Context) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, CodeSubscriptionsRemoved,
+		"Premium subscriptions were removed; buy a one-off pass or Boost with POST /v1/dating/premium/purchases",
+		gin.H{"moved_to": "/v1/dating/premium/purchases", "catalogue": "/v1/dating/premium/catalogue"})
+	c.Abort()
 }
 
-// PostWebhook — POST /v1/dating/premium/webhook.
-//
-// CRITICAL: this handler intentionally does NOT call getUserID. Razorpay
-// webhooks are verified solely by the HMAC-SHA256 signature in the
-// X-Razorpay-Signature header. A missing/wrong signature returns 401; a
-// retried delivery (already-seen razorpay event id) returns 200 no-op.
-func (h *Handler) PostWebhook(c *gin.Context) {
-	signature := c.GetHeader("X-Razorpay-Signature")
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "cannot read body", nil)
-		return
-	}
-	res, err := h.svc.HandleWebhook(c.Request.Context(), signature, body)
-	if err != nil {
-		// Signature failure → 401 so Razorpay knows we rejected it.
-		// Other errors → 500 so Razorpay retries.
-		if hasPrefix(err.Error(), "forbidden:") {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "invalid signature", nil)
-			return
-		}
-		if hasPrefix(err.Error(), "invalid:") {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "WEBHOOK_FAILED", err.Error(), nil)
-		return
-	}
-	if res.Idempotent {
-		api.JSON(c.Writer, http.StatusOK, gin.H{"idempotent": true, "event_id": res.EventID}, nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"processed": true, "event_id": res.EventID}, nil)
+// premiumPlansMoved answers the retired plan list.
+func premiumPlansMoved(c *gin.Context) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, CodePlansMoved,
+		"the plan list moved to GET /v1/dating/premium/catalogue",
+		gin.H{"moved_to": "/v1/dating/premium/catalogue"})
+	c.Abort()
 }
 
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+func writePremiumError(c *gin.Context, err error, defaultCode string) {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrPremiumUnavailable), errors.Is(err, service.ErrPremiumCheckoutUnavailable):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, CodePremiumUnavailable,
+			"premium purchases are unavailable right now", nil)
+	case errors.Is(err, payments.ErrPaymentsUnavailable):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, CodePremiumPaymentsUnavailable,
+			"payments are unavailable; retry with the same idempotency_key", nil)
+	case errors.Is(err, payments.ErrRefused):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, CodePremiumPaymentsRefused,
+			"payments refused this purchase", nil)
+	case errors.Is(err, service.ErrPremiumProductUnknown):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, CodeInvalidProduct,
+			"product must be one of the catalogue products", gin.H{"allowed": payments.ProductIDs()})
+	case errors.Is(err, service.ErrPremiumMethodInvalid):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, CodePaymentMethodInvalid,
+			"method must be a launch payment method", gin.H{"allowed": paymentmethod.Allowed()})
+	case errors.Is(err, service.ErrPremiumIdempotencyKeyRequired):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, CodeIdempotencyKeyRequired, err.Error(), nil)
+	case errors.Is(err, store.ErrIdempotencyKeyReused):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodeIdempotencyKeyReused,
+			"this idempotency_key already names a different purchase", nil)
+	case errors.Is(err, store.ErrPurchaseIntentConflict):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodePurchaseIntentConflict, err.Error(), nil)
+	case errors.Is(err, store.ErrPurchaseNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, CodePurchaseNotFound, "purchase not found", nil)
+	default:
+		respondServiceError(c, err, http.StatusInternalServerError, defaultCode)
+	}
 }
 
 // PostBoost — POST /v1/dating/pulse/boost.
 //
-// Premium daily boost OR consume a one-shot boost token. Service applies
+// A purchased Boost token, or a pass holder's daily boost. Service applies
 // the rate limit and returns a 403 envelope when blocked.
 func (h *Handler) PostBoost(c *gin.Context) {
 	userID, ok := getUserID(c)
@@ -132,8 +204,6 @@ func (h *Handler) PostBoost(c *gin.Context) {
 	}
 	out, err := h.svc.RequestBoost(c.Request.Context(), userID)
 	if err != nil {
-		// Forbidden (rate-limited) — surface the next-boost-at hint via the
-		// service result if available.
 		if hasPrefix(err.Error(), "forbidden:") {
 			if out != nil {
 				api.JSON(c.Writer, http.StatusForbidden, out, nil)
@@ -146,4 +216,8 @@ func (h *Handler) PostBoost(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+func hasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }

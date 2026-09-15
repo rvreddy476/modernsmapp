@@ -51,11 +51,8 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	// Razorpay webhook is signature-authenticated (X-Razorpay-Signature
-	// HMAC verified inside the handler), NOT internal-key gated. The
-	// gateway forwards it untouched, and Razorpay itself cannot carry
-	// the internal key. Register it outside the v1 group.
-	r.POST("/v1/dating/premium/webhook", h.PostWebhook)
+	// Lane P2: the Razorpay webhook (/v1/dating/premium/webhook) is gone.
+	// Payments reach dating only as payments-service events on Kafka.
 
 	// Service-only family. Outside the key group on purpose: a service-token
 	// caller does not carry the internal key. Each route requires a service
@@ -190,16 +187,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Sprint 4 — AI moderation (SHADOW MODE for v1; internal-only).
 		dating.POST("/moderation/scan", h.PostScanMessage)
 
-		// Sprint 5 — Premium / Razorpay (spec §14).
-		dating.GET("/premium/plans", h.GetPlans)
-		dating.POST("/premium/checkout", h.PostCheckout)
+		// Lane P2 — Premium passes and Boost through payments-service.
+		dating.GET("/premium/catalogue", h.GetPremiumCatalogue)
+		dating.POST("/premium/purchases", h.PostPremiumPurchase)
+		dating.GET("/premium/purchases/:id/payment", h.GetPremiumPurchasePayment)
 		dating.GET("/premium/me", h.GetMyPremium)
-		dating.POST("/premium/cancel", h.PostCancelPremium)
-		// (Razorpay webhook /v1/dating/premium/webhook is registered
-		// outside this group — it's HMAC-authenticated, not
-		// internal-key gated.)
+		// Retired Razorpay subscription routes: 410 with a code.
+		dating.GET("/premium/plans", premiumPlansMoved)
+		dating.POST("/premium/checkout", premiumSubscriptionsRemoved)
+		dating.POST("/premium/cancel", premiumSubscriptionsRemoved)
 
-		// Sprint 5 — Pulse boost (premium daily OR one-shot token).
+		// Pulse boost (a purchased Boost token OR a pass holder's daily boost).
 		dating.POST("/pulse/boost", h.PostBoost)
 
 		// Sprint 5 — DPDP data export (§15.8).

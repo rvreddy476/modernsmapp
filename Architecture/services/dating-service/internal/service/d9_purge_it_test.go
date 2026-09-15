@@ -73,9 +73,10 @@ func TestD9_PurgeDropsDeckCaches(t *testing.T) {
 func TestD9_PurgeRedactsRawPaymentPayloads(t *testing.T) {
 	svc, st, _ := newD3Svc(t)
 	ctx := context.Background()
-	if err := st.SeedPremiumPlans(ctx); err != nil {
-		t.Fatal(err)
-	}
+	// The Razorpay tables are read-only in code since lane P2; this fixture
+	// writes a legacy plan row directly so old intents and events can exist.
+	d8Exec(t, st, `INSERT INTO dating_premium_plans (id, plan_type, name, price_inr_paise, duration_days)
+        VALUES ('monthly_399', 'subscription', 'Pulse Premium Monthly', 39900, 30) ON CONFLICT (id) DO NOTHING`)
 	purged, bystander := uuid.New(), uuid.New()
 	seedActiveProfile(t, st, purged)
 	var planID string
