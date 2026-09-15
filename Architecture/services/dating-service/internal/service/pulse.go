@@ -514,7 +514,7 @@ func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, 
 
 	cards := make([]PulseCard, 0, len(passes))
 	for _, p := range passes {
-		c, err := s.store.GetCandidateByUserID(ctx, p.CandidateID)
+		c, err := s.store.GetCandidateForViewer(ctx, viewerID, p.CandidateID)
 		if err != nil || c == nil {
 			continue
 		}
@@ -525,4 +525,75 @@ func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, 
 		Data: cards,
 		Meta: PulseMeta{GeneratedAt: time.Now().UTC(), Size: len(cards)},
 	}, nil
+}
+
+// PassResult is the body of POST /v1/dating/pulse/:candidateId/pass.
+type PassResult struct {
+	Passed        bool      `json:"passed"`
+	CandidateID   uuid.UUID `json:"candidate_id"`
+	CooldownUntil time.Time `json:"cooldown_until"`
+}
+
+// maxPassReasonLen bounds the optional free-text pass reason.
+const maxPassReasonLen = 200
+
+// PassCandidate records the viewer's pass (idempotent), drops the candidate
+// from the viewer's cached deck, and FetchCandidates then excludes them for
+// store.PassCooldown. Nothing is emitted: the candidate is never told.
+func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.UUID, reason string) (*PassResult, error) {
+	if viewerID == uuid.Nil || candidateID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: viewer and candidate ids required")
+	}
+	if viewerID == candidateID {
+		return nil, fmt.Errorf("invalid: cannot pass yourself")
+	}
+	if len(reason) > maxPassReasonLen {
+		return nil, fmt.Errorf("invalid: reason must be at most %d characters", maxPassReasonLen)
+	}
+	passedAt, err := s.store.RecordPass(ctx, viewerID, candidateID, reason)
+	if err != nil {
+		return nil, err
+	}
+	s.removeFromCachedDeck(ctx, viewerID, candidateID)
+	return &PassResult{
+		Passed:        true,
+		CandidateID:   candidateID,
+		CooldownUntil: passedAt.Add(store.PassCooldown).UTC(),
+	}, nil
+}
+
+// removeFromCachedDeck rewrites the viewer's cached deck without the
+// candidate, keeping the key's TTL. SET XX never recreates a key that
+// expired meanwhile; a failed rewrite drops the cache instead.
+func (s *Service) removeFromCachedDeck(ctx context.Context, viewerID, candidateID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	cached := s.readPulseCache(ctx, viewerID)
+	if cached == nil {
+		return
+	}
+	kept := make([]PulseCard, 0, len(cached.Data))
+	for _, card := range cached.Data {
+		if card.CandidateID != candidateID {
+			kept = append(kept, card)
+		}
+	}
+	if len(kept) == len(cached.Data) {
+		return
+	}
+	cached.Data = kept
+	cached.Meta.Size = len(kept)
+	raw, err := json.Marshal(cached)
+	if err != nil {
+		s.InvalidatePulseCache(ctx, viewerID)
+		return
+	}
+	if err := s.rdb.SetArgs(ctx, s.cacheKey(viewerID), raw, redis.SetArgs{Mode: "XX", KeepTTL: true}).Err(); err != nil && !errors.Is(err, redis.Nil) {
+		slog.Warn("pulse cache pass rewrite failed; dropping deck", "viewer_id", viewerID, "error", err)
+		s.InvalidatePulseCache(ctx, viewerID)
+	}
+	if err := s.rdb.SRem(ctx, deckMembershipKey(candidateID), viewerID.String()).Err(); err != nil {
+		slog.Warn("deck membership removal failed", "candidate_id", candidateID, "error", err)
+	}
 }

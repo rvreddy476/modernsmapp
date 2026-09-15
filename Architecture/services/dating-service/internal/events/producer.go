@@ -12,9 +12,21 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+// MessageWriter is the part of *kafka.Writer the producer uses. Tests pass a
+// recorder through NewProducerWithWriter to assert what was emitted.
+type MessageWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
 // Producer is a thin wrapper around kafka.Writer with typed Publish helpers.
 type Producer struct {
-	writer *kafka.Writer
+	writer MessageWriter
+}
+
+// NewProducerWithWriter wraps an arbitrary MessageWriter (tests).
+func NewProducerWithWriter(w MessageWriter) *Producer {
+	return &Producer{writer: w}
 }
 
 // NewProducer returns a Producer using the default dialer.

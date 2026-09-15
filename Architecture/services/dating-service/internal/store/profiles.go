@@ -440,6 +440,9 @@ func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, err
 	if err := exec(`DELETE FROM dating_blocks   WHERE user_id = $1 OR blocked_id = $1`, userID); err != nil {
 		return 0, err
 	}
+	if err := exec(`DELETE FROM dating_spark_ledger WHERE from_user_id = $1`, userID); err != nil {
+		return 0, err
+	}
 
 	// 3) Matches: we DO NOT delete the rows because the other party may
 	//    still see the match in their inbox. Anonymise: the deleted user
@@ -449,7 +452,7 @@ func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, err
 	//    surfaced as conversational.
 	if err := exec(`
         UPDATE dating_matches
-        SET status = 'closed', closed_by = $1
+        SET status = 'closed', closed_by = $1, closed_at = now()
         WHERE (user_a = $1 OR user_b = $1) AND status NOT IN ('closed','expired')`, userID); err != nil {
 		return 0, err
 	}

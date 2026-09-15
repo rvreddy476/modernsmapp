@@ -822,3 +822,47 @@ CREATE INDEX IF NOT EXISTS idx_dating_device_fp_ip_recent
 CREATE INDEX IF NOT EXISTS idx_dating_device_fp_user
     ON dating_device_fingerprints(user_id, last_seen_at DESC);
 
+-- ---------------------------------------------------------------------------
+-- Lane D3 — blocks and matching integrity.
+--
+-- declined_at: the recipient declined the spark. Hidden from their incoming
+--   list, never told to the sender (the column is not serialised), and not
+--   counted as interest by the mutual check.
+-- closed_at: when a match was closed (unmatch, block) or expired. The mutual
+--   check only counts sparks created after the pair's last closure, so one
+--   stale spark can never re-match a pair.
+-- dating_spark_ledger: one row per new spark, never deleted by revoke,
+--   unmatch or block, so the 24h spark limit cannot be reset by revoking.
+-- uq_dating_matches_open_pair: at most one open match per pair. Existing
+--   duplicates are closed first (keeping the one with a conversation, then
+--   the most recently active); closed_by stays NULL on those rows.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_sparks  ADD COLUMN IF NOT EXISTS declined_at TIMESTAMPTZ;
+ALTER TABLE dating_matches ADD COLUMN IF NOT EXISTS closed_at   TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS dating_spark_ledger (
+    from_user_id UUID        NOT NULL,
+    sent_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_spark_ledger_sender
+    ON dating_spark_ledger(from_user_id, sent_at DESC);
+
+WITH ranked AS (
+    SELECT id,
+           row_number() OVER (
+               PARTITION BY user_a, user_b
+               ORDER BY (conversation_id IS NOT NULL) DESC,
+                        COALESCE(last_message_at, matched_at) DESC,
+                        id) AS rn
+    FROM dating_matches
+    WHERE status IN ('matched','conversing','quiet')
+)
+UPDATE dating_matches m
+SET status = 'closed', closed_at = COALESCE(m.closed_at, now())
+FROM ranked r
+WHERE m.id = r.id AND r.rn > 1;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dating_matches_open_pair
+    ON dating_matches(user_a, user_b)
+    WHERE status IN ('matched','conversing','quiet');
+

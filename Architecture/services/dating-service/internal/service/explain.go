@@ -15,6 +15,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -71,6 +72,17 @@ func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.
 	}
 	if target == nil {
 		return nil, fmt.Errorf("not_found: target profile not found")
+	}
+	// Lane D3: a suspended or deleted target, or a pair blocked either
+	// way, is indistinguishable from a missing profile.
+	if target.ProfileStatus == store.ProfileStatusSuspended || target.ProfileStatus == store.ProfileStatusDeleted {
+		return nil, fmt.Errorf("not_found: target profile not found")
+	}
+	if err := s.requireNotBlocked(ctx, viewerID, targetID); err != nil {
+		if errors.Is(err, ErrCandidateUnavailable) {
+			return nil, fmt.Errorf("not_found: target profile not found")
+		}
+		return nil, err
 	}
 
 	prefs, err := s.store.GetPreferences(ctx, viewerID)

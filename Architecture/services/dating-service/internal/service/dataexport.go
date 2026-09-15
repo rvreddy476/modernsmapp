@@ -271,7 +271,7 @@ func (s *Service) BuildExportPayload(ctx context.Context, userID uuid.UUID) ([]b
 			})
 		}
 	}
-	if matches, err := s.store.ListMatchesForUser(ctx, userID, "all"); err == nil {
+	if matches, err := s.store.ListMatchesForExport(ctx, userID); err == nil {
 		for _, m := range matches {
 			other := m.UserB
 			if m.UserB == userID {

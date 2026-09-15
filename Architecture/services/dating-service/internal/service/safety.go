@@ -108,6 +108,10 @@ func (s *Service) ShareLocation(ctx context.Context, userID uuid.UUID, req Locat
 	if req.ContactID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: contact_id required")
 	}
+	// Lane D3: never share a live location with a user blocked either way.
+	if err := s.requireNotBlocked(ctx, userID, req.ContactID); err != nil {
+		return nil, err
+	}
 	share, err := s.store.CreateLiveLocationShare(ctx, userID, req.ContactID, req.DurationMinutes)
 	if err != nil {
 		return nil, err
@@ -143,6 +147,12 @@ func (s *Service) ShareLocation(ctx context.Context, userID uuid.UUID, req Locat
 func (s *Service) ScheduleMeet(ctx context.Context, userID uuid.UUID, req MeetRequest) (*MeetResult, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: userID required")
+	}
+	// Lane D3: no meet with a user blocked either way.
+	if req.WithUserID != uuid.Nil {
+		if err := s.requireNotBlocked(ctx, userID, req.WithUserID); err != nil {
+			return nil, err
+		}
 	}
 	id, err := s.store.ScheduleMeet(ctx, userID, req.WithUserID, req.When, req.Latitude, req.Longitude, req.Venue)
 	if err != nil {
@@ -186,16 +196,21 @@ func (s *Service) MeetCheckIn(ctx context.Context, meetID, userID uuid.UUID, sta
 	return nil
 }
 
-// Block records the dating_blocks row, propagates to graph-service (best
-// effort), and emits the block event.
+// Block records the dating_blocks row and severs the pair in the same
+// transaction (open match closed, sparks and stashes deleted both ways),
+// clears both users' deck caches, propagates to graph-service (best
+// effort), and emits the block events plus dating.match.closed for each
+// match it closed. Unblocking restores nothing.
 func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
-	if err := s.store.BlockUser(ctx, userID, targetID); err != nil {
+	outcome, err := s.store.BlockUserAndSever(ctx, userID, targetID)
+	if err != nil {
 		return err
 	}
-	// Phase 1 §3: viewer's own deck may already include the just-
-	// blocked candidate — drop it so the next pulse refresh re-runs
-	// the candidate query (which already filters mutual blocks).
+	// Lane D3: either deck may hold the other user for up to 24h. Drop
+	// both so the next pulse re-runs the candidate query, which filters
+	// blocks in both directions.
 	s.InvalidatePulseCache(ctx, userID)
+	s.InvalidatePulseCache(ctx, targetID)
 	// Propagate to graph-service so the graph layer also stops surfacing
 	// the user. Best-effort: log on failure, do not fail the user request.
 	if base := os.Getenv("GRAPH_SERVICE_URL"); base != "" {
@@ -241,6 +256,13 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 		// pair. Persist already succeeded; failure here is logged.
 		if perr := s.producer.PublishUserBlocked(ctx, userID, targetID); perr != nil {
 			slog.Error("publish user.blocked failed; row persisted", "user_id", userID, "error", perr)
+		}
+		// Lane D3: chat-service closes the dating conversation on
+		// dating.match.closed by match_id (dating_consumer.go).
+		for _, m := range outcome.ClosedMatches {
+			if perr := s.producer.PublishMatchClosed(ctx, m.ID, userID, m.UserA, m.UserB); perr != nil {
+				slog.Error("publish match.closed after block failed; match closed", "match_id", m.ID, "error", perr)
+			}
 		}
 	}
 	return nil

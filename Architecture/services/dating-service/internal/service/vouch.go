@@ -12,6 +12,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -61,6 +62,11 @@ func (s *Service) RequestVouch(ctx context.Context, voucherID, voucheeID uuid.UU
 	case "friend", "community_member", "colleague", "family":
 	default:
 		return nil, fmt.Errorf("invalid: relationship must be friend|community_member|colleague|family")
+	}
+
+	// Lane D3: no vouch across a block, refused before any graph call.
+	if err := s.requireNotBlocked(ctx, voucherID, voucheeID); err != nil {
+		return nil, err
 	}
 
 	// Eligibility checks (graph proofs).
@@ -123,6 +129,9 @@ func (s *Service) AcceptVouch(ctx context.Context, vouchID, voucheeID uuid.UUID)
 	if v.VoucheeID != voucheeID {
 		return fmt.Errorf("forbidden: only the vouchee may accept")
 	}
+	if err := s.vouchVisible(ctx, v); err != nil {
+		return err
+	}
 	if v.Status != "pending" {
 		return fmt.Errorf("invalid: vouch is not pending")
 	}
@@ -145,6 +154,9 @@ func (s *Service) DeclineVouch(ctx context.Context, vouchID, voucheeID uuid.UUID
 	}
 	if v.VoucheeID != voucheeID {
 		return fmt.Errorf("forbidden: only the vouchee may decline")
+	}
+	if err := s.vouchVisible(ctx, v); err != nil {
+		return err
 	}
 	if v.Status != "pending" {
 		return fmt.Errorf("invalid: vouch is not pending")
@@ -181,12 +193,26 @@ func (s *Service) RevokeVouch(ctx context.Context, vouchID, voucherID uuid.UUID)
 	return nil
 }
 
+// vouchVisible returns store.ErrVouchNotFound when voucher and vouchee are
+// blocked either way, so a blocked vouch cannot be acted on.
+func (s *Service) vouchVisible(ctx context.Context, v *store.Vouch) error {
+	if err := s.requireNotBlocked(ctx, v.VoucherID, v.VoucheeID); err != nil {
+		if errors.Is(err, ErrCandidateUnavailable) {
+			return store.ErrVouchNotFound
+		}
+		return err
+	}
+	return nil
+}
+
 // ListVouchesFor returns at most MaxVouchesDisplayedPerProfile vouches for
-// public display, ordered by recency. We sort defensively even though the
-// store already orders by created_at — display-cap logic might evolve to
-// factor in trust score later.
-func (s *Service) ListVouchesFor(ctx context.Context, voucheeID uuid.UUID, status string) ([]*store.Vouch, error) {
-	vouches, err := s.store.ListVouchesFor(ctx, voucheeID, status)
+// public display, ordered by recency, as viewerID may see them (uuid.Nil
+// for no viewer). Vouches across a block, from a deleted or suspended
+// voucher, or involving a user blocked with the viewer are left out. We
+// sort defensively even though the store already orders by created_at —
+// display-cap logic might evolve to factor in trust score later.
+func (s *Service) ListVouchesFor(ctx context.Context, viewerID, voucheeID uuid.UUID, status string) ([]*store.Vouch, error) {
+	vouches, err := s.store.ListVouchesForViewer(ctx, viewerID, voucheeID, status)
 	if err != nil {
 		return nil, err
 	}
@@ -200,9 +226,10 @@ func (s *Service) ListVouchesFor(ctx context.Context, voucheeID uuid.UUID, statu
 	return vouches, nil
 }
 
-// ListVouchesSent is a pass-through.
+// ListVouchesSent returns the caller's sent vouches, leaving out vouchees
+// blocked either way or with a deleted or suspended profile.
 func (s *Service) ListVouchesSent(ctx context.Context, voucherID uuid.UUID) ([]*store.Vouch, error) {
-	return s.store.ListVouchesSent(ctx, voucherID)
+	return s.store.ListVouchesSentVisible(ctx, voucherID)
 }
 
 // httpGraphServiceClient calls graph-service /v1/graph/follows/mutual.

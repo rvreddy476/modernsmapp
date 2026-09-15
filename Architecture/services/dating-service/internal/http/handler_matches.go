@@ -37,17 +37,15 @@ func (h *Handler) GetMatch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	m, err := h.svc.GetMatch(c.Request.Context(), matchID)
+	// Lane D3: 403 for a non-participant; 404 when the pair is blocked
+	// either way or the other participant is deleted or suspended.
+	m, err := h.svc.GetMatchForUser(c.Request.Context(), matchID, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrMatchNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "match not found", nil)
 			return
 		}
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
-		return
-	}
-	if userID != m.UserA && userID != m.UserB {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not a participant", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, m, nil)

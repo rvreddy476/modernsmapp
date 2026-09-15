@@ -30,6 +30,10 @@ func (s *Service) AddStash(ctx context.Context, userID, candidateID uuid.UUID) (
 		}
 		return nil, fmt.Errorf("load candidate profile: %w", err)
 	}
+	// Lane D3: a block removed any stash both ways; don't allow a new one.
+	if err := s.requireNotBlocked(ctx, userID, candidateID); err != nil {
+		return nil, err
+	}
 
 	expiresAt := time.Now().Add(stashDefaultTTL)
 	if err := s.store.AddStash(ctx, userID, candidateID, expiresAt); err != nil {

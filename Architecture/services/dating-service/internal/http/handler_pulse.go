@@ -1,6 +1,8 @@
 package http
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -80,6 +82,38 @@ func (h *Handler) ExplainPulseCandidate(c *gin.Context) {
 	resp, err := h.svc.ExplainCandidate(c.Request.Context(), viewerID, targetID)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// passRequest is the optional body of POST /v1/dating/pulse/:candidateId/pass.
+type passRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// PassCandidate — POST /v1/dating/pulse/:candidateId/pass
+//
+// Lane D3: records the pass (idempotent), removes the candidate from the
+// viewer's cached deck and keeps them out of new decks for the cooldown.
+// The body is optional.
+func (h *Handler) PassCandidate(c *gin.Context) {
+	viewerID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	candidateID, ok := parseUUID(c, "candidateId")
+	if !ok {
+		return
+	}
+	var body passRequest
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	resp, err := h.svc.PassCandidate(c.Request.Context(), viewerID, candidateID, body.Reason)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "PASS_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, resp, nil)

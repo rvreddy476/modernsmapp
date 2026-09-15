@@ -211,22 +211,116 @@ func (s *Store) MarkMeetNoShow(ctx context.Context, meetID uuid.UUID) error {
 	return nil
 }
 
-// BlockUser inserts a row into dating_blocks. Idempotent on (user_id,
-// blocked_id). Propagation to graph-service is the service layer's job.
+// blockedPairPredicate is THE block check (lane D3). It returns a SQL
+// boolean that is true when either user has blocked the other; x and y are
+// SQL expressions (placeholders with a ::uuid cast, or columns). Every read
+// that pairs two users embeds it, and IsBlockedEitherWay runs it for point
+// checks, so the two directions are always tested together.
+func blockedPairPredicate(x, y string) string {
+	return `EXISTS (SELECT 1 FROM dating_blocks blk
+        WHERE (blk.user_id = ` + x + ` AND blk.blocked_id = ` + y + `)
+           OR (blk.user_id = ` + y + ` AND blk.blocked_id = ` + x + `))`
+}
+
+// visibleProfilePredicate is true when the user has a live profile row that
+// is neither soft-deleted nor suspended. Lists (incoming sparks, matches,
+// vouches, passes) show a counterpart only when it holds.
+func visibleProfilePredicate(col string) string {
+	return `EXISTS (SELECT 1 FROM dating_profiles vp
+        WHERE vp.user_id = ` + col + `
+          AND vp.deleted_at IS NULL
+          AND vp.profile_status NOT IN ('suspended','deleted'))`
+}
+
+// IsBlockedEitherWay reports whether a has blocked b or b has blocked a.
+func (s *Store) IsBlockedEitherWay(ctx context.Context, a, b uuid.UUID) (bool, error) {
+	if a == uuid.Nil || b == uuid.Nil {
+		return false, nil
+	}
+	var blocked bool
+	if err := s.db.QueryRow(ctx, `SELECT `+blockedPairPredicate("$1::uuid", "$2::uuid"), a, b).Scan(&blocked); err != nil {
+		return false, fmt.Errorf("check block: %w", err)
+	}
+	return blocked, nil
+}
+
+// BlockOutcome is what a block severed, for event emission.
+type BlockOutcome struct {
+	ClosedMatches  []*Match
+	SparksDeleted  int64
+	StashesDeleted int64
+}
+
+// BlockUser records the block with its side effects; see BlockUserAndSever.
 func (s *Store) BlockUser(ctx context.Context, userID, targetUserID uuid.UUID) error {
+	_, err := s.BlockUserAndSever(ctx, userID, targetUserID)
+	return err
+}
+
+// BlockUserAndSever inserts the dating_blocks row (idempotent on
+// (user_id, blocked_id)) and, in the same transaction, closes any open
+// match between the pair (closed_by = the blocker), deletes the pair's
+// sparks in both directions and removes stashes in both directions. The
+// closed matches are returned so the caller emits dating.match.closed after
+// commit. Unblocking restores none of it. Propagation to graph-service and
+// cache invalidation are the service layer's job.
+func (s *Store) BlockUserAndSever(ctx context.Context, userID, targetUserID uuid.UUID) (*BlockOutcome, error) {
 	if userID == uuid.Nil || targetUserID == uuid.Nil {
-		return fmt.Errorf("invalid: user ids required")
+		return nil, fmt.Errorf("invalid: user ids required")
 	}
 	if userID == targetUserID {
-		return fmt.Errorf("invalid: cannot block yourself")
+		return nil, fmt.Errorf("invalid: cannot block yourself")
 	}
-	if _, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin block: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
         INSERT INTO dating_blocks (user_id, blocked_id)
         VALUES ($1, $2)
         ON CONFLICT DO NOTHING`, userID, targetUserID); err != nil {
-		return fmt.Errorf("block user: %w", err)
+		return nil, fmt.Errorf("block user: %w", err)
 	}
-	return nil
+	a, b := canonicalPair(userID, targetUserID)
+	rows, err := tx.Query(ctx, `
+        UPDATE dating_matches
+        SET status = 'closed', closed_by = $3, closed_at = now()
+        WHERE user_a = $1 AND user_b = $2
+          AND status IN ('matched','conversing','quiet')
+        RETURNING `+matchSelectCols, a, b, userID)
+	if err != nil {
+		return nil, fmt.Errorf("close matches on block: %w", err)
+	}
+	out := &BlockOutcome{}
+	for rows.Next() {
+		m, err := scanMatch(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.ClosedMatches = append(out.ClosedMatches, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("close matches on block: %w", err)
+	}
+	if out.SparksDeleted, err = deleteSparksBetween(ctx, tx, userID, targetUserID); err != nil {
+		return nil, err
+	}
+	tag, err := tx.Exec(ctx, `
+        DELETE FROM dating_stashes
+        WHERE (user_id = $1 AND candidate_id = $2)
+           OR (user_id = $2 AND candidate_id = $1)`, userID, targetUserID)
+	if err != nil {
+		return nil, fmt.Errorf("remove stashes on block: %w", err)
+	}
+	out.StashesDeleted = tag.RowsAffected()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit block: %w", err)
+	}
+	return out, nil
 }
 
 // CreateReport persists a report into dating_reports. The service layer

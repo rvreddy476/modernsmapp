@@ -1,7 +1,8 @@
 // Match service — implements the cross-service saga that forms a match.
 //
 // Saga steps (Risk R5 in plan §9):
-//  1. Begin tx, CreateMatchPending → matchID, commit.
+//  1. CreateOrGetOpenMatch → matchID (insert-or-get under the one-open-
+//     match-per-pair index; a caller that did not create the row stops).
 //  2. POST message-service /v1/messages/conversations to allocate the chat.
 //  3. On 2xx → MarkMatchActive(matchID, conversationID); emit match.formed.
 //  4. On non-2xx / network → DeleteMatch(matchID) compensation; bubble error.
@@ -166,28 +167,24 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 		return nil, err
 	}
 
-	// If a match already exists between these two users (any status), reuse
-	// it rather than create a duplicate. Idempotency for retried mutual-Spark.
-	if existing, err := s.store.GetMatchByUsers(ctx, userA, userB); err == nil && existing != nil {
-		if existing.Status == "matched" || existing.Status == "conversing" {
-			return existing, nil
-		}
-	} else if err != nil && !errors.Is(err, store.ErrMatchNotFound) {
-		return nil, fmt.Errorf("lookup existing match: %w", err)
-	}
-
-	// Step 1: pending row.
-	tx, err := s.store.BeginTx(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	matchID, err := s.store.CreateMatchPending(ctx, tx, userA, userB, sparkTarget)
-	if err != nil {
-		_ = tx.Rollback(ctx)
+	// Lane D3: a blocked pair never forms a match.
+	if err := s.requireNotBlocked(ctx, userA, userB); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit pending match: %w", err)
+
+	// Step 1: insert-or-get the pending row. uq_dating_matches_open_pair
+	// allows one open match per pair, so concurrent mutual sparks and
+	// retries converge on one row; only the call that created it runs the
+	// chat saga, the rest return the existing match.
+	matchID, created, err := s.store.CreateOrGetOpenMatch(ctx, userA, userB, sparkTarget)
+	if err != nil {
+		if errors.Is(err, store.ErrMatchPairBlocked) {
+			return nil, ErrCandidateUnavailable
+		}
+		return nil, err
+	}
+	if !created {
+		return s.store.GetMatch(ctx, matchID)
 	}
 
 	// Step 2: message-service handshake.
@@ -251,10 +248,44 @@ func (s *Service) ListMatches(ctx context.Context, userID uuid.UUID, status stri
 	return s.store.ListMatchesForUser(ctx, userID, status)
 }
 
-// GetMatch returns a single match (caller must be a participant; checked
-// at the handler).
+// GetMatch returns a single match with no viewer checks (internal callers).
 func (s *Service) GetMatch(ctx context.Context, matchID uuid.UUID) (*store.Match, error) {
 	return s.store.GetMatch(ctx, matchID)
+}
+
+// GetMatchForUser returns the match as userID may see it: forbidden when
+// userID is not a participant, and store.ErrMatchNotFound when the pair is
+// blocked either way or the other participant's profile is deleted,
+// suspended or gone.
+func (s *Service) GetMatchForUser(ctx context.Context, matchID, userID uuid.UUID) (*store.Match, error) {
+	m, err := s.store.GetMatch(ctx, matchID)
+	if err != nil {
+		return nil, err
+	}
+	if userID != m.UserA && userID != m.UserB {
+		return nil, fmt.Errorf("forbidden: not a participant")
+	}
+	if err := s.requireNotBlocked(ctx, m.UserA, m.UserB); err != nil {
+		if errors.Is(err, ErrCandidateUnavailable) {
+			return nil, store.ErrMatchNotFound
+		}
+		return nil, err
+	}
+	other := m.UserA
+	if userID == m.UserA {
+		other = m.UserB
+	}
+	p, err := s.store.GetProfile(ctx, other)
+	if err != nil {
+		if errors.Is(err, store.ErrProfileNotFound) {
+			return nil, store.ErrMatchNotFound
+		}
+		return nil, err
+	}
+	if p.ProfileStatus == store.ProfileStatusSuspended || p.ProfileStatus == store.ProfileStatusDeleted {
+		return nil, store.ErrMatchNotFound
+	}
+	return m, nil
 }
 
 // CloseMatch flips status to closed. Only a participant may close.

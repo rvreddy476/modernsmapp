@@ -124,11 +124,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Returns structured reasons (age band, distance, gender
 		// pref, shared community, shared interest, promoted).
 		dating.GET("/pulse/:targetUserId/explain", fpMW, h.ExplainPulseCandidate)
+		// Lane D3 — pass on a deck candidate (idempotent, 30-day cooldown).
+		dating.POST("/pulse/:candidateId/pass", fpMW, h.PassCandidate)
 
 		// Sprint 3 — Sparks
 		dating.POST("/sparks", fpMW, h.CreateSpark)
 		dating.GET("/sparks/incoming", fpMW, h.ListIncomingSparks)
 		dating.DELETE("/sparks/:id", h.RevokeSpark)
+		// Lane D3 — the recipient declines; the sender is never told.
+		dating.POST("/sparks/:id/decline", h.DeclineSpark)
 
 		// Sprint 3 — Stash
 		dating.GET("/stash", h.ListStash)
@@ -268,6 +272,21 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	}
 	if errors.Is(err, store.ErrProfileStatusConflict) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "PROFILE_STATUS_CONFLICT", err.Error(), nil)
+		return
+	}
+	// Lane D3: one refusal for blocked / inactive / suspended / deleted /
+	// under-18 counterparts, so a block is never revealed.
+	if errors.Is(err, service.ErrCandidateUnavailable) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "CANDIDATE_UNAVAILABLE", "this person is not available", nil)
+		return
+	}
+	if errors.Is(err, store.ErrSparkRateLimited) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "SPARK_RATE_LIMITED", "spark limit reached; try again later",
+			map[string]any{"limit": service.DefaultSparkDailyLimit, "window_hours": int(store.SparkQuotaWindow.Hours())})
+		return
+	}
+	if errors.Is(err, service.ErrSparkNoteRefused) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SPARK_NOTE_REFUSED", "spark notes cannot contain phone numbers, email addresses or links", nil)
 		return
 	}
 	msg := err.Error()

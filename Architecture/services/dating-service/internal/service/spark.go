@@ -1,5 +1,5 @@
-// Spark service — orchestrates Spark create / list / revoke and the
-// mutual-Spark match-formation hand-off.
+// Spark service — orchestrates Spark create / list / revoke / decline and
+// the mutual-Spark match-formation hand-off.
 //
 // On CreateSpark we always emit dating.spark.created. If the recipient
 // previously Sparked the actor (HasReverseSparks == true) we synchronously
@@ -12,10 +12,88 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
+	"github.com/atpost/dating-service/internal/moderation"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 )
+
+// ErrCandidateUnavailable is the one refusal for acting on another user who
+// is blocked (either way), not active, deleted, suspended, restricted or
+// under 18. It is deliberately the same for every cause, so a refusal never
+// reveals a block. Maps to 404 CANDIDATE_UNAVAILABLE.
+var ErrCandidateUnavailable = errors.New("not_found: candidate unavailable")
+
+// ErrSparkNoteRefused is returned when a spark note fails the layer-1
+// moderation filter in strict mode. Maps to 400 SPARK_NOTE_REFUSED.
+var ErrSparkNoteRefused = errors.New("invalid: spark notes cannot contain phone numbers, email addresses or links")
+
+// ErrSparkRateLimited is the store sentinel, re-exported for handlers.
+var ErrSparkRateLimited = store.ErrSparkRateLimited
+
+// DefaultSparkDailyLimit is how many new sparks a free user may send in a
+// rolling store.SparkQuotaWindow.
+const DefaultSparkDailyLimit = 50
+
+// sparkDailyLimit is the per-user spark allowance. Every user gets the free
+// limit today; this is the hook a premium allowance plugs into later.
+func (s *Service) sparkDailyLimit(_ context.Context, _ uuid.UUID) int {
+	return DefaultSparkDailyLimit
+}
+
+// checkSparkNote runs the layer-1 moderation filter in strict mode: a phone
+// number, email address or external link is refused, as is anything the
+// filter itself would block.
+func checkSparkNote(note string) error {
+	if strings.TrimSpace(note) == "" {
+		return nil
+	}
+	verdict := moderation.ScanMessage(note)
+	for _, p := range verdict.Patterns {
+		switch p {
+		case moderation.PatternPhone, moderation.PatternEmail, moderation.PatternURL:
+			return ErrSparkNoteRefused
+		}
+	}
+	if verdict.ActionTaken == "block" {
+		return ErrSparkNoteRefused
+	}
+	return nil
+}
+
+// requireNotBlocked returns ErrCandidateUnavailable when either user has
+// blocked the other.
+func (s *Service) requireNotBlocked(ctx context.Context, a, b uuid.UUID) error {
+	blocked, err := s.store.IsBlockedEitherWay(ctx, a, b)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return ErrCandidateUnavailable
+	}
+	return nil
+}
+
+// requireActiveAdultCandidate returns ErrCandidateUnavailable unless the
+// user has a live profile in status 'active' with a birth date putting them
+// at 18+. Deleted (soft or hard), suspended, restricted, paused, held and
+// onboarding profiles all fail.
+func (s *Service) requireActiveAdultCandidate(ctx context.Context, candidateID uuid.UUID) error {
+	p, err := s.store.GetProfile(ctx, candidateID)
+	if err != nil {
+		if errors.Is(err, store.ErrProfileNotFound) {
+			return ErrCandidateUnavailable
+		}
+		return fmt.Errorf("load candidate profile: %w", err)
+	}
+	if p.ProfileStatus != store.ProfileStatusActive || p.BirthDate == nil ||
+		ageYears(*p.BirthDate, time.Now()) < MinDatingAgeYears {
+		return ErrCandidateUnavailable
+	}
+	return nil
+}
 
 // CreateSpark inserts a Spark and triggers the mutual-Spark saga when
 // applicable. Returns the persisted Spark and an optional matchID — when
@@ -70,15 +148,24 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		return nil, nil, err
 	}
 
-	// Lightweight existence check on the target. We don't crash if the
-	// target profile is missing in test setups; just return invalid so the
-	// caller (handler) maps to 400.
-	if _, err := s.store.GetProfile(ctx, toUserID); err != nil && !errors.Is(err, store.ErrProfileNotFound) {
-		// Real DB error.
-		return nil, nil, fmt.Errorf("load target profile: %w", err)
+	// Lane D3: the note passes layer-1 moderation in strict mode.
+	if err := checkSparkNote(note); err != nil {
+		return nil, nil, err
 	}
 
-	sp, err := s.store.CreateSpark(ctx, fromUserID, toUserID, targetKind, targetRef, note)
+	// Lane D3: the recipient must be an active 18+ profile, and the pair
+	// must not be blocked either way. Both refusals are the same
+	// ErrCandidateUnavailable, so the sender cannot tell a block apart.
+	if err := s.requireActiveAdultCandidate(ctx, toUserID); err != nil {
+		return nil, nil, err
+	}
+	if err := s.requireNotBlocked(ctx, fromUserID, toUserID); err != nil {
+		return nil, nil, err
+	}
+
+	// Lane D3: the rolling spark allowance is enforced in the same
+	// transaction as the insert.
+	sp, err := s.store.CreateSparkWithQuota(ctx, fromUserID, toUserID, targetKind, targetRef, note, s.sparkDailyLimit(ctx, fromUserID))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -90,7 +177,8 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		}
 	}
 
-	// Mutual-Spark check: did `toUserID` already Spark `fromUserID`?
+	// Mutual-Spark check: did `toUserID` Spark `fromUserID` since the
+	// pair's last match closed (and not have it declined)?
 	mutual, herr := s.store.HasReverseSparks(ctx, fromUserID, toUserID)
 	if herr != nil {
 		// We log but don't fail — the Spark itself was persisted.
@@ -124,7 +212,8 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	return sp, &mid, nil
 }
 
-// ListIncomingSparks returns sparks targeted at userID.
+// ListIncomingSparks returns sparks targeted at userID that the recipient
+// may see (not declined, not blocked, sender not deleted or suspended).
 func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*store.Spark, error) {
 	return s.store.ListIncomingSparks(ctx, userID, limit, offset)
 }
@@ -134,4 +223,14 @@ func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limi
 // the user hasn't yet matched on.
 func (s *Service) RevokeSpark(ctx context.Context, sparkID, ownerID uuid.UUID) error {
 	return s.store.DeleteSpark(ctx, sparkID, ownerID)
+}
+
+// DeclineSpark lets the recipient decline a spark aimed at them. Idempotent.
+// It emits nothing, so the sender is never notified; anyone other than the
+// recipient gets store.ErrSparkNotFound.
+func (s *Service) DeclineSpark(ctx context.Context, sparkID, recipientID uuid.UUID) (*store.Spark, error) {
+	if sparkID == uuid.Nil || recipientID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: spark id and recipient required")
+	}
+	return s.store.DeclineSpark(ctx, sparkID, recipientID)
 }

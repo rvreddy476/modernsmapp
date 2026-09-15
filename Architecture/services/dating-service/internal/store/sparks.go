@@ -22,16 +22,31 @@ type Spark struct {
 	TargetRef  string    `json:"target_ref"`
 	Note       *string   `json:"note,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+	// DeclinedAt is set when the recipient declined. Never serialised: the
+	// sender must not learn of a decline.
+	DeclinedAt *time.Time `json:"-"`
 }
 
 // ErrSparkNotFound is returned when a spark id does not exist.
 var ErrSparkNotFound = errors.New("not_found: spark not found")
 
-const sparkSelectCols = `id, from_user_id, to_user_id, target_kind, target_ref, note, created_at`
+// ErrSparkRateLimited is returned when the sender has used their spark
+// allowance for the rolling window.
+var ErrSparkRateLimited = errors.New("rate_limited: spark limit reached")
+
+// SparkQuotaWindow is the rolling window the spark limit counts over.
+const SparkQuotaWindow = 24 * time.Hour
+
+const sparkSelectCols = `id, from_user_id, to_user_id, target_kind, target_ref, note, created_at, declined_at`
+
+// rowQuerier is satisfied by both the pool and a transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 func scanSpark(row pgx.Row) (*Spark, error) {
 	s := &Spark{}
-	if err := row.Scan(&s.ID, &s.FromUserID, &s.ToUserID, &s.TargetKind, &s.TargetRef, &s.Note, &s.CreatedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.FromUserID, &s.ToUserID, &s.TargetKind, &s.TargetRef, &s.Note, &s.CreatedAt, &s.DeclinedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSparkNotFound
 		}
@@ -40,37 +55,117 @@ func scanSpark(row pgx.Row) (*Spark, error) {
 	return s, nil
 }
 
-// CreateSpark inserts a new dating_sparks row. The UNIQUE constraint
-// (from_user_id, to_user_id, target_kind, target_ref) guarantees idempotency:
-// if a duplicate is attempted we fall through to the existing row.
-func (s *Store) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*Spark, error) {
+// pairLastClosedSQL is the time the pair's most recent match was closed or
+// expired (matched_at for legacy rows without closed_at), or -infinity. A
+// spark only counts toward a new match when it is newer than this.
+func pairLastClosedSQL(x, y string) string {
+	return `COALESCE((SELECT max(COALESCE(pm.closed_at, pm.matched_at)) FROM dating_matches pm
+        WHERE pm.user_a = LEAST(` + x + `, ` + y + `)
+          AND pm.user_b = GREATEST(` + x + `, ` + y + `)
+          AND pm.status IN ('closed','expired')), '-infinity'::timestamptz)`
+}
+
+func validateSparkInput(fromUserID, toUserID uuid.UUID, targetKind, targetRef string) error {
 	if fromUserID == uuid.Nil || toUserID == uuid.Nil {
-		return nil, fmt.Errorf("invalid: user ids required")
+		return fmt.Errorf("invalid: user ids required")
 	}
 	if fromUserID == toUserID {
-		return nil, fmt.Errorf("invalid: cannot spark yourself")
+		return fmt.Errorf("invalid: cannot spark yourself")
 	}
 	if targetKind == "" || targetRef == "" {
-		return nil, fmt.Errorf("invalid: target_kind and target_ref required")
+		return fmt.Errorf("invalid: target_kind and target_ref required")
 	}
 	switch targetKind {
 	case "photo", "prompt", "tune_axis", "echo":
 	default:
-		return nil, fmt.Errorf("invalid: unsupported target_kind %q", targetKind)
+		return fmt.Errorf("invalid: unsupported target_kind %q", targetKind)
 	}
+	return nil
+}
 
+// upsertSpark writes the spark. The UNIQUE constraint (from_user_id,
+// to_user_id, target_kind, target_ref) makes a repeat fall through to the
+// existing row; a row older than the pair's last closure is renewed (fresh
+// created_at, decline cleared) so it counts as new interest again.
+func upsertSpark(ctx context.Context, q rowQuerier, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*Spark, error) {
 	var notePtr *string
 	if note != "" {
 		notePtr = &note
 	}
-
-	row := s.db.QueryRow(ctx, `
+	stale := `dating_sparks.created_at <= ` + pairLastClosedSQL("$1::uuid", "$2::uuid")
+	row := q.QueryRow(ctx, `
         INSERT INTO dating_sparks (from_user_id, to_user_id, target_kind, target_ref, note)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (from_user_id, to_user_id, target_kind, target_ref) DO UPDATE
-            SET note = COALESCE(EXCLUDED.note, dating_sparks.note)
+            SET note        = COALESCE(EXCLUDED.note, dating_sparks.note),
+                declined_at = CASE WHEN `+stale+` THEN NULL ELSE dating_sparks.declined_at END,
+                created_at  = CASE WHEN `+stale+` THEN now() ELSE dating_sparks.created_at END
         RETURNING `+sparkSelectCols, fromUserID, toUserID, targetKind, targetRef, notePtr)
 	return scanSpark(row)
+}
+
+// CreateSpark inserts a new dating_sparks row without the spark limit.
+// Idempotent on (from_user_id, to_user_id, target_kind, target_ref).
+func (s *Store) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string) (*Spark, error) {
+	if err := validateSparkInput(fromUserID, toUserID, targetKind, targetRef); err != nil {
+		return nil, err
+	}
+	return upsertSpark(ctx, s.db, fromUserID, toUserID, targetKind, targetRef, note)
+}
+
+// CreateSparkWithQuota creates the spark only when the sender has fewer than
+// `limit` new sparks in the last SparkQuotaWindow (ErrSparkRateLimited
+// otherwise). Repeating an existing spark is free. Each new spark writes a
+// dating_spark_ledger row, which revoke/unmatch/block never delete, so the
+// allowance cannot be reset. A per-sender advisory lock serialises the
+// count-then-insert. limit <= 0 disables the check.
+func (s *Store) CreateSparkWithQuota(ctx context.Context, fromUserID, toUserID uuid.UUID, targetKind, targetRef, note string, limit int) (*Spark, error) {
+	if err := validateSparkInput(fromUserID, toUserID, targetKind, targetRef); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin spark: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 7021))`, fromUserID.String()); err != nil {
+		return nil, fmt.Errorf("lock spark quota: %w", err)
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+        SELECT EXISTS (SELECT 1 FROM dating_sparks
+            WHERE from_user_id = $1 AND to_user_id = $2 AND target_kind = $3 AND target_ref = $4)`,
+		fromUserID, toUserID, targetKind, targetRef).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("check existing spark: %w", err)
+	}
+	if !exists && limit > 0 {
+		window := time.Now().Add(-SparkQuotaWindow)
+		if _, err := tx.Exec(ctx, `
+            DELETE FROM dating_spark_ledger WHERE from_user_id = $1 AND sent_at <= $2`, fromUserID, window); err != nil {
+			return nil, fmt.Errorf("trim spark ledger: %w", err)
+		}
+		var used int
+		if err := tx.QueryRow(ctx, `
+            SELECT COUNT(*)::int FROM dating_spark_ledger WHERE from_user_id = $1 AND sent_at > $2`,
+			fromUserID, window).Scan(&used); err != nil {
+			return nil, fmt.Errorf("count spark ledger: %w", err)
+		}
+		if used >= limit {
+			return nil, ErrSparkRateLimited
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO dating_spark_ledger (from_user_id) VALUES ($1)`, fromUserID); err != nil {
+			return nil, fmt.Errorf("record spark ledger: %w", err)
+		}
+	}
+	sp, err := upsertSpark(ctx, tx, fromUserID, toUserID, targetKind, targetRef, note)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit spark: %w", err)
+	}
+	return sp, nil
 }
 
 // GetSpark returns a single spark by id.
@@ -79,7 +174,9 @@ func (s *Store) GetSpark(ctx context.Context, id uuid.UUID) (*Spark, error) {
 	return scanSpark(row)
 }
 
-// ListIncomingSparks returns sparks aimed at userID (ordered newest first).
+// ListIncomingSparks returns sparks aimed at userID (newest first) that the
+// recipient may see: not declined, the pair not blocked either way, and the
+// sender's profile neither deleted nor suspended.
 func (s *Store) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*Spark, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -89,16 +186,22 @@ func (s *Store) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit,
 	}
 	rows, err := s.db.Query(ctx, `
         SELECT `+sparkSelectCols+`
-        FROM dating_sparks
-        WHERE to_user_id = $1
-        ORDER BY created_at DESC
+        FROM dating_sparks sp
+        WHERE sp.to_user_id = $1
+          AND sp.declined_at IS NULL
+          AND NOT `+blockedPairPredicate("sp.from_user_id", "sp.to_user_id")+`
+          AND `+visibleProfilePredicate("sp.from_user_id")+`
+        ORDER BY sp.created_at DESC
         LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list incoming sparks: %w", err)
 	}
-	defer rows.Close()
+	return collectSparks(rows, limit)
+}
 
-	out := make([]*Spark, 0, limit)
+func collectSparks(rows pgx.Rows, capacity int) ([]*Spark, error) {
+	defer rows.Close()
+	out := make([]*Spark, 0, capacity)
 	for rows.Next() {
 		sp, err := scanSpark(rows)
 		if err != nil {
@@ -121,22 +224,22 @@ func (s *Store) ListSparksSent(ctx context.Context, userID uuid.UUID) ([]*Spark,
 	if err != nil {
 		return nil, fmt.Errorf("list sparks sent: %w", err)
 	}
-	defer rows.Close()
-	out := make([]*Spark, 0, 16)
-	for rows.Next() {
-		sp, err := scanSpark(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, sp)
-	}
-	return out, rows.Err()
+	return collectSparks(rows, 16)
 }
 
-// ListSparksReceived is an alias around ListIncomingSparks with a default
-// page size — kept distinct so the exporter's intent is obvious.
+// ListSparksReceived returns every spark aimed at userID for the DPDP data
+// exporter: the user's own record, so no visibility filter applies.
 func (s *Store) ListSparksReceived(ctx context.Context, userID uuid.UUID) ([]*Spark, error) {
-	return s.ListIncomingSparks(ctx, userID, 500, 0)
+	rows, err := s.db.Query(ctx, `
+        SELECT `+sparkSelectCols+`
+        FROM dating_sparks
+        WHERE to_user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 500`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list sparks received: %w", err)
+	}
+	return collectSparks(rows, 16)
 }
 
 // DeleteSpark removes a spark only when fromUserID matches the owner.
@@ -154,17 +257,45 @@ func (s *Store) DeleteSpark(ctx context.Context, id, fromUserID uuid.UUID) error
 	return nil
 }
 
-// HasReverseSparks reports true if user b has previously Sparked user a.
-// Used by the spark service to detect mutual interest and form a match.
+// DeclineSpark marks a spark declined by its recipient. Idempotent: a repeat
+// keeps the first declined_at. Any caller other than the recipient gets
+// ErrSparkNotFound, so a sender cannot probe the state.
+func (s *Store) DeclineSpark(ctx context.Context, id, recipientID uuid.UUID) (*Spark, error) {
+	row := s.db.QueryRow(ctx, `
+        UPDATE dating_sparks
+        SET declined_at = COALESCE(declined_at, now())
+        WHERE id = $1 AND to_user_id = $2
+        RETURNING `+sparkSelectCols, id, recipientID)
+	return scanSpark(row)
+}
+
+// HasReverseSparks reports true if user b has Sparked user a with interest
+// that still counts: not declined, and created after the pair's last match
+// closure or expiry. Used by the spark service to detect mutual interest.
 func (s *Store) HasReverseSparks(ctx context.Context, a, b uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `
         SELECT EXISTS (
-            SELECT 1 FROM dating_sparks
-            WHERE from_user_id = $1 AND to_user_id = $2
-        )`, b, a).Scan(&exists)
+            SELECT 1 FROM dating_sparks sp
+            WHERE sp.from_user_id = $2 AND sp.to_user_id = $1
+              AND sp.declined_at IS NULL
+              AND sp.created_at > `+pairLastClosedSQL("$1::uuid", "$2::uuid")+`
+        )`, a, b).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("has reverse sparks: %w", err)
 	}
 	return exists, nil
+}
+
+// deleteSparksBetween removes every spark between the two users, both
+// directions, inside tx. Unmatch and block both call it.
+func deleteSparksBetween(ctx context.Context, tx pgx.Tx, x, y uuid.UUID) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+        DELETE FROM dating_sparks
+        WHERE (from_user_id = $1 AND to_user_id = $2)
+           OR (from_user_id = $2 AND to_user_id = $1)`, x, y)
+	if err != nil {
+		return 0, fmt.Errorf("delete sparks between pair: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

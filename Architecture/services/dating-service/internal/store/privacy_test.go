@@ -98,16 +98,17 @@ func seedDiscoverableProfile(t *testing.T, s *Store, id uuid.UUID, gender string
 	driveTo(t, s, id, ProfileStatusActive)
 }
 
-// TestFetchCandidates_IncognitoGate covers the brief's required case
-// (a): FetchCandidates skips incognito profiles unless viewer liked
-// them. We treat "liked" as the viewer having created at least one
-// dating_sparks row aimed at the candidate (same predicate used in
-// the WHERE clause).
+// TestFetchCandidates_IncognitoGate pins the schema-doc meaning of
+// incognito (lane D3): an incognito profile appears only to people IT has
+// sparked. The viewer sparking the incognito profile reveals nothing; the
+// incognito profile sparking the viewer does. A unique gender keeps other
+// test rows out of the deck.
 func TestFetchCandidates_IncognitoGate(t *testing.T) {
 	s, cleanup := privacyTestStore(t)
 	defer cleanup()
 	ctx := context.Background()
 
+	gender := "d3-" + uuid.NewString()[:8]
 	viewer := uuid.New()
 	incognitoCandidate := uuid.New()
 	visibleCandidate := uuid.New()
@@ -116,8 +117,8 @@ func TestFetchCandidates_IncognitoGate(t *testing.T) {
 	ensureProfileForTest(t, s, incognitoCandidate)
 	ensureProfileForTest(t, s, visibleCandidate)
 	seedDiscoverableProfile(t, s, viewer, "female")
-	seedDiscoverableProfile(t, s, incognitoCandidate, "male")
-	seedDiscoverableProfile(t, s, visibleCandidate, "male")
+	seedDiscoverableProfile(t, s, incognitoCandidate, gender)
+	seedDiscoverableProfile(t, s, visibleCandidate, gender)
 
 	// Flip incognitoCandidate to incognito mode.
 	if _, err := s.UpdatePrivacy(ctx, incognitoCandidate, PrivacyUpdate{
@@ -126,38 +127,41 @@ func TestFetchCandidates_IncognitoGate(t *testing.T) {
 		t.Fatalf("set incognito: %v", err)
 	}
 
-	candidates, err := s.FetchCandidates(ctx, CandidateQuery{
-		ViewerID:     viewer,
-		GenderFilter: "male",
-		Limit:        50,
-	})
-	if err != nil {
-		t.Fatalf("fetch candidates: %v", err)
+	fetch := func() []CandidateProfile {
+		t.Helper()
+		candidates, err := s.FetchCandidates(ctx, CandidateQuery{
+			ViewerID:     viewer,
+			GenderFilter: gender,
+			Limit:        50,
+		})
+		if err != nil {
+			t.Fatalf("fetch candidates: %v", err)
+		}
+		return candidates
 	}
 
+	candidates := fetch()
 	if containsCandidate(candidates, incognitoCandidate) {
-		t.Fatalf("incognito candidate %s leaked into deck before spark", incognitoCandidate)
+		t.Fatalf("incognito candidate %s leaked into deck before any spark", incognitoCandidate)
 	}
 	if !containsCandidate(candidates, visibleCandidate) {
 		t.Fatalf("visible candidate %s should appear in deck", visibleCandidate)
 	}
 
-	// Now the viewer sparks the incognito candidate. After the
-	// spark lands the candidate should surface despite incognito.
+	// The viewer sparking the incognito profile must not reveal it.
 	if _, err := s.CreateSpark(ctx, viewer, incognitoCandidate, "photo", "0", ""); err != nil {
-		t.Fatalf("create spark: %v", err)
+		t.Fatalf("create spark viewer->incognito: %v", err)
+	}
+	if containsCandidate(fetch(), incognitoCandidate) {
+		t.Fatalf("incognito candidate %s surfaced because the VIEWER sparked them", incognitoCandidate)
 	}
 
-	candidates, err = s.FetchCandidates(ctx, CandidateQuery{
-		ViewerID:     viewer,
-		GenderFilter: "male",
-		Limit:        50,
-	})
-	if err != nil {
-		t.Fatalf("fetch candidates post-spark: %v", err)
+	// The incognito profile sparking the viewer reveals it to the viewer.
+	if _, err := s.CreateSpark(ctx, incognitoCandidate, viewer, "photo", "0", ""); err != nil {
+		t.Fatalf("create spark incognito->viewer: %v", err)
 	}
-	if !containsCandidate(candidates, incognitoCandidate) {
-		t.Fatalf("incognito candidate %s did not surface after viewer sparked them", incognitoCandidate)
+	if !containsCandidate(fetch(), incognitoCandidate) {
+		t.Fatalf("incognito candidate %s hidden from a viewer they sparked", incognitoCandidate)
 	}
 }
 

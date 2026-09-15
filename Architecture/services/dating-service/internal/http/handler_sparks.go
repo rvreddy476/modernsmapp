@@ -86,3 +86,26 @@ func (h *Handler) RevokeSpark(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"revoked": true}, nil)
 }
+
+// DeclineSpark — POST /v1/dating/sparks/:id/decline.
+// Only the recipient may decline; anyone else gets 404. Idempotent, and the
+// sender is never notified.
+func (h *Handler) DeclineSpark(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	sparkID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	if _, err := h.svc.DeclineSpark(c.Request.Context(), sparkID, userID); err != nil {
+		if errors.Is(err, store.ErrSparkNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "spark not found", nil)
+			return
+		}
+		respondServiceError(c, err, http.StatusInternalServerError, "DECLINE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"declined": true, "spark_id": sparkID.String()}, nil)
+}

@@ -1,0 +1,7 @@
+{
+  "data": {
+    "passed": true,
+    "candidate_id": "<candidate>",
+    "cooldown_until": "<timestamp>"
+  }
+}

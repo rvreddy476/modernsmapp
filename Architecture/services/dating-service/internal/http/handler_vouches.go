@@ -127,10 +127,15 @@ func (h *Handler) ListVouchesFor(c *gin.Context) {
 		return
 	}
 	status := "accepted"
-	if viewer, err := uuid.Parse(c.GetHeader(headerUserID)); err == nil && viewer == target {
-		status = c.DefaultQuery("status", "accepted")
+	viewer := uuid.Nil
+	if v, err := uuid.Parse(c.GetHeader(headerUserID)); err == nil {
+		viewer = v
+		if v == target {
+			status = c.DefaultQuery("status", "accepted")
+		}
 	}
-	out, err := h.svc.ListVouchesFor(c.Request.Context(), target, status)
+	// Lane D3: the viewer's blocks filter the list too.
+	out, err := h.svc.ListVouchesFor(c.Request.Context(), viewer, target, status)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return

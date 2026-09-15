@@ -104,6 +104,67 @@ func (s *Store) CreateMatchPending(ctx context.Context, tx pgx.Tx, userA, userB 
 	return id, nil
 }
 
+// ErrMatchPairBlocked is returned when a match is requested for a pair where
+// either user has blocked the other.
+var ErrMatchPairBlocked = errors.New("forbidden: match pair is blocked")
+
+// openMatchStatuses is the status set covered by uq_dating_matches_open_pair.
+const openMatchStatuses = `('matched','conversing','quiet')`
+
+// CreateOrGetOpenMatch is match formation's insert-or-get. It inserts a
+// pending 'matched' row unless the pair already has an open match (the
+// partial unique index uq_dating_matches_open_pair decides under
+// concurrency) or is blocked. Returns the match id and whether this call
+// created it: concurrent mutual sparks all get the same id and exactly one
+// of them gets created=true and runs the chat saga.
+func (s *Store) CreateOrGetOpenMatch(ctx context.Context, userA, userB uuid.UUID, sparkTarget map[string]any) (uuid.UUID, bool, error) {
+	a, b := canonicalPair(userA, userB)
+	if a == b {
+		return uuid.Nil, false, fmt.Errorf("invalid: cannot match a user with themselves")
+	}
+	var raw []byte
+	if sparkTarget != nil {
+		buf, err := json.Marshal(sparkTarget)
+		if err != nil {
+			return uuid.Nil, false, fmt.Errorf("marshal spark target: %w", err)
+		}
+		raw = buf
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		var id uuid.UUID
+		err := s.db.QueryRow(ctx, `
+            INSERT INTO dating_matches (user_a, user_b, status, spark_target, matched_at)
+            SELECT $1::uuid, $2::uuid, 'matched', $3::jsonb, now()
+            WHERE NOT `+blockedPairPredicate("$1::uuid", "$2::uuid")+`
+            ON CONFLICT (user_a, user_b) WHERE status IN `+openMatchStatuses+` DO NOTHING
+            RETURNING id`, a, b, raw).Scan(&id)
+		if err == nil {
+			return id, true, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, fmt.Errorf("insert match: %w", err)
+		}
+		err = s.db.QueryRow(ctx, `
+            SELECT id FROM dating_matches
+            WHERE user_a = $1 AND user_b = $2 AND status IN `+openMatchStatuses, a, b).Scan(&id)
+		if err == nil {
+			return id, false, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, fmt.Errorf("load open match: %w", err)
+		}
+		blocked, berr := s.IsBlockedEitherWay(ctx, a, b)
+		if berr != nil {
+			return uuid.Nil, false, berr
+		}
+		if blocked {
+			return uuid.Nil, false, ErrMatchPairBlocked
+		}
+		// The conflicting open match closed between the two statements; retry.
+	}
+	return uuid.Nil, false, fmt.Errorf("insert match: open match for the pair kept changing")
+}
+
 // MarkMatchActive sets status='matched', conversation_id and the 7-day
 // expiry window. Idempotent: re-running is safe.
 func (s *Store) MarkMatchActive(ctx context.Context, matchID, conversationID uuid.UUID) error {
@@ -180,64 +241,69 @@ func (s *Store) GetMatch(ctx context.Context, id uuid.UUID) (*Match, error) {
 	return scanMatch(row)
 }
 
-// GetMatchByUsers returns the match between two users (canonical order
-// applied internally) or ErrMatchNotFound.
+// GetMatchByUsers returns the pair's match (canonical order applied
+// internally), preferring the open one, else the most recent, or
+// ErrMatchNotFound.
 func (s *Store) GetMatchByUsers(ctx context.Context, userA, userB uuid.UUID) (*Match, error) {
 	a, b := canonicalPair(userA, userB)
 	row := s.db.QueryRow(ctx, `
         SELECT `+matchSelectCols+`
         FROM dating_matches
-        WHERE user_a = $1 AND user_b = $2`, a, b)
+        WHERE user_a = $1 AND user_b = $2
+        ORDER BY (status IN `+openMatchStatuses+`) DESC, matched_at DESC
+        LIMIT 1`, a, b)
 	return scanMatch(row)
 }
 
-// ListMatchesForUser returns matches involving userID, optionally filtered
-// by a status bucket. Recognised status filters: 'all', 'active', 'quiet',
-// 'sparks-waiting'. Anything else is treated as 'all'.
+// ListMatchesForUser returns matches involving userID that the user may
+// see, optionally filtered by a status bucket. Recognised status filters:
+// 'all', 'active', 'quiet', 'sparks-waiting'. Anything else is treated as
+// 'all'. A match is hidden when the pair is blocked either way or the other
+// participant's profile is deleted, suspended or gone.
 func (s *Store) ListMatchesForUser(ctx context.Context, userID uuid.UUID, status string) ([]*Match, error) {
-	var (
-		rows pgx.Rows
-		err  error
-	)
+	bucket := ""
+	order := `COALESCE(m.last_message_at, m.matched_at) DESC`
 	switch status {
 	case "active":
-		rows, err = s.db.Query(ctx, `
-            SELECT `+matchSelectCols+`
-            FROM dating_matches
-            WHERE (user_a = $1 OR user_b = $1)
-              AND status IN ('matched','conversing')
-            ORDER BY COALESCE(last_message_at, matched_at) DESC
-            LIMIT 200`, userID)
+		bucket = `AND m.status IN ('matched','conversing')`
 	case "quiet":
-		rows, err = s.db.Query(ctx, `
-            SELECT `+matchSelectCols+`
-            FROM dating_matches
-            WHERE (user_a = $1 OR user_b = $1)
-              AND status = 'quiet'
-            ORDER BY COALESCE(last_message_at, matched_at) DESC
-            LIMIT 200`, userID)
+		bucket = `AND m.status = 'quiet'`
 	case "sparks-waiting":
-		rows, err = s.db.Query(ctx, `
-            SELECT `+matchSelectCols+`
-            FROM dating_matches
-            WHERE (user_a = $1 OR user_b = $1)
-              AND status = 'matched'
-              AND first_message_at IS NULL
-            ORDER BY matched_at DESC
-            LIMIT 200`, userID)
-	default:
-		rows, err = s.db.Query(ctx, `
-            SELECT `+matchSelectCols+`
-            FROM dating_matches
-            WHERE user_a = $1 OR user_b = $1
-            ORDER BY COALESCE(last_message_at, matched_at) DESC
-            LIMIT 200`, userID)
+		bucket = `AND m.status = 'matched' AND m.first_message_at IS NULL`
+		order = `m.matched_at DESC`
 	}
+	rows, err := s.db.Query(ctx, `
+        SELECT `+matchSelectCols+`
+        FROM dating_matches m
+        WHERE (m.user_a = $1 OR m.user_b = $1)
+          `+bucket+`
+          AND NOT `+blockedPairPredicate("m.user_a", "m.user_b")+`
+          AND `+visibleProfilePredicate("CASE WHEN m.user_a = $1 THEN m.user_b ELSE m.user_a END")+`
+        ORDER BY `+order+`
+        LIMIT 200`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list matches: %w", err)
 	}
-	defer rows.Close()
+	return collectMatches(rows)
+}
 
+// ListMatchesForExport returns every match involving userID, unfiltered,
+// for the DPDP data exporter (the user's own record).
+func (s *Store) ListMatchesForExport(ctx context.Context, userID uuid.UUID) ([]*Match, error) {
+	rows, err := s.db.Query(ctx, `
+        SELECT `+matchSelectCols+`
+        FROM dating_matches
+        WHERE user_a = $1 OR user_b = $1
+        ORDER BY COALESCE(last_message_at, matched_at) DESC
+        LIMIT 500`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list matches for export: %w", err)
+	}
+	return collectMatches(rows)
+}
+
+func collectMatches(rows pgx.Rows) ([]*Match, error) {
+	defer rows.Close()
 	out := make([]*Match, 0, 16)
 	for rows.Next() {
 		m, err := scanMatch(rows)
@@ -249,17 +315,32 @@ func (s *Store) ListMatchesForUser(ctx context.Context, userID uuid.UUID, status
 	return out, rows.Err()
 }
 
-// CloseMatch sets status='closed' and records the actor.
+// CloseMatch (unmatch) sets status='closed', records the actor and the
+// time, and in the same transaction deletes both users' sparks toward each
+// other, so re-matching needs two fresh sparks.
 func (s *Store) CloseMatch(ctx context.Context, matchID, closedBy uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-        UPDATE dating_matches
-        SET status = 'closed', closed_by = $2
-        WHERE id = $1 AND status NOT IN ('closed','expired')`, matchID, closedBy)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
+		return fmt.Errorf("begin close match: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var a, b uuid.UUID
+	err = tx.QueryRow(ctx, `
+        UPDATE dating_matches
+        SET status = 'closed', closed_by = $2, closed_at = now()
+        WHERE id = $1 AND status NOT IN ('closed','expired')
+        RETURNING user_a, user_b`, matchID, closedBy).Scan(&a, &b)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMatchNotFound
+		}
 		return fmt.Errorf("close match: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrMatchNotFound
+	if _, err := deleteSparksBetween(ctx, tx, a, b); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit close match: %w", err)
 	}
 	return nil
 }
@@ -289,7 +370,7 @@ func (s *Store) ExtendMatch(ctx context.Context, matchID uuid.UUID, days int) er
 func (s *Store) ExpireStaleMatches(ctx context.Context) ([]*Match, error) {
 	rows, err := s.db.Query(ctx, `
         UPDATE dating_matches
-        SET status = 'expired'
+        SET status = 'expired', closed_at = now()
         WHERE status = 'matched'
           AND first_message_at IS NULL
           AND expires_at IS NOT NULL

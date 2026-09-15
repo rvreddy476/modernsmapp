@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "SPARK_RATE_LIMITED",
+    "message": "spark limit reached; try again later",
+    "details": {
+      "limit": 50,
+      "window_hours": 24
+    }
+  },
+  "meta": {}
+}

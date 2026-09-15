@@ -206,9 +206,7 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		      AND ph.moderation_status = 'approved'
 		      AND ph.visibility = 'public')`,
 		// Mutual block filter — neither side has blocked the other.
-		`NOT EXISTS (SELECT 1 FROM dating_blocks b
-		    WHERE (b.user_id = $1 AND b.blocked_id = p.user_id)
-		       OR (b.user_id = p.user_id AND b.blocked_id = $1))`,
+		`NOT ` + blockedPairPredicate("$1", "p.user_id"),
 		// §P0-7 Phase A: drop candidates whose enforcement level
 		// removes them from discovery. Rows with no risk record (the
 		// vast majority before the sweeper has run) implicitly pass
@@ -219,14 +217,10 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		    WHERE rar.user_id = p.user_id
 		      AND rar.risk_level IN
 		          ('hide_from_discovery','chat_hold','admin_review','suspend'))`,
-		// §P1-3: incognito candidates stay hidden UNLESS the viewer
-		// has already shown explicit prior interest by sparking
-		// them. The EXISTS check uses the same (from_user_id,
-		// to_user_id) ordering as dating_sparks so the UNIQUE
-		// index on that pair is the planner's hot path.
-		`(p.incognito = false OR EXISTS (
-		    SELECT 1 FROM dating_sparks s
-		    WHERE s.from_user_id = $1 AND s.to_user_id = p.user_id))`,
+		// §P1-3 (schema doc): an incognito profile appears only to
+		// people IT has sparked. The viewer sparking the incognito
+		// profile reveals nothing.
+		incognitoVisiblePredicate("p", "$1"),
 	}
 	if q.VerifiedOnly {
 		// §P1-3 verified-only filter: viewer-side toggle. Phone-only
@@ -252,8 +246,10 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		where = append(where, fmt.Sprintf(`p.intent = ANY($%d)`, len(args)))
 	}
 	if q.ExcludePassed {
-		where = append(where, `NOT EXISTS (SELECT 1 FROM dating_passes dp
-		    WHERE dp.user_id = $1 AND dp.candidate_id = p.user_id)`)
+		args = append(args, time.Now().Add(-PassCooldown))
+		where = append(where, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM dating_passes dp
+		    WHERE dp.user_id = $1 AND dp.candidate_id = p.user_id
+		      AND dp.passed_at > $%d)`, len(args)))
 	}
 
 	// P0-10 Phase A: geohash prefix prefilter. When the viewer has a
@@ -346,13 +342,28 @@ func scanCandidate(row pgx.Row) (*CandidateProfile, error) {
 	return c, nil
 }
 
-// GetCandidateByUserID returns a single CandidateProfile (used by Nebula).
-func (s *Store) GetCandidateByUserID(ctx context.Context, userID uuid.UUID) (*CandidateProfile, error) {
+// incognitoVisiblePredicate is true when the profile aliased `alias` is not
+// incognito, or has itself sparked the viewer expression.
+func incognitoVisiblePredicate(alias, viewer string) string {
+	return `(` + alias + `.incognito = false OR EXISTS (
+	    SELECT 1 FROM dating_sparks inc
+	    WHERE inc.from_user_id = ` + alias + `.user_id AND inc.to_user_id = ` + viewer + `))`
+}
+
+// GetCandidateForViewer returns one CandidateProfile as `viewerID` may see
+// it (used by Nebula). No row when the profile is deleted or suspended, the
+// pair is blocked either way, or the profile is incognito and has not
+// sparked the viewer.
+func (s *Store) GetCandidateForViewer(ctx context.Context, viewerID, userID uuid.UUID) (*CandidateProfile, error) {
 	row := s.db.QueryRow(ctx, `
         SELECT `+candidateSelectCols+`
         FROM dating_profiles p
         LEFT JOIN dating_tunes t ON t.user_id = p.user_id
-        WHERE p.user_id = $1 AND p.deleted_at IS NULL`, userID)
+        WHERE p.user_id = $2
+          AND p.deleted_at IS NULL
+          AND p.profile_status NOT IN ('suspended','deleted')
+          AND NOT `+blockedPairPredicate("$1::uuid", "p.user_id")+`
+          AND `+incognitoVisiblePredicate("p", "$1::uuid"), viewerID, userID)
 	return scanCandidate(row)
 }
 
@@ -452,8 +463,41 @@ type PassedCandidate struct {
 	Reason      *string
 }
 
+// PassCooldown is how long a pass keeps the candidate out of the passer's
+// deck. dating_passes has no expiry column, so it runs from passed_at.
+const PassCooldown = 30 * 24 * time.Hour
+
+// RecordPass writes the viewer's pass on a candidate. Idempotent: a repeat
+// inside the cooldown changes nothing; a repeat after it re-arms the
+// cooldown. Returns the passed_at that now stands.
+func (s *Store) RecordPass(ctx context.Context, userID, candidateID uuid.UUID, reason string) (time.Time, error) {
+	if userID == uuid.Nil || candidateID == uuid.Nil {
+		return time.Time{}, fmt.Errorf("invalid: user_id and candidate_id required")
+	}
+	if userID == candidateID {
+		return time.Time{}, fmt.Errorf("invalid: cannot pass yourself")
+	}
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+	var passedAt time.Time
+	err := s.db.QueryRow(ctx, `
+        INSERT INTO dating_passes (user_id, candidate_id, reason)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, candidate_id) DO UPDATE
+            SET passed_at = CASE WHEN dating_passes.passed_at <= $4 THEN now() ELSE dating_passes.passed_at END,
+                reason    = CASE WHEN dating_passes.passed_at <= $4 THEN EXCLUDED.reason ELSE dating_passes.reason END
+        RETURNING passed_at`, userID, candidateID, reasonPtr, time.Now().Add(-PassCooldown)).Scan(&passedAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("record pass: %w", err)
+	}
+	return passedAt, nil
+}
+
 // ListPassedCandidates returns the user's most-recent passes (paged, max
-// `limit`). Used by GET /v1/dating/pulse/nebula?filter=passed.
+// `limit`), skipping candidates blocked either way or whose profile is
+// deleted, suspended or gone. Used by GET /v1/dating/pulse/nebula?filter=passed.
 func (s *Store) ListPassedCandidates(ctx context.Context, userID uuid.UUID, limit, offset int) ([]PassedCandidate, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
@@ -462,10 +506,12 @@ func (s *Store) ListPassedCandidates(ctx context.Context, userID uuid.UUID, limi
 		offset = 0
 	}
 	rows, err := s.db.Query(ctx, `
-        SELECT candidate_id, passed_at, reason
-        FROM dating_passes
-        WHERE user_id = $1
-        ORDER BY passed_at DESC
+        SELECT dp.candidate_id, dp.passed_at, dp.reason
+        FROM dating_passes dp
+        WHERE dp.user_id = $1
+          AND NOT `+blockedPairPredicate("dp.user_id", "dp.candidate_id")+`
+          AND `+visibleProfilePredicate("dp.candidate_id")+`
+        ORDER BY dp.passed_at DESC
         LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list passes: %w", err)

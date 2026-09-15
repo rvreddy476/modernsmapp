@@ -189,6 +189,72 @@ func (s *Store) ListVouchesFor(ctx context.Context, voucheeID uuid.UUID, status 
 	return out, rows.Err()
 }
 
+// ListVouchesForViewer returns vouches aimed at voucheeID as viewerID may
+// see them. status="" returns all non-revoked; otherwise that status only.
+// A vouch is hidden when voucher and vouchee are blocked either way, when
+// the voucher's profile is deleted, suspended or gone, or (viewerID set)
+// when the viewer and either party are blocked either way.
+func (s *Store) ListVouchesForViewer(ctx context.Context, viewerID, voucheeID uuid.UUID, status string) ([]*Vouch, error) {
+	args := []any{voucheeID}
+	statusClause := `AND v.status <> 'revoked'`
+	if status != "" {
+		args = append(args, status)
+		statusClause = fmt.Sprintf(`AND v.status = $%d`, len(args))
+	}
+	viewerClause := ""
+	if viewerID != uuid.Nil {
+		args = append(args, viewerID)
+		viewer := fmt.Sprintf("$%d::uuid", len(args))
+		viewerClause = `AND NOT ` + blockedPairPredicate("v.voucher_id", viewer) +
+			` AND NOT ` + blockedPairPredicate("v.vouchee_id", viewer)
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT `+vouchSelectCols+`
+        FROM dating_vouches v
+        WHERE v.vouchee_id = $1
+          `+statusClause+`
+          AND NOT `+blockedPairPredicate("v.voucher_id", "v.vouchee_id")+`
+          AND `+visibleProfilePredicate("v.voucher_id")+`
+          `+viewerClause+`
+        ORDER BY v.created_at DESC
+        LIMIT 200`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list vouches for viewer: %w", err)
+	}
+	return collectVouches(rows)
+}
+
+// ListVouchesSentVisible returns the vouches voucherID created, hiding those
+// whose vouchee is blocked either way or has a deleted, suspended or missing
+// profile.
+func (s *Store) ListVouchesSentVisible(ctx context.Context, voucherID uuid.UUID) ([]*Vouch, error) {
+	rows, err := s.db.Query(ctx, `
+        SELECT `+vouchSelectCols+`
+        FROM dating_vouches v
+        WHERE v.voucher_id = $1
+          AND NOT `+blockedPairPredicate("v.voucher_id", "v.vouchee_id")+`
+          AND `+visibleProfilePredicate("v.vouchee_id")+`
+        ORDER BY v.created_at DESC
+        LIMIT 200`, voucherID)
+	if err != nil {
+		return nil, fmt.Errorf("list vouches sent: %w", err)
+	}
+	return collectVouches(rows)
+}
+
+func collectVouches(rows pgx.Rows) ([]*Vouch, error) {
+	defer rows.Close()
+	out := make([]*Vouch, 0, 16)
+	for rows.Next() {
+		v, err := scanVouch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // ListVouchesSent returns vouches created by voucherID (any status except
 // revoked, newest first).
 func (s *Store) ListVouchesSent(ctx context.Context, voucherID uuid.UUID) ([]*Vouch, error) {
