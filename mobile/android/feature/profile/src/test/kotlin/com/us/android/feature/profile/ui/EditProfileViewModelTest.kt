@@ -427,21 +427,50 @@ class EditProfileViewModelTest {
     }
 
     /**
-     * The legacy-name finding. profile-service validates `first_name` on every
-     * save that sends it, changed or not, and this form always sends it — so a
-     * stored name from before the rules blocks every save. The client says so
-     * on the field rather than hiding it or silently dropping the key.
+     * The legacy-name case. profile-service skips a first name whose trimmed
+     * value equals the stored one, so a name from before the rules is sent
+     * back as it is and does not stand in the way of other edits.
      */
     @Test
-    fun `an unchanged out-of-policy stored first name blocks the save and says why`() = runTest {
+    fun `an unchanged out-of-policy stored first name does not block saving other fields`() = runTest {
         val api = FakeApi().apply { ownProfile = ApiEnvelope(FakeApi.LOADED.copy(firstName = "Agent 007")) }
         val vm = viewModel(api)
         vm.onFieldChange(EditProfileField.LOCATION, "Hyderabad")
 
         vm.save()
 
-        assertThat(editingState(vm).errorFor(EditProfileField.FIRST_NAME)).contains("saved first name must be updated")
+        val state = editingState(vm)
+        assertThat(state.errorFor(EditProfileField.FIRST_NAME)).isNull()
+        assertThat(state.fieldErrors).isEmpty()
+        assertThat(requireNotNull(api.lastUpdate).firstName).isEqualTo("Agent 007")
+        assertThat(state.saved).isTrue()
+    }
+
+    @Test
+    fun `editing an out-of-policy stored first name to another invalid value is refused`() = runTest {
+        val api = FakeApi().apply { ownProfile = ApiEnvelope(FakeApi.LOADED.copy(firstName = "Agent 007")) }
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.FIRST_NAME, "Agent 008")
+
+        vm.save()
+
+        assertThat(editingState(vm).errorFor(EditProfileField.FIRST_NAME))
+            .isEqualTo("Use letters, spaces, hyphens, apostrophes and periods only")
         assertThat(api.calls).doesNotContain("updateProfile")
+    }
+
+    @Test
+    fun `editing an out-of-policy stored first name to a valid value saves`() = runTest {
+        val api = FakeApi().apply { ownProfile = ApiEnvelope(FakeApi.LOADED.copy(firstName = "Agent 007")) }
+        val vm = viewModel(api)
+        vm.onFieldChange(EditProfileField.FIRST_NAME, "Agent")
+
+        vm.save()
+
+        val state = editingState(vm)
+        assertThat(state.fieldErrors).isEmpty()
+        assertThat(requireNotNull(api.lastUpdate).firstName).isEqualTo("Agent")
+        assertThat(state.saved).isTrue()
     }
 
     @Test

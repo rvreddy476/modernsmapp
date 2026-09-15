@@ -174,19 +174,13 @@ class EditProfileViewModel @Inject constructor(
      * the exception — a stored one cannot be cleared.
      */
     private fun validate(form: EditableProfile, original: EditableProfile): Map<EditProfileField, String> = buildMap {
-        ProfileIdentityRules.validateFirstNameChange(form.firstName, original.firstName)?.let { error ->
-            // The server re-validates a first name on EVERY save, changed or
-            // not, so a stored name from before these rules blocks the whole
-            // form. Say so, rather than marking a field the user never touched
-            // with no explanation.
-            put(
-                EditProfileField.FIRST_NAME,
-                if (form.firstName == original.firstName) {
-                    "${error.message}. Your saved first name must be updated before changes can be saved."
-                } else {
-                    error.message
-                },
-            )
+        // profile-service skips a first name whose trimmed value equals the
+        // stored one, as it skips an unchanged date of birth. So a stored name
+        // from before these rules does not block edits to other fields; only
+        // a name the user actually changed is checked.
+        if (ProfileIdentityRules.trimFirstName(form.firstName) != original.firstName) {
+            ProfileIdentityRules.validateFirstNameChange(form.firstName, original.firstName)
+                ?.let { put(EditProfileField.FIRST_NAME, it.message) }
         }
         ProfileIdentityRules.validateDateOfBirthChange(
             value = form.dateOfBirth,

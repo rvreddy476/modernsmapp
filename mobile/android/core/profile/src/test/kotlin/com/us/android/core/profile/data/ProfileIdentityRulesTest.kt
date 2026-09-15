@@ -89,11 +89,18 @@ class ProfileIdentityRulesTest {
             .isEqualTo(FirstNameError.Empty)
     }
 
-    /** The server has no "unchanged" exemption for a non-empty name. */
+    /** Skipping an unchanged name is the caller's check (trimFirstName), not this rule's. */
     @Test
     fun `an unchanged stored name that breaks the rule is still refused`() {
         assertThat(ProfileIdentityRules.validateFirstNameChange(value = "Agent 007", stored = "Agent 007"))
             .isEqualTo(FirstNameError.InvalidCharacter)
+    }
+
+    /** strings.TrimSpace: Go's spaces at the ends only, never ZWJ or inner spaces. */
+    @Test
+    fun `a first name is trimmed as the server trims it before the unchanged comparison`() {
+        assertThat(ProfileIdentityRules.trimFirstName("　 Agent 007 ")).isEqualTo("Agent 007")
+        assertThat(ProfileIdentityRules.trimFirstName("क‍")).isEqualTo("क‍")
     }
 
     // ── Date of birth ───────────────────────────────────────────────────

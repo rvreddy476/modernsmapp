@@ -119,12 +119,20 @@ object ProfileIdentityRules {
     }
 
     /**
-     * The first-name rule as `checkIdentityFields` applies it to a save.
+     * `strings.TrimSpace`, the trim profile-service applies to a submitted
+     * first name before comparing it with the stored one. The stored value is
+     * compared as it is, untrimmed.
+     */
+    fun trimFirstName(raw: String): String = raw.trim { it.isGoSpace() }
+
+    /**
+     * The first-name rule as `checkIdentityFields` applies it to a written name.
      *
-     * Its only exemption: an empty `first_name` (spaces only) on an account
+     * Its own exemption: an empty `first_name` (spaces only) on an account
      * with no stored name is "unchanged", because this client always sends
-     * the key. There is NO exemption for an unchanged non-empty name — a
-     * stored name that fails the rule is refused on every save that sends it.
+     * the key. It does NOT skip an unchanged non-empty name: the server skips
+     * a submitted name whose [trimFirstName] equals the stored value, and the
+     * caller applies that check before calling this.
      */
     fun validateFirstNameChange(value: String, stored: String): FirstNameError? {
         val error = validateFirstName(value) ?: return null
