@@ -27,6 +27,8 @@ import (
 //
 // Every rule below returns a *FieldError. Nothing downgrades a failure to a
 // silent skip: that is exactly how the registration gate used to be bypassed.
+// The one skip is a value sent back unchanged (DOB, or first name under the
+// validator's trim): it is not written, so there is nothing to validate.
 
 // Stable field error codes. Clients key on these; never rename one.
 const (
@@ -220,6 +222,27 @@ func NormalizeFirstName(raw string) (string, error) {
 	return name, nil
 }
 
+// firstNameKey is a first name under the validator's trim. NormalizeFirstName
+// refuses control characters before it trims, so on anything it accepts the
+// trim removes only non-control white space; this removes exactly that, so a
+// control-character-padded "\nAsha" never matches a stored "Asha".
+func firstNameKey(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return unicode.IsSpace(r) && !unicode.IsControl(r) })
+}
+
+// sameFirstName reports whether a submitted first name is the stored one.
+// Both sides are trimmed: a stored value that predates validation may carry
+// padding the form does not send back, and white space at the ends is not
+// a change of name (the validator discards it on a write anyway). An empty
+// result never matches, so "" keeps its own exemption below.
+func sameFirstName(submitted string, stored *string) bool {
+	if stored == nil {
+		return false
+	}
+	key := firstNameKey(submitted)
+	return key != "" && key == firstNameKey(*stored)
+}
+
 type dobChange struct {
 	old *time.Time
 	new time.Time
@@ -240,19 +263,32 @@ func (s *Service) checkIdentityFields(ctx context.Context, userID uuid.UUID, par
 	}
 
 	if params.FirstName != nil {
-		name, err := NormalizeFirstName(*params.FirstName)
-		switch {
-		case err == nil:
-			params.FirstName = &name
-		case strings.Trim(*params.FirstName, " ") == "" && current != nil &&
-			(current.FirstName == nil || strings.TrimSpace(*current.FirstName) == ""):
-			// The Android edit form always sends first_name, as "" for an
-			// account that never had one (OAuth sign-ups, older accounts).
-			// Leaving an empty name empty is not a change, so it is not a
-			// refusal; clearing a name that exists still is.
+		if current != nil && sameFirstName(*params.FirstName, current.FirstName) {
+			// The stored name sent back unchanged: Android resends the whole
+			// form on every save. Like an unchanged DOB, not a first-name write,
+			// so nothing to validate, and an account whose name predates the
+			// rule (too long, digits) can still edit its bio. The stored value
+			// is kept byte for byte. Logged without the name.
+			if _, err := NormalizeFirstName(*current.FirstName); err != nil {
+				s.log.Info("profile first name outside the current rule, unchanged and kept",
+					"user_id", userID, "reason", "legacy_first_name_kept")
+			}
 			params.FirstName = nil
-		default:
-			return nil, err
+		} else {
+			name, err := NormalizeFirstName(*params.FirstName)
+			switch {
+			case err == nil:
+				params.FirstName = &name
+			case strings.Trim(*params.FirstName, " ") == "" && current != nil &&
+				(current.FirstName == nil || strings.TrimSpace(*current.FirstName) == ""):
+				// The Android edit form always sends first_name, as "" for an
+				// account that never had one (OAuth sign-ups, older accounts).
+				// Leaving an empty name empty is not a change, so it is not a
+				// refusal; clearing a name that exists still is.
+				params.FirstName = nil
+			default:
+				return nil, err
+			}
 		}
 	}
 

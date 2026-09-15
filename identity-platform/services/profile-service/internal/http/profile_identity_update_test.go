@@ -47,6 +47,9 @@ func (s *idwStore) UpdateProfile(_ context.Context, _ uuid.UUID, p store.UpdateP
 		n := *p.FirstName
 		next.FirstName = &n
 	}
+	if p.Bio != nil {
+		next.Bio = *p.Bio
+	}
 	s.profile = &next
 	return &next, nil
 }
@@ -191,5 +194,53 @@ func TestUpdateMe_FirstNameValidation(t *testing.T) {
 	}
 	if *st.profile.FirstName != "Asha K" {
 		t.Fatalf("stored first name = %q, want trimmed", *st.profile.FirstName)
+	}
+}
+
+// A stored first name from before the rule (60 characters, digits) must not
+// 422 every save: Android always resends first_name with the rest of the form.
+func TestUpdateMe_UnchangedLegacyFirstName(t *testing.T) {
+	legacy := strings.Repeat("Asha1", 12)
+	seed := func() *idwStore {
+		st := idwSeed()
+		st.profile.FirstName = &legacy
+		return st
+	}
+	cases := []struct {
+		name       string
+		stored     func() *idwStore
+		firstName  string
+		wantStatus int
+		wantCode   string
+		wantStored string
+		wantBio    string
+	}{
+		{"unchanged legacy name with a bio change", seed, legacy, 200, "", legacy, "new bio"},
+		{"changed to another invalid value", seed, legacy + "2", 422, service.CodeFirstNameInvalid, legacy, ""},
+		{"changed to a valid value", seed, "Asha K", 200, "", "Asha K", "new bio"},
+		{"unchanged valid name", idwSeed, "Asha", 200, "", "Asha", "new bio"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.stored()
+			status, env := idwPut(t, st, `{"bio":"new bio","first_name":"`+tc.firstName+`"}`)
+			if status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (error %+v)", status, tc.wantStatus, env.Error)
+			}
+			if tc.wantCode != "" {
+				if env.Error == nil || env.Error.Code != tc.wantCode || env.Error.Details.Field != "first_name" {
+					t.Fatalf("error = %+v, want %s on first_name", env.Error, tc.wantCode)
+				}
+				if len(st.updates) != 0 {
+					t.Fatal("a refused request still wrote")
+				}
+			}
+			if *st.profile.FirstName != tc.wantStored {
+				t.Fatal("stored first name is not the expected one")
+			}
+			if st.profile.Bio != tc.wantBio {
+				t.Fatalf("bio = %q, want %q", st.profile.Bio, tc.wantBio)
+			}
+		})
 	}
 }

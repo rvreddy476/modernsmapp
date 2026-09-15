@@ -48,6 +48,9 @@ func (f *fakeProfileWrites) UpdateProfile(_ context.Context, _ uuid.UUID, p stor
 		n := *p.FirstName
 		next.FirstName = &n
 	}
+	if p.Bio != nil {
+		next.Bio = *p.Bio
+	}
 	f.profile = &next
 	return &next, nil
 }
@@ -222,6 +225,115 @@ func TestUpdateProfile_FirstNameRules(t *testing.T) {
 	}
 	if got := *f.profile.FirstName; got != "Asha K" {
 		t.Fatalf("first name stored as %q, want trimmed", got)
+	}
+}
+
+// legacyFirstName is out of policy twice over: 60 characters, and digits. The
+// rule arrived after accounts like this existed.
+var legacyFirstName = strings.Repeat("Asha1", 12)
+
+func legacyProfile() *store.Profile {
+	p := storedProfile()
+	p.FirstName = strOf(legacyFirstName)
+	return p
+}
+
+// Android resends the whole form on every save. A stored first name that the
+// current rule would refuse, sent back unchanged, is not a first-name write:
+// the bio saves, the name stays, and the skip is logged without the name.
+func TestUpdateProfile_UnchangedLegacyFirstNameDoesNotBlockTheSave(t *testing.T) {
+	for name, sent := range map[string]string{
+		"exact":              legacyFirstName,
+		"padded by the form": "  " + legacyFirstName + " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeProfileWrites{profile: legacyProfile()}
+			svc, logs := identityService(f)
+			if _, err := svc.UpdateProfile(context.Background(), testUserID,
+				store.UpdateProfileParams{Bio: strOf("new bio"), FirstName: strOf(sent)}); err != nil {
+				t.Fatalf("an unchanged legacy first name blocked a bio save: %v", err)
+			}
+			if len(f.updates) != 1 || f.updates[0].FirstName != nil {
+				t.Fatal("an unchanged first name was written")
+			}
+			if f.profile.Bio != "new bio" {
+				t.Fatalf("bio = %q, want it saved", f.profile.Bio)
+			}
+			if *f.profile.FirstName != legacyFirstName {
+				t.Fatal("the stored first name moved")
+			}
+			out := logs.String()
+			if got := strings.Count(out, "reason=legacy_first_name_kept"); got != 1 {
+				t.Fatalf("legacy_first_name_kept logged %d times, want once", got)
+			}
+			for _, want := range []string{"level=INFO", "user_id=" + testUserID.String()} {
+				if !strings.Contains(out, want) {
+					t.Errorf("log line missing %q", want)
+				}
+			}
+			if strings.Contains(out, "Asha") {
+				t.Error("the log leaked the first name")
+			}
+		})
+	}
+}
+
+// The padding exemption is the validator's own trim, which never strips a
+// control character: those are refused before trimming.
+func TestUpdateProfile_ControlCharacterPaddingIsNotAnUnchangedName(t *testing.T) {
+	f := &fakeProfileWrites{profile: legacyProfile()}
+	svc, _ := identityService(f)
+	_, err := svc.UpdateProfile(context.Background(), testUserID,
+		store.UpdateProfileParams{Bio: strOf("new bio"), FirstName: strOf("\n" + legacyFirstName)})
+	if got := fieldCode(t, err); got != CodeFirstNameInvalid {
+		t.Fatalf("got %q, want %s", got, CodeFirstNameInvalid)
+	}
+	if len(f.updates) != 0 {
+		t.Fatal("the write happened anyway")
+	}
+}
+
+func TestUpdateProfile_ChangingALegacyFirstNameIsFullyValidated(t *testing.T) {
+	t.Run("to another invalid value", func(t *testing.T) {
+		f := &fakeProfileWrites{profile: legacyProfile()}
+		svc, _ := identityService(f)
+		_, err := svc.UpdateProfile(context.Background(), testUserID,
+			store.UpdateProfileParams{Bio: strOf("new bio"), FirstName: strOf(legacyFirstName + "2")})
+		if got := fieldCode(t, err); got != CodeFirstNameInvalid {
+			t.Fatalf("got %q, want %s", got, CodeFirstNameInvalid)
+		}
+		if len(f.updates) != 0 || *f.profile.FirstName != legacyFirstName || f.profile.Bio != "" {
+			t.Fatal("a refused first name change still wrote")
+		}
+	})
+	t.Run("to a valid value", func(t *testing.T) {
+		f := &fakeProfileWrites{profile: legacyProfile()}
+		svc, logs := identityService(f)
+		if _, err := svc.UpdateProfile(context.Background(), testUserID,
+			store.UpdateProfileParams{Bio: strOf("new bio"), FirstName: strOf(" Asha ")}); err != nil {
+			t.Fatalf("a valid new first name was refused: %v", err)
+		}
+		if *f.profile.FirstName != "Asha" || f.profile.Bio != "new bio" {
+			t.Fatal("the valid change was not saved")
+		}
+		if strings.Contains(logs.String(), "legacy_first_name_kept") {
+			t.Fatal("a changed name was logged as kept")
+		}
+	})
+}
+
+func TestUpdateProfile_UnchangedValidFirstNameIsNotAWrite(t *testing.T) {
+	f := &fakeProfileWrites{profile: storedProfile()}
+	svc, logs := identityService(f)
+	if _, err := svc.UpdateProfile(context.Background(), testUserID,
+		store.UpdateProfileParams{Bio: strOf("new bio"), FirstName: strOf("Asha")}); err != nil {
+		t.Fatalf("an unchanged valid first name was refused: %v", err)
+	}
+	if f.updates[0].FirstName != nil || *f.profile.FirstName != "Asha" || f.profile.Bio != "new bio" {
+		t.Fatal("want bio saved and the unchanged name not written")
+	}
+	if strings.Contains(logs.String(), "legacy_first_name_kept") {
+		t.Fatal("an in-policy name was logged as legacy")
 	}
 }
 

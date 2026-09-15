@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,6 +142,47 @@ func TestIntegration_BioOnlyUpdateKeepsEveryOtherField(t *testing.T) {
 		t.Fatalf("GetProfile: %v", err)
 	}
 	itAssertOnlyChanged(t, before, after, map[string]string{"bio": "new bio"})
+}
+
+// A first name stored before the rule existed (60 characters, digits), sent
+// back unchanged with a bio edit, as the Android form does on every save.
+func TestIntegration_UnchangedLegacyFirstNameDoesNotBlockABioSave(t *testing.T) {
+	pool := serviceITPool(t)
+	svc, st := itService(pool)
+	id, _ := seedITFullProfile(t, pool, st)
+	legacy := strings.Repeat("Asha1", 12)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE profile.profiles SET first_name = $2 WHERE user_id = $1`, id, legacy); err != nil {
+		t.Fatalf("seed legacy first name: %v", err)
+	}
+	before, err := st.GetProfile(context.Background(), id)
+	if err != nil || before == nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+
+	if _, err := svc.UpdateProfile(context.Background(), id,
+		store.UpdateProfileParams{Bio: strOf("new bio"), FirstName: strOf(legacy)}); err != nil {
+		t.Fatalf("an unchanged legacy first name blocked the save: %v", err)
+	}
+	after, err := st.GetProfile(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+	itAssertOnlyChanged(t, before, after, map[string]string{"bio": "new bio"})
+
+	// Changing it is still a first-name write, and still validated.
+	if got := fieldCode(t, func() error {
+		_, err := svc.UpdateProfile(context.Background(), id,
+			store.UpdateProfileParams{Bio: strOf("newer bio"), FirstName: strOf(legacy + "2")})
+		return err
+	}()); got != CodeFirstNameInvalid {
+		t.Fatalf("changed to another invalid value: got %q, want %s", got, CodeFirstNameInvalid)
+	}
+	unchanged, err := st.GetProfile(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+	itAssertOnlyChanged(t, after, unchanged, map[string]string{})
 }
 
 func TestIntegration_ClearedLastNameClearsOnlyLastName(t *testing.T) {
