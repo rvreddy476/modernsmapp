@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -441,6 +442,10 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 // processImage handles synchronous image processing (resize + upload variants).
 func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) error {
 	moderationStatus := "passed"
+	// Lane D6: the scanner's full label list is kept with the verdict, so
+	// dating-service can review borderline photos the verdict let through.
+	var scanLabels []processing.ModerationLabel
+	scanned := false
 	// Content safety scan for images.
 	//
 	// Audit H8: previously this block "skipped" the scan on download
@@ -487,6 +492,7 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 			return fmt.Errorf("media rejected: %s", result.Reason)
 		}
 		moderationStatus = "passed"
+		scanLabels, scanned = result.Labels, true
 	}
 
 	outputs, meta, err := processing.ProcessImage(
@@ -521,6 +527,18 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 
 	if err := s.pgStore.InsertVariants(ctx, variants); err != nil {
 		return fmt.Errorf("insert variants: %w", err)
+	}
+	if scanned {
+		if scanLabels == nil {
+			scanLabels = []processing.ModerationLabel{}
+		}
+		rawLabels, err := json.Marshal(scanLabels)
+		if err != nil {
+			return fmt.Errorf("encode image moderation labels: %w", err)
+		}
+		if err := s.pgStore.UpdateMediaModerationScan(ctx, media.ID, rawLabels, processing.ScannerName(s.scanner)); err != nil {
+			return fmt.Errorf("persist image moderation labels: %w", err)
+		}
 	}
 	if err := s.pgStore.UpdateMediaModerationStatus(ctx, media.ID, moderationStatus); err != nil {
 		return fmt.Errorf("persist image moderation verdict: %w", err)
@@ -629,6 +647,9 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 	if err != nil {
 		return nil, err
 	}
+	if DatingScopeDenies(media, viewerID) {
+		return nil, delivery.ErrDeliveryDenied
+	}
 	if s.gate == nil {
 		return nil, fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
 	}
@@ -717,6 +738,9 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 	media, err := s.pgStore.GetMedia(ctx, mediaID)
 	if err != nil {
 		return nil, err
+	}
+	if DatingScopeDenies(media, viewerID) {
+		return nil, delivery.ErrDeliveryDenied
 	}
 	if media.HLSMasterKey == "" {
 		return nil, fmt.Errorf("HLS is not available for media %s", mediaID)
@@ -838,6 +862,17 @@ func (s *Service) resolveAvatarRendition(ctx context.Context, mediaID uuid.UUID)
 }
 
 func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid.UUID, variant string) (string, error) {
+	// Lane D6: every variant of a dating-scoped asset, the blurred one
+	// included, is refused here to anyone but its uploader. Other viewers
+	// reach dating photos only through a URL dating-service obtained after
+	// its own audience decision.
+	asset, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return "", err
+	}
+	if DatingScopeDenies(asset, viewerID) {
+		return "", delivery.ErrDeliveryDenied
+	}
 	if variant == AvatarVariant {
 		key, err := s.resolveAvatarRendition(ctx, mediaID)
 		if err != nil {
@@ -846,11 +881,7 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid
 		return s.deliveryURL(ctx, viewerID, mediaID, key)
 	}
 	if variant == "original" {
-		media, err := s.pgStore.GetMedia(ctx, mediaID)
-		if err != nil {
-			return "", err
-		}
-		return s.deliveryURL(ctx, viewerID, mediaID, media.StorageKey)
+		return s.deliveryURL(ctx, viewerID, mediaID, asset.StorageKey)
 	}
 
 	variants, err := s.pgStore.GetVariants(ctx, mediaID)
@@ -908,6 +939,10 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 
 	assetKeys := make(map[string]map[string]string, len(medias))
 	for _, m := range medias {
+		if DatingScopeDenies(&m, viewerID) {
+			// Lane D6: omitted exactly like a denial below.
+			continue
+		}
 		keys := map[string]string{"original": m.StorageKey}
 		for _, v := range m.Variants {
 			keys[v.Name] = v.ObjectKey

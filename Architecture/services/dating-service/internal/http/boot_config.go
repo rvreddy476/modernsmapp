@@ -71,6 +71,96 @@ func ResolveSelfieConfig(getenv func(string) string) (service.SelfieConfig, erro
 	return cfg, nil
 }
 
+// ResolvePhotoSafetyConfig reads the lane D6 photo safety bars:
+//
+//	DATING_PHOTO_MAX_PER_PROFILE         1-12, default 6 (rejected photos do not count)
+//	DATING_PHOTO_EXPLICIT_LABELS         comma list of labels/parent categories that
+//	                                     auto-reject (default service.DefaultExplicitPhotoLabels)
+//	DATING_PHOTO_EXPLICIT_MIN_CONFIDENCE 50-100, default 80
+//	DATING_PHOTO_REVIEW_LABELS           comma list sent to pending_review
+//	                                     (default service.DefaultReviewPhotoLabels)
+//	DATING_PHOTO_REVIEW_MIN_CONFIDENCE   50-100, default 80. media-service stores only
+//	                                     labels at or above its scanner's MinConfidence
+//	                                     (80), so a lower bar here has no effect alone.
+//	DATING_PHOTO_REQUIRE_FACE            true|false, default true (primary with no face → review)
+//	DATING_PHOTO_RECHECK_ENABLED         true|false, default true
+//	DATING_PHOTO_RECHECK_INTERVAL_HOURS  1-168, default 24
+//
+// Any malformed value is an error, on which main refuses to start.
+func ResolvePhotoSafetyConfig(getenv func(string) string) (service.PhotoSafetyConfig, error) {
+	cfg := service.DefaultPhotoSafetyConfig()
+	intIn := func(key string, lo, hi int, dst *int) error {
+		raw := strings.TrimSpace(getenv(key))
+		if raw == "" {
+			return nil
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < lo || n > hi {
+			return fmt.Errorf("%s must be a whole number from %d to %d, got %q", key, lo, hi, raw)
+		}
+		*dst = n
+		return nil
+	}
+	confidence := func(key string, dst *float64) error {
+		raw := strings.TrimSpace(getenv(key))
+		if raw == "" {
+			return nil
+		}
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil || f < 50 || f > 100 {
+			return fmt.Errorf("%s must be a number from 50 to 100, got %q", key, raw)
+		}
+		*dst = f
+		return nil
+	}
+	labels := func(key string, dst *[]string) error {
+		raw := strings.TrimSpace(getenv(key))
+		if raw == "" {
+			return nil
+		}
+		var out []string
+		for _, part := range strings.Split(raw, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				out = append(out, p)
+			}
+		}
+		if len(out) == 0 {
+			return fmt.Errorf("%s must name at least one label, got %q", key, raw)
+		}
+		*dst = out
+		return nil
+	}
+	boolean := func(key string, dst *bool) error {
+		raw := strings.TrimSpace(getenv(key))
+		if raw == "" {
+			return nil
+		}
+		b, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("%s must be true or false, got %q", key, raw)
+		}
+		*dst = b
+		return nil
+	}
+	hours := int(cfg.RecheckInterval / time.Hour)
+	for _, step := range []error{
+		intIn("DATING_PHOTO_MAX_PER_PROFILE", 1, 12, &cfg.MaxPhotos),
+		labels("DATING_PHOTO_EXPLICIT_LABELS", &cfg.ExplicitLabels),
+		confidence("DATING_PHOTO_EXPLICIT_MIN_CONFIDENCE", &cfg.ExplicitMinConfidence),
+		labels("DATING_PHOTO_REVIEW_LABELS", &cfg.ReviewLabels),
+		confidence("DATING_PHOTO_REVIEW_MIN_CONFIDENCE", &cfg.ReviewMinConfidence),
+		boolean("DATING_PHOTO_REQUIRE_FACE", &cfg.RequireFaceOnPrimary),
+		boolean("DATING_PHOTO_RECHECK_ENABLED", &cfg.RecheckEnabled),
+		intIn("DATING_PHOTO_RECHECK_INTERVAL_HOURS", 1, 168, &hours),
+	} {
+		if step != nil {
+			return cfg, step
+		}
+	}
+	cfg.RecheckInterval = time.Duration(hours) * time.Hour
+	return cfg, nil
+}
+
 // DefaultMediaServiceURL is media-service's in-cluster address (port 8087).
 const DefaultMediaServiceURL = "http://media-service:8087"
 

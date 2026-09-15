@@ -30,6 +30,13 @@ var ErrAssetStillReferenced = errors.New("asset is still referenced")
 // ErrAssetNotFound: the asset row is already gone.
 var ErrAssetNotFound = errors.New("asset not found")
 
+// Referrer kinds. A dating photo (lane D6) names its owner as the referrer id;
+// the owner check happens before the purge (DatingPhotoService.Delete).
+const (
+	ReferrerPost        = "post"
+	ReferrerDatingPhoto = "dating_photo"
+)
+
 // Referrer names who is giving up the asset.
 type Referrer struct {
 	Kind string    // "post"
@@ -77,7 +84,7 @@ type PurgeResult struct {
 // in media_blob_reclaim for the sweeper — the rows are already gone, so the
 // asset can never be served again either way.
 func (p *AssetPurger) Purge(ctx context.Context, mediaID uuid.UUID, ref Referrer) (*PurgeResult, error) {
-	if ref.Kind != "post" || ref.ID == uuid.Nil {
+	if (ref.Kind != ReferrerPost && ref.Kind != ReferrerDatingPhoto) || ref.ID == uuid.Nil {
 		return nil, fmt.Errorf("unsupported referrer %q", ref.Kind)
 	}
 	rec, err := p.store.DeleteAssetForReferrer(ctx, mediaID, ref.Kind, ref.ID)

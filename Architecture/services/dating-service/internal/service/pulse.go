@@ -376,13 +376,13 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 //                               midpoint; the bucket label is emitted
 //                               regardless so clients can always show
 //                               a consistent range UI.
-//   - blur_photos_until_match → primary photo URL swapped for the
-//                               blurred-variant URL UNLESS the viewer
-//                               is a current match-partner. Phase A
-//                               fallback: when the media pipeline
-//                               hasn't generated a blurred variant
-//                               yet, append "?blurred=1" so the
-//                               client can still apply visual blur.
+//   - photo visibility and blur_photos_until_match (lane D6) →
+//                               primary_photo_url is the photo's
+//                               /blurred route unless PhotoVariantFor
+//                               allows /full (owner, open match, public
+//                               without blur, sparked_only the owner
+//                               sparked). The blur is rendered by
+//                               media-service, not the client.
 //
 // matchedPartners is the precomputed set of user-ids the viewer
 // currently has an active match with. Empty / nil = no matches.
@@ -412,25 +412,20 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 		displayDist = distanceBucketMidpoint(distBucket)
 	}
 
+	// Lane D6: the card names the photo image route for the variant this
+	// viewer may have — never a media id, never a storage URL. The route
+	// re-decides on every fetch, so a cached deck cannot outlive an unmatch.
 	_, isMatched := matchedPartners[c.UserID]
+	variant := PhotoVariantFor(c.PrimaryPhotoVisibility, PhotoViewer{
+		Matched:              isMatched,
+		OwnerSparkedViewer:   c.SparkedViewer,
+		OwnerBlursUntilMatch: c.BlurPhotosUntilMatch || c.BlurMode,
+	})
 	primaryURL := ""
-	if c.PrimaryPhotoMedia != nil {
-		primaryURL = "/media/" + c.PrimaryPhotoMedia.String()
+	if c.PrimaryPhotoID != nil {
+		primaryURL = PhotoImagePath(*c.PrimaryPhotoID, variant)
 	}
-	primaryBlurred := c.BlurMode
-	if c.BlurPhotosUntilMatch && !isMatched {
-		primaryBlurred = true
-		if primaryURL != "" {
-			// Phase A: no per-photo blurred_url lookup here — the
-			// candidate query already over-fetches each profile
-			// row, and a per-card SQL hop would balloon the
-			// pulse query plan. The "?blurred=1" sentinel lets
-			// the client switch to its visual-blur shader; once
-			// the media pipeline backfills blurred_url, the
-			// owner-side photo list endpoint will surface it.
-			primaryURL += "?blurred=1"
-		}
-	}
+	primaryBlurred := variant == PhotoVariantBlurred
 
 	tuneSummary := map[string]any{}
 	if c.LifestyleRhythm != nil {

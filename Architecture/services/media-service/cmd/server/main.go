@@ -142,7 +142,9 @@ func main() {
 	// to remove. In production that is a boot failure instead (below), because
 	// a production media service that cannot serve protected media is broken
 	// and should say so loudly rather than 503 every story image.
-	if gate, gerr := buildDeliveryGate(blobStore); gerr != nil {
+	// The gate's signer also signs dating photo URLs (lane D6, below).
+	var deliverySigner delivery.URLSigner
+	if gate, signer, gerr := buildDeliveryGate(blobStore); gerr != nil {
 		if isProductionEnv() {
 			slog.Error("delivery gate could not be configured; refusing to start in production",
 				"err", gerr)
@@ -153,6 +155,7 @@ func main() {
 			"and POST_SERVICE_URL to enable protected delivery.", "err", gerr)
 	} else {
 		mediaSvc.WithDeliveryGate(gate)
+		deliverySigner = signer
 		slog.Info("delivery gate configured", "cdn", env("MEDIA_CDN_BASE_URL", ""))
 	}
 
@@ -256,6 +259,8 @@ func main() {
 		slog.Error("media-service: face comparison configuration refused", "error", err)
 		os.Exit(1)
 	}
+	// Lane D6 counts faces on primary dating photos with the same provider.
+	var faceCounter processing.FaceCounter
 	if faceSettings.Enabled {
 		var comparer processing.FaceComparer
 		var analyzer processing.LivenessAnalyzer
@@ -279,6 +284,9 @@ func main() {
 			comparer = processing.NewRekognitionFaceComparer(client)
 			analyzer = processing.NewRekognitionLivenessAnalyzer(client, processing.FFmpegFrameSampler{})
 		}
+		if fc, ok := comparer.(processing.FaceCounter); ok {
+			faceCounter = fc
+		}
 		faceCompare := service.NewFaceCompareService(pgStore, blobStore, comparer, faceSettings.MatchThreshold).
 			WithLiveness(analyzer, faceSettings.Liveness)
 		mediaHandler.WithFaceCompare(faceCompare)
@@ -289,6 +297,22 @@ func main() {
 			"eyes_open_confidence", faceSettings.Liveness.EyesOpenConfidence, "required_blinks", faceSettings.Liveness.RequiredBlinks)
 	} else {
 		slog.Info("media-service: face comparison disabled (MEDIA_FACE_COMPARE_ENABLED is not true)")
+	}
+
+	// Dating plan lane D6: internal dating photo routes (owner-status,
+	// prepare, delivery-url, delete) for dating-service. They need the
+	// delivery signer: without one the routes do not exist and dating-service
+	// refuses photo attaches with 503 rather than serving unprotected bytes.
+	datingPhotoTTL, err := service.ResolveDatingPhotoURLTTL(os.Getenv)
+	if err != nil {
+		slog.Error("media-service: dating photo configuration refused", "error", err)
+		os.Exit(1)
+	}
+	if deliverySigner != nil {
+		mediaHandler.WithDatingPhotos(service.NewDatingPhotoService(pgStore, blobStore, deliverySigner, faceCounter, datingPhotoTTL, slog.Default()))
+		slog.Info("media-service: dating photo routes enabled", "url_ttl", datingPhotoTTL, "face_count", faceCounter != nil)
+	} else {
+		slog.Warn("media-service: no delivery signer — dating photo routes NOT registered")
 	}
 
 	gin.SetMode(gin.ReleaseMode)
@@ -308,6 +332,7 @@ func main() {
 	mediaHandler.RegisterSlotRoutes(r, authMW)
 	mediaHandler.RegisterStudioRoutes(r, authMW)
 	mediaHandler.RegisterFaceCompareRoutes(r)
+	mediaHandler.RegisterDatingPhotoRoutes(r)
 
 	// 10. Graceful shutdown
 	if err := server.Run(r, server.Config{
@@ -361,21 +386,21 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 // a manifest. There is deliberately no default and no fallback: a signer that
 // degrades to unsigned delivery when misconfigured reintroduces the exact hole
 // this replaces.
-func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, error) {
+func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, delivery.URLSigner, error) {
 	postURL := env("POST_SERVICE_URL", "")
 	if postURL == "" {
 		// Without a content authority there is nobody to ask, and "nobody to
 		// ask" must not mean "yes".
-		return nil, fmt.Errorf("POST_SERVICE_URL is required: protected media " +
+		return nil, nil, fmt.Errorf("POST_SERVICE_URL is required: protected media " +
 			"cannot be authorized without its content authority")
 	}
 	chatURL := env("CHAT_MESSAGE_SERVICE_URL", "")
 	if chatURL == "" {
-		return nil, fmt.Errorf("CHAT_MESSAGE_SERVICE_URL is required: protected chat media cannot be authorized")
+		return nil, nil, fmt.Errorf("CHAT_MESSAGE_SERVICE_URL is required: protected chat media cannot be authorized")
 	}
 	profileURL := env("PROFILE_SERVICE_URL", "")
 	if profileURL == "" {
-		return nil, fmt.Errorf("PROFILE_SERVICE_URL is required: profile media privacy cannot be authorized")
+		return nil, nil, fmt.Errorf("PROFILE_SERVICE_URL is required: profile media privacy cannot be authorized")
 	}
 	commerceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
@@ -394,7 +419,7 @@ func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, error) {
 			PrivateKeyPEM: []byte(os.Getenv("MEDIA_CLOUDFRONT_PRIVATE_KEY")),
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		signer = cloudFrontSigner
 	} else {
@@ -403,7 +428,7 @@ func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, error) {
 		// Production cannot select this branch.
 		signer = localBlobSigner{store: blobStore}
 	}
-	return delivery.NewGate(signer, authz), nil
+	return delivery.NewGate(signer, authz), signer, nil
 }
 
 type localBlobSigner struct{ store *blob.Store }
@@ -460,6 +485,14 @@ func buildMediaScanner(ctx context.Context, shared *processing.SharedRekognition
 		return processing.NewRekognitionScannerFromClient(client, processing.RekognitionConfig{
 			MinConfidence: 80,
 		}), nil
+	}
+	if backend == "mock" {
+		// Lane D6: deterministic labels from a test marker in the image
+		// (processing.MockModerationMarker). Never outside local/dev.
+		if !processing.IsLocalDevEnv(os.Getenv) {
+			return nil, fmt.Errorf("MEDIA_SCANNER_BACKEND=mock is refused unless ENV is local, dev or development")
+		}
+		return processing.NewMockModerationScanner(), nil
 	}
 	if isProductionEnv() {
 		return nil, fmt.Errorf("production requires MEDIA_SCANNER_BACKEND=rekognition")

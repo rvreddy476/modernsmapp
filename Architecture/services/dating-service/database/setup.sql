@@ -742,10 +742,9 @@ CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
 --                                for non-matched viewers. Matched
 --                                viewers see the original.
 --
--- The blurred URL is uploaded alongside the original by the media
--- pipeline. Phase A leaves blurred_url NULL when not yet generated —
--- the response builder falls back to "<url>?blurred=1" the client
--- honours so blur still takes effect end-to-end.
+-- Lane D6: the blurred image is rendered and served by media-service
+-- (GET /v1/dating/photos/:id/blurred); the client is never trusted to
+-- blur. blurred_url below is legacy and unread.
 -- ---------------------------------------------------------------------------
 ALTER TABLE dating_profiles
     ADD COLUMN IF NOT EXISTS incognito               BOOLEAN NOT NULL DEFAULT false,
@@ -770,6 +769,52 @@ ALTER TABLE dating_photos
 -- ---------------------------------------------------------------------------
 ALTER TABLE dating_photos
     ADD COLUMN IF NOT EXISTS moderation_reason TEXT;
+
+-- ---------------------------------------------------------------------------
+-- Dating plan lane D6 — dating photo safety.
+--
+-- moderation_status gains 'pending_review': automated moderation found a
+-- borderline label, the image was never scanned, or a primary photo shows
+-- no face; a moderator decides. moderation_source records who set the
+-- status ('auto' | 'admin'; NULL on rows from before D6). moderation_labels
+-- keeps the scanner labels the automated decision used. media_checked_at is
+-- when media-service last confirmed the asset (the recheck sweeper's cursor).
+-- face_count is set when media-service's provider counted faces.
+--
+-- blurred_url is no longer read: the blurred image is a media-service
+-- rendition served through GET /v1/dating/photos/:id/blurred.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_photos
+    ADD COLUMN IF NOT EXISTS moderation_source TEXT,
+    ADD COLUMN IF NOT EXISTS moderation_labels JSONB,
+    ADD COLUMN IF NOT EXISTS media_checked_at  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS face_count        INT;
+
+DO $d6$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'dating_photos'::regclass
+          AND conname = 'dating_photos_moderation_status_check'
+          AND pg_get_constraintdef(oid) LIKE '%pending_review%'
+    ) THEN
+        BEGIN
+            ALTER TABLE dating_photos DROP CONSTRAINT IF EXISTS dating_photos_moderation_status_check;
+            ALTER TABLE dating_photos ADD CONSTRAINT dating_photos_moderation_status_check
+                CHECK (moderation_status IN ('pending','pending_review','approved','rejected'));
+        EXCEPTION WHEN duplicate_object THEN
+            NULL; -- another replica's boot added it first
+        END;
+    END IF;
+END
+$d6$;
+
+CREATE INDEX IF NOT EXISTS idx_dating_photos_media_recheck
+    ON dating_photos (media_checked_at NULLS FIRST)
+    WHERE moderation_status IN ('pending','pending_review','approved');
+
+CREATE INDEX IF NOT EXISTS idx_dating_photos_user_media
+    ON dating_photos (user_id, media_id);
 
 -- ---------------------------------------------------------------------------
 -- Phase 1 notification follow-ups — idempotency markers for the four

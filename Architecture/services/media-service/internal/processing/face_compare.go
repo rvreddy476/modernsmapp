@@ -264,3 +264,46 @@ func (c *RekognitionFaceComparer) CompareFaces(ctx context.Context, source, targ
 	}
 	return res, nil
 }
+
+// FaceCounter counts the faces in one image (lane D6: a primary dating photo
+// with no face goes to review). Every non-answer is ErrFaceCompareUnavailable.
+type FaceCounter interface {
+	CountFaces(ctx context.Context, image []byte) (int, error)
+}
+
+// CountFaces implements FaceCounter. An image without the test marker has no
+// deterministic answer, so the mock reports unavailable rather than 0: a real
+// photo uploaded locally is never sent to review for "no face" by the mock.
+func (*MockFaceComparer) CountFaces(ctx context.Context, img []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrFaceCompareUnavailable, err)
+	}
+	if !bytes.Contains(img, []byte(MockFaceMarker)) {
+		return 0, fmt.Errorf("%w: no face test marker", ErrFaceCompareUnavailable)
+	}
+	return parseMockFace(img).faces, nil
+}
+
+// CountFaces implements FaceCounter with one DetectFaces call.
+func (c *RekognitionFaceComparer) CountFaces(ctx context.Context, img []byte) (int, error) {
+	if c == nil || c.api == nil {
+		return 0, fmt.Errorf("%w: comparer not configured", ErrFaceCompareUnavailable)
+	}
+	if len(img) == 0 {
+		return 0, fmt.Errorf("%w: empty image", ErrFaceCompareUnavailable)
+	}
+	if len(img) > MaxFaceImageBytes {
+		return 0, fmt.Errorf("%w: image exceeds %d bytes", ErrFaceCompareUnavailable, MaxFaceImageBytes)
+	}
+	out, err := c.api.DetectFaces(ctx, &rekognition.DetectFacesInput{
+		Image:      &rektypes.Image{Bytes: img},
+		Attributes: []rektypes.Attribute{rektypes.AttributeDefault},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("%w: detect faces: %v", ErrFaceCompareUnavailable, err)
+	}
+	if out == nil {
+		return 0, fmt.Errorf("%w: detect faces returned no result", ErrFaceCompareUnavailable)
+	}
+	return len(out.FaceDetails), nil
+}

@@ -190,32 +190,34 @@ func (s *RekognitionScanner) ScanImage(ctx context.Context, data []byte) (ScanRe
 	// A nil ModerationLabels slice is a genuine "no findings" answer from
 	// Rekognition, which is distinct from an error. An empty result after a
 	// successful call means the image cleared the threshold.
-	var worst float64
-	var worstLabel string
+	//
+	// Every label is kept (lane D6): categories that do not fail the upload
+	// (swimwear, suggestive, drugs) still decide whether a dating photo is
+	// approved or reviewed.
+	labels := make([]ModerationLabel, 0, len(out.ModerationLabels))
 	for _, l := range out.ModerationLabels {
-		name := ""
-		if l.ParentName != nil && *l.ParentName != "" {
-			name = *l.ParentName
-		} else if l.Name != nil {
-			name = *l.Name
+		ml := ModerationLabel{}
+		if l.Name != nil {
+			ml.Name = *l.Name
 		}
-		if !s.blocked[strings.ToLower(name)] {
-			continue
+		if l.ParentName != nil {
+			ml.Parent = *l.ParentName
 		}
-		conf := 0.0
 		if l.Confidence != nil {
-			conf = float64(*l.Confidence)
+			ml.Confidence = float64(*l.Confidence)
 		}
-		if conf > worst {
-			worst, worstLabel = conf, name
-		}
+		labels = append(labels, ml)
 	}
-	if worstLabel != "" {
+	if worstLabel, worst := worstBlocked(labels, s.blocked); worstLabel != "" {
 		return ScanResult{
 			IsSafe: false,
 			Reason: strings.ToLower(strings.ReplaceAll(worstLabel, " ", "_")),
 			Score:  worst / 100,
+			Labels: labels,
 		}, nil
 	}
-	return ScanResult{IsSafe: true, Score: 0}, nil
+	return ScanResult{IsSafe: true, Score: 0, Labels: labels}, nil
 }
+
+// Name implements NamedScanner.
+func (*RekognitionScanner) Name() string { return "rekognition" }

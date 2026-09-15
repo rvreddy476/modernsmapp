@@ -27,6 +27,7 @@ var defaultActor = map[ProfileEvent]ProfileActor{
 	ProfileEventBasicsComplete: ProfileActorSystem,
 	ProfileEventPhotoApproved:  ProfileActorSystem,
 	ProfileEventSelfiePassed:   ProfileActorSystem,
+	ProfileEventPhotoRevoked:   ProfileActorSystem,
 	ProfileEventPause:          ProfileActorUser,
 	ProfileEventUnpause:        ProfileActorUser,
 	ProfileEventReview:         ProfileActorAdmin,
@@ -37,7 +38,7 @@ var defaultActor = map[ProfileEvent]ProfileActor{
 }
 
 var allEvents = []ProfileEvent{
-	ProfileEventBasicsComplete, ProfileEventPhotoApproved, ProfileEventSelfiePassed,
+	ProfileEventBasicsComplete, ProfileEventPhotoApproved, ProfileEventSelfiePassed, ProfileEventPhotoRevoked,
 	ProfileEventPause, ProfileEventUnpause,
 	ProfileEventReview, ProfileEventRestrict, ProfileEventSuspend, ProfileEventReinstate,
 	ProfileEventDelete,
@@ -150,6 +151,22 @@ var allowedTransitions = map[string]string{
 	"suspended<active+p|delete":    "deleted<active+p",
 	// deleted is terminal
 	"deleted<active+p|delete": "deleted<active+p",
+
+	// Lane D6 photo_revoked: back to pending_photo from past the photo step
+	// (the remembered step under a pause or hold); a no-op before it.
+	"draft|photo_revoked":                    "draft",
+	"pending_photo|photo_revoked":            "pending_photo",
+	"pending_selfie|photo_revoked":           "pending_photo",
+	"active|photo_revoked":                   "pending_photo",
+	"paused<active+p|photo_revoked":          "paused<pending_photo+p",
+	"paused<draft+p|photo_revoked":           "paused<draft+p",
+	"paused<pending_selfie+p|photo_revoked":  "paused<pending_photo+p",
+	"pending_review<active|photo_revoked":    "pending_review<pending_photo",
+	"restricted<active|photo_revoked":        "restricted<pending_photo",
+	"suspended<active|photo_revoked":         "suspended<pending_photo",
+	"restricted<pending_photo|photo_revoked": "restricted<pending_photo",
+	"suspended<draft|photo_revoked":          "suspended<draft",
+	"suspended<active+p|photo_revoked":       "suspended<pending_photo+p",
 }
 
 var tableFromStates = []string{

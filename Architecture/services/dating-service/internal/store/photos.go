@@ -194,7 +194,7 @@ func (s *Store) UpdatePhoto(ctx context.Context, userID, photoID uuid.UUID, p Up
 // this back to the photo owner on GET /v1/dating/photos/me.
 func (s *Store) SetPhotoModerationStatus(ctx context.Context, photoID uuid.UUID, status, reason string) (*Photo, error) {
 	switch status {
-	case "approved", "rejected", "pending":
+	case "approved", "rejected", "pending", "pending_review":
 	default:
 		return nil, fmt.Errorf("invalid moderation status %q", status)
 	}
@@ -234,7 +234,7 @@ func (s *Store) ListPendingPhotos(ctx context.Context, limit int) ([]*Photo, err
         SELECT id, user_id, media_id, sort_order, is_primary, visibility,
                moderation_status, moderation_reason, created_at
         FROM dating_photos
-        WHERE moderation_status = 'pending'
+        WHERE moderation_status IN ('pending', 'pending_review')
         ORDER BY created_at ASC
         LIMIT $1`, limit)
 	if err != nil {

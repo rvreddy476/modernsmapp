@@ -53,6 +53,13 @@ type MediaAsset struct {
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
 	Variants      []MediaVariant `json:"variants,omitempty"`
+
+	// Lane D6 (migration 017). Never serialized: labels are a moderation
+	// signal for dating-service's internal read, not client data.
+	ModerationLabels   []byte     `json:"-"`
+	ModerationScanner  string     `json:"-"`
+	AccessScope        string     `json:"-"`
+	MetadataStrippedAt *time.Time `json:"-"`
 }
 
 type MediaVariant struct {
@@ -120,12 +127,14 @@ func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAss
 	err := s.db.QueryRow(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
 		       width, height, duration_seconds, duration_ms, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
-		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
+		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at,
+		       moderation_labels, COALESCE(moderation_scanner, ''), COALESCE(access_scope, ''), metadata_stripped_at
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
 		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
 		&m.Width, &m.Height, &m.DurationSeconds, &m.DurationMs, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 		&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
+		&m.ModerationLabels, &m.ModerationScanner, &m.AccessScope, &m.MetadataStrippedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -212,7 +221,8 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
 		       width, height, duration_seconds, duration_ms, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
-		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
+		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at,
+		       moderation_labels, COALESCE(moderation_scanner, ''), COALESCE(access_scope, ''), metadata_stripped_at
 		FROM media_assets WHERE id = ANY($1)
 	`, ids)
 	if err != nil {
@@ -228,6 +238,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
 			&m.Width, &m.Height, &m.DurationSeconds, &m.DurationMs, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 			&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
+			&m.ModerationLabels, &m.ModerationScanner, &m.AccessScope, &m.MetadataStrippedAt,
 		); err != nil {
 			return nil, err
 		}

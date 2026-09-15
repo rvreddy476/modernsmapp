@@ -33,6 +33,11 @@ env:
   IDENTITY_PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
   DATING_DEDUPE_OPEN_MATCHES: 'false'
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  # Lane D6: dating photo safety (service defaults for label lists and bars).
+  DATING_PHOTO_MAX_PER_PROFILE: '6'
+  DATING_PHOTO_REQUIRE_FACE: 'true'
+  DATING_PHOTO_RECHECK_ENABLED: 'true'
+  DATING_PHOTO_RECHECK_INTERVAL_HOURS: '24'
   DIGILOCKER_MODE: disabled
 ingress:
   enabled: false

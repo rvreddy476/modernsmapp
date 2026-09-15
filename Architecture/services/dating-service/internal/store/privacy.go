@@ -160,31 +160,6 @@ func (s *Store) ListActiveMatchPartnerIDs(ctx context.Context, viewer uuid.UUID)
 	return out, rows.Err()
 }
 
-// GetPhotoBlurredURL looks up the blurred-variant URL for a photo. The
-// URL is uploaded alongside the original by the media pipeline; when
-// the pipeline hasn't generated one yet the column is NULL and the
-// service-layer fallback ("<url>?blurred=1") kicks in. Returns the
-// empty string + nil error when the column is NULL — never errors on
-// "no row" because the caller has already validated the photo id.
-func (s *Store) GetPhotoBlurredURL(ctx context.Context, photoID uuid.UUID) (string, error) {
-	if photoID == uuid.Nil {
-		return "", fmt.Errorf("invalid: photo_id required")
-	}
-	var url *string
-	err := s.db.QueryRow(ctx, `
-        SELECT blurred_url FROM dating_photos WHERE id = $1`, photoID).Scan(&url)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", nil
-		}
-		return "", fmt.Errorf("get blurred url: %w", err)
-	}
-	if url == nil {
-		return "", nil
-	}
-	return *url, nil
-}
-
 // DistanceBucket maps an exact km distance to a §P1-3 coarse bucket
 // label. Buckets are: 0-5km, 5-10km, 10-25km, 25-50km, 50km+. The
 // lower bound is inclusive; the upper bound is exclusive except for

@@ -39,6 +39,13 @@ const (
 	ProfileEventPhotoApproved ProfileEvent = "photo_approved"
 	// ProfileEventSelfiePassed: pending_selfie → active.
 	ProfileEventSelfiePassed ProfileEvent = "selfie_passed"
+	// ProfileEventPhotoRevoked (lane D6): the approved primary photo is gone
+	// (a later rejection, a deletion, a primary change to a photo that is
+	// not approved) — pending_selfie | active → pending_photo, or the
+	// remembered step under a pause/hold. A no-op before the photo step.
+	// The writer refuses it while the database still holds an approved
+	// primary photo (ErrPhotoStillApproved).
+	ProfileEventPhotoRevoked ProfileEvent = "photo_revoked"
 	// ProfileEventPause hides the profile; ProfileEventUnpause restores
 	// the remembered step.
 	ProfileEventPause   ProfileEvent = "pause"
@@ -71,6 +78,9 @@ var (
 	// ErrOnboardingIncomplete: an onboarding step was requested but the
 	// database does not hold the evidence for it yet.
 	ErrOnboardingIncomplete = errors.New("invalid: onboarding requirements for this step are not met")
+	// ErrPhotoStillApproved: photo_revoked was requested but the database
+	// still holds an approved primary photo. Callers treat it as a no-op.
+	ErrPhotoStillApproved = errors.New("invalid: an approved primary photo still exists")
 	// ErrProfileStatusConflict: the row changed between the lock and the
 	// guarded UPDATE (should be unreachable under FOR UPDATE).
 	ErrProfileStatusConflict = errors.New("conflict: profile status changed concurrently")
@@ -137,6 +147,7 @@ var profileEventActors = map[ProfileEvent][]ProfileActor{
 	ProfileEventBasicsComplete: {ProfileActorSystem},
 	ProfileEventPhotoApproved:  {ProfileActorSystem},
 	ProfileEventSelfiePassed:   {ProfileActorSystem},
+	ProfileEventPhotoRevoked:   {ProfileActorSystem, ProfileActorAdmin},
 	ProfileEventPause:          {ProfileActorUser, ProfileActorLifecycle},
 	ProfileEventUnpause:        {ProfileActorUser, ProfileActorLifecycle},
 	ProfileEventReview:         {ProfileActorAdmin},
@@ -227,6 +238,17 @@ func NextProfileStatus(cur ProfileStatusState, ev ProfileEvent, actor ProfileAct
 			return ProfileStatusState{Status: edge[1]}, nil
 		}
 		return ProfileStatusState{Status: cur.Status, Prior: edge[1], Paused: cur.Paused}, nil
+
+	case ProfileEventPhotoRevoked:
+		if onboardingRank(base) <= onboardingRank(ProfileStatusPendingPhoto) {
+			// Nothing past the photo step to take back.
+			return cur, nil
+		}
+		if IsOnboardingStatus(cur.Status) {
+			return ProfileStatusState{Status: ProfileStatusPendingPhoto}, nil
+		}
+		// Paused or held: the hold stays, the remembered step drops.
+		return ProfileStatusState{Status: cur.Status, Prior: ProfileStatusPendingPhoto, Paused: cur.Paused}, nil
 
 	case ProfileEventPause:
 		if IsOnboardingStatus(cur.Status) {
@@ -325,6 +347,9 @@ func (s *Store) TransitionProfileStatus(ctx context.Context, userID uuid.UUID, e
 	}
 	if edge, ok := onboardingEdges[ev]; ok && onboardingRank(evidence) < onboardingRank(edge[1]) {
 		return nil, fmt.Errorf("%w: %s needs %s, evidence supports %s", ErrOnboardingIncomplete, ev, edge[1], evidence)
+	}
+	if ev == ProfileEventPhotoRevoked && onboardingRank(evidence) > onboardingRank(ProfileStatusPendingPhoto) {
+		return nil, fmt.Errorf("%w: evidence supports %s", ErrPhotoStillApproved, evidence)
 	}
 
 	if next != cur {

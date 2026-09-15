@@ -20,6 +20,9 @@ type Handler struct {
 	// faceCompare backs the internal face comparison route (lane D5,
 	// face_compare_handler.go). Nil leaves the route unregistered.
 	faceCompare *service.FaceCompareService
+	// datingPhotos backs the internal dating photo routes (lane D6,
+	// dating_photo_handler.go). Nil leaves them unregistered.
+	datingPhotos *service.DatingPhotoService
 }
 
 func New(svc *service.Service) *Handler {
@@ -245,7 +248,9 @@ func (h *Handler) GetMedia(c *gin.Context) {
 	}
 
 	res, err := h.svc.GetMedia(c.Request.Context(), mediaID)
-	if err != nil {
+	if err != nil || service.DatingScopeDenies(res, deliveryViewer(c)) {
+		// Lane D6: a dating photo's record (keys, renditions) is its
+		// owner's alone; everyone else gets the not-found every read gives.
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}

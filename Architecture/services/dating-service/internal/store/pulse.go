@@ -39,7 +39,12 @@ type CandidateProfile struct {
 	RegionWeight      *int
 	FamilyPlansAxis   *int
 	EducationAxis     *int
-	PrimaryPhotoMedia *uuid.UUID
+	// Lane D6: the approved primary photo (id + visibility) and whether the
+	// candidate has sparked the viewer (sparked_only photos). Never the
+	// media id.
+	PrimaryPhotoID         *uuid.UUID
+	PrimaryPhotoVisibility string
+	SparkedViewer          bool
 	// §P1-3 privacy flags. Carried on the candidate row so the
 	// response builder can decide whether to strip last_active_at,
 	// emit a bucketed distance, or swap in the blurred-photo URL
@@ -139,15 +144,21 @@ const candidateSelectCols = `
     p.community, p.blur_mode, p.trust_tier, p.last_active_at, p.language_prefs,
     t.lifestyle_rhythm, t.conversation_style, t.faith_weight, t.family_weight,
     t.region_weight, t.family_plans_axis, t.education_axis,
-    (SELECT media_id FROM dating_photos
-        WHERE user_id = p.user_id
-          AND is_primary = true
-          -- P0-6: discovery must only surface approved photos. Without
-          -- this filter a pending/rejected primary photo could leak to
-          -- other users.
-          AND moderation_status = 'approved'
-          AND visibility = 'public'
-        LIMIT 1) AS primary_photo_media,
+    -- Lane D6: the approved primary photo's id and visibility, never its
+    -- media id. The response builder turns them into the viewer's photo
+    -- image route (full or blurred). P0-6: approved only.
+    (SELECT ph.id FROM dating_photos ph
+        WHERE ph.user_id = p.user_id
+          AND ph.is_primary = true
+          AND ph.moderation_status = 'approved'
+        LIMIT 1) AS primary_photo_id,
+    COALESCE((SELECT ph.visibility FROM dating_photos ph
+        WHERE ph.user_id = p.user_id
+          AND ph.is_primary = true
+          AND ph.moderation_status = 'approved'
+        LIMIT 1), 'public') AS primary_photo_visibility,
+    EXISTS (SELECT 1 FROM dating_sparks sv
+        WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
     p.hide_last_active, p.approximate_location, p.blur_photos_until_match, p.incognito`
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
@@ -200,11 +211,12 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		// photo to approved-only; this EXISTS clause guarantees the
 		// candidate has one rather than relying on the LEFT-JOIN-style
 		// scalar subquery returning NULL.
+		// Lane D6: a match_only / sparked_only primary no longer hides the
+		// profile — the viewer gets its server-blurred image instead.
 		`EXISTS (SELECT 1 FROM dating_photos ph
 		    WHERE ph.user_id = p.user_id
 		      AND ph.is_primary = true
-		      AND ph.moderation_status = 'approved'
-		      AND ph.visibility = 'public')`,
+		      AND ph.moderation_status = 'approved')`,
 		// Mutual block filter — neither side has blocked the other.
 		`NOT ` + blockedPairPredicate("$1", "p.user_id"),
 		// §P0-7 Phase A: drop candidates whose enforcement level
@@ -339,7 +351,7 @@ func scanCandidate(row pgx.Row) (*CandidateProfile, error) {
 		&c.Community, &c.BlurMode, &c.TrustTier, &c.LastActiveAt, &c.LanguagePrefs,
 		&c.LifestyleRhythm, &c.ConversationStyle, &c.FaithWeight, &c.FamilyWeight,
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
-		&c.PrimaryPhotoMedia,
+		&c.PrimaryPhotoID, &c.PrimaryPhotoVisibility, &c.SparkedViewer,
 		&c.HideLastActive, &c.ApproximateLocation, &c.BlurPhotosUntilMatch, &c.Incognito,
 	)
 	if err != nil {

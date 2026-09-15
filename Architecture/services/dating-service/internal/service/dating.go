@@ -30,6 +30,12 @@ type Service struct {
 	// and its bars/limits (zero value = DefaultSelfieConfig).
 	livenessClient       LivenessClient
 	selfieCfg            SelfieConfig
+	// Lane D6 — media-service's dating photo routes (ownership, labels,
+	// strip + blur, signed delivery, delete) and the photo safety bars
+	// (unset = DefaultPhotoSafetyConfig).
+	mediaPhotos          MediaPhotoClient
+	photoCfg             PhotoSafetyConfig
+	photoCfgSet          bool
 	graphServiceClient   GraphServiceClient
 	communityClient      CommunityServiceClient
 	flagsClient          FeatureFlagsClient

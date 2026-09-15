@@ -813,7 +813,15 @@ services:
       MINIO_SECRET_KEY: *minio_secret_key
       MINIO_BUCKET: media
       KAFKA_BROKERS: redpanda:9092
-      MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
+      # Lane D6: images are scanned by the deterministic mock (clean unless
+      # the image carries an ATPOST-MODERATION-TEST marker; see
+      # internal/processing/moderation_mock.go), so dating photos get real
+      # moderation labels locally. An unscanned image sends a dating photo to
+      # review. The mock is refused unless ENV is local/dev.
+      MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-true}
+      MEDIA_SCANNER_BACKEND: ${MEDIA_SCANNER_BACKEND:-mock}
+      # Lifetime of the signed dating photo URLs (30-300 seconds).
+      MEDIA_DATING_PHOTO_URL_TTL_SECONDS: ${MEDIA_DATING_PHOTO_URL_TTL_SECONDS:-120}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       # Lane D5: internal blink liveness + face comparison for dating selfie
       # verification (POST /internal/v1/media/faces/liveness and /compare).
@@ -2002,6 +2010,13 @@ services:
       # Lane D5: the required blink selfie is checked by media-service's
       # internal liveness route.
       MEDIA_SERVICE_URL: http://media-service:8087
+      # Lane D6: dating photos go through media-service's internal dating
+      # photo routes (ownership, stored moderation labels, EXIF strip + server
+      # blur, signed delivery, delete). The media recheck sweeper is off
+      # locally so seeded rows with made-up media ids are not rejected;
+      # staging and prod run it.
+      DATING_PHOTO_MAX_PER_PROFILE: ${DATING_PHOTO_MAX_PER_PROFILE:-6}
+      DATING_PHOTO_RECHECK_ENABLED: ${DATING_PHOTO_RECHECK_ENABLED:-false}
       # Aadhaar (DigiLocker) is optional. ENV is unset here, so the mock is
       # refused; set ENV=local and DIGILOCKER_MODE=mock to exercise it.
       DIGILOCKER_MODE: ${DIGILOCKER_MODE:-disabled}

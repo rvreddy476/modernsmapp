@@ -63,6 +63,9 @@ env:
   # rekognition:CompareFaces, or every comparison answers 503.
   MEDIA_FACE_COMPARE_ENABLED: "true"
   MEDIA_FACE_COMPARE_BACKEND: rekognition
+  # Lane D6: lifetime of the signed dating photo URLs dating-service
+  # redirects viewers to (30-300 seconds; the redirect is cached 60s).
+  MEDIA_DATING_PHOTO_URL_TTL_SECONDS: "120"
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
   CHAT_MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098

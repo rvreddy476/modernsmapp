@@ -102,6 +102,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/photos", h.CreatePhoto)
 		dating.PATCH("/photos/:id", h.UpdatePhoto)
 		dating.DELETE("/photos/:id", h.DeletePhoto)
+		// Lane D6: a photo's image, decided per viewer on every fetch and
+		// redirected to a short-lived media-service URL.
+		dating.GET("/photos/:id/full", h.GetPhotoImage(service.PhotoVariantFull))
+		dating.GET("/photos/:id/blurred", h.GetPhotoImage(service.PhotoVariantBlurred))
 		// Admin / moderator moderation flip. Drives deck-cache
 		// invalidation + profile-state transition +
 		// photo.moderation_rejected event. Requires the admin scope, so a

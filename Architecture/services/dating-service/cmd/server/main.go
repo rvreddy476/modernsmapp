@@ -94,6 +94,13 @@ func main() {
 	if digilockerWarning != "" {
 		slog.Warn(digilockerWarning)
 	}
+	// Lane D6: photo limit, moderation label lists and bars, the no-face
+	// rule and the media recheck sweeper (DATING_PHOTO_*).
+	photoCfg, err := datinghttp.ResolvePhotoSafetyConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
 
 	port := env("HTTP_PORT", "8112")
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -220,6 +227,18 @@ func main() {
 		"max_attempts_per_day", selfieCfg.MaxAttemptsPerDay, "required_blinks", selfieCfg.RequiredBlinks,
 		"max_video_ms", selfieCfg.MaxVideoDurationMs)
 
+	// Lane D6: dating photo safety through media-service's internal dating
+	// photo routes (same key, no user identity headers): ownership and
+	// readiness on attach, automated moderation from the stored scanner
+	// labels, EXIF/GPS stripping and the server-rendered blur, signed
+	// per-viewer delivery, and asset deletion.
+	datingSvc.SetPhotoSafetyConfig(photoCfg)
+	datingSvc.SetMediaPhotoClient(service.NewHTTPMediaPhotoClient(mediaServiceURL, internalKey, nil))
+	slog.Info("dating photo safety configured", "max_photos", photoCfg.MaxPhotos,
+		"explicit_min_confidence", photoCfg.ExplicitMinConfidence, "review_min_confidence", photoCfg.ReviewMinConfidence,
+		"require_face", photoCfg.RequireFaceOnPrimary, "recheck_enabled", photoCfg.RecheckEnabled,
+		"recheck_interval", photoCfg.RecheckInterval)
+
 	// Optional Aadhaar via DigiLocker. DIGILOCKER_MODE (ResolveDigiLockerMode
 	// above): http, mock (local/dev only) or disabled.
 	// DPDP Act compliant — see PULSE_DATING_SPEC.md §15.8
@@ -328,6 +347,13 @@ func main() {
 	// Without this, a brief chat-service blip silently loses mutual
 	// matches forever.
 	go service.NewMatchSagaReconciler(datingSvc).Start(consumerCtx)
+
+	// Lane D6: re-read media-service for photos not confirmed within the
+	// recheck interval (a takedown or a vanished asset rejects the photo and
+	// revokes the profile's photo step).
+	if photoCfg.RecheckEnabled {
+		go datingSvc.StartPhotoRecheck(consumerCtx)
+	}
 	slog.Info("dating-service: match saga reconciler started")
 
 	// §P1-6 sweeper: every minute, ExpireStaleMatches +

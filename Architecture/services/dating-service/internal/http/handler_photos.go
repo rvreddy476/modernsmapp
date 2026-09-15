@@ -4,10 +4,76 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
+
+// Lane D6 stable error codes for photo attach, delete and image delivery.
+const (
+	CodePhotoMediaNotFound    = "PHOTO_MEDIA_NOT_FOUND"
+	CodePhotoMediaNotReady    = "PHOTO_MEDIA_NOT_READY"
+	CodePhotoMediaUnsupported = "PHOTO_MEDIA_UNSUPPORTED"
+	CodePhotoMediaUnavailable = "PHOTO_MEDIA_UNAVAILABLE"
+	CodePhotoLimitReached     = "PHOTO_LIMIT_REACHED"
+	CodePhotoAlreadyAttached  = "PHOTO_ALREADY_ATTACHED"
+)
+
+// respondPhotoError maps the photo safety errors, then falls back to
+// respondServiceError.
+func (h *Handler) respondPhotoError(c *gin.Context, err error, defaultCode int, defaultCodeName string) {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, store.ErrPhotoNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", "photo not found", nil)
+	case errors.Is(err, service.ErrPhotoMediaNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, CodePhotoMediaNotFound, "media not found", nil)
+	case errors.Is(err, service.ErrPhotoMediaNotReady):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodePhotoMediaNotReady,
+			"media must be a finished, moderation-passed image", nil)
+	case errors.Is(err, service.ErrPhotoMediaUnsupported):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusUnprocessableEntity, CodePhotoMediaUnsupported, "image cannot be used", nil)
+	case errors.Is(err, service.ErrPhotoMediaUnavailable):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, CodePhotoMediaUnavailable,
+			"photos are unavailable right now; try again shortly", nil)
+	case errors.Is(err, store.ErrPhotoLimitReached):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodePhotoLimitReached, "photo limit reached",
+			map[string]any{"max_photos": h.svc.PhotoSafety().MaxPhotos})
+	case errors.Is(err, store.ErrPhotoAlreadyAttached):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodePhotoAlreadyAttached, "this image is already one of your photos", nil)
+	default:
+		respondServiceError(c, err, defaultCode, defaultCodeName)
+	}
+}
+
+// GetPhotoImage — GET /v1/dating/photos/:id/full and /blurred (lane D6).
+//
+// Decides the caller's audience for this variant on every request
+// (service.PhotoImageURL) and redirects to media-service's short-lived signed
+// URL. A variant the caller may not have is 404, like a missing photo. The
+// redirect is private and cached for 60s at most — shorter than the signature
+// — so an unmatch or block stops rendering within a minute.
+func (h *Handler) GetPhotoImage(variant string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		viewerID, ok := getUserID(c)
+		if !ok {
+			return
+		}
+		photoID, ok := parseUUID(c, "id")
+		if !ok {
+			return
+		}
+		u, err := h.svc.PhotoImageURL(c.Request.Context(), viewerID, photoID, variant)
+		if err != nil {
+			h.respondPhotoError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+			return
+		}
+		c.Header("Cache-Control", "private, max-age=60")
+		c.Header("Vary", "X-User-Id")
+		c.Redirect(http.StatusTemporaryRedirect, u)
+	}
+}
 
 // ListPhotos returns the caller's photos.
 func (h *Handler) ListPhotos(c *gin.Context) {
@@ -65,7 +131,7 @@ func (h *Handler) CreatePhoto(c *gin.Context) {
 	}
 	photo, err := h.svc.CreatePhoto(c.Request.Context(), userID, body)
 	if err != nil {
-		respondServiceError(c, err, http.StatusInternalServerError, "CREATE_FAILED")
+		h.respondPhotoError(c, err, http.StatusInternalServerError, "CREATE_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, photo, nil)
@@ -149,11 +215,7 @@ func (h *Handler) DeletePhoto(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DeletePhoto(c.Request.Context(), userID, photoID); err != nil {
-		if errors.Is(err, store.ErrPhotoNotFound) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "photo not found", nil)
-			return
-		}
-		respondServiceError(c, err, http.StatusInternalServerError, "DELETE_FAILED")
+		h.respondPhotoError(c, err, http.StatusInternalServerError, "DELETE_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "deleted"}, nil)

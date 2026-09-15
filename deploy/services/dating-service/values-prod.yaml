@@ -49,6 +49,12 @@ env:
   # Lane D5: the required selfie is compared by media-service's internal
   # face compare route (internal key, no user identity).
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  # Lane D6: dating photo safety. Label lists and confidence bars use the
+  # service defaults (service.DefaultPhotoSafetyConfig) unless set here.
+  DATING_PHOTO_MAX_PER_PROFILE: "6"
+  DATING_PHOTO_REQUIRE_FACE: "true"
+  DATING_PHOTO_RECHECK_ENABLED: "true"
+  DATING_PHOTO_RECHECK_INTERVAL_HOURS: "24"
   # Aadhaar via DigiLocker is optional. Boot refuses without a mode and
   # refuses the mock outside local/dev; switch to http once the partner
   # credentials (DIGILOCKER_BASE_URL / DIGILOCKER_API_KEY) are in the store.
