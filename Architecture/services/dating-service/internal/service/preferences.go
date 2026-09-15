@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/atpost/dating-service/internal/store"
@@ -38,6 +39,13 @@ func (s *Service) UpsertPreferences(ctx context.Context, userID uuid.UUID, p sto
 	out, err := s.store.UpsertPreferences(ctx, userID, p)
 	if err != nil {
 		return nil, err
+	}
+	// interested_in is one of the onboarding basics (lane D2): setting it
+	// may complete draft → pending_photo. No profile yet is fine.
+	if p.InterestedInGender != nil {
+		if _, err := s.advanceOnboarding(ctx, userID); err != nil && !errors.Is(err, store.ErrProfileNotFound) {
+			return nil, err
+		}
 	}
 	s.InvalidatePulseCache(ctx, userID)
 	return out, nil

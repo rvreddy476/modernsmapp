@@ -4,7 +4,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/atpost/dating-service/internal/store"
@@ -26,6 +28,7 @@ func newMatchSvc(t *testing.T) (*Service, *store.Store, func()) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	ensureSchemaForTest(t, pool)
 	st := store.New(pool)
 	return New(st, nil), st, func() { pool.Close() }
 }
@@ -34,8 +37,8 @@ func TestFormMatch_HappyPath(t *testing.T) {
 	svc, st, cleanup := newMatchSvc(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
+	seedActiveProfile(t, st,a)
+	seedActiveProfile(t, st,b)
 	stub := &stubMessageClient{}
 	svc.SetMessageClient(stub)
 
@@ -58,15 +61,25 @@ func TestFormMatch_CompensatesOnFailure(t *testing.T) {
 	svc, st, cleanup := newMatchSvc(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
+	seedActiveProfile(t, st,a)
+	seedActiveProfile(t, st,b)
 	svc.SetMessageClient(&stubMessageClient{failNext: true})
 
 	if _, err := svc.FormMatch(context.Background(), a, b, nil); err == nil {
 		t.Fatalf("expected error from saga failure")
+	} else if errors.Is(err, ErrUnderage) || strings.Contains(err.Error(), "onboarding") {
+		t.Fatalf("FormMatch failed on a profile gate, not the saga: %v", err)
 	}
-	if _, err := st.GetMatchByUsers(context.Background(), a, b); err == nil {
-		t.Fatalf("compensation didn't delete the match")
+	// P0-9 (match.go): a failed chat handshake no longer hard-deletes the
+	// match. The row stays 'matched' with no conversation so the
+	// SagaReconciler retries it. (This test used to assert deletion and
+	// only passed because the draft profile gate stopped FormMatch first.)
+	m, err := st.GetMatchByUsers(context.Background(), a, b)
+	if err != nil {
+		t.Fatalf("expected the pending match to be kept for the reconciler: %v", err)
+	}
+	if m.Status != "matched" || m.ConversationID != nil {
+		t.Fatalf("pending match = status %s conversation %v, want matched with no conversation", m.Status, m.ConversationID)
 	}
 }
 
@@ -74,8 +87,8 @@ func TestFormMatch_Idempotent(t *testing.T) {
 	svc, st, cleanup := newMatchSvc(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
+	seedActiveProfile(t, st,a)
+	seedActiveProfile(t, st,b)
 	stub := &stubMessageClient{}
 	svc.SetMessageClient(stub)
 
@@ -100,9 +113,9 @@ func TestCloseMatch_OnlyParticipant(t *testing.T) {
 	svc, st, cleanup := newMatchSvc(t)
 	defer cleanup()
 	a, b, intruder := uuid.New(), uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
-	seedProfile(t, st, intruder)
+	seedActiveProfile(t, st,a)
+	seedActiveProfile(t, st,b)
+	seedActiveProfile(t, st,intruder)
 	stub := &stubMessageClient{}
 	svc.SetMessageClient(stub)
 
@@ -122,8 +135,8 @@ func TestRecordFirstMessage(t *testing.T) {
 	svc, st, cleanup := newMatchSvc(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
+	seedActiveProfile(t, st,a)
+	seedActiveProfile(t, st,b)
 	svc.SetMessageClient(&stubMessageClient{})
 	m, err := svc.FormMatch(context.Background(), a, b, nil)
 	if err != nil {
@@ -148,8 +161,8 @@ func TestExtendMatch_RequiresPremium(t *testing.T) {
 	svc, st, cleanup := newMatchSvc(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
+	seedActiveProfile(t, st,a)
+	seedActiveProfile(t, st,b)
 	svc.SetMessageClient(&stubMessageClient{})
 	m, err := svc.FormMatch(context.Background(), a, b, nil)
 	if err != nil {

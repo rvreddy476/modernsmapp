@@ -55,9 +55,22 @@ func (c *CandidateProfile) Age() int {
 	if c.BirthDate == nil {
 		return 0
 	}
-	now := time.Now()
-	age := now.Year() - c.BirthDate.Year()
-	if now.YearDay() < c.BirthDate.YearDay() {
+	return AgeOn(*c.BirthDate, time.Now())
+}
+
+// AgeOn is the whole-years age on the calendar date of `at`: a year counts
+// only once at's month/day has reached the birthday. Comparing day-of-year
+// instead is off by one around 29 February (a 2 March birthday is day 61
+// in a common year but 1 March is day 61 in a leap year). Matches
+// PostgreSQL EXTRACT(YEAR FROM AGE(...)). Zero or future birth → 0.
+func AgeOn(birth, at time.Time) int {
+	if birth.IsZero() {
+		return 0
+	}
+	by, bm, bd := birth.Date()
+	ay, am, ad := at.Date()
+	age := ay - by
+	if am < bm || (am == bm && ad < bd) {
 		age--
 	}
 	if age < 0 {

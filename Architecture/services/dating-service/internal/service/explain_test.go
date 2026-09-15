@@ -159,9 +159,13 @@ func TestExplainCandidate_DistanceAndSharedInterest(t *testing.T) {
 		Latitude:  &targetLat,
 		Longitude: &targetLon,
 		Gender:    &gender,
-		BirthDate: &birth,
 	}); err != nil {
 		t.Fatalf("seed target: %v", err)
+	}
+	// Lane D2: UpsertProfile never writes birth_date; it is recorded (and
+	// locked) through SetProfileBirthDate.
+	if _, err := st.SetProfileBirthDate(ctx, target, birth, store.BasicsSourceIdentity); err != nil {
+		t.Fatalf("seed target birth date: %v", err)
 	}
 
 	// Viewer preferences: 25km radius, want female, ages 22-35.

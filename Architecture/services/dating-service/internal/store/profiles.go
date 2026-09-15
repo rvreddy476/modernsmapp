@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,7 +17,14 @@ type UpsertProfileParams struct {
 	Intent           *string    `json:"intent,omitempty"`
 	Bio              *string    `json:"bio,omitempty"`
 	Gender           *string    `json:"gender,omitempty"`
-	BirthDate        *time.Time `json:"birth_date,omitempty"`
+	// BirthDate is still accepted on the wire for compatibility, but
+	// UpsertProfile never writes it: the service records it through
+	// SetProfileBirthDate (identity wins; a client value locks after first
+	// set).
+	BirthDate *time.Time `json:"birth_date,omitempty"`
+	// FirstName is the interim client-supplied name, written by the service
+	// through SetProfileFirstName and never over an identity-sourced name.
+	FirstName        *string    `json:"first_name,omitempty"`
 	City             *string    `json:"city,omitempty"`
 	State            *string    `json:"state,omitempty"`
 	Country          *string    `json:"country,omitempty"`
@@ -47,7 +55,8 @@ const profileSelectCols = `
     latitude, longitude, location_geohash, height_cm, religion, community,
     occupation, education, drinking, smoking, exercise, diet,
     wants_children, family_plans, blur_mode, visible_to_public, paused,
-    language_prefs, trust_tier, profile_status, created_at, updated_at, deleted_at`
+    language_prefs, trust_tier, profile_status, created_at, updated_at, deleted_at,
+    first_name, prior_status, dob_source, first_name_source`
 
 func scanProfile(row pgx.Row) (*Profile, error) {
 	p := &Profile{}
@@ -57,6 +66,7 @@ func scanProfile(row pgx.Row) (*Profile, error) {
 		&p.Occupation, &p.Education, &p.Drinking, &p.Smoking, &p.Exercise, &p.Diet,
 		&p.WantsChildren, &p.FamilyPlans, &p.BlurMode, &p.VisibleToPublic, &p.Paused,
 		&p.LanguagePrefs, &p.TrustTier, &p.ProfileStatus, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+		&p.FirstName, &p.PriorStatus, &p.DOBSource, &p.FirstNameSource,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -78,7 +88,9 @@ func (s *Store) GetProfile(ctx context.Context, userID uuid.UUID) (*Profile, err
 
 // UpsertProfile inserts a new profile or updates an existing one in place.
 // Pointer-typed fields in p are only written when non-nil so partial updates
-// preserve untouched columns.
+// preserve untouched columns. The non-nil fields are written by ONE UPDATE,
+// so a bad value fails the whole call with an error and nothing half-lands.
+// birth_date, first_name and the lifecycle columns are never written here.
 func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertProfileParams) (*Profile, error) {
 	// Step 1: ensure a row exists. We can't INSERT … ON CONFLICT DO UPDATE
 	// against arbitrarily nullable params, so we INSERT-IF-MISSING then UPDATE
@@ -96,81 +108,171 @@ func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertPro
 		return nil, fmt.Errorf("ensure dating profile: %w", err)
 	}
 
-	// Step 2: per-column updates. Skip nil pointers.
-	if p.Intent != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET intent = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Intent)
-	}
-	if p.Bio != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET bio = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Bio)
-	}
-	if p.Gender != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET gender = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Gender)
-	}
-	if p.BirthDate != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET birth_date = $2, updated_at = now() WHERE user_id = $1`, userID, *p.BirthDate)
-	}
-	if p.City != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET city = $2, updated_at = now() WHERE user_id = $1`, userID, *p.City)
-	}
-	if p.State != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET state = $2, updated_at = now() WHERE user_id = $1`, userID, *p.State)
-	}
-	if p.Country != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET country = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Country)
-	}
-	if p.Latitude != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET latitude = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Latitude)
-	}
-	if p.Longitude != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET longitude = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Longitude)
-	}
-	if p.LocationGeohash != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET location_geohash = $2, updated_at = now() WHERE user_id = $1`, userID, *p.LocationGeohash)
-	}
-	if p.HeightCm != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET height_cm = $2, updated_at = now() WHERE user_id = $1`, userID, *p.HeightCm)
-	}
-	if p.Religion != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET religion = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Religion)
-	}
-	if p.Community != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET community = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Community)
-	}
-	if p.Occupation != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET occupation = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Occupation)
-	}
-	if p.Education != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET education = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Education)
-	}
-	if p.Drinking != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET drinking = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Drinking)
-	}
-	if p.Smoking != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET smoking = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Smoking)
-	}
-	if p.Exercise != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET exercise = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Exercise)
-	}
-	if p.Diet != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET diet = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Diet)
-	}
-	if p.WantsChildren != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET wants_children = $2, updated_at = now() WHERE user_id = $1`, userID, *p.WantsChildren)
-	}
-	if p.FamilyPlans != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET family_plans = $2, updated_at = now() WHERE user_id = $1`, userID, *p.FamilyPlans)
-	}
-	if p.BlurMode != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET blur_mode = $2, updated_at = now() WHERE user_id = $1`, userID, *p.BlurMode)
-	}
-	if p.VisibleToPublic != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET visible_to_public = $2, updated_at = now() WHERE user_id = $1`, userID, *p.VisibleToPublic)
-	}
-	if p.LanguagePrefs != nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET language_prefs = $2, updated_at = now() WHERE user_id = $1`, userID, p.LanguagePrefs)
+	// Step 2: one UPDATE carrying every non-nil column.
+	cols, vals := profileAssignments(p)
+	if len(cols) > 0 {
+		sets := make([]string, 0, len(cols)+1)
+		args := make([]any, 0, len(vals)+1)
+		args = append(args, userID)
+		for i, col := range cols {
+			sets = append(sets, fmt.Sprintf("%s = $%d", col, i+2))
+			args = append(args, vals[i])
+		}
+		sets = append(sets, "updated_at = now()")
+		tag, err := s.db.Exec(ctx, `UPDATE dating_profiles SET `+strings.Join(sets, ", ")+` WHERE user_id = $1`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("update dating profile: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return nil, ErrProfileNotFound
+		}
 	}
 
 	return s.GetProfile(ctx, userID)
+}
+
+// profileAssignments lists the client-editable columns present in p, in a
+// fixed order. Column names are constants, never user input.
+func profileAssignments(p UpsertProfileParams) ([]string, []any) {
+	var cols []string
+	var vals []any
+	add := func(col string, v any) {
+		cols = append(cols, col)
+		vals = append(vals, v)
+	}
+	if p.Intent != nil {
+		add("intent", *p.Intent)
+	}
+	if p.Bio != nil {
+		add("bio", *p.Bio)
+	}
+	if p.Gender != nil {
+		add("gender", *p.Gender)
+	}
+	if p.City != nil {
+		add("city", *p.City)
+	}
+	if p.State != nil {
+		add("state", *p.State)
+	}
+	if p.Country != nil {
+		add("country", *p.Country)
+	}
+	if p.Latitude != nil {
+		add("latitude", *p.Latitude)
+	}
+	if p.Longitude != nil {
+		add("longitude", *p.Longitude)
+	}
+	if p.LocationGeohash != nil {
+		add("location_geohash", *p.LocationGeohash)
+	}
+	if p.HeightCm != nil {
+		add("height_cm", *p.HeightCm)
+	}
+	if p.Religion != nil {
+		add("religion", *p.Religion)
+	}
+	if p.Community != nil {
+		add("community", *p.Community)
+	}
+	if p.Occupation != nil {
+		add("occupation", *p.Occupation)
+	}
+	if p.Education != nil {
+		add("education", *p.Education)
+	}
+	if p.Drinking != nil {
+		add("drinking", *p.Drinking)
+	}
+	if p.Smoking != nil {
+		add("smoking", *p.Smoking)
+	}
+	if p.Exercise != nil {
+		add("exercise", *p.Exercise)
+	}
+	if p.Diet != nil {
+		add("diet", *p.Diet)
+	}
+	if p.WantsChildren != nil {
+		add("wants_children", *p.WantsChildren)
+	}
+	if p.FamilyPlans != nil {
+		add("family_plans", *p.FamilyPlans)
+	}
+	if p.BlurMode != nil {
+		add("blur_mode", *p.BlurMode)
+	}
+	if p.VisibleToPublic != nil {
+		add("visible_to_public", *p.VisibleToPublic)
+	}
+	if p.LanguagePrefs != nil {
+		add("language_prefs", p.LanguagePrefs)
+	}
+	return cols, vals
+}
+
+// Where a profile's birth date / first name came from.
+const (
+	BasicsSourceIdentity = "identity"
+	BasicsSourceClient   = "client"
+)
+
+// SetProfileBirthDate records the birth date. An identity-sourced value
+// always wins (replacing a client value). A client value is written only
+// while no birth date is on file, so it locks after first set. Reports
+// whether the row changed.
+func (s *Store) SetProfileBirthDate(ctx context.Context, userID uuid.UUID, dob time.Time, source string) (bool, error) {
+	var stmt string
+	switch source {
+	case BasicsSourceIdentity:
+		stmt = `
+        UPDATE dating_profiles
+        SET birth_date = $2::date, dob_source = 'identity', updated_at = now()
+        WHERE user_id = $1 AND deleted_at IS NULL
+          AND (birth_date IS DISTINCT FROM $2::date OR dob_source IS DISTINCT FROM 'identity')`
+	case BasicsSourceClient:
+		stmt = `
+        UPDATE dating_profiles
+        SET birth_date = $2::date, dob_source = 'client', updated_at = now()
+        WHERE user_id = $1 AND deleted_at IS NULL AND birth_date IS NULL`
+	default:
+		return false, fmt.Errorf("invalid: unknown birth date source %q", source)
+	}
+	tag, err := s.db.Exec(ctx, stmt, userID, dob)
+	if err != nil {
+		return false, fmt.Errorf("set birth date: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetProfileFirstName records the first name. Identity always wins; a
+// client value never replaces an identity-sourced name. Reports whether the
+// row changed.
+func (s *Store) SetProfileFirstName(ctx context.Context, userID uuid.UUID, name, source string) (bool, error) {
+	var stmt string
+	switch source {
+	case BasicsSourceIdentity:
+		stmt = `
+        UPDATE dating_profiles
+        SET first_name = $2, first_name_source = 'identity', updated_at = now()
+        WHERE user_id = $1 AND deleted_at IS NULL
+          AND (first_name IS DISTINCT FROM $2 OR first_name_source IS DISTINCT FROM 'identity')`
+	case BasicsSourceClient:
+		stmt = `
+        UPDATE dating_profiles
+        SET first_name = $2, first_name_source = 'client', updated_at = now()
+        WHERE user_id = $1 AND deleted_at IS NULL
+          AND first_name_source IS DISTINCT FROM 'identity'
+          AND first_name IS DISTINCT FROM $2`
+	default:
+		return false, fmt.Errorf("invalid: unknown first name source %q", source)
+	}
+	tag, err := s.db.Exec(ctx, stmt, userID, name)
+	if err != nil {
+		return false, fmt.Errorf("set first name: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // SetIntent updates only the intent field. Validated upstream against the
@@ -185,53 +287,8 @@ func (s *Store) SetIntent(ctx context.Context, userID uuid.UUID, intent string) 
 	return s.GetProfile(ctx, userID)
 }
 
-// SetPaused toggles the user's paused flag and mirrors the change into
-// profile_status (§P1-1). When paused=true the row goes to 'paused';
-// when paused=false we restore the prior lifecycle by recomputing —
-// callers that want fine-grained control should use SetProfileStatus
-// directly.
-func (s *Store) SetPaused(ctx context.Context, userID uuid.UUID, paused bool) (*Profile, error) {
-	var status string
-	if paused {
-		status = ProfileStatusPaused
-	} else {
-		// Best-effort restore. If the prior state is unknown we fall
-		// back to 'active' — defensible because the service-level
-		// SetPaused gate only fires on a profile that has already
-		// progressed past draft/pending.
-		status = ProfileStatusActive
-	}
-	if _, err := s.db.Exec(ctx, `
-        UPDATE dating_profiles
-        SET paused = $2, profile_status = $3, updated_at = now()
-        WHERE user_id = $1 AND deleted_at IS NULL`, userID, paused, status); err != nil {
-		return nil, fmt.Errorf("set paused: %w", err)
-	}
-	return s.GetProfile(ctx, userID)
-}
-
-// SetProfileStatus flips the §P1-1 lifecycle column. Returns the
-// post-update profile or ErrProfileNotFound. Used by:
-//   - service.UpsertProfile to graduate draft -> pending_photo
-//   - photo-approval consumer to step pending_photo -> pending_selfie
-//   - verification flow to step pending_selfie -> active
-//   - trust-safety moderation to flip restricted / suspended
-func (s *Store) SetProfileStatus(ctx context.Context, userID uuid.UUID, status string) (*Profile, error) {
-	if userID == uuid.Nil {
-		return nil, fmt.Errorf("invalid: user_id required")
-	}
-	tag, err := s.db.Exec(ctx, `
-        UPDATE dating_profiles
-        SET profile_status = $2, updated_at = now()
-        WHERE user_id = $1`, userID, status)
-	if err != nil {
-		return nil, fmt.Errorf("set profile status: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, ErrProfileNotFound
-	}
-	return s.GetProfile(ctx, userID)
-}
+// Pause / unpause and every other profile_status change go through
+// TransitionProfileStatus (profile_status.go).
 
 // GetCohortSalt returns the per-user cohort_salt or "" if unset. Used by
 // the soft-launch cohort gate (Sprint 6). The salt is set at profile
@@ -289,31 +346,7 @@ func (s *Store) LookupFirstName(ctx context.Context, userID uuid.UUID) (string, 
 	return *name, nil
 }
 
-// SoftDeleteProfile stamps deleted_at = now(). The 30-day grace begins at
-// this moment; cmd/data-purger sweeps rows where deleted_at < now() - 30d.
-//
-// DPDP §15.8 — soft-delete is the user-visible "delete account" action; the
-// real purge runs after the grace window so accidental deletes can be
-// reversed.
-func (s *Store) SoftDeleteProfile(ctx context.Context, userID uuid.UUID) error {
-	if userID == uuid.Nil {
-		return fmt.Errorf("invalid: user_id required")
-	}
-	tag, err := s.db.Exec(ctx, `
-        UPDATE dating_profiles
-        SET deleted_at = COALESCE(deleted_at, now()),
-            paused = true,
-            profile_status = 'deleted',
-            updated_at = now()
-        WHERE user_id = $1`, userID)
-	if err != nil {
-		return fmt.Errorf("soft delete profile: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrProfileNotFound
-	}
-	return nil
-}
+// SoftDeleteProfile lives in profile_status.go: it is a lifecycle transition.
 
 // ListExpiredSoftDeletes returns user_ids where deleted_at is older than the
 // grace window. Used by cmd/data-purger.

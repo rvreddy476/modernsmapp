@@ -37,13 +37,6 @@ func (s *Store) PurgeUserAuxiliary(ctx context.Context, userID uuid.UUID) error 
 	return tx.Commit(ctx)
 }
 
-// SetProfilePaused flips the pause flag (hide = paused). A missing profile
-// is not an error; a soft-deleted profile is never un-paused.
-func (s *Store) SetProfilePaused(ctx context.Context, userID uuid.UUID, paused bool) error {
-	if paused {
-		_, err := s.db.Exec(ctx, `UPDATE dating_profiles SET paused = true, updated_at = now() WHERE user_id = $1`, userID)
-		return err
-	}
-	_, err := s.db.Exec(ctx, `UPDATE dating_profiles SET paused = false, updated_at = now() WHERE user_id = $1 AND deleted_at IS NULL`, userID)
-	return err
-}
+// Account-lifecycle hide/unhide is service.SetProfileHidden: it pauses
+// through TransitionProfileStatus (profile_status.go) and invalidates the
+// deck caches, so there is no raw pause writer here.

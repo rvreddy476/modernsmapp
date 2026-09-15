@@ -213,7 +213,9 @@ func (s *Store) SetProfileGeohash(ctx context.Context, userID uuid.UUID) error {
 		return fmt.Errorf("read coords for geohash: %w", err)
 	}
 	if lat == nil || lon == nil {
-		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET location_geohash = NULL WHERE user_id = $1`, userID)
+		if _, err := s.db.Exec(ctx, `UPDATE dating_profiles SET location_geohash = NULL WHERE user_id = $1`, userID); err != nil {
+			return fmt.Errorf("clear location_geohash: %w", err)
+		}
 		return nil
 	}
 	gh := EncodeGeohash(*lat, *lon, 7)

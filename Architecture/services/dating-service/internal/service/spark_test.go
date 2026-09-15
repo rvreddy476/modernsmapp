@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -50,6 +49,7 @@ func newSvcForTest(t *testing.T) (*Service, *store.Store, func()) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	ensureSchemaForTest(t, pool)
 	st := store.New(pool)
 	svc := New(st, nil)
 	return svc, st, func() { pool.Close() }
@@ -68,8 +68,8 @@ func TestSparkService_CreateSpark_HappyPath(t *testing.T) {
 	svc, st, cleanup := newSvcForTest(t)
 	defer cleanup()
 	from, to := uuid.New(), uuid.New()
-	seedProfile(t, st, from)
-	seedProfile(t, st, to)
+	seedActiveProfile(t, st, from)
+	seedActiveProfile(t, st, to)
 
 	stub := &stubMessageClient{}
 	svc.SetMessageClient(stub)
@@ -93,8 +93,8 @@ func TestSparkService_MutualTriggersMatch(t *testing.T) {
 	svc, st, cleanup := newSvcForTest(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
+	seedActiveProfile(t, st, a)
+	seedActiveProfile(t, st, b)
 
 	stub := &stubMessageClient{}
 	svc.SetMessageClient(stub)
@@ -120,8 +120,8 @@ func TestSparkService_MatchSagaCompensatesOnFailure(t *testing.T) {
 	svc, st, cleanup := newSvcForTest(t)
 	defer cleanup()
 	a, b := uuid.New(), uuid.New()
-	seedProfile(t, st, a)
-	seedProfile(t, st, b)
+	seedActiveProfile(t, st, a)
+	seedActiveProfile(t, st, b)
 
 	stub := &stubMessageClient{failNext: true}
 	svc.SetMessageClient(stub)
@@ -140,9 +140,14 @@ func TestSparkService_MatchSagaCompensatesOnFailure(t *testing.T) {
 	if matchID != nil {
 		t.Fatalf("expected nil match id when saga fails")
 	}
-	// And no match record should remain (compensation).
-	if _, err := st.GetMatchByUsers(context.Background(), a, b); err == nil {
-		t.Fatalf("expected match to be compensated; found one")
+	// P0-9 (match.go): the failed handshake leaves the match 'matched' with
+	// no conversation for the SagaReconciler instead of deleting it.
+	m, err := st.GetMatchByUsers(context.Background(), a, b)
+	if err != nil {
+		t.Fatalf("expected the pending match to be kept for the reconciler: %v", err)
+	}
+	if m.Status != "matched" || m.ConversationID != nil {
+		t.Fatalf("pending match = status %s conversation %v, want matched with no conversation", m.Status, m.ConversationID)
 	}
 }
 
@@ -154,14 +159,17 @@ func TestSparkService_MatchSagaCompensatesOnFailure(t *testing.T) {
 // Table-driven so the four states share the seed harness.
 func TestCreateSpark_BlockedWhenRestricted(t *testing.T) {
 	cases := []struct {
-		name      string
-		status    string
-		wantErr   error
+		name    string
+		event   store.ProfileEvent
+		actor   store.ProfileActor
+		wantErr error
 	}{
-		{"restricted", store.ProfileStatusRestricted, ErrProfileRestricted},
-		{"suspended", store.ProfileStatusSuspended, ErrProfileSuspended},
-		{"deleted", store.ProfileStatusDeleted, ErrProfileSuspended},
-		{"pending_review", store.ProfileStatusPendingReview, ErrProfilePendingReview},
+		{"restricted", store.ProfileEventRestrict, store.ProfileActorAdmin, ErrProfileRestricted},
+		{"suspended", store.ProfileEventSuspend, store.ProfileActorAdmin, ErrProfileSuspended},
+		// A soft delete stamps deleted_at, so the deleted actor no longer
+		// has a live profile at all.
+		{"deleted", store.ProfileEventDelete, store.ProfileActorUser, store.ErrProfileNotFound},
+		{"pending_review", store.ProfileEventReview, store.ProfileActorAdmin, ErrProfilePendingReview},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -170,48 +178,17 @@ func TestCreateSpark_BlockedWhenRestricted(t *testing.T) {
 			defer cleanup()
 
 			from, to := uuid.New(), uuid.New()
-			seedAdultProfile(t, st, from)
-			seedAdultProfile(t, st, to)
+			seedActiveProfile(t, st, from)
+			seedActiveProfile(t, st, to)
 
-			// Flip the actor's profile_status to the test case state.
-			if _, err := st.SetProfileStatus(context.Background(), from, tc.status); err != nil {
-				t.Fatalf("set status %s: %v", tc.status, err)
-			}
+			// Move the actor through the status machine to the case state.
+			driveProfile(t, st, from, tc.event, tc.actor)
 
 			_, _, err := svc.CreateSpark(context.Background(), from, to, "photo", "0", "")
 			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("CreateSpark with %s: got err=%v want %v", tc.status, err, tc.wantErr)
+				t.Fatalf("CreateSpark after %s: got err=%v want %v", tc.event, err, tc.wantErr)
 			}
 		})
-	}
-}
-
-// seedAdultProfile creates the bare profile row plus an 18+ birth_date
-// so the §P0-5 adult-only gate doesn't fire before we get to the
-// §P1-1 profile_status gate under test. Mirrors the store package's
-// seedDiscoverableProfile but without the photo/visibility scaffolding
-// (we're testing the status gate, not the discovery query).
-func seedAdultProfile(t *testing.T, st *store.Store, id uuid.UUID) {
-	t.Helper()
-	intent := "casual"
-	gender := "female"
-	city := "Hyderabad"
-	dob := time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := st.UpsertProfile(context.Background(), id, store.UpsertProfileParams{
-		Intent:    &intent,
-		Gender:    &gender,
-		BirthDate: &dob,
-		City:      &city,
-	}); err != nil {
-		t.Fatalf("seed adult profile: %v", err)
-	}
-	// SetProfileStatus → active so the §P1-1 gate is a no-op by default
-	// (the test then flips to restricted/suspended/etc to assert the
-	// gate fires). Without this the row is left at 'draft' /
-	// 'pending_photo' which would also block the spark for a different
-	// reason ("invalid: complete onboarding").
-	if _, err := st.SetProfileStatus(context.Background(), id, store.ProfileStatusActive); err != nil {
-		t.Fatalf("activate profile: %v", err)
 	}
 }
 
@@ -219,9 +196,9 @@ func TestSparkService_RevokeSpark_OwnerOnly(t *testing.T) {
 	svc, st, cleanup := newSvcForTest(t)
 	defer cleanup()
 	owner, intruder, recipient := uuid.New(), uuid.New(), uuid.New()
-	seedProfile(t, st, owner)
-	seedProfile(t, st, intruder)
-	seedProfile(t, st, recipient)
+	seedActiveProfile(t, st, owner)
+	seedActiveProfile(t, st, intruder)
+	seedActiveProfile(t, st, recipient)
 
 	sp, _, err := svc.CreateSpark(context.Background(), owner, recipient, "photo", "0", "")
 	if err != nil {

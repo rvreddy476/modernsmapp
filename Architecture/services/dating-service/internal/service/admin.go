@@ -64,14 +64,20 @@ func (s *Service) ListAdminAudit(ctx context.Context, f store.AdminAuditFilter, 
 //	            and bars new sparks until a moderator clears it.
 //	restrict  - mark actioned + restrict the reported user
 //	suspend   - mark actioned + suspend the reported user
+//	reinstate - mark resolved + lift a review / restrict / suspend hold,
+//	            restoring the user's remembered onboarding step (or
+//	            'paused' if they had paused) — never a skipped step
 //
-// targetUserID is required for review + restrict + suspend.
+// targetUserID is required for review + restrict + suspend + reinstate.
+// Every profile change goes through store.TransitionProfileStatus as the
+// admin actor; a refused edge (e.g. reinstating a profile that is not
+// held) fails the action before the report changes.
 func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUserID uuid.UUID, action string) (string, error) {
 	if adminID == uuid.Nil {
 		return "", errAdminActorRequired
 	}
 	var newStatus string
-	var profileStatus string
+	var profileEvent store.ProfileEvent
 	switch action {
 	case "dismiss":
 		newStatus = "closed_no_action"
@@ -81,22 +87,25 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 		newStatus = "actioned"
 	case "review":
 		newStatus = "actioned"
-		profileStatus = store.ProfileStatusPendingReview
+		profileEvent = store.ProfileEventReview
 	case "restrict":
 		newStatus = "actioned"
-		profileStatus = store.ProfileStatusRestricted
+		profileEvent = store.ProfileEventRestrict
 	case "suspend":
 		newStatus = "actioned"
-		profileStatus = store.ProfileStatusSuspended
+		profileEvent = store.ProfileEventSuspend
+	case "reinstate":
+		newStatus = "resolved"
+		profileEvent = store.ProfileEventReinstate
 	default:
 		return "", errInvalidAdminAction
 	}
 
-	if profileStatus != "" {
+	if profileEvent != "" {
 		if targetUserID == uuid.Nil {
 			return "", errInvalidAdminAction
 		}
-		if _, err := s.store.SetProfileStatus(ctx, targetUserID, profileStatus); err != nil {
+		if _, err := s.store.TransitionProfileStatus(ctx, targetUserID, profileEvent, store.ProfileActorAdmin); err != nil {
 			return "", err
 		}
 		s.InvalidatePulseCache(ctx, targetUserID)
@@ -143,7 +152,7 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 // errInvalidAdminAction is unexported; callers receive it as a
 // generic error and the HTTP handler maps the "invalid: " prefix to
 // 400 via respondServiceError.
-var errInvalidAdminAction = fmt.Errorf("invalid: unknown admin action; allowed values are dismiss|resolved|warn|review|restrict|suspend")
+var errInvalidAdminAction = fmt.Errorf("invalid: unknown admin action; allowed values are dismiss|resolved|warn|review|restrict|suspend|reinstate")
 
 // errAdminActorRequired refuses an admin mutation with no actor. The
 // "forbidden: " prefix maps to 403 in respondServiceError.

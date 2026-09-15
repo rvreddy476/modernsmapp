@@ -59,6 +59,17 @@ type Profile struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
+	// FirstName is the display name ("identity" or interim "client"
+	// source, see FirstNameSource).
+	FirstName *string `json:"first_name,omitempty"`
+	// PriorStatus is the onboarding step remembered while the profile is
+	// paused, held (pending_review / restricted / suspended) or deleted.
+	// Written only by TransitionProfileStatus.
+	PriorStatus *string `json:"prior_status,omitempty"`
+	// DOBSource records where BirthDate came from: "identity" or the
+	// interim "client" (locked after first set).
+	DOBSource       *string `json:"dob_source,omitempty"`
+	FirstNameSource *string `json:"first_name_source,omitempty"`
 }
 
 // Profile status constants (§P1-1). Centralised to avoid string drift

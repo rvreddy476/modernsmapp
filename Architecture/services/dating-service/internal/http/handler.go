@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/atpost/dating-service/internal/service"
+	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/servicetoken"
@@ -257,6 +258,16 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	// flow rather than dumping the raw message.
 	if errors.Is(err, service.ErrUnderage) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "AGE_REQUIRED", err.Error(), nil)
+		return
+	}
+	// Lane D2: the status machine refused the edge (e.g. pausing a deleted
+	// profile, reinstating one that is not held). Stable code for clients.
+	if errors.Is(err, store.ErrProfileTransitionNotAllowed) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "PROFILE_TRANSITION_NOT_ALLOWED", err.Error(), nil)
+		return
+	}
+	if errors.Is(err, store.ErrProfileStatusConflict) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "PROFILE_STATUS_CONFLICT", err.Error(), nil)
 		return
 	}
 	msg := err.Error()

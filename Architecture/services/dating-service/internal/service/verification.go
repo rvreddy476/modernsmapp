@@ -244,15 +244,12 @@ func (s *Service) CompleteSelfieFlow(ctx context.Context, userID uuid.UUID, embe
 				slog.Warn("publish verification.completed failed", "error", perr)
 			}
 		}
-		// §P1-1: selfie pass graduates pending_selfie -> active. We only
-		// drive the forward transition — restricted/suspended must not
-		// be overwritten by a re-submission. Best-effort: a failure
-		// here is logged but doesn't block the user.
-		if p, gerr := s.store.GetProfile(ctx, userID); gerr == nil && p != nil &&
-			p.ProfileStatus == store.ProfileStatusPendingSelfie {
-			if _, err := s.store.SetProfileStatus(ctx, userID, store.ProfileStatusActive); err != nil {
-				slog.Warn("profile state: graduate to active failed", "user_id", userID, "error", err)
-			}
+		// §P1-1: selfie pass graduates pending_selfie -> active through
+		// the status machine. A restricted/suspended profile keeps its
+		// hold (only its remembered step advances). Best-effort: a
+		// failure here is logged but doesn't block the user.
+		if _, err := s.advanceOnboarding(ctx, userID); err != nil && !errors.Is(err, store.ErrProfileNotFound) {
+			slog.Warn("profile state: advance onboarding after selfie failed", "user_id", userID, "error", err)
 		}
 	} else if s.producer != nil {
 		// §P1-6 notification surface: explicit verification.rejected push.

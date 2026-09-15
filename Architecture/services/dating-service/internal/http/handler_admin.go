@@ -61,10 +61,12 @@ type actOnReportRequest struct {
 
 // ActOnReport — POST /v1/dating/admin/reports/:id/action
 // Body: {action, target_user_id?}. Allowed actions: dismiss /
-// resolved / warn / review / restrict / suspend. Review, restrict +
-// suspend require target_user_id and flip the reported user's
-// profile_status (pending_review / restricted / suspended), which
-// fires deck-cache invalidation downstream.
+// resolved / warn / review / restrict / suspend / reinstate. Review,
+// restrict, suspend + reinstate require target_user_id and move the
+// reported user through the profile status machine (pending_review /
+// restricted / suspended, or back to their remembered step), which
+// fires deck-cache invalidation downstream. A refused edge returns 409
+// PROFILE_TRANSITION_NOT_ALLOWED.
 //
 // The dating_admin_audit actor is the admin's gateway-derived X-User-Id
 // (requireAdmin). No actor → the action is refused.

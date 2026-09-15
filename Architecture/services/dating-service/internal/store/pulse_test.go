@@ -52,11 +52,10 @@ func TestFetchCandidates_ExcludesNonActive(t *testing.T) {
 	nonActiveCandidates := make(map[string]uuid.UUID, len(nonActiveStates))
 	for _, st := range nonActiveStates {
 		id := uuid.New()
-		ensureProfileForTest(t, s, id)
-		seedDiscoverableProfile(t, s, id, "male")
-		if _, err := s.SetProfileStatus(ctx, id, st); err != nil {
-			t.Fatalf("set status %s: %v", st, err)
-		}
+		// Same evidence as the active control; only the transitions
+		// applied through the writer differ.
+		seedOnboardingEvidence(t, s, id, "male")
+		driveTo(t, s, id, st)
 		nonActiveCandidates[st] = id
 	}
 

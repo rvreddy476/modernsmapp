@@ -20,7 +20,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -85,39 +84,18 @@ func privacyTestStore(t *testing.T) (*Store, func()) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	ensureStoreSchemaForTest(t, pool)
 	return New(pool), func() { pool.Close() }
 }
 
-// seedDiscoverableProfile sets the columns FetchCandidates' WHERE
-// clause requires (active status, approved primary photo, an adult
-// birth_date, a non-NULL trust_tier, etc.) on top of the bare row
-// inserted by ensureProfileForTest. Returns once the row is in a
-// shape the discovery query will accept.
+// seedDiscoverableProfile gives the bare row from ensureProfileForTest
+// everything FetchCandidates' WHERE clause requires (an adult birth_date, a
+// non-NULL trust_tier, an approved primary photo) plus the onboarding
+// evidence, then walks it to 'active' through TransitionProfileStatus.
 func seedDiscoverableProfile(t *testing.T, s *Store, id uuid.UUID, gender string) {
 	t.Helper()
-	ctx := context.Background()
-	if _, err := s.db.Exec(ctx, `
-        UPDATE dating_profiles
-        SET profile_status     = 'active',
-            deleted_at         = NULL,
-            paused             = false,
-            visible_to_public  = true,
-            birth_date         = $2,
-            gender             = $3,
-            trust_tier         = 'selfie',
-            first_name         = 'tester'
-        WHERE user_id = $1`, id,
-		time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC), gender); err != nil {
-		t.Fatalf("seed discoverable profile: %v", err)
-	}
-	// At least one approved primary photo is required by FetchCandidates.
-	if _, err := s.db.Exec(ctx, `
-        INSERT INTO dating_photos (user_id, media_id, sort_order, is_primary,
-                                   visibility, moderation_status)
-        VALUES ($1, $2, 0, true, 'public', 'approved')`,
-		id, uuid.New()); err != nil {
-		t.Fatalf("seed photo: %v", err)
-	}
+	seedOnboardingEvidence(t, s, id, gender)
+	driveTo(t, s, id, ProfileStatusActive)
 }
 
 // TestFetchCandidates_IncognitoGate covers the brief's required case

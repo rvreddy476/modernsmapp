@@ -6,28 +6,29 @@ import (
 	"github.com/google/uuid"
 )
 
-// ProfilePurger is the existing DPDP erase (store.PurgeUserData via
-// service.PurgeProfile, which also emits dating.profile.purged) plus the
-// auxiliary tables it leaves behind, and the pause flag for hide.
-type ProfilePurger interface {
+// ProfileService is the existing DPDP erase (store.PurgeUserData via
+// service.PurgeProfile, which also emits dating.profile.purged) and the
+// account-lifecycle hide, which pauses through the profile status machine
+// and invalidates deck caches (service.SetProfileHidden).
+type ProfileService interface {
 	PurgeProfile(ctx context.Context, userID uuid.UUID) error
+	SetProfileHidden(ctx context.Context, userID uuid.UUID, hidden bool) error
 }
 
 // AuxStore covers what PurgeUserData does not: account risk and device
-// fingerprints, and the pause flag used for hide/unhide.
+// fingerprints.
 type AuxStore interface {
 	PurgeUserAuxiliary(ctx context.Context, userID uuid.UUID) error
-	SetProfilePaused(ctx context.Context, userID uuid.UUID, paused bool) error
 }
 
 // Eraser composes them. Satisfies purge.Eraser and purge.Hider.
 type StoreEraser struct {
-	svc ProfilePurger
+	svc ProfileService
 	aux AuxStore
 }
 
 // NewEraser builds the adapter.
-func NewEraser(svc ProfilePurger, aux AuxStore) *StoreEraser { return &StoreEraser{svc: svc, aux: aux} }
+func NewEraser(svc ProfileService, aux AuxStore) *StoreEraser { return &StoreEraser{svc: svc, aux: aux} }
 
 // PurgeUser runs the library purge then the auxiliary deletes. Both are
 // idempotent (0 rows affected on a redelivery).
@@ -39,7 +40,8 @@ func (e *StoreEraser) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 }
 
 // SetUserHidden pauses (hidden=true) or resumes (hidden=false) the dating
-// profile without touching deleted_at.
+// profile through the status machine. Resuming restores the remembered step
+// and never lifts a moderation hold.
 func (e *StoreEraser) SetUserHidden(ctx context.Context, userID uuid.UUID, hidden bool, _ string) error {
-	return e.aux.SetProfilePaused(ctx, userID, hidden)
+	return e.svc.SetProfileHidden(ctx, userID, hidden)
 }

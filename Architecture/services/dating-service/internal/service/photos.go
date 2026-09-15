@@ -105,17 +105,14 @@ func (s *Service) SetPhotoModerationStatus(ctx context.Context, adminID, photoID
 
 	switch status {
 	case "approved":
-		// Profile state transition: pending_photo → pending_selfie when
-		// the user has at least one approved primary photo and is
-		// still in pending_photo. Idempotent — re-running on a profile
-		// already past pending_photo is a no-op.
-		prof, perr := s.store.GetProfile(ctx, photo.UserID)
-		if perr == nil && prof != nil && prof.ProfileStatus == store.ProfileStatusPendingPhoto {
-			if photo.IsPrimary && photo.ModerationStatus == "approved" {
-				if _, err := s.store.SetProfileStatus(ctx, photo.UserID, store.ProfileStatusPendingSelfie); err != nil {
-					slog.Warn("photo moderation: graduate to pending_selfie failed",
-						"user_id", photo.UserID, "photo_id", photoID, "error", err)
-				}
+		// Profile state transition: pending_photo → pending_selfie through
+		// the status machine, which checks the approved primary photo in
+		// the database. Idempotent — a profile already past pending_photo
+		// (or still in draft) is left where its evidence puts it.
+		if photo.IsPrimary && photo.ModerationStatus == "approved" {
+			if _, err := s.advanceOnboarding(ctx, photo.UserID); err != nil {
+				slog.Warn("photo moderation: advance onboarding failed",
+					"user_id", photo.UserID, "photo_id", photoID, "error", err)
 			}
 		}
 	case "rejected":

@@ -5,6 +5,9 @@
 -- All statements are idempotent (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
 -- =============================================================================
 
+-- gen_random_bytes (profile cohort_salt) and gen_random_uuid come from pgcrypto.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- ---------------------------------------------------------------------------
 -- Profiles
 -- ---------------------------------------------------------------------------
@@ -537,14 +540,116 @@ EXCEPTION WHEN duplicate_object THEN
     NULL;
 END $$;
 
--- Backfill: pre-existing rows go to 'active' so they don't disappear from
--- discovery on first deploy. The service layer will downshift any row
--- that fails the new minimum-fields gate the next time it's edited.
-UPDATE dating_profiles SET profile_status = 'active'
-    WHERE profile_status = 'draft' AND deleted_at IS NULL AND paused = false
-      AND first_name IS NOT NULL AND birth_date IS NOT NULL;
-UPDATE dating_profiles SET profile_status = 'paused' WHERE paused = true AND deleted_at IS NULL;
-UPDATE dating_profiles SET profile_status = 'deleted' WHERE deleted_at IS NOT NULL;
+-- ---------------------------------------------------------------------------
+-- Lane D2 — guarded status machine + identity-sourced basics.
+--
+-- prior_status: the onboarding step remembered while a profile is paused,
+--   held (pending_review / restricted / suspended) or deleted. Unpause and
+--   admin reinstate restore exactly this step.
+-- dob_source / first_name_source: 'identity' or the interim 'client'.
+-- Only store.TransitionProfileStatus writes profile_status / prior_status /
+-- paused at runtime (profile_status_scan_test.go).
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS prior_status      TEXT;
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS dob_source        TEXT;
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS first_name_source TEXT;
+DO $$
+BEGIN
+    ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_prior_status_chk;
+    ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_prior_status_chk
+        CHECK (prior_status IS NULL OR prior_status IN ('draft','pending_photo','pending_selfie','active'));
+    ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_dob_source_chk;
+    ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_dob_source_chk
+        CHECK (dob_source IS NULL OR dob_source IN ('identity','client'));
+    ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_first_name_source_chk;
+    ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_first_name_source_chk
+        CHECK (first_name_source IS NULL OR first_name_source IN ('identity','client'));
+EXCEPTION WHEN duplicate_object THEN
+    NULL;
+END $$;
+
+-- The onboarding step the database evidence supports. The transition writer
+-- refuses an onboarding step beyond it:
+--   draft          until intent, gender, interested_in, an 18+ birth date,
+--                  first name and a location (coordinates or city) are set
+--   pending_photo  until a primary photo is approved
+--   pending_selfie until a selfie has passed
+--   active         otherwise
+CREATE OR REPLACE FUNCTION dating_onboarding_step(p_user_id UUID) RETURNS TEXT
+LANGUAGE sql STABLE AS $fn$
+    SELECT CASE
+        WHEN p.user_id IS NULL THEN 'draft'
+        WHEN NOT (
+                 p.first_name IS NOT NULL AND btrim(p.first_name) <> ''
+             AND p.birth_date IS NOT NULL
+             AND p.birth_date <= (current_date - INTERVAL '18 years')::date
+             AND p.gender IS NOT NULL AND btrim(p.gender) <> ''
+             AND p.intent IS NOT NULL
+             AND ((p.latitude IS NOT NULL AND p.longitude IS NOT NULL)
+                  OR (p.city IS NOT NULL AND btrim(p.city) <> ''))
+             AND EXISTS (SELECT 1 FROM dating_preferences pr
+                         WHERE pr.user_id = p.user_id
+                           AND pr.interested_in_gender IS NOT NULL
+                           AND btrim(pr.interested_in_gender) <> ''))
+            THEN 'draft'
+        WHEN NOT EXISTS (SELECT 1 FROM dating_photos ph
+                         WHERE ph.user_id = p.user_id AND ph.is_primary
+                           AND ph.moderation_status = 'approved')
+            THEN 'pending_photo'
+        WHEN NOT EXISTS (SELECT 1 FROM dating_verifications v
+                         WHERE v.user_id = p.user_id AND v.selfie_status = 'passed')
+            THEN 'pending_selfie'
+        ELSE 'active'
+    END
+    FROM (SELECT p_user_id AS uid) x
+    LEFT JOIN dating_profiles p ON p.user_id = x.uid
+$fn$;
+
+-- Backfill, idempotent. The earlier backfill promoted draft rows straight
+-- to 'active' with no photo or selfie check and forced every paused row
+-- (suspended ones included) to 'paused'; both are gone.
+--
+-- (1) soft-deleted rows are 'deleted'.
+UPDATE dating_profiles SET profile_status = 'deleted'
+    WHERE deleted_at IS NOT NULL AND profile_status <> 'deleted';
+-- (2) a legacy pause flag on an onboarding/active row becomes 'paused',
+--     remembering the step.
+UPDATE dating_profiles SET prior_status = profile_status, profile_status = 'paused'
+    WHERE paused AND deleted_at IS NULL
+      AND profile_status IN ('draft','pending_photo','pending_selfie','active');
+-- (3) a 'paused' status always carries the flag.
+UPDATE dating_profiles SET paused = true
+    WHERE profile_status = 'paused' AND NOT paused;
+-- (4) unsafe legacy activation: an 'active' step without an approved primary
+--     photo or a passed selfie goes back to the step its evidence supports.
+UPDATE dating_profiles p SET profile_status = dating_onboarding_step(p.user_id)
+    WHERE p.profile_status = 'active'
+      AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                         AND ph.is_primary AND ph.moderation_status = 'approved')
+           OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                         AND v.selfie_status = 'passed'));
+UPDATE dating_profiles p SET prior_status = dating_onboarding_step(p.user_id)
+    WHERE p.prior_status = 'active'
+      AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                         AND ph.is_primary AND ph.moderation_status = 'approved')
+           OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                         AND v.selfie_status = 'passed'));
+-- (5) paused/held rows with no remembered step get one: 'active' when an
+--     approved primary photo and a passed selfie exist, else the evidence step.
+UPDATE dating_profiles p SET prior_status = CASE
+        WHEN EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                       AND ph.is_primary AND ph.moderation_status = 'approved')
+         AND EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                       AND v.selfie_status = 'passed')
+        THEN 'active'
+        ELSE dating_onboarding_step(p.user_id)
+    END
+    WHERE p.prior_status IS NULL
+      AND p.profile_status IN ('paused','pending_review','restricted','suspended');
+-- (6) a birth date already on file from before dob_source existed was
+--     client-supplied: record that, which also locks it.
+UPDATE dating_profiles SET dob_source = 'client'
+    WHERE birth_date IS NOT NULL AND dob_source IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- §P0-8 — dating_admin_audit (append-only log of every admin action).

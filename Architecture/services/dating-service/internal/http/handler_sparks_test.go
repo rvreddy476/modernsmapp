@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/atpost/dating-service/database"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/gin-gonic/gin"
@@ -39,6 +42,13 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *store.Store, func()) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	if strings.HasSuffix(cfg.ConnConfig.Database, "_test") {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := database.BootstrapSchema(ctx, pool); err != nil {
+			t.Fatalf("bootstrap schema: %v", err)
+		}
+	}
 	st := store.New(pool)
 	svc := service.New(st, nil)
 	svc.SetMessageClient(&stubMessageClient{})
@@ -58,12 +68,49 @@ func mustSeedProfile(t *testing.T, st *store.Store, id uuid.UUID) {
 	}
 }
 
+// mustSeedActiveProfile builds a valid active 18+ profile through the lane
+// D2 status machine: basics (identity-sourced birth date and first name,
+// interested_in), an approved primary photo and a passed selfie, then the
+// three onboarding transitions.
+func mustSeedActiveProfile(t *testing.T, st *store.Store, id uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	intent, gender, city, interested := "casual", "female", "Hyderabad", "male"
+	if _, err := st.UpsertProfile(ctx, id, store.UpsertProfileParams{Intent: &intent, Gender: &gender, City: &city}); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if _, err := st.SetProfileBirthDate(ctx, id, time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC), store.BasicsSourceIdentity); err != nil {
+		t.Fatalf("seed birth date: %v", err)
+	}
+	if _, err := st.SetProfileFirstName(ctx, id, "Asha", store.BasicsSourceIdentity); err != nil {
+		t.Fatalf("seed first name: %v", err)
+	}
+	if _, err := st.UpsertPreferences(ctx, id, store.UpsertPreferencesParams{InterestedInGender: &interested}); err != nil {
+		t.Fatalf("seed preferences: %v", err)
+	}
+	photo, err := st.CreatePhoto(ctx, id, store.CreatePhotoParams{MediaID: uuid.New(), IsPrimary: true, Visibility: "public"})
+	if err != nil {
+		t.Fatalf("seed photo: %v", err)
+	}
+	if _, err := st.SetPhotoModerationStatus(ctx, photo.ID, "approved", ""); err != nil {
+		t.Fatalf("approve photo: %v", err)
+	}
+	if err := st.RecordSelfieAttempt(ctx, id, 0.99, "passed"); err != nil {
+		t.Fatalf("seed selfie: %v", err)
+	}
+	for _, ev := range []store.ProfileEvent{store.ProfileEventBasicsComplete, store.ProfileEventPhotoApproved, store.ProfileEventSelfiePassed} {
+		if _, err := st.TransitionProfileStatus(ctx, id, ev, store.ProfileActorSystem); err != nil {
+			t.Fatalf("seed transition %s: %v", ev, err)
+		}
+	}
+}
+
 func TestHandler_CreateSpark(t *testing.T) {
 	r, st, cleanup := setupTestRouter(t)
 	defer cleanup()
 	from, to := uuid.New(), uuid.New()
-	mustSeedProfile(t, st, from)
-	mustSeedProfile(t, st, to)
+	mustSeedActiveProfile(t, st, from)
+	mustSeedActiveProfile(t, st, to)
 
 	body, _ := json.Marshal(map[string]string{
 		"to_user_id":  to.String(),

@@ -219,21 +219,10 @@ func buildAgeReason(target *store.Profile, prefs *store.Preferences) (ExplainRea
 	}, true
 }
 
-// ageFromBirthDate computes whole-year age. Mirrors store.CandidateProfile.Age
-// but takes a value type so we don't need a candidate projection here.
+// ageFromBirthDate computes whole-year age today via store.AgeOn, the one
+// calendar-correct age function shared with store.CandidateProfile.Age.
 func ageFromBirthDate(birth time.Time) int {
-	if birth.IsZero() {
-		return 0
-	}
-	now := time.Now()
-	age := now.Year() - birth.Year()
-	if now.YearDay() < birth.YearDay() {
-		age--
-	}
-	if age < 0 {
-		return 0
-	}
-	return age
+	return store.AgeOn(birth, time.Now())
 }
 
 // buildGenderReason emits a "gender_pref" reason iff the viewer set
