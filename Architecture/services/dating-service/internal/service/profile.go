@@ -193,9 +193,21 @@ func (s *Service) GetProfile(ctx context.Context, userID uuid.UUID) (*store.Prof
 //
 // After the write the profile is walked forward through every onboarding
 // step its evidence supports (advanceOnboarding).
+//
+// Location (lane D7): latitude + longitude together, in range and off 0,0
+// (ErrInvalidLocation, 400); stored snapped to the 0.01 degree grid; a move
+// within 15 minutes of the last one or past 10 a day is refused with a
+// *store.LocationRateLimitError (429) and nothing is written. A move inside
+// the same grid cell is a no-op.
 func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.UpsertProfileParams) (*store.Profile, error) {
 	if p.Intent != nil && !validIntent(*p.Intent) {
 		return nil, fmt.Errorf("invalid: intent must be one of casual|serious|marriage")
+	}
+	// Lane D7: a malformed location is refused before anything is written.
+	if p.Latitude != nil || p.Longitude != nil {
+		if _, _, err := store.ValidateLocation(p.Latitude, p.Longitude); err != nil {
+			return nil, err
+		}
 	}
 	existed := true
 	prior, err := s.store.GetProfile(ctx, userID)
@@ -226,7 +238,8 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 		return nil, ErrUnderage
 	}
 
-	if _, err := s.store.UpsertProfile(ctx, userID, p); err != nil {
+	written, err := s.store.UpsertProfile(ctx, userID, p)
+	if err != nil {
 		return nil, err
 	}
 	if dobSource != "" {
@@ -243,12 +256,6 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 			return nil, err
 		}
 	}
-	if p.Latitude != nil || p.Longitude != nil {
-		if err := s.store.SetProfileGeohash(ctx, userID); err != nil {
-			return nil, err
-		}
-	}
-
 	out, err := s.advanceOnboarding(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -262,6 +269,11 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 		}
 	}
 	s.InvalidatePulseCache(ctx, userID)
+	// Lane D7: other viewers' cached cards carry this profile's distance
+	// bucket, so a stored location that moved drops those decks.
+	if locationMoved(prior, written) {
+		s.InvalidateDecksForCandidate(ctx, userID)
+	}
 	return out, nil
 }
 
@@ -471,9 +483,6 @@ func fieldsTouched(p store.UpsertProfileParams) []string {
 	}
 	if p.Longitude != nil {
 		out = append(out, "longitude")
-	}
-	if p.LocationGeohash != nil {
-		out = append(out, "location_geohash")
 	}
 	if p.HeightCm != nil {
 		out = append(out, "height_cm")

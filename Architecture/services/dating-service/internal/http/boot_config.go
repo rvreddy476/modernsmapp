@@ -263,3 +263,39 @@ func ResolveDeclineCooldown(getenv func(string) string) (time.Duration, error) {
 	}
 	return time.Duration(days) * 24 * time.Hour, nil
 }
+
+// ResolveLocationPrivacyConfig reads the lane D7 limits:
+//
+//	DATING_LOCATION_CHANGE_MIN_INTERVAL_MINUTES  1-1440, default 15
+//	DATING_LOCATION_MAX_CHANGES_PER_DAY          1-100,  default 10 (rolling 24h)
+//	DATING_EXPLAIN_DAILY_LIMIT                   1-1000, default 60 (rolling 24h)
+//
+// Any malformed value is an error, on which main refuses to start (never a
+// silently weaker limit).
+func ResolveLocationPrivacyConfig(getenv func(string) string) (service.LocationPrivacyConfig, error) {
+	cfg := service.DefaultLocationPrivacyConfig()
+	intIn := func(key string, lo, hi int, dst *int) error {
+		raw := strings.TrimSpace(getenv(key))
+		if raw == "" {
+			return nil
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < lo || n > hi {
+			return fmt.Errorf("%s must be a whole number from %d to %d, got %q", key, lo, hi, raw)
+		}
+		*dst = n
+		return nil
+	}
+	minutes := int(cfg.LocationChangeMinInterval / time.Minute)
+	if err := intIn("DATING_LOCATION_CHANGE_MIN_INTERVAL_MINUTES", 1, 1440, &minutes); err != nil {
+		return cfg, err
+	}
+	cfg.LocationChangeMinInterval = time.Duration(minutes) * time.Minute
+	if err := intIn("DATING_LOCATION_MAX_CHANGES_PER_DAY", 1, 100, &cfg.LocationChangesPerDay); err != nil {
+		return cfg, err
+	}
+	if err := intIn("DATING_EXPLAIN_DAILY_LIMIT", 1, 1000, &cfg.ExplainDailyLimit); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}

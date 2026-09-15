@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_LOCATION",
+    "message": "latitude and longitude must be sent together, within range, and not 0,0"
+  },
+  "meta": {}
+}

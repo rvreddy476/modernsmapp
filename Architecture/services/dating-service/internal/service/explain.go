@@ -6,6 +6,11 @@
 // signals (distance, shared communities, shared interests) WITHOUT
 // exposing the numeric score or any internal abuse / risk signals.
 //
+// Lane D7: explain answers only for a candidate in the viewer's current deck,
+// counts every request against a daily allowance, and conveys distance as a
+// bucket code and label only. Anyone else is CANDIDATE_UNAVAILABLE, so explain
+// can no longer measure an arbitrary user.
+//
 // is_promoted reflects whether the candidate currently holds an active
 // boost. Boost state lives in Redis as a TTL-gated rate-limit key
 // (dating:boost:premium:<user_id>); the key's existence means the user
@@ -18,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"time"
 
 	"github.com/atpost/dating-service/internal/matcher"
@@ -27,18 +31,22 @@ import (
 )
 
 // CandidateExplanation is the payload returned by GET
-// /v1/dating/pulse/:targetUserId/explain. Shape locked — mobile +
-// web both consume this.
+// /v1/dating/pulse/:targetUserId/explain. Mobile + web both consume this.
+//
+// Lane D7: distance_km (a whole km) is gone. DistanceBucket is the bucket
+// code (lt_5_km | km_5_10 | km_10_25 | gt_25_km) and DistanceLabel its display
+// text; both are omitted when either side has no location.
 type CandidateExplanation struct {
-	Reasons     []ExplainReason `json:"reasons"`
-	DistanceKm  int             `json:"distance_km"`
-	IsPromoted  bool            `json:"is_promoted"`
+	Reasons        []ExplainReason `json:"reasons"`
+	DistanceBucket string          `json:"distance_bucket,omitempty"`
+	DistanceLabel  string          `json:"distance_label,omitempty"`
+	IsPromoted     bool            `json:"is_promoted"`
 }
 
 // ExplainReason is one bullet rendered under the "Why am I seeing
 // this profile?" sheet. Kind is one of:
 //   - "age_match"        — candidate age sits within viewer's preference window.
-//   - "distance"         — candidate is within the viewer's max radius.
+//   - "distance"         — candidate is within the viewer's max radius (bucket label only).
 //   - "gender_pref"      — candidate gender matches the viewer's interested_in_gender filter.
 //   - "shared_community" — both viewer + candidate belong to one or more communities.
 //   - "shared_interest"  — overlap in echo-cache topics/community slugs.
@@ -49,14 +57,14 @@ type ExplainReason struct {
 }
 
 // ExplainCandidate builds the §P1-2 transparency explanation for
-// (viewer -> target). All inputs come from the same stores the
-// matcher consults, so the explanation stays consistent with the
-// deck-generation outcome.
+// (viewer -> target).
 //
-// Errors are returned ONLY when both profiles are entirely missing
-// — partial data (missing prefs, missing target birthdate, etc.)
-// degrades to fewer reasons rather than failing the call. The UI
-// will render whatever subset is available.
+// Order: the request is counted against the viewer's daily allowance
+// (*store.ExplainRateLimitError past it), then the target must be in the
+// viewer's current deck — the cached one, or the deck computed for today —
+// and still available (not blocked either way, not suspended or deleted).
+// Otherwise ErrCandidateUnavailable, the one refusal used everywhere.
+// Partial data (missing prefs, birth date, …) degrades to fewer reasons.
 func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.UUID) (*CandidateExplanation, error) {
 	if viewerID == uuid.Nil || targetID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: viewer_id and target_user_id required")
@@ -64,23 +72,36 @@ func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.
 	if viewerID == targetID {
 		return nil, fmt.Errorf("invalid: cannot explain self")
 	}
-
-	viewer, vErr := s.store.GetProfile(ctx, viewerID)
-	target, tErr := s.store.GetProfile(ctx, targetID)
-	if vErr != nil && tErr != nil {
-		return nil, fmt.Errorf("not_found: profile not found")
+	if err := s.store.ConsumeExplainQuota(ctx, viewerID, s.store.ExplainDailyLimit()); err != nil {
+		return nil, err
 	}
-	if target == nil {
-		return nil, fmt.Errorf("not_found: target profile not found")
+	inDeck, err := s.candidateInCurrentDeck(ctx, viewerID, targetID)
+	if err != nil {
+		return nil, err
+	}
+	if !inDeck {
+		return nil, ErrCandidateUnavailable
+	}
+
+	target, err := s.store.GetProfile(ctx, targetID)
+	if err != nil {
+		if errors.Is(err, store.ErrProfileNotFound) {
+			return nil, ErrCandidateUnavailable
+		}
+		return nil, err
 	}
 	// Lane D3: a suspended or deleted target, or a pair blocked either
 	// way, is indistinguishable from a missing profile.
 	if target.ProfileStatus == store.ProfileStatusSuspended || target.ProfileStatus == store.ProfileStatusDeleted {
-		return nil, fmt.Errorf("not_found: target profile not found")
+		return nil, ErrCandidateUnavailable
 	}
 	if err := s.requireNotBlocked(ctx, viewerID, targetID); err != nil {
-		if errors.Is(err, ErrCandidateUnavailable) {
-			return nil, fmt.Errorf("not_found: target profile not found")
+		return nil, err
+	}
+	viewer, err := s.store.GetProfile(ctx, viewerID)
+	if err != nil {
+		if errors.Is(err, store.ErrProfileNotFound) {
+			return nil, ErrCandidateUnavailable
 		}
 		return nil, err
 	}
@@ -94,13 +115,12 @@ func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.
 
 	out := &CandidateExplanation{Reasons: []ExplainReason{}}
 
-	// ---- distance ----
-	dist := computeDistanceKm(viewer, target)
-	out.DistanceKm = capDistanceKm(dist, prefs.DistanceKm)
-	if dist >= 0 && prefs.DistanceKm > 0 && dist <= float64(prefs.DistanceKm) {
+	// ---- distance (bucket only; the deck already applied the radius) ----
+	if band, ok := store.DistanceBandBetween(viewer.Latitude, viewer.Longitude, target.Latitude, target.Longitude); ok {
+		out.DistanceBucket, out.DistanceLabel = band.Code, band.Label
 		out.Reasons = append(out.Reasons, ExplainReason{
 			Kind:   "distance",
-			Detail: formatDistanceReason(out.DistanceKm, prefs.DistanceKm),
+			Detail: formatDistanceReason(band),
 		})
 	}
 
@@ -149,45 +169,28 @@ func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.
 	return out, nil
 }
 
-// computeDistanceKm returns the geodesic distance between viewer and
-// target in km, or -1 if either side lacks coordinates.
-func computeDistanceKm(viewer, target *store.Profile) float64 {
-	if viewer == nil || target == nil {
-		return -1
+// candidateInCurrentDeck reports whether targetID is a card in the viewer's
+// current deck: the cached deck, or (on a miss) the deck computed for today,
+// which GetPulseToday caches. A gated viewer's deck is empty.
+func (s *Service) candidateInCurrentDeck(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
+	deck, err := s.GetPulseToday(ctx, viewerID)
+	if err != nil {
+		return false, err
 	}
-	if viewer.Latitude == nil || viewer.Longitude == nil ||
-		target.Latitude == nil || target.Longitude == nil {
-		return -1
+	for _, card := range deck.Data {
+		if card.CandidateID == targetID {
+			return true, nil
+		}
 	}
-	return store.DistanceKm(*viewer.Latitude, *viewer.Longitude, *target.Latitude, *target.Longitude)
+	return false, nil
 }
 
-// capDistanceKm rounds the raw distance to the nearest km, then caps
-// at the viewer's max radius. -1 (unknown) returns 0 so the response
-// shape stays integer.
-func capDistanceKm(raw float64, maxKm int) int {
-	if raw < 0 {
-		return 0
+// formatDistanceReason names the bucket, never a km figure.
+func formatDistanceReason(band store.DistanceBand) string {
+	if band.Code == store.DistanceBucketUnder5 {
+		return "Less than 5 km away, inside your distance preference."
 	}
-	rounded := int(math.Round(raw))
-	if rounded < 0 {
-		rounded = 0
-	}
-	if maxKm > 0 && rounded > maxKm {
-		rounded = maxKm
-	}
-	return rounded
-}
-
-func formatDistanceReason(distKm, maxKm int) string {
-	switch {
-	case distKm <= 1:
-		return "Lives less than 1 km away — well inside your distance preference."
-	case distKm < 5:
-		return fmt.Sprintf("About %d km away, well inside your %d km preference.", distKm, maxKm)
-	default:
-		return fmt.Sprintf("About %d km away, inside your %d km preference.", distKm, maxKm)
-	}
+	return band.Label + " away, inside your distance preference."
 }
 
 // buildAgeReason emits an "age_match" reason iff the target's age is

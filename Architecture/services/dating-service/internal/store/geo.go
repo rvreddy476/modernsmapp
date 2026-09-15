@@ -1,12 +1,8 @@
 package store
 
 import (
-	"context"
-	"fmt"
 	"math"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 // geohashBase32 is the standard geohash alphabet (RFC).
@@ -198,32 +194,105 @@ func DistanceKm(lat1, lon1, lat2, lon2 float64) float64 {
 	return earthRadiusKm * c
 }
 
-// SetProfileGeohash recomputes location_geohash for the given user from the
-// current latitude/longitude. Idempotent — clears the column if either
-// coordinate is NULL. Called from the Service layer after every profile
-// upsert so the matcher's hard-filter index is always consistent with the
-// raw lat/lon columns.
-func (s *Store) SetProfileGeohash(ctx context.Context, userID uuid.UUID) error {
-	row := s.db.QueryRow(ctx, `
-        SELECT latitude, longitude
-        FROM dating_profiles
-        WHERE user_id = $1 AND deleted_at IS NULL`, userID)
-	var lat, lon *float64
-	if err := row.Scan(&lat, &lon); err != nil {
-		return fmt.Errorf("read coords for geohash: %w", err)
+// --- Lane D7: snapped locations and distance buckets ------------------------
+
+// LocationGridCellsPerDegree snaps every stored dating location to a 0.01
+// degree grid (~1.1 km of latitude). Same pattern as food-service's
+// RoundDropCoordinate, which uses 0.005 degrees for a rider's drop area.
+const LocationGridCellsPerDegree = 100
+
+// LocationGeohashPrecision is the stored location_geohash length. It is
+// derived from the snapped point, so it carries nothing the snapped point
+// does not.
+const LocationGeohashPrecision = 7
+
+// SnapCoordinate is v on the 0.01 degree grid, rounding half up (towards
+// +Inf): 0.125 -> 0.13, -0.125 -> -0.12. The float64() conversion forbids a
+// fused multiply-add, so this is the same IEEE arithmetic as
+// dating_snap_coordinate in database/setup.sql. Idempotent.
+func SnapCoordinate(v float64) float64 {
+	return math.Floor(float64(v*LocationGridCellsPerDegree)+0.5) / LocationGridCellsPerDegree
+}
+
+// Distance bucket codes. Every response that conveys a distance carries one
+// of these with its label, never a number.
+const (
+	DistanceBucketUnder5 = "lt_5_km"
+	DistanceBucket5To10  = "km_5_10"
+	DistanceBucket10To25 = "km_10_25"
+	DistanceBucketOver25 = "gt_25_km"
+)
+
+// DistanceBand is a distance bucket code and its display label.
+type DistanceBand struct {
+	Code  string
+	Label string
+}
+
+// DistanceBucketFor maps a km distance onto the buckets. Lower edges are
+// inclusive: 4.9 -> lt_5_km, 5.0 -> km_5_10, 10.0 -> km_10_25,
+// 25.0 -> gt_25_km. NaN or a negative value (unreachable from haversine)
+// falls in lt_5_km rather than an empty label.
+func DistanceBucketFor(km float64) DistanceBand {
+	switch {
+	case !(km >= 5):
+		return DistanceBand{Code: DistanceBucketUnder5, Label: "< 5 km"}
+	case km < 10:
+		return DistanceBand{Code: DistanceBucket5To10, Label: "5–10 km"}
+	case km < 25:
+		return DistanceBand{Code: DistanceBucket10To25, Label: "10–25 km"}
+	default:
+		return DistanceBand{Code: DistanceBucketOver25, Label: "25+ km"}
 	}
-	if lat == nil || lon == nil {
-		if _, err := s.db.Exec(ctx, `UPDATE dating_profiles SET location_geohash = NULL WHERE user_id = $1`, userID); err != nil {
-			return fmt.Errorf("clear location_geohash: %w", err)
+}
+
+// SnappedDistanceKm is the haversine distance between the two points after
+// snapping each to the grid. Stored points are already snapped; snapping again
+// is a no-op that keeps any caller from measuring a raw point.
+func SnappedDistanceKm(lat1, lon1, lat2, lon2 float64) float64 {
+	return DistanceKm(SnapCoordinate(lat1), SnapCoordinate(lon1), SnapCoordinate(lat2), SnapCoordinate(lon2))
+}
+
+// DistanceBandBetween is the bucket between two optional points; ok is false
+// when either side has no location.
+func DistanceBandBetween(lat1, lon1, lat2, lon2 *float64) (DistanceBand, bool) {
+	if lat1 == nil || lon1 == nil || lat2 == nil || lon2 == nil {
+		return DistanceBand{}, false
+	}
+	return DistanceBucketFor(SnappedDistanceKm(*lat1, *lon1, *lat2, *lon2)), true
+}
+
+// DistanceBucketRepresentativeKm is the single km value ranking uses for a
+// bucket, so a card's score changes only when its bucket does.
+func DistanceBucketRepresentativeKm(code string) float64 {
+	switch code {
+	case DistanceBucketUnder5:
+		return 2.5
+	case DistanceBucket5To10:
+		return 7.5
+	case DistanceBucket10To25:
+		return 17.5
+	default:
+		return 37.5
+	}
+}
+
+// discoveryRadiusStepsKm are the radii the deck's distance filter applies.
+// The first three are the bucket edges.
+var discoveryRadiusStepsKm = []int{5, 10, 25, 50, 100, 250, 500}
+
+// EffectiveDiscoveryRadiusKm rounds a preferred radius up to the next step, so
+// stepping the distance preference 1 km at a time and watching who enters the
+// deck cannot measure a candidate more finely than a step. 0 (no radius) stays
+// 0; a value past the last step is returned unchanged (preferences cap at 500).
+func EffectiveDiscoveryRadiusKm(km int) int {
+	if km <= 0 {
+		return 0
+	}
+	for _, step := range discoveryRadiusStepsKm {
+		if km <= step {
+			return step
 		}
-		return nil
 	}
-	gh := EncodeGeohash(*lat, *lon, 7)
-	if gh == "" {
-		return nil
-	}
-	if _, err := s.db.Exec(ctx, `UPDATE dating_profiles SET location_geohash = $2 WHERE user_id = $1`, userID, gh); err != nil {
-		return fmt.Errorf("update location_geohash: %w", err)
-	}
-	return nil
+	return km
 }

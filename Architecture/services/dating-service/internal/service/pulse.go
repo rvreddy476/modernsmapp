@@ -33,22 +33,22 @@ type PulseProfileSummary struct {
 	Age                 int               `json:"age"`
 	Intent              string            `json:"intent"`
 	City                string            `json:"city"`
-	DistanceKm          int               `json:"distance_km"`
-	// DistanceBucket is the §P1-3 coarse-distance label
-	// ("0-5km" / "5-10km" / "10-25km" / "25-50km" / "50km+"). Always
-	// emitted; clients honour bucket-only display when the
-	// candidate has approximate_location = true (DistanceKm in that
-	// case is the same midpoint the bucket label implies, never the
-	// exact value).
-	DistanceBucket      string            `json:"distance_bucket"`
+	// DistanceBucket is the lane D7 distance bucket code (lt_5_km |
+	// km_5_10 | km_10_25 | gt_25_km) on the snapped points, and
+	// DistanceLabel its display text ("< 5 km", "5–10 km", "10–25 km",
+	// "25+ km"). Both are omitted when either side has no location. No
+	// numeric distance is ever sent.
+	DistanceBucket      string            `json:"distance_bucket,omitempty"`
+	DistanceLabel       string            `json:"distance_label,omitempty"`
 	PrimaryPhotoURL     string            `json:"primary_photo_url"`
 	PrimaryPhotoBlurred bool              `json:"primary_photo_blurred"`
 	TuneSummary         map[string]any    `json:"tune_summary"`
 	TrustTier           string            `json:"trust_tier"`
-	// LastActiveAt is omitted entirely when the candidate has
-	// hide_last_active = true. The client renders "online recently"
-	// or similar when the field is absent.
-	LastActiveAt        *time.Time        `json:"last_active_at,omitempty"`
+	// LastActiveBucket (today | this_week | a_while_ago) and
+	// LastActiveLabel are omitted when the candidate hides last active,
+	// the default for new profiles. Never a timestamp.
+	LastActiveBucket    string            `json:"last_active_bucket,omitempty"`
+	LastActiveLabel     string            `json:"last_active_label,omitempty"`
 }
 
 // PulseEchoes is the brief echoes ribbon under the card. v1 of Pulse leaves
@@ -144,8 +144,12 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 	return resp, nil
 }
 
+// cacheKey is versioned. v2 (lane D7) cards carry distance and last-active
+// buckets only, so a deck cached in the v1 shape (numeric distance_km,
+// last_active_at, km figures in match reasons) is never read back; it expires
+// on its own TTL.
 func (s *Service) cacheKey(viewerID uuid.UUID) string {
-	return fmt.Sprintf("dating:pulse:today:%s", viewerID.String())
+	return fmt.Sprintf("dating:pulse:today:v2:%s", viewerID.String())
 }
 
 func (s *Service) readPulseCache(ctx context.Context, viewerID uuid.UUID) *PulseResponse {
@@ -369,13 +373,12 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 
 // buildCard converts a scored candidate into the locked PulseCard shape.
 //
-// §P1-3 masking happens here so the wire-level response respects each
-// candidate's privacy settings without a second per-card hop:
-//   - hide_last_active        → LastActiveAt stripped (omitempty).
-//   - approximate_location    → DistanceKm replaced with the bucket
-//                               midpoint; the bucket label is emitted
-//                               regardless so clients can always show
-//                               a consistent range UI.
+// §P1-3 / lane D7 masking happens here so the wire-level response respects
+// each candidate's privacy settings without a second per-card hop:
+//   - distance                → a bucket code + label on the snapped
+//                               points, for every candidate; never km.
+//   - hide_last_active        → no last-active bucket; otherwise only
+//                               today / this_week / a_while_ago.
 //   - photo visibility and blur_photos_until_match (lane D6) →
 //                               primary_photo_url is the photo's
 //                               /blurred route unless PhotoVariantFor
@@ -396,20 +399,9 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 	if c.City != nil {
 		city = *c.City
 	}
-	exactDist := 0.0
-	hasDistance := false
-	if viewer != nil && viewer.Latitude != nil && viewer.Longitude != nil &&
-		c.Latitude != nil && c.Longitude != nil {
-		exactDist = store.DistanceKm(*viewer.Latitude, *viewer.Longitude, *c.Latitude, *c.Longitude)
-		hasDistance = true
-	}
-	distBucket := store.DistanceBucket(exactDist)
-	displayDist := int(exactDist)
-	if c.ApproximateLocation && hasDistance {
-		// Round the exact distance to the bucket midpoint so a
-		// client that ignores DistanceBucket can't fingerprint the
-		// real value back out of DistanceKm.
-		displayDist = distanceBucketMidpoint(distBucket)
+	var distance store.DistanceBand
+	if viewer != nil {
+		distance, _ = store.DistanceBandBetween(viewer.Latitude, viewer.Longitude, c.Latitude, c.Longitude)
 	}
 
 	// Lane D6: the card names the photo image route for the variant this
@@ -441,16 +433,16 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 		Age:                 c.Age(),
 		Intent:              c.Intent,
 		City:                city,
-		DistanceKm:          displayDist,
-		DistanceBucket:      distBucket,
+		DistanceBucket:      distance.Code,
+		DistanceLabel:       distance.Label,
 		PrimaryPhotoURL:     primaryURL,
 		PrimaryPhotoBlurred: primaryBlurred,
 		TuneSummary:         tuneSummary,
 		TrustTier:           c.TrustTier,
 	}
 	if !c.HideLastActive {
-		la := c.LastActiveAt
-		summary.LastActiveAt = &la
+		band := LastActiveBucketFor(c.LastActiveAt, time.Now())
+		summary.LastActiveBucket, summary.LastActiveLabel = band.Code, band.Label
 	}
 
 	return PulseCard{
@@ -459,27 +451,6 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 		MatchReasons: sc.Reasons,
 		Profile:      summary,
 		Echoes:       PulseEchoes{}, // v1 — filled in Sprint 3.
-	}
-}
-
-// distanceBucketMidpoint returns a representative km value for each
-// §P1-3 bucket. Used when the candidate has approximate_location =
-// true so DistanceKm carries the bucket-implied value rather than the
-// raw haversine result.
-func distanceBucketMidpoint(bucket string) int {
-	switch bucket {
-	case "0-5km":
-		return 2
-	case "5-10km":
-		return 7
-	case "10-25km":
-		return 17
-	case "25-50km":
-		return 37
-	case "50km+":
-		return 50
-	default:
-		return 0
 	}
 }
 

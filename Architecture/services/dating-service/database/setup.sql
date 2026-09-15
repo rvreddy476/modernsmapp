@@ -56,7 +56,9 @@ ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS visible_to_public BOOLEAN  
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS paused            BOOLEAN     NOT NULL DEFAULT false;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS deleted_at        TIMESTAMPTZ;
 -- Sprint 2: echoes refresher bookkeeping + freshness signal for matching.
-ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS echoes_consent    BOOLEAN     NOT NULL DEFAULT true;
+-- Lane D7: Echoes is an explicit opt-in, so the default is false (and is
+-- re-asserted in the D7 section for databases that already have the column).
+ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS echoes_consent    BOOLEAN     NOT NULL DEFAULT false;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS echo_refreshed_at TIMESTAMPTZ;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS last_active_at    TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS first_name        TEXT;
@@ -731,10 +733,10 @@ CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
 --
 --   * incognito                — viewer doesn't appear in anyone else's
 --                                deck unless they've already sparked.
---   * hide_last_active         — last_active_at omitted from pulse +
---                                match-list responses.
---   * approximate_location     — distance bucketed to coarse ranges
---                                instead of an exact km value.
+--   * hide_last_active         — no last-active bucket on pulse cards
+--                                (lane D7: on for new profiles).
+--   * approximate_location     — lane D7: no longer read; every distance
+--                                is a bucket computed on snapped points.
 --   * verified_only_filter     — viewer-side toggle — FetchCandidates
 --                                excludes trust_tier 'phone' (must be
 --                                'selfie' or 'aadhaar').
@@ -988,4 +990,121 @@ CREATE TABLE IF NOT EXISTS dating_selfie_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_dating_selfie_attempts_user
     ON dating_selfie_attempts(user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Lane D7 — location precision and privacy.
+--
+-- A location is stored snapped to a 0.01 degree grid (~1.1 km), rounding half
+-- up, and location_geohash (7 characters) is derived from the snapped point.
+-- dating_snap_coordinate / dating_geohash_encode are the same arithmetic as
+-- store.SnapCoordinate / store.EncodeGeohash (pinned equal by
+-- internal/store/location_it_test.go). The UPDATEs snap rows written before
+-- D7 in place; they touch only rows not yet snapped or whose geohash
+-- disagrees, so a second boot changes nothing.
+--
+-- dating_location_changes: one row per accepted location change, the first
+--   set included. The profile write refuses a change within the minimum
+--   interval or past the daily count (DATING_LOCATION_*). Rows older than 24h
+--   are trimmed on write.
+-- dating_explain_ledger: one row per explain request, for its daily limit
+--   (DATING_EXPLAIN_DAILY_LIMIT).
+--
+-- Defaults for NEW profiles: hide_last_active on; echoes_consent off (an
+-- explicit opt-in); approximate_location on (always on now, and no longer
+-- read). Existing rows keep their stored choice.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION dating_snap_coordinate(v DOUBLE PRECISION) RETURNS DOUBLE PRECISION
+LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT floor(v * 100 + 0.5) / 100
+$fn$;
+
+CREATE OR REPLACE FUNCTION dating_geohash_encode(p_lat DOUBLE PRECISION, p_lon DOUBLE PRECISION, p_len INT)
+RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS $fn$
+DECLARE
+    alphabet CONSTANT TEXT := '0123456789bcdefghjkmnpqrstuvwxyz';
+    lat_lo DOUBLE PRECISION := -90;
+    lat_hi DOUBLE PRECISION := 90;
+    lon_lo DOUBLE PRECISION := -180;
+    lon_hi DOUBLE PRECISION := 180;
+    mid    DOUBLE PRECISION;
+    bits   INT := 0;
+    nbits  INT := 0;
+    even   BOOLEAN := true;
+    gh     TEXT := '';
+BEGIN
+    IF p_lat IS NULL OR p_lon IS NULL OR p_len IS NULL OR p_len <= 0
+       OR p_lat < -90 OR p_lat > 90 OR p_lon < -180 OR p_lon > 180 THEN
+        RETURN NULL;
+    END IF;
+    WHILE length(gh) < p_len LOOP
+        IF even THEN
+            mid := (lon_lo + lon_hi) / 2;
+            IF p_lon >= mid THEN bits := bits * 2 + 1; lon_lo := mid;
+            ELSE bits := bits * 2; lon_hi := mid;
+            END IF;
+        ELSE
+            mid := (lat_lo + lat_hi) / 2;
+            IF p_lat >= mid THEN bits := bits * 2 + 1; lat_lo := mid;
+            ELSE bits := bits * 2; lat_hi := mid;
+            END IF;
+        END IF;
+        even := NOT even;
+        nbits := nbits + 1;
+        IF nbits = 5 THEN
+            gh := gh || substr(alphabet, bits + 1, 1);
+            bits := 0;
+            nbits := 0;
+        END IF;
+    END LOOP;
+    RETURN gh;
+END
+$fn$;
+
+UPDATE dating_profiles
+SET latitude         = dating_snap_coordinate(latitude),
+    longitude        = dating_snap_coordinate(longitude),
+    location_geohash = dating_geohash_encode(dating_snap_coordinate(latitude), dating_snap_coordinate(longitude), 7)
+WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+  AND (latitude  <> dating_snap_coordinate(latitude)
+    OR longitude <> dating_snap_coordinate(longitude)
+    OR location_geohash IS DISTINCT FROM
+       dating_geohash_encode(dating_snap_coordinate(latitude), dating_snap_coordinate(longitude), 7));
+UPDATE dating_profiles SET location_geohash = NULL
+WHERE (latitude IS NULL OR longitude IS NULL) AND location_geohash IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS dating_location_changes (
+    user_id    UUID        NOT NULL,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_location_changes_user
+    ON dating_location_changes(user_id, changed_at DESC);
+
+CREATE TABLE IF NOT EXISTS dating_explain_ledger (
+    viewer_id    UUID        NOT NULL,
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_explain_ledger_viewer
+    ON dating_explain_ledger(viewer_id, requested_at DESC);
+
+-- Column defaults, altered only when they differ (an ALTER takes an exclusive
+-- lock, so a no-op boot should not).
+DO $d7$
+DECLARE
+    want RECORD;
+BEGIN
+    FOR want IN
+        SELECT * FROM (VALUES ('hide_last_active', 'true'),
+                              ('echoes_consent', 'false'),
+                              ('approximate_location', 'true')) AS w(col, def)
+    LOOP
+        IF (SELECT pg_get_expr(d.adbin, d.adrelid)
+            FROM pg_attribute a
+            LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+            WHERE a.attrelid = 'dating_profiles'::regclass AND a.attname = want.col)
+           IS DISTINCT FROM want.def THEN
+            EXECUTE format('ALTER TABLE dating_profiles ALTER COLUMN %I SET DEFAULT %s', want.col, want.def);
+        END IF;
+    END LOOP;
+END
+$d7$;
 

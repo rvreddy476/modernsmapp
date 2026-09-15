@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "LOCATION_CHANGE_RATE_LIMITED",
+    "message": "location can change at most once every 15 minutes and 10 times a day; try again later",
+    "details": {
+      "max_changes_per_day": 10,
+      "min_interval_minutes": 15,
+      "window_hours": 24
+    }
+  },
+  "meta": {}
+}

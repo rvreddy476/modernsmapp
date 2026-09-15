@@ -1,7 +1,7 @@
-// Privacy store — §P1-3 (PRODUCTION_GAP_ANALYSIS.md).
+// Privacy store — §P1-3 (PRODUCTION_GAP_ANALYSIS.md), lane D7.
 //
-// Five booleans live alongside the rest of the profile row so a single
-// read serves both the discovery hard-filter pass and the response
+// The privacy toggles live alongside the rest of the profile row so a
+// single read serves both the discovery hard-filter pass and the response
 // builder's masking logic. The columns are added via ADD COLUMN IF
 // NOT EXISTS in setup.sql; this file is the data plane.
 package store
@@ -15,23 +15,30 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Privacy mirrors the five §P1-3 boolean toggles. The JSON shape is
-// the public contract for GET/PATCH /v1/dating/profile/privacy.
+// Privacy is the public contract for GET/PATCH /v1/dating/profile/privacy.
 type Privacy struct {
-	Incognito             bool `json:"incognito"`
-	HideLastActive        bool `json:"hide_last_active"`
-	ApproximateLocation   bool `json:"approximate_location"`
-	VerifiedOnlyFilter    bool `json:"verified_only_filter"`
-	BlurPhotosUntilMatch  bool `json:"blur_photos_until_match"`
+	Incognito      bool `json:"incognito"`
+	HideLastActive bool `json:"hide_last_active"`
+	// ApproximateLocation is always true (lane D7): every location is stored
+	// snapped and every distance is a bucket. Kept on the wire for older
+	// clients; writing it has no effect.
+	ApproximateLocation  bool `json:"approximate_location"`
+	VerifiedOnlyFilter   bool `json:"verified_only_filter"`
+	BlurPhotosUntilMatch bool `json:"blur_photos_until_match"`
+	// EchoesConsent is the explicit opt-in for pulling main-app activity
+	// (Echoes) into dating. Off for new profiles (lane D7).
+	EchoesConsent bool `json:"echoes_consent"`
 }
 
 // PrivacyUpdate is the partial-update payload. nil = "no change".
 type PrivacyUpdate struct {
-	Incognito             *bool `json:"incognito,omitempty"`
-	HideLastActive        *bool `json:"hide_last_active,omitempty"`
-	ApproximateLocation   *bool `json:"approximate_location,omitempty"`
-	VerifiedOnlyFilter    *bool `json:"verified_only_filter,omitempty"`
-	BlurPhotosUntilMatch  *bool `json:"blur_photos_until_match,omitempty"`
+	Incognito      *bool `json:"incognito,omitempty"`
+	HideLastActive *bool `json:"hide_last_active,omitempty"`
+	// ApproximateLocation is accepted and ignored (always on, lane D7).
+	ApproximateLocation  *bool `json:"approximate_location,omitempty"`
+	VerifiedOnlyFilter   *bool `json:"verified_only_filter,omitempty"`
+	BlurPhotosUntilMatch *bool `json:"blur_photos_until_match,omitempty"`
+	EchoesConsent        *bool `json:"echoes_consent,omitempty"`
 }
 
 // GetPrivacy returns the caller's current privacy settings. Returns
@@ -40,14 +47,14 @@ func (s *Store) GetPrivacy(ctx context.Context, userID uuid.UUID) (*Privacy, err
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: user_id required")
 	}
-	p := &Privacy{}
+	p := &Privacy{ApproximateLocation: true}
 	err := s.db.QueryRow(ctx, `
-        SELECT incognito, hide_last_active, approximate_location,
-               verified_only_filter, blur_photos_until_match
+        SELECT incognito, hide_last_active, verified_only_filter,
+               blur_photos_until_match, echoes_consent
         FROM dating_profiles
         WHERE user_id = $1 AND deleted_at IS NULL`, userID).Scan(
-		&p.Incognito, &p.HideLastActive, &p.ApproximateLocation,
-		&p.VerifiedOnlyFilter, &p.BlurPhotosUntilMatch,
+		&p.Incognito, &p.HideLastActive, &p.VerifiedOnlyFilter,
+		&p.BlurPhotosUntilMatch, &p.EchoesConsent,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -86,14 +93,6 @@ func (s *Store) UpdatePrivacy(ctx context.Context, userID uuid.UUID, u PrivacyUp
 			return nil, fmt.Errorf("set hide_last_active: %w", err)
 		}
 	}
-	if u.ApproximateLocation != nil {
-		if _, err := s.db.Exec(ctx, `
-            UPDATE dating_profiles
-            SET approximate_location = $2, updated_at = now()
-            WHERE user_id = $1 AND deleted_at IS NULL`, userID, *u.ApproximateLocation); err != nil {
-			return nil, fmt.Errorf("set approximate_location: %w", err)
-		}
-	}
 	if u.VerifiedOnlyFilter != nil {
 		if _, err := s.db.Exec(ctx, `
             UPDATE dating_profiles
@@ -108,6 +107,20 @@ func (s *Store) UpdatePrivacy(ctx context.Context, userID uuid.UUID, u PrivacyUp
             SET blur_photos_until_match = $2, updated_at = now()
             WHERE user_id = $1 AND deleted_at IS NULL`, userID, *u.BlurPhotosUntilMatch); err != nil {
 			return nil, fmt.Errorf("set blur_photos_until_match: %w", err)
+		}
+	}
+	if u.EchoesConsent != nil {
+		if _, err := s.db.Exec(ctx, `
+            UPDATE dating_profiles
+            SET echoes_consent = $2, updated_at = now()
+            WHERE user_id = $1 AND deleted_at IS NULL`, userID, *u.EchoesConsent); err != nil {
+			return nil, fmt.Errorf("set echoes_consent: %w", err)
+		}
+		if !*u.EchoesConsent {
+			// Withdrawing consent drops the snapshot already pulled in.
+			if _, err := s.db.Exec(ctx, `DELETE FROM dating_echo_cache WHERE user_id = $1`, userID); err != nil {
+				return nil, fmt.Errorf("drop echo cache: %w", err)
+			}
 		}
 	}
 	return s.GetPrivacy(ctx, userID)
@@ -160,26 +173,4 @@ func (s *Store) ListActiveMatchPartnerIDs(ctx context.Context, viewer uuid.UUID)
 	return out, rows.Err()
 }
 
-// DistanceBucket maps an exact km distance to a §P1-3 coarse bucket
-// label. Buckets are: 0-5km, 5-10km, 10-25km, 25-50km, 50km+. The
-// lower bound is inclusive; the upper bound is exclusive except for
-// the final ">=50" bucket.
-func DistanceBucket(km float64) string {
-	switch {
-	case km < 0:
-		// Defensive: a negative haversine result is unreachable
-		// but a NaN/Inf upstream could leak. Bucket to "0-5" so
-		// the response never carries an invalid label.
-		return "0-5km"
-	case km < 5:
-		return "0-5km"
-	case km < 10:
-		return "5-10km"
-	case km < 25:
-		return "10-25km"
-	case km < 50:
-		return "25-50km"
-	default:
-		return "50km+"
-	}
-}
+// Distance buckets moved to geo.go (DistanceBucketFor) with the lane D7 codes.

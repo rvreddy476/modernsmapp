@@ -101,6 +101,13 @@ func main() {
 		slog.Error("dating-service: refusing to start", "error", err)
 		os.Exit(1)
 	}
+	// Lane D7: location change limits and the explain allowance
+	// (DATING_LOCATION_*, DATING_EXPLAIN_DAILY_LIMIT).
+	locationCfg, err := datinghttp.ResolveLocationPrivacyConfig(os.Getenv)
+	if err != nil {
+		slog.Error("dating-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
 
 	port := env("HTTP_PORT", "8112")
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -176,6 +183,11 @@ func main() {
 	datingStore.SetDeclineCooldown(declineCooldown)
 	slog.Info("decline cooldown configured", "cooldown", declineCooldown)
 	datingSvc := service.New(datingStore, rdb)
+	datingSvc.SetLocationPrivacyConfig(locationCfg)
+	slog.Info("location privacy limits configured",
+		"location_change_min_interval", locationCfg.LocationChangeMinInterval,
+		"location_changes_per_day", locationCfg.LocationChangesPerDay,
+		"explain_daily_limit", locationCfg.ExplainDailyLimit)
 
 	graphProvider := matcher.NewHTTPGraphProvider(
 		os.Getenv("GRAPH_SERVICE_URL"),

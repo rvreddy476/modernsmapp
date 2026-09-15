@@ -17,11 +17,20 @@ type Store struct {
 	// declineCooldown is how long a decline keeps the sender away from the
 	// decliner (see DeclineCooldown in sparks.go).
 	declineCooldown time.Duration
+	// locationLimits bounds location changes; explainDailyLimit bounds explain
+	// requests (lane D7, location.go).
+	locationLimits    LocationChangeLimits
+	explainDailyLimit int
 }
 
 // New returns a Store backed by the given pool.
 func New(db *pgxpool.Pool) *Store {
-	return &Store{db: db, declineCooldown: DeclineCooldown}
+	return &Store{
+		db:                db,
+		declineCooldown:   DeclineCooldown,
+		locationLimits:    DefaultLocationChangeLimits(),
+		explainDailyLimit: DefaultExplainDailyLimit,
+	}
 }
 
 // --- Domain models ---------------------------------------------------------

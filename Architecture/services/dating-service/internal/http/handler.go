@@ -3,9 +3,11 @@ package http
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
@@ -296,6 +298,32 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	// under-18 counterparts, so a block is never revealed.
 	if errors.Is(err, service.ErrCandidateUnavailable) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "CANDIDATE_UNAVAILABLE", "this person is not available", nil)
+		return
+	}
+	// Lane D7: location changes and explain requests are rate limited, and a
+	// malformed location has its own 400.
+	var locationLimited *store.LocationRateLimitError
+	if errors.As(err, &locationLimited) {
+		minutes := int(locationLimited.Limits.MinInterval / time.Minute)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "LOCATION_CHANGE_RATE_LIMITED",
+			fmt.Sprintf("location can change at most once every %d minutes and %d times a day; try again later",
+				minutes, locationLimited.Limits.MaxPerDay),
+			map[string]any{
+				"min_interval_minutes": minutes,
+				"max_changes_per_day":  locationLimited.Limits.MaxPerDay,
+				"window_hours":         int(store.LocationChangeWindow.Hours()),
+			})
+		return
+	}
+	if errors.Is(err, store.ErrInvalidLocation) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LOCATION",
+			"latitude and longitude must be sent together, within range, and not 0,0", nil)
+		return
+	}
+	var explainLimited *store.ExplainRateLimitError
+	if errors.As(err, &explainLimited) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "EXPLAIN_RATE_LIMITED", "explain limit reached; try again later",
+			map[string]any{"limit": explainLimited.Limit, "window_hours": int(store.ExplainQuotaWindow.Hours())})
 		return
 	}
 	if errors.Is(err, store.ErrSparkRateLimited) {

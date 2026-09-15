@@ -76,7 +76,8 @@ func Score(ctx context.Context, vc ViewerContext, cand *store.CandidateProfile, 
 	content := contentTasteOverlap(vc.EchoCache, candEcho)
 	intent := intentAlignment(viewerIntent(vc), cand.Intent)
 	recency := recencyFreshness(cand.LastActiveAt)
-	proximity := geographicProximity(distanceKm(vc, cand))
+	band, located := distanceBand(vc, cand)
+	proximity := geographicProximity(proximityKm(band, located))
 	trust := trustFactor(cand.TrustTier)
 	diversity := diversityBonus(vc.History7DCommunities, cand)
 
@@ -103,7 +104,7 @@ func Score(ctx context.Context, vc ViewerContext, cand *store.CandidateProfile, 
 		{kind: "qa_topic", value: content, weight: WeightContent, summary: contentSummary(vc.EchoCache, candEcho)},
 		{kind: "intent", value: intent, weight: WeightIntent, summary: intentSummary(viewerIntent(vc), cand.Intent)},
 		{kind: "recency", value: recency, weight: WeightRecency, summary: "Recently active on AtPost"},
-		{kind: "proximity", value: proximity, weight: WeightProximity, summary: proximitySummary(distanceKm(vc, cand))},
+		{kind: "proximity", value: proximity, weight: WeightProximity, summary: proximitySummary(band, located)},
 		{kind: "trust", value: trust, weight: WeightTrust, summary: trustSummary(cand.TrustTier)},
 		{kind: "diversity", value: diversity, weight: WeightDiversity, summary: "Brings something fresh to your day"},
 	})
@@ -147,16 +148,21 @@ func viewerIntent(vc ViewerContext) string {
 // tests) can compute the intent component without going through Score.
 func IntentAlignmentByPair(a, b string) float64 { return intentAlignment(a, b) }
 
-// distanceKm returns 0 if either coord set is missing — proximity then
-// resolves to 1.0/(1+0/15) = 1, but we guard upstream with a hard filter
-// already so 0 means "we don't know" and the candidate gets the benefit
-// of the doubt rather than being penalised.
-func distanceKm(vc ViewerContext, cand *store.CandidateProfile) float64 {
-	if vc.Latitude == nil || vc.Longitude == nil ||
-		cand.Latitude == nil || cand.Longitude == nil {
+// distanceBand is the lane D7 distance bucket between viewer and candidate
+// on the snapped points; located is false when either side has no location.
+func distanceBand(vc ViewerContext, cand *store.CandidateProfile) (store.DistanceBand, bool) {
+	return store.DistanceBandBetween(vc.Latitude, vc.Longitude, cand.Latitude, cand.Longitude)
+}
+
+// proximityKm is the distance proximity scoring uses: the bucket's
+// representative km, so the (rounded, client-visible) score reveals no more
+// than the bucket. No location scores as 0 km — "we don't know", and the
+// candidate gets the benefit of the doubt rather than being penalised.
+func proximityKm(band store.DistanceBand, located bool) float64 {
+	if !located {
 		return 0
 	}
-	return store.DistanceKm(*vc.Latitude, *vc.Longitude, *cand.Latitude, *cand.Longitude)
+	return store.DistanceBucketRepresentativeKm(band.Code)
 }
 
 // --- tune alignment --------------------------------------------------------
@@ -393,16 +399,15 @@ func geographicProximity(distanceKm float64) float64 {
 	return clamp01(1.0 / (1.0 + distanceKm/15.0))
 }
 
-func proximitySummary(d float64) string {
+// proximitySummary names the bucket label, never a km figure (lane D7).
+func proximitySummary(band store.DistanceBand, located bool) string {
 	switch {
-	case d <= 0:
+	case !located:
 		return "Lives in your city"
-	case d < 5:
-		return fmt.Sprintf("Just %.0f km away", d)
-	case d < 25:
-		return fmt.Sprintf("%.0f km away in your area", d)
+	case band.Code == store.DistanceBucketUnder5:
+		return "Less than 5 km away"
 	default:
-		return fmt.Sprintf("%.0f km away", d)
+		return band.Label + " away"
 	}
 }
 

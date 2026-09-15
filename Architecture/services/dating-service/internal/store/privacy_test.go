@@ -2,9 +2,8 @@
 //
 // Two flavours:
 //
-//   - TestDistanceBucket (unit, no DB): verifies the §P1-3 coarse
-//     distance buckets cover every range correctly, including
-//     boundary km values and the unbounded "50km+" tail.
+//   - TestDistanceBucketFor (unit, no DB): the lane D7 distance
+//     buckets and their edges, including the unbounded "25+ km" tail.
 //
 //   - TestFetchCandidates_IncognitoGate (integration, needs
 //     TEST_PG_DSN): verifies the incognito hard-filter excludes a
@@ -25,44 +24,40 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestDistanceBucket(t *testing.T) {
+func TestDistanceBucketFor(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name string
-		km   float64
-		want string
+		name      string
+		km        float64
+		wantCode  string
+		wantLabel string
 	}{
-		// 0-5km bucket: inclusive lower (incl. 0), exclusive upper.
-		{"zero", 0, "0-5km"},
-		{"just-under-5", 4.999, "0-5km"},
-		// 5-10km bucket: 5 falls into the next band.
-		{"at-5", 5.0, "5-10km"},
-		{"mid-5-10", 7.5, "5-10km"},
-		{"just-under-10", 9.999, "5-10km"},
-		// 10-25km bucket.
-		{"at-10", 10.0, "10-25km"},
-		{"mid-10-25", 17.0, "10-25km"},
-		{"just-under-25", 24.999, "10-25km"},
-		// 25-50km bucket.
-		{"at-25", 25.0, "25-50km"},
-		{"mid-25-50", 37.0, "25-50km"},
-		{"just-under-50", 49.999, "25-50km"},
-		// 50km+ bucket: inclusive lower, unbounded above.
-		{"at-50", 50.0, "50km+"},
-		{"far", 12500.0, "50km+"},
-		// Defensive: negatives should collapse into the lowest
-		// bucket so a malformed haversine never produces an empty
-		// label.
-		{"negative", -3.0, "0-5km"},
+		// < 5 km: inclusive lower (incl. 0), exclusive upper.
+		{"zero", 0, "lt_5_km", "< 5 km"},
+		{"4.9", 4.9, "lt_5_km", "< 5 km"},
+		{"just-under-5", 4.999, "lt_5_km", "< 5 km"},
+		// 5–10 km: 5.0 falls into the next band.
+		{"at-5", 5.0, "km_5_10", "5–10 km"},
+		{"just-under-10", 9.999, "km_5_10", "5–10 km"},
+		// 10–25 km.
+		{"at-10", 10.0, "km_10_25", "10–25 km"},
+		{"just-under-25", 24.999, "km_10_25", "10–25 km"},
+		// 25+ km: inclusive lower, unbounded above.
+		{"at-25", 25.0, "gt_25_km", "25+ km"},
+		{"far", 12500.0, "gt_25_km", "25+ km"},
+		// Defensive: negatives collapse into the lowest bucket so a
+		// malformed haversine never produces an empty label.
+		{"negative", -3.0, "lt_5_km", "< 5 km"},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := DistanceBucket(tc.km); got != tc.want {
-				t.Fatalf("DistanceBucket(%v) = %q; want %q", tc.km, got, tc.want)
+			got := DistanceBucketFor(tc.km)
+			if got.Code != tc.wantCode || got.Label != tc.wantLabel {
+				t.Fatalf("DistanceBucketFor(%v) = %+v; want %s / %s", tc.km, got, tc.wantCode, tc.wantLabel)
 			}
 		})
 	}

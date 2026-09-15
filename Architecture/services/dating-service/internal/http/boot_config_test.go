@@ -59,3 +59,27 @@ func TestResolveDeclineCooldown(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveLocationPrivacyConfig(t *testing.T) {
+	cfg, err := ResolveLocationPrivacyConfig(envOf(nil))
+	if err != nil || cfg.LocationChangeMinInterval != 15*time.Minute || cfg.LocationChangesPerDay != 10 || cfg.ExplainDailyLimit != 60 {
+		t.Fatalf("unset = %+v, %v; want 15m / 10 / 60", cfg, err)
+	}
+	cfg, err = ResolveLocationPrivacyConfig(envOf(map[string]string{
+		"DATING_LOCATION_CHANGE_MIN_INTERVAL_MINUTES": " 30 ",
+		"DATING_LOCATION_MAX_CHANGES_PER_DAY":         "4",
+		"DATING_EXPLAIN_DAILY_LIMIT":                  "120",
+	}))
+	if err != nil || cfg.LocationChangeMinInterval != 30*time.Minute || cfg.LocationChangesPerDay != 4 || cfg.ExplainDailyLimit != 120 {
+		t.Fatalf("set = %+v, %v; want 30m / 4 / 120", cfg, err)
+	}
+	for key, raw := range map[string]string{
+		"DATING_LOCATION_CHANGE_MIN_INTERVAL_MINUTES": "0",
+		"DATING_LOCATION_MAX_CHANGES_PER_DAY":         "101",
+		"DATING_EXPLAIN_DAILY_LIMIT":                  "abc",
+	} {
+		if _, err := ResolveLocationPrivacyConfig(envOf(map[string]string{key: raw})); err == nil || !strings.Contains(err.Error(), key) {
+			t.Fatalf("%s=%q: err=%v, want a validation error", key, raw, err)
+		}
+	}
+}

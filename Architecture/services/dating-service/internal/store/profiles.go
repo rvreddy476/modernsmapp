@@ -28,9 +28,12 @@ type UpsertProfileParams struct {
 	City             *string    `json:"city,omitempty"`
 	State            *string    `json:"state,omitempty"`
 	Country          *string    `json:"country,omitempty"`
+	// Latitude and Longitude are sent together. Lane D7: UpsertProfile
+	// validates them, stores only the point snapped to the 0.01 degree grid
+	// (with location_geohash derived from it) and applies the location change
+	// limits. location_geohash is no longer accepted from the client.
 	Latitude         *float64   `json:"latitude,omitempty"`
 	Longitude        *float64   `json:"longitude,omitempty"`
-	LocationGeohash  *string    `json:"location_geohash,omitempty"`
 	HeightCm         *int       `json:"height_cm,omitempty"`
 	Religion         *string    `json:"religion,omitempty"`
 	Community        *string    `json:"community,omitempty"`
@@ -91,7 +94,28 @@ func (s *Store) GetProfile(ctx context.Context, userID uuid.UUID) (*Profile, err
 // preserve untouched columns. The non-nil fields are written by ONE UPDATE,
 // so a bad value fails the whole call with an error and nothing half-lands.
 // birth_date, first_name and the lifecycle columns are never written here.
+//
+// Lane D7: a location (Latitude + Longitude) is validated first
+// (ErrInvalidLocation), then stored snapped through setLocationTx, which may
+// refuse it with a *LocationRateLimitError. Row creation, the location and
+// the other columns share one transaction, so a refused location writes
+// nothing at all.
 func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertProfileParams) (*Profile, error) {
+	setLocation := p.Latitude != nil || p.Longitude != nil
+	var lat, lng float64
+	if setLocation {
+		var err error
+		if lat, lng, err = ValidateLocation(p.Latitude, p.Longitude); err != nil {
+			return nil, err
+		}
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin profile upsert: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	// Step 1: ensure a row exists. We can't INSERT … ON CONFLICT DO UPDATE
 	// against arbitrarily nullable params, so we INSERT-IF-MISSING then UPDATE
 	// only the non-nil columns.
@@ -101,14 +125,21 @@ func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertPro
 	}
 	// Sprint 6: cohort_salt populated at first insert so the staged
 	// rollout has a stable per-user bucket. The salt isn't a secret.
-	if _, err := s.db.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
         INSERT INTO dating_profiles (user_id, intent, cohort_salt)
         VALUES ($1, $2, encode(gen_random_bytes(8), 'hex'))
         ON CONFLICT (user_id) DO NOTHING`, userID, intent); err != nil {
 		return nil, fmt.Errorf("ensure dating profile: %w", err)
 	}
 
-	// Step 2: one UPDATE carrying every non-nil column.
+	// Step 2: the snapped location, under the change limits.
+	if setLocation {
+		if _, err := s.setLocationTx(ctx, tx, userID, lat, lng); err != nil {
+			return nil, err
+		}
+	}
+
+	// Step 3: one UPDATE carrying every other non-nil column.
 	cols, vals := profileAssignments(p)
 	if len(cols) > 0 {
 		sets := make([]string, 0, len(cols)+1)
@@ -119,7 +150,7 @@ func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertPro
 			args = append(args, vals[i])
 		}
 		sets = append(sets, "updated_at = now()")
-		tag, err := s.db.Exec(ctx, `UPDATE dating_profiles SET `+strings.Join(sets, ", ")+` WHERE user_id = $1`, args...)
+		tag, err := tx.Exec(ctx, `UPDATE dating_profiles SET `+strings.Join(sets, ", ")+` WHERE user_id = $1`, args...)
 		if err != nil {
 			return nil, fmt.Errorf("update dating profile: %w", err)
 		}
@@ -128,6 +159,9 @@ func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertPro
 		}
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit profile upsert: %w", err)
+	}
 	return s.GetProfile(ctx, userID)
 }
 
@@ -158,15 +192,8 @@ func profileAssignments(p UpsertProfileParams) ([]string, []any) {
 	if p.Country != nil {
 		add("country", *p.Country)
 	}
-	if p.Latitude != nil {
-		add("latitude", *p.Latitude)
-	}
-	if p.Longitude != nil {
-		add("longitude", *p.Longitude)
-	}
-	if p.LocationGeohash != nil {
-		add("location_geohash", *p.LocationGeohash)
-	}
+	// latitude / longitude / location_geohash: never here (lane D7,
+	// setLocationTx writes the snapped point and its geohash).
 	if p.HeightCm != nil {
 		add("height_cm", *p.HeightCm)
 	}
@@ -463,6 +490,12 @@ func (s *Store) PurgeUserData(ctx context.Context, userID uuid.UUID) (int64, err
 		return 0, err
 	}
 	if err := exec(`DELETE FROM dating_spark_ledger WHERE from_user_id = $1`, userID); err != nil {
+		return 0, err
+	}
+	if err := exec(`DELETE FROM dating_location_changes WHERE user_id = $1`, userID); err != nil {
+		return 0, err
+	}
+	if err := exec(`DELETE FROM dating_explain_ledger WHERE viewer_id = $1`, userID); err != nil {
 		return 0, err
 	}
 

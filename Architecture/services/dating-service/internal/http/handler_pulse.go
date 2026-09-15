@@ -65,8 +65,11 @@ func (h *Handler) GetPulseNebula(c *gin.Context) {
 //
 // §P1-2 transparency control: returns a structured, human-safe
 // list of reasons the candidate surfaced in the viewer's deck,
-// the distance (rounded + capped at viewer's max radius), and a
-// boolean for whether the candidate is currently promoted.
+// the distance bucket (code + label), and a boolean for whether
+// the candidate is currently promoted. Lane D7: only for a
+// candidate in the viewer's current deck (404
+// CANDIDATE_UNAVAILABLE otherwise), rate limited per viewer (429
+// EXPLAIN_RATE_LIMITED).
 //
 // Internal-key gated by the parent group; X-User-Id identifies
 // the viewer.

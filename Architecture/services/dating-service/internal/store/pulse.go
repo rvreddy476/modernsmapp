@@ -46,11 +46,11 @@ type CandidateProfile struct {
 	PrimaryPhotoVisibility string
 	SparkedViewer          bool
 	// §P1-3 privacy flags. Carried on the candidate row so the
-	// response builder can decide whether to strip last_active_at,
-	// emit a bucketed distance, or swap in the blurred-photo URL
-	// without a second per-card round-trip.
+	// response builder can decide whether to omit the last-active
+	// bucket or swap in the blurred-photo URL without a second
+	// per-card round-trip. approximate_location is no longer read:
+	// lane D7 buckets every distance.
 	HideLastActive       bool
-	ApproximateLocation  bool
 	BlurPhotosUntilMatch bool
 	Incognito            bool
 }
@@ -159,7 +159,7 @@ const candidateSelectCols = `
         LIMIT 1), 'public') AS primary_photo_visibility,
     EXISTS (SELECT 1 FROM dating_sparks sv
         WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
-    p.hide_last_active, p.approximate_location, p.blur_photos_until_match, p.incognito`
+    p.hide_last_active, p.blur_photos_until_match, p.incognito`
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
 type CandidateQuery struct {
@@ -280,8 +280,13 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	// Without a viewer location or with an unbounded radius we skip the
 	// prefilter — the Go-side haversine then still does the final
 	// distance check on the over-fetched batch.
-	if q.ViewerLat != nil && q.ViewerLon != nil && q.DistanceKmMax > 0 {
-		precision := GeohashPrefixForRadiusKm(q.DistanceKmMax)
+	//
+	// Lane D7: the radius applied is the preference rounded up to a step
+	// (EffectiveDiscoveryRadiusKm), so deck membership never measures a
+	// candidate more finely than a step.
+	radiusKm := EffectiveDiscoveryRadiusKm(q.DistanceKmMax)
+	if q.ViewerLat != nil && q.ViewerLon != nil && radiusKm > 0 {
+		precision := GeohashPrefixForRadiusKm(radiusKm)
 		if precision > 0 {
 			viewerGH := EncodeGeohash(*q.ViewerLat, *q.ViewerLon, precision)
 			if viewerGH != "" {
@@ -330,11 +335,13 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		if err != nil {
 			return nil, err
 		}
-		// Distance hard-filter (post-query — haversine without PostGIS).
-		if q.DistanceKmMax > 0 && q.ViewerLat != nil && q.ViewerLon != nil &&
+		// Distance hard-filter (post-query — haversine without PostGIS), on
+		// the snapped points. The radius is exclusive, so a step that is also
+		// a bucket edge (5, 10, 25 km) admits exactly the buckets below it.
+		if radiusKm > 0 && q.ViewerLat != nil && q.ViewerLon != nil &&
 			c.Latitude != nil && c.Longitude != nil {
-			d := DistanceKm(*q.ViewerLat, *q.ViewerLon, *c.Latitude, *c.Longitude)
-			if d > float64(q.DistanceKmMax) {
+			d := SnappedDistanceKm(*q.ViewerLat, *q.ViewerLon, *c.Latitude, *c.Longitude)
+			if d >= float64(radiusKm) {
 				continue
 			}
 		}
@@ -352,7 +359,7 @@ func scanCandidate(row pgx.Row) (*CandidateProfile, error) {
 		&c.LifestyleRhythm, &c.ConversationStyle, &c.FaithWeight, &c.FamilyWeight,
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
 		&c.PrimaryPhotoID, &c.PrimaryPhotoVisibility, &c.SparkedViewer,
-		&c.HideLastActive, &c.ApproximateLocation, &c.BlurPhotosUntilMatch, &c.Incognito,
+		&c.HideLastActive, &c.BlurPhotosUntilMatch, &c.Incognito,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan candidate: %w", err)
