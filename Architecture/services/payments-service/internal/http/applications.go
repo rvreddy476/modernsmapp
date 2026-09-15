@@ -37,6 +37,7 @@ import (
 	"github.com/atpost/payments-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/atpost/shared/paymentmethod"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 )
 
@@ -70,10 +71,12 @@ var refundStatuses = map[string]bool{
 
 // legacyApplications is the reference-type fallback for the user-facing family,
 // whose callers present no identity to hold an allowlist. It is the same mapping
-// migration 010's backfill uses (payments.legacy_application_for).
+// migration 010's backfill uses (payments.legacy_application_for, extended
+// with dating by migration 011).
 var legacyApplications = map[string]string{
-	"order":      "mstore",
-	"food_order": "feast",
+	servicetoken.RefOrder:         "mstore",
+	servicetoken.RefFoodOrder:     "feast",
+	servicetoken.RefDatingPremium: "dating",
 }
 
 // WithCallerApplications installs the caller → application allowlist that

@@ -174,8 +174,8 @@ type CallerPolicy struct {
 	PublicKey ed25519.PublicKey
 	// Operations this caller may request, e.g. {"payments:intent.create"}.
 	Operations []string
-	// RefTypes this caller may act on, e.g. {"order"} for commerce and
-	// {"food_order"} for food.
+	// RefTypes this caller may act on, e.g. {"order"} for commerce,
+	// {"food_order"} for food and {"dating_premium"} for dating.
 	RefTypes []string
 }
 
@@ -366,10 +366,12 @@ const (
 	OpPaymentFetch = "payments:payment.fetch"
 )
 
-// Reference types. `order` belongs to commerce; `food_order` to food.
+// Reference types. `order` belongs to commerce; `food_order` to food;
+// `dating_premium` (a one-off Premium pass or Boost) to dating.
 const (
-	RefOrder     = "order"
-	RefFoodOrder = "food_order"
+	RefOrder         = "order"
+	RefFoodOrder     = "food_order"
+	RefDatingPremium = "dating_premium"
 )
 
 // AudiencePayments is the audience string payments-service accepts.

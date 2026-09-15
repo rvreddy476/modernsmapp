@@ -96,6 +96,97 @@ func TestCommerceTokenCannotActOnFoodReference(t *testing.T) {
 	}
 }
 
+// ─── dating_premium ──────────────────────────────────────────────────
+
+// The wire string is a contract with payments-service's owner map, migration
+// 011 and every stored intent; a rename would orphan them.
+func TestRefDatingPremiumWireValue(t *testing.T) {
+	if RefDatingPremium != "dating_premium" {
+		t.Fatalf("RefDatingPremium = %q, want dating_premium", RefDatingPremium)
+	}
+	for _, other := range []string{RefOrder, RefFoodOrder} {
+		if other == RefDatingPremium {
+			t.Fatalf("RefDatingPremium collides with %q", other)
+		}
+	}
+}
+
+// datingHarness adds dating-service, allowed only dating_premium, to the
+// two-caller harness.
+func datingHarness(t *testing.T) (*harness, *Signer) {
+	t.Helper()
+	h := newHarness(t)
+	pub, priv, err := GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := NewSignerFromBase64("dating-service", "d1", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.v.RegisterBase64("dating-service", "d1", pub,
+		[]string{OpIntentCreate, OpIntentRead, OpRefundCreate},
+		[]string{RefDatingPremium}); err != nil {
+		t.Fatal(err)
+	}
+	return h, ds
+}
+
+func TestDatingTokenIsRecognisedForDatingPremium(t *testing.T) {
+	h, dating := datingHarness(t)
+	for _, op := range []string{OpIntentCreate, OpIntentRead, OpRefundCreate} {
+		tok, err := dating.Mint(AudiencePayments, "dating", []string{op}, []string{RefDatingPremium}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.v.Verify(tok, op, RefDatingPremium)
+		if err != nil {
+			t.Fatalf("%s on dating_premium: %v", op, err)
+		}
+		if got.Issuer != "dating-service" {
+			t.Fatalf("issuer = %q", got.Issuer)
+		}
+	}
+}
+
+func TestDatingTokenCannotActOnOtherReferences(t *testing.T) {
+	h, dating := datingHarness(t)
+	for _, ref := range []string{RefOrder, RefFoodOrder} {
+		tok, err := dating.Mint(AudiencePayments, "dating", []string{OpRefundCreate}, []string{ref}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.v.Verify(tok, OpRefundCreate, ref); err != ErrRefTypeDenied {
+			t.Fatalf("dating token on %s should be denied by policy, got %v", ref, err)
+		}
+	}
+}
+
+func TestOtherTokensCannotActOnDatingPremium(t *testing.T) {
+	h, _ := datingHarness(t)
+	for name, s := range map[string]*Signer{"commerce": h.commerce, "food": h.food} {
+		tok, err := s.Mint(AudiencePayments, name, []string{OpIntentCreate}, []string{RefDatingPremium}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.v.Verify(tok, OpIntentCreate, RefDatingPremium); err != ErrRefTypeDenied {
+			t.Fatalf("%s token on dating_premium should be denied by policy, got %v", name, err)
+		}
+	}
+}
+
+// dating-service does not get payments:payment.fetch.
+func TestDatingTokenHasNoPaymentFetch(t *testing.T) {
+	h, dating := datingHarness(t)
+	tok, err := dating.Mint(AudiencePayments, "dating", []string{OpPaymentFetch}, []string{RefDatingPremium}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.v.Verify(tok, OpPaymentFetch, RefDatingPremium); err != ErrScopeDenied {
+		t.Fatalf("payment.fetch should be denied by policy, got %v", err)
+	}
+}
+
 // A token minted for one operation must not be replayable as another.
 func TestScopeIsPerOperation(t *testing.T) {
 	h := newHarness(t)

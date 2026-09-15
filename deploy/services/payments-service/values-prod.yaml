@@ -78,6 +78,17 @@ externalSecret:
     - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
     - { secretKey: SERVICE_CALLER_FOOD_SERVICE_PUBKEY, remoteRef: caller_food_pubkey }
     - { secretKey: SERVICE_CALLER_FOOD_SERVICE_KID, remoteRef: caller_food_kid }
+    # dating-service (migration 011) is NOT enabled yet. To enable, in this order:
+    #   1. store caller_dating_pubkey and caller_dating_kid in Secrets Manager
+    #      (founder generates the ed25519 key; the private half goes to
+    #      dating-service only);
+    #   2. uncomment the two lines below;
+    #   3. add dating-service to SERVICE_CALLERS.
+    # Enabling before the secrets exist fails the secret sync and main.go refuses
+    # to boot a caller with no KID or PUBKEY — taking commerce and food payments
+    # down too. The non-secret dating lines under env are inert until step 3.
+    # - { secretKey: SERVICE_CALLER_DATING_SERVICE_PUBKEY, remoteRef: caller_dating_pubkey }
+    # - { secretKey: SERVICE_CALLER_DATING_SERVICE_KID, remoteRef: caller_dating_kid }
 
 env:
   ENV: prod
@@ -86,16 +97,20 @@ env:
 
   # A2 — who may call, what they may do, and what they may do it to.
   # An empty OPS or REFTYPES entry is a startup error, never "allow all".
+  # dating-service joins this list only after its secrets exist (see above).
   SERVICE_CALLERS: 'commerce-service,food-service'
   SERVICE_CALLER_COMMERCE_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create,payments:payment.fetch'
   SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: 'order'
   SERVICE_CALLER_FOOD_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
   SERVICE_CALLER_FOOD_SERVICE_REFTYPES: 'food_order'
+  SERVICE_CALLER_DATING_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  SERVICE_CALLER_DATING_SERVICE_REFTYPES: 'dating_premium'
   # Migration 010 — the APPLICATIONS (products) each caller may open payments
   # for. Every key must be in payments.applications; an empty list or an
-  # unregistered key refuses to boot when ENV=prod.
+  # unregistered key refuses to boot when ENV=prod. `dating` is seeded by 011.
   SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: 'mstore'
   SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS: 'feast'
+  SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: 'dating'
 
   # LB-9 — reconciliation: resolve captures the webhook never delivered, and
   # surface ledger-vs-provider drift instead of letting it accumulate.
@@ -125,6 +140,7 @@ networkPolicy:
   ingressFrom:
     - podSelector: { matchLabels: { app: commerce-service } }
     - podSelector: { matchLabels: { app: food-service } }
+    - podSelector: { matchLabels: { app: dating-service } }
     - ingressController: true # the webhook path only
 
 pdb:

@@ -51,6 +51,13 @@ externalSecret:
     - { secretKey: SERVICE_CALLER_COMMERCE_SERVICE_KID, remoteRef: caller_commerce_kid }
     - { secretKey: SERVICE_CALLER_FOOD_SERVICE_PUBKEY, remoteRef: caller_food_pubkey }
     - { secretKey: SERVICE_CALLER_FOOD_SERVICE_KID, remoteRef: caller_food_kid }
+    # dating-service (migration 011) is NOT enabled yet. Enable in this order:
+    # store caller_dating_pubkey / caller_dating_kid in Secrets Manager,
+    # uncomment the two lines below, then add dating-service to SERVICE_CALLERS.
+    # Enabling first fails the secret sync and the boot refuses, taking commerce
+    # and food payments down too.
+    # - { secretKey: SERVICE_CALLER_DATING_SERVICE_PUBKEY, remoteRef: caller_dating_pubkey }
+    # - { secretKey: SERVICE_CALLER_DATING_SERVICE_KID, remoteRef: caller_dating_kid }
 
 env:
   ENV: staging
@@ -60,14 +67,18 @@ env:
   # A2. Staging carries the SAME allowlist as production, deliberately: the
   # authorization boundary is one of the things staging exists to exercise,
   # and a looser staging teaches the wrong lesson.
+  # dating-service joins this list only after its secrets exist (see above).
   SERVICE_CALLERS: 'commerce-service,food-service'
   SERVICE_CALLER_COMMERCE_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create,payments:payment.fetch'
   SERVICE_CALLER_COMMERCE_SERVICE_REFTYPES: 'order'
   SERVICE_CALLER_FOOD_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
   SERVICE_CALLER_FOOD_SERVICE_REFTYPES: 'food_order'
+  SERVICE_CALLER_DATING_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  SERVICE_CALLER_DATING_SERVICE_REFTYPES: 'dating_premium'
   # Migration 010 — the applications (products) each caller may open payments for.
   SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: 'mstore'
   SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS: 'feast'
+  SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: 'dating'
 
   PAYMENTS_RECONCILE_INTERVAL_SEC: '60'
   PAYMENTS_PENDING_AGE_SEC: '300'
