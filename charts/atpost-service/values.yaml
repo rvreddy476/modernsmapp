@@ -137,6 +137,10 @@ worker:
     repository: ""
     tag: latest
     pullPolicy: IfNotPresent
+  # Optional container command. Empty keeps the image's CMD (media-worker).
+  # dating-service sets ["/data-exporter"]: that binary ships in its server
+  # image, so there the repository deliberately IS the server's.
+  command: []
   env: {}
   podAnnotations: {}
   resources:

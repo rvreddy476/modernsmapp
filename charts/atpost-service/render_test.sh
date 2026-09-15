@@ -108,6 +108,24 @@ else
 fi
 
 echo
+echo "── dating-service runs its data exporter as the worker ──"
+for envf in prod staging; do
+  expect_deployments dating-service "deploy/services/dating-service/values-${envf}.yaml" 2
+done
+out=$(helm_template dating-service deploy/services/dating-service/values-prod.yaml)
+if ! grep -q 'name: dating-service-worker' <<<"$out" || ! grep -q -- '- /data-exporter' <<<"$out"; then
+  echo "FAIL: dating worker is not the data exporter"; fail=1
+else
+  echo "ok   dating worker runs /data-exporter"
+fi
+# The media worker keeps its image CMD: no command rendered for it.
+if helm_template media-service deploy/services/media-service/values-prod.yaml | grep -q '^ *command:$'; then
+  echo "FAIL: media worker renders a command it never set"; fail=1
+else
+  echo "ok   worker command is opt-in"
+fi
+
+echo
 if [[ "$fail" -ne 0 ]]; then
   echo "RENDER REGRESSION FAILED"
   exit 1

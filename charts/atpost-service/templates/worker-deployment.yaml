@@ -85,6 +85,12 @@ spec:
         - name: {{ .Values.service.name }}-worker
           image: "{{ tpl .Values.worker.image.repository . }}:{{ .Values.worker.image.tag }}"
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          {{- /* Optional: a worker binary shipped inside the server image
+                 (dating-service's data-exporter). Unset renders nothing. */}}
+          {{- with .Values.worker.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
