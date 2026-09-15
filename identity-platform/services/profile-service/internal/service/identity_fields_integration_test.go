@@ -169,7 +169,7 @@ func itStoredDOB(t *testing.T, st *store.Store, id uuid.UUID) string {
 }
 
 func itUpdateDOB(svc *Service, id uuid.UUID, dob *time.Time) error {
-	_, err := svc.UpdateProfile(context.Background(), id, store.UpdateProfileParams{DisplayName: "IT User", DoB: dob})
+	_, err := svc.UpdateProfile(context.Background(), id, store.UpdateProfileParams{DisplayName: strOf("IT User"), DoB: dob})
 	return err
 }
 

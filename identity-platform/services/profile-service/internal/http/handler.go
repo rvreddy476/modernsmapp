@@ -392,16 +392,20 @@ func (h *Handler) GetMe(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, p, nil)
 }
 
+// UpdateProfileRequest is a partial update. An absent key leaves the stored
+// value alone; for the optionalText fields an explicit null or "" clears it.
+// first_name (a null is absent, "" is refused) and dob (null and "" refused)
+// cannot be cleared.
 type UpdateProfileRequest struct {
-	DisplayName   string     `json:"display_name"`
-	Bio           string     `json:"bio"`
-	AvatarMediaID *uuid.UUID `json:"avatar_media_id"`
-	CoverMediaID  *uuid.UUID `json:"cover_media_id"`
-	FirstName     *string    `json:"first_name"`
-	LastName      *string    `json:"last_name"`
-	PreferredName *string    `json:"preferred_name"`
-	Pronouns      *string    `json:"pronouns"`
-	Gender        *string    `json:"gender"`
+	DisplayName   optionalText `json:"display_name"`
+	Bio           optionalText `json:"bio"`
+	AvatarMediaID *uuid.UUID   `json:"avatar_media_id"`
+	CoverMediaID  *uuid.UUID   `json:"cover_media_id"`
+	FirstName     *string      `json:"first_name"`
+	LastName      optionalText `json:"last_name"`
+	PreferredName optionalText `json:"preferred_name"`
+	Pronouns      optionalText `json:"pronouns"`
+	Gender        optionalText `json:"gender"`
 	// Presence-aware: absent leaves the stored DOB alone; a present null or
 	// "" is refused (DOB_REQUIRED) rather than clearing it. See profileDOBField.
 	DoB profileDOBField `json:"dob"`
@@ -415,21 +419,25 @@ type UpdateProfileRequest struct {
 	// shed reputation, or take a handle someone else just released, and
 	// nothing records that it happened. The field is deliberately absent
 	// rather than ignored — a silently dropped value looks like a success.
-	Category          string     `json:"category"`
-	Profession        string     `json:"profession"`
-	Website           string     `json:"website"`
-	Location          string     `json:"location"`
-	StatusText        *string    `json:"status_text"`
-	StatusEmoji       *string    `json:"status_emoji"`
-	StatusExpiresAt   *time.Time `json:"status_expires_at"`
-	ProfileThemeColor string     `json:"profile_theme_color"`
-	IntroMediaURL     *string    `json:"intro_media_url"`
-	IntroMediaType    *string    `json:"intro_media_type"`
-	CTALabel          *string    `json:"cta_label"`
-	CTAURL            *string    `json:"cta_url"`
-	MemberSinceBadge  *bool      `json:"member_since_badge"`
-	Timezone          *string    `json:"timezone"`
+	Category        optionalText `json:"category"`
+	Profession      optionalText `json:"profession"`
+	Website         optionalText `json:"website"`
+	Location        optionalText `json:"location"`
+	StatusText      optionalText `json:"status_text"`
+	StatusEmoji     optionalText `json:"status_emoji"`
+	StatusExpiresAt optionalTime `json:"status_expires_at"`
+	// A null or "" resets the theme to defaultProfileThemeColor.
+	ProfileThemeColor optionalText `json:"profile_theme_color"`
+	IntroMediaURL     optionalText `json:"intro_media_url"`
+	IntroMediaType    optionalText `json:"intro_media_type"`
+	CTALabel          optionalText `json:"cta_label"`
+	CTAURL            optionalText `json:"cta_url"`
+	// A null is absent: a flag has no cleared state.
+	MemberSinceBadge *bool        `json:"member_since_badge"`
+	Timezone         optionalText `json:"timezone"`
 }
+
+const defaultProfileThemeColor = "#1A73E8"
 
 func (h *Handler) UpdateMe(c *gin.Context) {
 	userID, err := parseUserHeader(c)
@@ -458,45 +466,49 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 	if writeFieldError(c, err) {
 		return
 	}
-	req.Website = normalizeProfileURL(req.Website)
-	if req.CTAURL != nil && strings.TrimSpace(*req.CTAURL) != "" {
-		normalized := normalizeProfileURL(*req.CTAURL)
-		req.CTAURL = &normalized
+	if req.Website.present {
+		req.Website.value = normalizeProfileURL(req.Website.value)
 	}
-
-	themeColor := req.ProfileThemeColor
-	if themeColor == "" {
-		themeColor = "#1A73E8"
+	if strings.TrimSpace(req.CTAURL.value) != "" {
+		req.CTAURL.value = normalizeProfileURL(req.CTAURL.value)
+	}
+	if req.ProfileThemeColor.present && req.ProfileThemeColor.value == "" {
+		req.ProfileThemeColor.value = defaultProfileThemeColor
 	}
 
 	params := store.UpdateProfileParams{
-		DisplayName:   req.DisplayName,
-		Bio:           req.Bio,
+		DisplayName:   req.DisplayName.ptr(),
+		Bio:           req.Bio.ptr(),
 		AvatarMediaID: req.AvatarMediaID,
 		CoverMediaID:  req.CoverMediaID,
 		FirstName:     req.FirstName,
-		LastName:      req.LastName,
-		PreferredName: req.PreferredName,
-		Pronouns:      req.Pronouns,
-		Gender:        req.Gender,
+		LastName:      req.LastName.ptr(),
+		PreferredName: req.PreferredName.ptr(),
+		Pronouns:      req.Pronouns.ptr(),
+		Gender:        req.Gender.ptr(),
 		DoB:           dob,
 		// SR-4: Username is intentionally not carried here — PUT /me/handle is
-		// the only path that may change a handle. Passing nil leaves it unchanged.
+		// the only path that may change a handle. nil leaves it unchanged.
 		Username:          nil,
-		Category:          req.Category,
-		Profession:        req.Profession,
-		Website:           req.Website,
-		Location:          req.Location,
-		StatusText:        req.StatusText,
-		StatusEmoji:       req.StatusEmoji,
-		StatusExpiresAt:   req.StatusExpiresAt,
-		ProfileThemeColor: themeColor,
-		IntroMediaURL:     req.IntroMediaURL,
-		IntroMediaType:    req.IntroMediaType,
-		CTALabel:          req.CTALabel,
-		CTAURL:            req.CTAURL,
+		Category:          req.Category.ptr(),
+		Profession:        req.Profession.ptr(),
+		Website:           req.Website.ptr(),
+		Location:          req.Location.ptr(),
+		StatusText:        req.StatusText.ptr(),
+		StatusEmoji:       req.StatusEmoji.ptr(),
+		ProfileThemeColor: req.ProfileThemeColor.ptr(),
+		IntroMediaURL:     req.IntroMediaURL.ptr(),
+		IntroMediaType:    req.IntroMediaType.ptr(),
+		CTALabel:          req.CTALabel.ptr(),
+		CTAURL:            req.CTAURL.ptr(),
 		MemberSinceBadge:  req.MemberSinceBadge,
-		Timezone:          req.Timezone,
+		Timezone:          req.Timezone.ptr(),
+
+		ClearStatusExpiresAt: req.StatusExpiresAt.clear,
+	}
+	if req.StatusExpiresAt.present && !req.StatusExpiresAt.clear {
+		at := req.StatusExpiresAt.value
+		params.StatusExpiresAt = &at
 	}
 
 	p, err := h.svc.UpdateProfile(c.Request.Context(), userID, params)

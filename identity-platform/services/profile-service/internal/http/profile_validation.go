@@ -56,6 +56,66 @@ func (f profileDOBField) resolve() (*time.Time, error) {
 	return &born, nil
 }
 
+// optionalText is the wire form of every optional text field on
+// PUT /v1/profiles/me:
+//
+//	key absent     -> nil       -> the stored value is left alone
+//	null or ""     -> ""        -> the stored value is cleared
+//	"value"        -> "value"   -> set
+//
+// The fields were string or *string, which cannot tell an absent key from ""
+// or from null, and the store wrote them unconditionally: a request that sent
+// only bio erased last_name, preferred_name, pronouns, gender, category,
+// profession, website and location. UnmarshalJSON runs only when the key is
+// present, including for a literal null.
+type optionalText struct {
+	present bool
+	value   string
+}
+
+func (f *optionalText) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		*f = optionalText{present: true}
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	*f = optionalText{present: true, value: s}
+	return nil
+}
+
+// ptr is the store form: nil when absent, otherwise the value, "" for a clear.
+func (f optionalText) ptr() *string {
+	if !f.present {
+		return nil
+	}
+	v := f.value
+	return &v
+}
+
+// optionalTime is optionalText for a timestamp: absent leaves it alone, null
+// or "" clears it, an RFC 3339 string sets it.
+type optionalTime struct {
+	present bool
+	clear   bool
+	value   time.Time
+}
+
+func (f *optionalTime) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" || string(b) == `""` {
+		*f = optionalTime{present: true, clear: true}
+		return nil
+	}
+	var t time.Time
+	if err := json.Unmarshal(b, &t); err != nil {
+		return err
+	}
+	*f = optionalTime{present: true, value: t}
+	return nil
+}
+
 // writeFieldError renders a validation failure as 422 in the standard
 // envelope — error.code is the stable field code, error.details.field names
 // the field — and reports whether it wrote. Any other error is left to the
@@ -87,24 +147,21 @@ func validateProfileUpdate(req UpdateProfileRequest) map[string]any {
 			problems[field] = map[string]any{"max_characters": max}
 		}
 	}
-	limit("display_name", req.DisplayName, maxDisplayName)
-	limit("bio", req.Bio, maxBio)
-	limit("category", req.Category, maxShortProfileText)
-	limit("profession", req.Profession, maxShortProfileText)
-	limit("location", req.Location, maxShortProfileText)
-	if req.StatusText != nil {
-		limit("status_text", *req.StatusText, maxStatusText)
-	}
-	if req.CTALabel != nil {
-		limit("cta_label", *req.CTALabel, maxCTALabel)
-	}
-	if value := strings.TrimSpace(req.Website); value != "" && !SafePublicURL(normalizeProfileURL(value)) {
+	// An absent field has value "", which passes every rule below.
+	limit("display_name", req.DisplayName.value, maxDisplayName)
+	limit("bio", req.Bio.value, maxBio)
+	limit("category", req.Category.value, maxShortProfileText)
+	limit("profession", req.Profession.value, maxShortProfileText)
+	limit("location", req.Location.value, maxShortProfileText)
+	limit("status_text", req.StatusText.value, maxStatusText)
+	limit("cta_label", req.CTALabel.value, maxCTALabel)
+	if value := strings.TrimSpace(req.Website.value); value != "" && !SafePublicURL(normalizeProfileURL(value)) {
 		problems["website"] = "must be an http or https URL"
 	}
-	if req.CTAURL != nil && strings.TrimSpace(*req.CTAURL) != "" && !SafePublicURL(normalizeProfileURL(*req.CTAURL)) {
+	if value := strings.TrimSpace(req.CTAURL.value); value != "" && !SafePublicURL(normalizeProfileURL(value)) {
 		problems["cta_url"] = "must be an http or https URL"
 	}
-	if req.ProfileThemeColor != "" && !validHexColor(req.ProfileThemeColor) {
+	if req.ProfileThemeColor.value != "" && !validHexColor(req.ProfileThemeColor.value) {
 		problems["profile_theme_color"] = "must be #RRGGBB"
 	}
 	return problems

@@ -114,8 +114,8 @@ func TestProfileWrite_AbsentDOBAndFirstNameAreKept(t *testing.T) {
 	pool := profileWritePool(t)
 	s := New(pool)
 	for name, params := range map[string]UpdateProfileParams{
-		"profile edit without dob or first_name": {DisplayName: "Asha", Bio: "hello", ProfileThemeColor: "#1A73E8"},
-		"handle-change shaped params":            {DisplayName: "Asha", Username: strPtr("it_handle_" + uuid.NewString()[:8])},
+		"profile edit without dob or first_name": {DisplayName: strPtr("Asha"), Bio: strPtr("hello"), ProfileThemeColor: strPtr("#1A73E8")},
+		"handle-change shaped params":            {Username: strPtr("it_handle_" + uuid.NewString()[:8])},
 	} {
 		t.Run(name, func(t *testing.T) {
 			id := seedIdentityUser(t, pool, seedIdentity{firstName: "Asha", profileDOB: day("1990-03-17")})
@@ -141,7 +141,7 @@ func TestProfileWrite_SuppliedDOBAndFirstNameAreWritten(t *testing.T) {
 	id := seedIdentityUser(t, pool, seedIdentity{firstName: "Asha", profileDOB: day("1990-03-17")})
 	s := New(pool)
 	if _, err := s.UpdateProfile(context.Background(), id, UpdateProfileParams{
-		DisplayName: "Asha", FirstName: strPtr("Asha K"), DoB: day("1990-06-17"),
+		DisplayName: strPtr("Asha"), FirstName: strPtr("Asha K"), DoB: day("1990-06-17"),
 	}); err != nil {
 		t.Fatalf("UpdateProfile: %v", err)
 	}

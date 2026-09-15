@@ -25,7 +25,9 @@ type Service struct {
 	// profiles is the store slice UpdateProfile reads and writes through.
 	// *store.Store in production; a fake in unit tests.
 	profiles ProfileWriteStore
-	now      func() time.Time
+	// handles is the store slice ChangeHandle reads and writes through.
+	handles HandleChangeStore
+	now     func() time.Time
 }
 
 // ProfileWriteStore is what a validated profile write needs from storage.
@@ -35,11 +37,26 @@ type ProfileWriteStore interface {
 	UpdateProfile(ctx context.Context, userID uuid.UUID, params store.UpdateProfileParams) (*store.Profile, error)
 }
 
+// HandleChangeStore is what ChangeHandle needs from storage.
+type HandleChangeStore interface {
+	GetProfile(ctx context.Context, userID uuid.UUID) (*store.Profile, error)
+	GetProfileByUsername(ctx context.Context, username string) (*store.Profile, error)
+	GetLatestHandleChange(ctx context.Context, userID uuid.UUID) (*store.HandleHistoryEntry, error)
+	UpdateProfile(ctx context.Context, userID uuid.UUID, params store.UpdateProfileParams) (*store.Profile, error)
+	InsertHandleHistory(ctx context.Context, userID uuid.UUID, oldUsername, newUsername string) (*store.HandleHistoryEntry, error)
+}
+
 func New(s *store.Store, rdb *redis.Client, producer *events.Producer, cfg *config.Config, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger, profiles: s, now: time.Now}
+	return &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger, profiles: s, handles: s, now: time.Now}
+}
+
+// WithHandleChangeStore replaces the storage behind ChangeHandle. For tests.
+func (s *Service) WithHandleChangeStore(h HandleChangeStore) *Service {
+	s.handles = h
+	return s
 }
 
 // WithProfileWriteStore replaces the storage behind UpdateProfile and the
@@ -205,13 +222,14 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 		}
 	}
 
-	// Publish profile updated event
+	// Publish profile updated event. Names come from the stored row, not the
+	// request: a partial update that did not carry them has not changed them.
 	var fnPtr, lnPtr string
-	if params.FirstName != nil {
-		fnPtr = *params.FirstName
+	if p.FirstName != nil {
+		fnPtr = *p.FirstName
 	}
-	if params.LastName != nil {
-		lnPtr = *params.LastName
+	if p.LastName != nil {
+		lnPtr = *p.LastName
 	}
 	usernameStr := ""
 	if p.Username != nil {
@@ -700,7 +718,7 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 	}
 
 	// Get current profile
-	profile, err := s.store.GetProfile(ctx, userID)
+	profile, err := s.handles.GetProfile(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get profile: %w", err)
 	}
@@ -718,7 +736,7 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 	}
 
 	// Check cooldown
-	latest, err := s.store.GetLatestHandleChange(ctx, userID)
+	latest, err := s.handles.GetLatestHandleChange(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check handle cooldown: %w", err)
 	}
@@ -727,7 +745,7 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 	}
 
 	// Check if new username is taken
-	existing, err := s.store.GetProfileByUsername(ctx, newUsername)
+	existing, err := s.handles.GetProfileByUsername(ctx, newUsername)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check username availability: %w", err)
 	}
@@ -735,39 +753,37 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 		return nil, errors.New("username already taken")
 	}
 
-	// Update profile username
-	params := store.UpdateProfileParams{
-		DisplayName:       profile.DisplayName,
-		Bio:               profile.Bio,
-		Username:          &newUsername,
-		Category:          profile.Category,
-		Profession:        profile.Profession,
-		Website:           profile.Website,
-		Location:          profile.Location,
-		ProfileThemeColor: profile.ProfileThemeColor,
-	}
-	updated, err := s.store.UpdateProfile(ctx, userID, params)
+	// Username only. Every other field is nil, which the store leaves alone.
+	// This used to copy display_name, bio, category, profession, website,
+	// location and theme colour from the read above (overwriting any edit
+	// saved in between) and send nil for last_name, preferred_name, pronouns,
+	// gender and status_expires_at, which the store then wrote as NULL.
+	updated, err := s.handles.UpdateProfile(ctx, userID, store.UpdateProfileParams{Username: &newUsername})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update username: %w", err)
 	}
 
 	// Record handle change history
 	if oldUsername != "" {
-		if _, err := s.store.InsertHandleHistory(ctx, userID, oldUsername, newUsername); err != nil {
+		if _, err := s.handles.InsertHandleHistory(ctx, userID, oldUsername, newUsername); err != nil {
 			s.log.Warn("failed to record handle history", "err", err, "user_id", userID)
 		}
 	}
 
 	// Invalidate caches
-	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
-	if oldUsername != "" {
-		s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", oldUsername))
+	if s.rdb != nil {
+		s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
+		if oldUsername != "" {
+			s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", oldUsername))
+		}
+		s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", newUsername))
 	}
-	s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", newUsername))
 
 	// Publish event
-	if err := s.producer.PublishHandleChanged(ctx, userID, oldUsername, newUsername); err != nil {
-		s.log.Warn("failed to publish handle changed event", "err", err, "user_id", userID)
+	if s.producer != nil {
+		if err := s.producer.PublishHandleChanged(ctx, userID, oldUsername, newUsername); err != nil {
+			s.log.Warn("failed to publish handle changed event", "err", err, "user_id", userID)
+		}
 	}
 
 	return updated, nil

@@ -311,10 +311,20 @@ func (s *Store) ListProfilesChangedSince(ctx context.Context, since time.Time, l
 	return profiles, rows.Err()
 }
 
-// UpdateProfileParams groups all fields that can be updated on a profile.
+// UpdateProfileParams is a partial write to a profile.
+//
+// Every field's zero value means "leave the stored value alone": a nil
+// pointer, and ClearStatusExpiresAt false. A caller sets only the columns it
+// means to change. A non-nil pointer to "" is a real value and clears a text
+// column to the empty string.
+//
+// There is no way to write SQL NULL into a text column here; "cleared" is "".
+// first_name, dob and username cannot be cleared through this struct at all:
+// the service refuses an empty first_name or dob, and nothing passes an empty
+// username.
 type UpdateProfileParams struct {
-	DisplayName       string
-	Bio               string
+	DisplayName       *string
+	Bio               *string
 	AvatarMediaID     *uuid.UUID
 	CoverMediaID      *uuid.UUID
 	FirstName         *string
@@ -324,40 +334,45 @@ type UpdateProfileParams struct {
 	Gender            *string
 	DoB               *time.Time
 	Username          *string
-	Category          string
-	Profession        string
-	Website           string
-	Location          string
+	Category          *string
+	Profession        *string
+	Website           *string
+	Location          *string
 	StatusText        *string
 	StatusEmoji       *string
 	StatusExpiresAt   *time.Time
-	ProfileThemeColor string
+	ProfileThemeColor *string
 	IntroMediaURL     *string
 	IntroMediaType    *string
 	CTALabel          *string
 	CTAURL            *string
 	MemberSinceBadge  *bool
 	Timezone          *string
+	// ClearStatusExpiresAt sets status_expires_at to NULL, the one nullable
+	// column a client can clear. It wins over StatusExpiresAt.
+	ClearStatusExpiresAt bool
 }
 
-// UpdateProfile updates editable profile fields.
+// UpdateProfile applies a partial profile write and returns the stored row.
+//
+// Every SET is COALESCE($n, column): a nil parameter keeps the stored value.
+// The statement used to write display_name, bio, last_name, preferred_name,
+// pronouns, gender, username, category, profession, website, location and
+// status_expires_at unconditionally, so a PUT that omitted one of them, and
+// every handle change, wrote NULL or "" over it. In particular every
+// PUT /v1/profiles/me (which never carries username) cleared the handle.
 func (s *Store) UpdateProfile(ctx context.Context, userID uuid.UUID, p UpdateProfileParams) (*Profile, error) {
 	return scanProfile(s.db.QueryRow(ctx, `
 		UPDATE profile.profiles
-		SET display_name = $2, bio = $3, avatar_media_id = COALESCE($4, avatar_media_id), cover_media_id = COALESCE($5, cover_media_id),
-			-- first_name and dob: nil means "leave it alone". Before this, a PUT
-			-- that omitted dob (the Android edit screen with a blank date) or a
-			-- handle change (which never carries either field) wrote NULL over
-			-- both. Neither field can be cleared through this statement; the
-			-- service validates any value that is supplied.
-			first_name = COALESCE($6, first_name), last_name = $7, preferred_name = $8, pronouns = $9,
-			gender = $10, dob = COALESCE($11, dob), username = $12,
-			category = $13, profession = $14, website = $15, location = $16,
-			-- NOT NULL columns wrapped in COALESCE: omitting the field in the
-			-- request should mean "leave it alone", not "blow up with 23502".
-			-- Without this, any partial-update PUT (e.g. just display_name + bio)
-			-- failed because nil *string args were sent as SQL NULL.
-			status_text = COALESCE($17, status_text), status_emoji = COALESCE($18, status_emoji), status_expires_at = $19,
+		SET display_name = COALESCE($2, display_name), bio = COALESCE($3, bio),
+			avatar_media_id = COALESCE($4, avatar_media_id), cover_media_id = COALESCE($5, cover_media_id),
+			first_name = COALESCE($6, first_name), last_name = COALESCE($7, last_name),
+			preferred_name = COALESCE($8, preferred_name), pronouns = COALESCE($9, pronouns),
+			gender = COALESCE($10, gender), dob = COALESCE($11, dob), username = COALESCE($12, username),
+			category = COALESCE($13, category), profession = COALESCE($14, profession),
+			website = COALESCE($15, website), location = COALESCE($16, location),
+			status_text = COALESCE($17, status_text), status_emoji = COALESCE($18, status_emoji),
+			status_expires_at = CASE WHEN $27::boolean THEN NULL ELSE COALESCE($19, status_expires_at) END,
 			profile_theme_color = COALESCE($20, profile_theme_color), intro_media_url = COALESCE($21, intro_media_url), intro_media_type = COALESCE($22, intro_media_type),
 			cta_label = COALESCE($23, cta_label), cta_url = COALESCE($24, cta_url), member_since_badge = COALESCE($25, member_since_badge),
 			timezone = COALESCE($26, timezone),
@@ -371,7 +386,7 @@ func (s *Store) UpdateProfile(ctx context.Context, userID uuid.UUID, p UpdatePro
 		p.StatusText, p.StatusEmoji, p.StatusExpiresAt,
 		p.ProfileThemeColor, p.IntroMediaURL, p.IntroMediaType,
 		p.CTALabel, p.CTAURL, p.MemberSinceBadge,
-		p.Timezone,
+		p.Timezone, p.ClearStatusExpiresAt,
 	))
 }
 

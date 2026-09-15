@@ -110,7 +110,7 @@ func TestUpdateProfile_DOBRules(t *testing.T) {
 			f := &fakeProfileWrites{profile: storedProfile(), registered: tc.registered}
 			svc, _ := identityService(f)
 			_, err := svc.UpdateProfile(context.Background(), testUserID,
-				store.UpdateProfileParams{DisplayName: "Asha", DoB: dateOf(tc.dob)})
+				store.UpdateProfileParams{DisplayName: strOf("Asha"), DoB: dateOf(tc.dob)})
 			if got := fieldCode(t, err); got != tc.wantCode {
 				t.Fatalf("got code %q, want %q", got, tc.wantCode)
 			}
@@ -134,7 +134,7 @@ func TestUpdateProfile_AbsentDOBLeavesItUnchanged(t *testing.T) {
 	f := &fakeProfileWrites{profile: storedProfile()}
 	svc, _ := identityService(f)
 	if _, err := svc.UpdateProfile(context.Background(), testUserID,
-		store.UpdateProfileParams{DisplayName: "Asha", Bio: "hello"}); err != nil {
+		store.UpdateProfileParams{DisplayName: strOf("Asha"), Bio: strOf("hello")}); err != nil {
 		t.Fatalf("UpdateProfile: %v", err)
 	}
 	if len(f.updates) != 1 || f.updates[0].DoB != nil {
@@ -153,7 +153,7 @@ func TestUpdateProfile_UnchangedDOBResendIsNotAWrite(t *testing.T) {
 	f.profile.DoB = dateOf("2010-01-01")
 	svc, logs := identityService(f)
 	if _, err := svc.UpdateProfile(context.Background(), testUserID,
-		store.UpdateProfileParams{DisplayName: "Asha", DoB: dateOf("2010-01-01")}); err != nil {
+		store.UpdateProfileParams{DisplayName: strOf("Asha"), DoB: dateOf("2010-01-01")}); err != nil {
 		t.Fatalf("resending the stored DOB was refused: %v", err)
 	}
 	if f.updates[0].DoB != nil {
@@ -168,7 +168,7 @@ func TestUpdateProfile_DOBChangeIsAuditedWithYearsOnly(t *testing.T) {
 	f := &fakeProfileWrites{profile: storedProfile()}
 	svc, logs := identityService(f)
 	if _, err := svc.UpdateProfile(context.Background(), testUserID,
-		store.UpdateProfileParams{DisplayName: "Asha", DoB: dateOf("1990-01-01")}); err != nil {
+		store.UpdateProfileParams{DisplayName: strOf("Asha"), DoB: dateOf("1990-01-01")}); err != nil {
 		t.Fatalf("UpdateProfile: %v", err)
 	}
 	out := logs.String()
@@ -188,7 +188,7 @@ func TestUpdateProfile_RegistrationReadFailureFailsClosed(t *testing.T) {
 	f := &fakeProfileWrites{profile: storedProfile(), regErr: errors.New("db down")}
 	svc, _ := identityService(f)
 	_, err := svc.UpdateProfile(context.Background(), testUserID,
-		store.UpdateProfileParams{DisplayName: "Asha", DoB: dateOf("1995-08-05")})
+		store.UpdateProfileParams{DisplayName: strOf("Asha"), DoB: dateOf("1995-08-05")})
 	if err == nil {
 		t.Fatal("an unreadable registration record let the DOB change through")
 	}
@@ -205,7 +205,7 @@ func TestUpdateProfile_FirstNameRules(t *testing.T) {
 		f := &fakeProfileWrites{profile: storedProfile()}
 		svc, _ := identityService(f)
 		_, err := svc.UpdateProfile(context.Background(), testUserID,
-			store.UpdateProfileParams{DisplayName: "Asha", FirstName: strOf(bad)})
+			store.UpdateProfileParams{DisplayName: strOf("Asha"), FirstName: strOf(bad)})
 		if got := fieldCode(t, err); got != CodeFirstNameInvalid {
 			t.Errorf("first_name %q: got %q, want %s", bad, got, CodeFirstNameInvalid)
 		}
@@ -217,7 +217,7 @@ func TestUpdateProfile_FirstNameRules(t *testing.T) {
 	f := &fakeProfileWrites{profile: storedProfile()}
 	svc, _ := identityService(f)
 	if _, err := svc.UpdateProfile(context.Background(), testUserID,
-		store.UpdateProfileParams{DisplayName: "Asha", FirstName: strOf("  Asha K  ")}); err != nil {
+		store.UpdateProfileParams{DisplayName: strOf("Asha"), FirstName: strOf("  Asha K  ")}); err != nil {
 		t.Fatalf("valid first name refused: %v", err)
 	}
 	if got := *f.profile.FirstName; got != "Asha K" {
@@ -234,7 +234,7 @@ func TestUpdateProfile_EmptyFirstNameOnAnAccountWithoutOneIsUnchanged(t *testing
 			f.profile.FirstName = stored
 			svc, _ := identityService(f)
 			if _, err := svc.UpdateProfile(context.Background(), testUserID,
-				store.UpdateProfileParams{DisplayName: "Asha", Bio: "hi", FirstName: strOf("")}); err != nil {
+				store.UpdateProfileParams{DisplayName: strOf("Asha"), Bio: strOf("hi"), FirstName: strOf("")}); err != nil {
 				t.Fatalf("refused: %v", err)
 			}
 			if f.updates[0].FirstName != nil {
