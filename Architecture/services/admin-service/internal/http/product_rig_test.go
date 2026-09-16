@@ -35,6 +35,16 @@ var (
 		permTrustGrievancesRead, permTrustGrievancesAct, permTrustStrikesRead, permTrustStrikesManage,
 		permTrustVerificationReview, permTrustMediaLabelsRead, permTrustKeywordFiltersRead, permTrustAuditRead,
 	}
+	monAll = []string{
+		permMonStatsRead, permMonFraudReview, permMonWalletFreeze, permMonWalletUnfreeze, permMonWalletRebuild,
+		permMonFundRead, permMonFundRates, permMonCreatorsSuspend, permMonFundSettle, permMonFundReverse,
+		permMonFundBudget, permMonDisputesRead, permMonDisputesAct, permMonRefundIssue, permMonPayoutsRead,
+		permMonAuditRead,
+	}
+	payAll = []string{
+		permPayStatsRead, permPayRefundsRead, permPayRefundIssue, permPayIntentsRead, permPayReconciliationRead,
+		permPayApplicationsRead, permPayApplicationsManage, permPayAuditRead,
+	}
 )
 
 // productHit is one call a stub product saw, with the token verified by a
@@ -102,6 +112,7 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 		return srv.URL
 	}
 	foodURL, commerceURL, trustURL := stub("food", foodAll), stub("commerce", commerceAll), stub("trust_safety", trustAll)
+	monURL, payURL := stub("monetization", monAll), stub("payments", payAll)
 
 	var signer *servicetoken.Signer
 	if withKey {
@@ -117,7 +128,9 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 	h := New(&stubAdminService{}, rg.gate, approvals.NewService(rg.store, rg.holders))
 	h.WithFood(service.NewFoodClient(foodURL, signer), thresholdPaise).
 		WithCommerce(service.NewCommerceClient(commerceURL, signer)).
-		WithTrustSafety(service.NewTrustSafetyClient(trustURL, signer))
+		WithTrustSafety(service.NewTrustSafetyClient(trustURL, signer)).
+		WithMonetization(service.NewMonetizationClient(monURL, signer)).
+		WithPayments(service.NewPaymentsClient(payURL, signer))
 	if err := h.RegisterAllRoutes(rg.r); err != nil {
 		t.Fatalf("route table refused: %v", err)
 	}

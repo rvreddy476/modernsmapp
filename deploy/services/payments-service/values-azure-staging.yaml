@@ -25,6 +25,15 @@ externalSecret:
     remoteRef: jwt_secret
   - secretKey: JWT_KID
     remoteRef: jwt_kid
+  # admin-service (admin console) as a payments caller is NOT enabled on this
+  # overlay; SERVICE_CALLERS is not configured here yet. When it is, follow
+  # values-prod.yaml's numbered steps: key-vault caller_admin_pubkey /
+  # caller_admin_kid, then these lines and SERVICE_CALLER_ADMIN_SERVICE_OPS,
+  # then add admin-service to SERVICE_CALLERS last (earlier refuses boot).
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY
+  #   remoteRef: caller_admin_pubkey
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID
+  #   remoteRef: caller_admin_kid
   secretStoreName: azure-key-vault
 env:
   ENV: staging

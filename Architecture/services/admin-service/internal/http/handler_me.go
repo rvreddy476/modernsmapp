@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/atpost/admin-service/internal/adminauth"
@@ -54,6 +55,10 @@ type MeMFA struct {
 type NavigationItem struct {
 	App   string `json:"app"`
 	Label string `json:"label"`
+	// Applications is set on Payments for an admin who reaches it only through
+	// confined permissions (<app>:payments_…): the payments applications they
+	// may view. Absent means every application.
+	Applications []string `json:"applications,omitempty"`
 }
 
 // RegisterMeRoute adds GET /v1/admin/me. It is the one admin route reachable
@@ -104,10 +109,29 @@ func navigation(p adminauth.Permissions) []NavigationItem {
 	if len(p.Platform) > 0 {
 		visible["platform"] = true
 	}
+	// Payments confined to applications: a payments view held in a product app.
+	var confined []string
+	if !visible[paymentsAuditApp] {
+		for _, m := range paymentsApplications {
+			for _, perm := range p.Apps[m.app] {
+				if strings.HasPrefix(perm, m.app+":payments_") {
+					confined = append(confined, m.application)
+					break
+				}
+			}
+		}
+		if len(confined) > 0 {
+			visible[paymentsAuditApp] = true
+		}
+	}
 	out := []NavigationItem{}
 	for _, n := range navigationOrder {
 		if visible[n.app] {
-			out = append(out, NavigationItem{App: n.app, Label: n.label})
+			item := NavigationItem{App: n.app, Label: n.label}
+			if n.app == paymentsAuditApp {
+				item.Applications = confined
+			}
+			out = append(out, item)
 			delete(visible, n.app)
 		}
 	}

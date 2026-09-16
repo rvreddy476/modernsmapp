@@ -89,6 +89,23 @@ externalSecret:
     # down too. The non-secret dating lines under env are inert until step 3.
     # - { secretKey: SERVICE_CALLER_DATING_SERVICE_PUBKEY, remoteRef: caller_dating_pubkey }
     # - { secretKey: SERVICE_CALLER_DATING_SERVICE_KID, remoteRef: caller_dating_kid }
+    # admin-service (admin console, /v1/payments/internal/admin/* only) is NOT
+    # enabled yet: the console's Payments routes are refused (401). It holds
+    # admin permissions only, no REFTYPES and no APPLICATIONS; the money routes
+    # refuse its tokens whatever it holds. To enable, in this order:
+    #   1. the founder generates admin-service's ed25519 key (one key for every
+    #      product): the private half and kid go to admin-service's secret
+    #      store (admin_service_token_key / admin_service_token_kid); the public
+    #      half and the same kid go here as caller_admin_pubkey / caller_admin_kid;
+    #   2. uncomment the two lines below AND SERVICE_CALLER_ADMIN_SERVICE_OPS
+    #      under env;
+    #   3. add admin-service to SERVICE_CALLERS under env;
+    #   4. enable admin-service's two lines (its values file).
+    # WARNING: adding admin-service to SERVICE_CALLERS before its secrets exist
+    # fails the secret sync and main.go refuses to boot a caller with no KID or
+    # PUBKEY — taking commerce and food payments down too.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
 
 env:
   ENV: prod
@@ -111,6 +128,10 @@ env:
   SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: 'mstore'
   SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS: 'feast'
   SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: 'dating'
+  # admin-service (see externalSecret above for the order). SERVICE_CALLERS
+  # above stays unchanged until step 3: then it becomes
+  # 'commerce-service,food-service,admin-service' (plus dating-service if enabled).
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'payments:stats.read,payments:refunds.read,payments:refund.issue,payments:intents.read,payments:reconciliation.read,payments:applications.read,payments:applications.manage,payments:audit.read'
 
   # LB-9 — reconciliation: resolve captures the webhook never delivered, and
   # surface ledger-vs-provider drift instead of letting it accumulate.

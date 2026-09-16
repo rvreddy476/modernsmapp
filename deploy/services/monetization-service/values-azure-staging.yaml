@@ -25,9 +25,25 @@ externalSecret:
     remoteRef: jwt_secret
   - secretKey: JWT_KID
     remoteRef: jwt_kid
+  # Admin console: monetization verifies admin-service's service tokens. NOT
+  # enabled yet (Monetization console routes answer 401; with writes off they
+  # answer MONETIZATION_NOT_LAUNCHED once enabled). Enable in this order:
+  #   1. store admin-service's key in the key vault (admin_service_token_key /
+  #      admin_service_token_kid) and its public half and kid here
+  #      (caller_admin_pubkey / caller_admin_kid);
+  #   2. uncomment below AND the SERVICE_CALLERS lines under env;
+  #   3. enable admin-service's two lines. SERVICE_CALLERS before the key refuses boot.
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY
+  #   remoteRef: caller_admin_pubkey
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID
+  #   remoteRef: caller_admin_kid
   secretStoreName: azure-key-vault
 env:
   ENV: staging
+  # Admin console (see externalSecret above for the order): uncomment
+  # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'monetization:stats.read,monetization:fraud.review,monetization:wallet.freeze,monetization:wallet.unfreeze,monetization:wallet.rebuild,monetization:fund.read,monetization:fund.rates,monetization:creators.suspend,monetization:fund.settle,monetization:fund.reverse,monetization:fund.budget,monetization:disputes.read,monetization:disputes.act,monetization:refund.issue,monetization:payouts.read,monetization:audit.read'
   MONETIZATION_WRITES_ENABLED: "false"
   MONETIZATION_PAYOUTS_ENABLED: "false"
   MONETIZATION_MAINTENANCE: "false"

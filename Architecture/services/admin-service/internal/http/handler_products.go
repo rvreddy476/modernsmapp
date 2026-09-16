@@ -49,12 +49,14 @@ type productRoute struct {
 	// decide and mayTwoPerson feed Requirement.Decide / MayTwoPerson.
 	decide       func(*gin.Context, adminauth.Permissions) (Decision, error)
 	mayTwoPerson bool
+	// admitsHeldAs feeds Requirement.AdmitsHeldAs (payments confinement).
+	admitsHeldAs bool
 }
 
 func (rt productRoute) requirement() Requirement {
 	req := Requirement{
 		Operation: rt.operation, Permission: rt.permission, StepUp: rt.stepUp, TwoPerson: rt.twoPerson,
-		Decide: rt.decide, MayTwoPerson: rt.mayTwoPerson,
+		Decide: rt.decide, MayTwoPerson: rt.mayTwoPerson, AdmitsHeldAs: rt.admitsHeldAs,
 	}
 	if len(rt.alternatives) > 0 {
 		if rt.decide != nil || rt.permission != rt.alternatives[0] {
@@ -84,6 +86,9 @@ type product struct {
 	label  string // "Feast"
 	prefix string // "/v1/admin/food"
 	client *service.ProductClient
+	// answered, when set, may write the answer itself for a product response
+	// (monetization's not-launched state) and returns true when it did.
+	answered func(c *gin.Context, info *auditInfo, resp service.ProductResponse) bool
 }
 
 // registerProduct declares every route; special supplies handlers by
@@ -194,7 +199,7 @@ func (h *Handler) forwardProduct(p product, rt productRoute) gin.HandlerFunc {
 				return
 			}
 			pr.RawBody = raw
-			info.reason = stringField(fields, "reason", "note", "resolution_notes")
+			info.reason = stringField(fields, "reason", "note", "notes", "resolution_notes")
 		}
 		key, ok := idempotencyKey(c, rt.idempotent)
 		if !ok {
@@ -228,6 +233,9 @@ func (h *Handler) productCall(c *gin.Context, p product, pr service.ProductReque
 	}
 	pr.Permission, pr.Actor = req.Permission, actorFrom(c)
 	resp, err := p.client.Do(productContext(c), pr)
+	if err == nil && p.answered != nil && p.answered(c, info, resp) {
+		return
+	}
 	writeProduct(c, info, p.label, resp, err, statusOnly)
 }
 

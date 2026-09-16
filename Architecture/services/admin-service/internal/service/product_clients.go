@@ -13,7 +13,25 @@ const (
 
 	TrustSafetyAudience    = "trust_safety"
 	TrustSafetyAdminPrefix = "/v1/internal/admin/trust"
+
+	MonetizationAudience    = "monetization"
+	MonetizationAdminPrefix = "/v1/monetization/internal/admin"
+
+	// Payments registers admin-service through its existing SERVICE_CALLERS
+	// (OPS = its admin permissions, no REFTYPES).
+	PaymentsAudience    = "payments"
+	PaymentsAdminPrefix = "/v1/payments/internal/admin"
 )
+
+// NewMonetizationClient builds the client for monetization-service.
+func NewMonetizationClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, MonetizationAdminPrefix, MonetizationAudience, signer)
+}
+
+// NewPaymentsClient builds the client for payments-service.
+func NewPaymentsClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, PaymentsAdminPrefix, PaymentsAudience, signer)
+}
 
 // NewFoodClient builds the client for food-service (Feast).
 func NewFoodClient(baseURL string, signer *servicetoken.Signer) *ProductClient {

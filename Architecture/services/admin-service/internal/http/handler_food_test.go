@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -190,11 +191,21 @@ func TestFoodRefund_FullRefundIsBoundedByTheOrderTotalOrTwoPerson(t *testing.T) 
 		total     string
 		twoPerson bool
 	}{
-		{"no orders.read: amount unknown", false, `{"data":{"final_amount_paise":20000}}`, true},
-		{"small order", true, `{"data":{"final_amount_paise":20000}}`, false},
-		{"order at the threshold", true, `{"data":{"final_amount_paise":500000}}`, true},
-		{"rupee total below", true, `{"data":{"final_amount":4999.5}}`, false},
+		// food's order detail (postgres.Order): the total is nested.
+		{"no orders.read: amount unknown", false, foodOrderDetail(20000, 200), true},
+		{"small order: step-up only", true, foodOrderDetail(20000, 200), false},
+		{"order just below the threshold", true, foodOrderDetail(499999, 4999.99), false},
+		{"order at the threshold", true, foodOrderDetail(500000, 5000), true},
+		{"order above the threshold", true, foodOrderDetail(900000, 9000), true},
+		{"no money block: rupee totals below", true, `{"data":{"id":"x","totals":{"item_subtotal":4000,"final_amount":4999.5}}}`, false},
+		{"no money block: rupee totals at", true, `{"data":{"id":"x","totals":{"final_amount":5000}}}`, true},
+		// The paise block wins over the rupee totals when both are present.
+		{"paise block wins", true, `{"data":{"totals":{"final_amount":1},"money":{"totals_paise":{"final_amount_paise":600000}}}}`, true},
 		{"order unreadable", true, `{"data":{}}`, true},
+		{"zero totals unreadable", true, `{"data":{"totals":{"final_amount":0},"money":{"totals_paise":{"final_amount_paise":0}}}}`, true},
+		{"not JSON", true, `<html>`, true},
+		// A total only at the top level is not food's shape: unknown.
+		{"top-level total is not read", true, `{"data":{"final_amount_paise":20000,"final_amount":200}}`, true},
 	} {
 		rg := newProductsRig(t, true, 500000)
 		rg.holders.n = 1
@@ -456,4 +467,12 @@ func TestMe_ProductNavigationOnlyWithAPermissionInThatApp(t *testing.T) {
 			}
 		}
 	}
+}
+
+// foodOrderDetail is food's admin order detail as food-service answers it
+// (api.JSONWithContext of postgres.Order): rupee totals and the paise money block.
+func foodOrderDetail(paise int64, rupees float64) string {
+	return `{"data":{"id":"` + uuid.NewString() + `","status":"DELIVERED","totals":{"item_subtotal":1,"final_amount":` +
+		strconv.FormatFloat(rupees, 'f', -1, 64) + `},"money":{"totals_paise":{"item_subtotal_paise":1,"final_amount_paise":` +
+		strconv.FormatInt(paise, 10) + `},"taxes_and_charges":null,"needs_adviser_confirmation":false}},"meta":{"request_id":"r"}}`
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -70,9 +71,16 @@ func (h *Handler) submitTwoPerson(c *gin.Context, targetType, targetID, reason s
 		return
 	}
 
+	// An admin admitted by another app's permission (payments confined to one
+	// application) needs a second holder of THAT permission, never a count of
+	// holders of a permission the requester does not hold.
+	required := req.Permission
+	if held := heldAsFrom(c); held != "" {
+		required = held
+	}
 	sub, err := h.approvals.Submit(ctx, approvals.Request{
 		App: info.app, Operation: req.Operation, TargetType: targetType, TargetID: targetID,
-		RequiredPermission: req.Permission, Requester: actorFrom(c), Reason: reason, Payload: payload,
+		RequiredPermission: required, Requester: actorFrom(c), Reason: reason, Payload: payload,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "two-person submit failed; refusing", "error", err, "operation", req.Operation)
@@ -126,6 +134,15 @@ var approvalLabels = map[string]string{
 	opFoodRefundDecide:       "Decide Feast refund request",
 	opFoodRestaurantMarkPaid: "Mark restaurant settlement paid",
 	opFoodDeliveryMarkPaid:   "Mark delivery partner settlement paid",
+	opMonRatesSet:            "Set creator fund rate",
+	opMonBandsSet:            "Set creator fund quality band",
+	opMonBudgetSet:           "Set creator fund budget",
+	opMonSettleDay:           "Settle creator fund day",
+	opMonSettlePeriod:        "Settle creator fund period",
+	opMonSettleCreator:       "Settle creator fund period for creator",
+	opMonEarningReverse:      "Reverse creator fund earning",
+	opMonRefundIssue:         "Refund monetization transaction",
+	opPayRefundResolve:       "Resolve payments refund",
 }
 
 // approvalSummary is a one-line description: what, on which target, and the
@@ -144,8 +161,11 @@ func approvalSummary(a approvals.Approval) string {
 		s += " " + target
 	}
 	var p struct {
-		AmountPaise int64  `json:"amount_paise"`
-		Status      string `json:"status"`
+		AmountPaise   int64  `json:"amount_paise"`
+		Status        string `json:"status"`
+		Resolution    string `json:"resolution"`
+		ApplicationID string `json:"application_id"`
+		Query         string `json:"query"`
 	}
 	_ = json.Unmarshal(a.Payload, &p)
 	if p.AmountPaise > 0 {
@@ -155,6 +175,22 @@ func approvalSummary(a approvals.Approval) string {
 	}
 	if p.Status != "" {
 		s += " (" + p.Status + ")"
+	}
+	if p.Resolution != "" {
+		s += " as " + strings.ReplaceAll(p.Resolution, "_", " ")
+	}
+	if p.ApplicationID != "" {
+		s += " in " + p.ApplicationID
+	}
+	if a.App == monetizationAuditApp && p.Query != "" {
+		// settle ?day= / settle-period ?period=
+		if q, err := url.ParseQuery(p.Query); err == nil {
+			for _, k := range []string{"day", "period"} {
+				if v := q.Get(k); v != "" && len(v) <= 20 {
+					s += " " + k + " " + v
+				}
+			}
+		}
 	}
 	return s
 }

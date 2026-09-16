@@ -62,14 +62,24 @@ type Requirement struct {
 	// MayTwoPerson declares that Decide can require two-person approval, so
 	// boot checks the operation has an executor.
 	MayTwoPerson bool
+	// AdmitsHeldAs lets Decide admit an admin who lacks Permission but holds
+	// another app's permission (Decision.HeldAs) — the payments views an
+	// app-scoped admin reaches confined to their own application. The token
+	// still carries Permission; the handler must apply the confinement. Only
+	// routes that declare it may be decided this way.
+	AdmitsHeldAs bool
 }
 
 // Decision is what Decide concluded for one request.
 type Decision struct {
 	// Permission replaces the declared permission when set (same app only).
 	Permission string
-	StepUp    bool
-	TwoPerson bool
+	StepUp     bool
+	TwoPerson  bool
+	// HeldAs admits the admin by this permission of ANOTHER app instead of
+	// Permission (routes declaring AdmitsHeldAs only). Two-person approval then
+	// requires a second holder of HeldAs.
+	HeldAs string
 	// Audit adds fields to the request's audit payload.
 	Audit map[string]any
 }
@@ -118,6 +128,9 @@ func (r Requirement) validate() error {
 	}
 	if r.MayTwoPerson && r.Decide == nil {
 		return errors.New("may-two-person needs a decision")
+	}
+	if r.AdmitsHeldAs && (r.Decide == nil || r.Access != AccessPermission) {
+		return errors.New("admits-held-as needs a permission route with a decision")
 	}
 	return nil
 }
@@ -231,7 +244,12 @@ const (
 	ctxActor     = "admin.actor"
 	ctxEffective = "admin.requirement"
 	ctxBody      = "admin.body"
+	ctxHeldAs    = "admin.held_as"
 )
+
+// heldAsFrom is the other-app permission the gate admitted this request by,
+// or "" when the admin holds the route's own permission.
+func heldAsFrom(c *gin.Context) string { return c.GetString(ctxHeldAs) }
 
 // effectiveRequirement is the declaration as the gate enforced it for this
 // request, after Decide. Handlers mint the product token with its Permission
@@ -332,6 +350,7 @@ func (g *Gate) enforce(declared Requirement) gin.HandlerFunc {
 
 		// The request's own decision comes first, so the permission, step-up
 		// and two-person checks below judge what was actually asked for.
+		heldAs := ""
 		if req.Decide != nil {
 			d, err := req.Decide(c, perms)
 			if err != nil {
@@ -356,14 +375,31 @@ func (g *Gate) enforce(declared Requirement) gin.HandlerFunc {
 				}
 				req.Permission = d.Permission
 			}
+			if d.HeldAs != "" {
+				if !req.AdmitsHeldAs || !adminauth.ValidPermission(d.HeldAs) ||
+					adminauth.AppOf(d.HeldAs) == adminauth.AppOf(req.Permission) || adminauth.AppOf(d.HeldAs) == "platform" {
+					slog.ErrorContext(ctx, "admin decision admitted by an undeclared permission; refusing", "declared", req.Permission, "held_as", d.HeldAs)
+					g.deny(c, info, http.StatusInternalServerError, "INTERNAL_ERROR", "Invalid route decision")
+					return
+				}
+				heldAs = d.HeldAs
+			}
 			req.StepUp = req.StepUp || d.StepUp
 			req.TwoPerson = req.TwoPerson || d.TwoPerson
 		}
 
-		if req.Access == AccessPermission && !perms.Has(req.Permission) {
-			info.set("required_permission", req.Permission)
-			g.deny(c, info, http.StatusForbidden, CodePermissionDenied, "Missing permission "+req.Permission)
-			return
+		if req.Access == AccessPermission {
+			held := perms.Has(req.Permission)
+			if !held && heldAs != "" && perms.Has(heldAs) {
+				held = true
+				info.set("held_as", heldAs)
+				c.Set(ctxHeldAs, heldAs)
+			}
+			if !held {
+				info.set("required_permission", req.Permission)
+				g.deny(c, info, http.StatusForbidden, CodePermissionDenied, "Missing permission "+req.Permission)
+				return
+			}
 		}
 		c.Set(ctxEffective, req)
 		if req.StepUp {

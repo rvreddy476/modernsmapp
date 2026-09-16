@@ -79,8 +79,24 @@ type Handler struct {
 	food     *service.ProductClient
 	commerce *service.ProductClient
 	trust    *service.ProductClient
-	// refundThresholdPaise: a Feast refund at or above it is two-person.
+	// Money: monetization and payments.
+	monetization *service.ProductClient
+	payments     *service.ProductClient
+	// refundThresholdPaise: a Feast or monetization refund, or a payments
+	// refund resolved as money, at or above it is two-person.
 	refundThresholdPaise int64
+}
+
+// WithMonetization installs the Monetization client.
+func (h *Handler) WithMonetization(mc *service.ProductClient) *Handler {
+	h.monetization = mc
+	return h
+}
+
+// WithPayments installs the Payments client.
+func (h *Handler) WithPayments(pc *service.ProductClient) *Handler {
+	h.payments = pc
+	return h
 }
 
 // WithDating installs the Dating client.
@@ -127,6 +143,8 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterDatingRoutes(r, h.dating)
 	h.RegisterFoodRoutes(r)
 	h.RegisterTrustRoutes(r)
+	h.RegisterMonetizationRoutes(r)
+	h.RegisterPaymentsRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err
 	}

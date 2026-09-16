@@ -1296,6 +1296,16 @@ services:
       # How often the creator-fund payment run happens: monthly (default)
       # or semimonthly (1st-15th, 16th-end).
       CF_SETTLEMENT_CADENCE: ${CF_SETTLEMENT_CADENCE:-monthly}
+      # Admin console: admin-service reaches /v1/monetization/internal/admin/*
+      # only with a token scoped to the one permission it checked, naming the
+      # admin. The launch flags still apply: with writes off every route answers
+      # 503 MONETIZATION_NOT_LAUNCHED. A distinct .env name, because
+      # SERVICE_CALLERS in .env is payments'. OPS is monetization's
+      # AdminPermissions. Blank = no tokens accepted.
+      SERVICE_CALLERS: ${MONETIZATION_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: monetization:stats.read,monetization:fraud.review,monetization:wallet.freeze,monetization:wallet.unfreeze,monetization:wallet.rebuild,monetization:fund.read,monetization:fund.rates,monetization:creators.suspend,monetization:fund.settle,monetization:fund.reverse,monetization:fund.budget,monetization:disputes.read,monetization:disputes.act,monetization:refund.issue,monetization:payouts.read,monetization:audit.read
     ports:
       # Loopback only: the admin routes trust X-Scopes/X-User-Id from
       # whoever reaches the port, so the port must not be reachable from
@@ -1427,6 +1437,10 @@ services:
       ADMIN_SERVICE_TOKEN_KEY: ${ADMIN_SERVICE_TOKEN_KEY:-}
       ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       DATING_SERVICE_URL: http://dating-service:8112
+      # Money dashboards (Monetization, Payments), same token contract. Payments
+      # registers admin-service through its existing SERVICE_CALLERS.
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
       # Feast, MStore and Trust & safety dashboards, same token contract. The
       # matching public key is registered with each service below.
       FOOD_SERVICE_URL: http://food-service:8113
@@ -1480,6 +1494,13 @@ services:
       SERVICE_CALLER_DATING_SERVICE_OPS: ${SERVICE_CALLER_DATING_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
       SERVICE_CALLER_DATING_SERVICE_REFTYPES: ${SERVICE_CALLER_DATING_SERVICE_REFTYPES:-dating_premium}
       SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: ${SERVICE_CALLER_DATING_SERVICE_APPLICATIONS:-dating}
+      # admin-service: the admin console's /v1/payments/internal/admin/* only.
+      # OPS is payments' AdminPermissions; no REFTYPES and no APPLICATIONS (boot
+      # refuses either). Takes effect only once SERVICE_CALLERS names
+      # admin-service and ADMIN_SERVICE_TOKEN_PUBKEY is set.
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: payments:stats.read,payments:refunds.read,payments:refund.issue,payments:intents.read,payments:reconciliation.read,payments:applications.read,payments:applications.manage,payments:audit.read
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
       # Razorpay credentials — omit to use StubGateway in dev.

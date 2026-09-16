@@ -124,7 +124,7 @@ func main() {
 		os.Exit(1)
 	}
 	if tokenSigner == nil {
-		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE")
+		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE (also Monetization, Payments)")
 	}
 	refundThreshold, err := refundThresholdFromEnv(os.Getenv)
 	if err != nil {
@@ -134,8 +134,10 @@ func main() {
 	handler.WithDating(service.NewDatingClient(env("DATING_SERVICE_URL", "http://dating-service:8112"), tokenSigner)).
 		WithFood(service.NewFoodClient(env("FOOD_SERVICE_URL", "http://food-service:8113"), tokenSigner), refundThreshold).
 		WithCommerce(service.NewCommerceClient(env("COMMERCE_SERVICE_URL", "http://commerce-service:8109"), tokenSigner)).
-		WithTrustSafety(service.NewTrustSafetyClient(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"), tokenSigner))
-	slog.Info("feast refund two-person threshold", "paise", refundThreshold)
+		WithTrustSafety(service.NewTrustSafetyClient(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"), tokenSigner)).
+		WithMonetization(service.NewMonetizationClient(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"), tokenSigner)).
+		WithPayments(service.NewPaymentsClient(env("PAYMENTS_SERVICE_URL", "http://payments-service:8102"), tokenSigner))
+	slog.Info("refund two-person threshold (Feast, monetization, payments)", "paise", refundThreshold)
 
 	// 7. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

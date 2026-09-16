@@ -343,18 +343,39 @@ func (h *Handler) foodOrderTotalPaise(c *gin.Context, perms adminauth.Permission
 	if err != nil || resp.Status != http.StatusOK {
 		return 0, false
 	}
+	return foodOrderTotalFromDetail(resp.Body)
+}
+
+// foodOrderTotalFromDetail reads the total from food's order detail
+// (postgres.Order), where it is nested, never top level:
+//
+//	data.money.totals_paise.final_amount_paise   integer paise (preferred)
+//	data.totals.final_amount                     rupees, float (orders without the money block)
+//
+// Anything else is unknown, and the caller treats unknown as two-person.
+func foodOrderTotalFromDetail(body []byte) (int64, bool) {
 	var o struct {
-		FinalAmountPaise *int64   `json:"final_amount_paise"`
-		FinalAmount      *float64 `json:"final_amount"`
+		Money *struct {
+			TotalsPaise *struct {
+				FinalAmountPaise *int64 `json:"final_amount_paise"`
+			} `json:"totals_paise"`
+		} `json:"money"`
+		Totals *struct {
+			FinalAmount *float64 `json:"final_amount"`
+		} `json:"totals"`
 	}
-	if json.Unmarshal(envelopeData(resp.Body), &o) != nil {
+	if json.Unmarshal(envelopeData(body), &o) != nil {
 		return 0, false
 	}
-	switch {
-	case o.FinalAmountPaise != nil && *o.FinalAmountPaise > 0:
-		return *o.FinalAmountPaise, true
-	case o.FinalAmount != nil && *o.FinalAmount > 0:
-		return int64(math.Round(*o.FinalAmount * 100)), true
+	if o.Money != nil && o.Money.TotalsPaise != nil && o.Money.TotalsPaise.FinalAmountPaise != nil {
+		if p := *o.Money.TotalsPaise.FinalAmountPaise; p > 0 && p <= maxRefundPaise {
+			return p, true
+		}
+	}
+	if o.Totals != nil && o.Totals.FinalAmount != nil {
+		if f := *o.Totals.FinalAmount; f > 0 && !math.IsInf(f, 0) && f*100 <= float64(maxRefundPaise) {
+			return int64(math.Round(f * 100)), true
+		}
 	}
 	return 0, false
 }

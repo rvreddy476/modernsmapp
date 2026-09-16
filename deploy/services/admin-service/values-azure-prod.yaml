@@ -56,6 +56,10 @@ env:
   FOOD_SERVICE_URL: http://food-service.atpost.svc.cluster.local:8113
   COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
   TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  # Money dashboards, same key: enable monetization-service and
+  # payments-service first (numbered steps in their values files).
+  MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
   ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: '500000'
 ingress:
   enabled: false
