@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/time/rate"
 
+	"github.com/atpost/api-gateway/pkg/adminsession"
 	"github.com/atpost/api-gateway/pkg/edgeheaders"
 	"github.com/atpost/api-gateway/pkg/internalroutes"
 	"github.com/atpost/api-gateway/pkg/routepolicy"
@@ -707,8 +708,22 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		//      auth in the query string.
 		// Falling through with no token leaves the request
 		// unauthenticated; downstream handlers may 401 if they care.
+		//
+		// EXCEPT under /v1/admin, where the ONLY source is the admin console's
+		// own admin_access_token cookie (see pkg/adminsession). A Bearer
+		// header, the consumer access_token cookie and query tokens are
+		// ignored there, and the Authorization header is dropped so an
+		// ignored credential is never forwarded upstream.
+		adminPath := adminsession.IsAdminRequest(r)
 		var token string
-		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		if adminPath {
+			r.Header.Del("Authorization")
+			token = adminsession.AccessToken(r)
+			if token == "" {
+				adminsession.Refuse(w, http.StatusUnauthorized, adminsession.CodeSessionRequired, "Admin session required")
+				return
+			}
+		} else if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
 		} else if c, err := r.Cookie("access_token"); err == nil && c.Value != "" {
 			token = c.Value
@@ -733,6 +748,19 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"Invalid or expired token"}}`))
+			return
+		}
+		// Session kind. An admin path needs an admin session: a consumer token
+		// — even one with admin_mfa=true — is refused. And an admin session
+		// is refused everywhere else, so it cannot stand in for a consumer one.
+		if adminPath != (identity.SessionKind == adminsession.KindAdmin) {
+			adminsession.Refuse(w, http.StatusUnauthorized, adminsession.CodeWrongSession, "Wrong session for this path")
+			return
+		}
+		// CSRF on admin writes. The cookies are SameSite=Strict already; this
+		// is the second, independent check the console's double-submit relies on.
+		if adminPath && adminsession.NeedsCSRF(r.Method) && !adminsession.CSRFValid(r) {
+			adminsession.Refuse(w, http.StatusForbidden, adminsession.CodeCSRFFailed, "CSRF token missing or invalid")
 			return
 		}
 		userID, scopes, deviceID := identity.UserID, identity.Scopes, identity.DeviceID

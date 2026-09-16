@@ -184,6 +184,10 @@ type Claims struct {
 	AuthTime int64 `json:"auth_time,omitempty"`
 	AdminMFA bool  `json:"admin_mfa,omitempty"`
 	StepUpAt int64 `json:"step_up_at,omitempty"`
+	// SessionKind is `sk`: "admin" on a token minted for the admin console's
+	// own session, absent on a consumer token. The gateway decides which path
+	// families a token may drive from this claim.
+	SessionKind string `json:"sk,omitempty"`
 }
 
 // ValidateClaims enforces the policy. Every failure is a hard reject: there

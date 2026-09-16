@@ -92,6 +92,9 @@ type Identity struct {
 	AdminMFA bool
 	// StepUpAt is `step_up_at` (unix seconds); 0 when the token has no claim.
 	StepUpAt int64
+	// SessionKind is `sk`: "admin" for an admin console session, "" for a
+	// consumer token. The edge decides which paths a token may drive from it.
+	SessionKind string `json:"sk"`
 }
 
 // Error is a verification failure. The message is deliberately not returned to
@@ -170,13 +173,14 @@ func Verify(tokenStr string, keys KeySet, policy Policy, now time.Time) (Identit
 		userID = claims.UserID
 	}
 	return Identity{
-		UserID:    userID,
-		Scopes:    claims.Scopes,
-		DeviceID:  claims.DeviceID,
-		SessionID: strings.TrimSpace(claims.Sid),
-		AuthTime:  claims.AuthTime,
-		AdminMFA:  claims.AdminMFA,
-		StepUpAt:  claims.StepUpAt,
+		UserID:      userID,
+		Scopes:      claims.Scopes,
+		DeviceID:    claims.DeviceID,
+		SessionID:   strings.TrimSpace(claims.Sid),
+		AuthTime:    claims.AuthTime,
+		AdminMFA:    claims.AdminMFA,
+		StepUpAt:    claims.StepUpAt,
+		SessionKind: claims.SessionKind,
 	}, nil
 }
 

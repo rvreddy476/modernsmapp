@@ -93,6 +93,23 @@ func edgeToken(t *testing.T, scopes, sessionID string) string {
 	return signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, claims, "secret")
 }
 
+// adminEdgeToken is edgeToken for the admin console session (sk=admin).
+func adminEdgeToken(t *testing.T, scopes, sessionID string) string {
+	t.Helper()
+	claims := map[string]any{
+		"user_id": "33333333-3333-4333-8333-333333333333",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+		"sk":      "admin",
+	}
+	if scopes != "" {
+		claims["scopes"] = scopes
+	}
+	if sessionID != "" {
+		claims["sid"] = sessionID
+	}
+	return signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, claims, "secret")
+}
+
 func TestEveryGatewayRouteHasAnInternalKeyDecision(t *testing.T) {
 	var prefixes []string
 	for _, rd := range routeDefinitions() {
@@ -214,8 +231,15 @@ func TestInternalKeyIsStampedOnlyForUpstreamsThatNeedIt(t *testing.T) {
 	}
 	for _, anonymous := range []bool{true, false} {
 		for _, c := range cases {
+			isAdmin := strings.HasPrefix(c.path, "/v1/admin/")
+			if anonymous && isAdmin {
+				continue // no admin session: refused 401 before routing
+			}
 			req := httptest.NewRequest(http.MethodGet, c.path, nil)
-			if !anonymous {
+			switch {
+			case isAdmin:
+				req.AddCookie(&http.Cookie{Name: "admin_access_token", Value: adminEdgeToken(t, "admin", "")})
+			case !anonymous:
 				req.Header.Set("Authorization", "Bearer "+token)
 			}
 			req.Header.Set("X-Internal-Service-Key", "client-forged")
@@ -246,7 +270,11 @@ func TestEdgeRefusesRevokedSessions(t *testing.T) {
 
 	do := func(path, token string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Authorization", "Bearer "+token)
+		if strings.HasPrefix(path, "/v1/admin/") {
+			req.AddCookie(&http.Cookie{Name: "admin_access_token", Value: token})
+		} else {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		res := httptest.NewRecorder()
 		gw.ServeHTTP(res, req)
 		up.take()
@@ -262,7 +290,7 @@ func TestEdgeRefusesRevokedSessions(t *testing.T) {
 	if got := do("/v1/feed/home", live); got != http.StatusUnauthorized {
 		t.Fatalf("revoked session on consumer path: %d, want 401", got)
 	}
-	if got := do("/v1/admin/commerce/sellers/queue", edgeToken(t, "admin", sid)); got != http.StatusUnauthorized {
+	if got := do("/v1/admin/commerce/sellers/queue", adminEdgeToken(t, "admin", sid)); got != http.StatusUnauthorized {
 		t.Fatalf("revoked session on admin path: %d, want 401", got)
 	}
 
@@ -271,7 +299,7 @@ func TestEdgeRefusesRevokedSessions(t *testing.T) {
 	if got := do("/v1/feed/home", other); got != http.StatusOK {
 		t.Errorf("redis down, consumer path: %d, want 200 (fail open)", got)
 	}
-	if got := do("/v1/admin/commerce/sellers/queue", other); got != http.StatusServiceUnavailable {
+	if got := do("/v1/admin/commerce/sellers/queue", adminEdgeToken(t, "user", "8b2c3d4e-5f60-4b7c-9d8e-0f1a2b3c4d5e")); got != http.StatusServiceUnavailable {
 		t.Errorf("redis down, admin path: %d, want 503 (fail closed)", got)
 	}
 	if got := do("/v1/feed/home", edgeToken(t, "moderator", "8b2c3d4e-5f60-4b7c-9d8e-0f1a2b3c4d5e")); got != http.StatusServiceUnavailable {

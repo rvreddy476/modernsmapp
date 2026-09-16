@@ -61,9 +61,16 @@ func headerGateway(t *testing.T, up *headerUpstream) http.Handler {
 // as well, since Header.Del alone would miss those.
 func sendThrough(t *testing.T, gw http.Handler, up *headerUpstream, token string, forged map[string]string) http.Header {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/v1/admin/commerce/sellers/queue", nil)
+	// An admin path needs the admin console session (admin cookie, sk=admin);
+	// an anonymous request is refused there before any stamping, so the
+	// anonymous case drives a consumer path instead.
+	path := "/v1/feed/home"
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		path = "/v1/admin/commerce/sellers/queue"
+	}
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if token != "" {
+		req.AddCookie(&http.Cookie{Name: "admin_access_token", Value: token})
 	}
 	for k, v := range forged {
 		req.Header[k] = []string{v}
@@ -98,6 +105,7 @@ func sessionToken(t *testing.T, extra map[string]any) string {
 	claims := map[string]any{
 		"user_id": "44444444-4444-4444-8444-444444444444",
 		"scopes":  "admin",
+		"sk":      "admin",
 		"exp":     time.Now().Add(time.Hour).Unix(),
 	}
 	for k, v := range extra {

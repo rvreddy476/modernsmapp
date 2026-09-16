@@ -74,7 +74,7 @@ func TestGatewayIgnoresClientScopesWithLowPrivToken(t *testing.T) {
 		"exp":     time.Now().Add(time.Hour).Unix(),
 	}, keys.activeSecret)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/admin/thing", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/users/thing", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Scopes", "admin superadmin") // forged privilege escalation
 
@@ -100,7 +100,7 @@ func TestGatewayHonoursScopesFromVerifiedToken(t *testing.T) {
 		"exp":     time.Now().Add(time.Hour).Unix(),
 	}, keys.activeSecret)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/admin/thing", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/users/thing", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Scopes", "superadmin") // attacker tries to upgrade
 

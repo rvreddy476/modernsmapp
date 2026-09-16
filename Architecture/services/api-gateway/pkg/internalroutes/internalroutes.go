@@ -80,14 +80,33 @@ func IsInternalPath(decodedPath, rawPath string) bool {
 
 // IsInternalRequest applies IsInternalPath to a request's URL.
 func IsInternalRequest(r *http.Request) bool {
+	return AnyRequestInterpretation(r, hasInternalSegment)
+}
+
+// AnyRequestInterpretation reports whether match holds for ANY interpretation
+// of the request path — the same set IsInternalRequest examines: the decoded
+// and raw paths, the escaped path and the on-the-wire RequestURI, each
+// repeatedly percent-decoded, with backslashes as separators, and cleaned.
+// Other edge gates that must classify a path the way every upstream might
+// (the admin session gate) use this so the normalisation lives in one place.
+func AnyRequestInterpretation(r *http.Request, match func(string) bool) bool {
 	if r == nil || r.URL == nil {
 		return false
 	}
-	return IsInternalPath(r.URL.Path, r.URL.RawPath) ||
-		IsInternalPath("", r.URL.EscapedPath()) ||
+	for _, pair := range [][2]string{
+		{r.URL.Path, r.URL.RawPath},
+		{"", r.URL.EscapedPath()},
 		// RequestURI is what arrived on the wire, before Go parsed it. A
 		// client-crafted form Go normalises away still gets looked at.
-		IsInternalPath("", requestURIPath(r.RequestURI))
+		{"", requestURIPath(r.RequestURI)},
+	} {
+		for _, candidate := range interpretations(pair[0], pair[1]) {
+			if match(candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func requestURIPath(uri string) string {
