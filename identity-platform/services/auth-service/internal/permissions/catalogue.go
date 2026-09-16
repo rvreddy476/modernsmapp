@@ -57,6 +57,46 @@ var apps = []string{
 	AppSocial, AppTube, AppQA, AppChat, AppRider, AppTrustSafety, AppPlatform,
 }
 
+// confinedPayments is the payments view of ONE product application, held under
+// that product app as "<app>:payments_<resource>.<action>" (admin-service
+// handler_payments.go confinedPaymentsPermission; food→feast, commerce→mstore,
+// dating→dating). Identity resolves an app-scoped grant only into that app's
+// permissions, so this is how a Feast admin sees Feast payments and nothing
+// else; admin-service always forces that admin's application_id.
+//
+// It mirrors the payments app mapping. withFinance is false where finance holds
+// nothing in the product app today (dating), so a confined view never makes a
+// role grantable somewhere it was not.
+//
+// payments_applications.manage is superOnly: admin-service would confine it,
+// but changing the application registry stays with a payments-app admin or a
+// superadmin, not a product-app admin.
+func confinedPayments(withFinance bool) []entry {
+	f := func(holders ...string) []string {
+		if withFinance {
+			return holders
+		}
+		out := []string{}
+		for _, r := range holders {
+			if r != fin {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	return []entry{
+		p("payments_stats.read", f(fin)...),
+		p("payments_intents.read", f(fin, sup)...),
+		p("payments_reconciliation.read", f(fin)...),
+		p("payments_applications.read", f(fin)...),
+		p("payments_refunds.read", f(fin, sup)...),
+		p("payments_refund.issue", f(fin)...),
+		{action: "payments_applications.manage", superOnly: true},
+		// Auditors already hold this app's audit.read, so they read its payments audit.
+		p("payments_audit.read", audr),
+	}
+}
+
 // entry is one permission of an app and the roles that hold it besides the
 // implicit admin and superadmin. superOnly withholds it from admin.
 type entry struct {
@@ -78,7 +118,7 @@ const (
 // catalogue is the whole permission table. Keep it small; later lanes add
 // entries here and nowhere else.
 var catalogue = map[string][]entry{
-	AppDating: {
+	AppDating: append([]entry{
 		// stats.read: the dashboard's counts (no personal data).
 		p("stats.read", mod, sup),
 		p("reports.read", mod, sup),
@@ -94,8 +134,8 @@ var catalogue = map[string][]entry{
 		p("risk.read", mod),
 		p("users.ban"),
 		p("audit.read", audr),
-	},
-	AppFood: {
+	}, confinedPayments(false)...),
+	AppFood: append([]entry{
 		// stats.read includes today's GMV and unpaid settlement totals: not moderator,
 		// matching commerce.
 		p("stats.read", fin, sup),
@@ -123,8 +163,8 @@ var catalogue = map[string][]entry{
 		p("reports.read", fin, sup),
 		p("fraud.read"),
 		p("audit.read", audr),
-	},
-	AppCommerce: {
+	}, confinedPayments(true)...),
+	AppCommerce: append([]entry{
 		// stats.read includes pending payout amounts and GMV: not moderator.
 		p("stats.read", fin, sup),
 		p("sellers.read", mod, sup),
@@ -143,7 +183,7 @@ var catalogue = map[string][]entry{
 		p("compliance.read"),
 		p("compliance.sweep"),
 		p("audit.read", audr),
-	},
+	}, confinedPayments(true)...),
 	// Money dashboard: every monetization and payments permission is money, so
 	// moderator holds none of them and support holds reads only.
 	AppMonetization: {

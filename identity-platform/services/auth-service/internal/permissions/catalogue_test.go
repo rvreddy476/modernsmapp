@@ -323,6 +323,148 @@ func TestAppModeratorNeverCrossesApps(t *testing.T) {
 	}
 }
 
+// confinedPaymentsApps are the product apps admin-service maps to a payments
+// application (handler_payments.go paymentsApplications).
+var confinedPaymentsApps = []string{AppFood, AppCommerce, AppDating}
+
+// confinedPaymentsSuffixes are admin-service's eight payments permissions with
+// "payments:" replaced by "payments_" (confinedPaymentsPermission).
+var confinedPaymentsSuffixes = []string{
+	"payments_stats.read", "payments_refunds.read", "payments_refund.issue", "payments_intents.read",
+	"payments_reconciliation.read", "payments_applications.read", "payments_applications.manage", "payments_audit.read",
+}
+
+// confinedPaymentsHolders is, per confined permission, EXACTLY the admin roles
+// that hold it (admin and superadmin listed explicitly). Dating has no finance.
+func confinedPaymentsHolders(app, suffix string) []string {
+	finance := []string{roles.Finance}
+	if app == AppDating {
+		finance = nil
+	}
+	withAdmins := func(rs ...string) []string { return append([]string{roles.Admin, roles.Superadmin}, rs...) }
+	switch suffix {
+	case "payments_stats.read", "payments_reconciliation.read", "payments_applications.read", "payments_refund.issue":
+		return withAdmins(finance...)
+	case "payments_intents.read", "payments_refunds.read":
+		return withAdmins(append(finance, roles.Support)...)
+	case "payments_applications.manage":
+		return []string{roles.Superadmin}
+	case "payments_audit.read":
+		return withAdmins(roles.Auditor)
+	}
+	return nil
+}
+
+// TestConfinedPaymentsExactHolders: every <app>:payments_* string resolves for
+// exactly its intended roles, platform-wide and scoped to that app.
+func TestConfinedPaymentsExactHolders(t *testing.T) {
+	for _, app := range confinedPaymentsApps {
+		for _, suffix := range confinedPaymentsSuffixes {
+			perm := app + ":" + suffix
+			want := map[string]bool{}
+			for _, r := range confinedPaymentsHolders(app, suffix) {
+				want[r] = true
+			}
+			for _, role := range roles.AdminRoles() {
+				if got := contains(mustFor(t, role, ""), perm); got != want[role] {
+					t.Errorf("platform-wide %s holds %s = %v, want %v", role, perm, got, want[role])
+				}
+				if role == roles.Superadmin {
+					continue
+				}
+				scoped, err := For(role, app)
+				if err != nil && !errors.Is(err, ErrNoPermissionsInApp) {
+					t.Fatalf("For(%q,%q): %v", role, app, err)
+				}
+				if got := contains(scoped, perm); got != want[role] {
+					t.Errorf("%s scoped to %s holds %s = %v, want %v", role, app, perm, got, want[role])
+				}
+			}
+		}
+	}
+	// Nothing else under a product app is named payments_*.
+	for _, p := range mustFor(t, roles.Superadmin, "") {
+		i := strings.Index(p, ":payments_")
+		if i < 0 {
+			continue
+		}
+		app, suffix := p[:i], p[i+1:]
+		if !contains(confinedPaymentsApps, app) || !contains(confinedPaymentsSuffixes, suffix) {
+			t.Errorf("unexpected confined payments permission %q", p)
+		}
+	}
+}
+
+// TestConfinedPaymentsStayInTheirApp: a Feast-scoped admin (or any food role)
+// never holds another application's payments view, and the resolver agrees.
+func TestConfinedPaymentsStayInTheirApp(t *testing.T) {
+	for _, role := range roles.AdminRoles() {
+		if role == roles.Superadmin {
+			continue
+		}
+		for _, app := range confinedPaymentsApps {
+			perms, err := For(role, app)
+			if errors.Is(err, ErrNoPermissionsInApp) {
+				continue
+			}
+			if err != nil {
+				t.Fatalf("For(%q,%q): %v", role, app, err)
+			}
+			for _, p := range perms {
+				if strings.Contains(p, "payments") && !strings.HasPrefix(p, app+":payments_") {
+					t.Errorf("%s scoped to %s holds %q", role, app, p)
+				}
+			}
+		}
+	}
+	got := Resolve([]Grant{{Role: roles.Admin, App: AppFood}}, time.Now())
+	if !got.Has("food:payments_refund.issue") {
+		t.Fatalf("feast admin lacks food:payments_refund.issue: %+v", got)
+	}
+	for _, suffix := range confinedPaymentsSuffixes {
+		for _, other := range []string{AppCommerce + ":" + suffix, AppDating + ":" + suffix, "payments:" + strings.TrimPrefix(suffix, "payments_")} {
+			if got.Has(other) {
+				t.Errorf("feast admin holds %q", other)
+			}
+		}
+	}
+	if got.Has("food:payments_applications.manage") {
+		t.Error("feast admin holds food:payments_applications.manage")
+	}
+}
+
+// TestModeratorHoldsNoConfinedPayments: every confined payments permission is
+// money, so moderator holds none at any scope.
+func TestModeratorHoldsNoConfinedPayments(t *testing.T) {
+	scopes := map[string][]string{"": mustFor(t, roles.Moderator, "")}
+	for _, app := range confinedPaymentsApps {
+		scopes[app] = mustFor(t, roles.Moderator, app)
+	}
+	for scope, perms := range scopes {
+		for _, p := range perms {
+			if strings.Contains(p, ":payments_") {
+				t.Errorf("moderator (scope %q) holds %q", scope, p)
+			}
+		}
+	}
+}
+
+// TestSupportConfinedPaymentsReadOnly: support's confined payments view is
+// intents and refunds reads, never a write, at any scope.
+func TestSupportConfinedPaymentsReadOnly(t *testing.T) {
+	for _, app := range append([]string{""}, confinedPaymentsApps...) {
+		for _, p := range mustFor(t, roles.Support, app) {
+			if !strings.Contains(p, ":payments_") {
+				continue
+			}
+			i := strings.Index(p, ":payments_")
+			if s := p[i+1:]; s != "payments_intents.read" && s != "payments_refunds.read" {
+				t.Errorf("support (scope %q) holds %q", app, p)
+			}
+		}
+	}
+}
+
 func TestForRefusals(t *testing.T) {
 	cases := []struct {
 		role, app string
