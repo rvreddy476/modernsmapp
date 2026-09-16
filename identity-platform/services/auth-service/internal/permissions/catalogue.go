@@ -144,18 +144,42 @@ var catalogue = map[string][]entry{
 		p("compliance.sweep"),
 		p("audit.read", audr),
 	},
+	// Money dashboard: every monetization and payments permission is money, so
+	// moderator holds none of them and support holds reads only.
 	AppMonetization: {
+		// stats.read includes fund and payout totals: finance and support.
+		p("stats.read", fin, sup),
 		p("fraud.review", fin),
-		p("creators.read", fin, sup),
-		p("fund.settle", fin),
-		p("fund.reverse", fin),
+		// wallet.freeze / unfreeze / rebuild and creators.suspend are account-safety
+		// actions on a creator, like food restaurant.suspend and commerce
+		// seller.suspend: admin only, not finance.
+		p("wallet.freeze"),
+		p("wallet.unfreeze"),
+		p("wallet.rebuild"),
+		p("fund.read", fin),
 		p("fund.rates", fin),
 		p("fund.budget", fin),
+		p("fund.settle", fin),
+		p("fund.reverse", fin),
+		// creators.read: no monetization route checks it today.
+		p("creators.read", fin, sup),
+		p("creators.suspend"),
+		p("disputes.read", fin, sup),
+		p("disputes.act", fin),
+		p("refund.issue", fin),
+		p("payouts.read", fin, sup),
 		p("audit.read", audr),
 	},
 	AppPayments: {
+		// stats.read and reconciliation.read are money totals across applications:
+		// finance only.
+		p("stats.read", fin),
+		p("intents.read", fin, sup),
+		p("reconciliation.read", fin),
+		p("applications.read", fin),
 		p("refunds.read", fin, sup),
 		p("refund.issue", fin),
+		// disputes.act and payouts.approve: no payments admin route checks them today.
 		p("disputes.act", fin),
 		p("payouts.approve", fin),
 		p("applications.manage"),

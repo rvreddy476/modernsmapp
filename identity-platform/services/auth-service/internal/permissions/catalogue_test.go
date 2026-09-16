@@ -90,6 +90,32 @@ func TestForTable(t *testing.T) {
 			has: []string{"payments:refund.issue"}, hasNot: []string{"payments:applications.manage"}, noOther: true},
 		{name: "monetization finance", role: roles.Finance, app: AppMonetization,
 			has: []string{"monetization:fund.settle"}, noOther: true},
+		// Admin console Wave 2 — the Money dashboard.
+		{name: "monetization admin holds the console permissions", role: roles.Admin, app: AppMonetization,
+			has: []string{"monetization:stats.read", "monetization:wallet.freeze", "monetization:wallet.unfreeze", "monetization:wallet.rebuild",
+				"monetization:fund.read", "monetization:creators.suspend", "monetization:disputes.read", "monetization:disputes.act",
+				"monetization:refund.issue", "monetization:payouts.read", "monetization:audit.read"}, noOther: true},
+		{name: "monetization finance runs the fund, not account safety", role: roles.Finance, app: AppMonetization,
+			has: []string{"monetization:stats.read", "monetization:fund.read", "monetization:payouts.read", "monetization:disputes.read",
+				"monetization:disputes.act", "monetization:refund.issue", "monetization:fund.rates", "monetization:fund.budget",
+				"monetization:fund.settle", "monetization:fund.reverse", "monetization:fraud.review"},
+			hasNot: []string{"monetization:wallet.freeze", "monetization:wallet.unfreeze", "monetization:wallet.rebuild", "monetization:creators.suspend"}, noOther: true},
+		{name: "monetization support reads only", role: roles.Support, app: AppMonetization,
+			has: []string{"monetization:stats.read", "monetization:disputes.read", "monetization:payouts.read"},
+			hasNot: []string{"monetization:disputes.act", "monetization:refund.issue", "monetization:fund.read", "monetization:fund.settle",
+				"monetization:wallet.freeze", "monetization:creators.suspend"}, noOther: true},
+		{name: "payments admin holds the console permissions", role: roles.Admin, app: AppPayments,
+			has: []string{"payments:stats.read", "payments:intents.read", "payments:reconciliation.read", "payments:applications.read",
+				"payments:applications.manage", "payments:refunds.read", "payments:refund.issue", "payments:audit.read"}, noOther: true},
+		{name: "payments finance reads the ledger", role: roles.Finance, app: AppPayments,
+			has: []string{"payments:stats.read", "payments:intents.read", "payments:reconciliation.read", "payments:applications.read",
+				"payments:refunds.read", "payments:refund.issue"},
+			hasNot: []string{"payments:applications.manage"}, noOther: true},
+		{name: "payments support reads intents and refunds", role: roles.Support, app: AppPayments,
+			has:    []string{"payments:intents.read", "payments:refunds.read"},
+			hasNot: []string{"payments:stats.read", "payments:reconciliation.read", "payments:applications.read", "payments:refund.issue", "payments:applications.manage"}, noOther: true},
+		{name: "monetization auditor reads audit only", role: roles.Auditor, app: AppMonetization,
+			has: []string{"monetization:audit.read"}, hasNot: []string{"monetization:stats.read", "monetization:fund.read"}, noOther: true},
 		{name: "support has no money or bans", role: roles.Support, app: "",
 			has:    []string{"food:orders.read", "platform:users.read"},
 			hasNot: []string{"payments:refund.issue", "dating:users.ban", "platform:users.suspend", "commerce:kyc.reveal"}},
@@ -132,8 +158,8 @@ func TestForTable(t *testing.T) {
 	}
 }
 
-// consolePermissionHolders is every permission the food, commerce and
-// trust-safety admin token routes check that the catalogue gained for the admin
+// consolePermissionHolders is every permission the food, commerce,
+// trust-safety, monetization and payments admin token routes check that the catalogue gained for the admin
 // console, with EXACTLY the roles (besides implicit admin and superadmin) that
 // must hold it. The strings mirror each service's AdminPermissions list.
 var consolePermissionHolders = map[string][]string{
@@ -161,6 +187,31 @@ var consolePermissionHolders = map[string][]string{
 	"trust_safety:verification.review":  {roles.KYCReviewer},
 	"trust_safety:media_labels.read":    {roles.Moderator},
 	"trust_safety:keyword_filters.read": {roles.Moderator},
+	// Money dashboard: monetization and payments AdminPermissions.
+	"monetization:stats.read":       {roles.Finance, roles.Support},
+	"monetization:fraud.review":     {roles.Finance},
+	"monetization:wallet.freeze":    nil,
+	"monetization:wallet.unfreeze":  nil,
+	"monetization:wallet.rebuild":   nil,
+	"monetization:fund.read":        {roles.Finance},
+	"monetization:fund.rates":       {roles.Finance},
+	"monetization:fund.budget":      {roles.Finance},
+	"monetization:fund.settle":      {roles.Finance},
+	"monetization:fund.reverse":     {roles.Finance},
+	"monetization:creators.suspend": nil,
+	"monetization:disputes.read":    {roles.Finance, roles.Support},
+	"monetization:disputes.act":     {roles.Finance},
+	"monetization:refund.issue":     {roles.Finance},
+	"monetization:payouts.read":     {roles.Finance, roles.Support},
+	"monetization:audit.read":       {roles.Auditor},
+	"payments:stats.read":           {roles.Finance},
+	"payments:intents.read":         {roles.Finance, roles.Support},
+	"payments:reconciliation.read":  {roles.Finance},
+	"payments:applications.read":    {roles.Finance},
+	"payments:applications.manage":  nil,
+	"payments:refunds.read":         {roles.Finance, roles.Support},
+	"payments:refund.issue":         {roles.Finance},
+	"payments:audit.read":           {roles.Auditor},
 }
 
 // TestConsolePermissionsExactHolders: each new permission resolves for its
@@ -212,6 +263,21 @@ func TestModeratorNeverHoldsMoneyOrReview(t *testing.T) {
 			if contains(perms, p) {
 				t.Errorf("moderator holds %q", p)
 			}
+		}
+	}
+}
+
+// TestModeratorHoldsNoMoneyApp: moderator holds no monetization or payments
+// permission at any scope, and cannot even be granted into those apps.
+func TestModeratorHoldsNoMoneyApp(t *testing.T) {
+	for _, p := range mustFor(t, roles.Moderator, "") {
+		if strings.HasPrefix(p, AppMonetization+":") || strings.HasPrefix(p, AppPayments+":") {
+			t.Errorf("platform-wide moderator holds %q", p)
+		}
+	}
+	for _, app := range []string{AppMonetization, AppPayments} {
+		if perms, err := For(roles.Moderator, app); !errors.Is(err, ErrNoPermissionsInApp) {
+			t.Errorf("For(moderator,%q) = %v, %v; want ErrNoPermissionsInApp", app, perms, err)
 		}
 	}
 }
