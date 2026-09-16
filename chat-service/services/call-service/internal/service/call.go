@@ -145,12 +145,39 @@ func (s *Service) createCallLocked(ctx context.Context, userID uuid.UUID, req Cr
 
 	isDirect := req.CallType == domain.CallTypeDirectAudio || req.CallType == domain.CallTypeDirectVideo
 
+	// Audit C2: gate every direct call on the social graph before
+	// any DB row or SFU room exists. Group calls are gated by group
+	// membership elsewhere; this only covers 1:1 audio/video. Policy
+	// fails closed on graph errors — the alternative (fail-open) was
+	// the documented exploit path. nil policy means "tests / dev
+	// where the gate is intentionally disabled".
+	//
+	// ORDER IS PART OF THE CONTRACT. This check used to run AFTER the
+	// target-busy check and the ring anti-spam limiter, which turned
+	// CreateCall into a presence oracle: any authenticated user could tell
+	// "that person is on a call right now" (409 ErrTargetUnavailable) from
+	// "not permitted" (403) — for ANYONE, including people who had blocked
+	// them or set who_can_call=no_one. A caller who may not call the target
+	// must learn NOTHING beyond the refusal, so permission is decided first
+	// and every later refusal is reachable only by a permitted caller. The
+	// caller's OWN active-call check stays above: it is self-information and
+	// leaks nothing about the target.
+	if isDirect && s.policy != nil {
+		for _, targetID := range req.TargetUserIDs {
+			if err := s.policy.CanCall(ctx, userID, targetID); err != nil {
+				s.log.Info("call rejected by policy",
+					"caller", userID, "target", targetID, "err", err)
+				return nil, err
+			}
+		}
+	}
+
 	// CALL-LB-5: a recipient already in a live call may not be placed into
 	// a second one. Checked under the SAME user-set lock as the initiator
 	// check, and BEFORE any SFU room, session, participant, invite or
 	// outbox write exists — the loser leaves no side effect at all. The
 	// refusal is the generic unavailable contract: no recipient call
-	// details leak.
+	// details leak. Only a PERMITTED caller ever reaches it.
 	if isDirect {
 		for _, targetID := range req.TargetUserIDs {
 			if targetID == userID {
@@ -166,26 +193,12 @@ func (s *Service) createCallLocked(ctx context.Context, userID uuid.UUID, req Cr
 		}
 	}
 
-	// Anti-spam check for direct calls
+	// Anti-spam check for direct calls. Still fully enforced — it just no
+	// longer runs for callers the policy has already refused, so its 429
+	// cannot be used to probe a target either.
 	if isDirect && len(req.TargetUserIDs) == 1 {
 		if err := s.rateLimiter.CheckRingAntiSpam(ctx, userID, req.TargetUserIDs[0]); err != nil {
 			return nil, err
-		}
-	}
-
-	// Audit C2: gate every direct call on the social graph before
-	// any DB row or SFU room exists. Group calls are gated by group
-	// membership elsewhere; this only covers 1:1 audio/video. Policy
-	// fails closed on graph errors — the alternative (fail-open) was
-	// the documented exploit path. nil policy means "tests / dev
-	// where the gate is intentionally disabled".
-	if isDirect && s.policy != nil {
-		for _, targetID := range req.TargetUserIDs {
-			if err := s.policy.CanCall(ctx, userID, targetID); err != nil {
-				s.log.Info("call rejected by policy",
-					"caller", userID, "target", targetID, "err", err)
-				return nil, err
-			}
 		}
 	}
 
@@ -417,6 +430,15 @@ func (s *Service) JoinCall(ctx context.Context, userID, callID uuid.UUID) (*Join
 		return nil, ErrCallNotFound
 	}
 
+	// Re-gate the pair BEFORE any other refusal. Permission was previously
+	// checked only at CreateCall, so a block or unmatch arriving mid-ring was
+	// invisible here. It runs first deliberately: a forbidden pair must get
+	// the SAME generic 403 whatever else is true of the call, so join cannot
+	// be used to distinguish "ended" / "not a participant" / "forbidden".
+	if err := s.recheckDirectCallPermission(ctx, session); err != nil {
+		return nil, err
+	}
+
 	if session.State == domain.CallStateEnded || session.State == domain.CallStateCanceled ||
 		session.State == domain.CallStateFailed || session.State == domain.CallStateExpired {
 		return nil, ErrCallAlreadyEnded
@@ -533,6 +555,23 @@ func (s *Service) AcceptInvite(ctx context.Context, userID, callID, inviteID uui
 	if invite.CallSessionID != callID || invite.InviteeUserID != userID {
 		return ErrInviteNotFound
 	}
+
+	// Answering is the moment the channel actually opens, so the permission
+	// gate has to hold HERE and not just at create time. Checked before the
+	// pending-state test so a revoked pair always sees the create path's
+	// generic 403 rather than a 409 that would reveal the invite's state
+	// (including the `expired` an event-driven teardown just wrote).
+	acceptSession, err := s.store.GetCallSession(ctx, callID)
+	if err != nil {
+		return err
+	}
+	if acceptSession == nil {
+		return ErrCallNotFound
+	}
+	if err := s.recheckDirectCallPermission(ctx, acceptSession); err != nil {
+		return err
+	}
+
 	if invite.ResponseStatus != domain.ResponseStatusPending {
 		return ErrInviteNotPending
 	}
@@ -771,6 +810,114 @@ func (s *Service) endCallInternal(ctx context.Context, callID uuid.UUID, endedBy
 		SourceID:        uuidPtrToString(session.SourceID),
 		EndedAt:         time.Now(),
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Live permission enforcement
+// ---------------------------------------------------------------------------
+
+// directCallCounterpart returns the OTHER party of a 1:1 call, resolved in the
+// direction the call was originally gated: initiator → invitee.
+//
+// It returns (initiator, invitee). For a direct call there is exactly one
+// non-initiator participant; if the row is missing (a half-written call) the
+// second value is uuid.Nil and the caller skips the re-check rather than
+// inventing a pair.
+func (s *Service) directCallCounterpart(ctx context.Context, session *domain.CallSession) (uuid.UUID, uuid.UUID) {
+	participants, err := s.store.GetParticipants(ctx, session.ID)
+	if err != nil {
+		return session.InitiatorUserID, uuid.Nil
+	}
+	for _, p := range participants {
+		if p.UserID != session.InitiatorUserID {
+			return session.InitiatorUserID, p.UserID
+		}
+	}
+	return session.InitiatorUserID, uuid.Nil
+}
+
+// recheckDirectCallPermission re-runs the graph permission gate on a call that
+// ALREADY EXISTS.
+//
+// The audit defect: CanCall ran once, in CreateCall, and nowhere else. Accept
+// and join re-used the create-time decision forever, so a block or a dating
+// unmatch landing between create and accept was simply not seen — the callee
+// could still answer a caller they had just blocked.
+//
+// The check is asked in the SAME direction as create (initiator → invitee) for
+// two reasons: `who_can_call` is the target's setting and only means anything
+// in that direction, and graph resolves blocks in EITHER direction, so this one
+// question also catches the initiator blocking the invitee.
+//
+// Errors are returned verbatim so the accept/join paths refuse with exactly the
+// contract the create path uses: ErrCallNotAllowed → 403 (generic, leaks
+// nothing about which side revoked), ErrGraphUnavailable → 503 retryable.
+// Fails CLOSED, like create: an unreachable graph does not silently re-admit a
+// pair whose relationship may have been revoked.
+//
+// Group calls are out of scope (see EndDirectCallsBetween).
+func (s *Service) recheckDirectCallPermission(ctx context.Context, session *domain.CallSession) error {
+	if s.policy == nil || session == nil || !session.IsDirectCall() {
+		return nil
+	}
+	initiator, invitee := s.directCallCounterpart(ctx, session)
+	if invitee == uuid.Nil {
+		return nil
+	}
+	if err := s.policy.CanCall(ctx, initiator, invitee); err != nil {
+		s.log.Info("live call refused by policy re-check",
+			"call_id", session.ID, "initiator", initiator, "invitee", invitee, "err", err)
+		// A DEFINITE refusal also ends the call: the pair are no longer
+		// permitted to be connected, so leaving the session ringing (or
+		// active) would keep exactly the channel the block was meant to
+		// close. A transient ErrGraphUnavailable must NOT tear down a
+		// call — it is "ask again", not "you are forbidden".
+		if errors.Is(err, ErrCallNotAllowed) {
+			s.endCallInternal(ctx, session.ID, initiator, domain.EndedReasonPermissionRevoked)
+		}
+		return err
+	}
+	return nil
+}
+
+// EndDirectCallsBetween terminates every LIVE 1:1 call the pair share and
+// reports how many it ended.
+//
+// This is the teardown half of the same defect: call-service consumed no
+// relationship events at all, so blocking or unmatching somebody mid-call left
+// the media flowing until one side hung up or the duration cap fired. It is
+// driven by the relationship consumer (UserBlocked, dating.match.closed).
+//
+// SCOPE — 1:1 ONLY. A group call is not torn down by a pair-level revocation:
+// a block between two of twenty participants is not grounds to end everyone
+// else's call, and per-participant ejection from a group call needs its own
+// design (which pair gets removed, who is told, what the host sees). Group
+// calls are in any case fenced off in P0 by groupCallsEnabled=false, so today
+// this covers every call the service will actually create.
+//
+// Idempotent: endCallInternal returns early on an already-ended session, so a
+// Kafka redelivery of the same block is a no-op and safe to ack.
+func (s *Service) EndDirectCallsBetween(ctx context.Context, userA, userB uuid.UUID, reason string) (int, error) {
+	if userA == uuid.Nil || userB == uuid.Nil || userA == userB {
+		return 0, nil
+	}
+	sessions, err := s.store.ListLiveDirectCallsBetween(ctx, userA, userB)
+	if err != nil {
+		return 0, fmt.Errorf("list live direct calls between pair: %w", err)
+	}
+	ended := 0
+	for _, cs := range sessions {
+		// endedBy is the initiator: the teardown is not attributable to
+		// either party as a hang-up, and the lifecycle payload already
+		// carries ended_reason for consumers that care.
+		s.endCallInternal(ctx, cs.ID, cs.InitiatorUserID, reason)
+		ended++
+	}
+	if ended > 0 {
+		s.log.Info("ended live direct calls on relationship revocation",
+			"user_a", userA, "user_b", userB, "reason", reason, "calls_ended", ended)
+	}
+	return ended, nil
 }
 
 // ---------------------------------------------------------------------------

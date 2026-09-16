@@ -77,6 +77,16 @@ const (
 	EndedReasonAllLeft   = "all_left"
 	EndedReasonFailed    = "failed"
 	EndedReasonMissed    = "missed"
+
+	// EndedReasonPermissionRevoked ends a live 1:1 call because the pair's
+	// relationship was revoked WHILE they were talking — one blocked the
+	// other, or a dating match was closed (unmatch). Permission used to be
+	// checked only at CreateCall, so a block or unmatch mid-call left the
+	// call running indefinitely; this is the reason the teardown consumer
+	// and the accept/join re-check both record. Distinct from `canceled`
+	// (a human hung up) so support and analytics can tell a safety
+	// termination from an ordinary one.
+	EndedReasonPermissionRevoked = "permission_revoked"
 )
 
 // JoinMode

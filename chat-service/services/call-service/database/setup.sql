@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS calls.call_sessions (
     started_at TIMESTAMPTZ,
     answered_at TIMESTAMPTZ,
     ended_at TIMESTAMPTZ,
-    ended_reason TEXT CHECK (ended_reason IN ('completed', 'timeout', 'canceled', 'host_left', 'all_left', 'failed', 'missed')),
+    ended_reason TEXT CHECK (ended_reason IN ('completed', 'timeout', 'canceled', 'host_left', 'all_left', 'failed', 'missed', 'permission_revoked')),
     metadata_json JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -185,3 +185,13 @@ CREATE TABLE IF NOT EXISTS calls.call_summaries (
     generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (call_session_id)
 );
+
+-- `permission_revoked` end reason (mid-call block / dating unmatch teardown).
+-- The table above is created with CREATE TABLE IF NOT EXISTS, so an EXISTING
+-- database keeps the old CHECK and would reject the new reason. Drop-then-add
+-- is idempotent and re-runs safely on every boot; every pre-existing value is
+-- still in the list, so the constraint validates without a rewrite.
+ALTER TABLE calls.call_sessions DROP CONSTRAINT IF EXISTS call_sessions_ended_reason_check;
+ALTER TABLE calls.call_sessions ADD CONSTRAINT call_sessions_ended_reason_check
+    CHECK (ended_reason IN ('completed', 'timeout', 'canceled', 'host_left',
+                            'all_left', 'failed', 'missed', 'permission_revoked'));

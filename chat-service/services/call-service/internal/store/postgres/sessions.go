@@ -252,6 +252,59 @@ func (s *CallStore) GetActiveCallForUser(ctx context.Context, userID uuid.UUID) 
 	return &cs, nil
 }
 
+// ListLiveDirectCallsBetween returns every live (initiated/ringing/active)
+// DIRECT call in which BOTH users are participants.
+//
+// This is the lookup the relationship-teardown consumer rides: when a pair's
+// relationship is revoked (block, or a dating match closed) any 1:1 call they
+// are sharing must end. Deliberately scoped to direct calls — a group call is
+// not a two-party relationship and is not torn down by a pair-level revocation
+// (see Service.EndDirectCallsBetween).
+//
+// Both participant rows must still be "live" in the same sense
+// GetActiveCallForUser uses, so a call the pair already left is not re-ended.
+func (s *CallStore) ListLiveDirectCallsBetween(ctx context.Context, userA, userB uuid.UUID) ([]domain.CallSession, error) {
+	if userA == userB {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT cs.id, cs.call_type, cs.source_type, cs.source_id, cs.initiator_user_id,
+		       cs.room_id, cs.state, cs.region_code, cs.audio_only, cs.recording_enabled,
+		       cs.max_participants, cs.join_mode, cs.started_at, cs.answered_at, cs.ended_at,
+		       cs.ended_reason, cs.metadata_json, cs.created_at, cs.updated_at
+		FROM calls.call_sessions cs
+		JOIN calls.call_participants pa
+		  ON pa.call_session_id = cs.id AND pa.user_id = $1
+		JOIN calls.call_participants pb
+		  ON pb.call_session_id = cs.id AND pb.user_id = $2
+		WHERE cs.state IN ('initiated', 'ringing', 'active')
+		  AND cs.call_type IN ('direct_audio', 'direct_video')
+		  AND pa.join_state IN ('not_joined', 'joining', 'joined', 'reconnecting')
+		  AND pb.join_state IN ('not_joined', 'joining', 'joined', 'reconnecting')
+		ORDER BY cs.created_at DESC`, userA, userB)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []domain.CallSession
+	for rows.Next() {
+		var cs domain.CallSession
+		if err := rows.Scan(
+			&cs.ID, &cs.CallType, &cs.SourceType, &cs.SourceID,
+			&cs.InitiatorUserID, &cs.RoomID, &cs.State,
+			&cs.RegionCode, &cs.AudioOnly, &cs.RecordingEnabled,
+			&cs.MaxParticipants, &cs.JoinMode,
+			&cs.StartedAt, &cs.AnsweredAt, &cs.EndedAt, &cs.EndedReason,
+			&cs.MetadataJSON, &cs.CreatedAt, &cs.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, cs)
+	}
+	return sessions, rows.Err()
+}
+
 // GetRingingCallsOlderThan returns calls in ringing state older than the given time.
 func (s *CallStore) GetRingingCallsOlderThan(ctx context.Context, olderThan time.Time) ([]domain.CallSession, error) {
 	rows, err := s.db.Query(ctx, `

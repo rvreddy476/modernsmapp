@@ -22,7 +22,17 @@ type Config struct {
 	IdentityKafkaTopic   string
 	IdentityKafkaGroupID string
 	PurgeAcksTopic       string
-	JWTSecret              string
+
+	// Relationship-revocation teardown: ending a live 1:1 call when the pair
+	// is blocked (graph) or their dating match closes (unmatch). Topic names
+	// match the producers — message-service already reads SocialKafkaTopic
+	// for the same UserBlocked event.
+	SocialKafkaTopic   string
+	SocialKafkaGroupID string
+	DatingKafkaTopic   string
+	DatingKafkaGroupID string
+
+	JWTSecret string
 	// C7 — kid + previous-secret rotation knobs.
 	JWTKID             string
 	JWTSecretPrevious  string
@@ -59,6 +69,10 @@ func Load() *Config {
 		IdentityKafkaTopic:     getEnv("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
 		IdentityKafkaGroupID:   getEnv("IDENTITY_KAFKA_GROUP_ID", "call-service-account-lifecycle"),
 		PurgeAcksTopic:         getEnv("PURGE_ACKS_TOPIC", "platform.purge-acks.v1"),
+		SocialKafkaTopic:       getEnv("SOCIAL_KAFKA_TOPIC", "social.events.v1"),
+		SocialKafkaGroupID:     getEnv("SOCIAL_KAFKA_GROUP_ID", "call-service-social-teardown"),
+		DatingKafkaTopic:       getEnv("DATING_KAFKA_TOPIC", "dating-events"),
+		DatingKafkaGroupID:     getEnv("DATING_KAFKA_GROUP_ID", "call-service-dating-teardown"),
 		JWTSecret:              getEnv("JWT_SECRET", ""),
 		JWTKID:                 getEnv("JWT_KID", "v1"),
 		JWTSecretPrevious:      getEnv("JWT_SECRET_PREVIOUS", ""),

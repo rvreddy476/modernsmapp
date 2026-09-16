@@ -10,8 +10,10 @@ import (
 
 	"github.com/atpost/chat-call-service/database"
 	"github.com/atpost/chat-call-service/internal/config"
+	"github.com/atpost/chat-call-service/internal/domain"
 	callhttp "github.com/atpost/chat-call-service/internal/http"
 	"github.com/atpost/chat-call-service/internal/purge"
+	"github.com/atpost/chat-call-service/internal/relationship"
 	"github.com/atpost/chat-call-service/internal/service"
 	"github.com/atpost/chat-call-service/internal/sfu"
 	"github.com/atpost/chat-call-service/internal/store/postgres"
@@ -189,6 +191,23 @@ func main() {
 		purge.NewHandler("call", store, service.NewOutboxAckPublisher(store), nil, logger), logger)
 	defer func() { _ = lifecycle.Close() }()
 	go lifecycle.Start(ctx)
+
+	// 6b. Relationship-revocation teardown. Permission was only ever checked
+	// at CreateCall, so blocking or unmatching somebody MID-CALL left the
+	// call running. These two consumers end any live 1:1 call the pair share
+	// the moment the revocation lands: UserBlocked from graph-service, and
+	// dating.match.closed (unmatch) from dating-service. Both sides are told
+	// through the normal CallEnded lifecycle.
+	revocationHandler := relationship.NewHandler(svc, domain.EndedReasonPermissionRevoked, logger)
+	socialTeardown := relationship.NewConsumer(cfg.KafkaBrokers, cfg.SocialKafkaTopic,
+		cfg.SocialKafkaGroupID, kafkaDialer, revocationHandler, logger)
+	defer func() { _ = socialTeardown.Close() }()
+	go socialTeardown.Start(ctx)
+
+	datingTeardown := relationship.NewConsumer(cfg.KafkaBrokers, cfg.DatingKafkaTopic,
+		cfg.DatingKafkaGroupID, kafkaDialer, revocationHandler, logger)
+	defer func() { _ = datingTeardown.Close() }()
+	go datingTeardown.Start(ctx)
 
 	// 7. Ringing Timeout Worker (background)
 	timeoutWorker := service.NewRingingTimeoutWorker(store, svc, logger, cfg.RingTimeoutSeconds)
