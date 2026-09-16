@@ -54,6 +54,36 @@ func TestForTable(t *testing.T) {
 			has: []string{"dating:stats.read", "dating:panic.act", "dating:risk.read", "dating:users.ban"}, noOther: true},
 		{name: "food admin", role: roles.Admin, app: AppFood,
 			has: []string{"food:restaurant.approve", "food:refund.issue", "food:audit.read"}, noOther: true},
+		// Admin console Wave 2 — food, commerce and trust-safety dashboards.
+		{name: "food admin holds the console permissions", role: roles.Admin, app: AppFood,
+			has: []string{"food:stats.read", "food:restaurant.suspend", "food:delivery_partner.suspend", "food:payout_accounts.read",
+				"food:settlement.generate", "food:coupons.manage", "food:service_areas.manage", "food:fraud.read", "food:reports.read"}, noOther: true},
+		{name: "food finance runs settlements", role: roles.Finance, app: AppFood,
+			has: []string{"food:stats.read", "food:refunds.read", "food:settlement.read", "food:settlement.generate",
+				"food:settlement.mark_paid", "food:payout_accounts.read", "food:reports.read", "food:refund.issue"},
+			hasNot: []string{"food:restaurant.suspend", "food:coupons.manage", "food:fraud.read"}, noOther: true},
+		{name: "food moderator moderates, sees no money", role: roles.Moderator, app: AppFood,
+			has:    []string{"food:reviews.moderate"},
+			hasNot: []string{"food:stats.read", "food:settlement.generate", "food:payout_accounts.read", "food:restaurant.suspend", "food:reports.read", "food:refunds.read"}, noOther: true},
+		{name: "food support reads only", role: roles.Support, app: AppFood,
+			has: []string{"food:stats.read", "food:refunds.read", "food:reports.read"}, hasNot: []string{"food:refund.issue", "food:settlement.read", "food:coupons.manage"}, noOther: true},
+		{name: "commerce admin holds the console permissions", role: roles.Admin, app: AppCommerce,
+			has: []string{"commerce:stats.read", "commerce:sellers.read", "commerce:banners.edit", "commerce:jobs.read", "commerce:compliance.read", "commerce:compliance.sweep"}, noOther: true},
+		{name: "commerce moderator reads the seller queue", role: roles.Moderator, app: AppCommerce,
+			has: []string{"commerce:sellers.read"}, hasNot: []string{"commerce:stats.read", "commerce:compliance.sweep", "commerce:seller.approve", "commerce:banners.edit"}, noOther: true},
+		{name: "commerce finance sees stats", role: roles.Finance, app: AppCommerce,
+			has: []string{"commerce:stats.read", "commerce:cod.settle", "commerce:refund.issue"}, hasNot: []string{"commerce:sellers.read", "commerce:compliance.read"}, noOther: true},
+		{name: "commerce support", role: roles.Support, app: AppCommerce,
+			has: []string{"commerce:stats.read", "commerce:sellers.read"}, hasNot: []string{"commerce:banners.edit", "commerce:jobs.read"}, noOther: true},
+		{name: "trust_safety moderator reads its queues", role: roles.Moderator, app: AppTrustSafety,
+			has: []string{"trust_safety:stats.read", "trust_safety:appeals.read", "trust_safety:grievances.read", "trust_safety:strikes.read",
+				"trust_safety:media_labels.read", "trust_safety:keyword_filters.read"},
+			hasNot: []string{"trust_safety:verification.review", "trust_safety:strikes.manage"}, noOther: true},
+		{name: "trust_safety kyc reviewer reviews verification", role: roles.KYCReviewer, app: AppTrustSafety,
+			has: []string{"trust_safety:verification.review"}, hasNot: []string{"trust_safety:appeals.read", "trust_safety:stats.read"}, noOther: true},
+		{name: "trust_safety support", role: roles.Support, app: AppTrustSafety,
+			has:    []string{"trust_safety:grievances.read", "trust_safety:appeals.read", "trust_safety:reports.read"},
+			hasNot: []string{"trust_safety:grievances.act", "trust_safety:appeals.act", "trust_safety:verification.review"}, noOther: true},
 		{name: "commerce kyc reviewer", role: roles.KYCReviewer, app: AppCommerce,
 			has: []string{"commerce:kyc.reveal", "commerce:kyc.verify"}, hasNot: []string{"commerce:seller.approve"}, noOther: true},
 		{name: "payments finance", role: roles.Finance, app: AppPayments,
@@ -99,6 +129,102 @@ func TestForTable(t *testing.T) {
 				t.Errorf("seller holds %v", perms)
 			}
 		})
+	}
+}
+
+// consolePermissionHolders is every permission the food, commerce and
+// trust-safety admin token routes check that the catalogue gained for the admin
+// console, with EXACTLY the roles (besides implicit admin and superadmin) that
+// must hold it. The strings mirror each service's AdminPermissions list.
+var consolePermissionHolders = map[string][]string{
+	"food:stats.read":                   {roles.Finance, roles.Support},
+	"food:restaurant.suspend":           nil,
+	"food:delivery_partner.suspend":     nil,
+	"food:payout_accounts.read":         {roles.Finance},
+	"food:refunds.read":                 {roles.Finance, roles.Support},
+	"food:settlement.read":              {roles.Finance},
+	"food:settlement.generate":          {roles.Finance},
+	"food:coupons.manage":               nil,
+	"food:service_areas.manage":         nil,
+	"food:reports.read":                 {roles.Finance, roles.Support},
+	"food:fraud.read":                   nil,
+	"commerce:stats.read":               {roles.Finance, roles.Support},
+	"commerce:sellers.read":             {roles.Moderator, roles.Support},
+	"commerce:banners.edit":             nil,
+	"commerce:jobs.read":                nil,
+	"commerce:compliance.read":          nil,
+	"commerce:compliance.sweep":         nil,
+	"trust_safety:stats.read":           {roles.Moderator},
+	"trust_safety:appeals.read":         {roles.Moderator, roles.Support},
+	"trust_safety:grievances.read":      {roles.Moderator, roles.Support},
+	"trust_safety:strikes.read":         {roles.Moderator},
+	"trust_safety:verification.review":  {roles.KYCReviewer},
+	"trust_safety:media_labels.read":    {roles.Moderator},
+	"trust_safety:keyword_filters.read": {roles.Moderator},
+}
+
+// TestConsolePermissionsExactHolders: each new permission resolves for its
+// intended roles (app-scoped and platform-wide), for admin and superadmin,
+// and for no other role.
+func TestConsolePermissionsExactHolders(t *testing.T) {
+	for perm, holders := range consolePermissionHolders {
+		app := appOf(perm)
+		want := map[string]bool{roles.Admin: true, roles.Superadmin: true}
+		for _, r := range holders {
+			want[r] = true
+		}
+		for _, role := range roles.AdminRoles() {
+			platform := mustFor(t, role, "")
+			if got := contains(platform, perm); got != want[role] {
+				t.Errorf("platform-wide %s holds %s = %v, want %v", role, perm, got, want[role])
+			}
+			if role == roles.Superadmin {
+				continue
+			}
+			scoped, err := For(role, app)
+			if err != nil && !errors.Is(err, ErrNoPermissionsInApp) {
+				t.Fatalf("For(%q,%q): %v", role, app, err)
+			}
+			if got := contains(scoped, perm); got != want[role] {
+				t.Errorf("%s scoped to %s holds %s = %v, want %v", role, app, perm, got, want[role])
+			}
+		}
+	}
+}
+
+// TestModeratorNeverHoldsMoneyOrReview: moderator, at any scope, never holds
+// settlements, payout accounts, suspensions, identity verification or a
+// compliance sweep.
+func TestModeratorNeverHoldsMoneyOrReview(t *testing.T) {
+	forbidden := []string{
+		"food:settlement.generate", "food:settlement.read", "food:settlement.mark_paid",
+		"food:payout_accounts.read", "food:refunds.read", "food:refund.issue", "food:reports.read",
+		"food:restaurant.suspend", "food:delivery_partner.suspend",
+		"trust_safety:verification.review", "commerce:compliance.sweep", "commerce:stats.read",
+		"commerce:seller.suspend", "commerce:payouts.read",
+	}
+	scopes := [][]string{mustFor(t, roles.Moderator, "")}
+	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety} {
+		scopes = append(scopes, mustFor(t, roles.Moderator, app))
+	}
+	for _, perms := range scopes {
+		for _, p := range forbidden {
+			if contains(perms, p) {
+				t.Errorf("moderator holds %q", p)
+			}
+		}
+	}
+}
+
+// TestSupportHoldsNoWrites: support's only non-read permissions are the two
+// ticket/complaint handling actions it already had; nothing new is a write.
+func TestSupportHoldsNoWrites(t *testing.T) {
+	allowedActs := map[string]bool{"food:tickets.act": true, "rider:complaints.act": true}
+	for _, p := range mustFor(t, roles.Support, "") {
+		if strings.HasSuffix(p, ".read") || allowedActs[p] {
+			continue
+		}
+		t.Errorf("support holds write permission %q", p)
 	}
 }
 
