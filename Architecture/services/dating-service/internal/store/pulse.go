@@ -16,21 +16,21 @@ import (
 // everything the matcher and the response builder need without forcing a
 // second round-trip per candidate.
 type CandidateProfile struct {
-	UserID            uuid.UUID
-	FirstName         *string
-	Intent            string
-	Bio               string
-	Gender            *string
-	BirthDate         *time.Time
-	City              *string
-	Country           *string
-	Latitude          *float64
-	Longitude         *float64
-	LocationGeohash   *string
-	Community         *string
+	UserID          uuid.UUID
+	FirstName       *string
+	Intent          string
+	Bio             string
+	Gender          *string
+	BirthDate       *time.Time
+	City            *string
+	Country         *string
+	Latitude        *float64
+	Longitude       *float64
+	LocationGeohash *string
+	Community       *string
 	// communitySealed is the sealed community as scanned (lane D9), opened
 	// into Community for the deck's same-community cap only.
-	communitySealed []byte
+	communitySealed   []byte
 	BlurMode          bool
 	TrustTier         string
 	LastActiveAt      time.Time
@@ -166,16 +166,19 @@ const candidateSelectCols = `
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
 type CandidateQuery struct {
-	ViewerID       uuid.UUID
-	MinAge         int
-	MaxAge         int
-	GenderFilter   string // "" = no filter
-	IntentFilter   []string
-	DistanceKmMax  int
-	ViewerLat      *float64
-	ViewerLon      *float64
-	ExcludePassed  bool
-	Limit          int
+	ViewerID     uuid.UUID
+	MinAge       int
+	MaxAge       int
+	GenderFilter string // "" = no filter ("everyone" maps to this)
+	// ViewerGender is the viewer's own gender, for the reciprocal half of
+	// the gender rule. "" skips that filter.
+	ViewerGender  string
+	IntentFilter  []string
+	DistanceKmMax int
+	ViewerLat     *float64
+	ViewerLon     *float64
+	ExcludePassed bool
+	Limit         int
 	// VerifiedOnly mirrors the viewer's §P1-3 verified_only_filter
 	// toggle. When true the WHERE clause restricts candidate
 	// trust_tier to selfie/aadhaar — phone-only trust accounts drop
@@ -259,6 +262,20 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	if q.GenderFilter != "" {
 		args = append(args, q.GenderFilter)
 		where = append(where, fmt.Sprintf(`p.gender = $%d`, len(args)))
+	}
+	// Lane D10: the gender rule runs BOTH ways. The viewer's preference
+	// filters the candidate's gender (above); this filters the candidate's
+	// own preference by the viewer's gender. A candidate with no
+	// preferences row, an empty preference or "everyone" admits anyone; any
+	// other value must equal the viewer's gender exactly. Skipped when the
+	// viewer has no gender on their profile — there is nothing to compare,
+	// and an empty deck would be worse than an unfiltered one.
+	if q.ViewerGender != "" {
+		args = append(args, q.ViewerGender)
+		where = append(where, fmt.Sprintf(`(NOT EXISTS (SELECT 1 FROM dating_preferences cp WHERE cp.user_id = p.user_id)
+		    OR EXISTS (SELECT 1 FROM dating_preferences cp
+		        WHERE cp.user_id = p.user_id
+		          AND COALESCE(NULLIF(btrim(cp.interested_in_gender), ''), 'everyone') IN ('everyone', $%d)))`, len(args)))
 	}
 	if len(q.IntentFilter) > 0 {
 		args = append(args, q.IntentFilter)

@@ -109,3 +109,35 @@ func (h *Handler) DeclineSpark(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"declined": true, "spark_id": sparkID.String()}, nil)
 }
+
+// AcceptSpark — POST /v1/dating/sparks/:id/accept.
+//
+// The recipient sparks back, which forms the match through the ordinary
+// mutual-spark path. Idempotent, and the answer is the same 201 shape as
+// POST /v1/dating/sparks when it formed a match. Anyone but the recipient,
+// and an already-declined spark, get 404.
+func (h *Handler) AcceptSpark(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	sparkID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	sp, matchID, err := h.svc.AcceptSpark(c.Request.Context(), sparkID, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrSparkNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "spark not found", nil)
+			return
+		}
+		respondServiceError(c, err, http.StatusInternalServerError, "ACCEPT_FAILED")
+		return
+	}
+	out := gin.H{"spark": sp}
+	if matchID != nil {
+		out["match_id"] = matchID.String()
+		out["matched"] = true
+	}
+	api.JSON(c.Writer, http.StatusCreated, out, nil)
+}

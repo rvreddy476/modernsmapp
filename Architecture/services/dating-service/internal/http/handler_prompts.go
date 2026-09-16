@@ -25,6 +25,10 @@ func (h *Handler) ListPrompts(c *gin.Context) {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
+	// Lane D10: an empty list is [], never null.
+	if prompts == nil {
+		prompts = []store.Prompt{}
+	}
 	api.JSON(c.Writer, http.StatusOK, prompts, nil)
 }
 

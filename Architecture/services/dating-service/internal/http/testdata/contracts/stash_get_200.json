@@ -1,0 +1,10 @@
+{
+  "data": [
+    {
+      "user_id": "<user>",
+      "candidate_id": "<candidate>",
+      "stashed_at": "<timestamp>",
+      "expires_at": "<timestamp>"
+    }
+  ]
+}

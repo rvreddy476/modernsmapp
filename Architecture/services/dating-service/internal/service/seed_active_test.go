@@ -56,7 +56,7 @@ func seedBasicsProfile(t *testing.T, st *store.Store, id uuid.UUID) {
 	if _, err := st.SetProfileFirstName(ctx, id, "Asha", store.BasicsSourceIdentity); err != nil {
 		t.Fatalf("seed first name: %v", err)
 	}
-	interested := "male"
+	interested := "everyone"
 	if _, err := st.UpsertPreferences(ctx, id, store.UpsertPreferencesParams{InterestedInGender: &interested}); err != nil {
 		t.Fatalf("seed preferences: %v", err)
 	}

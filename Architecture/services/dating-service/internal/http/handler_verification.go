@@ -35,14 +35,17 @@ const (
 	CodePrimaryPhotoNotApproved     = "PRIMARY_PHOTO_NOT_APPROVED"
 	CodeSelfieAttemptsExceeded      = "SELFIE_ATTEMPTS_EXCEEDED"
 	CodeSelfieMediaNotFound         = "SELFIE_MEDIA_NOT_FOUND"
-	CodeSelfieSameAsPrimaryPhoto    = "SELFIE_SAME_AS_PRIMARY_PHOTO"
-	CodeSelfieVideoTooLong          = "SELFIE_VIDEO_TOO_LONG"
-	CodeSelfieVideoUnsupported      = "SELFIE_VIDEO_UNSUPPORTED"
-	CodeFaceCompareUnavailable      = "FACE_COMPARE_UNAVAILABLE"
-	CodeSelfieAlreadyPassed         = "SELFIE_ALREADY_PASSED"
-	CodeSelfieReviewPending         = "SELFIE_REVIEW_PENDING"
-	CodeSelfieNotPendingReview      = "SELFIE_NOT_PENDING_REVIEW"
-	CodeAadhaarDisabled             = "AADHAAR_DISABLED"
+	// CodeSelfieMediaNotReady (409) — the video exists but media-service
+	// has not finished processing it; the same upload can be retried.
+	CodeSelfieMediaNotReady      = "MEDIA_NOT_READY"
+	CodeSelfieSameAsPrimaryPhoto = "SELFIE_SAME_AS_PRIMARY_PHOTO"
+	CodeSelfieVideoTooLong       = "SELFIE_VIDEO_TOO_LONG"
+	CodeSelfieVideoUnsupported   = "SELFIE_VIDEO_UNSUPPORTED"
+	CodeFaceCompareUnavailable   = "FACE_COMPARE_UNAVAILABLE"
+	CodeSelfieAlreadyPassed      = "SELFIE_ALREADY_PASSED"
+	CodeSelfieReviewPending      = "SELFIE_REVIEW_PENDING"
+	CodeSelfieNotPendingReview   = "SELFIE_NOT_PENDING_REVIEW"
+	CodeAadhaarDisabled          = "AADHAAR_DISABLED"
 )
 
 // respondVerificationError maps verification errors to stable codes, then
@@ -63,9 +66,12 @@ func (h *Handler) respondVerificationError(c *gin.Context, err error) {
 		api.ErrorWithContext(ctx, w, http.StatusTooManyRequests, CodeSelfieAttemptsExceeded,
 			"selfie verification attempt limit reached; try again later",
 			map[string]any{"limit": cfg.MaxAttemptsPerDay, "window_hours": int(store.SelfieAttemptWindow.Hours())})
+	case errors.Is(err, service.ErrSelfieMediaNotReady):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, CodeSelfieMediaNotReady,
+			"the selfie video is still being processed; try again in a moment", nil)
 	case errors.Is(err, service.ErrSelfieMediaNotFound):
 		api.ErrorWithContext(ctx, w, http.StatusNotFound, CodeSelfieMediaNotFound,
-			"selfie video not found or still processing", nil)
+			"selfie video not found", nil)
 	case errors.Is(err, service.ErrSelfieSameAsPrimaryPhoto):
 		api.ErrorWithContext(ctx, w, http.StatusBadRequest, CodeSelfieSameAsPrimaryPhoto,
 			"record a new selfie video; the primary profile photo cannot verify itself", nil)
@@ -258,6 +264,24 @@ func (h *Handler) ReviewSelfie(c *gin.Context) {
 		return
 	}
 	out, err := h.svc.ReviewSelfie(c.Request.Context(), adminID, userID, strings.TrimSpace(body.Decision), body.Reason)
+	if err != nil {
+		h.respondVerificationError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// GetVerificationStatus — GET /v1/dating/verification/status.
+//
+// The selfie state (none | pending | review | passed | failed), the attempts
+// left in the rolling window, the trust tier and the next step. A read only:
+// it never starts an attempt and never consumes a challenge.
+func (h *Handler) GetVerificationStatus(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetVerificationStatus(c.Request.Context(), userID)
 	if err != nil {
 		h.respondVerificationError(c, err)
 		return

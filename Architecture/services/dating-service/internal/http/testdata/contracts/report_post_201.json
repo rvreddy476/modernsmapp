@@ -1,0 +1,16 @@
+{
+  "data": {
+    "id": "<uuid>",
+    "reporter_id": "<reporter>",
+    "target_id": "<target>",
+    "category": "harassment",
+    "reason": "harassment",
+    "details": "Unpleasant messages after the match.",
+    "status": "submitted",
+    "evidence": {},
+    "auto_blocked": true,
+    "reporter_anonymised": false,
+    "created_at": "<timestamp>",
+    "blocked": true
+  }
+}

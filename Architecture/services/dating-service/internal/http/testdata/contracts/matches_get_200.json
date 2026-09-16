@@ -11,7 +11,17 @@
         "target_ref": "0"
       },
       "matched_at": "<timestamp>",
-      "expires_at": "<timestamp>"
+      "expires_at": "<timestamp>",
+      "person": {
+        "user_id": "<user_b>",
+        "first_name": "Asha",
+        "age": 30,
+        "primary_photo_id": "<uuid>",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "photo_state": "full",
+        "verified": false,
+        "trust_tier": "phone"
+      }
     }
   ]
 }

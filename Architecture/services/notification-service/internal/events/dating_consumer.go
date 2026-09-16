@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/events"
@@ -565,12 +567,45 @@ func (c *Consumer) handleChatDatingMessageNew(ctx context.Context, raw json.RawM
 	if err := unmarshalPayload(raw, &e); err != nil {
 		return err
 	}
+	recipient, sender, matchID, deepLink, ok := datingNewMessageNotification(e)
+	if !ok {
+		return fmt.Errorf("dating.match.new_message: invalid recipient_id %q", e.RecipientID)
+	}
+	return c.service.CreateNotification(ctx, recipient, sender, "dating.match.new_message",
+		DatingNewMessageEntityType, matchID, deepLink, e.SentAt)
+}
+
+// datingMatchDeepLink is the one deep link for a dating-match notification:
+// the match is the destination and the conversation rides along as a query
+// parameter, so a client that opens the chat has both ids without a second
+// lookup. A missing conversation simply leaves the parameter off; a missing
+// match id yields the matches list, never a conversation id mistaken for a
+// match id.
+func datingMatchDeepLink(matchID, conversationID string) string {
+	if strings.TrimSpace(matchID) == "" {
+		return "/dating/matches"
+	}
+	link := "/dating/matches/" + matchID
+	if strings.TrimSpace(conversationID) != "" {
+		link += "?conversation=" + url.QueryEscape(conversationID)
+	}
+	return link
+}
+
+// datingNewMessageNotification is the ONE mapping from a dating chat message
+// to its notification fields, shared by both producers of
+// dating.match.new_message (the dating-topic consumer and the chat-topic
+// bridge): the entity is the match, and the deep link names the match and
+// the conversation. An unparseable recipient is not a notification.
+func datingNewMessageNotification(e chatDatingMessageNewPayload) (recipient, sender, matchID uuid.UUID, deepLink string, ok bool) {
 	recipient, err := uuid.Parse(e.RecipientID)
 	if err != nil {
-		return err
+		return uuid.Nil, uuid.Nil, uuid.Nil, "", false
 	}
-	sender, _ := uuid.Parse(e.SenderID)
-	matchID, _ := uuid.Parse(e.MatchID)
-	deepLink := fmt.Sprintf("/dating/matches/%s", e.MatchID)
-	return c.service.CreateNotification(ctx, recipient, sender, "dating.match.new_message", "dating_match", matchID, deepLink, e.SentAt)
+	sender, _ = uuid.Parse(e.SenderID)
+	matchID, _ = uuid.Parse(e.MatchID)
+	return recipient, sender, matchID, datingMatchDeepLink(e.MatchID, e.ConversationID), true
 }
+
+// DatingNewMessageEntityType is the entity type both producers write.
+const DatingNewMessageEntityType = "dating_match"

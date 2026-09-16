@@ -379,3 +379,35 @@ func (h *Handler) GetPanicNotifyContext(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
+
+// ListMyLocationShares — GET /v1/dating/safety/share-location.
+// The caller's live outgoing shares; no coordinates.
+func (h *Handler) ListMyLocationShares(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	items, err := h.svc.ListMyLocationShares(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "SHARE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items}, nil)
+}
+
+// ListSharedLocations — GET /v1/dating/safety/shared-locations.
+// The live shares aimed at the caller: the share id to read the point with,
+// the sharer's compact card and when the share ends. No coordinates here —
+// GET /v1/dating/safety/shared-locations/:id serves the point.
+func (h *Handler) ListSharedLocations(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	items, err := h.svc.ListSharedLocationsForMe(c.Request.Context(), userID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "SHARE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items}, nil)
+}

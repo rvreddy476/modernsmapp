@@ -196,7 +196,9 @@ func TestD3Contracts(t *testing.T) {
 	})
 
 	t.Run("matches_get_200", func(t *testing.T) {
-		x, y := uuid.New(), uuid.New()
+		// The viewer is always user_a (d10Pair orders the ids), so the
+		// person card in the fixture is always user_b.
+		x, y := d10Pair()
 		mustSeedActiveProfile(t, st, x)
 		mustSeedActiveProfile(t, st, y)
 		id, _, err := st.CreateOrGetOpenMatch(ctx, x, y, map[string]any{"target_kind": "photo", "target_ref": "0"})

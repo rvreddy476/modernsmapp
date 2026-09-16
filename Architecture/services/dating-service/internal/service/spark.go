@@ -235,8 +235,13 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 
 // ListIncomingSparks returns sparks targeted at userID that the recipient
 // may see (not declined, not blocked, sender not deleted or suspended).
-func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*store.Spark, error) {
-	return s.store.ListIncomingSparks(ctx, userID, limit, offset)
+// Lane D10: each spark carries the sender's compact person card.
+func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*SparkWithPerson, error) {
+	sparks, err := s.store.ListIncomingSparks(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return s.decorateIncomingSparks(ctx, userID, sparks), nil
 }
 
 // RevokeSpark removes the spark only when ownerID matches the row's
@@ -260,4 +265,31 @@ func (s *Service) DeclineSpark(ctx context.Context, sparkID, recipientID uuid.UU
 	}
 	s.removeFromCachedDeck(ctx, sp.FromUserID, recipientID)
 	return sp, nil
+}
+
+// AcceptSpark is the recipient sparking back: it creates the reverse spark
+// through the normal CreateSpark path, so every gate (risk, age, profile
+// status, block, note moderation, quota) and the mutual-spark match saga run
+// exactly as they do for any spark.
+//
+// Only the recipient may accept; anyone else — and a spark that was declined
+// or is gone — gets store.ErrSparkNotFound, so a sender cannot probe it.
+// Idempotent: the reverse spark is an upsert on (from, to, kind, ref) and
+// FormMatch returns the pair's existing open match, so a repeat answers with
+// the same match id.
+//
+// The reverse spark reuses the incoming spark's target so a repeat is the
+// same row; the response is the spark-201 shape.
+func (s *Service) AcceptSpark(ctx context.Context, sparkID, recipientID uuid.UUID) (*store.Spark, *uuid.UUID, error) {
+	if sparkID == uuid.Nil || recipientID == uuid.Nil {
+		return nil, nil, fmt.Errorf("invalid: spark id and recipient required")
+	}
+	sp, err := s.store.GetSpark(ctx, sparkID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sp.ToUserID != recipientID || sp.DeclinedAt != nil {
+		return nil, nil, store.ErrSparkNotFound
+	}
+	return s.CreateSpark(ctx, recipientID, sp.FromUserID, sp.TargetKind, sp.TargetRef, "")
 }

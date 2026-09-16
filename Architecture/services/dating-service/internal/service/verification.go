@@ -379,6 +379,12 @@ func (s *Service) SubmitSelfie(ctx context.Context, userID, videoMediaID, challe
 	if primary.MediaID == videoMediaID {
 		return nil, ErrSelfieSameAsPrimaryPhoto
 	}
+	// Lane D10: a video media-service has not finished with is a 409
+	// MEDIA_NOT_READY before any attempt is consumed, so the client retries
+	// the same upload instead of burning an attempt.
+	if err := s.requireReadySelfieVideo(ctx, userID, videoMediaID); err != nil {
+		return nil, err
+	}
 	cfg := s.SelfieSettings()
 	start, err := s.store.BeginSelfieAttempt(ctx, userID, challengeID, videoMediaID, cfg.MaxAttemptsPerDay)
 	if err != nil {
@@ -592,4 +598,42 @@ func (s *Service) ReviewSelfie(ctx context.Context, adminID, userID uuid.UUID, d
 		}
 	}
 	return out, nil
+}
+
+// ErrSelfieMediaNotReady: the selfie video exists and is the caller's, but
+// media-service has not finished processing (or moderating) it yet. Distinct
+// from ErrSelfieMediaNotFound so the client can retry the SAME upload in a
+// moment instead of recording again. Maps to 409 MEDIA_NOT_READY.
+var ErrSelfieMediaNotReady = errors.New("selfie media is still being processed")
+
+// requireReadySelfieVideo checks the video is the caller's and finished
+// before an attempt is consumed. media-service answers 404 for a media that
+// is missing OR not theirs, so both stay ErrSelfieMediaNotFound; a media that
+// exists but is not a ready, moderation-passed asset is ErrSelfieMediaNotReady.
+//
+// Best effort by design: with no media client wired, or when media-service
+// cannot answer, the check is skipped and the liveness call decides — a
+// media outage must not make every selfie unverifiable.
+func (s *Service) requireReadySelfieVideo(ctx context.Context, userID, videoMediaID uuid.UUID) error {
+	if s.mediaPhotos == nil {
+		return nil
+	}
+	st, err := s.mediaPhotos.PhotoOwnerStatus(ctx, videoMediaID, userID)
+	switch {
+	case errors.Is(err, ErrPhotoMediaNotFound):
+		return ErrSelfieMediaNotFound
+	case errors.Is(err, ErrPhotoMediaNotReady):
+		return ErrSelfieMediaNotReady
+	case err != nil:
+		slog.Warn("selfie: media readiness check unavailable; continuing",
+			"user_id", userID, "video_media_id", videoMediaID, "error", err)
+		return nil
+	case st == nil:
+		return nil
+	case !st.OwnerMatches:
+		return ErrSelfieMediaNotFound
+	case st.Status != "ready" || st.ModerationStatus == "pending" || st.ModerationStatus == "":
+		return ErrSelfieMediaNotReady
+	}
+	return nil
 }

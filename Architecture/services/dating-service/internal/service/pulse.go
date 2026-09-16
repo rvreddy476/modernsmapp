@@ -28,27 +28,27 @@ type PulseCard struct {
 // PulseProfileSummary mirrors the locked spec — abbreviated profile for the
 // list-card.
 type PulseProfileSummary struct {
-	UserID              uuid.UUID         `json:"user_id"`
-	FirstName           string            `json:"first_name"`
-	Age                 int               `json:"age"`
-	Intent              string            `json:"intent"`
-	City                string            `json:"city"`
+	UserID    uuid.UUID `json:"user_id"`
+	FirstName string    `json:"first_name"`
+	Age       int       `json:"age"`
+	Intent    string    `json:"intent"`
+	City      string    `json:"city"`
 	// DistanceBucket is the lane D7 distance bucket code (lt_5_km |
 	// km_5_10 | km_10_25 | gt_25_km) on the snapped points, and
 	// DistanceLabel its display text ("< 5 km", "5–10 km", "10–25 km",
 	// "25+ km"). Both are omitted when either side has no location. No
 	// numeric distance is ever sent.
-	DistanceBucket      string            `json:"distance_bucket,omitempty"`
-	DistanceLabel       string            `json:"distance_label,omitempty"`
-	PrimaryPhotoURL     string            `json:"primary_photo_url"`
-	PrimaryPhotoBlurred bool              `json:"primary_photo_blurred"`
-	TuneSummary         map[string]any    `json:"tune_summary"`
-	TrustTier           string            `json:"trust_tier"`
+	DistanceBucket      string         `json:"distance_bucket,omitempty"`
+	DistanceLabel       string         `json:"distance_label,omitempty"`
+	PrimaryPhotoURL     string         `json:"primary_photo_url"`
+	PrimaryPhotoBlurred bool           `json:"primary_photo_blurred"`
+	TuneSummary         map[string]any `json:"tune_summary"`
+	TrustTier           string         `json:"trust_tier"`
 	// LastActiveBucket (today | this_week | a_while_ago) and
 	// LastActiveLabel are omitted when the candidate hides last active,
 	// the default for new profiles. Never a timestamp.
-	LastActiveBucket    string            `json:"last_active_bucket,omitempty"`
-	LastActiveLabel     string            `json:"last_active_label,omitempty"`
+	LastActiveBucket string `json:"last_active_bucket,omitempty"`
+	LastActiveLabel  string `json:"last_active_label,omitempty"`
 }
 
 // PulseEchoes is the brief echoes ribbon under the card. v1 of Pulse leaves
@@ -64,8 +64,8 @@ type PulseEchoes struct {
 // PulseResponse is the top-level shape returned by /v1/dating/pulse/today and
 // /v1/dating/pulse/nebula.
 type PulseResponse struct {
-	Data         []PulseCard `json:"data"`
-	Meta         PulseMeta   `json:"meta"`
+	Data []PulseCard `json:"data"`
+	Meta PulseMeta   `json:"meta"`
 	// CohortGated is true when the soft-launch cohort gate (Sprint 6) is
 	// excluding this user from the rollout. Mobile renders the same
 	// "coming soon" empty state used by the city gate.
@@ -289,8 +289,15 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	if prefs.MaxAge != nil {
 		q.MaxAge = *prefs.MaxAge
 	}
-	if prefs.InterestedInGender != nil {
+	// Lane D10: the preference must EQUAL the candidate's gender, and
+	// "everyone" is the one value that applies no gender filter at all.
+	if prefs.InterestedInGender != nil && *prefs.InterestedInGender != InterestedInEveryone {
 		q.GenderFilter = *prefs.InterestedInGender
+	}
+	// The rule runs both ways: a candidate surfaces only if their own
+	// preference admits the viewer's gender (or is "everyone" / unset).
+	if viewerProfile != nil && viewerProfile.Gender != nil {
+		q.ViewerGender = *viewerProfile.Gender
 	}
 	q.IntentFilter = prefs.IntentFilter
 	if prefs.DistanceKm > 0 {
@@ -378,16 +385,16 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 // §P1-3 / lane D7 masking happens here so the wire-level response respects
 // each candidate's privacy settings without a second per-card hop:
 //   - distance                → a bucket code + label on the snapped
-//                               points, for every candidate; never km.
+//     points, for every candidate; never km.
 //   - hide_last_active        → no last-active bucket; otherwise only
-//                               today / this_week / a_while_ago.
+//     today / this_week / a_while_ago.
 //   - photo visibility and blur_photos_until_match (lane D6) →
-//                               primary_photo_url is the photo's
-//                               /blurred route unless PhotoVariantFor
-//                               allows /full (owner, open match, public
-//                               without blur, sparked_only the owner
-//                               sparked). The blur is rendered by
-//                               media-service, not the client.
+//     primary_photo_url is the photo's
+//     /blurred route unless PhotoVariantFor
+//     allows /full (owner, open match, public
+//     without blur, sparked_only the owner
+//     sparked). The blur is rendered by
+//     media-service, not the client.
 //
 // matchedPartners is the precomputed set of user-ids the viewer
 // currently has an active match with. Empty / nil = no matches.

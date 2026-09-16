@@ -1,0 +1,7 @@
+{
+  "data": {
+    "share_id": "<share>",
+    "stopped": true,
+    "stopped_at": "<timestamp>"
+  }
+}

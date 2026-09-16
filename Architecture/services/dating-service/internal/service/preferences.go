@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -29,6 +30,9 @@ func (s *Service) UpsertPreferences(ctx context.Context, userID uuid.UUID, p sto
 	if p.DistanceKm != nil && (*p.DistanceKm <= 0 || *p.DistanceKm > 500) {
 		return nil, fmt.Errorf("invalid: distance_km must be between 1 and 500")
 	}
+	if p.InterestedInGender != nil && !validInterestedInGender(strings.TrimSpace(*p.InterestedInGender)) {
+		return nil, fmt.Errorf("invalid: interested_in_gender must be one of %s", strings.Join(InterestedInGenders, ", "))
+	}
 	if p.IntentFilter != nil {
 		for _, intent := range p.IntentFilter {
 			if !validIntent(intent) {
@@ -49,4 +53,23 @@ func (s *Service) UpsertPreferences(ctx context.Context, userID uuid.UUID, p sto
 	}
 	s.InvalidatePulseCache(ctx, userID)
 	return out, nil
+}
+
+// InterestedInGenders is the enum accepted for a discovery gender
+// preference. It is the same vocabulary a profile's own gender uses, plus
+// "everyone": the preference must EQUAL the other person's gender, and
+// "everyone" is the only way to say "no gender filter".
+var InterestedInGenders = []string{"woman", "man", "nonbinary", "everyone"}
+
+// InterestedInEveryone is the preference that applies no gender filter.
+const InterestedInEveryone = "everyone"
+
+// validInterestedInGender reports whether v is one of InterestedInGenders.
+func validInterestedInGender(v string) bool {
+	for _, g := range InterestedInGenders {
+		if v == g {
+			return true
+		}
+	}
+	return false
 }

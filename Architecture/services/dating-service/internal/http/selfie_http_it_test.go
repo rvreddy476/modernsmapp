@@ -83,7 +83,7 @@ func seedSelfieUser(t *testing.T, st *store.Store, id uuid.UUID, approvePhoto bo
 	if _, err := st.SetConsent(ctx, id, service.ConsentBiometricSelfie, true, "test"); err != nil {
 		t.Fatalf("seed selfie consent: %v", err)
 	}
-	intent, gender, city, interested := "casual", "female", "Hyderabad", "male"
+	intent, gender, city, interested := "casual", "female", "Hyderabad", "everyone"
 	if _, err := st.UpsertProfile(ctx, id, store.UpsertProfileParams{Intent: &intent, Gender: &gender, City: &city}); err != nil {
 		t.Fatalf("seed profile: %v", err)
 	}

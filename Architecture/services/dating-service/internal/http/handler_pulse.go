@@ -1,12 +1,16 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/shared/api"
+	"github.com/atpost/shared/o11y/trace"
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,10 +28,11 @@ func (h *Handler) GetPulseToday(c *gin.Context) {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
-	// We pass the entire envelope through as `data` because the contract
-	// spec puts `data` as the candidate array and `meta` as a top-level
-	// sibling.
-	c.JSON(http.StatusOK, resp)
+	// Lane D10: the deck is served in the standard {data, meta} envelope —
+	// data is the card array, meta carries generated_at, size, cohort_gated
+	// and the request id (see pulseEnvelope for why cohort_gated also stays
+	// at the top level).
+	c.JSON(http.StatusOK, envelopePulse(c.Request.Context(), resp))
 }
 
 // GetPulseNebula handles GET /v1/dating/pulse/nebula?filter=passed
@@ -134,4 +139,46 @@ func parseQueryInt(c *gin.Context, key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// pulseMeta is the meta member of the /pulse/today envelope: the deck's own
+// metadata plus the standard request id.
+type pulseMeta struct {
+	GeneratedAt time.Time `json:"generated_at"`
+	Size        int       `json:"size"`
+	CohortGated bool      `json:"cohort_gated"`
+	RequestID   string    `json:"request_id,omitempty"`
+}
+
+// pulseEnvelope is the standard {data, meta} envelope for the deck: data is
+// the card array and meta carries generated_at, size, cohort_gated and the
+// request id.
+//
+// CohortGated is ALSO kept at the top level. It is the one field the shape
+// used to expose there, and Android reads it there today (DatingApi.kt
+// parses {data, meta, cohort_gated}); dropping it would silently turn the
+// "coming soon" state into an ordinary empty deck. It is additive, so the
+// envelope is still {data, meta}.
+type pulseEnvelope struct {
+	Data        []service.PulseCard `json:"data"`
+	Meta        pulseMeta           `json:"meta"`
+	CohortGated bool                `json:"cohort_gated,omitempty"`
+}
+
+// envelopePulse wraps a service response for the wire.
+func envelopePulse(ctx context.Context, resp *service.PulseResponse) pulseEnvelope {
+	cards := resp.Data
+	if cards == nil {
+		cards = []service.PulseCard{}
+	}
+	return pulseEnvelope{
+		Data: cards,
+		Meta: pulseMeta{
+			GeneratedAt: resp.Meta.GeneratedAt,
+			Size:        resp.Meta.Size,
+			CohortGated: resp.CohortGated,
+			RequestID:   trace.RequestIDFrom(ctx),
+		},
+		CohortGated: resp.CohortGated,
+	}
 }

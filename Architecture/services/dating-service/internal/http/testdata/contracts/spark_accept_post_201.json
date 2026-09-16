@@ -1,0 +1,14 @@
+{
+  "data": {
+    "match_id": "<uuid>",
+    "matched": true,
+    "spark": {
+      "id": "<uuid>",
+      "from_user_id": "<recipient>",
+      "to_user_id": "<sender>",
+      "target_kind": "photo",
+      "target_ref": "0",
+      "created_at": "<timestamp>"
+    }
+  }
+}

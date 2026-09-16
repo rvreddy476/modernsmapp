@@ -76,11 +76,11 @@ func mustSeedProfile(t *testing.T, st *store.Store, id uuid.UUID) {
 func mustSeedActiveProfile(t *testing.T, st *store.Store, id uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
-	intent, gender, city, interested := "casual", "female", "Hyderabad", "male"
+	intent, gender, city, interested := "casual", "female", "Hyderabad", "everyone"
 	if _, err := st.UpsertProfile(ctx, id, store.UpsertProfileParams{Intent: &intent, Gender: &gender, City: &city}); err != nil {
 		t.Fatalf("seed profile: %v", err)
 	}
-	if _, err := st.SetProfileBirthDate(ctx, id, time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC), store.BasicsSourceIdentity); err != nil {
+	if _, err := st.SetProfileBirthDate(ctx, id, stableTestBirthDate(), store.BasicsSourceIdentity); err != nil {
 		t.Fatalf("seed birth date: %v", err)
 	}
 	if _, err := st.SetProfileFirstName(ctx, id, "Asha", store.BasicsSourceIdentity); err != nil {
@@ -174,4 +174,11 @@ func TestHandler_RevokeSpark(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
+}
+
+// stableTestBirthDate is 30 years and a day ago, so a seeded profile is
+// always exactly 30 — golden contract fixtures that carry an age then do not
+// drift as the calendar moves.
+func stableTestBirthDate() time.Time {
+	return time.Now().UTC().AddDate(-30, 0, -1).Truncate(24 * time.Hour)
 }

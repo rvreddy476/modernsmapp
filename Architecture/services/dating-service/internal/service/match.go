@@ -246,8 +246,13 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 }
 
 // ListMatches returns the caller's matches, filtered by status bucket.
-func (s *Service) ListMatches(ctx context.Context, userID uuid.UUID, status string) ([]*store.Match, error) {
-	return s.store.ListMatchesForUser(ctx, userID, status)
+// Lane D10: each match carries the other participant's compact person card.
+func (s *Service) ListMatches(ctx context.Context, userID uuid.UUID, status string) ([]*MatchWithPerson, error) {
+	matches, err := s.store.ListMatchesForUser(ctx, userID, status)
+	if err != nil {
+		return nil, err
+	}
+	return s.decorateMatches(ctx, userID, matches), nil
 }
 
 // GetMatch returns a single match with no viewer checks (internal callers).

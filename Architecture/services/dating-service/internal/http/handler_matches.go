@@ -39,7 +39,7 @@ func (h *Handler) GetMatch(c *gin.Context) {
 	}
 	// Lane D3: 403 for a non-participant; 404 when the pair is blocked
 	// either way or the other participant is deleted or suspended.
-	m, err := h.svc.GetMatchForUser(c.Request.Context(), matchID, userID)
+	m, err := h.svc.GetMatchViewForUser(c.Request.Context(), matchID, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrMatchNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "match not found", nil)

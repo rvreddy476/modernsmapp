@@ -146,7 +146,7 @@ func envelopeOf(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 func seedPhotoBasics(t *testing.T, st *store.Store, id uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
-	intent, gender, city, interested := "casual", "female", "Hyderabad", "male"
+	intent, gender, city, interested := "casual", "female", "Hyderabad", "everyone"
 	if _, err := st.UpsertProfile(ctx, id, store.UpsertProfileParams{Intent: &intent, Gender: &gender, City: &city}); err != nil {
 		t.Fatalf("seed profile: %v", err)
 	}

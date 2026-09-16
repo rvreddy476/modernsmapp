@@ -802,3 +802,66 @@ func (s *Service) PanicNotifyContext(ctx context.Context, incidentID uuid.UUID) 
 	}
 	return out, nil
 }
+
+// ── Live location: the two list views (lane D10) ────────────────────────────
+
+// OutgoingLocationShare is one of the caller's live shares. No coordinates:
+// the sharer already knows where they are, and the recipient reads the point
+// one share at a time.
+type OutgoingLocationShare struct {
+	*store.LocationShareSummary
+	// Recipient is the compact person the share goes to, when the caller
+	// may still see them.
+	Recipient *PersonCard `json:"recipient,omitempty"`
+}
+
+// IncomingLocationShare is one live share aimed at the caller: the share id
+// to read the point with, who is sharing, and when it ends.
+type IncomingLocationShare struct {
+	*store.LocationShareSummary
+	// Person is the sharer's compact card.
+	Person *PersonCard `json:"person,omitempty"`
+}
+
+// ListMyLocationShares returns the caller's live outgoing shares.
+func (s *Service) ListMyLocationShares(ctx context.Context, userID uuid.UUID) ([]*OutgoingLocationShare, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: userID required")
+	}
+	shares, err := s.store.ListActiveSharesByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(shares))
+	for _, sh := range shares {
+		ids = append(ids, sh.RecipientID)
+	}
+	cards := s.personCards(ctx, userID, ids)
+	out := make([]*OutgoingLocationShare, 0, len(shares))
+	for _, sh := range shares {
+		out = append(out, &OutgoingLocationShare{LocationShareSummary: sh, Recipient: cards[sh.RecipientID]})
+	}
+	return out, nil
+}
+
+// ListSharedLocationsForMe returns the live shares aimed at the caller, each
+// with the share id the point is read with.
+func (s *Service) ListSharedLocationsForMe(ctx context.Context, recipientID uuid.UUID) ([]*IncomingLocationShare, error) {
+	if recipientID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: userID required")
+	}
+	shares, err := s.store.ListActiveSharesForRecipient(ctx, recipientID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(shares))
+	for _, sh := range shares {
+		ids = append(ids, sh.UserID)
+	}
+	cards := s.personCards(ctx, recipientID, ids)
+	out := make([]*IncomingLocationShare, 0, len(shares))
+	for _, sh := range shares {
+		out = append(out, &IncomingLocationShare{LocationShareSummary: sh, Person: cards[sh.UserID]})
+	}
+	return out, nil
+}

@@ -383,3 +383,18 @@ func (s *Store) ResolveSelfieReview(ctx context.Context, userID, adminID uuid.UU
 	}
 	return tx.Commit(ctx)
 }
+
+// CountSelfieAttemptsInWindow returns how many selfie attempts the user made
+// inside SelfieAttemptWindow — the number the attempt limit counts. Read-only
+// (no lock): the status route reports it, the limit itself is still enforced
+// under the per-user lock inside BeginSelfieAttempt.
+func (s *Store) CountSelfieAttemptsInWindow(ctx context.Context, userID uuid.UUID) (int, error) {
+	var n int
+	if err := s.db.QueryRow(ctx, `
+        SELECT COUNT(*)::int FROM dating_selfie_attempts
+        WHERE user_id = $1 AND created_at > now() - make_interval(secs => $2)`,
+		userID, SelfieAttemptWindow.Seconds()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("selfie: count attempts in window: %w", err)
+	}
+	return n, nil
+}

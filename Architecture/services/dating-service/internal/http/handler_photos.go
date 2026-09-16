@@ -86,6 +86,11 @@ func (h *Handler) ListPhotos(c *gin.Context) {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
+	// Lane D10: an empty list is [], never null, so a client can render it
+	// without a null check.
+	if photos == nil {
+		photos = []store.Photo{}
+	}
 	api.JSON(c.Writer, http.StatusOK, photos, nil)
 }
 

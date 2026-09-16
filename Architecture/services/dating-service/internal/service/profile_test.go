@@ -81,7 +81,7 @@ func TestProfileLifecycle_OnboardingToActive(t *testing.T) {
 	}
 
 	// interested_in completes the basics.
-	interested := "male"
+	interested := "everyone"
 	if _, err := svc.UpsertPreferences(ctx, user, store.UpsertPreferencesParams{InterestedInGender: &interested}); err != nil {
 		t.Fatalf("preferences: %v", err)
 	}
@@ -550,7 +550,7 @@ func seedActiveClientDOBProfile(t *testing.T, st *store.Store, id uuid.UUID) {
 	if _, err := st.SetProfileFirstName(ctx, id, "Asha", store.BasicsSourceClient); err != nil {
 		t.Fatalf("seed first name: %v", err)
 	}
-	interested := "male"
+	interested := "everyone"
 	if _, err := st.UpsertPreferences(ctx, id, store.UpsertPreferencesParams{InterestedInGender: &interested}); err != nil {
 		t.Fatalf("seed preferences: %v", err)
 	}

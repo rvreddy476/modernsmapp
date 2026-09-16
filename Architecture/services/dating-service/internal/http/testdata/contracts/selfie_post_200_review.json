@@ -1,0 +1,10 @@
+{
+  "data": {
+    "status": "pending_review",
+    "passed": false,
+    "reason": "MANUAL_REVIEW",
+    "trust_tier": "phone",
+    "profile_status": "pending_selfie",
+    "attempts_remaining": 4
+  }
+}

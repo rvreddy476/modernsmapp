@@ -138,7 +138,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.DELETE("/sparks/:id", h.RevokeSpark)
 		// Lane D3 — the recipient declines; the sender is never told.
 		dating.POST("/sparks/:id/decline", h.DeclineSpark)
+		// Lane D10 — the recipient sparks back and the match forms.
+		dating.POST("/sparks/:id/accept", h.AcceptSpark)
 
+		// Lane D10 — the compact card for one person, for a current match,
+		// an incoming spark or someone in the viewer's deck. 404 otherwise.
+		dating.GET("/people/:userId", h.GetPersonCard)
 		// Sprint 3 — Stash
 		dating.GET("/stash", h.ListStash)
 		dating.POST("/stash", h.AddStash)
@@ -154,6 +159,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Sprint 4 — Verification (Aadhaar via DigiLocker, optional).
 		// DPDP Act compliant — see PULSE_DATING_SPEC.md §15.8
+		// Lane D10 — the selfie state, attempts left and the next step.
+		dating.GET("/verification/status", h.GetVerificationStatus)
 		dating.POST("/verification/aadhaar/start", h.StartAadhaar)
 		dating.POST("/verification/aadhaar/callback", h.AadhaarCallback)
 		// Lane D5 — required selfie, decided server-side: a single-use
@@ -176,12 +183,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/safety/trusted-contacts", h.ListTrustedContacts)
 		dating.PUT("/safety/trusted-contacts/:contactId", h.PutTrustedContact)
 		dating.DELETE("/safety/trusted-contacts/:contactId", h.DeleteTrustedContact)
+		dating.GET("/safety/share-location", h.ListMyLocationShares)
 		dating.POST("/safety/share-location", h.PostShareLocation)
 		dating.DELETE("/safety/share-location/:id", h.DeleteShareLocation)
+		dating.GET("/safety/shared-locations", h.ListSharedLocations)
 		dating.GET("/safety/shared-locations/:id", h.GetSharedLocation)
 		dating.POST("/safety/meet", h.PostScheduleMeet)
 		dating.POST("/safety/meet/:id/check-in", h.PostMeetCheckIn)
 		dating.POST("/safety/block", h.PostBlock)
+		// Lane D10 — the caller's block list and undoing a block. Unblocking
+		// restores nothing the block severed.
+		dating.GET("/blocks", h.ListBlocks)
+		dating.DELETE("/blocks/:userId", h.DeleteBlock)
 		dating.POST("/safety/report", h.PostReport)
 
 		// Sprint 4 — AI moderation (SHADOW MODE for v1; internal-only).

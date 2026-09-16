@@ -157,3 +157,68 @@ func (s *Store) StopLocationShare(ctx context.Context, shareID, userID uuid.UUID
         WHERE id = $1 AND user_id = $2
         RETURNING `+locationShareCols, shareID, userID))
 }
+
+// LocationShareSummary is a live share without its point: the list views
+// name the share, the two people and when it ends, and nothing else. The
+// coordinates are read one share at a time, by the recipient only, through
+// GetLocationShareForRecipient.
+type LocationShareSummary struct {
+	ShareID       uuid.UUID `json:"share_id"`
+	UserID        uuid.UUID `json:"user_id"`
+	RecipientID   uuid.UUID `json:"recipient_id"`
+	RecipientKind string    `json:"recipient_kind"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+const locationShareSummaryCols = `ls.id, ls.user_id, ls.recipient_id, ls.recipient_kind, ls.expires_at, ls.created_at`
+
+func collectLocationShareSummaries(rows pgx.Rows) ([]*LocationShareSummary, error) {
+	defer rows.Close()
+	out := make([]*LocationShareSummary, 0, 8)
+	for rows.Next() {
+		s := &LocationShareSummary{}
+		if err := rows.Scan(&s.ShareID, &s.UserID, &s.RecipientID, &s.RecipientKind, &s.ExpiresAt, &s.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan location share summary: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ListActiveSharesByUser returns the caller's own live outgoing shares
+// (not stopped, not expired, the pair not blocked either way).
+func (s *Store) ListActiveSharesByUser(ctx context.Context, userID uuid.UUID) ([]*LocationShareSummary, error) {
+	rows, err := s.db.Query(ctx, `
+        SELECT `+locationShareSummaryCols+`
+        FROM dating_location_shares ls
+        WHERE ls.user_id = $1
+          AND ls.stopped_at IS NULL
+          AND ls.expires_at > now()
+          AND NOT `+blockedPairPredicate("ls.user_id", "ls.recipient_id")+`
+        ORDER BY ls.expires_at DESC
+        LIMIT 100`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list outgoing location shares: %w", err)
+	}
+	return collectLocationShareSummaries(rows)
+}
+
+// ListActiveSharesForRecipient returns the live shares aimed at the caller,
+// with the same rules and no coordinates.
+func (s *Store) ListActiveSharesForRecipient(ctx context.Context, recipientID uuid.UUID) ([]*LocationShareSummary, error) {
+	rows, err := s.db.Query(ctx, `
+        SELECT `+locationShareSummaryCols+`
+        FROM dating_location_shares ls
+        WHERE ls.recipient_id = $1
+          AND ls.stopped_at IS NULL
+          AND ls.expires_at > now()
+          AND (ls.location_sealed IS NOT NULL OR (ls.latitude IS NOT NULL AND ls.longitude IS NOT NULL))
+          AND NOT `+blockedPairPredicate("ls.user_id", "ls.recipient_id")+`
+        ORDER BY ls.expires_at DESC
+        LIMIT 100`, recipientID)
+	if err != nil {
+		return nil, fmt.Errorf("list incoming location shares: %w", err)
+	}
+	return collectLocationShareSummaries(rows)
+}

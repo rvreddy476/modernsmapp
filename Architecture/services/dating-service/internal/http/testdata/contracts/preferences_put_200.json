@@ -1,0 +1,15 @@
+{
+  "data": {
+    "user_id": "<user>",
+    "min_age": 25,
+    "max_age": 35,
+    "distance_km": 25,
+    "interested_in_gender": "everyone",
+    "intent_filter": [
+      "casual"
+    ],
+    "blur_mode_pref": false,
+    "language_filter": [],
+    "updated_at": "<timestamp>"
+  }
+}

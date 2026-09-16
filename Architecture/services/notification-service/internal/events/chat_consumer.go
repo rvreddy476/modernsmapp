@@ -253,25 +253,24 @@ func (c *ChatConsumer) handleMessageRequestCreated(ctx context.Context, e messag
 //
 // handleChatDatingMessageNew creates a dating-flavoured push for a
 // single recipient. Phase 1 §1 — the outbox emits one event per
-// recipient so we don't need to fan out here. The "conversation"
-// entity type means notification-service' existing collapse-key logic
-// will fold repeated dating messages into one device notification
-// (same behaviour as DMs in /messages/).
+// recipient so we don't need to fan out here.
+//
+// Lane D10: the entity is the MATCH, never the conversation, and the deep
+// link names both. Both producers of dating.match.new_message (this chat
+// bridge and dating_consumer.go) now write the same shape — entity_type
+// "dating_match", entity_id = match_id — so a client routes on one rule and
+// the collapse key folds a match's messages together.
 func (c *ChatConsumer) handleChatDatingMessageNew(ctx context.Context, e chatDatingMessageNewPayload) error {
-	recipientID, err := uuid.Parse(e.RecipientID)
-	if err != nil {
+	recipientID, senderID, matchID, deepLink, ok := datingNewMessageNotification(e)
+	if !ok {
 		return nil
 	}
-	senderID, _ := uuid.Parse(e.SenderID)
-	conversationID, _ := uuid.Parse(e.ConversationID)
-
 	sentAt := e.SentAt
 	if sentAt.IsZero() {
 		sentAt = time.Now().UTC()
 	}
-	deepLink := fmt.Sprintf("/dating/matches/%s", e.MatchID)
 	return c.service.CreateNotification(
-		ctx, recipientID, senderID, "dating.match.new_message", "conversation", conversationID, deepLink, sentAt,
+		ctx, recipientID, senderID, "dating.match.new_message", DatingNewMessageEntityType, matchID, deepLink, sentAt,
 	)
 }
 

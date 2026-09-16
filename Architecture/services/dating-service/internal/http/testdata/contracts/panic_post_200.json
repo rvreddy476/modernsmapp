@@ -1,0 +1,8 @@
+{
+  "data": {
+    "deduplicated": false,
+    "incident_id": "<uuid>",
+    "recorded": true,
+    "status": "open"
+  }
+}

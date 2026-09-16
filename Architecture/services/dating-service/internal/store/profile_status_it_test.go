@@ -75,7 +75,7 @@ func seedOnboardingEvidence(t *testing.T, s *Store, id uuid.UUID, gender string)
 	}
 	interested := "female"
 	if gender == "female" {
-		interested = "male"
+		interested = "everyone"
 	}
 	if _, err := s.UpsertPreferences(ctx, id, UpsertPreferencesParams{InterestedInGender: &interested}); err != nil {
 		t.Fatalf("seed preferences: %v", err)

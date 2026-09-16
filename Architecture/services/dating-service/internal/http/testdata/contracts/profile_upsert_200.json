@@ -1,0 +1,22 @@
+{
+  "data": {
+    "user_id": "<user>",
+    "intent": "casual",
+    "bio": "Filter coffee and long walks.",
+    "gender": "woman",
+    "birth_date": "<timestamp>",
+    "city": "Hyderabad",
+    "country": "India",
+    "blur_mode": false,
+    "visible_to_public": true,
+    "paused": false,
+    "language_prefs": [],
+    "trust_tier": "phone",
+    "profile_status": "active",
+    "created_at": "<timestamp>",
+    "updated_at": "<timestamp>",
+    "first_name": "Asha",
+    "dob_source": "identity",
+    "first_name_source": "identity"
+  }
+}
