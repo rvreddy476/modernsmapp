@@ -31,7 +31,7 @@ func (s *Service) UpsertPreferences(ctx context.Context, userID uuid.UUID, p sto
 		return nil, fmt.Errorf("invalid: distance_km must be between 1 and 500")
 	}
 	if p.InterestedInGender != nil && !validInterestedInGender(strings.TrimSpace(*p.InterestedInGender)) {
-		return nil, fmt.Errorf("invalid: interested_in_gender must be one of %s", strings.Join(InterestedInGenders, ", "))
+		return nil, ErrInvalidInterestedInGender
 	}
 	if p.IntentFilter != nil {
 		for _, intent := range p.IntentFilter {
@@ -63,6 +63,13 @@ var InterestedInGenders = []string{"woman", "man", "nonbinary", "everyone"}
 
 // InterestedInEveryone is the preference that applies no gender filter.
 const InterestedInEveryone = "everyone"
+
+// ErrInvalidInterestedInGender: interested_in_gender is not one of
+// InterestedInGenders. It has its own stable code
+// (400 INVALID_INTERESTED_IN_GENDER) rather than the generic INVALID_REQUEST,
+// because the app shows the picker again and needs to know which field the
+// server refused.
+var ErrInvalidInterestedInGender = errors.New("interested_in_gender must be one of " + strings.Join(InterestedInGenders, ", "))
 
 // validInterestedInGender reports whether v is one of InterestedInGenders.
 func validInterestedInGender(v string) bool {

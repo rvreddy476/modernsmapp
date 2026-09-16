@@ -30,6 +30,7 @@ var d10Fixtures = []string{
 	"profile_upsert_200",
 	"preferences_get_200",
 	"preferences_put_200",
+	"preferences_put_400_invalid_gender",
 	"photos_get_200",
 	"photos_post_201",
 	"prompts_get_200",
@@ -38,6 +39,7 @@ var d10Fixtures = []string{
 	"selfie_post_200_passed",
 	"selfie_post_200_review",
 	"selfie_post_200_not_enough_blinks",
+	"selfie_post_409_media_not_ready",
 	"verification_status_get_200",
 	"spark_create_post_201_matched",
 	"sparks_incoming_get_200",
@@ -51,6 +53,7 @@ var d10Fixtures = []string{
 	"report_post_201",
 	"panic_post_200",
 	"trusted_contacts_get_200",
+	"trusted_contacts_get_200_profile_gone",
 	"trusted_contact_put_200",
 	"share_location_post_200",
 	"share_location_get_200",
@@ -76,35 +79,41 @@ func d10Blinks(similarity float64) service.LivenessResult {
 }
 
 // d10Media is a media-service stub: every media is the caller's, ready and
-// moderation-passed, with no labels and one face.
-type d10Media struct{}
+// moderation-passed, with no labels and one face. notReady names one media
+// that is still transcoding, for the MEDIA_NOT_READY fixture.
+type d10Media struct{ notReady uuid.UUID }
 
-func (d10Media) status(mediaID uuid.UUID) *service.MediaPhotoStatus {
+func (m *d10Media) status(mediaID uuid.UUID) *service.MediaPhotoStatus {
 	faces := 1
-	return &service.MediaPhotoStatus{MediaID: mediaID, OwnerMatches: true, Kind: "image", Status: "ready",
+	st := &service.MediaPhotoStatus{MediaID: mediaID, OwnerMatches: true, Kind: "image", Status: "ready",
 		ModerationStatus: "passed", ContentType: "image/jpeg", ModerationScanned: true, ModerationScanner: "mock",
 		ModerationLabels: []service.MediaPhotoLabel{}, Prepared: true, FaceCount: &faces}
+	if m.notReady != uuid.Nil && mediaID == m.notReady {
+		st.Kind, st.Status, st.Prepared = "video", "processing", false
+	}
+	return st
 }
 
-func (m d10Media) PhotoOwnerStatus(_ context.Context, mediaID, _ uuid.UUID) (*service.MediaPhotoStatus, error) {
+func (m *d10Media) PhotoOwnerStatus(_ context.Context, mediaID, _ uuid.UUID) (*service.MediaPhotoStatus, error) {
 	return m.status(mediaID), nil
 }
 
-func (m d10Media) PreparePhoto(_ context.Context, mediaID, _ uuid.UUID, _ bool) (*service.MediaPhotoStatus, error) {
+func (m *d10Media) PreparePhoto(_ context.Context, mediaID, _ uuid.UUID, _ bool) (*service.MediaPhotoStatus, error) {
 	return m.status(mediaID), nil
 }
 
-func (d10Media) PhotoDeliveryURL(context.Context, uuid.UUID, uuid.UUID, string) (string, error) {
+func (*d10Media) PhotoDeliveryURL(context.Context, uuid.UUID, uuid.UUID, string) (string, error) {
 	return "https://media.example/signed", nil
 }
 
-func (d10Media) DeletePhotoMedia(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (*d10Media) DeletePhotoMedia(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
 type d10Env struct {
-	r    *gin.Engine
-	st   *store.Store
-	svc  *service.Service
-	live *d10Liveness
+	r     *gin.Engine
+	st    *store.Store
+	svc   *service.Service
+	live  *d10Liveness
+	media *d10Media
 }
 
 // setupD10 builds the router with the stubs the fixtures need.
@@ -135,13 +144,14 @@ func setupD10(t *testing.T) *d10Env {
 	st.SetPII(testPII(t))
 	svc := service.New(st, nil)
 	svc.SetMessageClient(&stubMessageClient{})
-	svc.SetMediaPhotoClient(d10Media{})
+	media := &d10Media{}
+	svc.SetMediaPhotoClient(media)
 	live := &d10Liveness{result: d10Blinks(96)}
 	svc.SetLivenessClient(live)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	New(svc).RegisterRoutes(r)
-	return &d10Env{r: r, st: st, svc: svc, live: live}
+	return &d10Env{r: r, st: st, svc: svc, live: live, media: media}
 }
 
 // d10Birth is a birth date 30 years and a day ago, so every fixture says age
@@ -238,6 +248,10 @@ func TestD10Contracts(t *testing.T) {
 		assertContract(t, contractDo(r, http.MethodGet, "/v1/dating/preferences", ``, user), http.StatusOK, "preferences_get_200", labels)
 		body := `{"min_age":25,"max_age":35,"distance_km":25,"interested_in_gender":"everyone","intent_filter":["casual"]}`
 		assertContract(t, contractDo(r, http.MethodPut, "/v1/dating/preferences", body, user), http.StatusOK, "preferences_put_200", labels)
+		// An unknown gender filter has its own code, not INVALID_REQUEST.
+		bad := `{"interested_in_gender":"women"}`
+		assertContract(t, contractDo(r, http.MethodPut, "/v1/dating/preferences", bad, user),
+			http.StatusBadRequest, "preferences_put_400_invalid_gender", labels)
 	})
 
 	t.Run("photos_and_prompts", func(t *testing.T) {
@@ -286,6 +300,19 @@ func TestD10Contracts(t *testing.T) {
 		assertContract(t, contractDo(r, http.MethodPost, "/v1/dating/verification/selfie", submit, blinkUser),
 			http.StatusOK, "selfie_post_200_not_enough_blinks", map[uuid.UUID]string{blinkUser: "<user>"})
 		env.live.result = d10Blinks(96)
+
+		// media-service is still transcoding the video: 409 MEDIA_NOT_READY,
+		// the one code the app retries the SAME upload on.
+		notReadyUser := uuid.New()
+		seedD10Basics(t, st, notReadyUser)
+		video := uuid.New()
+		env.media.notReady = video
+		t.Cleanup(func() { env.media.notReady = uuid.Nil })
+		ch = d10Challenge(t, r, notReadyUser)
+		submit = `{"challenge_id":"` + ch + `","video_media_id":"` + video.String() + `"}`
+		assertContract(t, contractDo(r, http.MethodPost, "/v1/dating/verification/selfie", submit, notReadyUser),
+			http.StatusConflict, "selfie_post_409_media_not_ready", map[uuid.UUID]string{notReadyUser: "<user>"})
+		env.media.notReady = uuid.Nil
 	})
 
 	t.Run("sparks_and_matches", func(t *testing.T) {
@@ -398,6 +425,29 @@ func TestD10Contracts(t *testing.T) {
 			http.StatusOK, "shared_location_get_200", shareLabels)
 		assertContract(t, contractDo(r, http.MethodDelete, "/v1/dating/safety/share-location/"+shareID.String(), ``, user),
 			http.StatusOK, "share_location_delete_200", shareLabels)
+	})
+
+	t.Run("trusted_contact_profile_gone", func(t *testing.T) {
+		// A contact whose profile is gone still lists, with person null, so
+		// the user can still see and remove what they set.
+		user, contact := uuid.New(), uuid.New()
+		seedD10Profile(t, st, user)
+		seedD10Profile(t, st, contact)
+		matchID, _, err := st.CreateOrGetOpenMatch(ctx, user, contact, nil)
+		if err != nil {
+			t.Fatalf("match: %v", err)
+		}
+		if err := st.MarkMatchActive(ctx, matchID, uuid.New()); err != nil {
+			t.Fatalf("activate: %v", err)
+		}
+		if _, _, err := st.UpsertTrustedContact(ctx, user, contact, true); err != nil {
+			t.Fatalf("trusted contact: %v", err)
+		}
+		if err := st.SoftDeleteProfile(ctx, contact); err != nil {
+			t.Fatalf("delete contact profile: %v", err)
+		}
+		assertContract(t, contractDo(r, http.MethodGet, "/v1/dating/safety/trusted-contacts", ``, user),
+			http.StatusOK, "trusted_contacts_get_200_profile_gone", map[uuid.UUID]string{user: "<user>", contact: "<contact>"})
 	})
 
 	t.Run("data_export", func(t *testing.T) {

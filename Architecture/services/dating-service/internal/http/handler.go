@@ -386,6 +386,14 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SPARK_NOTE_REFUSED", "spark notes cannot contain phone numbers, email addresses or links", nil)
 		return
 	}
+	// Preferences: the gender filter is an enum, so it gets its own code
+	// instead of the generic INVALID_REQUEST the "invalid: " fallback gives.
+	if errors.Is(err, service.ErrInvalidInterestedInGender) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_INTERESTED_IN_GENDER",
+			"interested_in_gender must be one of "+strings.Join(service.InterestedInGenders, ", "),
+			map[string]any{"allowed": service.InterestedInGenders})
+		return
+	}
 	// Lane D8: reports, trusted contacts, live location and meets.
 	if errors.Is(err, service.ErrInvalidReportReason) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REPORT_REASON", "reason must be one of the report reason codes",

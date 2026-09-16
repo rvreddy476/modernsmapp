@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "MEDIA_NOT_READY",
+    "message": "the selfie video is still being processed; try again in a moment"
+  },
+  "meta": {}
+}

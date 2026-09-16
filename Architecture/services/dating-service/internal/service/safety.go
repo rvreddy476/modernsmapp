@@ -239,12 +239,40 @@ func (s *Service) RepublishUnpagedPanics(ctx context.Context, limit int) (int, e
 
 // ── Trusted contacts ────────────────────────────────────────────────────────
 
-// ListTrustedContacts returns the user's trusted contacts.
-func (s *Service) ListTrustedContacts(ctx context.Context, userID uuid.UUID) ([]*store.TrustedContact, error) {
+// TrustedContactWithPerson is one trusted contact plus the compact person
+// card (lane D10), so the app can name the contact instead of falling back
+// to "Your match" for anyone who is not a current match.
+//
+// Person is deliberately NOT omitempty: a contact whose profile is gone,
+// suspended or purged still lists, and the app switches on an explicit null
+// rather than on a missing member.
+type TrustedContactWithPerson struct {
+	*store.TrustedContact
+	Person *PersonCard `json:"person"`
+}
+
+// ListTrustedContacts returns the user's trusted contacts, each with the
+// compact person card. The card is null for a contact the caller may no
+// longer see (deleted, suspended or purged); the contact itself still lists
+// so the user can see — and remove — what they set.
+func (s *Service) ListTrustedContacts(ctx context.Context, userID uuid.UUID) ([]*TrustedContactWithPerson, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: userID required")
 	}
-	return s.store.ListTrustedContacts(ctx, userID)
+	contacts, err := s.store.ListTrustedContacts(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(contacts))
+	for _, tc := range contacts {
+		ids = append(ids, tc.ContactID)
+	}
+	cards := s.personCards(ctx, userID, ids)
+	out := make([]*TrustedContactWithPerson, 0, len(contacts))
+	for _, tc := range contacts {
+		out = append(out, &TrustedContactWithPerson{TrustedContact: tc, Person: cards[tc.ContactID]})
+	}
+	return out, nil
 }
 
 // SetTrustedContact adds contactID as a trusted contact (or updates the
