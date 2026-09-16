@@ -54,6 +54,69 @@ type Claims struct {
 	Scopes string `json:"scopes,omitempty"`
 	// TokenType is `typ`.
 	TokenType string `json:"typ"`
+
+	// ── Admin session claims (admin console Wave 0, A2) ──────────────────────
+	//
+	// GATEWAY CONTRACT. The api-gateway will verify these and stamp them onto
+	// the proxied request for admin-service and every admin route, replacing
+	// any client-supplied copy:
+	//
+	//	X-Auth-Time    = auth_time   (unix seconds; absent when the claim is)
+	//	X-Admin-MFA    = admin_mfa   ("true" or "false"; absent claim = "false")
+	//	X-Step-Up-At   = step_up_at  (unix seconds; absent when the claim is)
+	//
+	// Downstream rules (admin-service): an admin route requires
+	// X-Admin-MFA=true; money actions, KYC/document reveal, bans and role
+	// changes additionally require now - X-Step-Up-At <= StepUpValidity.
+
+	// AuthTime is `auth_time`: unix seconds of the last FULL authentication
+	// (password / OAuth / passkey, plus a second factor when one was asked
+	// for). Carried through refresh unchanged; a step-up does not move it.
+	AuthTime int64 `json:"auth_time,omitempty"`
+	// AMR is `amr` (RFC 8176 style): how this session authenticated, e.g.
+	// ["pwd"], ["pwd","otp"], ["fed"], ["hwk"]. "otp" means a TOTP challenge
+	// was completed ON THIS SESSION. Carried through refresh unchanged.
+	AMR []string `json:"amr,omitempty"`
+	// AdminMFA is `admin_mfa`: true only when the user resolves to at least one
+	// admin permission AND this session's amr includes "otp". Always present;
+	// an admin without it gets no admin scope in `scopes` either.
+	AdminMFA bool `json:"admin_mfa"`
+	// StepUpAt is `step_up_at`: unix seconds of the last POST /v1/auth/step-up
+	// on this session. Only the token that step-up returns carries it; refresh
+	// drops it. Valid for StepUpValidity.
+	StepUpAt int64 `json:"step_up_at,omitempty"`
+}
+
+// AdminSessionMaxTTL caps the access-token lifetime of a token that carries
+// admin_mfa=true, whatever the consumer ACCESS_TOKEN_TTL is.
+const AdminSessionMaxTTL = 15 * time.Minute
+
+// StepUpValidity is how long a step_up_at stays usable for a sensitive admin
+// action (money, KYC reveal, bans, role changes). Enforced by auth-service for
+// role changes and force logout, and by admin-service for everything else.
+const StepUpValidity = 300 * time.Second
+
+// StepUpFresh reports whether a step_up_at (unix seconds) is still valid at
+// now. A zero value, or one more than a minute in the future (clock skew
+// allowance), is not.
+func StepUpFresh(stepUpAt int64, now time.Time) bool {
+	if stepUpAt <= 0 {
+		return false
+	}
+	age := now.Unix() - stepUpAt // whole seconds, like the claim
+	if age < -60 {
+		return false
+	}
+	return age <= int64(StepUpValidity/time.Second)
+}
+
+// Session is the per-session part of the claim set. The zero value mints a
+// token with no auth_time/amr/step_up_at and admin_mfa=false.
+type Session struct {
+	AuthTime time.Time
+	AMR      []string
+	AdminMFA bool
+	StepUpAt time.Time
 }
 
 // Config is the minting configuration.
@@ -88,10 +151,28 @@ type Config struct {
 // create one. With a shared HS256 secret every verifier is also an identity
 // provider.
 func Mint(cfg Config, signingKey *rsa.PrivateKey, userID, sessionID uuid.UUID, scopes string, now time.Time) (string, error) {
+	token, _, err := MintSession(cfg, signingKey, userID, sessionID, scopes, Session{}, now)
+	return token, err
+}
+
+// TTLFor returns the access-token lifetime for a session: the configured TTL,
+// capped at AdminSessionMaxTTL when the token carries admin_mfa=true.
+func TTLFor(cfg Config, sess Session) time.Duration {
+	if sess.AdminMFA && (cfg.TTL <= 0 || cfg.TTL > AdminSessionMaxTTL) {
+		return AdminSessionMaxTTL
+	}
+	return cfg.TTL
+}
+
+// MintSession is Mint with the session claims (auth_time, amr, admin_mfa,
+// step_up_at). It returns the token's expiry, which is shorter than cfg.TTL
+// for an admin-MFA token (TTLFor).
+func MintSession(cfg Config, signingKey *rsa.PrivateKey, userID, sessionID uuid.UUID, scopes string, sess Session, now time.Time) (string, time.Time, error) {
 	issuer := strings.TrimSpace(cfg.Issuer)
 	if issuer == "" {
 		issuer = DefaultIssuer
 	}
+	expiresAt := now.Add(TTLFor(cfg, sess))
 
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -99,11 +180,21 @@ func Mint(cfg Config, signingKey *rsa.PrivateKey, userID, sessionID uuid.UUID, s
 			Issuer:    issuer,
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(cfg.TTL)),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
 		},
 		SessionID: sessionID.String(),
 		Scopes:    scopes,
 		TokenType: AccessTokenType,
+		AdminMFA:  sess.AdminMFA,
+	}
+	if !sess.AuthTime.IsZero() {
+		claims.AuthTime = sess.AuthTime.Unix()
+	}
+	if len(sess.AMR) > 0 {
+		claims.AMR = append([]string(nil), sess.AMR...)
+	}
+	if !sess.StepUpAt.IsZero() {
+		claims.StepUpAt = sess.StepUpAt.Unix()
 	}
 	if aud := strings.TrimSpace(cfg.Audience); aud != "" {
 		claims.Audience = jwt.ClaimStrings{aud}
@@ -114,11 +205,12 @@ func Mint(cfg Config, signingKey *rsa.PrivateKey, userID, sessionID uuid.UUID, s
 		if cfg.RS256KID != "" {
 			token.Header["kid"] = cfg.RS256KID
 		}
-		return token.SignedString(signingKey)
+		signed, err := token.SignedString(signingKey)
+		return signed, expiresAt, err
 	}
 
 	if cfg.HS256Secret == "" {
-		return "", fmt.Errorf("accesstoken: no RSA signing key and no HS256 secret configured")
+		return "", time.Time{}, fmt.Errorf("accesstoken: no RSA signing key and no HS256 secret configured")
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	// Stamp `kid` so the verifier can pick the right secret during a rotation.
@@ -127,5 +219,6 @@ func Mint(cfg Config, signingKey *rsa.PrivateKey, userID, sessionID uuid.UUID, s
 	if cfg.HS256KID != "" {
 		token.Header["kid"] = cfg.HS256KID
 	}
-	return token.SignedString([]byte(cfg.HS256Secret))
+	signed, err := token.SignedString([]byte(cfg.HS256Secret))
+	return signed, expiresAt, err
 }

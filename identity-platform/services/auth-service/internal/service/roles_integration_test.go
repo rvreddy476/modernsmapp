@@ -132,9 +132,11 @@ func TestIntegrationLegacyRowsMigrate(t *testing.T) {
 func TestIntegrationScopedGrantsAndExpiry(t *testing.T) {
 	pool := rolesPool(t)
 	resetRoles(t, pool)
-	ctx := context.Background()
+	// A2: role changes need an admin MFA session with a fresh step-up.
+	ctx := stepped()
 	st := store.New(pool)
 	super, u := uuid.New(), uuid.New()
+	itEnrolled(t, pool, super)
 	if err := st.GrantRole(ctx, super, uuid.Nil, "superadmin"); err != nil {
 		t.Fatal(err)
 	}
@@ -237,9 +239,11 @@ func TestIntegrationAuditFailureRollsBackGrant(t *testing.T) {
 func TestIntegrationLastSuperadminAndSelfGrant(t *testing.T) {
 	pool := rolesPool(t)
 	resetRoles(t, pool)
-	ctx := context.Background()
+	// A2: role changes need an admin MFA session with a fresh step-up.
+	ctx := stepped()
 	st := store.New(pool)
 	a, b := uuid.New(), uuid.New()
+	itEnrolled(t, pool, a, b)
 	if err := st.GrantRole(ctx, a, uuid.Nil, "superadmin"); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +281,8 @@ func TestIntegrationLastSuperadminAndSelfGrant(t *testing.T) {
 
 func TestIntegrationEnvBootstrapAudit(t *testing.T) {
 	pool := rolesPool(t)
-	ctx := context.Background()
+	// A2: role changes need an admin MFA session with a fresh step-up.
+	ctx := stepped()
 	st := store.New(pool)
 	envSuper := uuid.New()
 	svc := New(st, nil, &config.Config{
@@ -296,6 +301,7 @@ func TestIntegrationEnvBootstrapAudit(t *testing.T) {
 		t.Fatalf("non-superadmin revoke: %v", err)
 	}
 	other := uuid.New()
+	itEnrolled(t, pool, other)
 	resetRoles(t, pool)
 	if err := st.GrantRole(ctx, other, uuid.Nil, "superadmin"); err != nil {
 		t.Fatal(err)

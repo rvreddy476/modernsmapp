@@ -10,7 +10,6 @@ import (
 
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/google/uuid"
-	"github.com/pquerna/otp/totp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -79,7 +78,9 @@ type PendingAnomalySession struct {
 	UserAgent      string   `json:"user_agent"`
 	Purpose        string   `json:"purpose"`
 	AllowedMethods []string `json:"allowed_methods"`
-	CreatedAt      int64    `json:"created_at"`
+	// AMR is the first factor already passed (e.g. ["pwd"]).
+	AMR       []string `json:"amr,omitempty"`
+	CreatedAt int64    `json:"created_at"`
 }
 
 // anomalyRiskBand classifies a login attempt. Used internally by
@@ -161,7 +162,7 @@ func allowedStepUpMethods(u *store.User) []string {
 // storePendingAnomalySession is the parallel of StorePending2FASession
 // for the anomaly path. Lives in its own Redis namespace so the 2FA
 // invalidation set isn't dragged along.
-func (s *Service) storePendingAnomalySession(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string, methods []string) (string, error) {
+func (s *Service) storePendingAnomalySession(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string, methods, amr []string) (string, error) {
 	token, err := generateOpaqueToken(32)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate pending token: %w", err)
@@ -175,6 +176,7 @@ func (s *Service) storePendingAnomalySession(ctx context.Context, userID uuid.UU
 		UserAgent:      userAgent,
 		Purpose:        anomalyStepUpOTPPurpose,
 		AllowedMethods: methods,
+		AMR:            amr,
 		CreatedAt:      time.Now().Unix(),
 	}
 
@@ -229,13 +231,13 @@ func (s *Service) consumePendingAnomalySession(ctx context.Context, token, userI
 // channel (TOTP > email-OTP), dispatches the challenge code via the
 // email channel if needed, and stores the pending session. The caller
 // turns the AuthResponse into a 401 with body so the UI can pivot.
-func (s *Service) startAnomalyStepUp(ctx context.Context, user *store.User, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
+func (s *Service) startAnomalyStepUp(ctx context.Context, user *store.User, amr []string, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
 	methods := allowedStepUpMethods(user)
 	if len(methods) == 0 {
 		return nil, ErrAnomalyStepUpUnavailable
 	}
 
-	pendingToken, err := s.storePendingAnomalySession(ctx, user.ID, deviceID, platform, ip, userAgent, methods)
+	pendingToken, err := s.storePendingAnomalySession(ctx, user.ID, deviceID, platform, ip, userAgent, methods, amr)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +341,7 @@ func (s *Service) ResolveAnomalyStepUpEmail(ctx context.Context, pendingToken, c
 			"platform": pending.Platform,
 		})
 
-	return s.finishAnomalyStepUpSession(ctx, user, pending)
+	return s.finishAnomalyStepUpSession(ctx, user, pending, AMREmail)
 }
 
 // ResolveAnomalyStepUp2FA finishes a step-up login via the existing TOTP
@@ -369,24 +371,16 @@ func (s *Service) ResolveAnomalyStepUp2FA(ctx context.Context, pendingToken, cod
 		return nil, ErrAnomalyStepUpUnavailable
 	}
 
-	secret, err := s.store.Get2FASecret(ctx, uid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get 2FA secret: %w", err)
-	}
-
-	valid := totp.Validate(code, secret)
-	if valid {
-		// Replay protection — reuse the same totp_used key as Verify2FA
-		// so a TOTP code burned for step-up can't be replayed against
-		// the 2FA gate inside the same 90s window.
-		usedKey := fmt.Sprintf("totp_used:%s:%s", uid.String(), code)
-		exists, _ := s.rdb.Exists(ctx, usedKey).Result()
-		if exists > 0 {
-			return nil, ErrTOTPReplay
-		}
-		s.rdb.Set(ctx, usedKey, "1", 90*time.Second)
-	} else {
+	// Replay protection is shared with Verify2FA and admin step-up (same
+	// totp_used key), so a burned code is refused on every TOTP path.
+	method := AMROTP
+	switch terr := s.verifyTOTPOnce(ctx, uid, code); {
+	case terr == nil:
+	case errors.Is(terr, ErrTOTPReplay):
+		return nil, ErrTOTPReplay
+	case errors.Is(terr, ErrInvalidOTP):
 		// Fall back to recovery code.
+		method = AMRRecovery
 		used, recErr := s.useRecoveryCode(ctx, uid, code)
 		if recErr != nil {
 			return nil, fmt.Errorf("recovery code: %w", recErr)
@@ -394,6 +388,8 @@ func (s *Service) ResolveAnomalyStepUp2FA(ctx context.Context, pendingToken, cod
 		if !used {
 			return nil, ErrAnomalyCodeInvalid
 		}
+	default:
+		return nil, terr
 	}
 
 	s.consumePendingAnomalySession(ctx, pendingToken, pending.UserID)
@@ -404,16 +400,15 @@ func (s *Service) ResolveAnomalyStepUp2FA(ctx context.Context, pendingToken, cod
 			"platform": pending.Platform,
 		})
 
-	return s.finishAnomalyStepUpSession(ctx, user, pending)
+	return s.finishAnomalyStepUpSession(ctx, user, pending, method)
 }
 
 // finishAnomalyStepUpSession is the shared tail of both verify paths.
 // Bypasses the anomaly gate in createSessionForUser (the user has just
 // proven possession of a second factor — re-running the check would
-// loop) by minting the session inline. If 2FA is enabled, we still
-// route through StorePending2FASession to honour the existing 2FA
-// gate; step-up is orthogonal to standing 2FA.
-func (s *Service) finishAnomalyStepUpSession(ctx context.Context, user *store.User, pending *PendingAnomalySession) (*AuthResponse, error) {
+// loop) by minting the session inline. method is the factor the step-up
+// proved (AMREmail, AMROTP or AMRRecovery) and is added to the session's amr.
+func (s *Service) finishAnomalyStepUpSession(ctx context.Context, user *store.User, pending *PendingAnomalySession, method string) (*AuthResponse, error) {
 	// If 2FA is enabled AND the step-up channel was email (not TOTP),
 	// fall back to a 2FA pending session — the user still has to clear
 	// the standing 2FA gate. Step-up doesn't replace 2FA, it adds a
@@ -432,28 +427,8 @@ func (s *Service) finishAnomalyStepUpSession(ctx context.Context, user *store.Us
 		// we trust the step-up here and mint directly.
 	}
 
-	sessionID := uuid.New()
-	refreshToken, err := generateOpaqueToken(32)
-	if err != nil {
-		return nil, err
-	}
-
-	sess := &store.Session{
-		ID:           sessionID,
-		UserID:       user.ID,
-		RefreshToken: hashToken(refreshToken),
-		DeviceID:     pending.DeviceID,
-		Platform:     pending.Platform,
-		IP:           pending.IP,
-		UserAgent:    pending.UserAgent,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
-	}
-	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
-	}
-
-	accessToken, err := s.generateAccessToken(ctx, user.ID, sessionID)
+	resp, err := s.startSession(ctx, user, pending.DeviceID, pending.Platform, pending.IP, pending.UserAgent,
+		withAMR(pending.AMR, method))
 	if err != nil {
 		return nil, err
 	}
@@ -464,17 +439,9 @@ func (s *Service) finishAnomalyStepUpSession(ctx context.Context, user *store.Us
 		_ = s.rdb.Set(ctx, fmt.Sprintf("last_ip:%s", user.ID.String()), pending.IP, 30*24*time.Hour).Err()
 	}
 
-	_ = s.producer.PublishUserLoggedIn(ctx, user.ID, sessionID, pending.DeviceID, pending.Platform, pending.IP)
+	_ = s.producer.PublishUserLoggedIn(ctx, user.ID, resp.SessionID, pending.DeviceID, pending.Platform, pending.IP)
 
-	return &AuthResponse{
-		Tokens: TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
-		},
-		User:      user,
-		SessionID: sessionID,
-	}, nil
+	return resp, nil
 }
 
 // bcryptCompare is defined in auth.go as a thin wrapper around

@@ -72,6 +72,10 @@ type AuthService interface {
 	PermissionsForUser(ctx context.Context, userID uuid.UUID) (permissions.Admin, error)
 	ListUserRoles(ctx context.Context, actorID, targetID uuid.UUID) ([]store.UserRole, error)
 	ListAdminAudit(ctx context.Context, actorID uuid.UUID, limit int) ([]store.AdminAuditEntry, error)
+	// Admin sessions (A2): step-up, force logout, second-approver count.
+	StepUp(ctx context.Context, userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error)
+	ForceLogout(ctx context.Context, actorID, targetID uuid.UUID, reason string) (int, error)
+	CountOtherHolders(ctx context.Context, permission string, excludeUserID uuid.UUID) (int, error)
 	// Service-to-service ecosystem role management. Guarded at the route by
 	// RequireInternalServiceKey and constrained in the service layer to the
 	// four ecosystem roles — a service can never mint admin or superadmin.
@@ -257,6 +261,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.DELETE("/admin/roles", h.RevokeRole)
 			protected.GET("/admin/roles/:userId", h.ListUserRoles)
 			protected.GET("/admin/audit", h.ListAdminAudit)
+			// Force logout: superadmin + admin MFA + fresh step-up, audited
+			// in the same transaction. See admin_session.go.
+			protected.POST("/admin/users/:userId/sessions/revoke", h.ForceLogout)
+
+			// Step-up (A2): re-verify TOTP, get a token with step_up_at.
+			// Login IP limiter here, plus a per-account limit in the service.
+			protected.POST("/step-up", middleware.LoginRateLimit(h.rdb), h.StepUp)
 
 			// 2FA management (protected)
 			protected.POST("/2fa/setup", h.Setup2FA)
@@ -297,6 +308,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// is still turned away. See internal_permissions.go.
 		v1.GET("/internal/users/:userId/permissions",
 			RequireServiceCallerNoUser(h.cfg.InternalServiceKey), h.InternalUserPermissions)
+		// Two-person approval support for admin-service: how many OTHER
+		// active, TOTP-enrolled accounts hold a permission. Service-only.
+		v1.GET("/internal/permissions/:permission/holders",
+			RequireServiceCallerNoUser(h.cfg.InternalServiceKey), h.InternalPermissionHolders)
 	}
 }
 

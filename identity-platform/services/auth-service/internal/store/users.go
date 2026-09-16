@@ -57,6 +57,11 @@ type Session struct {
 	anomalyFlagged bool
 	LastRefreshAt  *time.Time `json:"last_refresh_at,omitempty"`
 	LastRefreshIP  string     `json:"last_refresh_ip,omitempty"`
+	// AuthTime is the last full authentication of this session (auth_time
+	// claim); nil on sessions created before it was recorded.
+	AuthTime *time.Time `json:"-"`
+	// AMR is how this session authenticated (amr claim), e.g. ["pwd","otp"].
+	AMR []string `json:"-"`
 }
 
 // AnomalyFlagged returns the persisted anomaly flag. Lowercase field
@@ -366,9 +371,9 @@ func (s *Store) DeleteOTP(ctx context.Context, id uuid.UUID) error {
 
 func (s *Store) CreateSession(ctx context.Context, sess *Session) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO auth.sessions (session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8, $9)
-	`, sess.ID, sess.UserID, sess.RefreshToken, sess.DeviceID, sess.Platform, sess.IP, sess.UserAgent, sess.CreatedAt, sess.ExpiresAt)
+		INSERT INTO auth.sessions (session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, auth_time, amr)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8, $9, $10, $11)
+	`, sess.ID, sess.UserID, sess.RefreshToken, sess.DeviceID, sess.Platform, sess.IP, sess.UserAgent, sess.CreatedAt, sess.ExpiresAt, sess.AuthTime, sess.AMR)
 	return err
 }
 
@@ -381,6 +386,7 @@ func scanSession(row pgx.Row) (*Session, error) {
 		&sess.DeviceID, &sess.Platform, &sess.IP, &sess.UserAgent,
 		&sess.IsActive, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt,
 		&familyID, &sess.anomalyFlagged, &sess.LastRefreshAt, &lastRefreshIP,
+		&sess.AuthTime, &sess.AMR,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -395,7 +401,7 @@ func scanSession(row pgx.Row) (*Session, error) {
 	return &sess, nil
 }
 
-const allSessionCols = `session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, revoked_at, family_id, anomaly_flagged, last_refresh_at, last_refresh_ip`
+const allSessionCols = `session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, revoked_at, family_id, anomaly_flagged, last_refresh_at, last_refresh_ip, auth_time, amr`
 
 func (s *Store) GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*Session, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+allSessionCols+` FROM auth.sessions WHERE refresh_token_hash = $1`, refreshTokenHash)
@@ -429,6 +435,7 @@ func (s *Store) ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]Ses
 			&sess.DeviceID, &sess.Platform, &sess.IP, &sess.UserAgent,
 			&sess.IsActive, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt,
 			&familyID, &sess.anomalyFlagged, &sess.LastRefreshAt, &lastRefreshIP,
+			&sess.AuthTime, &sess.AMR,
 		); err != nil {
 			return nil, err
 		}

@@ -137,7 +137,7 @@ func TestCreateSessionForUser_LowRiskShadowMode_IssuesSession(t *testing.T) {
 	user := &store.User{ID: uuid.New()}
 	fstore.users = map[uuid.UUID]*store.User{user.ID: user}
 
-	resp, err := svc.createSessionForUser(context.Background(), user, "dev-1", "ios", "10.0.0.5", "ua")
+	resp, err := svc.createSessionForUser(context.Background(), user, []string{AMRPassword}, "dev-1", "ios", "10.0.0.5", "ua")
 	if err != nil {
 		t.Fatalf("createSessionForUser: unexpected err: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestCreateSessionForUser_HighRiskEnforceMode_BlocksSession(t *testing.T) {
 	mr.Set("last_ip:"+user.ID.String(), "203.0.113.10")
 
 	// No trusted devices: device id "new-device" will look novel.
-	resp, err := svc.createSessionForUser(context.Background(), user, "new-device-1", "ios", "198.51.100.99", "ua")
+	resp, err := svc.createSessionForUser(context.Background(), user, []string{AMRPassword}, "new-device-1", "ios", "198.51.100.99", "ua")
 
 	if err == nil {
 		t.Fatal("expected ErrAnomalyStepUpRequired, got nil")
@@ -227,7 +227,7 @@ func TestCreateSessionForUser_HighRiskShadowMode_IssuesSessionAndRecordsAnomaly(
 	// Same high-risk signal as the enforce test.
 	mr.Set("last_ip:"+user.ID.String(), "203.0.113.10")
 
-	resp, err := svc.createSessionForUser(context.Background(), user, "new-device-1", "ios", "198.51.100.99", "ua")
+	resp, err := svc.createSessionForUser(context.Background(), user, []string{AMRPassword}, "new-device-1", "ios", "198.51.100.99", "ua")
 	if err != nil {
 		t.Fatalf("shadow mode must not block: %v", err)
 	}
@@ -402,8 +402,17 @@ func (f *fakeAnomalyStore) RoleGrantsForUser(_ context.Context, _ uuid.UUID) ([]
 	return nil, nil
 }
 func (f *fakeAnomalyStore) ChangeRole(_ context.Context, _ store.RoleChange, _ store.RoleAudit,
-	_ func([]store.SuperadminHolder) error) (bool, error) {
-	return true, nil
+	_ func([]store.SuperadminHolder) error) (store.RoleChangeResult, error) {
+	return store.RoleChangeResult{Changed: true}, nil
+}
+func (f *fakeAnomalyStore) AddSessionAMR(_ context.Context, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (f *fakeAnomalyStore) RevokeAllSessionsAudited(_ context.Context, _ uuid.UUID, _ store.RoleAudit) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (f *fakeAnomalyStore) AdminHolderCandidates(_ context.Context, _ []uuid.UUID) ([]store.HolderCandidate, error) {
+	return nil, nil
 }
 func (f *fakeAnomalyStore) RecordRoleBootstrap(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
 	return true, nil

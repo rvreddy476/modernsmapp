@@ -36,6 +36,9 @@ type stubAuthService struct {
 	revokeEcosystemFn func(callingService string, target uuid.UUID, role, reason string) error
 	resolveRolesFn    func(userID uuid.UUID) []string
 	permissionsFn     func(userID uuid.UUID) (permissions.Admin, error)
+	stepUpFn          func(userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error)
+	forceLogoutFn     func(ctx context.Context, actor, target uuid.UUID, reason string) (int, error)
+	holdersFn         func(permission string, exclude uuid.UUID) (int, error)
 	grantRoleFn       func(actor uuid.UUID, req service.RoleChangeRequest) error
 }
 
@@ -107,6 +110,26 @@ func (s *stubAuthService) DeleteAccount(_ context.Context, _ uuid.UUID, _ string
 	return &service.DeletionSchedule{}, nil
 }
 
+// Admin session stubs (A2).
+func (s *stubAuthService) StepUp(_ context.Context, userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error) {
+	if s.stepUpFn != nil {
+		return s.stepUpFn(userID, sessionID, code)
+	}
+	return &service.StepUpResponse{}, nil
+}
+func (s *stubAuthService) ForceLogout(ctx context.Context, actor, target uuid.UUID, reason string) (int, error) {
+	if s.forceLogoutFn != nil {
+		return s.forceLogoutFn(ctx, actor, target, reason)
+	}
+	return 0, nil
+}
+func (s *stubAuthService) CountOtherHolders(_ context.Context, permission string, exclude uuid.UUID) (int, error) {
+	if s.holdersFn != nil {
+		return s.holdersFn(permission, exclude)
+	}
+	return 0, nil
+}
+
 // RBAC stubs
 func (s *stubAuthService) GrantRole(_ context.Context, actor uuid.UUID, req service.RoleChangeRequest) error {
 	if s.grantRoleFn != nil {
@@ -160,7 +183,7 @@ func (s *stubAuthService) CapabilitiesForUser(_ context.Context, uid uuid.UUID) 
 	return service.Capabilities{
 		UserID: uid.String(), Roles: held, IsCustomer: true,
 		Capabilities: caps, Switcher: switcher,
-		Admin: permissions.Resolve(grants, time.Now()),
+		Admin: service.AdminCapabilities{Admin: permissions.Resolve(grants, time.Now())},
 	}
 }
 func (s *stubAuthService) ListUserRoles(_ context.Context, _, _ uuid.UUID) ([]store.UserRole, error) {

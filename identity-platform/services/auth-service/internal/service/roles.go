@@ -18,24 +18,32 @@ import (
 // ErrNotSuperadmin is returned when a non-superadmin attempts role management.
 var ErrNotSuperadmin = errors.New("superadmin role required")
 
-// ErrMFARequired is returned when REQUIRE_MFA_FOR_PRIVILEGED is on and the
-// acting user has not enrolled 2FA.
-var ErrMFARequired = errors.New("MFA must be enabled for privileged actions")
+// ErrMFARequired is returned when the acting session is not an admin MFA
+// session (admin_mfa=false: TOTP not enrolled, or not completed on this
+// session). HTTP code MFA_REQUIRED.
+var ErrMFARequired = errors.New("an admin session with two-factor authentication is required: enrol TOTP, then sign in with it or POST /v1/auth/step-up")
 
-// authorizePrivileged enforces the gate for role-management actions: the actor
-// must be a superadmin and (when REQUIRE_MFA_FOR_PRIVILEGED is set) must have
-// 2FA enabled. Denied attempts are audit-logged. action/target are recorded.
+// authorizePrivileged enforces the gate for role management and force logout:
+// the actor must be a superadmin, the session must be an admin MFA session
+// (ErrMFARequired) and must carry a step_up_at younger than
+// accesstoken.StepUpValidity (ErrStepUpRequired). The session claims come from
+// the request context (WithSessionAuth); without them the gate fails closed.
+// Denied attempts are audit-logged.
+//
+// REQUIRE_MFA_FOR_PRIVILEGED no longer affects this gate — MFA is always
+// required here — and it guards nothing else; the setting is inert.
 func (s *Service) authorizePrivileged(ctx context.Context, actorID, targetID uuid.UUID, action string) error {
 	if !s.IsSuperadmin(ctx, actorID) {
 		s.audit(ctx, actorID, targetID, action, "denied: not superadmin", false)
 		return ErrNotSuperadmin
 	}
-	if s.cfg.RequireMFAForPrivileged {
-		actor, err := s.store.GetUserByID(ctx, actorID)
-		if err != nil || actor == nil || !actor.TwoFactorEnabled {
-			s.audit(ctx, actorID, targetID, action, "denied: MFA not enabled", false)
-			return ErrMFARequired
+	if err := s.requireFreshAdminSession(ctx, actorID); err != nil {
+		detail := "denied: admin MFA session required"
+		if errors.Is(err, ErrStepUpRequired) {
+			detail = "denied: step-up required"
 		}
+		s.audit(ctx, actorID, targetID, action, detail, false)
+		return err
 	}
 	return nil
 }
@@ -110,8 +118,20 @@ type Capabilities struct {
 	Switcher []CapabilitySwitch `json:"switcher"`
 	// Admin is the admin-console permission map, resolved live on every
 	// request (a grant shows without re-login). Additive: every field above is
-	// unchanged. {"apps":{},"platform":[]} for a user with no admin role.
-	Admin permissions.Admin `json:"admin"`
+	// unchanged. {"apps":{},"platform":[],"mfa_required":false,...} for a user
+	// with no admin role.
+	Admin AdminCapabilities `json:"admin"`
+}
+
+// AdminCapabilities is the admin permission map as THIS session may use it.
+//
+// An admin whose session is not an admin MFA session (admin_mfa=false) gets
+// empty apps/platform and mfa_required=true; mfa_enrolled then tells the
+// console whether to send them to TOTP enrolment or to step-up.
+type AdminCapabilities struct {
+	permissions.Admin
+	MFARequired bool `json:"mfa_required"`
+	MFAEnrolled bool `json:"mfa_enrolled"`
 }
 
 // CapabilitySwitch is one row of the role switcher.
@@ -149,6 +169,21 @@ func (s *Service) CapabilitiesForUser(ctx context.Context, userID uuid.UUID) Cap
 	if err != nil {
 		s.log.Warn("admin permissions lookup failed; env roles only", "user_id", userID, "err", err)
 	}
+	adminCaps := AdminCapabilities{Admin: admin}
+	if !adminEmpty(admin) {
+		if u, uerr := s.store.GetUserByID(ctx, userID); uerr == nil && u != nil {
+			adminCaps.MFAEnrolled = u.TwoFactorEnabled
+		}
+		// The token's admin_mfa was resolved at mint; enrolment is re-read
+		// live so disabling TOTP takes effect at once here too.
+		if sa, ok := SessionAuthFrom(ctx); !ok || !sa.AdminMFA || !adminCaps.MFAEnrolled {
+			adminCaps = AdminCapabilities{
+				Admin:       permissions.Admin{Apps: map[string][]string{}, Platform: []string{}},
+				MFARequired: true,
+				MFAEnrolled: adminCaps.MFAEnrolled,
+			}
+		}
+	}
 
 	return Capabilities{
 		UserID:       userID.String(),
@@ -156,7 +191,7 @@ func (s *Service) CapabilitiesForUser(ctx context.Context, userID uuid.UUID) Cap
 		IsCustomer:   true,
 		Capabilities: caps,
 		Switcher:     switcher,
-		Admin:        admin,
+		Admin:        adminCaps,
 	}
 }
 
@@ -380,7 +415,7 @@ func (s *Service) changeRole(ctx context.Context, actorID uuid.UUID, req RoleCha
 	if req.Role == roles.Superadmin && (revoke || req.ExpiresAt != nil) {
 		guard = s.lastSuperadminGuard(req.TargetID)
 	}
-	_, err := s.store.ChangeRole(ctx, store.RoleChange{
+	res, err := s.store.ChangeRole(ctx, store.RoleChange{
 		Revoke:    revoke,
 		UserID:    req.TargetID,
 		GrantedBy: actorID,
@@ -397,7 +432,17 @@ func (s *Service) changeRole(ctx context.Context, actorID uuid.UUID, req RoleCha
 	if errors.Is(err, ErrLastSuperadmin) {
 		s.audit(ctx, actorID, req.TargetID, action, "denied: last superadmin, "+roleChangeDetail(req), false)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// A revoke or an expiry-shortening renewal revoked the target's sessions
+	// in the same transaction; mark each one so the gateway (which checks
+	// sess_revoked:<sid>) stops their access tokens now, not at expiry.
+	s.revokeCached(ctx, res.RevokedSessions)
+	if len(res.RevokedSessions) > 0 {
+		s.InvalidatePending2FASessions(ctx, req.TargetID)
+	}
+	return nil
 }
 
 // PermissionsForUser resolves a user's admin permission map live: active DB

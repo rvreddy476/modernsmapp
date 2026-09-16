@@ -191,7 +191,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		return nil, fmt.Errorf("failed to look up user: %w", err)
 	}
 	if user != nil {
-		auth, err := s.createSessionForUser(ctx, user, "oauth", provider, "", "")
+		auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, "oauth", provider, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +228,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		if err := s.store.LinkOAuthProvider(ctx, user.ID, provider); err != nil {
 			return nil, fmt.Errorf("failed to link OAuth provider: %w", err)
 		}
-		auth, err := s.createSessionForUser(ctx, user, "oauth", provider, "", "")
+		auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, "oauth", provider, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -272,7 +272,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 	}
 
 	s.log.Info("user registered via OAuth", "user_id", user.ID, "provider", provider, "email_verified", true)
-	auth, err := s.createSessionForUser(ctx, user, "oauth", provider, "", "")
+	auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, "oauth", provider, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +503,7 @@ func (s *Service) VerifyOAuthSignup(ctx context.Context, pendingToken, otpCode, 
 
 	s.log.Info("user registered via OAuth (OTP-completed signup)",
 		"user_id", user.ID, "provider", claims.Provider, "email_verified", false, "phone_verified", true)
-	return s.createSessionForUser(ctx, user, deviceID, platform, ip, userAgent)
+	return s.createSessionForUser(ctx, user, []string{AMRFederated, AMRSMS}, deviceID, platform, ip, userAgent)
 }
 
 // oauthConfig returns the oauth2.Config for the given provider.

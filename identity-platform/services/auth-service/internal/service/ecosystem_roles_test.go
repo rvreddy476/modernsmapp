@@ -311,7 +311,9 @@ func TestCapabilitiesForUser(t *testing.T) {
 	st.dbRoles[target] = []string{"seller", "moderator"}
 	svc := newEcosystemSvc(t, st)
 
-	caps := svc.CapabilitiesForUser(context.Background(), target)
+	// An admin MFA session with TOTP enrolled sees its admin map (A2).
+	st.users = map[uuid.UUID]*store.User{target: {ID: target, TwoFactorEnabled: true}}
+	caps := svc.CapabilitiesForUser(stepped(), target)
 
 	if !caps.IsCustomer {
 		t.Fatal("is_customer must be true unconditionally — every account is a customer")
@@ -396,7 +398,8 @@ func TestCapabilitiesAppScopedIsNotPlatform(t *testing.T) {
 	target := uuid.New()
 	st := newEcosystemStore()
 	st.scoped = map[uuid.UUID][]store.RoleGrant{target: {{Role: "moderator", App: "dating"}}}
-	caps := newEcosystemSvc(t, st).CapabilitiesForUser(context.Background(), target)
+	st.users = map[uuid.UUID]*store.User{target: {ID: target, TwoFactorEnabled: true}}
+	caps := newEcosystemSvc(t, st).CapabilitiesForUser(stepped(), target)
 
 	if len(caps.Roles) != 0 || caps.Capabilities["moderator"] {
 		t.Fatalf("app-scoped moderator leaked into roles: %v / %v", caps.Roles, caps.Capabilities)
@@ -415,7 +418,9 @@ func TestSuperadminIsNotASeller(t *testing.T) {
 		ScopeSuperadminUserIDs: map[string]struct{}{target.String(): {}},
 	}, nil, nil, nil)
 
-	caps := svc.CapabilitiesForUser(context.Background(), target)
+	// An admin MFA session with TOTP enrolled sees its admin map (A2).
+	st.users = map[uuid.UUID]*store.User{target: {ID: target, TwoFactorEnabled: true}}
+	caps := svc.CapabilitiesForUser(stepped(), target)
 	for _, r := range roles.Ecosystem() {
 		if caps.Capabilities[r] {
 			t.Fatalf("a superadmin came out as %q — platform roles must not imply ecosystem roles", r)

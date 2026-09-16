@@ -44,6 +44,8 @@ type PendingTwoFASession struct {
 	Platform  string `json:"platform"`
 	IP        string `json:"ip"`
 	UserAgent string `json:"user_agent"`
+	// AMR is the first factor already passed (e.g. ["pwd"]).
+	AMR []string `json:"amr,omitempty"`
 }
 
 // Setup2FA generates a TOTP secret and recovery codes for the user.
@@ -201,28 +203,17 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 		return nil, errors.New("user ID mismatch")
 	}
 
-	// Get the TOTP secret
-	secret, err := s.store.Get2FASecret(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get 2FA secret: %w", err)
-	}
-
-	// Try TOTP validation first
-	valid := totp.Validate(code, secret)
-
-	if valid {
-		// Check replay: reject already-used TOTP codes within the validity window
-		usedKey := fmt.Sprintf("totp_used:%s:%s", userID.String(), code)
-		exists, err := s.rdb.Exists(ctx, usedKey).Result()
-		if err == nil && exists > 0 {
-			return nil, ErrTOTPReplay
-		}
-		// Mark this code as used for 90 seconds (covers 3 time steps)
-		s.rdb.Set(ctx, usedKey, "1", 90*time.Second)
-	}
-
-	// If TOTP fails, try recovery code
-	if !valid {
+	// Try TOTP first (validated and burned against replay in one place,
+	// shared with anomaly step-up and admin step-up), then a recovery code.
+	amr := withAMR(pending.AMR, AMROTP)
+	switch terr := s.verifyTOTPOnce(ctx, userID, code); {
+	case terr == nil:
+	case errors.Is(terr, ErrTOTPReplay):
+		return nil, ErrTOTPReplay
+	case errors.Is(terr, ErrInvalidOTP):
+		// A recovery code signs the user in, but is not "otp": it never
+		// yields an admin MFA session.
+		amr = withAMR(pending.AMR, AMRRecovery)
 		used, err := s.useRecoveryCode(ctx, userID, code)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check recovery code: %w", err)
@@ -230,6 +221,8 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 		if !used {
 			return nil, errors.New("invalid 2FA code")
 		}
+	default:
+		return nil, terr
 	}
 
 	// Delete the pending session and drop it from the per-user index
@@ -247,12 +240,16 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 		return nil, errors.New("user not found")
 	}
 
-	// Create the real session
-	return s.createSessionForUser(ctx, user, pending.DeviceID, pending.Platform, pending.IP, pending.UserAgent)
+	// Create the real session. amr carries the second factor, so the 2FA
+	// gate inside createSessionForUser is satisfied instead of issuing
+	// another pending token.
+	return s.createSessionForUser(ctx, user, amr, pending.DeviceID, pending.Platform, pending.IP, pending.UserAgent)
 }
 
-// StorePending2FASession stores a pending 2FA session in Redis and returns a temporary token.
-func (s *Service) StorePending2FASession(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string) (string, error) {
+// StorePending2FASession stores a pending 2FA session in Redis and returns a
+// temporary token. amr is the first factor already passed (e.g. "pwd"); it is
+// carried to the session Verify2FA creates.
+func (s *Service) StorePending2FASession(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string, amr ...string) (string, error) {
 	token, err := generateOpaqueToken(32)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate pending token: %w", err)
@@ -264,6 +261,7 @@ func (s *Service) StorePending2FASession(ctx context.Context, userID uuid.UUID, 
 		Platform:  platform,
 		IP:        ip,
 		UserAgent: userAgent,
+		AMR:       amr,
 	}
 
 	data, err := json.Marshal(pending)

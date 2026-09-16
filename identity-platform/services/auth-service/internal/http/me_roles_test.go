@@ -167,7 +167,8 @@ func containsStr(list []string, s string) bool {
 	return false
 }
 
-// TestMeCapabilitiesRolelessAdminShape: {"apps":{},"platform":[]}, never null.
+// TestMeCapabilitiesRolelessAdminShape: empty maps (never null) and, for a
+// non-admin, mfa_required=false (A2 added the two mfa_* fields).
 func TestMeCapabilitiesRolelessAdminShape(t *testing.T) {
 	resp := getAs(t, meRouter(t, []string{}), "/v1/auth/me/capabilities", uuid.New())
 	var env struct {
@@ -176,7 +177,7 @@ func TestMeCapabilitiesRolelessAdminShape(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got := string(env.Data["admin"]); got != `{"apps":{},"platform":[]}` {
+	if got := string(env.Data["admin"]); got != `{"apps":{},"platform":[],"mfa_required":false,"mfa_enrolled":false}` {
 		t.Fatalf("admin = %s", got)
 	}
 	for _, k := range []string{"user_id", "roles", "is_customer", "capabilities", "switcher"} {

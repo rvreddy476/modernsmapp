@@ -657,3 +657,20 @@ CREATE TABLE IF NOT EXISTS auth.account_purge_acks (
     acked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, service)
 );
+
+-- ---------------------------------------------------------------------------
+-- Admin sessions (admin console Wave 0, A2). How a session authenticated is
+-- stored on the session row, because a refresh has no access token to copy
+-- the claims from and they must survive refresh unchanged:
+--
+--   auth_time  — last FULL authentication of this session (the auth_time
+--                claim). NULL on sessions created before this change; the
+--                service then uses created_at.
+--   amr        — authentication methods (the amr claim), e.g. {pwd},
+--                {pwd,otp}. "otp" = a TOTP challenge completed on THIS
+--                session (login 2FA or POST /v1/auth/step-up). NULL on older
+--                sessions, which therefore never carry admin_mfa=true.
+-- ---------------------------------------------------------------------------
+ALTER TABLE auth.sessions
+    ADD COLUMN IF NOT EXISTS auth_time TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS amr       TEXT[];

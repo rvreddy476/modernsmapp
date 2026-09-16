@@ -105,7 +105,11 @@ type Store interface {
 	RoleGrantsForUser(ctx context.Context, userID uuid.UUID) ([]store.RoleGrant, error)
 	// ChangeRole applies an admin grant/revoke and its audit row atomically.
 	ChangeRole(ctx context.Context, ch store.RoleChange, audit store.RoleAudit,
-		guard func(holders []store.SuperadminHolder) error) (bool, error)
+		guard func(holders []store.SuperadminHolder) error) (store.RoleChangeResult, error)
+	// Admin sessions (A2): step-up amr, audited force logout, holder counts.
+	AddSessionAMR(ctx context.Context, sessionID uuid.UUID, method string) error
+	RevokeAllSessionsAudited(ctx context.Context, userID uuid.UUID, audit store.RoleAudit) ([]uuid.UUID, error)
+	AdminHolderCandidates(ctx context.Context, envUserIDs []uuid.UUID) ([]store.HolderCandidate, error)
 	RecordRoleBootstrap(ctx context.Context, userID uuid.UUID, detail string) (bool, error)
 	ListUserRoles(ctx context.Context, userID uuid.UUID) ([]store.UserRole, error)
 	InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUID, action, detail string, allowed bool) error
@@ -364,7 +368,7 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, purpose, deviceID,
 	// anomaly gate are applied in one place. The step-up sentinel is
 	// re-wrapped as an AuthResponse with RequiresStepUp set so the
 	// handler can render it.
-	resp, err := s.createSessionForUser(ctx, user, deviceID, platform, ip, userAgent)
+	resp, err := s.createSessionForUser(ctx, user, []string{AMRSMS}, deviceID, platform, ip, userAgent)
 	if err != nil {
 		if errors.Is(err, ErrAnomalyStepUpRequired) {
 			// Surface the envelope without the sentinel — handler will
@@ -642,7 +646,7 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 	// Route through createSessionForUser so both the 2FA gate (A6) and
 	// the A13 anomaly gate are applied centrally. The step-up sentinel
 	// is forwarded to the handler so the 401-with-body can render.
-	resp, err := s.createSessionForUser(ctx, user, deviceID, platform, ip, userAgent)
+	resp, err := s.createSessionForUser(ctx, user, []string{AMRPassword}, deviceID, platform, ip, userAgent)
 	if err != nil {
 		if errors.Is(err, ErrAnomalyStepUpRequired) {
 			return resp, err
@@ -801,7 +805,10 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 			})
 	}
 
-	accessToken, err := s.generateAccessToken(ctx, user.ID, sess.ID)
+	// A2: auth_time and amr come from the session row, unchanged; admin
+	// permissions and TOTP enrolment are re-resolved on this mint, so a
+	// revoked role or a disabled authenticator takes effect here.
+	accessToken, accessExpiresAt, err := s.mintAccessToken(ctx, user, sess, time.Time{})
 	if err != nil {
 		return nil, err
 	}
@@ -817,7 +824,7 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		Tokens: TokenPair{
 			AccessToken:  accessToken,
 			RefreshToken: newRefreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
+			ExpiresAt:    accessExpiresAt,
 		},
 		User:      user,
 		SessionID: sess.ID,
@@ -890,24 +897,13 @@ func (s *Service) generateOTP() (string, error) {
 	return fmt.Sprintf(format, n.Int64()), nil
 }
 
-func (s *Service) generateAccessToken(ctx context.Context, userID, sessionID uuid.UUID) (string, error) {
-	// Module 3 LB-1 — the claim set is a CONTRACT with the API gateway's
-	// verifier, and it now lives in pkg/accesstoken so the contract can be
-	// tested against BOTH real implementations without either deployable
-	// service depending on the other. See that package's doc comment.
-	//
-	// Scopes are resolved here, server-side (env allowlist ∪ DB roles),
-	// because that requires the store. A client can never influence them —
-	// they are bound to the user id inside the signature.
-	return accesstoken.Mint(
-		s.accessTokenConfig(),
-		s.accessSigningKey,
-		userID,
-		sessionID,
-		s.resolveScopes(ctx, userID),
-		time.Now(),
-	)
-}
+// Access tokens are minted ONLY by mintAccessToken (admin_session.go).
+//
+// Module 3 LB-1 — the claim set is a CONTRACT with the API gateway's verifier,
+// and it lives in pkg/accesstoken so the contract can be tested against BOTH
+// real implementations without either deployable service depending on the
+// other. Scopes and the session claims are resolved server-side (env
+// allowlist ∪ DB roles, the session row); a client can never influence them.
 
 // accessTokenConfig maps service configuration onto the minter.
 func (s *Service) accessTokenConfig() accesstoken.Config {
@@ -1486,7 +1482,13 @@ func (s *Service) RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid
 }
 
 // createSessionForUser is a helper to create a full session (shared logic).
-func (s *Service) createSessionForUser(ctx context.Context, user *store.User, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
+// amr names how the caller authenticated so far (e.g. ["pwd"]); it is stored
+// on the session and becomes the token's amr claim. When it already contains
+// AMROTP (Verify2FA calling back in after the TOTP check) the 2FA gate and
+// the anomaly enforcement are both satisfied and skipped: re-entering them
+// asked a TOTP user for a second pending token forever.
+func (s *Service) createSessionForUser(ctx context.Context, user *store.User, amr []string, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
+	secondFactorDone := hasAMR(amr, AMROTP) || hasAMR(amr, AMRRecovery)
 	// Audit A6: enforce 2FA at every full-session entry point, not just
 	// the password-login path. Previously OAuth (Google/Apple) called
 	// this directly and skipped the TwoFactorEnabled check that
@@ -1494,8 +1496,8 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 	// could still sign in with only a stolen OAuth refresh token.
 	// Returning a pending 2FA session here funnels every login flow
 	// through the same second-factor gate.
-	if user.TwoFactorEnabled {
-		pendingToken, err := s.StorePending2FASession(ctx, user.ID, deviceID, platform, ip, userAgent)
+	if user.TwoFactorEnabled && !secondFactorDone {
+		pendingToken, err := s.StorePending2FASession(ctx, user.ID, deviceID, platform, ip, userAgent, amr...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create pending 2FA session: %w", err)
 		}
@@ -1524,7 +1526,7 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 	probe := s.probeLoginAnomaly(ctx, user.ID.String(), ip, deviceID)
 	risk := classifyAnomalyRisk(probe.LastIP, ip, probe.IsNewIP, probe.IsNewDevice, probe.UAFamilyChanged)
 
-	if risk == anomalyHigh && s.cfg.LoginAnomalyEnforce == "enforce" {
+	if risk == anomalyHigh && s.cfg.LoginAnomalyEnforce == "enforce" && !secondFactorDone {
 		// High-risk + enforce mode: refuse to mint tokens. Stash the
 		// pending state, dispatch the email-OTP if available, and
 		// return a step-up envelope. The handler maps the sentinel to
@@ -1534,7 +1536,7 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 		// don't want to advance last_ip until the user proves they own
 		// the account (otherwise the second login attempt would see
 		// the new IP as already-known and bypass the gate).
-		resp, err := s.startAnomalyStepUp(ctx, user, deviceID, platform, ip, userAgent)
+		resp, err := s.startAnomalyStepUp(ctx, user, amr, deviceID, platform, ip, userAgent)
 		if err == nil {
 			// startAnomalyStepUp returns (nil, ErrAnomalyStepUpRequired)
 			// on success; landing here means an unexpected nil-error
@@ -1569,42 +1571,7 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 	// the session.
 	s.applyAnomalySideEffects(ctx, user.ID.String(), ip, deviceID, platform, userAgent, probe)
 
-	sessionID := uuid.New()
-	refreshToken, err := generateOpaqueToken(32)
-	if err != nil {
-		return nil, err
-	}
-
-	sess := &store.Session{
-		ID:           sessionID,
-		UserID:       user.ID,
-		RefreshToken: hashToken(refreshToken),
-		DeviceID:     deviceID,
-		Platform:     platform,
-		IP:           ip,
-		UserAgent:    userAgent,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
-	}
-
-	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
-	}
-
-	accessToken, err := s.generateAccessToken(ctx, user.ID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AuthResponse{
-		Tokens: TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
-		},
-		User:      user,
-		SessionID: sessionID,
-	}, nil
+	return s.startSession(ctx, user, deviceID, platform, ip, userAgent, amr)
 }
 
 // anomalyProbeResult captures everything classifyAnomalyRisk needs to

@@ -104,9 +104,11 @@ type Config struct {
 	// stamped as the token `kid` and must match the verifiers' configured kid.
 	AccessTokenPrivateKeyPEM string
 	AccessTokenRS256KID      string
-	// RequireMFAForPrivileged, when true, blocks privileged actions (role
-	// management) unless the acting user has 2FA enabled. Default off so dev /
-	// first-superadmin bootstrap isn't locked out before enrolling MFA.
+	// RequireMFAForPrivileged (REQUIRE_MFA_FOR_PRIVILEGED) is INERT since the
+	// admin console A2 lane: role management and force logout now always
+	// require an admin MFA session plus a fresh step-up
+	// (service.authorizePrivileged), and nothing else read this flag. Still
+	// parsed so existing environments that set it keep starting.
 	RequireMFAForPrivileged bool
 	// WebAuthn / passkey relying-party config (used by the `webauthn`-tagged
 	// ceremony). RPID is the registrable domain (e.g. "cleestudio.com");

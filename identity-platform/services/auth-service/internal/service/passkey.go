@@ -3,9 +3,7 @@ package service
 import (
 	"context"
 	"errors"
-	"time"
 
-	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -28,43 +26,16 @@ func (s *Service) IssueSessionForUser(ctx context.Context, userID uuid.UUID, dev
 		return nil, errors.New("user not found")
 	}
 
-	sessionID := uuid.New()
-	refreshToken, err := generateOpaqueToken(32)
-	if err != nil {
-		return nil, err
-	}
-	sess := &store.Session{
-		ID:           sessionID,
-		UserID:       user.ID,
-		RefreshToken: hashToken(refreshToken),
-		DeviceID:     deviceID,
-		Platform:     platform,
-		IP:           ip,
-		UserAgent:    userAgent,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
-	}
-	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
-	}
-
-	accessToken, err := s.generateAccessToken(ctx, user.ID, sessionID)
+	// amr ["hwk"]: a passkey session is a consumer session. It never carries
+	// admin_mfa — an admin reaches that with POST /v1/auth/step-up (TOTP).
+	resp, err := s.startSession(ctx, user, deviceID, platform, ip, userAgent, []string{AMRHardwareKey})
 	if err != nil {
 		return nil, err
 	}
 	if s.producer != nil {
-		if err := s.producer.PublishUserLoggedIn(ctx, user.ID, sessionID, deviceID, platform, ip); err != nil {
+		if err := s.producer.PublishUserLoggedIn(ctx, user.ID, resp.SessionID, deviceID, platform, ip); err != nil {
 			s.log.Warn("publish user logged in failed", "err", err, "user_id", user.ID)
 		}
 	}
-
-	return &AuthResponse{
-		Tokens: TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
-		},
-		User:      user,
-		SessionID: sessionID,
-	}, nil
+	return resp, nil
 }

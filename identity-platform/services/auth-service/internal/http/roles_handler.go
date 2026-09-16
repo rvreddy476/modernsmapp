@@ -78,7 +78,11 @@ func (h *Handler) writeRoleErr(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrNotSuperadmin):
 		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "superadmin role required", nil, nil)
 	case errors.Is(err, service.ErrMFARequired):
-		api.Error(c.Writer, http.StatusForbidden, "MFA_REQUIRED", "enable two-factor auth to perform admin actions", nil, nil)
+		api.Error(c.Writer, http.StatusForbidden, CodeMFARequired,
+			"an admin session with two-factor authentication is required: enrol TOTP, then sign in with it or POST /v1/auth/step-up", nil, nil)
+	case errors.Is(err, service.ErrStepUpRequired):
+		api.Error(c.Writer, http.StatusForbidden, CodeStepUpRequired,
+			"a fresh two-factor check is required: POST /v1/auth/step-up, then retry within 5 minutes", nil, nil)
 	case errors.Is(err, service.ErrInvalidRole):
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST",
 			"invalid role (allowed: "+strings.Join(roles.All(), ", ")+")",

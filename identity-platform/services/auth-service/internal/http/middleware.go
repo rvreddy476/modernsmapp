@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-shared/api"
 	identitymiddleware "github.com/atpost/identity-shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,23 @@ import (
 type AccessClaims struct {
 	jwt.RegisteredClaims
 	SessionID string `json:"sid"`
+	// Admin session claims (A2); see pkg/accesstoken.Claims for meaning.
+	AuthTime int64    `json:"auth_time,omitempty"`
+	AMR      []string `json:"amr,omitempty"`
+	AdminMFA bool     `json:"admin_mfa"`
+	StepUpAt int64    `json:"step_up_at,omitempty"`
+}
+
+// sessionAuth converts verified claims into the service's context value.
+func (c *AccessClaims) sessionAuth() service.SessionAuth {
+	sid, _ := uuid.Parse(c.SessionID)
+	return service.SessionAuth{
+		SessionID: sid,
+		AuthTime:  c.AuthTime,
+		AMR:       c.AMR,
+		AdminMFA:  c.AdminMFA,
+		StepUpAt:  c.StepUpAt,
+	}
 }
 
 const (
@@ -221,6 +239,9 @@ func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
 		}
 
 		c.Request.Header.Set("X-User-Id", claims.Subject)
+		// The verified session claims ride on the request context, never on
+		// a header, so nothing a client sends can stand in for them.
+		c.Request = c.Request.WithContext(service.WithSessionAuth(c.Request.Context(), claims.sessionAuth()))
 		identitymiddleware.MarkAuthenticatedCredential(c, credentialSource)
 		c.Next()
 	}

@@ -2,11 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/atpost/identity-auth-service/internal/roles"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // UserRole is a single role grant for a user.
@@ -164,12 +166,20 @@ func (s *Store) RoleGrantsForUser(ctx context.Context, userID uuid.UUID) ([]Role
 // makes two concurrent revokes see each other's result instead of both
 // passing. guard may be nil for other roles.
 //
-// changed reports whether a row was inserted, updated or deleted.
+// Session revocation (A2): when the change REDUCES authority — a revoke that
+// deleted a row, or a grant that puts an expiry on a row that had none or
+// moves its expiry earlier — every live session of the target is revoked in
+// the same transaction and the ids are returned, so the service can write
+// sess_revoked:<sid> for each after the commit. Tokens minted under the old
+// authority then stop at the gateway instead of living out their TTL.
+//
+// The result reports whether a row was inserted, updated or deleted, and
+// which sessions were revoked.
 func (s *Store) ChangeRole(ctx context.Context, ch RoleChange, audit RoleAudit,
-	guard func(holders []SuperadminHolder) error) (changed bool, err error) {
+	guard func(holders []SuperadminHolder) error) (res RoleChangeResult, err error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("change role: begin: %w", err)
+		return res, fmt.Errorf("change role: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -179,23 +189,23 @@ func (s *Store) ChangeRole(ctx context.Context, ch RoleChange, audit RoleAudit,
 			WHERE role = 'superadmin' AND app IS NULL AND `+activeRole+`
 			FOR UPDATE`)
 		if err != nil {
-			return false, fmt.Errorf("change role: lock superadmins: %w", err)
+			return res, fmt.Errorf("change role: lock superadmins: %w", err)
 		}
 		var holders []SuperadminHolder
 		for rows.Next() {
 			var h SuperadminHolder
 			if err := rows.Scan(&h.UserID, &h.ExpiresAt); err != nil {
 				rows.Close()
-				return false, fmt.Errorf("change role: scan superadmin: %w", err)
+				return res, fmt.Errorf("change role: scan superadmin: %w", err)
 			}
 			holders = append(holders, h)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return false, fmt.Errorf("change role: read superadmins: %w", err)
+			return res, fmt.Errorf("change role: read superadmins: %w", err)
 		}
 		if err := guard(holders); err != nil {
-			return false, err
+			return res, err
 		}
 	}
 
@@ -203,20 +213,36 @@ func (s *Store) ChangeRole(ctx context.Context, ch RoleChange, audit RoleAudit,
 	if ch.App != "" {
 		app = &ch.App
 	}
+	reduces := false
 	if ch.Revoke {
 		tag, err := tx.Exec(ctx, `
 			DELETE FROM auth.user_roles
 			WHERE user_id = $1 AND role = $2 AND COALESCE(app, '') = $3`,
 			ch.UserID, ch.Role, ch.App)
 		if err != nil {
-			return false, fmt.Errorf("change role: revoke: %w", err)
+			return res, fmt.Errorf("change role: revoke: %w", err)
 		}
-		changed = tag.RowsAffected() > 0
+		res.Changed = tag.RowsAffected() > 0
+		reduces = res.Changed
 	} else {
 		var gb *uuid.UUID
 		if ch.GrantedBy != uuid.Nil {
 			gb = &ch.GrantedBy
 		}
+		// Read the current row (locked) to tell an expiry-shortening renewal
+		// from a fresh grant or an extension.
+		var prevExpiry *time.Time
+		exists := true
+		if err := tx.QueryRow(ctx, `
+			SELECT expires_at FROM auth.user_roles
+			WHERE user_id = $1 AND role = $2 AND COALESCE(app, '') = $3
+			FOR UPDATE`, ch.UserID, ch.Role, ch.App).Scan(&prevExpiry); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return res, fmt.Errorf("change role: read current grant: %w", err)
+			}
+			exists = false
+		}
+		reduces = exists && ExpiryShortened(prevExpiry, ch.ExpiresAt)
 		// Re-granting renews: expiry, reason and grantor are replaced.
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO auth.user_roles (user_id, role, app, granted_by, expires_at, reason)
@@ -226,27 +252,46 @@ func (s *Store) ChangeRole(ctx context.Context, ch RoleChange, audit RoleAudit,
 			    expires_at = EXCLUDED.expires_at, reason = EXCLUDED.reason`,
 			ch.UserID, ch.Role, app, gb, ch.ExpiresAt, ch.Reason)
 		if err != nil {
-			return false, fmt.Errorf("change role: grant: %w", err)
+			return res, fmt.Errorf("change role: grant: %w", err)
 		}
-		changed = tag.RowsAffected() > 0
+		res.Changed = tag.RowsAffected() > 0
 	}
 
-	var actor, target *uuid.UUID
-	if audit.ActorID != uuid.Nil {
-		actor = &audit.ActorID
+	detail := audit.Detail
+	if reduces {
+		ids, err := revokeAllSessionsTx(ctx, tx, ch.UserID)
+		if err != nil {
+			return RoleChangeResult{}, fmt.Errorf("change role: %w", err)
+		}
+		res.RevokedSessions = ids
+		detail = fmt.Sprintf("%s sessions_revoked=%d", detail, len(ids))
 	}
-	if audit.TargetID != uuid.Nil {
-		target = &audit.TargetID
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO auth.admin_audit (actor_id, action, target_id, detail, allowed)
-		VALUES ($1, $2, $3, $4, TRUE)`, actor, audit.Action, target, audit.Detail); err != nil {
-		return false, fmt.Errorf("change role: audit: %w", err)
+
+	if err := insertAuditTx(ctx, tx, audit, detail); err != nil {
+		return RoleChangeResult{}, fmt.Errorf("change role: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("change role: commit: %w", err)
+		return RoleChangeResult{}, fmt.Errorf("change role: commit: %w", err)
 	}
-	return changed, nil
+	return res, nil
+}
+
+// RoleChangeResult is what ChangeRole did.
+type RoleChangeResult struct {
+	// Changed: a row was inserted, updated or deleted.
+	Changed bool
+	// RevokedSessions: the target's sessions revoked in the same transaction
+	// because the change reduced their authority. Empty otherwise.
+	RevokedSessions []uuid.UUID
+}
+
+// ExpiryShortened reports whether replacing an existing grant's expiry prev
+// (nil = never) with next reduces how long the grant lasts.
+func ExpiryShortened(prev, next *time.Time) bool {
+	if next == nil {
+		return false
+	}
+	return prev == nil || next.Before(*prev)
 }
 
 // RecordRoleBootstrap writes the one audit row that records an env allowlist
