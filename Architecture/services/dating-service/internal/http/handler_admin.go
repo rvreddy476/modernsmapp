@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/api"
@@ -124,6 +125,18 @@ type actOnReportRequest struct {
 	TargetUserID string `json:"target_user_id"`
 }
 
+// ReportActionPermission is the permission one report action needs.
+// Suspending a profile, and lifting a suspension, are enforcement against a
+// person (dating:users.ban, admins only); the rest are moderation of the
+// report itself (dating:reports.act).
+func ReportActionPermission(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "suspend", "reinstate":
+		return PermUsersBan
+	}
+	return PermReportsAct
+}
+
 // ActOnReport — POST /v1/dating/admin/reports/:id/action
 // Body: {action, target_user_id?}. Allowed actions: dismiss /
 // resolved / warn / review / restrict / suspend / reinstate. Every action
@@ -148,6 +161,9 @@ func (h *Handler) ActOnReport(c *gin.Context) {
 	var body actOnReportRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if !adminMay(c, ReportActionPermission(body.Action)) {
 		return
 	}
 	var targetID uuid.UUID

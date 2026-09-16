@@ -111,7 +111,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// invalidation + profile-state transition +
 		// photo.moderation_rejected event. Requires the admin scope, so a
 		// user cannot approve their own photo.
-		dating.POST("/photos/:id/moderation", h.requireAdmin(), h.SetPhotoModerationStatus)
+		dating.POST("/photos/:id/moderation", h.requireAdmin(PermPhotosReview), h.SetPhotoModerationStatus)
 
 		dating.GET("/prompts/catalog", h.GetPromptCatalog)
 		dating.GET("/prompts", h.ListPrompts)
@@ -229,32 +229,76 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// gateway does NOT admin-gate these paths (they have no
 		// "/internal/" segment), so dating checks the gateway-set
 		// scopes itself: every route requires admin|moderator|superadmin.
-		admin := dating.Group("/admin", h.requireAdmin())
-		admin.GET("/reports", h.ListReports)
-		admin.POST("/reports/:id/action", h.ActOnReport)
-		// Lane D8 — the panic queue is paginated and carries no
-		// coordinates; the point is only in the single-incident detail,
-		// and every detail view is audited.
-		admin.GET("/safety/panic", h.ListPanicIncidents)
-		admin.GET("/safety/panic/:id", h.GetPanicIncident)
-		// Acknowledge moves open → acknowledged, writes the audit row and
-		// emits dating.safety.panic.acknowledged so the user sees support
-		// has triaged their alert; resolve closes it with a note (audited).
-		admin.POST("/safety/panic/:id/ack", h.AcknowledgePanic)
-		admin.POST("/safety/panic/:id/resolve", h.ResolvePanic)
-		admin.GET("/photos/pending", h.ListPendingPhotos)
-		// Lane D5 — selfie review queue (borderline similarity, high-risk
-		// first attempts) and the moderator decision.
-		admin.GET("/verification/selfie/pending", h.ListSelfieReviews)
-		admin.POST("/verification/selfie/:userId/review", h.ReviewSelfie)
-		// §P0-8 — append-only audit log surface for the console.
-		admin.GET("/audit", h.ListAdminAudit)
-		// §P0-7 Phase A — fake-account risk queue.
-		admin.GET("/risk", h.ListAccountRisks)
+		//
+		// Admin console Wave 2: each route also names its permission, and a
+		// request carrying an admin-service token is judged by that token
+		// alone (requireAdmin, admin_token.go). admin-service itself calls
+		// the token-only mirror under InternalAdminPrefix below.
+		admin := dating.Group("/admin")
+		h.registerAdminRoutes(admin, h.requireAdmin)
+	}
+
+	// Token-only admin family for admin-service: the same handlers, outside
+	// the internal-key group, admitted only by an admin-service token.
+	h.registerAdminRoutes(r.Group(InternalAdminPrefix), h.requireAdminToken)
+	r.GET(InternalAdminPrefix+"/stats", h.requireAdminToken(PermStatsRead), h.GetAdminStats)
+	r.POST(InternalAdminPrefix+"/photos/:id/moderation", h.requireAdminToken(PermPhotosReview), h.SetPhotoModerationStatus)
+
+	{
+		dating := v1.Group("/v1/dating")
 
 		// Moved to InternalRiskPath; 410 for one release.
 		dating.GET("/risk/:userId", movedTo(InternalRiskPath))
 	}
+}
+
+// registerAdminRoutes declares the admin console routes once, with the
+// permission each needs, under whichever gate the caller passes: requireAdmin
+// (token or LEGACY gateway scopes) or requireAdminToken (token only).
+//
+//	GET  /reports                              dating:reports.read
+//	POST /reports/:id/action                   dating:reports.act, or dating:users.ban for suspend/reinstate
+//	GET  /safety/panic                         dating:panic.read (no coordinates)
+//	GET  /safety/panic/:id                     dating:panic.reveal (GPS; audited per view)
+//	POST /safety/panic/:id/ack|resolve         dating:panic.act
+//	GET  /photos/pending                       dating:photos.review
+//	GET  /verification/selfie/pending          dating:selfie.review
+//	POST /verification/selfie/:userId/review   dating:selfie.review
+//	GET  /audit                                dating:audit.read
+//	GET  /risk                                 dating:risk.read
+func (h *Handler) registerAdminRoutes(g *gin.RouterGroup, gate func(perms ...string) gin.HandlerFunc) {
+	g.GET("/reports", gate(PermReportsRead), h.ListReports)
+	g.POST("/reports/:id/action", gate(PermReportsAct, PermUsersBan), h.ActOnReport)
+	// Lane D8 — the panic queue is paginated and carries no coordinates; the
+	// point is only in the single-incident detail, and every detail view is
+	// audited.
+	g.GET("/safety/panic", gate(PermPanicRead), h.ListPanicIncidents)
+	g.GET("/safety/panic/:id", gate(PermPanicReveal), h.GetPanicIncident)
+	// Acknowledge moves open → acknowledged, writes the audit row and emits
+	// dating.safety.panic.acknowledged so the user sees support has triaged
+	// their alert; resolve closes it with a note (audited).
+	g.POST("/safety/panic/:id/ack", gate(PermPanicAct), h.AcknowledgePanic)
+	g.POST("/safety/panic/:id/resolve", gate(PermPanicAct), h.ResolvePanic)
+	g.GET("/photos/pending", gate(PermPhotosReview), h.ListPendingPhotos)
+	// Lane D5 — selfie review queue (borderline similarity, high-risk first
+	// attempts) and the moderator decision.
+	g.GET("/verification/selfie/pending", gate(PermSelfieReview), h.ListSelfieReviews)
+	g.POST("/verification/selfie/:userId/review", gate(PermSelfieReview), h.ReviewSelfie)
+	// §P0-8 — append-only audit log surface for the console.
+	g.GET("/audit", gate(PermAuditRead), h.ListAdminAudit)
+	// §P0-7 Phase A — fake-account risk queue.
+	g.GET("/risk", gate(PermRiskRead), h.ListAccountRisks)
+}
+
+// GetAdminStats — GET /v1/dating/internal/admin/stats (admin-service token,
+// dating:stats.read). Read-only dashboard counts.
+func (h *Handler) GetAdminStats(c *gin.Context) {
+	stats, err := h.svc.AdminStats(c.Request.Context())
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, stats, nil)
 }
 
 func getUserID(c *gin.Context) (uuid.UUID, bool) {

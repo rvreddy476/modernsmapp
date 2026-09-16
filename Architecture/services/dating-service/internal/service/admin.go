@@ -93,6 +93,11 @@ func (s *Service) ListPendingPhotos(ctx context.Context, limit int) ([]*store.Ph
 	return s.store.ListPendingPhotos(ctx, limit)
 }
 
+// AdminStats is the passthrough used by GET /v1/dating/internal/admin/stats.
+func (s *Service) AdminStats(ctx context.Context) (*store.AdminStats, error) {
+	return s.store.AdminStats(ctx)
+}
+
 // ListAdminAudit is the passthrough used by GET /v1/dating/admin/audit.
 // Filters narrow by actor / target / action; the store applies the
 // limit + offset clamps. Acceptance test D in PHASE_0_TEST_PLANS.md

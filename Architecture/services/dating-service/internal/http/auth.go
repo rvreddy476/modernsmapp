@@ -105,15 +105,36 @@ func hasAdminScope(scopes string) bool {
 	return false
 }
 
-// requireAdmin admits a caller whose gateway-set identity is a valid user
-// id AND whose gateway-set scopes include an admin role. No identity → 401;
-// identity without the scope → 403 ADMIN_SCOPE_REQUIRED. The admitted user
-// id is stored as the audit actor; handlers read it with adminActor.
+// requireAdmin gates one admin route. perms[0] is the route's permission;
+// any further perms are ones the handler may narrow to per action (a report
+// suspension needs dating:users.ban, not dating:reports.act).
+//
+// Two ways in, never mixed:
+//
+//   - A service token in X-Service-Authorization. The request is judged
+//     ONLY by the token (admin_token.go): the gateway identity headers, the
+//     scopes and the internal key are ignored, and the audit actor is the
+//     token's signed "act" claim.
+//   - LEGACY, no token: a gateway-set identity that is a valid user id AND
+//     gateway-set scopes that include an admin role. No identity → 401;
+//     identity without the scope → 403 ADMIN_SCOPE_REQUIRED. The console
+//     moves to admin-service; this path stays for compatibility until then.
 //
 // X-Admin-Id is deliberately NOT read: the gateway never sets it, so any
 // value there was chosen by whoever sent the request.
-func (h *Handler) requireAdmin() gin.HandlerFunc {
+func (h *Handler) requireAdmin(perms ...string) gin.HandlerFunc {
+	if len(perms) == 0 {
+		panic("dating: requireAdmin needs the route's permission")
+	}
 	return func(c *gin.Context) {
+		if rawServiceToken(c) != "" {
+			if !h.authorizeAdminToken(c, perms) {
+				c.Abort()
+				return
+			}
+			c.Next()
+			return
+		}
 		raw := strings.TrimSpace(c.GetHeader(headerUserID))
 		if raw == "" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, CodeAuthRequired, "authentication required", nil)

@@ -43,10 +43,25 @@ externalSecret:
   #   remoteRef: dating_service_token_key
   # - secretKey: DATING_SERVICE_TOKEN_KID
   #   remoteRef: dating_service_token_kid
+  # Admin console Wave 2: dating verifies admin-service's service tokens on
+  # /v1/dating/internal/admin/*. NOT enabled yet (the console's Dating
+  # dashboard is refused; legacy admin routes keep working). Enable in this
+  # order: store admin-service's private seed and kid in its key vault entry
+  # (admin_service_token_key / admin_service_token_kid) and the public half and
+  # kid here (caller_admin_pubkey / caller_admin_kid); uncomment below AND the
+  # SERVICE_CALLERS lines under env; then enable admin-service's lines.
+  # Setting SERVICE_CALLERS before the key exists refuses boot.
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY
+  #   remoteRef: caller_admin_pubkey
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID
+  #   remoteRef: caller_admin_kid
   secretStoreName: azure-key-vault
 env:
   ENV: staging
   LOG_LEVEL: info
+  # Admin console Wave 2: uncomment with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
+  # SERVICE_CALLERS: admin-service
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: dating:stats.read,dating:reports.read,dating:reports.act,dating:users.ban,dating:photos.review,dating:selfie.review,dating:panic.read,dating:panic.act,dating:panic.reveal,dating:risk.read,dating:audit.read
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   IDENTITY_PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
   DATING_DEDUPE_OPEN_MATCHES: 'false'
