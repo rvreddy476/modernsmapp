@@ -9,6 +9,7 @@ import (
 	"github.com/atpost/qa-service/internal/service"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -17,6 +18,11 @@ type Handler struct {
 	svc           *service.Service
 	internalKey   string
 	moderatorIDs  map[uuid.UUID]struct{}
+	// verifier admits admin-service tokens on /v1/qa/internal/admin/*
+	// (admin_token.go); nil accepts none.
+	verifier *servicetoken.Verifier
+	// adminStore backs the token path; nil means svc.Store().
+	adminStore AdminStore
 }
 
 func New(svc *service.Service) *Handler {
@@ -78,10 +84,15 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Token-only admin family for admin-service, registered on the engine
+	// OUTSIDE the internal-key group: the key is no evidence of who is
+	// calling, the admin-service token is (admin_token.go).
+	h.registerAdminTokenRoutes(r)
+
 	qa := r.Group("/v1/qa")
+	if h.internalKey != "" {
+		qa.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	{
 		// Questions
 		qa.POST("/questions", h.CreateQuestion)
