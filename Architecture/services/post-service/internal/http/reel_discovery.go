@@ -17,9 +17,9 @@ func (h *Handler) RegisterReelDiscoveryRoutes(r *gin.Engine) {
 	// Slug redirect
 	r.GET("/v1/reels/slug/:slug", h.LookupSlugRedirect)
 
-	// Moderation (admin)
-	r.GET("/v1/reels/moderation/flagged", h.GetFlaggedReels)
-	r.GET("/v1/reels/:reelId/moderation", h.GetReelModerationReviews)
+	// Moderation: moderator-or-higher scope from the gateway-verified identity.
+	r.GET("/v1/reels/moderation/flagged", requireModerator(), h.GetFlaggedReels)
+	r.GET("/v1/reels/:reelId/moderation", requireModerator(), h.GetReelModerationReviews)
 }
 
 func (h *Handler) GetTrendingHashtags(c *gin.Context) {

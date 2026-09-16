@@ -287,8 +287,9 @@ func (s *Service) SetReviewAllVideos(v bool) {
 // (approved|rejected). Used by reviewer-service's ML pre-filter to clear
 // content without a human. Scoped to flagged rows so it can't override a
 // human/pending verdict. Busts the cached post body on success.
-func (s *Service) AutoResolveFlagged(ctx context.Context, postID uuid.UUID, status string) (bool, error) {
-	ok, err := s.pgStore.SetReviewStatusFromFlagged(ctx, postID, status)
+// The actor is written to post_review_audit with the change.
+func (s *Service) AutoResolveFlagged(ctx context.Context, postID uuid.UUID, status string, actor postgres.ReviewAuditActor) (bool, error) {
+	ok, err := s.pgStore.SetReviewStatusFromFlagged(ctx, postID, status, actor)
 	if err == nil && ok && s.rdb != nil {
 		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
 	}
@@ -334,8 +335,9 @@ func (s *Service) Resubmit(ctx context.Context, postID, actorID uuid.UUID) (bool
 
 // PromoteStaged finalizes a test-audience rollout by moving a STAGED post to a
 // new visibility (typically 'public'). Used by the reviewer promotion worker.
-func (s *Service) PromoteStaged(ctx context.Context, postID uuid.UUID, visibility string) (bool, error) {
-	ok, err := s.pgStore.SetVisibilityFromStaged(ctx, postID, visibility)
+// The actor is written to post_review_audit with the change.
+func (s *Service) PromoteStaged(ctx context.Context, postID uuid.UUID, visibility string, actor postgres.ReviewAuditActor) (bool, error) {
+	ok, err := s.pgStore.SetVisibilityFromStaged(ctx, postID, visibility, actor)
 	if err == nil && ok && s.rdb != nil {
 		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
 	}

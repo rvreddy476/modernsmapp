@@ -1409,7 +1409,13 @@ func (s *Store) FlipReviewStatusFromPending(ctx context.Context, postID uuid.UUI
 // the reviewer-service ML pre-filter to auto-resolve flagged content without a
 // human. Scoped to review_status='flagged' so it can never override a human
 // moderator's or the pending-gate's decision.
-func (s *Store) SetReviewStatusFromFlagged(ctx context.Context, postID uuid.UUID, newStatus string) (bool, error) {
+//
+// Every change writes one post_review_audit row in the same transaction; a
+// no-op (post not flagged) writes none.
+func (s *Store) SetReviewStatusFromFlagged(ctx context.Context, postID uuid.UUID, newStatus string, actor ReviewAuditActor) (bool, error) {
+	if err := actor.validate(); err != nil {
+		return false, err
+	}
 	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		tag, err := tx.Exec(ctx, `
 			UPDATE posts SET review_status = $2, updated_at = NOW()
@@ -1418,7 +1424,13 @@ func (s *Store) SetReviewStatusFromFlagged(ctx context.Context, postID uuid.UUID
 		if err != nil {
 			return false, err
 		}
-		return tag.RowsAffected() > 0, nil
+		if tag.RowsAffected() == 0 {
+			return false, nil
+		}
+		if err := insertReviewAudit(ctx, tx, postID, "review_status", "flagged", newStatus, actor); err != nil {
+			return false, err
+		}
+		return true, nil
 	})
 }
 
@@ -1440,7 +1452,12 @@ func (s *Store) ResubmitFromNeedsChanges(ctx context.Context, postID uuid.UUID) 
 // SetVisibilityFromStaged promotes a STAGED post to a new visibility (e.g.
 // 'public'). Scoped to visibility='staged' so the reviewer promotion worker can
 // only finalize the test-audience rollout, never change other visibilities.
-func (s *Store) SetVisibilityFromStaged(ctx context.Context, postID uuid.UUID, newVisibility string) (bool, error) {
+//
+// Every change writes one post_review_audit row in the same transaction.
+func (s *Store) SetVisibilityFromStaged(ctx context.Context, postID uuid.UUID, newVisibility string, actor ReviewAuditActor) (bool, error) {
+	if err := actor.validate(); err != nil {
+		return false, err
+	}
 	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		tag, err := tx.Exec(ctx, `
 			UPDATE posts SET visibility = $2, updated_at = NOW()
@@ -1449,7 +1466,13 @@ func (s *Store) SetVisibilityFromStaged(ctx context.Context, postID uuid.UUID, n
 		if err != nil {
 			return false, err
 		}
-		return tag.RowsAffected() > 0, nil
+		if tag.RowsAffected() == 0 {
+			return false, nil
+		}
+		if err := insertReviewAudit(ctx, tx, postID, "visibility", "staged", newVisibility, actor); err != nil {
+			return false, err
+		}
+		return true, nil
 	})
 }
 

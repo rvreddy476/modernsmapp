@@ -16,15 +16,16 @@ func (h *Handler) RegisterReportRoutes(r *gin.Engine) {
 	// User-facing: submit a report
 	r.POST("/v1/reports", h.SubmitReport)
 
-	// Admin-facing: list and review reports
-	reports := r.Group("/v1/admin/reports")
+	// Admin-facing: list and review reports. Moderator-or-higher scope is
+	// checked here, not left to gateway route order.
+	reports := r.Group("/v1/admin/reports", requireModerator())
 	{
 		reports.GET("", h.ListReports)
 		reports.PATCH("/:reportId", h.ReviewReport)
 	}
 
 	// Tier 2b: comment moderation queue
-	mod := r.Group("/v1/admin/comments")
+	mod := r.Group("/v1/admin/comments", requireModerator())
 	{
 		mod.GET("/moderation", h.ListFlaggedComments)
 		mod.PATCH("/:commentId/moderation", h.ModerateComment)
