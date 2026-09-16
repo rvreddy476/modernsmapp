@@ -202,7 +202,16 @@ fun PersonScreen(
                     )
                     if (s.person.verified) Pill("Verified", Tone.Positive)
                 }
-                s.person.distance?.let {
+                // The same line the deck card carries, so the person view is no
+                // thinner than the card it came from. Every part is optional and
+                // an absent one contributes no separator.
+                val about = listOfNotNull(s.person.city, s.person.intent, s.person.distance).joinToString(" · ")
+                if (about.isNotBlank()) {
+                    Text(about, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary)
+                }
+                // Absent when they hide last active. Nothing is shown then — no
+                // placeholder, no empty row.
+                s.person.lastActive?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
                 }
                 PersonDetailBody(s.person.detail)

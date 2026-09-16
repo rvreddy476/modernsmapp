@@ -181,6 +181,12 @@ fun person(
     photoState: String = "full",
     bucket: String? = "lt_5_km",
     verified: Boolean = true,
+    city: String = "Hyderabad",
+    intent: String = "casual",
+    // Null by BOTH defaults is the hidden case: a person who hides last active,
+    // which is what a new profile does, and the server then omits both fields.
+    lastActiveBucket: String? = null,
+    lastActiveLabel: String? = null,
     detail: ProfileDetailDto? = null,
 ) = DatingPersonDto(
     userId = userId,
@@ -193,6 +199,10 @@ fun person(
     trustTier = if (verified) "selfie" else "phone",
     distanceBucket = bucket,
     distanceLabel = bucket?.let { "server label" },
+    city = city,
+    intent = intent,
+    lastActiveBucket = lastActiveBucket,
+    lastActiveLabel = lastActiveLabel,
     detail = detail,
 )
 

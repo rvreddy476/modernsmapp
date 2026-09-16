@@ -293,7 +293,13 @@ private fun SparksList(viewModel: SparksViewModel, onOpenPerson: (String) -> Uni
                                     )
                                     if (spark.verified) Pill("Verified", Tone.Positive)
                                 }
-                                spark.distance?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted) }
+                                // One line, the deck's separator: city and intent
+                                // join the distance the row already carried rather
+                                // than adding rows to a row that is already dense.
+                                val about = listOfNotNull(spark.city, spark.intent, spark.distance).joinToString(" · ")
+                                if (about.isNotBlank()) {
+                                    Text(about, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                                }
                                 spark.note?.let { Text("“$it”", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary) }
                             }
                             IconButton(onClick = { reporting = spark }) { Icon(UsIcons.Flag, contentDescription = "Report", tint = UsTheme.extended.textMuted) }
@@ -361,8 +367,14 @@ private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Un
                                     )
                                     if (match.verified) Pill("Verified", Tone.Positive)
                                 }
-                                val line = listOfNotNull(matchStatusLabel(match.status).takeIf { it.isNotBlank() }, match.distance)
-                                    .joinToString(" · ")
+                                // City sits with the distance it belongs to. The
+                                // row stays one line: last active is on the match
+                                // itself, where there is room for it.
+                                val line = listOfNotNull(
+                                    matchStatusLabel(match.status).takeIf { it.isNotBlank() },
+                                    match.city,
+                                    match.distance,
+                                ).joinToString(" · ")
                                 if (line.isNotBlank()) {
                                     Text(line, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
                                 }
@@ -436,10 +448,17 @@ fun MatchDetailScreen(
                     )
                     if (s.match.verified) Pill("Verified", Tone.Positive)
                 }
-                val detail = listOfNotNull(matchStatusLabel(s.match.status).takeIf { it.isNotBlank() }, s.match.distance)
-                    .joinToString(" · ")
+                val detail = listOfNotNull(
+                    matchStatusLabel(s.match.status).takeIf { it.isNotBlank() },
+                    s.match.city,
+                    s.match.distance,
+                ).joinToString(" · ")
                 if (detail.isNotBlank()) {
                     Text(detail, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
+                }
+                // Absent when they hide last active, and nothing stands in for it.
+                s.match.lastActive?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
                 }
                 UsButton(text = "Open chat", onClick = viewModel::openChat, modifier = Modifier.fillMaxWidth())
                 UsSecondaryButton(text = "Share my live location", onClick = { onShareLocation(s.match.otherUserId) }, modifier = Modifier.fillMaxWidth())

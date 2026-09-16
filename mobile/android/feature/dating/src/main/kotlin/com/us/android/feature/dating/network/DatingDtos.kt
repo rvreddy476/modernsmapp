@@ -45,6 +45,19 @@ data class DatingPersonDto(
     @SerialName("distance_bucket") val distanceBucket: String? = null,
     /** The server's own label. Never rendered: the app maps the bucket code itself. */
     @SerialName("distance_label") val distanceLabel: String? = null,
+    /** A city NAME only — never coordinates. Omitted when the person set none. */
+    val city: String = "",
+    /** casual | serious | marriage — rendered through [DatingIntent] only. */
+    val intent: String = "",
+    /**
+     * How recently they were here, as a COARSE bucket: today | this_week | a_while_ago.
+     *
+     * Both this and [lastActiveLabel] are ABSENT when the owner hides last active
+     * — the default for a new profile — and the app renders nothing at all then.
+     * There is no fallback string: hidden means hidden.
+     */
+    @SerialName("last_active_bucket") val lastActiveBucket: String? = null,
+    @SerialName("last_active_label") val lastActiveLabel: String? = null,
     /**
      * The pre-match "enough to decide" block, present only where the viewer is
      * deciding about this person: `GET /people/:userId` and an incoming spark.

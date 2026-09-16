@@ -20,7 +20,9 @@
         "primary_photo_url": "/v1/dating/photos/<uuid>/full",
         "photo_state": "full",
         "verified": false,
-        "trust_tier": "phone"
+        "trust_tier": "phone",
+        "city": "Hyderabad",
+        "intent": "casual"
       }
     }
   ]

@@ -61,7 +61,7 @@ import java.io.File
  * Every golden contract fixture from dating-service decodes into its DTO.
  *
  * The fixtures are dating-service's handler-test goldens
- * (internal/http/testdata/contracts, 55b06b4a), copied byte for byte into
+ * (internal/http/testdata/contracts, adfeb2fc), copied byte for byte into
  * src/test/resources/contracts. Decoding is STRICT — unknown keys fail — so a
  * key renamed on either side, or a field the server added that the DTO does
  * not declare, fails here rather than defaulting silently in production.
@@ -134,6 +134,9 @@ class DatingContractFixtureTest {
             assertThat(person.primaryPhotoUrl).isEqualTo("/v1/dating/photos/<uuid>/full")
             assertThat(person.photoState).isEqualTo("full")
             assertThat(person.verified).isFalse()
+            assertThat(person.city).isEqualTo("Hyderabad")
+            assertThat(person.intent).isEqualTo("casual")
+            assertThat(person.lastActiveLabel).isNull()
             // The match list stays COMPACT: the server omits detail here on purpose.
             assertThat(person.detail).isNull()
         },
@@ -148,6 +151,12 @@ class DatingContractFixtureTest {
             assertThat(it.photoState).isEqualTo("full")
             assertThat(it.trustTier).isEqualTo("phone")
             assertThat(it.verified).isFalse()
+            // A city NAME, never a coordinate, and the intent as a CODE.
+            assertThat(it.city).isEqualTo("Hyderabad")
+            assertThat(it.intent).isEqualTo("casual")
+            // The golden hides last active — the default — so BOTH fields are absent.
+            assertThat(it.lastActiveBucket).isNull()
+            assertThat(it.lastActiveLabel).isNull()
             // The person view decides too, so it carries the detail block.
             assertThat(checkNotNull(it.detail).photos.single().state).isEqualTo("full")
         },
@@ -418,6 +427,9 @@ class DatingContractFixtureTest {
             assertThat(person.age).isEqualTo(30)
             // Blur-by-default is OFF: an unmatched spark sender shows openly.
             assertThat(person.photoState).isEqualTo("full")
+            assertThat(person.city).isEqualTo("Hyderabad")
+            assertThat(person.intent).isEqualTo("casual")
+            assertThat(person.lastActiveBucket).isNull()
             // A spark is decided on, so it carries the detail block too.
             assertThat(checkNotNull(person.detail).photos.single().state).isEqualTo("full")
         },
@@ -441,6 +453,10 @@ class DatingContractFixtureTest {
             assertThat(person.firstName).isEqualTo("Asha")
             assertThat(person.age).isEqualTo(30)
             assertThat(person.photoState).isEqualTo("full")
+            // The wire carries city and intent here too, because it is the same
+            // compact card. The safety screens render NEITHER: who someone is
+            // looking for is no part of reaching them in an emergency.
+            assertThat(person.intent).isEqualTo("casual")
             // A safety surface carries no bio and no gallery.
             assertThat(person.detail).isNull()
         },

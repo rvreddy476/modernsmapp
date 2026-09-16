@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.feature.dating.DatingCopy
+import com.us.android.feature.dating.DatingIntent
 import com.us.android.feature.dating.DistanceBucket
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.data.DatingResult
@@ -86,8 +87,18 @@ data class PersonUi(
     val userId: String,
     val name: String?,
     val age: Int?,
+    /** A city name, or null. Never coordinates. */
+    val city: String?,
+    /** An intent label ("Casual"), or null for blank and unknown codes. */
+    val intent: String?,
     /** A bucket label, or null. Never a number. */
     val distance: String?,
+    /**
+     * The server's coarse last-active label, or null when it sent none — which
+     * is what a hidden last-active looks like. Null renders NOTHING: the screen
+     * never substitutes "Unknown" or any other stand-in.
+     */
+    val lastActive: String?,
     val verified: Boolean,
     val photoUrl: String?,
     val photoId: String?,
@@ -139,7 +150,10 @@ class PersonViewModel @Inject constructor(
         userId = userId.takeIf { it.isNotBlank() } ?: this@PersonViewModel.userId,
         name = firstName.takeIf { it.isNotBlank() },
         age = age.takeIf { it > 0 },
+        city = city.trim().takeIf { it.isNotBlank() },
+        intent = DatingIntent.labelFor(intent),
         distance = DistanceBucket.labelFor(distanceBucket),
+        lastActive = lastActiveLabel?.trim()?.takeIf { it.isNotBlank() },
         verified = verified,
         photoUrl = urls.forPerson(this),
         photoId = PhotoRules.photoIdOf(primaryPhotoUrl),

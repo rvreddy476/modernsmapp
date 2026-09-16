@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.feature.dating.DatingCopy
+import com.us.android.feature.dating.DatingIntent
 import com.us.android.feature.dating.DatingSession
 import com.us.android.feature.dating.DistanceBucket
 import com.us.android.feature.dating.data.DatingError
@@ -224,6 +225,10 @@ data class IncomingSparkUi(
     val fromUserId: String,
     val name: String?,
     val age: Int?,
+    /** A city name, or null. Never coordinates. */
+    val city: String?,
+    /** An intent label ("Casual"), or null for blank and unknown codes. */
+    val intent: String?,
     /** A bucket label, or null when the server sent no bucket. Never a number. */
     val distance: String?,
     val verified: Boolean,
@@ -330,6 +335,8 @@ class SparksViewModel @Inject constructor(
         fromUserId = fromUserId,
         name = person?.firstName?.takeIf { it.isNotBlank() },
         age = person?.age?.takeIf { it > 0 },
+        city = person?.city?.trim()?.takeIf { it.isNotBlank() },
+        intent = DatingIntent.labelFor(person?.intent),
         distance = DistanceBucket.labelFor(person?.distanceBucket),
         verified = person?.verified == true,
         photoUrl = urls.forPerson(person),
@@ -347,8 +354,12 @@ data class MatchUi(
     val otherUserId: String,
     val name: String?,
     val age: Int?,
+    /** A city name, or null. Never coordinates. */
+    val city: String?,
     /** A bucket label, or null when the server sent no bucket. Never a number. */
     val distance: String?,
+    /** The server's coarse label, or null when they hide last active — which renders nothing. */
+    val lastActive: String?,
     val verified: Boolean,
     /** The variant the card's `photo_state` allows — never upgraded by the app. */
     val photoUrl: String?,
@@ -363,7 +374,9 @@ private fun MatchDto.toUi(other: String, urls: DatingPhotoUrls) = MatchUi(
     otherUserId = other,
     name = person?.firstName?.takeIf { it.isNotBlank() },
     age = person?.age?.takeIf { it > 0 },
+    city = person?.city?.trim()?.takeIf { it.isNotBlank() },
     distance = DistanceBucket.labelFor(person?.distanceBucket),
+    lastActive = person?.lastActiveLabel?.trim()?.takeIf { it.isNotBlank() },
     verified = person?.verified == true,
     photoUrl = urls.forPerson(person),
     status = status,

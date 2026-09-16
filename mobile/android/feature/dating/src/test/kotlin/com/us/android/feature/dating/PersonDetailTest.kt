@@ -222,6 +222,91 @@ class PersonDetailTest {
         assertThat(view.state.value).isInstanceOf(PersonState.Gone::class.java)
     }
 
+    // ── city, intent and last active ────────────────────────────────────────
+
+    @Test
+    fun `the person view shows city, intent and the last-active label`() = runTest {
+        api.people = mapOf(
+            other to person(
+                other,
+                name = "Asha",
+                city = "Hyderabad",
+                intent = "serious",
+                lastActiveBucket = "today",
+                lastActiveLabel = "Active today",
+            ),
+        )
+        val view = PersonViewModel(SavedStateHandle(mapOf("userId" to other)), repository, urls)
+
+        val card = (view.state.value as PersonState.Loaded).person
+
+        assertThat(card.city).isEqualTo("Hyderabad")
+        // The label comes from the CODE, never from the wire value itself.
+        assertThat(card.intent).isEqualTo("Serious")
+        assertThat(card.lastActive).isEqualTo("Active today")
+    }
+
+    @Test
+    fun `a card with last active absent renders no last-active text anywhere`() = runTest {
+        // Both fields omitted: the owner hides last active, which is the default.
+        val hidden = person(other, lastActiveBucket = null, lastActiveLabel = null)
+        api.people = mapOf(other to hidden)
+        api.matches = listOf(match("m-1", other, hidden))
+        api.incoming = listOf(spark("s-1", other, hidden))
+
+        val view = PersonViewModel(SavedStateHandle(mapOf("userId" to other)), repository, urls)
+        val matches = MatchesViewModel(repository, session, urls)
+        val sparks = SparksViewModel(repository, session, safety, urls)
+
+        // Null, not "Unknown" and not an empty string: nothing is rendered at all.
+        assertThat((view.state.value as PersonState.Loaded).person.lastActive).isNull()
+        assertThat((matches.state.value as ListState.Items).items.single().lastActive).isNull()
+        // The rest of the card still reads, so the absence is silent, not fatal.
+        assertThat((sparks.state.value as ListState.Items).items.single().city).isEqualTo("Hyderabad")
+    }
+
+    @Test
+    fun `an intent code the app does not know renders nothing`() = runTest {
+        api.people = mapOf(other to person(other, intent = "situationship"))
+        val view = PersonViewModel(SavedStateHandle(mapOf("userId" to other)), repository, urls)
+
+        // A future server value never reaches a card as raw wire text.
+        assertThat((view.state.value as PersonState.Loaded).person.intent).isNull()
+    }
+
+    @Test
+    fun `an incoming spark carries the city and intent the row shows`() = runTest {
+        api.incoming = listOf(spark("s-1", other, person(other, city = "Chennai", intent = "marriage")))
+        val sparks = SparksViewModel(repository, session, safety, urls)
+
+        val row = (sparks.state.value as ListState.Items).items.single()
+
+        assertThat(row.city).isEqualTo("Chennai")
+        assertThat(row.intent).isEqualTo("Marriage")
+    }
+
+    @Test
+    fun `a match keeps the city and the last-active label`() = runTest {
+        api.matches = listOf(
+            match("m-1", other, person(other, city = "Pune", lastActiveBucket = "this_week", lastActiveLabel = "Active this week")),
+        )
+        val matches = MatchesViewModel(repository, session, urls)
+
+        val row = (matches.state.value as ListState.Items).items.single()
+
+        assertThat(row.city).isEqualTo("Pune")
+        assertThat(row.lastActive).isEqualTo("Active this week")
+    }
+
+    @Test
+    fun `a card with no city contributes no city text`() = runTest {
+        api.people = mapOf(other to person(other, city = "   "))
+        val view = PersonViewModel(SavedStateHandle(mapOf("userId" to other)), repository, urls)
+
+        // Blank is the same as absent: a separator must never be left behind.
+        assertThat((view.state.value as PersonState.Loaded).person.city).isNull()
+    }
+
     // ── the compact surfaces stay compact ───────────────────────────────────
 
     @Test

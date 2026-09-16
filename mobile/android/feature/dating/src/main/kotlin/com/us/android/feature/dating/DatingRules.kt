@@ -27,6 +27,27 @@ enum class DistanceBucket(val code: String, val label: String) {
     }
 }
 
+/**
+ * What someone is looking for, as the card states it.
+ *
+ * Mapped from the server's CODE, the same way distance is: the app renders only
+ * these three labels, and an unknown code renders nothing rather than leaking a
+ * raw wire value onto a card.
+ */
+enum class DatingIntent(val code: String, val label: String) {
+    CASUAL("casual", "Casual"),
+    SERIOUS("serious", "Serious"),
+    MARRIAGE("marriage", "Marriage"),
+    ;
+
+    companion object {
+        fun fromCode(code: String?): DatingIntent? = entries.firstOrNull { it.code == code?.trim() }
+
+        /** The label for [code], or null. The only way intent text is produced in this module. */
+        fun labelFor(code: String?): String? = fromCode(code)?.label
+    }
+}
+
 /** The server's profile status machine, as the app routes it. */
 enum class OnboardingStep {
     /** No dating profile yet. */
