@@ -108,7 +108,8 @@ func (s *Service) requireAdult(ctx context.Context, userID uuid.UUID) error {
 //	                           only hides from discovery); otherwise the
 //	                           onboarding error below
 //	draft / pending_photo /
-//	  pending_selfie         -> "invalid:" 400; onboarding incomplete
+//	  pending_selfie         -> *OnboardingIncompleteError (409); onboarding
+//	                           is not finished
 //	pending_review           -> ErrProfilePendingReview
 //	restricted               -> ErrProfileRestricted
 //	suspended / deleted      -> ErrProfileSuspended
@@ -138,7 +139,7 @@ func (s *Service) requireInteractiveProfile(ctx context.Context, userID uuid.UUI
 		if p.PriorStatus != nil {
 			step = *p.PriorStatus
 		}
-		return fmt.Errorf("invalid: complete onboarding (profile_status=paused, step=%s) before sparking", step)
+		return &OnboardingIncompleteError{ProfileStatus: store.ProfileStatusPaused, Step: step}
 	case store.ProfileStatusPendingReview:
 		return ErrProfilePendingReview
 	case store.ProfileStatusRestricted:
@@ -149,15 +150,43 @@ func (s *Service) requireInteractiveProfile(ctx context.Context, userID uuid.UUI
 		// draft / pending_photo / pending_selfie — onboarding still in
 		// progress. Returning ErrUnderage here would be wrong (the user
 		// may well be an adult), but they cannot spark before their
-		// profile is active. Surface as 400 via the "invalid:" prefix.
-		return fmt.Errorf("invalid: complete onboarding (profile_status=%s) before sparking", p.ProfileStatus)
+		// profile is active. This is a state gate, not a malformed
+		// request: 409 ONBOARDING_INCOMPLETE (see the type below).
+		return &OnboardingIncompleteError{ProfileStatus: p.ProfileStatus, Step: p.ProfileStatus}
 	}
 }
 
+// OnboardingIncompleteError: the caller's profile has not finished
+// onboarding, so it cannot take an outbound action (sparking, accepting).
+// Nothing about the request is malformed — resending it unchanged after
+// onboarding finishes succeeds — so this is 409 ONBOARDING_INCOMPLETE, next
+// to the other profile-state refusals (PROFILE_TRANSITION_NOT_ALLOWED,
+// PROFILE_STATUS_CONFLICT), rather than the 400 the "invalid: " prefix used
+// to give it. Step is the onboarding step still owed; for a paused profile
+// it is the status the pause is remembering.
+type OnboardingIncompleteError struct {
+	ProfileStatus string
+	Step          string
+}
+
+func (e *OnboardingIncompleteError) Error() string {
+	return fmt.Sprintf("complete onboarding (profile_status=%s, step=%s) before sparking", e.ProfileStatus, e.Step)
+}
+
+// Intents is the enum accepted for a profile's intent and for each value of
+// the preferences intent_filter.
+var Intents = []string{"casual", "serious", "marriage"}
+
+// ErrInvalidIntent: intent is not one of Intents. Stable code
+// (400 INVALID_INTENT) instead of the generic INVALID_REQUEST, so the app can
+// show the intent picker again with the allowed values from details.
+var ErrInvalidIntent = errors.New("intent must be one of " + strings.Join(Intents, ", "))
+
 func validIntent(i string) bool {
-	switch i {
-	case "casual", "serious", "marriage":
-		return true
+	for _, v := range Intents {
+		if i == v {
+			return true
+		}
 	}
 	return false
 }
@@ -201,7 +230,7 @@ func (s *Service) GetProfile(ctx context.Context, userID uuid.UUID) (*store.Prof
 // the same grid cell is a no-op.
 func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.UpsertProfileParams) (*store.Profile, error) {
 	if p.Intent != nil && !validIntent(*p.Intent) {
-		return nil, fmt.Errorf("invalid: intent must be one of casual|serious|marriage")
+		return nil, ErrInvalidIntent
 	}
 	// Lane D9: religion and community need explicit consent (422
 	// CONSENT_REQUIRED), checked before anything is written.
@@ -381,7 +410,7 @@ func (s *Service) advanceOnboarding(ctx context.Context, userID uuid.UUID) (*sto
 
 func (s *Service) SetIntent(ctx context.Context, userID uuid.UUID, intent string) (*store.Profile, error) {
 	if !validIntent(intent) {
-		return nil, fmt.Errorf("invalid: intent must be one of casual|serious|marriage")
+		return nil, ErrInvalidIntent
 	}
 	out, err := s.store.SetIntent(ctx, userID, intent)
 	if err != nil {

@@ -5,17 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 )
 
+// PhotoVisibilities is the spec §10 enum a photo's visibility must be one of.
+var PhotoVisibilities = []string{"public", "match_only", "sparked_only"}
+
+// ErrInvalidVisibility: visibility is not one of PhotoVisibilities. Stable
+// code (400 INVALID_VISIBILITY) instead of the generic INVALID_REQUEST, so
+// the app can reopen the visibility picker with the allowed values.
+var ErrInvalidVisibility = errors.New("visibility must be one of " + strings.Join(PhotoVisibilities, ", "))
+
 // validVisibility gates the spec §10 enum.
 func validVisibility(v string) bool {
-	switch v {
-	case "public", "match_only", "sparked_only":
-		return true
+	for _, allowed := range PhotoVisibilities {
+		if v == allowed {
+			return true
+		}
 	}
 	return false
 }
@@ -56,7 +66,7 @@ func (s *Service) CreatePhoto(ctx context.Context, userID uuid.UUID, p store.Cre
 		return nil, fmt.Errorf("invalid: media_id is required")
 	}
 	if p.Visibility != "" && !validVisibility(p.Visibility) {
-		return nil, fmt.Errorf("invalid: visibility must be one of public|match_only|sparked_only")
+		return nil, ErrInvalidVisibility
 	}
 	if s.mediaPhotos == nil {
 		return nil, fmt.Errorf("%w: no media photo client configured", ErrPhotoMediaUnavailable)
@@ -108,7 +118,7 @@ func (s *Service) CreatePhoto(ctx context.Context, userID uuid.UUID, p store.Cre
 // refreshes decks and the profile's photo step.
 func (s *Service) UpdatePhoto(ctx context.Context, userID, photoID uuid.UUID, p store.UpdatePhotoParams) (*store.Photo, error) {
 	if p.Visibility != nil && !validVisibility(*p.Visibility) {
-		return nil, fmt.Errorf("invalid: visibility must be one of public|match_only|sparked_only")
+		return nil, ErrInvalidVisibility
 	}
 	photo, err := s.store.UpdatePhoto(ctx, userID, photoID, p)
 	if err != nil {

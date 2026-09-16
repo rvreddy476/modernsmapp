@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "PROMPT_ANSWER_REQUIRED",
+    "message": "answer is required and must be 1 to 280 characters",
+    "details": {
+      "max": 280,
+      "min": 1
+    }
+  },
+  "meta": {}
+}

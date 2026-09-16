@@ -509,8 +509,14 @@ type PassResult struct {
 	CooldownUntil time.Time `json:"cooldown_until"`
 }
 
-// maxPassReasonLen bounds the optional free-text pass reason.
-const maxPassReasonLen = 200
+// MaxPassReasonLen bounds the optional free-text pass reason.
+const MaxPassReasonLen = 200
+
+// ErrPassReasonTooLong: the optional pass reason is over MaxPassReasonLen.
+// Stable code (400 PASS_REASON_TOO_LONG) instead of the generic
+// INVALID_REQUEST, so the app can mark the reason box rather than losing
+// the pass.
+var ErrPassReasonTooLong = fmt.Errorf("reason must be at most %d characters", MaxPassReasonLen)
 
 // PassCandidate records the viewer's pass (idempotent), drops the candidate
 // from the viewer's cached deck, and FetchCandidates then excludes them for
@@ -522,8 +528,8 @@ func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.
 	if viewerID == candidateID {
 		return nil, fmt.Errorf("invalid: cannot pass yourself")
 	}
-	if len(reason) > maxPassReasonLen {
-		return nil, fmt.Errorf("invalid: reason must be at most %d characters", maxPassReasonLen)
+	if len(reason) > MaxPassReasonLen {
+		return nil, ErrPassReasonTooLong
 	}
 	passedAt, err := s.store.RecordPass(ctx, viewerID, candidateID, reason)
 	if err != nil {

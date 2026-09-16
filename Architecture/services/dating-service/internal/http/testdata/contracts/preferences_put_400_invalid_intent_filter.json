@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "INVALID_INTENT_FILTER",
+    "message": "intent_filter values must each be one of casual, serious, marriage",
+    "details": {
+      "allowed": [
+        "casual",
+        "serious",
+        "marriage"
+      ]
+    }
+  },
+  "meta": {}
+}

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,6 +28,28 @@ var promptCatalog = []store.PromptCatalogItem{
 	{ID: 12, Question: "What I love about my city..."},
 }
 
+// MaxPromptAnswerLen bounds a prompt answer, after trimming.
+const MaxPromptAnswerLen = 280
+
+// The prompt write refusals, each with its own stable code instead of the
+// generic INVALID_REQUEST: the app shows them on the answer field (or sends
+// the user back to the catalog) rather than as a toast.
+var (
+	ErrUnknownPrompt        = errors.New("prompt_id is not in the v1 catalog")
+	ErrPromptAnswerRequired = fmt.Errorf("answer is required and must be 1 to %d characters", MaxPromptAnswerLen)
+	ErrPromptAnswerTooLong  = fmt.Errorf("answer must be at most %d characters", MaxPromptAnswerLen)
+)
+
+// PromptCatalogIDs returns the catalog ids a prompt write may use, in
+// catalog order. It is the allowed set carried in an UNKNOWN_PROMPT error.
+func PromptCatalogIDs() []int {
+	ids := make([]int, 0, len(promptCatalog))
+	for _, item := range promptCatalog {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
 // validPromptID gates writes to known catalog ids.
 func validPromptID(id int) bool {
 	for _, item := range promptCatalog {
@@ -50,14 +73,14 @@ func (s *Service) ListPrompts(ctx context.Context, userID uuid.UUID) ([]store.Pr
 // UpsertPrompt validates the prompt id + answer and writes through.
 func (s *Service) UpsertPrompt(ctx context.Context, userID uuid.UUID, promptID int, answer string) (*store.Prompt, error) {
 	if !validPromptID(promptID) {
-		return nil, fmt.Errorf("invalid: prompt_id is not in the v1 catalog")
+		return nil, ErrUnknownPrompt
 	}
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
-		return nil, fmt.Errorf("invalid: answer is required")
+		return nil, ErrPromptAnswerRequired
 	}
-	if len(answer) > 280 {
-		return nil, fmt.Errorf("invalid: answer must be <= 280 characters")
+	if len(answer) > MaxPromptAnswerLen {
+		return nil, ErrPromptAnswerTooLong
 	}
 	return s.store.UpsertPrompt(ctx, userID, promptID, answer)
 }

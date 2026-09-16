@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "INVALID_VISIBILITY",
+    "message": "visibility must be one of public, match_only, sparked_only",
+    "details": {
+      "allowed": [
+        "public",
+        "match_only",
+        "sparked_only"
+      ]
+    }
+  },
+  "meta": {}
+}

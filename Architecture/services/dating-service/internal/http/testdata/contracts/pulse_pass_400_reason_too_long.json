@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "PASS_REASON_TOO_LONG",
+    "message": "reason must be at most 200 characters",
+    "details": {
+      "max": 200
+    }
+  },
+  "meta": {}
+}

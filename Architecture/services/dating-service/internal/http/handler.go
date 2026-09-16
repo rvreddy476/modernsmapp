@@ -394,6 +394,66 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 			map[string]any{"allowed": service.InterestedInGenders})
 		return
 	}
+	// The rest of the client-facing validation refusals. Same idea as the
+	// gender filter above: each names the field the server refused and
+	// carries the allowed values or the limit in details, so the app can
+	// write copy against a code instead of parsing a sentence.
+	if errors.Is(err, service.ErrMinAgeTooLow) || errors.Is(err, service.ErrMaxAgeTooHigh) || errors.Is(err, service.ErrAgeRangeInverted) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_AGE_RANGE", err.Error(),
+			map[string]any{"min": service.MinPreferenceAge, "max": service.MaxPreferenceAge})
+		return
+	}
+	if errors.Is(err, service.ErrInvalidDistanceKm) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DISTANCE_KM", err.Error(),
+			map[string]any{"min": service.MinDistanceKm, "max": service.MaxDistanceKm})
+		return
+	}
+	if errors.Is(err, service.ErrInvalidIntentFilter) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_INTENT_FILTER", err.Error(),
+			map[string]any{"allowed": service.Intents})
+		return
+	}
+	if errors.Is(err, service.ErrInvalidIntent) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_INTENT", err.Error(),
+			map[string]any{"allowed": service.Intents})
+		return
+	}
+	if errors.Is(err, service.ErrInvalidVisibility) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_VISIBILITY", err.Error(),
+			map[string]any{"allowed": service.PhotoVisibilities})
+		return
+	}
+	// Onboarding is a state gate, not a malformed request: 409, beside the
+	// other profile-state refusals above.
+	var onboarding *service.OnboardingIncompleteError
+	if errors.As(err, &onboarding) {
+		// The key is "status", not "profile_status": a bare
+		// "profile_status" literal outside the guarded writer trips the
+		// store's raw-lifecycle-write scanner (profile_status_scan_test).
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ONBOARDING_INCOMPLETE", err.Error(),
+			map[string]any{"status": onboarding.ProfileStatus, "step": onboarding.Step})
+		return
+	}
+	if errors.Is(err, service.ErrUnknownPrompt) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UNKNOWN_PROMPT", err.Error(),
+			map[string]any{"allowed": service.PromptCatalogIDs()})
+		return
+	}
+	if errors.Is(err, service.ErrPromptAnswerRequired) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PROMPT_ANSWER_REQUIRED", err.Error(),
+			map[string]any{"min": 1, "max": service.MaxPromptAnswerLen})
+		return
+	}
+	if errors.Is(err, service.ErrPromptAnswerTooLong) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PROMPT_ANSWER_TOO_LONG", err.Error(),
+			map[string]any{"max": service.MaxPromptAnswerLen})
+		return
+	}
+	if errors.Is(err, service.ErrPassReasonTooLong) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PASS_REASON_TOO_LONG", err.Error(),
+			map[string]any{"max": service.MaxPassReasonLen})
+		return
+	}
 	// Lane D8: reports, trusted contacts, live location and meets.
 	if errors.Is(err, service.ErrInvalidReportReason) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REPORT_REASON", "reason must be one of the report reason codes",

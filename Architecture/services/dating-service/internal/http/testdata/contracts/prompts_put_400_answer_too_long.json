@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "PROMPT_ANSWER_TOO_LONG",
+    "message": "answer must be at most 280 characters",
+    "details": {
+      "max": 280
+    }
+  },
+  "meta": {}
+}

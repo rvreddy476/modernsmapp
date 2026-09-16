@@ -18,17 +18,17 @@ func (s *Service) GetPreferences(ctx context.Context, userID uuid.UUID) (*store.
 
 // UpsertPreferences validates and persists the partial update.
 func (s *Service) UpsertPreferences(ctx context.Context, userID uuid.UUID, p store.UpsertPreferencesParams) (*store.Preferences, error) {
-	if p.MinAge != nil && *p.MinAge < 18 {
-		return nil, fmt.Errorf("invalid: min_age must be >= 18")
+	if p.MinAge != nil && *p.MinAge < MinPreferenceAge {
+		return nil, ErrMinAgeTooLow
 	}
-	if p.MaxAge != nil && *p.MaxAge > 120 {
-		return nil, fmt.Errorf("invalid: max_age must be <= 120")
+	if p.MaxAge != nil && *p.MaxAge > MaxPreferenceAge {
+		return nil, ErrMaxAgeTooHigh
 	}
 	if p.MinAge != nil && p.MaxAge != nil && *p.MinAge > *p.MaxAge {
-		return nil, fmt.Errorf("invalid: min_age must be <= max_age")
+		return nil, ErrAgeRangeInverted
 	}
-	if p.DistanceKm != nil && (*p.DistanceKm <= 0 || *p.DistanceKm > 500) {
-		return nil, fmt.Errorf("invalid: distance_km must be between 1 and 500")
+	if p.DistanceKm != nil && (*p.DistanceKm < MinDistanceKm || *p.DistanceKm > MaxDistanceKm) {
+		return nil, ErrInvalidDistanceKm
 	}
 	if p.InterestedInGender != nil && !validInterestedInGender(strings.TrimSpace(*p.InterestedInGender)) {
 		return nil, ErrInvalidInterestedInGender
@@ -36,7 +36,7 @@ func (s *Service) UpsertPreferences(ctx context.Context, userID uuid.UUID, p sto
 	if p.IntentFilter != nil {
 		for _, intent := range p.IntentFilter {
 			if !validIntent(intent) {
-				return nil, fmt.Errorf("invalid: intent_filter contains unknown value %q", intent)
+				return nil, ErrInvalidIntentFilter
 			}
 		}
 	}
@@ -70,6 +70,28 @@ const InterestedInEveryone = "everyone"
 // because the app shows the picker again and needs to know which field the
 // server refused.
 var ErrInvalidInterestedInGender = errors.New("interested_in_gender must be one of " + strings.Join(InterestedInGenders, ", "))
+
+// The age and distance bounds a discovery preference must stay inside.
+// MinPreferenceAge is the legal floor (the product is 18+), not a taste.
+const (
+	MinPreferenceAge = 18
+	MaxPreferenceAge = 120
+	MinDistanceKm    = 1
+	MaxDistanceKm    = 500
+)
+
+// The preference validation refusals, each with its own stable code rather
+// than the generic INVALID_REQUEST, so the app can put the message on the
+// field the server actually refused. The three age errors share the code
+// INVALID_AGE_RANGE (400) and differ only in message; distance is
+// INVALID_DISTANCE_KM and the intent filter INVALID_INTENT_FILTER.
+var (
+	ErrMinAgeTooLow        = fmt.Errorf("min_age must be >= %d", MinPreferenceAge)
+	ErrMaxAgeTooHigh       = fmt.Errorf("max_age must be <= %d", MaxPreferenceAge)
+	ErrAgeRangeInverted    = errors.New("min_age must be <= max_age")
+	ErrInvalidDistanceKm   = fmt.Errorf("distance_km must be between %d and %d", MinDistanceKm, MaxDistanceKm)
+	ErrInvalidIntentFilter = errors.New("intent_filter values must each be one of " + strings.Join(Intents, ", "))
+)
 
 // validInterestedInGender reports whether v is one of InterestedInGenders.
 func validInterestedInGender(v string) bool {
