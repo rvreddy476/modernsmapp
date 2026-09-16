@@ -137,7 +137,22 @@ func main() {
 		slog.Info("community member-count sharded flush worker started")
 	}
 
-	communityHandler := http.New(communitySvc)
+	communityHandler := http.New(communitySvc).WithAdmin(communityStore)
+
+	// Admin console (Wave 2 — Chat): admin-service tokens on
+	// /v1/communities/internal/admin. Blank SERVICE_CALLERS accepts no token
+	// (the family answers 401); a half-configured caller is fatal.
+	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("community-service: invalid SERVICE_CALLERS configuration", "error", err)
+		os.Exit(1)
+	}
+	if serviceVerifier == nil {
+		slog.Warn("community-service: SERVICE_CALLERS not set — the admin console token family answers 401")
+	} else {
+		slog.Info("community-service: admin-service token verifier enabled", "callers", serviceVerifier.Callers())
+	}
+	communityHandler.WithServiceAuth(serviceVerifier)
 
 	// Audit CC1: gate every /v1/communities/* endpoint behind the
 	// shared internal service key. The handler supports the middleware

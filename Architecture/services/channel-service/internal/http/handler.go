@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/channel-service/internal/store"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -25,10 +26,19 @@ type Handler struct {
 	// product answers 404 (emergency disable, level 1). Default true; see
 	// docs/runbooks/communities-invite-only-pilot.md.
 	communitiesEnabled bool
+	// verifier admits admin-service tokens on InternalAdminPrefix
+	// (admin_token.go); nil accepts none.
+	verifier *servicetoken.Verifier
+	// admin backs the token-only admin handlers; the service in production.
+	admin ChannelAdmin
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc, communitiesEnabled: true}
+	h := &Handler{svc: svc, communitiesEnabled: true}
+	if svc != nil {
+		h.admin = svc
+	}
+	return h
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -57,6 +67,11 @@ const communitiesPrefix = "/v1/broadcast-channels"
 func communitiesDisabledGate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
+		if strings.HasPrefix(p, InternalAdminPrefix+"/") {
+			// Moderation keeps working while the product is off.
+			c.Next()
+			return
+		}
 		if p == communitiesPrefix || strings.HasPrefix(p, communitiesPrefix+"/") {
 			c.Header("Content-Type", "application/json")
 			c.String(http.StatusNotFound, `{"error":{"code":"NOT_FOUND","message":"Not found"}}`)
@@ -68,6 +83,12 @@ func communitiesDisabledGate() gin.HandlerFunc {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Admin console token family FIRST. gin fixes a route's handler chain
+	// when the route is registered, so registering these before the
+	// engine-wide key and kill-switch middleware below keeps both off them:
+	// they are judged only by the admin-service token (admin_token.go).
+	h.registerAdminTokenRoutes(r)
+
 	// Apply internal service key enforcement to all /v1 routes.
 	// Health and metrics endpoints registered outside this group remain public.
 	if h.internalKey != "" {

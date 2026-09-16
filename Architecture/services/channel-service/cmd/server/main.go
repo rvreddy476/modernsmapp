@@ -192,6 +192,21 @@ func main() {
 
 	channelHandler := http.New(channelSvc).WithCommunitiesEnabled(policy.Enabled)
 
+	// Admin console (Wave 2 — Chat): admin-service tokens on
+	// /v1/broadcast-channels/internal/admin. Blank SERVICE_CALLERS accepts
+	// no token (the family answers 401); a half-configured caller is fatal.
+	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("channel-service: invalid SERVICE_CALLERS configuration", "error", err)
+		os.Exit(1)
+	}
+	if serviceVerifier == nil {
+		slog.Warn("channel-service: SERVICE_CALLERS not set — the admin console token family answers 401")
+	} else {
+		slog.Info("channel-service: admin-service token verifier enabled", "callers", serviceVerifier.Callers())
+	}
+	channelHandler.WithServiceAuth(serviceVerifier)
+
 	// Audit CCh5: gate every /v1/channels/* endpoint behind the shared
 	// internal service key. The handler supports the middleware but
 	// main.go previously never wired the env var, so the gate was a

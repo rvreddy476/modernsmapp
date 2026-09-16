@@ -114,7 +114,22 @@ func main() {
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")
 
-	groupHandler := http.New(groupSvc)
+	groupHandler := http.New(groupSvc).WithAdmin(groupStore)
+
+	// Admin console (Wave 2 — Chat): admin-service tokens on
+	// /v1/groups/internal/admin. Blank SERVICE_CALLERS accepts no token (the
+	// family answers 401); a half-configured caller is fatal.
+	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("group-service: invalid SERVICE_CALLERS configuration", "error", err)
+		os.Exit(1)
+	}
+	if serviceVerifier == nil {
+		slog.Warn("group-service: SERVICE_CALLERS not set — the admin console token family answers 401")
+	} else {
+		slog.Info("group-service: admin-service token verifier enabled", "callers", serviceVerifier.Callers())
+	}
+	groupHandler.WithServiceAuth(serviceVerifier)
 
 	// Audit CG2: gate every /v1/groups/* endpoint behind the shared
 	// internal service key. The handler supports the middleware but

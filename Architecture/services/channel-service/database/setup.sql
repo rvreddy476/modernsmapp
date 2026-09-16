@@ -248,3 +248,37 @@ CREATE INDEX IF NOT EXISTS idx_cr_status_created
 
 -- 3. Member roster by role — the ban/unban and "who is banned" reads.
 CREATE INDEX IF NOT EXISTS idx_cm_channel_role ON channel_members(channel_id, role);
+
+-- 4. Admin console (Wave 2 — Content, Chat): every decision taken through
+--    admin-service's signed token family (/v1/broadcast-channels/internal/admin)
+--    writes one row here in the same transaction as the change. actor_id is
+--    the token's signed act claim, never a header. Append-only, following
+--    dating_admin_audit. No foreign keys: the trail must outlive the channel
+--    and the report it names.
+CREATE TABLE IF NOT EXISTS channel_admin_audit (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_id     UUID NOT NULL,
+    action       TEXT NOT NULL,
+    target_type  TEXT NOT NULL,
+    target_id    UUID NOT NULL,
+    reason       TEXT NOT NULL DEFAULT '',
+    metadata     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_channel_admin_audit_target
+    ON channel_admin_audit(target_type, target_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_channel_admin_audit_actor
+    ON channel_admin_audit(actor_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION channel_admin_audit_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'channel_admin_audit is append-only';
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS channel_admin_audit_no_update ON channel_admin_audit;
+CREATE TRIGGER channel_admin_audit_no_update
+    BEFORE UPDATE OR DELETE ON channel_admin_audit
+    FOR EACH ROW EXECUTE FUNCTION channel_admin_audit_immutable();
+
+-- Stats: reports decided in the last 7 days.
+CREATE INDEX IF NOT EXISTS idx_cr_reviewed_at
+    ON channel_reports(reviewed_at) WHERE reviewed_at IS NOT NULL;

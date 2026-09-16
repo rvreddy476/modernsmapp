@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/group-service/internal/store"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -17,6 +18,11 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// verifier admits admin-service tokens on InternalAdminPrefix
+	// (admin_token.go); nil accepts none.
+	verifier *servicetoken.Verifier
+	// admin backs the token-only admin handlers; the store in production.
+	admin GroupAdmin
 }
 
 func New(svc *service.Service) *Handler {
@@ -29,6 +35,11 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Admin console token family FIRST: gin fixes a route's handler chain at
+	// registration, so the engine-wide key middleware below stays off it.
+	// It is judged only by the admin-service token (admin_token.go).
+	h.registerAdminTokenRoutes(r)
+
 	if h.internalKey != "" {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
