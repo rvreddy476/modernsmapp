@@ -398,6 +398,16 @@ func (f *fakeAnomalyStore) RolesForUser(_ context.Context, _ uuid.UUID) ([]strin
 func (f *fakeAnomalyStore) ListUserRoles(_ context.Context, _ uuid.UUID) ([]store.UserRole, error) {
 	return nil, nil
 }
+func (f *fakeAnomalyStore) RoleGrantsForUser(_ context.Context, _ uuid.UUID) ([]store.RoleGrant, error) {
+	return nil, nil
+}
+func (f *fakeAnomalyStore) ChangeRole(_ context.Context, _ store.RoleChange, _ store.RoleAudit,
+	_ func([]store.SuperadminHolder) error) (bool, error) {
+	return true, nil
+}
+func (f *fakeAnomalyStore) RecordRoleBootstrap(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+	return true, nil
+}
 func (f *fakeAnomalyStore) InsertAdminAudit(_ context.Context, _, _ uuid.UUID, _, _ string, _ bool) error {
 	return nil
 }

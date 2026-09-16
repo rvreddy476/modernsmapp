@@ -32,6 +32,7 @@ type ecosystemStore struct {
 	grantErr     error
 	revokeErr    error
 	auditWriteEr error
+	scoped       map[uuid.UUID][]store.RoleGrant
 }
 
 func newEcosystemStore() *ecosystemStore {
@@ -78,6 +79,20 @@ func (e *ecosystemStore) RolesForUser(_ context.Context, userID uuid.UUID) ([]st
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// RoleGrantsForUser: dbRoles/granted are platform-wide rows; scoped adds
+// app-scoped ones.
+func (e *ecosystemStore) RoleGrantsForUser(ctx context.Context, userID uuid.UUID) ([]store.RoleGrant, error) {
+	platform, err := e.RolesForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	var out []store.RoleGrant
+	for _, r := range platform {
+		out = append(out, store.RoleGrant{Role: r})
+	}
+	return append(out, e.scoped[userID]...), nil
 }
 
 func (e *ecosystemStore) InsertAdminAudit(_ context.Context, _, _ uuid.UUID, action, _ string, allowed bool) error {
@@ -307,9 +322,19 @@ func TestCapabilitiesForUser(t *testing.T) {
 	if want := []string{"moderator", "seller"}; !reflect.DeepEqual(caps.Roles, want) {
 		t.Fatalf("roles=%v want %v", caps.Roles, want)
 	}
-	if len(caps.Capabilities) != len(roles.All()) {
-		t.Fatalf("capabilities has %d entries, want one per role (%d) so a client "+
-			"never has to know which roles exist", len(caps.Capabilities), len(roles.All()))
+	// One per token role — the shape that existed before staff roles, kept
+	// unchanged. Staff hats are expressed only in caps.Admin.
+	if len(caps.Capabilities) != len(roles.TokenRoles()) || len(caps.Capabilities) != 7 {
+		t.Fatalf("capabilities has %d entries, want one per token role (%d) so a client "+
+			"never has to know which roles exist", len(caps.Capabilities), len(roles.TokenRoles()))
+	}
+	// Additive admin map: a platform-wide moderator reaches every app's
+	// moderator permissions and holds no admin-only or platform-manage ones.
+	if !caps.Admin.Has("dating:reports.act") || !caps.Admin.Has("social:posts.moderate") {
+		t.Fatalf("admin map missing moderator permissions: %+v", caps.Admin)
+	}
+	if caps.Admin.Has("food:restaurant.approve") || caps.Admin.Has("platform:roles.manage") {
+		t.Fatalf("moderator got admin permissions: %+v", caps.Admin)
 	}
 	if _, ok := caps.Capabilities["customer"]; ok {
 		t.Fatal("capabilities must not contain a `customer` key — it is not a role")
@@ -357,6 +382,27 @@ func TestCapabilitiesForRolelessUser(t *testing.T) {
 		if v {
 			t.Fatalf("capabilities=%v — a roleless account holds nothing", caps.Capabilities)
 		}
+	}
+	if caps.Admin.Apps == nil || caps.Admin.Platform == nil ||
+		len(caps.Admin.Apps) != 0 || len(caps.Admin.Platform) != 0 {
+		t.Fatalf("admin=%+v — want {apps:{}, platform:[]}, never null", caps.Admin)
+	}
+}
+
+// TestCapabilitiesAppScopedIsNotPlatform: a dating moderator shows up only in
+// admin.apps.dating — never as the `moderator` role, which every service reads
+// from the token as a platform-wide grant.
+func TestCapabilitiesAppScopedIsNotPlatform(t *testing.T) {
+	target := uuid.New()
+	st := newEcosystemStore()
+	st.scoped = map[uuid.UUID][]store.RoleGrant{target: {{Role: "moderator", App: "dating"}}}
+	caps := newEcosystemSvc(t, st).CapabilitiesForUser(context.Background(), target)
+
+	if len(caps.Roles) != 0 || caps.Capabilities["moderator"] {
+		t.Fatalf("app-scoped moderator leaked into roles: %v / %v", caps.Roles, caps.Capabilities)
+	}
+	if len(caps.Admin.Apps) != 1 || !caps.Admin.Has("dating:reports.act") {
+		t.Fatalf("admin=%+v want only dating", caps.Admin)
 	}
 }
 

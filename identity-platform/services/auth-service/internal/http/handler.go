@@ -16,6 +16,7 @@ import (
 
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/middleware"
+	"github.com/atpost/identity-auth-service/internal/permissions"
 	"github.com/atpost/identity-auth-service/internal/rollout"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
@@ -66,8 +67,9 @@ type AuthService interface {
 	DeactivateAccount(ctx context.Context, userID uuid.UUID, password string) error
 	DeleteAccount(ctx context.Context, userID uuid.UUID, password string) (*service.DeletionSchedule, error)
 	// RBAC role management (superadmin-gated in the service layer)
-	GrantRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
-	RevokeRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
+	GrantRole(ctx context.Context, actorID uuid.UUID, req service.RoleChangeRequest) error
+	RevokeRole(ctx context.Context, actorID uuid.UUID, req service.RoleChangeRequest) error
+	PermissionsForUser(ctx context.Context, userID uuid.UUID) (permissions.Admin, error)
 	ListUserRoles(ctx context.Context, actorID, targetID uuid.UUID) ([]store.UserRole, error)
 	ListAdminAudit(ctx context.Context, actorID uuid.UUID, limit int) ([]store.AdminAuditEntry, error)
 	// Service-to-service ecosystem role management. Guarded at the route by
@@ -288,6 +290,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			internal.DELETE("/roles", h.InternalRevokeRole)
 			internal.GET("/roles/:userId", h.InternalListRoles)
 		}
+
+		// Admin permission map for admin-service (and later other services).
+		// Service-only: user identity headers are refused before the key is
+		// checked, so a moderator the gateway lets through to /internal/ paths
+		// is still turned away. See internal_permissions.go.
+		v1.GET("/internal/users/:userId/permissions",
+			RequireServiceCallerNoUser(h.cfg.InternalServiceKey), h.InternalUserPermissions)
 	}
 }
 

@@ -116,6 +116,10 @@ func TestMeCapabilities(t *testing.T) {
 				Role  string `json:"role"`
 				Label string `json:"label"`
 			} `json:"switcher"`
+			Admin struct {
+				Apps     map[string][]string `json:"apps"`
+				Platform []string            `json:"platform"`
+			} `json:"admin"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(resp.Body.Bytes(), &env); err != nil {
@@ -127,7 +131,12 @@ func TestMeCapabilities(t *testing.T) {
 	if !env.Data.IsCustomer {
 		t.Fatal("is_customer must be true — every account is a customer")
 	}
-	if len(env.Data.Capabilities) != len(roles.All()) {
+	// Additive admin map; a platform moderator reaches dating moderation.
+	if !containsStr(env.Data.Admin.Apps["dating"], "dating:reports.act") || env.Data.Admin.Platform == nil {
+		t.Fatalf("admin=%+v (body %s)", env.Data.Admin, resp.Body.String())
+	}
+	// Pre-existing keys unchanged: exactly the seven token roles.
+	if len(env.Data.Capabilities) != 7 || len(env.Data.Capabilities) != len(roles.TokenRoles()) {
 		t.Fatalf("capabilities=%v want one entry per role", env.Data.Capabilities)
 	}
 	if _, ok := env.Data.Capabilities["customer"]; ok {
@@ -145,6 +154,34 @@ func TestMeCapabilities(t *testing.T) {
 	for _, s := range env.Data.Switcher {
 		if s.Label == "" {
 			t.Fatalf("switcher row %q has no label — a blank row is unrenderable", s.Role)
+		}
+	}
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// TestMeCapabilitiesRolelessAdminShape: {"apps":{},"platform":[]}, never null.
+func TestMeCapabilitiesRolelessAdminShape(t *testing.T) {
+	resp := getAs(t, meRouter(t, []string{}), "/v1/auth/me/capabilities", uuid.New())
+	var env struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := string(env.Data["admin"]); got != `{"apps":{},"platform":[]}` {
+		t.Fatalf("admin = %s", got)
+	}
+	for _, k := range []string{"user_id", "roles", "is_customer", "capabilities", "switcher"} {
+		if _, ok := env.Data[k]; !ok {
+			t.Fatalf("capabilities lost the %q field", k)
 		}
 	}
 }

@@ -101,6 +101,12 @@ type Store interface {
 	GrantRole(ctx context.Context, userID, grantedBy uuid.UUID, role string) error
 	RevokeRole(ctx context.Context, userID uuid.UUID, role string) error
 	RolesForUser(ctx context.Context, userID uuid.UUID) ([]string, error)
+	// RoleGrantsForUser returns active platform-wide and app-scoped rows.
+	RoleGrantsForUser(ctx context.Context, userID uuid.UUID) ([]store.RoleGrant, error)
+	// ChangeRole applies an admin grant/revoke and its audit row atomically.
+	ChangeRole(ctx context.Context, ch store.RoleChange, audit store.RoleAudit,
+		guard func(holders []store.SuperadminHolder) error) (bool, error)
+	RecordRoleBootstrap(ctx context.Context, userID uuid.UUID, detail string) (bool, error)
 	ListUserRoles(ctx context.Context, userID uuid.UUID) ([]store.UserRole, error)
 	InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUID, action, detail string, allowed bool) error
 	// InsertServiceAudit records an action whose actor is a SERVICE, not a

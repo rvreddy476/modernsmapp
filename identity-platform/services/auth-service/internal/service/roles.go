@@ -3,9 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/permissions"
 	"github.com/atpost/identity-auth-service/internal/roles"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/google/uuid"
@@ -104,6 +108,10 @@ type Capabilities struct {
 	// Switcher is what the role switcher lists: the customer hat, then each
 	// role actually held, in canonical order, with display wording.
 	Switcher []CapabilitySwitch `json:"switcher"`
+	// Admin is the admin-console permission map, resolved live on every
+	// request (a grant shows without re-login). Additive: every field above is
+	// unchanged. {"apps":{},"platform":[]} for a user with no admin role.
+	Admin permissions.Admin `json:"admin"`
 }
 
 // CapabilitySwitch is one row of the role switcher.
@@ -126,8 +134,9 @@ func (s *Service) CapabilitiesForUser(ctx context.Context, userID uuid.UUID) Cap
 		heldSet[r] = true
 	}
 
-	caps := make(map[string]bool, len(roles.All()))
-	for _, r := range roles.All() {
+	// TokenRoles, not All: staff roles are not part of this map's shape.
+	caps := make(map[string]bool, len(roles.TokenRoles()))
+	for _, r := range roles.TokenRoles() {
 		caps[r] = heldSet[r]
 	}
 
@@ -136,12 +145,18 @@ func (s *Service) CapabilitiesForUser(ctx context.Context, userID uuid.UUID) Cap
 		switcher = append(switcher, CapabilitySwitch{Role: r, Label: roles.Label(r)})
 	}
 
+	admin, err := s.PermissionsForUser(ctx, userID)
+	if err != nil {
+		s.log.Warn("admin permissions lookup failed; env roles only", "user_id", userID, "err", err)
+	}
+
 	return Capabilities{
 		UserID:       userID.String(),
 		Roles:        held,
 		IsCustomer:   true,
 		Capabilities: caps,
 		Switcher:     switcher,
+		Admin:        admin,
 	}
 }
 
@@ -167,34 +182,284 @@ func (s *Service) IsSuperadmin(ctx context.Context, userID uuid.UUID) bool {
 	return false
 }
 
-// GrantRole grants a role to a target user. Only a superadmin (actor) may do so.
-// The new scope takes effect on the target's next token mint (login/refresh) —
-// existing tokens are not retroactively upgraded, which is standard for JWTs and
-// honors the no-forced-logout rule.
-func (s *Service) GrantRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error {
-	if !store.ValidRole(role) {
-		return errors.New("invalid role")
+// Admin role-change errors. Each maps to a distinct HTTP code in
+// internal/http/roles_handler.go.
+var (
+	// ErrInvalidRole: the role is not in the vocabulary. The text is matched by
+	// older callers, so it stays "invalid role".
+	ErrInvalidRole = errors.New("invalid role")
+	// ErrInvalidApp: the app is not in the catalogue.
+	ErrInvalidApp = errors.New("invalid app")
+	// ErrRoleNotScopable: the role cannot be held in that app (superadmin is
+	// platform-wide; an ecosystem role has no app; finance holds nothing in qa).
+	ErrRoleNotScopable = errors.New("role cannot be granted for that app")
+	// ErrReasonRequired: every admin grant and revoke records why.
+	ErrReasonRequired = errors.New("reason is required")
+	// ErrInvalidExpiry: expires_at is not in the future.
+	ErrInvalidExpiry = errors.New("expires_at must be in the future")
+	// ErrSelfGrant: nobody grants a role to themselves, superadmins included.
+	ErrSelfGrant = errors.New("you cannot grant a role to yourself; another superadmin must do it")
+	// ErrLastSuperadmin: the change would leave no durable superadmin.
+	ErrLastSuperadmin = errors.New("refused: this would remove or expire the last active superadmin; grant another superadmin first")
+	// ErrEnvBootstrapRole: the role comes from an env allowlist. Match with
+	// errors.Is; the concrete *EnvBootstrapRoleError names the variable.
+	ErrEnvBootstrapRole = errors.New("role is granted by an environment allowlist")
+)
+
+// maxReasonLen bounds the free-text reason stored on the row and in the audit.
+const maxReasonLen = 500
+
+// EnvBootstrapRoleError explains why an env allowlist role cannot be revoked
+// through the API, and what to do instead.
+type EnvBootstrapRoleError struct {
+	Role   string
+	EnvVar string
+}
+
+func (e *EnvBootstrapRoleError) Error() string {
+	return fmt.Sprintf("role %q for this user comes from the %s environment allowlist (bootstrap) "+
+		"and cannot be revoked through the API; remove the user id from %s and restart auth-service",
+		e.Role, e.EnvVar, e.EnvVar)
+}
+
+func (e *EnvBootstrapRoleError) Is(target error) bool { return target == ErrEnvBootstrapRole }
+
+// RoleChangeRequest is one admin grant or revoke. App "" is platform-wide.
+// ExpiresAt is ignored on revoke.
+type RoleChangeRequest struct {
+	TargetID  uuid.UUID
+	Role      string
+	App       string
+	ExpiresAt *time.Time
+	Reason    string
+}
+
+// validateRoleChange checks the request against the vocabulary and catalogue.
+func validateRoleChange(req *RoleChangeRequest, revoke bool, now time.Time) error {
+	req.Role = strings.TrimSpace(req.Role)
+	req.App = strings.TrimSpace(req.App)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if !roles.Valid(req.Role) {
+		return ErrInvalidRole
 	}
-	if err := s.authorizePrivileged(ctx, actorID, targetID, "role.grant"); err != nil {
-		return err
+	if req.App != "" && !permissions.ValidApp(req.App) {
+		return ErrInvalidApp
 	}
-	if err := s.store.GrantRole(ctx, targetID, actorID, role); err != nil {
-		return err
+	if _, err := permissions.For(req.Role, req.App); err != nil {
+		return fmt.Errorf("%w: %v", ErrRoleNotScopable, err)
 	}
-	s.audit(ctx, actorID, targetID, "role.grant", "role="+role, true)
+	if req.Reason == "" {
+		return ErrReasonRequired
+	}
+	if len(req.Reason) > maxReasonLen {
+		req.Reason = req.Reason[:maxReasonLen]
+	}
+	if revoke {
+		req.ExpiresAt = nil
+	} else if req.ExpiresAt != nil && !req.ExpiresAt.After(now) {
+		return ErrInvalidExpiry
+	}
 	return nil
 }
 
-// RevokeRole removes a role from a target user. Superadmin (actor) only.
-func (s *Service) RevokeRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error {
-	if err := s.authorizePrivileged(ctx, actorID, targetID, "role.revoke"); err != nil {
+// roleChangeDetail renders the audit detail of an admin role change.
+func roleChangeDetail(req RoleChangeRequest) string {
+	d := "role=" + req.Role
+	if req.App != "" {
+		d += " app=" + req.App
+	} else {
+		d += " app=platform-wide"
+	}
+	if req.ExpiresAt != nil {
+		d += " expires_at=" + req.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return d + " reason=" + req.Reason
+}
+
+// envBootstrapSource returns the env allowlist variable that grants role to
+// userID platform-wide, or "" when none does (implication included: a
+// SUPERADMIN_USER_IDS holder holds admin and moderator from that variable).
+func (s *Service) envBootstrapSource(userID uuid.UUID, role string) string {
+	id := userID.String()
+	sources := []struct {
+		set    map[string]struct{}
+		role   string
+		envVar string
+	}{
+		{s.cfg.ScopeSuperadminUserIDs, roles.Superadmin, "SUPERADMIN_USER_IDS"},
+		{s.cfg.ScopeAdminUserIDs, roles.Admin, "ADMIN_USER_IDS"},
+		{s.cfg.ScopeModeratorUserIDs, roles.Moderator, "MODERATOR_USER_IDS"},
+	}
+	for _, src := range sources {
+		if _, ok := src.set[id]; !ok {
+			continue
+		}
+		for _, r := range roles.Expand([]string{src.role}) {
+			if r == role {
+				return src.envVar
+			}
+		}
+	}
+	return ""
+}
+
+// lastSuperadminGuard refuses a change that takes the number of DURABLE
+// superadmins (active, no expiry, or held through SUPERADMIN_USER_IDS) from at
+// least one to zero. A superadmin with an expiry is not counted as durable:
+// leaving only temporary holders would lock the platform out when they lapse.
+func (s *Service) lastSuperadminGuard(target uuid.UUID) func([]store.SuperadminHolder) error {
+	return func(holders []store.SuperadminHolder) error {
+		durable := map[uuid.UUID]bool{}
+		for id := range s.cfg.ScopeSuperadminUserIDs {
+			if u, err := uuid.Parse(id); err == nil {
+				durable[u] = true
+			}
+		}
+		for _, h := range holders {
+			if h.ExpiresAt == nil {
+				durable[h.UserID] = true
+			}
+		}
+		before := len(durable)
+		if _, env := s.cfg.ScopeSuperadminUserIDs[target.String()]; !env {
+			delete(durable, target)
+		}
+		if before > 0 && len(durable) == 0 {
+			return ErrLastSuperadmin
+		}
+		return nil
+	}
+}
+
+// GrantRole grants a role, platform-wide or for one app, to a target user.
+//
+// Rules, in order: the request must name a known role and app, the role must
+// be holdable in that app, a reason is required and an expiry must be in the
+// future (400s); the actor must be a superadmin (and 2FA-enrolled when
+// REQUIRE_MFA_FOR_PRIVILEGED); nobody grants to themselves; putting an expiry
+// on the last durable superadmin is refused. The row and its audit record are
+// written in one transaction. Re-granting renews expiry and reason.
+//
+// The `scopes` claim changes on the next mint (refresh is enough); the admin
+// permission map (capabilities, internal permissions route) changes at once.
+func (s *Service) GrantRole(ctx context.Context, actorID uuid.UUID, req RoleChangeRequest) error {
+	return s.changeRole(ctx, actorID, req, false)
+}
+
+// RevokeRole removes one grant (role + app). Same validation and
+// authorisation as GrantRole; additionally a role held through an env
+// allowlist cannot be revoked here, and removing the last durable superadmin
+// is refused. Revoking a grant that does not exist succeeds and is audited.
+func (s *Service) RevokeRole(ctx context.Context, actorID uuid.UUID, req RoleChangeRequest) error {
+	return s.changeRole(ctx, actorID, req, true)
+}
+
+func (s *Service) changeRole(ctx context.Context, actorID uuid.UUID, req RoleChangeRequest, revoke bool) error {
+	action := "role.grant"
+	if revoke {
+		action = "role.revoke"
+	}
+	if err := validateRoleChange(&req, revoke, time.Now()); err != nil {
 		return err
 	}
-	if err := s.store.RevokeRole(ctx, targetID, role); err != nil {
+	if err := s.authorizePrivileged(ctx, actorID, req.TargetID, action); err != nil {
 		return err
 	}
-	s.audit(ctx, actorID, targetID, "role.revoke", "role="+role, true)
-	return nil
+	if !revoke && actorID == req.TargetID {
+		s.audit(ctx, actorID, req.TargetID, action, "denied: self-grant, "+roleChangeDetail(req), false)
+		return ErrSelfGrant
+	}
+	if revoke && req.App == "" {
+		if envVar := s.envBootstrapSource(req.TargetID, req.Role); envVar != "" {
+			s.audit(ctx, actorID, req.TargetID, action, "denied: env bootstrap role ("+envVar+"), "+roleChangeDetail(req), false)
+			return &EnvBootstrapRoleError{Role: req.Role, EnvVar: envVar}
+		}
+	}
+
+	var guard func([]store.SuperadminHolder) error
+	if req.Role == roles.Superadmin && (revoke || req.ExpiresAt != nil) {
+		guard = s.lastSuperadminGuard(req.TargetID)
+	}
+	_, err := s.store.ChangeRole(ctx, store.RoleChange{
+		Revoke:    revoke,
+		UserID:    req.TargetID,
+		GrantedBy: actorID,
+		Role:      req.Role,
+		App:       req.App,
+		ExpiresAt: req.ExpiresAt,
+		Reason:    req.Reason,
+	}, store.RoleAudit{
+		ActorID:  actorID,
+		TargetID: req.TargetID,
+		Action:   action,
+		Detail:   roleChangeDetail(req),
+	}, guard)
+	if errors.Is(err, ErrLastSuperadmin) {
+		s.audit(ctx, actorID, req.TargetID, action, "denied: last superadmin, "+roleChangeDetail(req), false)
+	}
+	return err
+}
+
+// PermissionsForUser resolves a user's admin permission map live: active DB
+// rows (platform-wide and app-scoped) plus the env allowlist roles as
+// platform-wide grants. On a DB error it returns the env-only map AND the
+// error, so a caller can choose to degrade (capabilities) or refuse (the
+// internal route).
+func (s *Service) PermissionsForUser(ctx context.Context, userID uuid.UUID) (permissions.Admin, error) {
+	var grants []permissions.Grant
+	for _, r := range s.cfg.EnvRolesForUser(userID.String()) {
+		grants = append(grants, permissions.Grant{Role: r})
+	}
+	now := time.Now()
+	dbGrants, err := s.store.RoleGrantsForUser(ctx, userID)
+	if err != nil {
+		return permissions.Resolve(grants, now), err
+	}
+	for _, g := range dbGrants {
+		grants = append(grants, permissions.Grant{Role: g.Role, App: g.App, ExpiresAt: g.ExpiresAt})
+	}
+	return permissions.Resolve(grants, now), nil
+}
+
+// RecordEnvBootstrap writes one audit row per env allowlist holder per role,
+// idempotently (a restart writes nothing new). Called once at boot. Invalid
+// ids in the allowlists are logged and skipped. Errors are returned joined so
+// boot can log them; they must not stop the service.
+func (s *Service) RecordEnvBootstrap(ctx context.Context) error {
+	sources := []struct {
+		set    map[string]struct{}
+		role   string
+		envVar string
+	}{
+		{s.cfg.ScopeSuperadminUserIDs, roles.Superadmin, "SUPERADMIN_USER_IDS"},
+		{s.cfg.ScopeAdminUserIDs, roles.Admin, "ADMIN_USER_IDS"},
+		{s.cfg.ScopeModeratorUserIDs, roles.Moderator, "MODERATOR_USER_IDS"},
+	}
+	var errs []error
+	for _, src := range sources {
+		ids := make([]string, 0, len(src.set))
+		for id := range src.set {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			uid, err := uuid.Parse(id)
+			if err != nil {
+				s.log.Warn("env role allowlist holds an invalid user id; skipped", "env", src.envVar)
+				continue
+			}
+			detail := "role=" + src.role + " app=platform-wide source=env:" + src.envVar
+			inserted, err := s.store.RecordRoleBootstrap(ctx, uid, detail)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if inserted {
+				s.log.Info("env bootstrap role recorded in audit", "user_id", uid, "role", src.role, "env", src.envVar)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ErrRoleNotGrantableByService is returned when the internal (service-to-

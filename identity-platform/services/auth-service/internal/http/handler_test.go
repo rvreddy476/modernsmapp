@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/permissions"
 	"github.com/atpost/identity-auth-service/internal/roles"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
@@ -34,6 +35,8 @@ type stubAuthService struct {
 	grantEcosystemFn  func(callingService string, target uuid.UUID, role, reason string) error
 	revokeEcosystemFn func(callingService string, target uuid.UUID, role, reason string) error
 	resolveRolesFn    func(userID uuid.UUID) []string
+	permissionsFn     func(userID uuid.UUID) (permissions.Admin, error)
+	grantRoleFn       func(actor uuid.UUID, req service.RoleChangeRequest) error
 }
 
 func (s *stubAuthService) RequestOTP(ctx context.Context, phone, purpose string) error {
@@ -105,8 +108,21 @@ func (s *stubAuthService) DeleteAccount(_ context.Context, _ uuid.UUID, _ string
 }
 
 // RBAC stubs
-func (s *stubAuthService) GrantRole(_ context.Context, _, _ uuid.UUID, _ string) error  { return nil }
-func (s *stubAuthService) RevokeRole(_ context.Context, _, _ uuid.UUID, _ string) error { return nil }
+func (s *stubAuthService) GrantRole(_ context.Context, actor uuid.UUID, req service.RoleChangeRequest) error {
+	if s.grantRoleFn != nil {
+		return s.grantRoleFn(actor, req)
+	}
+	return nil
+}
+func (s *stubAuthService) RevokeRole(_ context.Context, _ uuid.UUID, _ service.RoleChangeRequest) error {
+	return nil
+}
+func (s *stubAuthService) PermissionsForUser(_ context.Context, uid uuid.UUID) (permissions.Admin, error) {
+	if s.permissionsFn != nil {
+		return s.permissionsFn(uid)
+	}
+	return permissions.Admin{Apps: map[string][]string{}, Platform: []string{}}, nil
+}
 
 // Ecosystem role stubs. The fns let a test observe what the handler forwarded
 // (and return the service-layer sentinels) without a second stub type.
@@ -131,17 +147,20 @@ func (s *stubAuthService) ResolveRoles(_ context.Context, uid uuid.UUID) []strin
 func (s *stubAuthService) CapabilitiesForUser(_ context.Context, uid uuid.UUID) service.Capabilities {
 	held := s.ResolveRoles(context.Background(), uid)
 	caps := map[string]bool{}
-	for _, r := range roles.All() {
+	for _, r := range roles.TokenRoles() {
 		caps[r] = false
 	}
 	switcher := []service.CapabilitySwitch{{Role: service.CustomerSwitchRole, Label: "Customer"}}
+	var grants []permissions.Grant
 	for _, r := range held {
 		caps[r] = true
 		switcher = append(switcher, service.CapabilitySwitch{Role: r, Label: roles.Label(r)})
+		grants = append(grants, permissions.Grant{Role: r})
 	}
 	return service.Capabilities{
 		UserID: uid.String(), Roles: held, IsCustomer: true,
 		Capabilities: caps, Switcher: switcher,
+		Admin: permissions.Resolve(grants, time.Now()),
 	}
 }
 func (s *stubAuthService) ListUserRoles(_ context.Context, _, _ uuid.UUID) ([]store.UserRole, error) {

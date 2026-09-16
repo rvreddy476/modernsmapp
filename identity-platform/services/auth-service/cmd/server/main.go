@@ -181,6 +181,13 @@ func main() {
 
 	authSvc := service.New(authStore, authProducer, cfg, logger, rdb, miniAppSessionSigner)
 
+	// Env allowlist holders (SUPERADMIN_/ADMIN_/MODERATOR_USER_IDS) are
+	// bootstrap grants: recorded once in auth.admin_audit, idempotently, and
+	// not revocable through the API. A failure is logged, never fatal.
+	if err := authSvc.RecordEnvBootstrap(ctx); err != nil {
+		logger.Warn("env bootstrap role audit failed", "err", err)
+	}
+
 	// Module 3 SR-6 — email delivery.
 	//
 	// Verification and password-reset codes were generated, stored, and sent

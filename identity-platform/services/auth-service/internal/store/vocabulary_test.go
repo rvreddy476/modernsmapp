@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/atpost/identity-auth-service/database"
+	"github.com/atpost/identity-auth-service/internal/permissions"
 	"github.com/atpost/identity-auth-service/internal/roles"
 )
 
@@ -78,6 +79,66 @@ func TestSetupSQLAllowsServiceActorInAudit(t *testing.T) {
 			t.Fatalf("database/setup.sql is missing %q — InsertServiceAudit writes "+
 				"actor_id NULL and would fail with 23502", fragment)
 		}
+	}
+}
+
+var appCheckRE = regexp.MustCompile(
+	`(?is)ADD\s+CONSTRAINT\s+user_roles_app_check\s+CHECK\s*\(\s*app\s+IS\s+NULL\s+OR\s+app\s+IN\s*\(([^)]*)\)`)
+
+var scopedRoleCheckRE = regexp.MustCompile(
+	`(?is)ADD\s+CONSTRAINT\s+user_roles_scoped_role_check\s+CHECK\s*\(\s*app\s+IS\s+NULL\s+OR\s+role\s+IN\s*\(([^)]*)\)`)
+
+// TestSetupSQLAppCheckMatchesCatalogue: the app CHECK is a copy of
+// permissions.Apps() and the scoped-role CHECK a copy of the app-scopable
+// roles (every admin role except superadmin).
+func TestSetupSQLAppCheckMatchesCatalogue(t *testing.T) {
+	m := appCheckRE.FindStringSubmatch(database.SetupSQL)
+	if m == nil {
+		t.Fatal("database/setup.sql must ADD user_roles_app_check")
+	}
+	want := permissions.Apps()
+	sort.Strings(want)
+	if got := parseSQLStringList(m[1]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("app CHECK lists %v, catalogue is %v", got, want)
+	}
+
+	m = scopedRoleCheckRE.FindStringSubmatch(database.SetupSQL)
+	if m == nil {
+		t.Fatal("database/setup.sql must ADD user_roles_scoped_role_check")
+	}
+	var scopable []string
+	for _, r := range roles.AdminRoles() {
+		if r != roles.Superadmin {
+			scopable = append(scopable, r)
+		}
+	}
+	sort.Strings(scopable)
+	if got := parseSQLStringList(m[1]); !reflect.DeepEqual(got, scopable) {
+		t.Fatalf("scoped-role CHECK lists %v, want %v", got, scopable)
+	}
+}
+
+// TestSetupSQLPerAppKey: the migration is additive and idempotent, and the
+// old (user_id, role) key is replaced by (user_id, role, COALESCE(app,'')).
+func TestSetupSQLPerAppKey(t *testing.T) {
+	for _, fragment := range []string{
+		"ALTER TABLE auth.user_roles ADD COLUMN IF NOT EXISTS app TEXT",
+		"ALTER TABLE auth.user_roles ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ",
+		"ALTER TABLE auth.user_roles ADD COLUMN IF NOT EXISTS reason TEXT",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_user_roles_user_role_app",
+		"ON auth.user_roles (user_id, role, (COALESCE(app, '')))",
+		"ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_pkey",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_audit_role_bootstrap",
+	} {
+		if !strings.Contains(database.SetupSQL, fragment) {
+			t.Fatalf("database/setup.sql is missing %q", fragment)
+		}
+	}
+	// The unique index must exist before the PK is dropped, so there is no
+	// window without a key.
+	if strings.Index(database.SetupSQL, "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_roles_user_role_app") >
+		strings.Index(database.SetupSQL, "DROP CONSTRAINT IF EXISTS user_roles_pkey") {
+		t.Fatal("create uq_user_roles_user_role_app before dropping user_roles_pkey")
 	}
 }
 

@@ -99,11 +99,14 @@ CREATE TABLE IF NOT EXISTS auth.user_roles (
     user_id    UUID NOT NULL,
     role       TEXT NOT NULL CHECK (role IN (
                    'superadmin','admin','moderator',
+                   'finance','support','kyc_reviewer','auditor',
                    'seller','restaurant_owner','delivery_partner','rider_partner'
                )),
     granted_by UUID,
     granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, role)
+    app        TEXT,
+    expires_at TIMESTAMPTZ,
+    reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON auth.user_roles(user_id);
 
@@ -133,8 +136,47 @@ CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON auth.user_roles(user_id);
 ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_role_check;
 ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_role_check CHECK (role IN (
     'superadmin','admin','moderator',
+    'finance','support','kyc_reviewer','auditor',
     'seller','restaurant_owner','delivery_partner','rider_partner'
 ));
+
+-- Per-application admin roles (admin console, Wave 0 A1).
+--
+-- A role row may now be scoped to ONE application ("dating moderator"), carry
+-- an expiry, and record why it was granted:
+--
+--   app        NULL = platform-wide. Every row that existed before this change
+--              has NULL and therefore keeps meaning exactly what it meant.
+--   expires_at NULL = never expires. An expired row grants nothing; every read
+--              path filters on it (store.RolesForUser, store.RoleGrantsForUser).
+--   reason     free text required by the admin grant API; NULL on legacy rows
+--              and optional on the service (ecosystem) grant API.
+--
+-- The key used to be PRIMARY KEY (user_id, role). A PK cannot contain an
+-- expression, and "one row per (user, role, app) with NULL as its own value"
+-- needs COALESCE(app, ''), so the PK is dropped and replaced by a unique
+-- expression index. Both statements are idempotent; the DROP is a no-op on a
+-- database created by the CREATE TABLE above, which has no PK.
+--
+-- The app vocabulary is internal/permissions.Apps(); the CHECK below must
+-- list exactly those values (TestSetupSQLAppCheckMatchesCatalogue).
+ALTER TABLE auth.user_roles ADD COLUMN IF NOT EXISTS app TEXT;
+ALTER TABLE auth.user_roles ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE auth.user_roles ADD COLUMN IF NOT EXISTS reason TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_roles_user_role_app
+    ON auth.user_roles (user_id, role, (COALESCE(app, '')));
+ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_pkey;
+ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_app_check;
+ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_app_check CHECK (app IS NULL OR app IN (
+    'dating','food','commerce','monetization','payments','wallet','social',
+    'tube','qa','chat','rider','trust_safety','platform'
+));
+-- superadmin is platform-wide by definition, and the ecosystem roles belong to
+-- no admin app. The service refuses both; the database refuses them too.
+ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_scoped_role_check;
+ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_scoped_role_check CHECK (
+    app IS NULL OR role IN ('admin','moderator','finance','support','kyc_reviewer','auditor')
+);
 
 -- Immutable audit trail of privileged actions (role grants/revokes, etc.).
 -- Append-only: revokes delete the user_roles row, so this is the durable record
@@ -175,6 +217,14 @@ ALTER TABLE auth.admin_audit ADD CONSTRAINT admin_audit_actor_present CHECK (
 CREATE INDEX IF NOT EXISTS idx_admin_audit_actor_service
     ON auth.admin_audit(actor_service, created_at DESC)
     WHERE actor_service IS NOT NULL;
+
+-- Env allowlist holders (SUPERADMIN_/ADMIN_/MODERATOR_USER_IDS) are recorded
+-- once as bootstrap grants. Every replica runs the recording at boot, so the
+-- row is made unique here and inserted ON CONFLICT DO NOTHING — idempotent
+-- across restarts and concurrent boots. See service.RecordEnvBootstrap.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_audit_role_bootstrap
+    ON auth.admin_audit(target_id, detail)
+    WHERE action = 'role.bootstrap';
 
 -- WebAuthn / passkey credentials. One row per registered authenticator. The
 -- public key + sign_count are used to verify assertions at login; credential_id

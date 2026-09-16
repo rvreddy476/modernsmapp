@@ -54,9 +54,27 @@ const (
 	RiderPartner    = "rider_partner"
 )
 
+// The staff roles (admin console). Granted by a superadmin through the same
+// route as the ladder, platform-wide or scoped to one application. Their
+// meaning is entirely the permission catalogue in internal/permissions.
+//
+// They are deliberately NOT part of the token's `scopes` claim (Expand drops
+// them): every service today reads `admin`/`moderator` from that claim as a
+// blanket grant, and a finance or support hat must never be mistaken for one.
+// Services resolve staff permissions live through identity instead.
+const (
+	Finance     = "finance"
+	Support     = "support"
+	KYCReviewer = "kyc_reviewer"
+	Auditor     = "auditor"
+)
+
 // platform is the privilege ladder in descending order. The order is also the
 // canonical output order of Expand, so a token's `scopes` claim is stable.
 var platform = []string{Superadmin, Admin, Moderator}
+
+// staff is the admin-console roles that sit outside the ladder.
+var staff = []string{Finance, Support, KYCReviewer, Auditor}
 
 // ecosystem is the set a SERVICE may grant. Deliberately separate from
 // platform: the internal grant endpoint is allowed to write only this list, so
@@ -70,11 +88,44 @@ func Platform() []string { return append([]string(nil), platform...) }
 // Ecosystem returns the service-grantable roles in canonical order.
 func Ecosystem() []string { return append([]string(nil), ecosystem...) }
 
+// Staff returns the admin-console staff roles in canonical order.
+func Staff() []string { return append([]string(nil), staff...) }
+
+// AdminRoles returns every role an admin grant may name: the ladder, then staff.
+func AdminRoles() []string {
+	out := make([]string, 0, len(platform)+len(staff))
+	out = append(out, platform...)
+	out = append(out, staff...)
+	return out
+}
+
+// IsAdminRole reports whether r is a ladder or staff role.
+func IsAdminRole(r string) bool {
+	for _, known := range AdminRoles() {
+		if r == known {
+			return true
+		}
+	}
+	return false
+}
+
+// TokenRoles returns the roles that can appear in the `scopes` claim and in
+// the capabilities switcher: the ladder and the ecosystem roles, exactly the
+// set that existed before staff roles. Kept separate so neither surface
+// changes shape.
+func TokenRoles() []string {
+	out := make([]string, 0, len(platform)+len(ecosystem))
+	out = append(out, platform...)
+	out = append(out, ecosystem...)
+	return out
+}
+
 // All returns every assignable role in canonical order. The auth.user_roles
 // CHECK constraint must list exactly these values.
 func All() []string {
-	out := make([]string, 0, len(platform)+len(ecosystem))
+	out := make([]string, 0, len(platform)+len(staff)+len(ecosystem))
 	out = append(out, platform...)
+	out = append(out, staff...)
 	out = append(out, ecosystem...)
 	return out
 }
@@ -160,6 +211,14 @@ func Label(r string) string {
 		return "Admin"
 	case Moderator:
 		return "Moderator"
+	case Finance:
+		return "Finance"
+	case Support:
+		return "Support"
+	case KYCReviewer:
+		return "KYC reviewer"
+	case Auditor:
+		return "Auditor"
 	case Seller:
 		return "Seller"
 	case RestaurantOwner:

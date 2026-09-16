@@ -7,12 +7,13 @@ import (
 
 // TestVocabulary pins the exact set of assignable roles.
 //
-// Seven, and only seven. If someone adds an eighth this fails, which is the
+// Eleven, and only eleven. If someone adds a twelfth this fails, which is the
 // point: the CHECK constraint in database/setup.sql is a copy of this list that
 // Go cannot import, and the two must not drift.
 func TestVocabulary(t *testing.T) {
 	want := []string{
 		"superadmin", "admin", "moderator",
+		"finance", "support", "kyc_reviewer", "auditor",
 		"seller", "restaurant_owner", "delivery_partner", "rider_partner",
 	}
 	if got := All(); !reflect.DeepEqual(got, want) {
@@ -21,6 +22,27 @@ func TestVocabulary(t *testing.T) {
 	for _, r := range want {
 		if !Valid(r) {
 			t.Fatalf("Valid(%q) = false, want true", r)
+		}
+	}
+	// The token/capabilities surface keeps its pre-staff shape.
+	tokenWant := []string{
+		"superadmin", "admin", "moderator",
+		"seller", "restaurant_owner", "delivery_partner", "rider_partner",
+	}
+	if got := TokenRoles(); !reflect.DeepEqual(got, tokenWant) {
+		t.Fatalf("TokenRoles() = %v, want %v", got, tokenWant)
+	}
+}
+
+// TestStaffRolesNeverReachScopes: a finance or support hat must not appear in
+// the `scopes` claim, where services read admin/moderator as blanket grants.
+func TestStaffRolesNeverReachScopes(t *testing.T) {
+	for _, r := range Staff() {
+		if got := Expand([]string{r}); len(got) != 0 {
+			t.Fatalf("Expand([%q]) = %v, want []", r, got)
+		}
+		if IsEcosystem(r) || IsPlatform(r) || !IsAdminRole(r) {
+			t.Fatalf("%q classified wrongly", r)
 		}
 	}
 }
