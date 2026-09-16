@@ -65,6 +65,13 @@ func (h *Handler) SetReviewStatusInternal(c *gin.Context) {
 	if !ok {
 		return
 	}
+	h.setReviewStatus(c, actor, nil)
+}
+
+// setReviewStatus is the flagged → approved|rejected write shared by the
+// internal route and the admin-service token route. allow, when set, is asked
+// about the post and status before anything is written.
+func (h *Handler) setReviewStatus(c *gin.Context, actor postgres.ReviewAuditActor, allow func(c *gin.Context, postID uuid.UUID, status string) bool) {
 	var req setReviewStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
@@ -81,6 +88,9 @@ func (h *Handler) SetReviewStatusInternal(c *gin.Context) {
 	}
 	if len(req.Reason) > 2000 {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "reason must be at most 2000 characters", nil)
+		return
+	}
+	if allow != nil && !allow(c, postID, req.Status) {
 		return
 	}
 	actor.Reason = req.Reason
@@ -127,6 +137,12 @@ func (h *Handler) SetVisibilityInternal(c *gin.Context) {
 	if !ok {
 		return
 	}
+	h.setVisibility(c, actor, nil)
+}
+
+// setVisibility is the staged → visibility write shared by the internal route
+// and the admin-service token route; allow as in setReviewStatus.
+func (h *Handler) setVisibility(c *gin.Context, actor postgres.ReviewAuditActor, allow func(c *gin.Context, postID uuid.UUID, visibility string) bool) {
 	var req setVisibilityRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
@@ -139,6 +155,9 @@ func (h *Handler) SetVisibilityInternal(c *gin.Context) {
 	}
 	if len(req.Reason) > 2000 {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "reason must be at most 2000 characters", nil)
+		return
+	}
+	if allow != nil && !allow(c, postID, req.Visibility) {
 		return
 	}
 	actor.Reason = req.Reason

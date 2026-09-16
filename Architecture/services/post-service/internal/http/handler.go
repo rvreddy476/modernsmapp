@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/moderationcap"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -28,6 +29,9 @@ type Handler struct {
 	hub                *streamhub.Hub
 	internalKey        string
 	moderationVerifier *moderationcap.Verifier
+	// verifier admits admin-service tokens on /v1/posts/internal/admin
+	// (admin_token.go). nil: no token is accepted.
+	verifier *servicetoken.Verifier
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
@@ -60,9 +64,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// Apply internal service key enforcement to all /v1 routes.
 	// Health and metrics endpoints registered outside this group remain public.
+	//
+	// The one exception is the admin-service token family (admin_token.go):
+	// the key proves nothing there (the gateway stamps it on edge traffic), so
+	// those routes are judged ONLY by the signed token. The exemption is keyed
+	// on the MATCHED route (FullPath), never the raw URL, and every route
+	// under the prefix is registered with requireAdminToken.
 	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+		keyGate := sharedmiddleware.RequireInternalKey(h.internalKey)
+		r.Use(func(c *gin.Context) {
+			if isAdminTokenRoute(c.FullPath()) {
+				c.Next()
+				return
+			}
+			keyGate(c)
+		})
 	}
+	h.registerAdminTokenRoutes(r)
 
 	v1 := r.Group("/v1/posts")
 	{

@@ -485,10 +485,20 @@ func main() {
 	// O(distinct channels) instead. See internal/streamhub.
 	sseHub := streamhub.New(rdb, slog.Default())
 
+	// Admin console (Wave 2 — Content): admin-service tokens on
+	// /v1/posts/internal/admin. Blank SERVICE_CALLERS accepts no token (401);
+	// a half-configured caller refuses to boot.
+	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("service token callers configuration", "error", err)
+		os.Exit(1)
+	}
+
 	postHandler := http.New(postSvc, rdb).
 		WithStreamHub(sseHub).
 		WithInternalKey(internalServiceKey).
-		WithModerationVerifier(postModerationVerifier)
+		WithModerationVerifier(postModerationVerifier).
+		WithServiceAuth(serviceVerifier)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

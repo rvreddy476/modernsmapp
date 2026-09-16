@@ -35,8 +35,9 @@ func (s *Service) ListFlaggedComments(ctx context.Context, status string, cursor
 
 // SetCommentModerationStatus is the admin override.
 // status ∈ {visible, hidden, removed, review}.
-func (s *Service) SetCommentModerationStatus(ctx context.Context, commentID uuid.UUID, status string) error {
-	return s.pgStore.SetCommentModerationStatus(ctx, commentID, status)
+// actor is the acting human; the change is audited in post_admin_audit.
+func (s *Service) SetCommentModerationStatus(ctx context.Context, actor, commentID uuid.UUID, status string) error {
+	return s.pgStore.SetCommentModerationStatus(ctx, actor, commentID, status)
 }
 
 // ListReports returns content reports, optionally filtered by status. Used by admin dashboard.
@@ -45,6 +46,7 @@ func (s *Service) ListReports(ctx context.Context, status string, limit, offset 
 }
 
 // ReviewReport updates the status and review note of a report. Used by admin dashboard.
-func (s *Service) ReviewReport(ctx context.Context, reportID uuid.UUID, status, reviewerID, reviewNote string) error {
-	return s.pgStore.UpdateReportStatus(ctx, reportID, status, reviewerID, reviewNote)
+// actor is the acting human; the review is audited in post_admin_audit.
+func (s *Service) ReviewReport(ctx context.Context, reportID uuid.UUID, status string, actor uuid.UUID, reviewNote string) error {
+	return s.pgStore.UpdateReportStatus(ctx, reportID, status, actor, reviewNote)
 }

@@ -42,6 +42,13 @@ func (h *Handler) ModeratePost(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid actor identity", nil)
 		return
 	}
+	h.moderatePost(c, actorID, nil)
+}
+
+// moderatePost is the decision write shared by the LEGACY route and the
+// admin-service token route. allow, when set, is asked about the action
+// before anything is written and answers the refusal itself.
+func (h *Handler) moderatePost(c *gin.Context, actorID uuid.UUID, allow func(c *gin.Context, postID uuid.UUID, action string) bool) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
@@ -65,6 +72,9 @@ func (h *Handler) ModeratePost(c *gin.Context) {
 			return
 		}
 		reportID = &parsed
+	}
+	if allow != nil && !allow(c, postID, req.Action) {
+		return
 	}
 	h.applyModeration(c, postgres.ModeratePostInput{
 		DecisionID: decisionID, PostID: postID, ActorID: actorID,

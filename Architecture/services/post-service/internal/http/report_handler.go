@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -121,8 +122,20 @@ func (h *Handler) ListReports(c *gin.Context) {
 }
 
 // ReviewReport handles PATCH /v1/admin/reports/:reportId
+// The actor is the gateway-verified moderator (requireModerator has already
+// validated X-User-Id); the review is audited in post_admin_audit.
 func (h *Handler) ReviewReport(c *gin.Context) {
-	reviewerID := c.GetHeader("X-User-Id")
+	actor, ok := requireModeratorIdentity(c)
+	if !ok {
+		return
+	}
+	h.reviewReport(c, actor, nil)
+}
+
+// reviewReport is the review write shared by the LEGACY route and the
+// admin-service token route. allow, when set, is asked about the report's
+// target type before anything is written (it answers the refusal itself).
+func (h *Handler) reviewReport(c *gin.Context, actor uuid.UUID, allow func(c *gin.Context, targetType string) bool) {
 	reportID, err := uuid.Parse(c.Param("reportId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil)
@@ -143,8 +156,31 @@ func (h *Handler) ReviewReport(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid status", nil)
 		return
 	}
+	if len(body.ReviewNote) > 2000 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "review_note must be at most 2000 characters", nil)
+		return
+	}
 
-	if err := h.svc.ReviewReport(c.Request.Context(), reportID, body.Status, reviewerID, body.ReviewNote); err != nil {
+	if allow != nil {
+		report, err := h.svc.GetContentReport(c.Request.Context(), reportID)
+		if errors.Is(err, postgres.ErrReportNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Report not found", nil)
+			return
+		}
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to review report", nil)
+			return
+		}
+		if !allow(c, report.TargetType) {
+			return
+		}
+	}
+
+	if err := h.svc.ReviewReport(c.Request.Context(), reportID, body.Status, actor, body.ReviewNote); err != nil {
+		if errors.Is(err, postgres.ErrReportNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Report not found", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to review report", nil)
 		return
 	}
@@ -207,7 +243,19 @@ func (h *Handler) ListFlaggedComments(c *gin.Context) {
 
 // ModerateComment — PATCH /v1/admin/comments/:commentId/moderation
 // Body: {"status": "visible|hidden|removed|review"}
+// The actor is the gateway-verified moderator; the change is audited.
 func (h *Handler) ModerateComment(c *gin.Context) {
+	actor, ok := requireModeratorIdentity(c)
+	if !ok {
+		return
+	}
+	h.moderateComment(c, actor, nil)
+}
+
+// moderateComment is the comment moderation write shared by the LEGACY route
+// and the admin-service token route. allow, when set, is asked about the
+// requested status before anything is written.
+func (h *Handler) moderateComment(c *gin.Context, actor uuid.UUID, allow func(c *gin.Context, status string) bool) {
 	commentID, err := uuid.Parse(c.Param("commentId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
@@ -220,7 +268,10 @@ func (h *Handler) ModerateComment(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-	if err := h.svc.SetCommentModerationStatus(c.Request.Context(), commentID, body.Status); err != nil {
+	if allow != nil && !allow(c, body.Status) {
+		return
+	}
+	if err := h.svc.SetCommentModerationStatus(c.Request.Context(), actor, commentID, body.Status); err != nil {
 		switch err.Error() {
 		case "COMMENT_NOT_FOUND":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)

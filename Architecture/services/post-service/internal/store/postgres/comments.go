@@ -546,23 +546,40 @@ func (s *Store) IncrementCommentFlaggedCount(ctx context.Context, commentID uuid
 // SetCommentModerationStatus is the admin's override. Status must be
 // one of visible / hidden / removed / review. Returns
 // COMMENT_NOT_FOUND if the row doesn't exist.
-func (s *Store) SetCommentModerationStatus(ctx context.Context, commentID uuid.UUID, status string) error {
+//
+// actor is the acting human (required). The change and one post_admin_audit
+// row (comment.moderate, previous → new status) commit together.
+func (s *Store) SetCommentModerationStatus(ctx context.Context, actor, commentID uuid.UUID, status string) error {
 	switch status {
 	case "visible", "hidden", "removed", "review":
 	default:
 		return fmt.Errorf("INVALID_MODERATION_STATUS: %q", status)
 	}
-	tag, err := s.db.Exec(ctx, `
-		UPDATE comments SET moderation_status = $2, updated_at = NOW()
-		WHERE id = $1
-	`, commentID, status)
+	if actor == uuid.Nil {
+		return ErrAdminAuditActor
+	}
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("COMMENT_NOT_FOUND")
+	defer tx.Rollback(ctx)
+	var previous string
+	if err := tx.QueryRow(ctx, `SELECT moderation_status FROM comments WHERE id = $1 FOR UPDATE`, commentID).Scan(&previous); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("COMMENT_NOT_FOUND")
+		}
+		return err
 	}
-	return nil
+	if _, err := tx.Exec(ctx, `
+		UPDATE comments SET moderation_status = $2, updated_at = NOW()
+		WHERE id = $1
+	`, commentID, status); err != nil {
+		return err
+	}
+	if err := insertAdminAudit(ctx, tx, actor, "comment.moderate", "comment", commentID, previous, status, ""); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ListFlaggedComments returns the moderation queue: comments with
