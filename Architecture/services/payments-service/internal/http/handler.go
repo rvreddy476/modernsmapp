@@ -55,6 +55,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/atpost/payments-service/internal/gateway"
 	"github.com/atpost/payments-service/internal/service"
@@ -105,6 +106,10 @@ type Handler struct {
 	// callerApps is SERVICE_CALLER_<NAME>_APPLICATIONS by caller (issuer). A
 	// token caller may name only these applications (applications.go).
 	callerApps map[string][]string
+	// admin serves the admin console family (admin_token.go, admin_routes.go);
+	// nil leaves it unregistered. pendingAge is when an intent counts as stuck.
+	admin      AdminService
+	pendingAge time.Duration
 }
 
 func New(svc Service) *Handler {
@@ -219,6 +224,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 		// through to a 404 that reads like a deploy problem.
 		internal.PATCH("/intents/:id/status", h.GoneClientStatusMutation)
 	}
+
+	// ── Admin console family: /v1/payments/internal/admin ───────────────
+	// Its own group, outside the service family's gate: admin-service tokens
+	// only, no internal-key fallback (admin_token.go).
+	if h.admin != nil {
+		h.registerAdminRoutes(r)
+	}
 	return nil
 }
 
@@ -291,6 +303,15 @@ func (h *Handler) requireOp(op string) gin.HandlerFunc {
 			// not which claim failed.
 			slog.Warn("payments: service token refused",
 				"op", op, "ref_type", refType, "reason", err.Error(), "path", c.Request.URL.Path)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden,
+				"FORBIDDEN", "service token rejected", nil)
+			c.Abort()
+			return
+		}
+		if v.Issuer == IssuerAdminService {
+			// The admin console's backend never touches the money family,
+			// whatever its token or registration claims (admin_token.go).
+			slog.Warn("payments: admin-service token refused on a service route", "op", op, "path", c.Request.URL.Path)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden,
 				"FORBIDDEN", "service token rejected", nil)
 			c.Abort()

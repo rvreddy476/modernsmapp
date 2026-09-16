@@ -39,11 +39,21 @@ func CallerEnvPrefix(name string) string {
 	return "SERVICE_CALLER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 }
 
+// AdminServiceCaller is the admin console's backend. It opens no payments, so
+// it has no application allowlist: it is registered with admin permissions
+// only (http.AdminPermissions) and is confined per request by the
+// application_id it passes for an app-scoped admin.
+const AdminServiceCaller = "admin-service"
+
 // CallerApplications reads SERVICE_CALLER_<NAME>_APPLICATIONS for every caller
-// in SERVICE_CALLERS. A caller with no list maps to an empty slice.
+// in SERVICE_CALLERS. A caller with no list maps to an empty slice. The admin
+// console's backend is not a payment opener and is left out.
 func CallerApplications(getenv func(string) string) map[string][]string {
 	out := map[string][]string{}
 	for _, name := range splitCSV(getenv("SERVICE_CALLERS")) {
+		if name == AdminServiceCaller {
+			continue
+		}
 		out[name] = splitCSV(getenv(CallerEnvPrefix(name) + "_APPLICATIONS"))
 	}
 	return out

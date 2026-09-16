@@ -251,8 +251,11 @@ func main() {
 
 	// WithProduction: in production the operator routes (refund admin, registry
 	// write) refuse the legacy internal key and need a service token.
+	// The admin console family (admin-service tokens only). "Stuck" uses the
+	// reconciler's own pending age.
 	handler := nethttp.New(svc).WithProvider(provider).WithProduction(isProd).
-		WithCallerApplications(callerApps)
+		WithCallerApplications(callerApps).
+		WithAdmin(svc, time.Duration(envInt("PAYMENTS_PENDING_AGE_SEC", 600))*time.Second)
 	if verifier != nil {
 		handler.WithServiceAuth(verifier)
 	}
@@ -401,11 +404,16 @@ func buildServiceTokenVerifier() (*servicetoken.Verifier, error) {
 		if kid == "" || pub == "" {
 			return nil, fmt.Errorf("caller %q is missing %s_KID or %s_PUBKEY", name, prefix, prefix)
 		}
-		if len(ops) == 0 || len(refs) == 0 {
+		if len(ops) == 0 || (len(refs) == 0 && name != nethttp.IssuerAdminService) {
 			// An empty allowlist is not "allow everything" — it is a
 			// configuration error, and treating it as permissive is how
 			// the original shared-key hole was built.
 			return nil, fmt.Errorf("caller %q must declare both %s_OPS and %s_REFTYPES", name, prefix, prefix)
+		}
+		// Admin console: admin-service holds admin permissions only and no
+		// reference type; no other caller may hold an admin permission.
+		if err := nethttp.ValidateCallerPolicy(name, ops, refs); err != nil {
+			return nil, err
 		}
 		if err := v.RegisterBase64(name, kid, pub, ops, refs); err != nil {
 			return nil, fmt.Errorf("caller %q: %w", name, err)

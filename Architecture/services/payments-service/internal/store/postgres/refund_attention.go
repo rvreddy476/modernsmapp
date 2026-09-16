@@ -272,6 +272,14 @@ type ResolveRefundInput struct {
 	// OwnerDomain restricts the command to intents that domain owns. "" is a
 	// legacy internal-key caller, which is not domain-scoped.
 	OwnerDomain string
+	// ApplicationID confines the command to one application: a command of
+	// another application reads as absent. "" = every application (every
+	// caller before the admin console).
+	ApplicationID string
+	// ActorID is the human the resolution is attributed to by a signed token
+	// (admin-service's act claim). It is written to payment_audit_log.actor_id;
+	// nil leaves the column NULL, as it always was.
+	ActorID *uuid.UUID
 }
 
 // RefundResolution is the stored outcome of a resolution.
@@ -337,6 +345,10 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 	}
 	if in.OwnerDomain != "" && owner != in.OwnerDomain {
 		// Not yours reads as absent, as on every other owner-scoped route.
+		return nil, ErrRefundCommandNotFound
+	}
+	if in.ApplicationID != "" && appID != in.ApplicationID {
+		// Another application's command reads as absent too.
 		return nil, ErrRefundCommandNotFound
 	}
 
@@ -473,9 +485,9 @@ func (s *Store) ResolveRefundCommand(ctx context.Context, in ResolveRefundInput)
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO payments.payment_audit_log (intent_id, event, old_status, new_status, metadata)
-		 VALUES ($1,'refund_command_resolved',$2,$3,$4)`,
-		intentID, intentStatus, newIntentStatus, meta); err != nil {
+		`INSERT INTO payments.payment_audit_log (intent_id, event, old_status, new_status, metadata, actor_id)
+		 VALUES ($1,'refund_command_resolved',$2,$3,$4,$5)`,
+		intentID, intentStatus, newIntentStatus, meta, in.ActorID); err != nil {
 		return nil, err
 	}
 
