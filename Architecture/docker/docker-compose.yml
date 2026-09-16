@@ -1405,6 +1405,10 @@ services:
       POSTGRES_DSN: *app_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Dev only: admin routes do not demand X-Admin-MFA until the gateway
+      # stamps it from identity's admin_mfa claim. Unset, the service requires
+      # MFA everywhere except ENV=local/dev. Step-up is enforced regardless.
+      ADMIN_REQUIRE_MFA: ${ADMIN_REQUIRE_MFA:-false}
     ports:
       - "8096:8096"
     depends_on:

@@ -27,12 +27,25 @@ type AuditLog struct {
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
-// Audit outcomes. A write whose downstream answered 2xx is a success; any
-// other status, or no answer at all, is a failure.
+// Audit outcomes. A request whose operation answered 2xx is a success; any
+// other status, or no answer at all, is a failure. Denied means admin-service
+// refused it before it ran (permission, MFA, step-up, identity unavailable);
+// pending and rejected belong to two-person approval (migration 003).
 const (
-	AuditOutcomeSuccess = "success"
-	AuditOutcomeFailure = "failure"
+	AuditOutcomeSuccess  = "success"
+	AuditOutcomeFailure  = "failure"
+	AuditOutcomeDenied   = "denied"
+	AuditOutcomePending  = "pending"
+	AuditOutcomeRejected = "rejected"
 )
+
+func validAuditOutcome(o string) bool {
+	switch o {
+	case AuditOutcomeSuccess, AuditOutcomeFailure, AuditOutcomeDenied, AuditOutcomePending, AuditOutcomeRejected:
+		return true
+	}
+	return false
+}
 
 // AdminAuditEntry is one admin write that passed through admin-service.
 type AdminAuditEntry struct {
@@ -43,7 +56,7 @@ type AdminAuditEntry struct {
 	TargetID   string
 	Reason     string // empty when none was given
 	RequestID  string
-	Outcome    string // AuditOutcomeSuccess or AuditOutcomeFailure
+	Outcome    string // one of the AuditOutcome constants
 	StatusCode int    // downstream status; 0 when the downstream never answered
 	Payload    map[string]any
 }
@@ -61,8 +74,7 @@ func New(db *pgxpool.Pool) *Store {
 // RecordAdminWrite appends one row to admin.audit_log. The table is
 // append-only (migration 002); there is no update path.
 func (s *Store) RecordAdminWrite(ctx context.Context, e AdminAuditEntry) error {
-	if e.Actor == "" || e.App == "" || e.Operation == "" || e.TargetType == "" ||
-		(e.Outcome != AuditOutcomeSuccess && e.Outcome != AuditOutcomeFailure) {
+	if e.Actor == "" || e.App == "" || e.Operation == "" || e.TargetType == "" || !validAuditOutcome(e.Outcome) {
 		return ErrInvalidAuditEntry
 	}
 	var payload []byte

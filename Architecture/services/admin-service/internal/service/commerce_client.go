@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/atpost/shared/o11y/trace"
 	"github.com/google/uuid"
@@ -146,6 +147,40 @@ func (c *CommerceClient) RejectProduct(ctx context.Context, productID, actorID, 
 		"/v1/commerce/internal/products/"+productID+"/reject", actorID,
 		adminActionPayload{Reason: reason})
 	return status, err
+}
+
+func (c *CommerceClient) UnsuspendSeller(ctx context.Context, sellerID, actorID, reason, notes string) ([]byte, int, error) {
+	return c.do(ctx, http.MethodPost,
+		"/v1/commerce/internal/sellers/"+url.PathEscape(sellerID)+"/unsuspend", actorID,
+		adminActionPayload{Reason: reason, Notes: notes})
+}
+
+func (c *CommerceClient) RequestProductChanges(ctx context.Context, productID, actorID, changes, notes string) ([]byte, int, error) {
+	return c.do(ctx, http.MethodPost,
+		"/v1/commerce/internal/products/"+url.PathEscape(productID)+"/request-changes", actorID,
+		adminActionPayload{Changes: changes, Notes: notes})
+}
+
+// VerifySellerKYC runs commerce's KYC adapter for one seller and returns its
+// per-field report.
+func (c *CommerceClient) VerifySellerKYC(ctx context.Context, sellerID, actorID string) ([]byte, int, error) {
+	return c.do(ctx, http.MethodPost,
+		"/v1/commerce/internal/sellers/"+url.PathEscape(sellerID)+"/kyc/verify", actorID, struct{}{})
+}
+
+func (c *CommerceClient) ListPendingPayouts(ctx context.Context, limit int) ([]byte, int, error) {
+	return c.do(ctx, http.MethodGet,
+		fmt.Sprintf("/v1/commerce/internal/payouts/pending?limit=%d", limit), "", nil)
+}
+
+// SettleCODRemittance marks a COD remittance paid. payoutBatchID may be empty.
+func (c *CommerceClient) SettleCODRemittance(ctx context.Context, remittanceID, payoutBatchID, actorID string) ([]byte, int, error) {
+	body := map[string]string{}
+	if payoutBatchID != "" {
+		body["payout_batch_id"] = payoutBatchID
+	}
+	return c.do(ctx, http.MethodPost,
+		"/v1/commerce/internal/cod-remittances/"+url.PathEscape(remittanceID)+"/settle", actorID, body)
 }
 
 // RawProxy forwards one admin request to a commerce-service internal endpoint

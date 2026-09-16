@@ -106,7 +106,7 @@ func TestRecordAdminWriteStoresEveryField(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO admin.audit_log (id, admin_actor, action, entity_type, entity_id, outcome)
 		VALUES ($1, 'a', 'x', 'y', 'z', 'maybe')`, uuid.New()); err == nil {
-		t.Fatal("an outcome outside success/failure was accepted")
+		t.Fatal("an outcome outside the allowed set was accepted")
 	}
 }
 

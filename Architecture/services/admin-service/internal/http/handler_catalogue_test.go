@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atpost/admin-service/internal/adminauth"
+	"github.com/atpost/admin-service/internal/approvals"
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -38,22 +40,32 @@ func catalogueRig(t *testing.T) (*gin.Engine, *struct {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := &Handler{audit: &fakeRecorder{}}
+	perms := &fakePerms{byUser: map[string]adminauth.Permissions{}}
+	perms.grant(catalogueModerator, permProductsModerate)
+	perms.grant(catalogueEditor, permProductsModerate, permCatalogueEdit)
+	h := New(&stubAdminService{}, NewGate(perms, &fakeRecorder{}, true), approvals.NewService(newMemStore(), &fakeHolders{}))
 	h.RegisterCatalogueRoutes(r, service.NewCommerceClient(upstream.URL, "test-internal-key"))
 	return r, seen
 }
 
+const (
+	catalogueModerator = "44444444-4444-4444-8444-444444444444"
+	catalogueEditor    = "55555555-5555-4555-8555-555555555555"
+)
+
+// callCatalogue calls as the holder of the old scope's equivalent permissions:
+// "moderator" reads the taxonomy, "admin"/"superadmin" also edit it, "" holds
+// nothing.
 func callCatalogue(r *gin.Engine, method, path, scopes, body string) *httptest.ResponseRecorder {
-	var rdr *strings.Reader
-	if body != "" {
-		rdr = strings.NewReader(body)
-	} else {
-		rdr = strings.NewReader("")
-	}
-	req := httptest.NewRequest(method, path, rdr)
-	req.Header.Set("X-User-Id", testActor)
-	if scopes != "" {
-		req.Header.Set("X-Scopes", scopes)
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("X-Admin-MFA", "true")
+	switch scopes {
+	case "moderator":
+		req.Header.Set("X-User-Id", catalogueModerator)
+	case "admin", "superadmin":
+		req.Header.Set("X-User-Id", catalogueEditor)
+	default:
+		req.Header.Set("X-User-Id", nobody)
 	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

@@ -2,13 +2,12 @@ package http
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/atpost/admin-service/internal/approvals"
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -17,13 +16,10 @@ import (
 )
 
 type adminService interface {
-	TakedownContent(ctx context.Context, actor string, entityType, entityID, reason string) error
-	SuspendUser(ctx context.Context, actor string, userID uuid.UUID, until time.Time, reason string) error
 	GetDashboard(ctx context.Context) (*postgres.DashboardStats, error)
 	GetAuditLogs(ctx context.Context, limit, offset int) ([]postgres.AuditLog, int, error)
 	ListReports(ctx context.Context, status string, limit, offset int) ([]postgres.Report, int, error)
 	ListSuspensions(ctx context.Context, limit, offset int) ([]postgres.Suspension, int, error)
-	UnsuspendUser(ctx context.Context, actor string, userID uuid.UUID) error
 	RequestDataExport(ctx context.Context, userID uuid.UUID) (*postgres.DataExportRequest, error)
 	GetDataExportStatus(ctx context.Context, id, userID uuid.UUID) (*postgres.DataExportRequest, error)
 	CreateMiniApp(ctx context.Context, app *postgres.MiniApp) error
@@ -49,6 +45,9 @@ func hasScope(scopes, target string) bool {
 	return false
 }
 
+// requireAnyScope is the X-Scopes compatibility check. No /v1/admin route uses
+// it any more (identity permissions via the gate are the only source there); it
+// remains only on the mini-app status route outside /v1/admin until that moves.
 // requireAnyScope returns true and continues if the user has any of the given scopes.
 // It writes a 403 and returns false otherwise.
 func requireAnyScope(c *gin.Context, scopes ...string) bool {
@@ -65,30 +64,61 @@ func requireAnyScope(c *gin.Context, scopes ...string) bool {
 	return false
 }
 
+// Handler serves admin-service's HTTP routes. Every /v1/admin route is declared
+// through gate, which resolves the caller's permissions, enforces MFA, step-up
+// and the declared permission, and writes the request's audit row.
 type Handler struct {
-	svc   adminService
-	audit auditRecorder
+	svc       adminService
+	gate      *Gate
+	approvals *approvals.Service
 }
 
-func New(svc adminService) *Handler {
-	return &Handler{svc: svc, audit: svc}
+func New(svc adminService, gate *Gate, appr *approvals.Service) *Handler {
+	return &Handler{svc: svc, gate: gate, approvals: appr}
+}
+
+// RegisterAllRoutes registers every route and refuses a table with an
+// undeclared /v1/admin route. main exits on the error.
+func (h *Handler) RegisterAllRoutes(r *gin.Engine, cc *service.CommerceClient) error {
+	h.RegisterRoutes(r)
+	h.RegisterMeRoute(r)
+	h.RegisterApprovalRoutes(r)
+	h.RegisterCommerceRoutes(r, cc)
+	h.RegisterCatalogueRoutes(r, cc)
+	if err := h.gate.VerifyDeclared(r); err != nil {
+		return err
+	}
+	return h.gate.VerifyExecutors(h.approvals.HasExecutor)
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	v1 := r.Group("/v1/admin")
-	{
-		v1.GET("/dashboard", h.GetDashboard)
-		v1.GET("/audit-log", h.GetAuditLog)
-		v1.GET("/reports", h.ListReports)
-		v1.GET("/suspensions", h.ListSuspensions)
-		v1.POST("/takedown", h.TakedownContent)
-		v1.POST("/users/:userId/suspend", h.SuspendUser)
-		v1.DELETE("/users/:userId/suspend", h.UnsuspendUser)
+	g := h.gate
+	g.Handle(r, http.MethodGet, "/v1/admin/dashboard",
+		Requirement{Operation: "dashboard.read", Permission: "platform:users.read"}, h.GetDashboard)
+	g.Handle(r, http.MethodGet, "/v1/admin/audit-log",
+		Requirement{Operation: "audit.read", Permission: "*:audit.read"}, h.GetAuditLog)
+	g.Handle(r, http.MethodGet, "/v1/admin/reports",
+		Requirement{Operation: "reports.read", Permission: "trust_safety:reports.read"}, h.ListReports)
+	g.Handle(r, http.MethodGet, "/v1/admin/suspensions",
+		Requirement{Operation: "suspensions.read", Permission: "platform:users.read"}, h.ListSuspensions)
 
-		// Data export
-		v1.POST("/data-export", h.RequestDataExport)
-		v1.GET("/data-export/:id", h.GetDataExportStatus)
+	// Retired: platform-wide takedown and suspension were hard-disabled here.
+	// Enforcement belongs to each application's admin routes (Wave 2) and to
+	// identity for platform-wide user actions.
+	for _, rt := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/admin/takedown"},
+		{http.MethodPost, "/v1/admin/users/:userId/suspend"},
+		{http.MethodDelete, "/v1/admin/users/:userId/suspend"},
+	} {
+		g.Handle(r, rt.method, rt.path, Requirement{Operation: "retired", Access: AccessRetired}, nil)
 	}
+
+	// Data export is a signed-in user asking for their own data, not an admin
+	// action; it is declared self-service and skips the admin gate.
+	g.Handle(r, http.MethodPost, "/v1/admin/data-export",
+		Requirement{Operation: "data_export.request", Access: AccessSelfService}, h.RequestDataExport)
+	g.Handle(r, http.MethodGet, "/v1/admin/data-export/:id",
+		Requirement{Operation: "data_export.status", Access: AccessSelfService}, h.GetDataExportStatus)
 
 	// Mini Apps
 	apps := r.Group("/v1/apps")
@@ -112,82 +142,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 }
 
-type TakedownRequest struct {
-	EntityType string `json:"entity_type" binding:"required,oneof=post comment user message"`
-	EntityID   string `json:"entity_id" binding:"required"`
-	Reason     string `json:"reason" binding:"required"`
-}
-
-func (h *Handler) TakedownContent(c *gin.Context) {
-	if !requireAnyScope(c, "admin", "superadmin") {
-		return
-	}
-
-	var req TakedownRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-
-	adminActor := c.GetHeader("X-User-Id")
-
-	if err := h.svc.TakedownContent(c.Request.Context(), adminActor, req.EntityType, req.EntityID, req.Reason); err != nil {
-		slog.Error("Takedown error", "error", err)
-		if errors.Is(err, service.ErrCanonicalModerationRequired) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "CANONICAL_MODERATION_REQUIRED", "Use the content owner's canonical moderation endpoint", nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Takedown failed", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "taken_down"}, nil)
-}
-
-type SuspendRequest struct {
-	Until  time.Time `json:"until" binding:"required"`
-	Reason string    `json:"reason" binding:"required"`
-}
-
-func (h *Handler) SuspendUser(c *gin.Context) {
-	if !requireAnyScope(c, "admin", "superadmin") {
-		return
-	}
-
-	userIDStr := c.Param("userId")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid User ID", nil)
-		return
-	}
-
-	var req SuspendRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-
-	adminActor := c.GetHeader("X-User-Id")
-
-	if err := h.svc.SuspendUser(c.Request.Context(), adminActor, userID, req.Until, req.Reason); err != nil {
-		slog.Error("Suspend error", "error", err)
-		if errors.Is(err, service.ErrSuspensionUnavailable) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "SUSPENSION_UNAVAILABLE", err.Error(), nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Suspension failed", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "suspended"}, nil)
-}
-
 // GetDashboard returns aggregate platform stats.
 func (h *Handler) GetDashboard(c *gin.Context) {
-	if !requireAnyScope(c, "admin", "superadmin") {
-		return
-	}
-
 	stats, err := h.svc.GetDashboard(c.Request.Context())
 	if err != nil {
 		slog.Error("Dashboard error", "error", err)
@@ -199,10 +155,6 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 
 // GetAuditLog returns paginated audit log entries.
 func (h *Handler) GetAuditLog(c *gin.Context) {
-	if !requireAnyScope(c, "admin", "superadmin") {
-		return
-	}
-
 	limit, offset := parsePagination(c)
 
 	logs, total, err := h.svc.GetAuditLogs(c.Request.Context(), limit, offset)
@@ -222,10 +174,6 @@ func (h *Handler) GetAuditLog(c *gin.Context) {
 
 // ListReports returns paginated reports, optionally filtered by status.
 func (h *Handler) ListReports(c *gin.Context) {
-	if !requireAnyScope(c, "moderator", "admin", "superadmin") {
-		return
-	}
-
 	limit, offset := parsePagination(c)
 	status := c.Query("status")
 
@@ -246,10 +194,6 @@ func (h *Handler) ListReports(c *gin.Context) {
 
 // ListSuspensions returns paginated active suspensions.
 func (h *Handler) ListSuspensions(c *gin.Context) {
-	if !requireAnyScope(c, "admin", "superadmin") {
-		return
-	}
-
 	limit, offset := parsePagination(c)
 
 	suspensions, total, err := h.svc.ListSuspensions(c.Request.Context(), limit, offset)
@@ -265,34 +209,6 @@ func (h *Handler) ListSuspensions(c *gin.Context) {
 		"limit":  limit,
 		"offset": offset,
 	}, nil)
-}
-
-// UnsuspendUser removes a user's suspension.
-func (h *Handler) UnsuspendUser(c *gin.Context) {
-	if !requireAnyScope(c, "admin", "superadmin") {
-		return
-	}
-
-	userIDStr := c.Param("userId")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid User ID", nil)
-		return
-	}
-
-	adminActor := c.GetHeader("X-User-Id")
-
-	if err := h.svc.UnsuspendUser(c.Request.Context(), adminActor, userID); err != nil {
-		slog.Error("Unsuspend error", "error", err)
-		if errors.Is(err, service.ErrSuspensionUnavailable) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "SUSPENSION_UNAVAILABLE", err.Error(), nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Unsuspend failed", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unsuspended"}, nil)
 }
 
 // parsePagination extracts limit and offset query params with defaults.

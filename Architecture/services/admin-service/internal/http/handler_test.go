@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/admin-service/internal/adminauth"
+	"github.com/atpost/admin-service/internal/approvals"
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
@@ -173,7 +175,8 @@ func (s *stubAdminService) GetOAuthClientByClientID(ctx context.Context, clientI
 func newAdminTestRouter(svc adminService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	New(svc).RegisterRoutes(r)
+	gate := NewGate(&fakePerms{byUser: map[string]adminauth.Permissions{}}, svc, true)
+	New(svc, gate, approvals.NewService(newMemStore(), &fakeHolders{})).RegisterRoutes(r)
 	return r
 }
 

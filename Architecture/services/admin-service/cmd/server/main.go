@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/atpost/admin-service/database"
+	"github.com/atpost/admin-service/internal/adminauth"
+	"github.com/atpost/admin-service/internal/approvals"
 	"github.com/atpost/admin-service/internal/http"
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
@@ -96,7 +98,20 @@ func main() {
 		slog.Info("hashed plaintext oauth client secrets", "rows", n)
 	}
 
-	handler := http.New(svc)
+	// Admin access. Permissions come from identity (cached briefly, never on
+	// error); ADMIN_REQUIRE_MFA is true unless set false or ENV is local/dev.
+	requireMFA, err := adminauth.RequireMFAFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("invalid admin MFA configuration", "error", err)
+		os.Exit(1)
+	}
+	if !requireMFA {
+		slog.Warn("ADMIN_REQUIRE_MFA is off: admin routes do not require X-Admin-MFA (dev only, until the gateway stamps it)")
+	}
+	identity := adminauth.NewIdentityClient(authURL, internalKey)
+	gate := http.NewGate(adminauth.NewCachedPermissions(identity, adminauth.PermissionCacheTTL), svc, requireMFA)
+	approvalSvc := approvals.NewService(store, identity)
+	handler := http.New(svc, gate, approvalSvc)
 
 	// Commerce client for seller/product approval proxying
 	commerceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
@@ -113,9 +128,10 @@ func main() {
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
-	handler.RegisterRoutes(r)
-	handler.RegisterCommerceRoutes(r, commerceClient)
-	handler.RegisterCatalogueRoutes(r, commerceClient)
+	if err := handler.RegisterAllRoutes(r, commerceClient); err != nil {
+		slog.Error("refusing to boot: admin route table is not fully declared", "error", err)
+		os.Exit(1)
+	}
 
 	// 8. Graceful shutdown
 	if err := server.Run(r, server.Config{

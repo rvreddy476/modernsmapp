@@ -28,11 +28,10 @@ var allowedCataloguePrefixes = map[string]struct{}{
 //
 // A browser cannot hold that key, so without this the console the founder
 // authors the taxonomy in could not call a single one of those routes. The
-// scope split matches what the actions do: reading the taxonomy is moderator
-// work, changing it is not.
+// permission split matches what the actions do: reading the taxonomy is
+// moderation work (commerce:products.moderate), changing it needs
+// commerce:catalogue.edit.
 func (h *Handler) RegisterCatalogueRoutes(r *gin.Engine, cc *service.CommerceClient) {
-	g := r.Group("/v1/admin/commerce/catalogue")
-
 	proxy := func(c *gin.Context) {
 		rest := strings.TrimPrefix(c.Param("rest"), "/")
 		if rest == "" {
@@ -60,7 +59,6 @@ func (h *Handler) RegisterCatalogueRoutes(r *gin.Engine, cc *service.CommerceCli
 		upstreamPath := "/v1/commerce/internal/" + rest
 		if c.Request.Method != http.MethodGet {
 			h.forwardCommerceWrite(c, commerceWrite{
-				operation:  "catalogue." + strings.ToLower(c.Request.Method),
 				targetType: head,
 				targetID:   rest,
 				payload: map[string]any{
@@ -76,24 +74,18 @@ func (h *Handler) RegisterCatalogueRoutes(r *gin.Engine, cc *service.CommerceCli
 			return
 		}
 
+		info := auditFrom(c)
+		info.targetType, info.targetID = head, rest
 		data, status, err := cc.RawProxy(c.Request.Context(), c.Request.Method,
 			upstreamPath, c.Request.URL.RawQuery, "", c.Request.Body)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway,
-				"UPSTREAM_ERROR", err.Error(), nil)
-			return
-		}
-		if len(data) == 0 {
-			c.Status(status)
-			return
-		}
-		c.Data(status, "application/json", data)
+		writeUpstream(c, info, data, status, err)
 	}
 
-	g.GET("/*rest", requireScopeFn("moderator", "admin", "superadmin"), proxy)
-	for _, register := range []func(string, ...gin.HandlerFunc) gin.IRoutes{
-		g.POST, g.PATCH, g.PUT,
-	} {
-		register("/*rest", requireScopeFn("admin", "superadmin"), proxy)
+	const path = "/v1/admin/commerce/catalogue/*rest"
+	h.gate.Handle(r, http.MethodGet, path,
+		Requirement{Operation: "catalogue.get", Permission: permProductsModerate}, proxy)
+	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodPut} {
+		h.gate.Handle(r, method, path,
+			Requirement{Operation: "catalogue." + strings.ToLower(method), Permission: permCatalogueEdit}, proxy)
 	}
 }

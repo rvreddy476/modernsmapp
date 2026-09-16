@@ -3,16 +3,16 @@ package http
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/atpost/admin-service/internal/adminauth"
+	"github.com/atpost/admin-service/internal/approvals"
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
-	"github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,41 +31,6 @@ func (f *fakeRecorder) RecordAdminWrite(_ context.Context, e postgres.AdminAudit
 	return f.err
 }
 
-type upstreamSeen struct {
-	mu      sync.Mutex
-	hits    int
-	actor   string
-	request string
-}
-
-// commerceRig stands up a commerce stub answering status, registers every
-// commerce and catalogue route against it, and returns the router, the
-// recorder and what the stub saw.
-func commerceRig(t *testing.T, status int) (*gin.Engine, *fakeRecorder, *upstreamSeen, *httptest.Server) {
-	t.Helper()
-	seen := &upstreamSeen{}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body)
-		seen.mu.Lock()
-		seen.hits++
-		seen.actor = r.Header.Get("X-User-Id")
-		seen.request = r.Header.Get("X-Request-Id")
-		seen.mu.Unlock()
-		w.WriteHeader(status)
-	}))
-	t.Cleanup(upstream.Close)
-
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.Use(middleware.RequestID())
-	rec := &fakeRecorder{}
-	h := &Handler{audit: rec}
-	cc := service.NewCommerceClient(upstream.URL, "test-internal-key")
-	h.RegisterCommerceRoutes(r, cc)
-	h.RegisterCatalogueRoutes(r, cc)
-	return r, rec, seen, upstream
-}
-
 type writeRoute struct {
 	method, path, body            string
 	operation, targetType, target string
@@ -77,44 +42,33 @@ var commerceWriteRoutes = []writeRoute{
 	{http.MethodPost, "/v1/admin/commerce/sellers/s-1/reject", `{"reason":"fake docs"}`, "seller.reject", "seller", "s-1", "fake docs"},
 	{http.MethodPost, "/v1/admin/commerce/sellers/s-1/request-changes", `{"changes":"gstin"}`, "seller.request_changes", "seller", "s-1", ""},
 	{http.MethodPost, "/v1/admin/commerce/sellers/s-1/suspend", `{"reason":"fraud"}`, "seller.suspend", "seller", "s-1", "fraud"},
+	{http.MethodPost, "/v1/admin/commerce/sellers/s-1/unsuspend", `{"reason":"cleared"}`, "seller.unsuspend", "seller", "s-1", "cleared"},
+	{http.MethodPost, "/v1/admin/commerce/sellers/s-1/kyc/verify", `{"reason":"docs in"}`, "seller.kyc_verify", "seller", "s-1", "docs in"},
 	{http.MethodPost, "/v1/admin/commerce/products/p-1/approve", `{}`, "product.approve", "product", "p-1", ""},
 	{http.MethodPost, "/v1/admin/commerce/products/p-1/reject", `{"reason":"counterfeit"}`, "product.reject", "product", "p-1", "counterfeit"},
+	{http.MethodPost, "/v1/admin/commerce/products/p-1/request-changes", `{"changes":"photos"}`, "product.request_changes", "product", "p-1", ""},
 	{http.MethodPost, "/v1/admin/commerce/catalogue/attribute-definitions", `{}`, "catalogue.post", "attribute-definitions", "attribute-definitions", ""},
 	{http.MethodPatch, "/v1/admin/commerce/catalogue/categories/c-1/attributes", `{}`, "catalogue.patch", "categories", "categories/c-1/attributes", ""},
 	{http.MethodPut, "/v1/admin/commerce/catalogue/attribute-schema/c-1", `{}`, "catalogue.put", "attribute-schema", "attribute-schema/c-1", ""},
 }
 
-func sendWrite(r *gin.Engine, wr writeRoute, actor string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(wr.method, wr.path, strings.NewReader(wr.body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Scopes", "admin")
-	req.Header.Set("X-Request-Id", "req-123")
-	if actor != "" {
-		req.Header.Set("X-User-Id", actor)
-	}
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	return w
-}
-
-func TestEveryCommerceWriteForwardsTheActorAndIsAudited(t *testing.T) {
+func TestEveryCommerceWriteForwardsTheActorAndIsAuditedOnce(t *testing.T) {
 	for _, wr := range commerceWriteRoutes {
 		t.Run(wr.operation, func(t *testing.T) {
-			r, rec, seen, _ := commerceRig(t, http.StatusOK)
-			w := sendWrite(r, wr, testActor)
+			rg := newRig(t, rigOpts{})
+			rg.perms.grant(testActor, commerceAll...)
+			w := rg.do(wr.method, wr.path, wr.body, testActor)
 			if w.Code != http.StatusOK {
 				t.Fatalf("status %d: %s", w.Code, w.Body.String())
 			}
-			if seen.hits != 1 || seen.actor != testActor {
-				t.Fatalf("commerce saw hits=%d X-User-Id=%q, want 1 and %q", seen.hits, seen.actor, testActor)
+			hits, actor, _, _ := rg.seen.snapshot()
+			if hits != 1 || actor != testActor {
+				t.Fatalf("commerce saw hits=%d X-User-Id=%q, want 1 and %q", hits, actor, testActor)
 			}
-			if seen.request != "req-123" {
-				t.Fatalf("request id not forwarded: %q", seen.request)
+			if rg.seen.request != "req-123" {
+				t.Fatalf("request id not forwarded: %q", rg.seen.request)
 			}
-			if len(rec.entries) != 1 {
-				t.Fatalf("audit rows = %d, want 1", len(rec.entries))
-			}
-			e := rec.entries[0]
+			e := rg.onlyEntry(t)
 			if e.Actor != testActor || e.App != "commerce" || e.Operation != wr.operation ||
 				e.TargetType != wr.targetType || e.TargetID != wr.target || e.Reason != wr.reason ||
 				e.RequestID != "req-123" || e.Outcome != postgres.AuditOutcomeSuccess || e.StatusCode != http.StatusOK {
@@ -124,19 +78,31 @@ func TestEveryCommerceWriteForwardsTheActorAndIsAudited(t *testing.T) {
 	}
 }
 
-func TestAWriteWithoutAnActorIsRefusedBeforeCommerce(t *testing.T) {
+func TestAReadIsAuditedToo(t *testing.T) {
+	rg := newRig(t, rigOpts{})
+	rg.perms.grant(testActor, permSellerApprove)
+	w := rg.do(http.MethodGet, "/v1/admin/commerce/sellers/queue?limit=5", "", testActor)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if e := rg.onlyEntry(t); e.Operation != "sellers.queue" || e.Outcome != postgres.AuditOutcomeSuccess || e.App != "commerce" {
+		t.Fatalf("audit entry %+v", e)
+	}
+}
+
+func TestARequestWithoutAnActorIsRefusedBeforeAnything(t *testing.T) {
 	for _, actor := range []string{"", "not-a-uuid"} {
 		for _, wr := range commerceWriteRoutes {
-			r, rec, seen, _ := commerceRig(t, http.StatusOK)
-			w := sendWrite(r, wr, actor)
-			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "ACTOR_REQUIRED") {
-				t.Fatalf("%s actor=%q: status %d body %s, want 400 ACTOR_REQUIRED", wr.operation, actor, w.Code, w.Body.String())
+			rg := newRig(t, rigOpts{})
+			w := rg.do(wr.method, wr.path, wr.body, actor)
+			if w.Code != http.StatusUnauthorized || !hasCode(w, CodeActorRequired) {
+				t.Fatalf("%s actor=%q: status %d body %s, want 401 ACTOR_REQUIRED", wr.operation, actor, w.Code, w.Body.String())
 			}
-			if seen.hits != 0 {
-				t.Fatalf("%s actor=%q reached commerce", wr.operation, actor)
+			if hits, _, _, _ := rg.seen.snapshot(); hits != 0 || rg.perms.calls != 0 {
+				t.Fatalf("%s actor=%q reached commerce (%d) or identity (%d)", wr.operation, actor, hits, rg.perms.calls)
 			}
-			if len(rec.entries) != 0 {
-				t.Fatalf("%s actor=%q wrote %d audit rows for a write that never happened", wr.operation, actor, len(rec.entries))
+			if n := len(rg.entries()); n != 0 {
+				t.Fatalf("%s actor=%q wrote %d audit rows with no actor", wr.operation, actor, n)
 			}
 		}
 	}
@@ -144,15 +110,13 @@ func TestAWriteWithoutAnActorIsRefusedBeforeCommerce(t *testing.T) {
 
 func TestADownstreamFailureIsStillAudited(t *testing.T) {
 	for _, wr := range commerceWriteRoutes {
-		r, rec, _, _ := commerceRig(t, http.StatusInternalServerError)
-		w := sendWrite(r, wr, testActor)
+		rg := newRig(t, rigOpts{status: http.StatusInternalServerError})
+		rg.perms.grant(testActor, commerceAll...)
+		w := rg.do(wr.method, wr.path, wr.body, testActor)
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("%s: status %d, want the upstream 500", wr.operation, w.Code)
 		}
-		if len(rec.entries) != 1 {
-			t.Fatalf("%s: audit rows = %d, want 1", wr.operation, len(rec.entries))
-		}
-		if e := rec.entries[0]; e.Outcome != postgres.AuditOutcomeFailure || e.StatusCode != http.StatusInternalServerError {
+		if e := rg.onlyEntry(t); e.Outcome != postgres.AuditOutcomeFailure || e.StatusCode != http.StatusInternalServerError {
 			t.Fatalf("%s: audit entry %+v", wr.operation, e)
 		}
 	}
@@ -160,16 +124,14 @@ func TestADownstreamFailureIsStillAudited(t *testing.T) {
 
 func TestAnUnreachableCommerceIsStillAudited(t *testing.T) {
 	for _, wr := range commerceWriteRoutes {
-		r, rec, _, upstream := commerceRig(t, http.StatusOK)
-		upstream.Close()
-		w := sendWrite(r, wr, testActor)
+		rg := newRig(t, rigOpts{})
+		rg.perms.grant(testActor, commerceAll...)
+		rg.upstream.Close()
+		w := rg.do(wr.method, wr.path, wr.body, testActor)
 		if w.Code != http.StatusBadGateway {
 			t.Fatalf("%s: status %d, want 502", wr.operation, w.Code)
 		}
-		if len(rec.entries) != 1 {
-			t.Fatalf("%s: audit rows = %d, want 1", wr.operation, len(rec.entries))
-		}
-		e := rec.entries[0]
+		e := rg.onlyEntry(t)
 		if e.Outcome != postgres.AuditOutcomeFailure || e.StatusCode != 0 || e.Payload["error"] == nil {
 			t.Fatalf("%s: audit entry %+v", wr.operation, e)
 		}
@@ -177,23 +139,29 @@ func TestAnUnreachableCommerceIsStillAudited(t *testing.T) {
 }
 
 func TestAFailedAuditInsertDoesNotHideTheWrite(t *testing.T) {
-	r, rec, seen, _ := commerceRig(t, http.StatusOK)
-	rec.err = errors.New("db down")
-	w := sendWrite(r, commerceWriteRoutes[0], testActor)
-	if w.Code != http.StatusOK || seen.hits != 1 || len(rec.entries) != 1 {
-		t.Fatalf("status %d hits %d attempts %d", w.Code, seen.hits, len(rec.entries))
+	rg := newRig(t, rigOpts{})
+	rg.perms.grant(testActor, commerceAll...)
+	rg.rec.err = errors.New("db down")
+	w := rg.do(commerceWriteRoutes[0].method, commerceWriteRoutes[0].path, commerceWriteRoutes[0].body, testActor)
+	if hits, _, _, _ := rg.seen.snapshot(); w.Code != http.StatusOK || hits != 1 || len(rg.entries()) != 1 {
+		t.Fatalf("status %d hits %d attempts %d", w.Code, hits, len(rg.entries()))
 	}
 }
 
-func TestWritesAreRefusedWithoutARecorder(t *testing.T) {
+func TestAdminRoutesAreRefusedWithoutARecorder(t *testing.T) {
 	hits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
 	defer upstream.Close()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := &Handler{} // no recorder
-	h.RegisterCommerceRoutes(r, service.NewCommerceClient(upstream.URL, "k"))
-	w := sendWrite(r, commerceWriteRoutes[0], testActor)
+	perms := &fakePerms{byUser: map[string]adminauth.Permissions{}}
+	perms.grant(testActor, commerceAll...)
+	h := New(&stubAdminService{}, NewGate(perms, nil, true), approvals.NewService(newMemStore(), &fakeHolders{}))
+	if err := h.RegisterAllRoutes(r, service.NewCommerceClient(upstream.URL, "k")); err != nil {
+		t.Fatal(err)
+	}
+	rg := &rig{r: r}
+	w := rg.do(commerceWriteRoutes[0].method, commerceWriteRoutes[0].path, `{}`, testActor)
 	if w.Code != http.StatusServiceUnavailable || hits != 0 {
 		t.Fatalf("status %d hits %d, want 503 and no downstream call", w.Code, hits)
 	}
@@ -208,6 +176,9 @@ func TestCommerceClientRefusesAWriteWithoutAnActor(t *testing.T) {
 
 	if _, err := cc.ApproveSeller(ctx, "s-1", "", ""); !errors.Is(err, service.ErrActorRequired) {
 		t.Fatalf("ApproveSeller err = %v", err)
+	}
+	if _, _, err := cc.SettleCODRemittance(ctx, "r-1", "", ""); !errors.Is(err, service.ErrActorRequired) {
+		t.Fatalf("SettleCODRemittance err = %v", err)
 	}
 	if _, _, err := cc.RawProxy(ctx, http.MethodPost, "/v1/commerce/internal/categories", "", "", nil); !errors.Is(err, service.ErrActorRequired) {
 		t.Fatalf("RawProxy err = %v", err)
