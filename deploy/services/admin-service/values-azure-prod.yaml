@@ -34,11 +34,22 @@ externalSecret:
     remoteRef: jwt_secret_previous
   - secretKey: JWT_KID_PREVIOUS
     remoteRef: jwt_kid_previous
+  # Admin console Wave 2: admin-service's service-token key for product admin
+  # calls is NOT enabled yet (Dating dashboard routes answer 503; boot is not
+  # refused). Enable in this order: store admin_service_token_key (base64
+  # ed25519 seed) and admin_service_token_kid in the key vault, and the public
+  # half and kid for dating-service (caller_admin_pubkey / caller_admin_kid);
+  # enable dating-service first (its lines and SERVICE_CALLERS); then uncomment.
+  # - secretKey: ADMIN_SERVICE_TOKEN_KEY
+  #   remoteRef: admin_service_token_key
+  # - secretKey: ADMIN_SERVICE_TOKEN_KID
+  #   remoteRef: admin_service_token_kid
   secretStoreName: azure-key-vault
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
 ingress:
   enabled: false
 pdb:

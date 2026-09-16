@@ -113,6 +113,19 @@ func main() {
 	approvalSvc := approvals.NewService(store, identity)
 	handler := http.New(svc, gate, approvalSvc)
 
+	// Product dashboards. admin-service signs a 60 s service token per call
+	// (audience = product, scope = the permission checked, act = the admin).
+	// Without ADMIN_SERVICE_TOKEN_KEY the Dating routes answer 503.
+	tokenSigner, err := service.SignerFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("invalid admin-service token key", "error", err)
+		os.Exit(1)
+	}
+	if tokenSigner == nil {
+		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating) answer 503 PRODUCT_UNAVAILABLE")
+	}
+	handler.WithDating(service.NewDatingClient(env("DATING_SERVICE_URL", "http://dating-service:8112"), tokenSigner))
+
 	// Commerce client for seller/product approval proxying
 	commerceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
 	commerceClient := service.NewCommerceClient(commerceURL, internalKey)

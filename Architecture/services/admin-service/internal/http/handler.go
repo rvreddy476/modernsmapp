@@ -71,6 +71,15 @@ type Handler struct {
 	svc       adminService
 	gate      *Gate
 	approvals *approvals.Service
+	// dating calls dating-service's token-only admin family. Nil (no signing
+	// key) keeps the routes declared; each answers 503 PRODUCT_UNAVAILABLE.
+	dating *service.ProductClient
+}
+
+// WithDating installs the Dating client.
+func (h *Handler) WithDating(dc *service.ProductClient) *Handler {
+	h.dating = dc
+	return h
 }
 
 func New(svc adminService, gate *Gate, appr *approvals.Service) *Handler {
@@ -85,6 +94,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine, cc *service.CommerceClient) e
 	h.RegisterApprovalRoutes(r)
 	h.RegisterCommerceRoutes(r, cc)
 	h.RegisterCatalogueRoutes(r, cc)
+	h.RegisterDatingRoutes(r, h.dating)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err
 	}

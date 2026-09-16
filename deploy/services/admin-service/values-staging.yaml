@@ -35,6 +35,18 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    # Admin console Wave 2: admin-service signs a 60 s service token per
+    # product admin call. NOT enabled yet: without it the Dating dashboard
+    # routes answer 503 PRODUCT_UNAVAILABLE; boot is not refused. To enable:
+    #   1. the founder generates an ed25519 key: the private half (base64
+    #      32-byte seed) goes to admin_service_token_key and its kid to
+    #      admin_service_token_kid here; the public half and the same kid go
+    #      to dating-service (caller_admin_pubkey / caller_admin_kid);
+    #   2. enable dating-service first (its values file: two secret lines and
+    #      the SERVICE_CALLERS lines);
+    #   3. uncomment the two lines below.
+    # - { secretKey: ADMIN_SERVICE_TOKEN_KEY, remoteRef: admin_service_token_key }
+    # - { secretKey: ADMIN_SERVICE_TOKEN_KID, remoteRef: admin_service_token_kid }
     # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
     # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
 
@@ -43,6 +55,7 @@ env:
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

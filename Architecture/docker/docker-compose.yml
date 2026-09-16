@@ -1410,6 +1410,15 @@ services:
       # code). Set ADMIN_REQUIRE_MFA=false only to debug locally. Step-up is
       # enforced regardless.
       ADMIN_REQUIRE_MFA: ${ADMIN_REQUIRE_MFA:-true}
+      # Admin console Wave 2: admin-service calls each product's token-only
+      # admin family with a 60 s service token it signs per call (audience =
+      # product, scope = the permission it checked, act = the admin). The
+      # dev-only Ed25519 seed and kid live in the gitignored .env; the matching
+      # ADMIN_SERVICE_TOKEN_PUBKEY is registered with dating-service below.
+      # Without the key, product dashboards answer 503; boot is not refused.
+      ADMIN_SERVICE_TOKEN_KEY: ${ADMIN_SERVICE_TOKEN_KEY:-}
+      ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      DATING_SERVICE_URL: http://dating-service:8112
     ports:
       - "8096:8096"
     depends_on:
@@ -2073,6 +2082,15 @@ services:
       PAYMENTS_SERVICE_URL: http://payments-service:8102
       DATING_SERVICE_TOKEN_KEY: ${DATING_SERVICE_TOKEN_KEY:-}
       DATING_SERVICE_TOKEN_KID: ${DATING_SERVICE_TOKEN_KID:-}
+      # Admin console Wave 2: callers whose service tokens dating verifies.
+      # admin-service reaches /v1/dating/internal/admin/* only with a token
+      # scoped to the one permission it checked and naming the admin (act).
+      # A distinct .env name (DATING_SERVICE_CALLERS), because SERVICE_CALLERS
+      # in .env is payments-service's list. Blank = no tokens accepted.
+      SERVICE_CALLERS: ${DATING_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: ${SERVICE_CALLER_ADMIN_SERVICE_OPS:-dating:stats.read,dating:reports.read,dating:reports.act,dating:users.ban,dating:photos.review,dating:selfie.review,dating:panic.read,dating:panic.act,dating:panic.reveal,dating:risk.read,dating:audit.read}
     ports:
       - "8112:8112"
     depends_on:
