@@ -604,6 +604,13 @@ var trustedIdentityHeaders = []string{
 	// an admin action attributed to someone else, or a guessed internal key.
 	"X-Admin-Id",
 	"X-Internal-Key",
+	// Admin 2FA session headers (identity 92e6b8f6). admin-service admits an
+	// admin route only on X-Admin-MFA: true and a sensitive one only on a
+	// recent X-Step-Up-At, so a client copy of either would be a forged 2FA
+	// session or a forged step-up. See stampAdminSession.
+	"X-Auth-Time",
+	"X-Admin-MFA",
+	"X-Step-Up-At",
 	// Module 3 LB-3: the graph write-source label.
 	//
 	// graph-service refuses a mutating request whose source is not an approved
@@ -649,6 +656,28 @@ func stampAdminRole(r *http.Request, scopes string) {
 			r.Header.Set("X-Admin-Role", role)
 			return
 		}
+	}
+}
+
+// stampAdminSession forwards the admin 2FA session claims of a VERIFIED token.
+//
+// X-Admin-MFA is always stamped on an authenticated request, "true" only when
+// the token says admin_mfa=true — a token minted before the claim existed is
+// "false", never "absent", so a consumer cannot mistake silence for a pass.
+// X-Auth-Time and X-Step-Up-At are unix seconds and are omitted when the token
+// has no such claim. Anonymous requests never reach this function, so they
+// carry none of the three (the inbound copies were already stripped).
+func stampAdminSession(r *http.Request, id tokenpolicy.Identity) {
+	if id.AdminMFA {
+		r.Header.Set("X-Admin-MFA", "true")
+	} else {
+		r.Header.Set("X-Admin-MFA", "false")
+	}
+	if id.AuthTime > 0 {
+		r.Header.Set("X-Auth-Time", strconv.FormatInt(id.AuthTime, 10))
+	}
+	if id.StepUpAt > 0 {
+		r.Header.Set("X-Step-Up-At", strconv.FormatInt(id.StepUpAt, 10))
 	}
 }
 
@@ -726,6 +755,7 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		if deviceID != "" {
 			r.Header.Set("X-Device-Id", deviceID)
 		}
+		stampAdminSession(r, identity)
 		next.ServeHTTP(w, r)
 	})
 }

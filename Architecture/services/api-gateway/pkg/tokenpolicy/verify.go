@@ -86,6 +86,12 @@ type Identity struct {
 	// minted for, which the gateway looks up in the revocation set. Empty only
 	// outside production, where legacy tokens without a sid still verify.
 	SessionID string
+	// AuthTime is `auth_time` (unix seconds); 0 when the token has no claim.
+	AuthTime int64
+	// AdminMFA is `admin_mfa`; false when the token has no claim.
+	AdminMFA bool
+	// StepUpAt is `step_up_at` (unix seconds); 0 when the token has no claim.
+	StepUpAt int64
 }
 
 // Error is a verification failure. The message is deliberately not returned to
@@ -168,6 +174,9 @@ func Verify(tokenStr string, keys KeySet, policy Policy, now time.Time) (Identit
 		Scopes:    claims.Scopes,
 		DeviceID:  claims.DeviceID,
 		SessionID: strings.TrimSpace(claims.Sid),
+		AuthTime:  claims.AuthTime,
+		AdminMFA:  claims.AdminMFA,
+		StepUpAt:  claims.StepUpAt,
 	}, nil
 }
 

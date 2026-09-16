@@ -178,6 +178,12 @@ type Claims struct {
 	Type      string `json:"type"`
 	Scopes    string `json:"scopes"`
 	DeviceID  string `json:"device_id"`
+	// Admin 2FA session claims (auth-service pkg/accesstoken). All optional on
+	// the wire: tokens minted before they existed carry none of them, and an
+	// absent admin_mfa decodes as false.
+	AuthTime int64 `json:"auth_time,omitempty"`
+	AdminMFA bool  `json:"admin_mfa,omitempty"`
+	StepUpAt int64 `json:"step_up_at,omitempty"`
 }
 
 // ValidateClaims enforces the policy. Every failure is a hard reject: there
