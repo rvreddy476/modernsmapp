@@ -453,24 +453,8 @@ func (s *Service) CreateLedgerEntry(ctx context.Context, debitOwnerID uuid.UUID,
 	return s.store.InsertLedgerEntry(ctx, entry)
 }
 
-// ---------------------------------------------------------------------------
-// Admin wallet operations
-// ---------------------------------------------------------------------------
-
-// FreezeWallet freezes a user's wallet.
-func (s *Service) FreezeWallet(ctx context.Context, userID uuid.UUID) error {
-	return s.store.FreezeWallet(ctx, userID)
-}
-
-// UnfreezeWallet unfreezes a user's wallet.
-func (s *Service) UnfreezeWallet(ctx context.Context, userID uuid.UUID) error {
-	return s.store.UnfreezeWallet(ctx, userID)
-}
-
-// RebuildWallet recalculates a wallet balance from ledger entries.
-func (s *Service) RebuildWallet(ctx context.Context, userID uuid.UUID) (int64, error) {
-	return s.store.RebuildWalletFromLedger(ctx, userID)
-}
+// Admin wallet operations (freeze, unfreeze, rebuild) are in admin_console.go:
+// each commits its audit row with the change.
 
 // ---------------------------------------------------------------------------
 // Helpers

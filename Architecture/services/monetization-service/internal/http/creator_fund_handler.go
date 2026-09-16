@@ -1,9 +1,7 @@
 package http
 
 import (
-	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -115,7 +113,8 @@ func (h *Handler) ListCreatorFundRates(c *gin.Context) {
 // earnings stay in the wallet (admin can reverse via the dispute path
 // if needed).
 func (h *Handler) SuspendCreatorFund(c *gin.Context) {
-	if _, ok := getAdminID(c); !ok {
+	actor, ok := adminActor(c)
+	if !ok {
 		return
 	}
 	userID, err := uuid.Parse(c.Param("userId"))
@@ -127,7 +126,7 @@ func (h *Handler) SuspendCreatorFund(c *gin.Context) {
 		Reason string `json:"reason"`
 	}
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.SuspendCreatorFund(c.Request.Context(), userID, req.Reason); err != nil {
+	if err := h.svc.AdminSuspendCreatorFund(c.Request.Context(), actor, userID, req.Reason); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -138,7 +137,8 @@ func (h *Handler) SuspendCreatorFund(c *gin.Context) {
 // 'pending' so the next nightly evaluator (or a creator's POST /apply)
 // can re-rate them.
 func (h *Handler) UnsuspendCreatorFund(c *gin.Context) {
-	if _, ok := getAdminID(c); !ok {
+	actor, ok := adminActor(c)
+	if !ok {
 		return
 	}
 	userID, err := uuid.Parse(c.Param("userId"))
@@ -146,7 +146,7 @@ func (h *Handler) UnsuspendCreatorFund(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
-	if err := h.svc.ClearCreatorFundSuspension(c.Request.Context(), userID); err != nil {
+	if err := h.svc.AdminUnsuspendCreatorFund(c.Request.Context(), actor, userID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -157,7 +157,7 @@ func (h *Handler) UnsuspendCreatorFund(c *gin.Context) {
 // closes off the previous active rate for the same content type +
 // region. Audit: the admin's user_id is captured on the row.
 func (h *Handler) SetCreatorFundRate(c *gin.Context) {
-	adminID, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -175,7 +175,7 @@ func (h *Handler) SetCreatorFundRate(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_RATE", "rpm_paise must be >= 0", nil)
 		return
 	}
-	rate, err := h.svc.SetRpmRate(c.Request.Context(), req.ContentType, req.RegionCode, req.RpmPaise, req.Notes, &adminID)
+	rate, err := h.svc.AdminSetRpmRate(c.Request.Context(), actor, req.ContentType, req.RegionCode, req.RpmPaise, req.Notes)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
@@ -204,7 +204,8 @@ func (h *Handler) ListCreatorFundRatesAdmin(c *gin.Context) {
 // already paid cannot be re-measured into a second payment because its
 // row carries credited = true.
 func (h *Handler) ForceAccrueCreatorFundDay(c *gin.Context) {
-	if _, ok := getAdminID(c); !ok {
+	actor, ok := adminActor(c)
+	if !ok {
 		return
 	}
 	dayStr := c.Query("day")
@@ -217,7 +218,7 @@ func (h *Handler) ForceAccrueCreatorFundDay(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "day must be YYYY-MM-DD", nil)
 		return
 	}
-	batch, err := h.svc.AccrueCreatorFundDayForAllEligible(c.Request.Context(), day, nil)
+	batch, err := h.svc.AdminAccrueCreatorFundDay(c.Request.Context(), actor, day)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -270,7 +271,7 @@ func (h *Handler) GetCreatorFundEarningAdmin(c *gin.Context) {
 // Body: {"reason": "..."} — required; it is written on the row and on
 // the adjustment, and into the audit log with the admin's id.
 func (h *Handler) ReverseCreatorFundEarning(c *gin.Context) {
-	adminID, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -286,7 +287,9 @@ func (h *Handler) ReverseCreatorFundEarning(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REASON_REQUIRED", "a non-empty reason is required", nil)
 		return
 	}
-	res, err := h.svc.ReverseFundEarning(c.Request.Context(), id, req.Reason)
+	// The audit row (creator_fund_earnings / reverse, the admin's id) is
+	// written inside the reversal's transaction.
+	res, err := h.svc.AdminReverseFundEarning(c.Request.Context(), actor, id, req.Reason)
 	if err != nil {
 		if errors.Is(err, service.ErrEarningNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "EARNING_NOT_FOUND", "No accrual row with that id", nil)
@@ -294,19 +297,6 @@ func (h *Handler) ReverseCreatorFundEarning(c *gin.Context) {
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
-	}
-	if !res.AlreadyReversed {
-		newData, _ := json.Marshal(res)
-		if aerr := h.svc.WriteAuditLog(c.Request.Context(), &pgstore.AuditLogEntry{
-			TableName:   "creator_fund_earnings",
-			Operation:   "reverse",
-			NewData:     newData,
-			PerformerID: adminID,
-			IPAddress:   c.ClientIP(),
-		}); aerr != nil {
-			slog.WarnContext(c.Request.Context(), "creator-fund reversal: audit log write failed",
-				"earning_id", id, "admin_id", adminID, "error", aerr)
-		}
 	}
 	api.JSON(c.Writer, http.StatusOK, res, nil)
 }
@@ -344,7 +334,7 @@ func (h *Handler) ListCreatorFundBudgets(c *gin.Context) {
 // already accrued is refused with 409 BUDGET_BELOW_ACCRUED. Raising it
 // re-opens an exhausted period only if accrued is below the new cap.
 func (h *Handler) SetCreatorFundBudget(c *gin.Context) {
-	adminID, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -361,7 +351,7 @@ func (h *Handler) SetCreatorFundBudget(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BUDGET", "cap_paise must be >= 0", nil)
 		return
 	}
-	b, err := h.svc.UpsertCreatorFundBudget(c.Request.Context(), req, &adminID)
+	b, err := h.svc.AdminUpsertCreatorFundBudget(c.Request.Context(), actor, req)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrBudgetBelowAccrued):
@@ -390,7 +380,8 @@ func (h *Handler) SetCreatorFundBudget(c *gin.Context) {
 // creators_newly_credited and credited_paise both come back zero, while
 // the statement figures stay whatever they were.
 func (h *Handler) SettleCreatorFundPeriod(c *gin.Context) {
-	if _, ok := getAdminID(c); !ok {
+	actor, ok := adminActor(c)
+	if !ok {
 		return
 	}
 	cfg := h.svc.CreatorFundConfigSnapshot()
@@ -406,7 +397,7 @@ func (h *Handler) SettleCreatorFundPeriod(c *gin.Context) {
 		period = service.PreviousPeriod(time.Now().UTC(), cfg.SettlementCadence)
 	}
 
-	res, err := h.svc.SettleCreatorFundPeriodForAll(c.Request.Context(), period, nil)
+	res, err := h.svc.AdminSettleCreatorFundPeriodForAll(c.Request.Context(), actor, period)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -424,7 +415,8 @@ func (h *Handler) SettleCreatorFundPeriod(c *gin.Context) {
 // Useful when one creator's analytics was repaired and the rest of the
 // month is already correct.
 func (h *Handler) SettleCreatorFundPeriodForCreator(c *gin.Context) {
-	if _, ok := getAdminID(c); !ok {
+	actor, ok := adminActor(c)
+	if !ok {
 		return
 	}
 	creatorID, err := uuid.Parse(c.Param("userId"))
@@ -442,7 +434,7 @@ func (h *Handler) SettleCreatorFundPeriodForCreator(c *gin.Context) {
 		}
 		period = p
 	}
-	st, err := h.svc.SettleCreatorFundPeriod(c.Request.Context(), creatorID, period)
+	st, err := h.svc.AdminSettleCreatorFundPeriod(c.Request.Context(), actor, creatorID, period)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -533,7 +525,7 @@ func (h *Handler) ListCreatorFundQualityBands(c *gin.Context) {
 // off the previous one, mirroring SetCreatorFundRate. The admin's
 // user_id is captured on the row.
 func (h *Handler) SetCreatorFundQualityBand(c *gin.Context) {
-	adminID, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -570,7 +562,7 @@ func (h *Handler) SetCreatorFundQualityBand(c *gin.Context) {
 	if req.Enabled != nil {
 		band.Enabled = *req.Enabled
 	}
-	saved, err := h.svc.SetQualityBand(c.Request.Context(), band, &adminID)
+	saved, err := h.svc.AdminSetQualityBand(c.Request.Context(), actor, band)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BAND", err.Error(), nil)
 		return

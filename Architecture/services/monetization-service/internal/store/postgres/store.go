@@ -338,17 +338,7 @@ func (s *Store) GetTransactionsByType(ctx context.Context, userID uuid.UUID, txT
 
 // CreateTransaction inserts a new transaction.
 func (s *Store) CreateTransaction(ctx context.Context, t *Transaction) error {
-	now := time.Now()
-	t.CreatedAt = now
-	if t.ID == uuid.Nil {
-		t.ID = uuid.New()
-	}
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, t.ID, t.WalletID, t.Type, t.AmountPaise, t.Currency, t.Status,
-		t.ReferenceType, t.ReferenceID, t.Description, t.CreatedAt)
-	return err
+	return s.CreateTransactionTx(ctx, s.db, t)
 }
 
 // ---------------------------------------------------------------------------
@@ -828,17 +818,7 @@ func (s *Store) GetDashboard(ctx context.Context, userID uuid.UUID) (*Dashboard,
 
 // WriteAuditLog appends an entry to the monetization_audit_log table.
 func (s *Store) WriteAuditLog(ctx context.Context, entry *AuditLogEntry) error {
-	now := time.Now()
-	entry.CreatedAt = now
-	if entry.ID == uuid.Nil {
-		entry.ID = uuid.New()
-	}
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO monetization_audit_log (id, table_name, operation, old_data, new_data, performer_id, ip_address, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, entry.ID, entry.TableName, entry.Operation, entry.OldData, entry.NewData,
-		entry.PerformerID, entry.IPAddress, entry.CreatedAt)
-	return err
+	return insertAuditLog(ctx, s.db, entry)
 }
 
 // ---------------------------------------------------------------------------

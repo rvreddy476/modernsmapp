@@ -11,9 +11,12 @@ import (
 // ---------------------------------------------------------------------------
 // Admin wallet operations
 // ---------------------------------------------------------------------------
+//
+// Each writes a monetization_audit_log row in the same transaction as the
+// change, with the acting admin (adminActor).
 
 func (h *Handler) FreezeWallet(c *gin.Context) {
-	_, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -24,7 +27,7 @@ func (h *Handler) FreezeWallet(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.FreezeWallet(c.Request.Context(), userID); err != nil {
+	if err := h.svc.AdminFreezeWallet(c.Request.Context(), actor, userID); err != nil {
 		if err.Error() == "WALLET_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "WALLET_NOT_FOUND", "Wallet not found", nil)
 			return
@@ -37,7 +40,7 @@ func (h *Handler) FreezeWallet(c *gin.Context) {
 }
 
 func (h *Handler) UnfreezeWallet(c *gin.Context) {
-	_, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -48,7 +51,7 @@ func (h *Handler) UnfreezeWallet(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UnfreezeWallet(c.Request.Context(), userID); err != nil {
+	if err := h.svc.AdminUnfreezeWallet(c.Request.Context(), actor, userID); err != nil {
 		if err.Error() == "WALLET_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "WALLET_NOT_FOUND", "Wallet not found", nil)
 			return
@@ -61,7 +64,7 @@ func (h *Handler) UnfreezeWallet(c *gin.Context) {
 }
 
 func (h *Handler) RebuildWallet(c *gin.Context) {
-	_, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -72,7 +75,7 @@ func (h *Handler) RebuildWallet(c *gin.Context) {
 		return
 	}
 
-	newBalance, err := h.svc.RebuildWallet(c.Request.Context(), userID)
+	newBalance, err := h.svc.AdminRebuildWallet(c.Request.Context(), actor, userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

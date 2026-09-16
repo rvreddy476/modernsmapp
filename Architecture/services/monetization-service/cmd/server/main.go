@@ -189,8 +189,25 @@ func main() {
 		slog.Error("refusing to start: settlement cadence conflicts with accrued budgets", "error", err)
 		os.Exit(1)
 	}
+	// Service-token verifier for the admin console family
+	// (/v1/monetization/internal/admin/*): SERVICE_CALLERS=admin-service plus
+	// SERVICE_CALLER_ADMIN_SERVICE_{KID,PUBKEY,OPS}. Unset: no token is
+	// accepted and that family answers 401. A named caller with a missing key
+	// or empty ops refuses to start. The launch boundary and maintenance mode
+	// apply to that family exactly as to /v1/monetization/admin.
+	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("refusing to start: SERVICE_CALLERS", "error", err)
+		os.Exit(1)
+	}
+	if serviceVerifier == nil {
+		slog.Warn("SERVICE_CALLERS not set: admin-service tokens are refused; /v1/monetization/internal/admin answers 401")
+	} else {
+		slog.Info("service-token callers registered", "callers", serviceVerifier.Callers())
+	}
 	monetizationHandler := http.New(monetizationSvc).
 		WithInternalKey(internalKey).
+		WithServiceAuth(serviceVerifier).
 		WithWritesEnabled(writesEnabled).
 		WithPayoutsEnabled(payoutsEnabled).
 		WithMaintenance(mode.Maintenance)

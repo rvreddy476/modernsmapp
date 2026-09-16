@@ -154,6 +154,14 @@ func (s *Service) PostAdjustmentTx(ctx context.Context, tx pgx.Tx, creatorID uui
 // keyed on the row, in the same transaction. Reversing a reversed row
 // returns it and moves nothing.
 func (s *Service) ReverseFundEarning(ctx context.Context, earningID uuid.UUID, reason string) (*ReversalResult, error) {
+	return s.reverseFundEarning(ctx, earningID, reason, nil)
+}
+
+// reverseFundEarning is ReverseFundEarning with an optional hook run as
+// the last statement of the reversal's transaction, so an admin audit row
+// commits with the reversal (AdminReverseFundEarning). The hook sees the
+// final result; returning an error rolls the reversal back.
+func (s *Service) reverseFundEarning(ctx context.Context, earningID uuid.UUID, reason string, inTx func(tx pgx.Tx, out *ReversalResult) error) (*ReversalResult, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return nil, fmt.Errorf("REVERSAL_REASON_REQUIRED")
@@ -185,6 +193,9 @@ func (s *Service) ReverseFundEarning(ctx context.Context, earningID uuid.UUID, r
 		if e.Status == "reversed" {
 			out.AlreadyReversed = true
 			out.BalanceAfter, err = walletBalanceTx(ctx, tx, e.CreatorID)
+			if err == nil && inTx != nil {
+				err = inTx(tx, &out)
+			}
 			return err
 		}
 
@@ -264,6 +275,9 @@ func (s *Service) ReverseFundEarning(ctx context.Context, earningID uuid.UUID, r
 		e.ReversedAt = &now
 		e.ReversalReason = reason
 		e.ReversalTransactionID = adjustmentID
+		if inTx != nil {
+			return inTx(tx, &out)
+		}
 		return nil
 	})
 	if err != nil {

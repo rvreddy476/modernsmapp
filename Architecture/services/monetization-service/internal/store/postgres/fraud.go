@@ -109,18 +109,10 @@ func (s *Store) ListPendingFraudReviews(ctx context.Context, limit, offset int) 
 
 // ResolveFraudReview updates the status of a fraud review.
 func (s *Store) ResolveFraudReview(ctx context.Context, reviewID uuid.UUID, status, notes string, reviewerID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE fraud_reviews
-		SET status = $2, notes = $3, reviewer_id = $4, resolved_at = NOW()
-		WHERE id = $1
-	`, reviewID, status, notes, reviewerID)
-	if err != nil {
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		_, err := s.ResolveFraudReviewTx(ctx, tx, reviewID, status, notes, reviewerID)
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("FRAUD_REVIEW_NOT_FOUND")
-	}
-	return nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -223,18 +215,10 @@ func (s *Store) ListOpenDisputes(ctx context.Context, limit, offset int) ([]Disp
 
 // ResolveDispute updates the status and resolution of a dispute.
 func (s *Store) ResolveDispute(ctx context.Context, disputeID uuid.UUID, status, notes string, resolvedBy uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE disputes
-		SET status = $2, resolution_notes = $3, resolved_by = $4, resolved_at = NOW()
-		WHERE id = $1
-	`, disputeID, status, notes, resolvedBy)
-	if err != nil {
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		_, err := s.ResolveDisputeTx(ctx, tx, disputeID, status, notes, resolvedBy)
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("DISPUTE_NOT_FOUND")
-	}
-	return nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -243,41 +227,12 @@ func (s *Store) ResolveDispute(ctx context.Context, disputeID uuid.UUID, status,
 
 // CreateRefund inserts a new refund.
 func (s *Store) CreateRefund(ctx context.Context, refund *Refund) (*Refund, error) {
-	if refund.ID == uuid.Nil {
-		refund.ID = uuid.New()
-	}
-	refund.CreatedAt = time.Now()
-
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO refunds (id, transaction_id, dispute_id, amount_paise, reason, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, refund.ID, refund.TransactionID, refund.DisputeID, refund.AmountPaise, refund.Reason, refund.Status, refund.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return refund, nil
+	return s.CreateRefundTx(ctx, s.db, refund)
 }
 
 // GetRefundByTransaction returns a refund for a given transaction ID.
 func (s *Store) GetRefundByTransaction(ctx context.Context, txnID uuid.UUID) (*Refund, error) {
-	var r Refund
-	err := s.db.QueryRow(ctx, `
-		SELECT id, transaction_id, dispute_id, amount_paise, reason, status, processed_at, created_at
-		FROM refunds
-		WHERE transaction_id = $1
-		ORDER BY created_at DESC
-		LIMIT 1
-	`, txnID).Scan(
-		&r.ID, &r.TransactionID, &r.DisputeID, &r.AmountPaise, &r.Reason,
-		&r.Status, &r.ProcessedAt, &r.CreatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &r, nil
+	return s.GetRefundByTransactionTx(ctx, s.db, txnID)
 }
 
 // ---------------------------------------------------------------------------
@@ -286,30 +241,18 @@ func (s *Store) GetRefundByTransaction(ctx context.Context, txnID uuid.UUID) (*R
 
 // FreezeWallet sets is_frozen=true for a user's wallet.
 func (s *Store) FreezeWallet(ctx context.Context, userID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE creator_ledger SET is_frozen = true, updated_at = NOW() WHERE user_id = $1
-	`, userID)
-	if err != nil {
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		_, err := s.SetWalletFrozenTx(ctx, tx, userID, true)
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("WALLET_NOT_FOUND")
-	}
-	return nil
+	})
 }
 
 // UnfreezeWallet sets is_frozen=false for a user's wallet.
 func (s *Store) UnfreezeWallet(ctx context.Context, userID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE creator_ledger SET is_frozen = false, updated_at = NOW() WHERE user_id = $1
-	`, userID)
-	if err != nil {
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		_, err := s.SetWalletFrozenTx(ctx, tx, userID, false)
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("WALLET_NOT_FOUND")
-	}
-	return nil
+	})
 }
 
 // GetStuckTransactions returns transactions with status 'pending' created before olderThan.
@@ -366,39 +309,19 @@ func (s *Store) GetTransactionByID(ctx context.Context, txnID uuid.UUID) (*Trans
 
 // CreditWallet adds amount to a user's wallet balance (used for refunds).
 func (s *Store) CreditWallet(ctx context.Context, userID uuid.UUID, amountPaise int64) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE creator_ledger SET balance = balance + $2, updated_at = NOW() WHERE user_id = $1
-	`, userID, amountPaise)
-	return err
+	return s.CreditWalletTx(ctx, s.db, userID, amountPaise)
 }
 
 // RebuildWalletFromLedger recalculates a wallet balance from ledger entries.
 // It sums all credits minus debits for accounts owned by the user.
 func (s *Store) RebuildWalletFromLedger(ctx context.Context, userID uuid.UUID) (int64, error) {
 	var balance int64
-	err := s.db.QueryRow(ctx, `
-		WITH user_accounts AS (
-			SELECT id FROM accounts WHERE owner_id = $1 AND account_type = 'user_wallet'
-		)
-		SELECT COALESCE(
-			(SELECT COALESCE(SUM(le.amount_paise), 0) FROM ledger_entries le JOIN user_accounts ua ON le.credit_account_id = ua.id), 0
-		) - COALESCE(
-			(SELECT COALESCE(SUM(le.amount_paise), 0) FROM ledger_entries le JOIN user_accounts ua ON le.debit_account_id = ua.id), 0
-		)
-	`, userID).Scan(&balance)
-	if err != nil {
-		return 0, err
-	}
-
-	// Update wallet balance to match ledger
-	_, err = s.db.Exec(ctx, `
-		UPDATE creator_ledger SET balance = $2, updated_at = NOW() WHERE user_id = $1
-	`, userID, balance)
-	if err != nil {
-		return 0, err
-	}
-
-	return balance, nil
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		_, balance, err = s.RebuildWalletFromLedgerTx(ctx, tx, userID)
+		return err
+	})
+	return balance, err
 }
 
 // GetAllWallets returns all creator-ledger rows (used by reconciliation worker).

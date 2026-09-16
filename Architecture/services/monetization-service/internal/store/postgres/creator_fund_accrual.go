@@ -348,45 +348,10 @@ func (s *Store) ListBudgetPeriodKeysWithAccruals(ctx context.Context) ([]string,
 //   - Raising clears the exhaustion only when accrued is below the new cap;
 //     a cap set exactly to accrued stays exhausted.
 func (s *Store) UpsertCreatorFundBudget(ctx context.Context, b *CreatorFundBudget) (*CreatorFundBudget, error) {
-	if b.RegionCode == "" {
-		b.RegionCode = "IN"
-	}
-	if b.CapPaise < 0 {
-		return nil, errors.New("INVALID_BUDGET: cap_paise must be >= 0")
-	}
 	var stored *CreatorFundBudget
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
-		existing, err := lockBudget(ctx, tx, b.PeriodKey, b.RegionCode)
-		if err != nil {
-			return err
-		}
-		if existing == nil {
-			row := tx.QueryRow(ctx, `
-				INSERT INTO creator_fund_budgets (period_key, region_code, cap_paise, accrued_paise, notes, created_by)
-				VALUES ($1, $2, $3, 0, $4, $5)
-				RETURNING period_key, region_code, cap_paise, accrued_paise, exhausted_at, exhausted_on_day,
-				          COALESCE(notes, ''), created_by, created_at, updated_at
-			`, b.PeriodKey, b.RegionCode, b.CapPaise, nullableString(b.Notes), b.CreatedBy)
-			stored, err = scanBudget(row)
-			return err
-		}
-		if b.CapPaise < existing.AccruedPaise {
-			return fmt.Errorf("%w: cap %d, accrued %d for %s/%s", ErrBudgetBelowAccrued,
-				b.CapPaise, existing.AccruedPaise, b.PeriodKey, b.RegionCode)
-		}
-		row := tx.QueryRow(ctx, `
-			UPDATE creator_fund_budgets
-			SET cap_paise        = $3,
-			    exhausted_at     = CASE WHEN accrued_paise < $3 THEN NULL ELSE COALESCE(exhausted_at, NOW()) END,
-			    exhausted_on_day = CASE WHEN accrued_paise < $3 THEN NULL ELSE exhausted_on_day END,
-			    notes            = COALESCE($4, notes),
-			    created_by       = COALESCE($5, created_by),
-			    updated_at       = NOW()
-			WHERE period_key = $1 AND region_code = $2
-			RETURNING period_key, region_code, cap_paise, accrued_paise, exhausted_at, exhausted_on_day,
-			          COALESCE(notes, ''), created_by, created_at, updated_at
-		`, b.PeriodKey, b.RegionCode, b.CapPaise, nullableString(b.Notes), b.CreatedBy)
-		stored, err = scanBudget(row)
+		var err error
+		_, stored, err = s.UpsertCreatorFundBudgetTx(ctx, tx, b)
 		return err
 	})
 	if err != nil {

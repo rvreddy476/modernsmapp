@@ -51,6 +51,15 @@ type BudgetInput struct {
 
 // UpsertCreatorFundBudget creates or changes a period's cap.
 func (s *Service) UpsertCreatorFundBudget(ctx context.Context, in BudgetInput, adminID *uuid.UUID) (*postgres.CreatorFundBudget, error) {
+	row, err := s.budgetRow(in, adminID)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.UpsertCreatorFundBudget(ctx, row)
+}
+
+// budgetRow validates a budget request against the configured cadence.
+func (s *Service) budgetRow(in BudgetInput, adminID *uuid.UUID) (*postgres.CreatorFundBudget, error) {
 	period, err := ParsePeriodKey(in.PeriodKey)
 	if err != nil {
 		return nil, err
@@ -66,13 +75,13 @@ func (s *Service) UpsertCreatorFundBudget(ctx context.Context, in BudgetInput, a
 	if region == "" {
 		region = defaultRegionCode
 	}
-	return s.store.UpsertCreatorFundBudget(ctx, &postgres.CreatorFundBudget{
+	return &postgres.CreatorFundBudget{
 		PeriodKey:  period.Key,
 		RegionCode: region,
 		CapPaise:   in.CapPaise,
 		Notes:      in.Notes,
 		CreatedBy:  adminID,
-	})
+	}, nil
 }
 
 // ListCreatorFundBudgets returns every budget row, newest period first.

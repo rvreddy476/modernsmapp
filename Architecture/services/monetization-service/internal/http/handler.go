@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -29,6 +30,9 @@ type Handler struct {
 	// route must carry the internal service key as well as the scope
 	// header. It wins over writesEnabled.
 	maintenance bool
+	// verifier admits admin-service tokens on the token-only admin family
+	// (admin_token.go); nil accepts none.
+	verifier *servicetoken.Verifier
 }
 
 func New(svc *service.Service) *Handler {
@@ -67,10 +71,16 @@ func (h *Handler) WithMaintenance(on bool) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Token-only admin family for admin-service, registered on the engine
+	// OUTSIDE the internal-key group: the key is no evidence of who is
+	// calling, the admin-service token is (admin_token.go). The launch
+	// boundary still applies to it, route by route, after the token.
+	h.registerTokenAdminRoutes(r)
+
 	v1 := r.Group("/v1/monetization")
+	if h.internalKey != "" {
+		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	v1.Use(h.launchBoundary())
 	{
 		// Creator earnings ledger (canonical name as of 2026-04-30, Phase 2 §D4).

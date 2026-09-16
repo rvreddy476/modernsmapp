@@ -1,10 +1,12 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -34,7 +36,19 @@ func hasAdminScope(c *gin.Context) bool {
 	return false
 }
 
+// getAdminID is the acting admin. On the token family (admin_token.go) it is
+// ONLY the signed act claim of the admitted admin-service token — headers are
+// never read there, and a token path without an admitted actor is refused.
+// On the legacy /v1/monetization/admin routes it is X-User-Id behind the
+// admin scope, as before.
 func getAdminID(c *gin.Context) (uuid.UUID, bool) {
+	if onTokenPath(c) {
+		if id, ok := tokenActor(c); ok {
+			return id, true
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeAdminActorRequired, "the token does not name the acting admin", nil)
+		return uuid.Nil, false
+	}
 	if !hasAdminScope(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin access required", nil)
 		return uuid.Nil, false
@@ -164,7 +178,7 @@ type ResolveDisputeRequest struct {
 }
 
 func (h *Handler) ResolveDisputeAdmin(c *gin.Context) {
-	adminID, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -181,7 +195,7 @@ func (h *Handler) ResolveDisputeAdmin(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.ResolveDispute(c.Request.Context(), disputeID, req.Status, req.ResolutionNotes, adminID); err != nil {
+	if err := h.svc.AdminResolveDispute(c.Request.Context(), actor, disputeID, req.Status, req.ResolutionNotes); err != nil {
 		if err.Error() == "DISPUTE_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Dispute not found", nil)
 			return
@@ -205,7 +219,7 @@ type ProcessRefundRequest struct {
 }
 
 func (h *Handler) ProcessRefund(c *gin.Context) {
-	_, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -232,8 +246,12 @@ func (h *Handler) ProcessRefund(c *gin.Context) {
 		disputeID = &parsed
 	}
 
-	refund, err := h.svc.ProcessRefund(c.Request.Context(), txnID, req.AmountPaise, req.Reason, disputeID)
+	refund, err := h.svc.AdminProcessRefund(c.Request.Context(), actor, txnID, req.AmountPaise, req.Reason, disputeID)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidRefund) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REFUND_AMOUNT", err.Error(), nil)
+			return
+		}
 		switch err.Error() {
 		case "TRANSACTION_NOT_FOUND":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "TRANSACTION_NOT_FOUND", "Transaction not found", nil)
@@ -278,7 +296,7 @@ type ResolveFraudReviewRequest struct {
 }
 
 func (h *Handler) ResolveFraudReviewAdmin(c *gin.Context) {
-	adminID, ok := getAdminID(c)
+	actor, ok := adminActor(c)
 	if !ok {
 		return
 	}
@@ -295,7 +313,7 @@ func (h *Handler) ResolveFraudReviewAdmin(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.ResolveFraudReview(c.Request.Context(), reviewID, req.Status, req.Notes, adminID); err != nil {
+	if err := h.svc.AdminResolveFraudReview(c.Request.Context(), actor, reviewID, req.Status, req.Notes); err != nil {
 		if err.Error() == "FRAUD_REVIEW_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Fraud review not found", nil)
 			return

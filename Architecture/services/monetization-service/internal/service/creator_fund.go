@@ -228,21 +228,10 @@ func (s *Service) GetCreatorFundStatus(ctx context.Context, creatorID uuid.UUID)
 	return &CreatorFundStatus{Row: row, Decision: d}, nil
 }
 
-// SuspendCreatorFund flips the row to suspended, blocking future fund
-// earnings. Past settled earnings stay in the wallet — admin can reverse
-// individually via the dispute pathway if needed.
-func (s *Service) SuspendCreatorFund(ctx context.Context, creatorID uuid.UUID, reason string) error {
-	if reason == "" {
-		reason = "admin action"
-	}
-	return s.store.SetCreatorFundSuspension(ctx, creatorID, reason)
-}
-
-// ClearCreatorFundSuspension drops the suspended state back to pending
-// so the next nightly evaluator can re-rate the creator.
-func (s *Service) ClearCreatorFundSuspension(ctx context.Context, creatorID uuid.UUID) error {
-	return s.store.ClearCreatorFundSuspension(ctx, creatorID)
-}
+// Suspending a creator from the fund (blocking future fund earnings; past
+// settled earnings stay in the wallet) and clearing the suspension back to
+// pending are AdminSuspendCreatorFund / AdminUnsuspendCreatorFund in
+// admin_console.go, each audited.
 
 // ---------------------------------------------------------------------------
 // Earnings settlement
@@ -359,38 +348,37 @@ func (s *Service) ListActiveQualityBands(ctx context.Context) ([]postgres.Qualit
 	return s.store.ListActiveQualityBands(ctx, time.Now())
 }
 
-// SetQualityBand configures a new active band (closing the previous
-// one), the same shape and the same admin authorisation contract as
-// SetRpmRate. Setting floor == ceiling == 10000, or enabled = false,
-// restores the pre-quality views x RPM payout exactly.
-func (s *Service) SetQualityBand(ctx context.Context, band postgres.QualityBandRow, adminID *uuid.UUID) (*postgres.QualityBandRow, error) {
+// validateQualityBand refuses a band that would underpay genuine views and
+// fills in the default region. (AdminSetQualityBand sets it. Setting
+// floor == ceiling == 10000, or enabled = false, restores the pre-quality
+// views x RPM payout exactly.)
+func validateQualityBand(band *postgres.QualityBandRow) error {
 	switch band.ContentType {
 	case "long_video", "flick":
 	default:
-		return nil, fmt.Errorf("INVALID_CONTENT_TYPE: %q (expected long_video|flick)", band.ContentType)
+		return fmt.Errorf("INVALID_CONTENT_TYPE: %q (expected long_video|flick)", band.ContentType)
 	}
 	if band.RegionCode == "" {
 		band.RegionCode = defaultRegionCode
 	}
 	if band.FloorBps < 0 || band.CeilingBps < 0 {
-		return nil, fmt.Errorf("INVALID_BAND: floor_bps and ceiling_bps must be >= 0")
+		return fmt.Errorf("INVALID_BAND: floor_bps and ceiling_bps must be >= 0")
 	}
 	if band.CeilingBps < band.FloorBps {
-		return nil, fmt.Errorf("INVALID_BAND: ceiling_bps must be >= floor_bps")
+		return fmt.Errorf("INVALID_BAND: ceiling_bps must be >= floor_bps")
 	}
 	// A floor of zero re-opens exactly the failure this band exists to
 	// prevent: a creator paid nothing for views that really happened.
 	if band.FloorBps == 0 {
-		return nil, fmt.Errorf("INVALID_BAND: floor_bps must be > 0 so genuine views always pay")
+		return fmt.Errorf("INVALID_BAND: floor_bps must be > 0 so genuine views always pay")
 	}
 	if band.PivotCQS <= 0 || band.PivotCQS >= 1 {
-		return nil, fmt.Errorf("INVALID_BAND: pivot_cqs must be strictly between 0 and 1")
+		return fmt.Errorf("INVALID_BAND: pivot_cqs must be strictly between 0 and 1")
 	}
 	if band.ConfidenceImpressions < 0 {
-		return nil, fmt.Errorf("INVALID_BAND: confidence_impressions must be >= 0")
+		return fmt.Errorf("INVALID_BAND: confidence_impressions must be >= 0")
 	}
-	band.CreatedBy = adminID
-	return s.store.SetQualityBand(ctx, &band)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -402,21 +390,20 @@ func (s *Service) ListActiveRpmRates(ctx context.Context) ([]postgres.RpmRate, e
 	return s.store.ListActiveRpmRates(ctx, time.Now())
 }
 
-// SetRpmRate configures a new active rate (closing the previous one).
-// Caller is responsible for admin authorisation upstream.
-func (s *Service) SetRpmRate(ctx context.Context, contentType, regionCode string, rpmPaise int64, notes string, adminID *uuid.UUID) (*postgres.RpmRate, error) {
+// validateRpmRate checks a rate and returns the region it applies to.
+func validateRpmRate(contentType, regionCode string, rpmPaise int64) (string, error) {
 	switch contentType {
 	case "long_video", "flick":
 	default:
-		return nil, fmt.Errorf("INVALID_CONTENT_TYPE: %q (expected long_video|flick)", contentType)
+		return "", fmt.Errorf("INVALID_CONTENT_TYPE: %q (expected long_video|flick)", contentType)
 	}
 	if regionCode == "" {
 		regionCode = defaultRegionCode
 	}
 	if rpmPaise < 0 {
-		return nil, fmt.Errorf("INVALID_RATE: rpm_paise must be >= 0")
+		return "", fmt.Errorf("INVALID_RATE: rpm_paise must be >= 0")
 	}
-	return s.store.SetRpmRate(ctx, contentType, regionCode, rpmPaise, notes, adminID)
+	return regionCode, nil
 }
 
 // ---------------------------------------------------------------------------

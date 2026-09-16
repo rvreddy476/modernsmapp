@@ -252,43 +252,20 @@ func (s *Store) UpsertCreatorFundEligibility(ctx context.Context, e *CreatorFund
 // admin's reason. Used by both the admin endpoint and any automated
 // fraud rule that needs to take a creator out of the fund.
 func (s *Store) SetCreatorFundSuspension(ctx context.Context, creatorID uuid.UUID, reason string) error {
-	now := time.Now()
-	tag, err := s.db.Exec(ctx, `
-		UPDATE creator_fund_eligibility
-		SET status = 'suspended',
-		    suspended_at = $2,
-		    suspension_reason = $3,
-		    last_evaluated_at = $2,
-		    updated_at = $2
-		WHERE creator_id = $1
-	`, creatorID, now, reason)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		// No row yet — create a suspended row so subsequent evaluations
-		// see the sticky state.
-		_, err := s.db.Exec(ctx, `
-			INSERT INTO creator_fund_eligibility (
-				creator_id, status, suspended_at, suspension_reason,
-				last_evaluated_at, created_at, updated_at
-			) VALUES ($1, 'suspended', $2, $3, $2, $2, $2)
-			ON CONFLICT (creator_id) DO UPDATE SET
-				status = 'suspended',
-				suspended_at = EXCLUDED.suspended_at,
-				suspension_reason = EXCLUDED.suspension_reason,
-				last_evaluated_at = EXCLUDED.last_evaluated_at,
-				updated_at = EXCLUDED.updated_at
-		`, creatorID, now, reason)
-		return err
-	}
-	return nil
+	// An upsert: with no row yet a suspended row is created so subsequent
+	// evaluations see the sticky state.
+	return s.SetCreatorFundSuspensionTx(ctx, s.db, creatorID, reason)
 }
 
 // ClearCreatorFundSuspension drops the suspended state back to pending,
 // so the next eligibility evaluation can re-rate the creator. Admin-only.
 func (s *Store) ClearCreatorFundSuspension(ctx context.Context, creatorID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	return s.ClearCreatorFundSuspensionTx(ctx, s.db, creatorID)
+}
+
+// ClearCreatorFundSuspensionTx is ClearCreatorFundSuspension on db.
+func (s *Store) ClearCreatorFundSuspensionTx(ctx context.Context, db DBTX, creatorID uuid.UUID) error {
+	_, err := db.Exec(ctx, `
 		UPDATE creator_fund_eligibility
 		SET status = 'pending',
 		    suspended_at = NULL,
@@ -427,40 +404,13 @@ func (s *Store) ListActiveRpmRates(ctx context.Context, asOf time.Time) ([]RpmRa
 // previously-active row for the same (content_type, region). All in one
 // transaction so the active-rate query never sees an overlap.
 func (s *Store) SetRpmRate(ctx context.Context, contentType, regionCode string, rpmPaise int64, notes string, createdBy *uuid.UUID) (*RpmRate, error) {
-	tx, err := s.db.Begin(ctx)
+	var r *RpmRate
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		r, err = s.SetRpmRateTx(ctx, tx, contentType, regionCode, rpmPaise, notes, createdBy)
+		return err
+	})
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	now := time.Now()
-	if _, err := tx.Exec(ctx, `
-		UPDATE monetization_rpm_rates
-		SET effective_to = $3
-		WHERE content_type = $1 AND region_code = $2 AND effective_to IS NULL
-	`, contentType, regionCode, now); err != nil {
-		return nil, err
-	}
-	r := &RpmRate{
-		ID:            uuid.New(),
-		ContentType:   contentType,
-		RegionCode:    regionCode,
-		RpmPaise:      rpmPaise,
-		EffectiveFrom: now,
-		Notes:         notes,
-		CreatedAt:     now,
-		CreatedBy:     createdBy,
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO monetization_rpm_rates (
-			id, content_type, region_code, rpm_paise,
-			effective_from, notes, created_at, created_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, r.ID, r.ContentType, r.RegionCode, r.RpmPaise,
-		r.EffectiveFrom, nullableString(r.Notes), r.CreatedAt, r.CreatedBy); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -869,35 +819,11 @@ func (s *Store) ListActiveQualityBands(ctx context.Context, asOf time.Time) ([]Q
 // SetRpmRate exactly, so the multiplier is configurable through the same
 // admin flow and the same audit trail as the rate it multiplies.
 func (s *Store) SetQualityBand(ctx context.Context, b *QualityBandRow) (*QualityBandRow, error) {
-	tx, err := s.db.Begin(ctx)
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		_, err := s.SetQualityBandTx(ctx, tx, b)
+		return err
+	})
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	now := time.Now()
-	if _, err := tx.Exec(ctx, `
-		UPDATE monetization_quality_bands
-		SET effective_to = $3
-		WHERE content_type = $1 AND region_code = $2 AND effective_to IS NULL
-	`, b.ContentType, b.RegionCode, now); err != nil {
-		return nil, err
-	}
-	b.ID = uuid.New()
-	b.EffectiveFrom = now
-	b.CreatedAt = now
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO monetization_quality_bands (
-			id, content_type, region_code, floor_bps, ceiling_bps,
-			pivot_cqs, confidence_impressions, enabled, effective_from,
-			notes, created_at, created_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, b.ID, b.ContentType, b.RegionCode, b.FloorBps, b.CeilingBps,
-		b.PivotCQS, b.ConfidenceImpressions, b.Enabled, b.EffectiveFrom,
-		nullableString(b.Notes), b.CreatedAt, b.CreatedBy); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return b, nil
