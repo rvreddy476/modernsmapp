@@ -24,16 +24,16 @@ cd /c/workspace/modernsmapp/Architecture/docker && docker compose up -d
 ## 2. Rebuild the services whose code changed since they were last built
 
 ```bash
-cd /c/workspace/modernsmapp/Architecture/docker && docker compose up -d --build dating-service dating-data-exporter notification-service
+cd /c/workspace/modernsmapp/Architecture/docker && docker compose up -d --build dating-service dating-data-exporter notification-service graph-service chat-message-service call-service
 ```
 
 Wait about 30 seconds, then confirm they are healthy:
 
 ```bash
-cd /c/workspace/modernsmapp/Architecture/docker && docker compose ps --format '{{.Name}} {{.Status}}' dating-service dating-data-exporter notification-service && docker compose exec -T dating-service wget -qO- http://localhost:8112/healthz
+cd /c/workspace/modernsmapp/Architecture/docker && docker compose ps --format '{{.Name}} {{.Status}}' dating-service dating-data-exporter notification-service graph-service chat-message-service call-service && docker compose exec -T dating-service wget -qO- http://localhost:8112/healthz
 ```
 
-Expect three `Up` lines and `{"status":"alive"}`.
+Expect six `Up` lines and `{"status":"alive"}`.
 
 ## 3. Check the seeded data is still there
 
@@ -85,13 +85,17 @@ Sign in as **call_a**, then open the **Match** tile.
 1. **Onboarding** — call_a already has a profile, so you land on the deck. To
    see onboarding, use a third account, or reset with step 3 and skip the
    pilot accounts.
-2. **Pulse deck** — cards show a first name, age and a distance range such as
-   "< 5 km". No exact distances anywhere.
+2. **Pulse deck** — the photo shows openly (no blur), and the card scrolls:
+   swipe the gallery, read the description and the prompt answers, then the
+   languages. Distance is a range such as "< 5 km"; there are no exact
+   distances anywhere.
 3. **Spark** someone, **pass** on someone.
-4. **Sparks tab** — incoming sparks show name, age and range. "Spark back"
-   forms a match.
+4. **Sparks tab** — incoming sparks carry the same detail. Tap one to open the
+   person view. "Spark back" forms a match.
 5. **Matches** — open a match, then open the chat. The message should send and
-   arrive.
+   arrive. Then try the **call** button in the chat header: a match may call
+   without being a friend in the main app. Block or unmatch during a call and
+   it should end for both sides.
 6. **Report** a test profile: fixed reasons, `other` needs a description.
    After reporting, that person disappears from every list.
 7. **Panic button**, then check it was recorded:
@@ -119,6 +123,11 @@ SQL
 
 ## 7. Known limits on dev — not bugs
 
+- **Calls between matches are on in dev only.** They are switched off in
+  staging and production until you say otherwise (`DATING_CALLS_ENABLED`).
+  Someone who has set "no calls" still cannot be called, even by a match.
+- **Test profiles have only one photo each**, so the gallery swipe is best
+  seen on a profile you build yourself.
 - **Test profiles have no chat name or photo.** The 20 seeded profiles are not
   real accounts, so a chat with one may show a blank name. call_a and call_b
   look normal with each other.
