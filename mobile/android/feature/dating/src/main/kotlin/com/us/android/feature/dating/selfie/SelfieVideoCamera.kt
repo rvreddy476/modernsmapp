@@ -3,24 +3,32 @@ package com.us.android.feature.dating.selfie
 import android.content.Context
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
-import android.media.MediaRecorder
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceRequest
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -28,20 +36,20 @@ import java.io.File
 import kotlin.math.max
 
 /**
- * The FRONT camera for the blink-twice clip, through CameraX core 1.4.1.
+ * The FRONT camera for the blink-twice clip, through CameraX 1.4.1.
  *
- * Based on `feature/rider/.../selfie/SelfieCamera.kt` (features may not share
- * code): the preview is a [TextureView] fed by a [Preview.SurfaceProvider],
- * because camera-view is not in the offline cache. That module takes a photo;
- * this one records VIDEO, and camera-video is not in the cache either, so the
- * clip is written by the platform [MediaRecorder] from a surface: for the few
- * seconds of recording the Preview's surface is swapped from the TextureView to
- * the recorder's input surface, then swapped back. No audio source is set, so
- * no microphone permission is involved.
+ * Two use cases are bound together: a [Preview] that draws into a [TextureView]
+ * (camera-view is not in the offline cache, so the surface is provided by hand,
+ * as in `feature/rider/.../selfie/SelfieCamera.kt` — features may not share
+ * code), and a [VideoCapture] backed by a [Recorder] that writes the clip.
+ * Because they are separate use cases the preview keeps running for the whole
+ * recording, and the clip carries CameraX's target rotation, so what is
+ * uploaded is upright rather than at the sensor's angle.
  *
- * UNVERIFIED ON A DEVICE (no device automation is allowed on the only handset):
- * the on-screen preview holds its last frame while recording, and the clip's
- * orientation comes from the sensor rotation as an MP4 orientation hint.
+ * No audio: [androidx.camera.video.PendingRecording.withAudioEnabled] is never
+ * called, so no microphone permission is involved and nothing is heard.
+ *
+ * UNVERIFIED ON A DEVICE (no device automation is allowed on the only handset).
  */
 @Composable
 fun SelfieCameraPreview(
@@ -50,6 +58,7 @@ fun SelfieCameraPreview(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val textureView = remember { TextureView(context) }
     val textureProvider = remember { TextureSurfaceProvider(textureView) }
@@ -57,6 +66,7 @@ fun SelfieCameraPreview(
     DisposableEffect(lifecycleOwner) {
         val future = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
+        var recorder: SelfieRecorder? = null
         future.addListener(
             {
                 val camera = runCatching { future.get() }.getOrNull()
@@ -68,119 +78,168 @@ fun SelfieCameraPreview(
                 }
                 provider = camera
                 val preview = Preview.Builder()
-                    .setResolutionSelector(
-                        ResolutionSelector.Builder()
-                            .setResolutionStrategy(
-                                ResolutionStrategy(Size(CLIP_LONG_EDGE, CLIP_SHORT_EDGE), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER),
-                            )
-                            .build(),
-                    )
+                    .setResolutionSelector(previewResolution())
                     .build()
                 preview.setSurfaceProvider(ContextCompat.getMainExecutor(context), textureProvider)
+                val videoCapture = VideoCapture.withOutput(
+                    Recorder.Builder()
+                        .setQualitySelector(clipQuality())
+                        .setTargetVideoEncodingBitRate(BIT_RATE)
+                        .build(),
+                )
+                videoCapture.targetRotation = displayRotation(view)
                 val bound = runCatching {
                     camera.unbindAll()
-                    camera.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview)
+                    camera.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_FRONT_CAMERA,
+                        preview,
+                        videoCapture,
+                    )
                 }.getOrNull()
                 if (bound == null) {
                     onUnavailable()
                 } else {
-                    onReady(SelfieRecorder(context, preview, textureProvider, bound.cameraInfo.sensorRotationDegrees))
+                    val made = SelfieRecorder(context, videoCapture, rotation = { displayRotation(view) })
+                    recorder = made
+                    onReady(made)
                 }
             },
             ContextCompat.getMainExecutor(context),
         )
-        onDispose { provider?.unbindAll() }
+        onDispose {
+            // Leaving the step, losing the camera permission or backing out mid
+            // clip throws the half-written file away rather than uploading a stub.
+            recorder?.cancel()
+            provider?.unbindAll()
+        }
     }
 
     AndroidView(factory = { textureView }, modifier = modifier)
 }
 
 /**
- * Records one clip at a time into `cacheDir/dating-selfie` (emptied before each
- * clip; the uploader deletes the clip after upload). All calls on the main thread.
+ * Records one clip at a time into `cacheDir/dating-selfie` and hands the file to
+ * the caller. The preview is a separate use case, so it stays live throughout.
+ *
+ * Every call and every callback is on the main thread.
  */
 class SelfieRecorder internal constructor(
     private val context: Context,
-    private val preview: Preview,
-    private val previewProvider: Preview.SurfaceProvider,
-    private val rotationDegrees: Int,
+    private val videoCapture: VideoCapture<Recorder>,
+    private val rotation: () -> Int,
+    private val clips: SelfieClipStore = SelfieClipStore(File(context.cacheDir, CLIP_DIR)),
 ) {
     private val main = ContextCompat.getMainExecutor(context)
     private val handler = Handler(Looper.getMainLooper())
-    private var recording = false
+    private val state = SelfieRecordingState()
+    private var active: Recording? = null
+    private var watchdog: Runnable? = null
 
-    val isRecording: Boolean get() = recording
+    val isRecording: Boolean get() = state.isBusy
 
-    /** Records for [durationMillis], then calls [onFinished] with the clip, or null when it failed. */
+    /**
+     * Records for at most [durationMillis] — CameraX stops itself at the limit,
+     * and a watchdog stops it if the limit never fires — then calls [onFinished]
+     * with the clip, or with null when nothing usable was written.
+     */
     fun record(durationMillis: Long, onFinished: (File?) -> Unit) {
-        if (recording) return
-        recording = true
-        val directory = File(context.cacheDir, CLIP_DIR).apply {
-            mkdirs()
-            listFiles()?.forEach { it.delete() }
-        }
-        val file = File(directory, "selfie-${System.currentTimeMillis()}.mp4")
-        preview.setSurfaceProvider(main) { request -> startRecording(request, file, durationMillis, onFinished) }
-    }
-
-    private fun startRecording(request: SurfaceRequest, file: File, durationMillis: Long, onFinished: (File?) -> Unit) {
-        val recorder = newRecorder()
-        val prepared = runCatching {
-            recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            recorder.setVideoSize(request.resolution.width, request.resolution.height)
-            recorder.setVideoFrameRate(FRAME_RATE)
-            recorder.setVideoEncodingBitRate(BIT_RATE)
-            recorder.setOrientationHint(rotationDegrees)
-            recorder.setOutputFile(file.absolutePath)
-            recorder.prepare()
-        }.isSuccess
-        if (!prepared) {
-            request.willNotProvideSurface()
-            recorder.release()
-            finish(file, saved = false, onFinished)
-            return
-        }
-        // The recorder is released only once the camera has stopped using its surface.
-        request.provideSurface(recorder.surface, main) { recorder.release() }
-        if (runCatching { recorder.start() }.isFailure) {
-            finish(file, saved = false, onFinished)
-            return
-        }
-        handler.postDelayed({
-            val saved = runCatching { recorder.stop() }.isSuccess
-            finish(file, saved, onFinished)
-        }, durationMillis)
-    }
-
-    private fun finish(file: File, saved: Boolean, onFinished: (File?) -> Unit) {
-        // Back to the on-screen preview; the camera lets go of the recorder's surface.
-        preview.setSurfaceProvider(main, previewProvider)
-        recording = false
-        if (saved && file.length() > 0L) {
-            onFinished(file)
-        } else {
+        if (!state.beginRequested()) return
+        val file = clips.next(System.currentTimeMillis())
+        // Read at the moment of recording: the phone may have been turned since
+        // the camera was bound.
+        videoCapture.targetRotation = rotation()
+        val options = FileOutputOptions.Builder(file).apply {
+            setDurationLimitMillis(durationMillis)
+            setFileSizeLimit(MAX_CLIP_BYTES)
+        }.build()
+        val started = runCatching {
+            videoCapture.output
+                .prepareRecording(context, options)
+                .start(main) { event -> onEvent(event, file, onFinished) }
+        }.getOrNull()
+        if (started == null) {
+            state.finished()
             file.delete()
             onFinished(null)
+            return
+        }
+        active = started
+        val stopAt = durationMillis + SelfieOutcomes.RECORD_WATCHDOG_MS
+        watchdog = Runnable { stop() }.also { handler.postDelayed(it, stopAt) }
+    }
+
+    /** Stops early and still delivers what was recorded. */
+    fun stop() {
+        if (!state.stopRequested()) return
+        clearWatchdog()
+        active?.stop()
+    }
+
+    /**
+     * Throws the in-flight clip away. Does nothing once a clip has been
+     * delivered: that file belongs to the uploader.
+     */
+    fun cancel() {
+        if (!state.cancelled()) return
+        clearWatchdog()
+        active?.stop()
+    }
+
+    private fun onEvent(event: VideoRecordEvent, file: File, onFinished: (File?) -> Unit) {
+        when (event) {
+            is VideoRecordEvent.Start -> state.started()
+            is VideoRecordEvent.Finalize -> {
+                active = null
+                clearWatchdog()
+                val deliver = state.finished()
+                val usable = SelfieClipOutcome.usable(fatal = event.isFatal(), file = file)
+                if (!usable || !deliver) file.delete()
+                if (deliver) onFinished(if (usable) file else null)
+            }
+            else -> Unit
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun newRecorder(): MediaRecorder =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
+    private fun clearWatchdog() {
+        watchdog?.let(handler::removeCallbacks)
+        watchdog = null
+    }
 
     private companion object {
-        const val CLIP_DIR = "dating-selfie"
-        const val FRAME_RATE = 30
-        const val BIT_RATE = 2_500_000
+        const val MAX_CLIP_BYTES = 8L * 1024 * 1024
     }
 }
 
 /**
+ * The duration and size caps are how the clip is held inside the server's
+ * limits, so CameraX reporting them is a success, not a failure.
+ */
+private fun VideoRecordEvent.Finalize.isFatal(): Boolean =
+    hasError() &&
+        error != VideoRecordEvent.Finalize.ERROR_DURATION_LIMIT_REACHED &&
+        error != VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED
+
+/** SD is enough for a blink check; HD is the ceiling so the upload stays small. */
+private fun clipQuality(): QualitySelector = QualitySelector.fromOrderedList(
+    listOf(Quality.HD, Quality.SD),
+    FallbackStrategy.lowerQualityOrHigherThan(Quality.SD),
+)
+
+private fun previewResolution(): ResolutionSelector = ResolutionSelector.Builder()
+    .setResolutionStrategy(
+        ResolutionStrategy(
+            Size(CLIP_LONG_EDGE, CLIP_SHORT_EDGE),
+            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+        ),
+    )
+    .build()
+
+private fun displayRotation(view: View): Int = view.display?.rotation ?: Surface.ROTATION_0
+
+/**
  * Feeds a [TextureView] to CameraX: provides the Surface once both the request
- * and the SurfaceTexture exist, and keeps a centre-crop transform. Re-provides
- * after the recorder hands the stream back.
+ * and the SurfaceTexture exist, and keeps a centre-crop transform.
  */
 private class TextureSurfaceProvider(private val view: TextureView) :
     Preview.SurfaceProvider,
@@ -234,7 +293,12 @@ private class TextureSurfaceProvider(private val view: TextureView) :
         val scale = max(viewWidth / contentWidth, viewHeight / contentHeight)
         view.setTransform(
             Matrix().apply {
-                setScale(contentWidth * scale / viewWidth, contentHeight * scale / viewHeight, viewWidth / 2f, viewHeight / 2f)
+                setScale(
+                    contentWidth * scale / viewWidth,
+                    contentHeight * scale / viewHeight,
+                    viewWidth / 2f,
+                    viewHeight / 2f,
+                )
             },
         )
     }
@@ -244,5 +308,7 @@ private class TextureSurfaceProvider(private val view: TextureView) :
     }
 }
 
+private const val CLIP_DIR = "dating-selfie"
+private const val BIT_RATE = 2_500_000
 private const val CLIP_LONG_EDGE = 1280
 private const val CLIP_SHORT_EDGE = 720

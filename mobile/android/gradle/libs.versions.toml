@@ -324,6 +324,10 @@ androidx-camera-core              = { module = "androidx.camera:camera-core", ve
 androidx-camera-camera2           = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
 androidx-camera-lifecycle         = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
 androidx-camera-view              = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+# camera-video: Recorder/VideoCapture for Dating's blink-twice selfie clip.
+# Same `camerax` ref as the rest — never a lone newer CameraX artifact, or
+# conflict resolution drags Face AR's camera stack up with it.
+androidx-camera-video             = { module = "androidx.camera:camera-video", version.ref = "camerax" }
 androidx-lifecycle-service        = { module = "androidx.lifecycle:lifecycle-service", version.ref = "lifecycle" }
 
 [plugins]

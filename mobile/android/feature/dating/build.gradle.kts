@@ -32,13 +32,15 @@ dependencies {
     // Fused location for the profile's snapped point, panic and live share.
     implementation(libs.play.services.location)
 
-    // The selfie VIDEO: CameraX core only, 1.4.1 (the version Banuba Face AR
-    // pins in :app). camera-video is NOT in the offline cache, so the clip is
-    // recorded by the platform MediaRecorder from a Preview surface
-    // (selfie/SelfieVideoCamera.kt).
+    // The selfie VIDEO: CameraX 1.4.1 (the version Banuba Face AR pins in
+    // :app), recorded with VideoCapture + Recorder from camera-video so the
+    // preview stays live and the clip carries CameraX's target rotation
+    // (selfie/SelfieVideoCamera.kt). camera-view is still not used — the
+    // preview is a TextureView fed by a Preview.SurfaceProvider.
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.video)
 
     // Photos through the app's singleton loader, which shares the authenticated
     // OkHttp client (bearer on the API origin only, redirects followed).

@@ -217,6 +217,14 @@ object SelfieOutcomes {
     }
 
     const val MAX_CLIP_MS = 4_000
+
+    /**
+     * How long after the limit the recorder's own watchdog stops the clip, for
+     * the case where CameraX's duration cap does not fire. [recordMillis] plus
+     * this must still leave the clip inside [MAX_CLIP_MS] — asserted in the tests.
+     */
+    const val RECORD_WATCHDOG_MS = 200L
+
     private const val ENCODER_MARGIN_MS = 300
     private const val MIN_CLIP_MS = 2_000
 }

@@ -151,6 +151,20 @@ private fun RecordStep(state: SelfieState.Ready, onRecorded: (java.io.File) -> U
         permitted = granted
         denied = !granted
     }
+    var recorder by remember { mutableStateOf<SelfieRecorder?>(null) }
+    var unavailable by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
+    var secondsLeft by remember { mutableIntStateOf(0) }
+
+    // Losing the permission takes the camera preview out of composition, which
+    // cancels and deletes any half-written clip; the stale handle goes with it.
+    LaunchedEffect(permitted) {
+        if (!permitted) {
+            recorder = null
+            recording = false
+        }
+    }
+
     if (!permitted) {
         // The explanation always comes before the system prompt.
         MessagePane(
@@ -166,11 +180,6 @@ private fun RecordStep(state: SelfieState.Ready, onRecorded: (java.io.File) -> U
         )
         return
     }
-
-    var recorder by remember { mutableStateOf<SelfieRecorder?>(null) }
-    var unavailable by remember { mutableStateOf(false) }
-    var recording by remember { mutableStateOf(false) }
-    var secondsLeft by remember { mutableIntStateOf(0) }
 
     if (unavailable) {
         MessagePane(title = "No front camera", body = "This device's front camera isn't available, so it can't record the check.", icon = UsIcons.Camera)
