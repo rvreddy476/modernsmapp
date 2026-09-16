@@ -88,7 +88,7 @@ func newDatingRig(t *testing.T, withKey bool) *datingRig {
 	rg.gate = NewGate(rg.perms, rg.rec, true)
 	h := New(&stubAdminService{}, rg.gate, approvals.NewService(newMemStore(), &fakeHolders{}))
 	h.WithDating(service.NewDatingClient(stub.URL, signer))
-	if err := h.RegisterAllRoutes(rg.r, service.NewCommerceClient(stub.URL, "k")); err != nil {
+	if err := h.RegisterAllRoutes(rg.r); err != nil {
 		t.Fatalf("route table refused: %v", err)
 	}
 	return rg

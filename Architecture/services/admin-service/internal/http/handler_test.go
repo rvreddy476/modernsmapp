@@ -18,6 +18,7 @@ import (
 )
 
 type stubAdminService struct {
+	listAuditTrailFn       func(ctx context.Context, f postgres.AuditTrailFilter) (postgres.AuditTrailPage, error)
 	installAppFn           func(ctx context.Context, appID, userID uuid.UUID, permissions []string) (*postgres.AppInstallation, error)
 	createMiniAppSessionFn func(ctx context.Context, appID, userID uuid.UUID) (*service.MiniAppSession, error)
 	getUserInstalledAppsFn func(ctx context.Context, userID uuid.UUID) ([]postgres.MiniApp, error)
@@ -407,4 +408,11 @@ func (e serviceErr) Error() string {
 
 func (s *stubAdminService) RecordAdminWrite(ctx context.Context, entry postgres.AdminAuditEntry) error {
 	return nil
+}
+
+func (s *stubAdminService) ListAuditTrail(ctx context.Context, f postgres.AuditTrailFilter) (postgres.AuditTrailPage, error) {
+	if s.listAuditTrailFn == nil {
+		return postgres.AuditTrailPage{Items: []postgres.AuditTrailEntry{}}, nil
+	}
+	return s.listAuditTrailFn(ctx, f)
 }

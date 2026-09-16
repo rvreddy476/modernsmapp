@@ -109,6 +109,11 @@ func (s *Service) GetAuditLogs(ctx context.Context, limit, offset int) ([]postgr
 	return s.store.GetAuditLogs(ctx, limit, offset)
 }
 
+// ListAuditTrail returns one filtered page of admin.audit_log, newest first.
+func (s *Service) ListAuditTrail(ctx context.Context, f postgres.AuditTrailFilter) (postgres.AuditTrailPage, error) {
+	return s.store.ListAuditTrail(ctx, f)
+}
+
 // ListSuspensions returns paginated active suspensions.
 func (s *Service) ListSuspensions(ctx context.Context, limit, offset int) ([]postgres.Suspension, int, error) {
 	return s.store.GetSuspensions(ctx, limit, offset)

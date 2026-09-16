@@ -18,6 +18,7 @@ import (
 type adminService interface {
 	GetDashboard(ctx context.Context) (*postgres.DashboardStats, error)
 	GetAuditLogs(ctx context.Context, limit, offset int) ([]postgres.AuditLog, int, error)
+	ListAuditTrail(ctx context.Context, f postgres.AuditTrailFilter) (postgres.AuditTrailPage, error)
 	ListReports(ctx context.Context, status string, limit, offset int) ([]postgres.Report, int, error)
 	ListSuspensions(ctx context.Context, limit, offset int) ([]postgres.Suspension, int, error)
 	RequestDataExport(ctx context.Context, userID uuid.UUID) (*postgres.DataExportRequest, error)
@@ -71,9 +72,15 @@ type Handler struct {
 	svc       adminService
 	gate      *Gate
 	approvals *approvals.Service
-	// dating calls dating-service's token-only admin family. Nil (no signing
-	// key) keeps the routes declared; each answers 503 PRODUCT_UNAVAILABLE.
-	dating *service.ProductClient
+	// Product clients for each application's token-only admin family. A nil
+	// client, or one without a signing key, keeps the routes declared; each
+	// answers 503 PRODUCT_UNAVAILABLE.
+	dating   *service.ProductClient
+	food     *service.ProductClient
+	commerce *service.ProductClient
+	trust    *service.ProductClient
+	// refundThresholdPaise: a Feast refund at or above it is two-person.
+	refundThresholdPaise int64
 }
 
 // WithDating installs the Dating client.
@@ -82,19 +89,44 @@ func (h *Handler) WithDating(dc *service.ProductClient) *Handler {
 	return h
 }
 
+// WithFood installs the Feast client and the refund two-person threshold
+// (paise; <= 0 means DefaultRefundTwoPersonThresholdPaise).
+func (h *Handler) WithFood(fc *service.ProductClient, refundThresholdPaise int64) *Handler {
+	h.food = fc
+	if refundThresholdPaise > 0 {
+		h.refundThresholdPaise = refundThresholdPaise
+	}
+	return h
+}
+
+// WithCommerce installs the MStore client.
+func (h *Handler) WithCommerce(cc *service.ProductClient) *Handler {
+	h.commerce = cc
+	return h
+}
+
+// WithTrustSafety installs the Trust & safety client.
+func (h *Handler) WithTrustSafety(tc *service.ProductClient) *Handler {
+	h.trust = tc
+	return h
+}
+
 func New(svc adminService, gate *Gate, appr *approvals.Service) *Handler {
-	return &Handler{svc: svc, gate: gate, approvals: appr}
+	return &Handler{svc: svc, gate: gate, approvals: appr, refundThresholdPaise: DefaultRefundTwoPersonThresholdPaise}
 }
 
 // RegisterAllRoutes registers every route and refuses a table with an
 // undeclared /v1/admin route. main exits on the error.
-func (h *Handler) RegisterAllRoutes(r *gin.Engine, cc *service.CommerceClient) error {
+func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterRoutes(r)
 	h.RegisterMeRoute(r)
 	h.RegisterApprovalRoutes(r)
-	h.RegisterCommerceRoutes(r, cc)
-	h.RegisterCatalogueRoutes(r, cc)
+	h.RegisterAuditRoute(r)
+	h.RegisterCommerceRoutes(r)
+	h.RegisterCatalogueRoutes(r)
 	h.RegisterDatingRoutes(r, h.dating)
+	h.RegisterFoodRoutes(r)
+	h.RegisterTrustRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err
 	}

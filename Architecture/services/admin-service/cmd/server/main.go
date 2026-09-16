@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/admin-service/database"
@@ -122,13 +124,18 @@ func main() {
 		os.Exit(1)
 	}
 	if tokenSigner == nil {
-		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating) answer 503 PRODUCT_UNAVAILABLE")
+		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE")
 	}
-	handler.WithDating(service.NewDatingClient(env("DATING_SERVICE_URL", "http://dating-service:8112"), tokenSigner))
-
-	// Commerce client for seller/product approval proxying
-	commerceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
-	commerceClient := service.NewCommerceClient(commerceURL, internalKey)
+	refundThreshold, err := refundThresholdFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("invalid refund two-person threshold", "error", err)
+		os.Exit(1)
+	}
+	handler.WithDating(service.NewDatingClient(env("DATING_SERVICE_URL", "http://dating-service:8112"), tokenSigner)).
+		WithFood(service.NewFoodClient(env("FOOD_SERVICE_URL", "http://food-service:8113"), tokenSigner), refundThreshold).
+		WithCommerce(service.NewCommerceClient(env("COMMERCE_SERVICE_URL", "http://commerce-service:8109"), tokenSigner)).
+		WithTrustSafety(service.NewTrustSafetyClient(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"), tokenSigner))
+	slog.Info("feast refund two-person threshold", "paise", refundThreshold)
 
 	// 7. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
@@ -141,7 +148,7 @@ func main() {
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
-	if err := handler.RegisterAllRoutes(r, commerceClient); err != nil {
+	if err := handler.RegisterAllRoutes(r); err != nil {
 		slog.Error("refusing to boot: admin route table is not fully declared", "error", err)
 		os.Exit(1)
 	}
@@ -158,6 +165,21 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// refundThresholdFromEnv reads ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: a
+// Feast refund at or above it needs a second approver. Unset means ₹5,000;
+// anything but a positive whole number of paise refuses boot.
+func refundThresholdFromEnv(getenv func(string) string) (int64, error) {
+	v := strings.TrimSpace(getenv("ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE"))
+	if v == "" {
+		return http.DefaultRefundTwoPersonThresholdPaise, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE must be a positive whole number of paise")
+	}
+	return n, nil
 }
 
 func env(key, fallback string) string {

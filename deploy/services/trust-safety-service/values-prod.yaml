@@ -40,10 +40,27 @@ externalSecret:
     - { secretKey: STORY_MODERATION_HMAC_KEY, remoteRef: story_moderation_hmac_key }
     - { secretKey: STORY_MODERATION_BLOCKLIST, remoteRef: story_moderation_blocklist }
     - { secretKey: POST_MODERATION_HMAC_KEY, remoteRef: post_moderation_hmac_key }
+    # Admin console: trust-safety verifies admin-service's service tokens on
+    # /v1/internal/admin/trust/*. NOT enabled yet: without it the console's
+    # Trust & safety routes are refused (401). To enable, in this order:
+    #   1. the founder generates admin-service's ed25519 key (one key for
+    #      every product): the private half (base64 32-byte seed) and kid go
+    #      to admin-service's secret store (admin_service_token_key /
+    #      admin_service_token_kid); the public half and the same kid go here
+    #      as caller_admin_pubkey / caller_admin_kid;
+    #   2. uncomment the two lines below AND the SERVICE_CALLERS lines under env;
+    #   3. enable admin-service's two lines (its values file).
+    # Setting SERVICE_CALLERS before the key exists refuses boot.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
 
 env:
   ENV: prod
   LOG_LEVEL: info
+  # Admin console (see externalSecret above for the order): uncomment
+  # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'trust_safety:stats.read,trust_safety:reports.read,trust_safety:reports.act,trust_safety:appeals.read,trust_safety:appeals.act,trust_safety:grievances.read,trust_safety:grievances.act,trust_safety:strikes.read,trust_safety:strikes.manage,trust_safety:verification.review,trust_safety:media_labels.read,trust_safety:keyword_filters.read,trust_safety:audit.read'
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   STORY_MODERATION_POLICY_VERSION: story-keyword-v1
   POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084

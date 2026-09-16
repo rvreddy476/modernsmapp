@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
 	"github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -27,10 +28,12 @@ const (
 	nobody = "33333333-3333-4333-8333-333333333333"
 )
 
-// commerceAll is every commerce permission the routes use.
+// commerceAll is every commerce permission the routes use — commerce's
+// AdminPermissions.
 var commerceAll = []string{
-	permCatalogueEdit, permCODSettle, permKYCVerify, permPayoutsRead,
-	permProductsModerate, permSellerApprove, permSellerSuspend,
+	permCommerceStatsRead, permSellersRead, permSellerApprove, permSellerSuspend, permProductsModerate,
+	permKYCVerify, permPayoutsRead, permCODSettle, permCatalogueEdit, permBannersEdit,
+	permJobsRead, permComplianceRead, permComplianceSweep,
 }
 
 // fakePerms is identity's permission route.
@@ -198,11 +201,13 @@ func (m *memStore) mutate(id string, fn func(*approvals.Approval)) {
 type upstreamSeen struct {
 	mu      sync.Mutex
 	hits    int
-	actor   string
+	actor   string // the verified token's act claim
+	scope   []string
 	request string
 	paths   []string
 	bodies  []string
-	userHdr bool
+	userHdr string
+	keyHdr  string
 }
 
 func (u *upstreamSeen) snapshot() (int, string, []string, []string) {
@@ -240,19 +245,42 @@ func newRig(t *testing.T, o rigOpts) *rig {
 	if o.requireMFA != nil {
 		requireMFA = *o.requireMFA
 	}
+	// Commerce as it is now: it admits only an admin-service token for
+	// audience commerce, and the actor it records is the token's act.
+	pub, priv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := servicetoken.NewVerifier("commerce")
+	if err := verifier.RegisterBase64("admin-service", "a1", pub, commerceAll, nil); err != nil {
+		t.Fatal(err)
+	}
 	seen := &upstreamSeen{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		v, verr := verifier.Verify(strings.TrimPrefix(r.Header.Get("X-Service-Authorization"), "Bearer "), "", "")
 		seen.mu.Lock()
 		seen.hits++
-		seen.actor = r.Header.Get("X-User-Id")
+		seen.actor, seen.scope = "", nil
+		if verr == nil {
+			seen.actor, seen.scope = v.Actor, v.Scope
+		}
 		seen.request = r.Header.Get("X-Request-Id")
+		seen.userHdr, seen.keyHdr = r.Header.Get("X-User-Id"), r.Header.Get("X-Internal-Service-Key")
 		seen.paths = append(seen.paths, r.URL.Path)
 		seen.bodies = append(seen.bodies, string(b))
 		seen.mu.Unlock()
+		if verr != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		w.WriteHeader(o.status)
 	}))
 	t.Cleanup(upstream.Close)
+	signer, err := servicetoken.NewSignerFromBase64("admin-service", "a1", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -262,7 +290,8 @@ func newRig(t *testing.T, o rigOpts) *rig {
 	holders := &fakeHolders{}
 	gate := NewGate(perms, rec, requireMFA)
 	h := New(&stubAdminService{}, gate, approvals.NewService(o.store, holders))
-	if err := h.RegisterAllRoutes(r, service.NewCommerceClient(upstream.URL, "test-internal-key")); err != nil {
+	h.WithCommerce(service.NewCommerceClient(upstream.URL, signer))
+	if err := h.RegisterAllRoutes(r); err != nil {
 		t.Fatalf("route table refused: %v", err)
 	}
 	return &rig{r: r, gate: gate, rec: rec, perms: perms, holders: holders, store: o.store, seen: seen, upstream: upstream}

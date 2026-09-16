@@ -1,9 +1,11 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -51,6 +53,38 @@ type Requirement struct {
 	// AllowWithoutMFA admits a caller without X-Admin-MFA. Only GET /me, so the
 	// console can tell an admin they must enrol.
 	AllowWithoutMFA bool
+	// Decide narrows the declaration from the request itself — a status or
+	// outcome in the body, an amount — BEFORE the permission, step-up and
+	// two-person checks and before any product call. It may swap Permission
+	// for another permission of the same app and may add StepUp or TwoPerson;
+	// it can never remove what the declaration requires.
+	Decide func(c *gin.Context, perms adminauth.Permissions) (Decision, error)
+	// MayTwoPerson declares that Decide can require two-person approval, so
+	// boot checks the operation has an executor.
+	MayTwoPerson bool
+}
+
+// Decision is what Decide concluded for one request.
+type Decision struct {
+	// Permission replaces the declared permission when set (same app only).
+	Permission string
+	StepUp    bool
+	TwoPerson bool
+	// Audit adds fields to the request's audit payload.
+	Audit map[string]any
+}
+
+// DecisionError refuses a request from Decide with a client error.
+type DecisionError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *DecisionError) Error() string { return e.Code + ": " + e.Message }
+
+func badRequest(code, msg string) error {
+	return &DecisionError{Status: http.StatusBadRequest, Code: code, Message: msg}
 }
 
 func (r Requirement) app() string {
@@ -70,8 +104,8 @@ func (r Requirement) validate() error {
 			return fmt.Errorf("permission %q is not <app>:<resource>.<action>", r.Permission)
 		}
 	case AccessAnyAdmin, AccessSelfService, AccessRetired:
-		if r.Permission != "" || r.TwoPerson {
-			return errors.New("only permission routes may carry a permission or be two-person")
+		if r.Permission != "" || r.TwoPerson || r.MayTwoPerson || r.Decide != nil {
+			return errors.New("only permission routes may carry a permission, a decision or be two-person")
 		}
 		if r.Access == AccessAnyAdmin && r.App == "" {
 			return errors.New("an any-admin route needs an audit app")
@@ -81,6 +115,9 @@ func (r Requirement) validate() error {
 	}
 	if r.AllowWithoutMFA && r.Access != AccessAnyAdmin {
 		return errors.New("only an any-admin route may skip MFA")
+	}
+	if r.MayTwoPerson && r.Decide == nil {
+		return errors.New("may-two-person needs a decision")
 	}
 	return nil
 }
@@ -95,6 +132,7 @@ const (
 	CodePermissionsUnavailable = "PERMISSIONS_UNAVAILABLE"
 	CodeAuditUnavailable       = "AUDIT_UNAVAILABLE"
 	CodeRetired                = "RETIRED_USE_APP_ROUTES"
+	CodeDecisionUnavailable    = "DECISION_UNAVAILABLE"
 )
 
 // Gate enforces declarations and writes the audit trail.
@@ -188,10 +226,51 @@ func (a *auditInfo) set(key string, v any) {
 }
 
 const (
-	ctxAudit = "admin.audit"
-	ctxPerms = "admin.permissions"
-	ctxActor = "admin.actor"
+	ctxAudit     = "admin.audit"
+	ctxPerms     = "admin.permissions"
+	ctxActor     = "admin.actor"
+	ctxEffective = "admin.requirement"
+	ctxBody      = "admin.body"
 )
+
+// effectiveRequirement is the declaration as the gate enforced it for this
+// request, after Decide. Handlers mint the product token with its Permission
+// and submit two-person work when its TwoPerson is set.
+func effectiveRequirement(c *gin.Context) (Requirement, bool) {
+	v, ok := c.Get(ctxEffective)
+	if !ok {
+		return Requirement{}, false
+	}
+	r, ok := v.(Requirement)
+	return r, ok
+}
+
+// maxAdminBody bounds what admin-service reads from the console.
+const maxAdminBody = 1 << 20
+
+var errBodyTooLarge = errors.New("request body too large")
+
+// requestBody reads the request body once and keeps it for later readers
+// (Decide, then the handler).
+func requestBody(c *gin.Context) ([]byte, error) {
+	if v, ok := c.Get(ctxBody); ok {
+		return v.([]byte), nil
+	}
+	var b []byte
+	if c.Request.Body != nil {
+		var err error
+		b, err = io.ReadAll(io.LimitReader(c.Request.Body, maxAdminBody+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(b) > maxAdminBody {
+			return nil, errBodyTooLarge
+		}
+	}
+	c.Set(ctxBody, b)
+	c.Request.Body = io.NopCloser(bytes.NewReader(b))
+	return b, nil
+}
 
 func auditFrom(c *gin.Context) *auditInfo {
 	if v, ok := c.Get(ctxAudit); ok {
@@ -210,8 +289,11 @@ func permsFrom(c *gin.Context) adminauth.Permissions {
 
 func actorFrom(c *gin.Context) string { return c.GetString(ctxActor) }
 
-func (g *Gate) enforce(req Requirement) gin.HandlerFunc {
+func (g *Gate) enforce(declared Requirement) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// A per-request copy: a decision narrows THIS request only, never the
+		// declaration later requests start from.
+		req := declared
 		ctx := c.Request.Context()
 		if g.audit == nil {
 			slog.ErrorContext(ctx, "admin audit recorder not configured; refusing", "operation", req.Operation)
@@ -248,11 +330,42 @@ func (g *Gate) enforce(req Requirement) gin.HandlerFunc {
 		}
 		c.Set(ctxPerms, perms)
 
+		// The request's own decision comes first, so the permission, step-up
+		// and two-person checks below judge what was actually asked for.
+		if req.Decide != nil {
+			d, err := req.Decide(c, perms)
+			if err != nil {
+				var de *DecisionError
+				if errors.As(err, &de) {
+					g.deny(c, info, de.Status, de.Code, de.Message)
+					return
+				}
+				slog.ErrorContext(ctx, "admin decision failed; refusing", "error", err, "operation", req.Operation)
+				info.set("error", err.Error())
+				g.deny(c, info, http.StatusServiceUnavailable, CodeDecisionUnavailable, "The rule for this action could not be applied")
+				return
+			}
+			for k, v := range d.Audit {
+				info.set(k, v)
+			}
+			if d.Permission != "" {
+				if adminauth.AppOf(d.Permission) != adminauth.AppOf(req.Permission) || !adminauth.ValidPermission(d.Permission) {
+					slog.ErrorContext(ctx, "admin decision crossed apps; refusing", "declared", req.Permission, "decided", d.Permission)
+					g.deny(c, info, http.StatusInternalServerError, "INTERNAL_ERROR", "Invalid route decision")
+					return
+				}
+				req.Permission = d.Permission
+			}
+			req.StepUp = req.StepUp || d.StepUp
+			req.TwoPerson = req.TwoPerson || d.TwoPerson
+		}
+
 		if req.Access == AccessPermission && !perms.Has(req.Permission) {
 			info.set("required_permission", req.Permission)
 			g.deny(c, info, http.StatusForbidden, CodePermissionDenied, "Missing permission "+req.Permission)
 			return
 		}
+		c.Set(ctxEffective, req)
 		if req.StepUp {
 			if _, ok := adminauth.StepUpValidUntil(c.GetHeader(adminauth.HeaderStepUpAt), g.now()); !ok {
 				g.deny(c, info, http.StatusForbidden, adminauth.CodeStepUpRequired, "A fresh two-factor check is required for this action")
@@ -317,6 +430,9 @@ func (g *Gate) VerifyExecutors(has func(app, operation string) bool) error {
 	var missing []string
 	for k, req := range g.declared {
 		if req.TwoPerson && !has(req.app(), req.Operation) {
+			missing = append(missing, k)
+		}
+		if req.MayTwoPerson && !has(req.app(), req.Operation) {
 			missing = append(missing, k)
 		}
 	}

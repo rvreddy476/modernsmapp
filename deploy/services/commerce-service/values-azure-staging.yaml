@@ -25,10 +25,25 @@ externalSecret:
     remoteRef: jwt_secret
   - secretKey: JWT_KID
     remoteRef: jwt_kid
+  # Admin console Wave 2: commerce verifies admin-service's service tokens on
+  # /v1/commerce/internal/admin/*. NOT enabled yet. Enable in this order:
+  #   1. store admin-service's private seed and kid in its key vault entry
+  #      (admin_service_token_key / admin_service_token_kid) and the public
+  #      half and kid here (caller_admin_pubkey / caller_admin_kid);
+  #   2. uncomment below AND the SERVICE_CALLERS lines under env;
+  #   3. enable admin-service's lines.
+  # Setting SERVICE_CALLERS before the key exists refuses boot.
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY
+  #   remoteRef: caller_admin_pubkey
+  # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID
+  #   remoteRef: caller_admin_kid
   secretStoreName: azure-key-vault
 env:
   ENV: staging
   LOG_LEVEL: info
+  # Admin console Wave 2: uncomment with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
+  # SERVICE_CALLERS: admin-service
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: commerce:stats.read,commerce:sellers.read,commerce:seller.approve,commerce:seller.suspend,commerce:products.moderate,commerce:kyc.verify,commerce:payouts.read,commerce:cod.settle,commerce:catalogue.edit,commerce:banners.edit,commerce:jobs.read,commerce:compliance.read,commerce:compliance.sweep
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 ingress:
   enabled: false

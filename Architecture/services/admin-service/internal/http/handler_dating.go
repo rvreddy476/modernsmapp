@@ -144,7 +144,7 @@ func passQuery(keys ...string) func(*gin.Context) url.Values {
 // permission as the token scope, and writes the result and audit row.
 func (h *Handler) datingCall(c *gin.Context, dc *service.ProductClient, method, path string, query url.Values, body any) {
 	info := auditFrom(c)
-	req, ok := h.gate.Requirement(c.Request.Method, c.FullPath())
+	req, ok := effectiveRequirement(c)
 	if !ok || req.Permission == "" {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Route is not declared", nil)
 		return

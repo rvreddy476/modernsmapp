@@ -127,7 +127,8 @@ func TestASecondHolderApprovesAndTheExactPayloadExecutesOnce(t *testing.T) {
 		t.Fatalf("approve: status %d %s", w.Code, w.Body.String())
 	}
 	hits, actor, paths, bodies := rg.seen.snapshot()
-	if hits != 1 || actor != adminB || paths[0] != "/v1/commerce/internal/cod-remittances/"+remittance+"/settle" {
+	if hits != 1 || actor != adminB || paths[0] != "/v1/commerce/internal/admin/cod-remittances/"+remittance+"/settle" ||
+		len(rg.seen.scope) != 1 || rg.seen.scope[0] != permCODSettle {
 		t.Fatalf("commerce saw hits=%d actor=%s paths=%v", hits, actor, paths)
 	}
 	var sent map[string]string

@@ -1,10 +1,14 @@
 package http
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atpost/admin-service/internal/approvals"
 	"github.com/atpost/admin-service/internal/store/postgres"
@@ -55,7 +59,7 @@ func (h *Handler) submitTwoPerson(c *gin.Context, targetType, targetID, reason s
 	info := auditFrom(c)
 	info.targetType, info.targetID, info.reason = targetType, targetID, reason
 
-	req, ok := h.gate.Requirement(c.Request.Method, c.FullPath())
+	req, ok := effectiveRequirement(c)
 	if !ok || !req.TwoPerson {
 		// Programming error: VerifyDeclared and the route table disagree.
 		api.ErrorWithContext(ctx, c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Route is not declared two-person", nil)
@@ -90,8 +94,88 @@ func (h *Handler) submitTwoPerson(c *gin.Context, targetType, targetID, reason s
 		info.outcome = postgres.AuditOutcomePending
 		info.set(approvalFieldApproval, approvalValueRequested)
 		info.set(approvalFieldApprovalID, sub.Approval.ID)
-		api.JSON(c.Writer, http.StatusAccepted, gin.H{"approval": sub.Approval}, nil)
+		api.JSON(c.Writer, http.StatusAccepted, gin.H{"approval": approvalView(*sub.Approval)}, nil)
 	}
+}
+
+// ApprovalView is one approval as GET /v1/admin/approvals (and a two-person
+// route's 202) returns it: every stored field, plus the names the console
+// reads —
+//
+//	id, status, app, operation   as stored
+//	summary       short description built from operation, target and payload
+//	requested_by  the requester's user id
+//	requested_at  when it was requested (created_at)
+//	expires_at    as stored
+//	reason        the requester's reason
+type ApprovalView struct {
+	approvals.Approval
+	Summary     string    `json:"summary"`
+	RequestedBy string    `json:"requested_by"`
+	RequestedAt time.Time `json:"requested_at"`
+	Reason      string    `json:"reason"`
+}
+
+func approvalView(a approvals.Approval) ApprovalView {
+	return ApprovalView{Approval: a, Summary: approvalSummary(a), RequestedBy: a.Requester, RequestedAt: a.CreatedAt, Reason: a.RequesterReason}
+}
+
+var approvalLabels = map[string]string{
+	opCODSettle:              "Settle COD remittance",
+	opFoodRefundIssue:        "Refund Feast order",
+	opFoodRefundDecide:       "Decide Feast refund request",
+	opFoodRestaurantMarkPaid: "Mark restaurant settlement paid",
+	opFoodDeliveryMarkPaid:   "Mark delivery partner settlement paid",
+}
+
+// approvalSummary is a one-line description: what, on which target, and the
+// amount or decision when the stored request carries one. Ids only.
+func approvalSummary(a approvals.Approval) string {
+	label, ok := approvalLabels[a.Operation]
+	if !ok {
+		label = strings.ReplaceAll(a.Operation, ".", " ")
+	}
+	target := a.TargetID
+	if len(target) > 8 {
+		target = target[:8]
+	}
+	s := label
+	if target != "" {
+		s += " " + target
+	}
+	var p struct {
+		AmountPaise int64  `json:"amount_paise"`
+		Status      string `json:"status"`
+	}
+	_ = json.Unmarshal(a.Payload, &p)
+	if p.AmountPaise > 0 {
+		s += " for " + formatRupees(p.AmountPaise)
+	} else if a.Operation == opFoodRefundIssue {
+		s += " (full refund)"
+	}
+	if p.Status != "" {
+		s += " (" + p.Status + ")"
+	}
+	return s
+}
+
+// formatRupees renders paise as ₹1,23,456.78 (Indian grouping).
+func formatRupees(paise int64) string {
+	rupees, frac := paise/100, paise%100
+	digits := strconv.FormatInt(rupees, 10)
+	if len(digits) > 3 {
+		head, tail := digits[:len(digits)-3], digits[len(digits)-3:]
+		var groups []string
+		for len(head) > 2 {
+			groups = append([]string{head[len(head)-2:]}, groups...)
+			head = head[:len(head)-2]
+		}
+		if head != "" {
+			groups = append([]string{head}, groups...)
+		}
+		digits = strings.Join(groups, ",") + "," + tail
+	}
+	return fmt.Sprintf("₹%s.%02d", digits, frac)
 }
 
 func (h *Handler) listApprovals(c *gin.Context) {
@@ -102,7 +186,11 @@ func (h *Handler) listApprovals(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list approvals", nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"items": list}, nil)
+	items := make([]ApprovalView, 0, len(list))
+	for _, a := range list {
+		items = append(items, approvalView(a))
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items}, nil)
 }
 
 type decisionReq struct {

@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/admin-service/internal/approvals"
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 )
 
@@ -48,8 +49,9 @@ var commerceWriteRoutes = []writeRoute{
 	{http.MethodPost, "/v1/admin/commerce/products/p-1/reject", `{"reason":"counterfeit"}`, "product.reject", "product", "p-1", "counterfeit"},
 	{http.MethodPost, "/v1/admin/commerce/products/p-1/request-changes", `{"changes":"photos"}`, "product.request_changes", "product", "p-1", ""},
 	{http.MethodPost, "/v1/admin/commerce/catalogue/attribute-definitions", `{}`, "catalogue.post", "attribute-definitions", "attribute-definitions", ""},
-	{http.MethodPatch, "/v1/admin/commerce/catalogue/categories/c-1/attributes", `{}`, "catalogue.patch", "categories", "categories/c-1/attributes", ""},
-	{http.MethodPut, "/v1/admin/commerce/catalogue/attribute-schema/c-1", `{}`, "catalogue.put", "attribute-schema", "attribute-schema/c-1", ""},
+	{http.MethodPut, "/v1/admin/commerce/catalogue/categories/c-1/attributes", `{}`, "catalogue.put", "categories", "categories/c-1/attributes", ""},
+	{http.MethodPatch, "/v1/admin/commerce/catalogue/attribute-definitions/d-1", `{}`, "catalogue.patch", "attribute-definitions", "attribute-definitions/d-1", ""},
+	{http.MethodPost, "/v1/admin/commerce/catalogue/attribute-schema/publish", `{}`, "catalogue.publish", "attribute-schema", "attribute-schema/publish", ""},
 }
 
 func TestEveryCommerceWriteForwardsTheActorAndIsAuditedOnce(t *testing.T) {
@@ -61,9 +63,12 @@ func TestEveryCommerceWriteForwardsTheActorAndIsAuditedOnce(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("status %d: %s", w.Code, w.Body.String())
 			}
-			hits, actor, _, _ := rg.seen.snapshot()
+			hits, actor, paths, _ := rg.seen.snapshot()
 			if hits != 1 || actor != testActor {
-				t.Fatalf("commerce saw hits=%d X-User-Id=%q, want 1 and %q", hits, actor, testActor)
+				t.Fatalf("commerce saw hits=%d token act=%q, want 1 and %q", hits, actor, testActor)
+			}
+			if !strings.HasPrefix(paths[0], "/v1/commerce/internal/admin/") || rg.seen.userHdr != "" || rg.seen.keyHdr != "" {
+				t.Fatalf("commerce path %q, X-User-Id=%q, key sent=%v: the token family is the only way in", paths[0], rg.seen.userHdr, rg.seen.keyHdr != "")
 			}
 			if rg.seen.request != "req-123" {
 				t.Fatalf("request id not forwarded: %q", rg.seen.request)
@@ -80,7 +85,7 @@ func TestEveryCommerceWriteForwardsTheActorAndIsAuditedOnce(t *testing.T) {
 
 func TestAReadIsAuditedToo(t *testing.T) {
 	rg := newRig(t, rigOpts{})
-	rg.perms.grant(testActor, permSellerApprove)
+	rg.perms.grant(testActor, permSellersRead)
 	w := rg.do(http.MethodGet, "/v1/admin/commerce/sellers/queue?limit=5", "", testActor)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
@@ -157,7 +162,10 @@ func TestAdminRoutesAreRefusedWithoutARecorder(t *testing.T) {
 	perms := &fakePerms{byUser: map[string]adminauth.Permissions{}}
 	perms.grant(testActor, commerceAll...)
 	h := New(&stubAdminService{}, NewGate(perms, nil, true), approvals.NewService(newMemStore(), &fakeHolders{}))
-	if err := h.RegisterAllRoutes(r, service.NewCommerceClient(upstream.URL, "k")); err != nil {
+	_, priv, _ := servicetoken.GenerateKeypair()
+	signer, _ := servicetoken.NewSignerFromBase64("admin-service", "a1", priv)
+	h.WithCommerce(service.NewCommerceClient(upstream.URL, signer))
+	if err := h.RegisterAllRoutes(r); err != nil {
 		t.Fatal(err)
 	}
 	rg := &rig{r: r}
@@ -167,27 +175,34 @@ func TestAdminRoutesAreRefusedWithoutARecorder(t *testing.T) {
 	}
 }
 
-func TestCommerceClientRefusesAWriteWithoutAnActor(t *testing.T) {
+func TestProductClientRefusesACallWithoutAnActorOrKey(t *testing.T) {
 	hits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
 	defer upstream.Close()
-	cc := service.NewCommerceClient(upstream.URL, "k")
+	_, priv, _ := servicetoken.GenerateKeypair()
+	signer, _ := servicetoken.NewSignerFromBase64("admin-service", "a1", priv)
 	ctx := context.Background()
 
-	if _, err := cc.ApproveSeller(ctx, "s-1", "", ""); !errors.Is(err, service.ErrActorRequired) {
-		t.Fatalf("ApproveSeller err = %v", err)
+	for _, pc := range []*service.ProductClient{
+		service.NewCommerceClient(upstream.URL, signer), service.NewFoodClient(upstream.URL, signer),
+		service.NewTrustSafetyClient(upstream.URL, signer),
+	} {
+		for _, actor := range []string{"", "not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
+			// Reads too: every product call is made as a named admin.
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				_, err := pc.Do(ctx, service.ProductRequest{Method: method, Path: "/stats", Permission: "commerce:stats.read", Actor: actor})
+				if !errors.Is(err, service.ErrActorRequired) {
+					t.Fatalf("%s %s actor=%q: err = %v", pc.Audience(), method, actor, err)
+				}
+			}
+		}
 	}
-	if _, _, err := cc.SettleCODRemittance(ctx, "r-1", "", ""); !errors.Is(err, service.ErrActorRequired) {
-		t.Fatalf("SettleCODRemittance err = %v", err)
-	}
-	if _, _, err := cc.RawProxy(ctx, http.MethodPost, "/v1/commerce/internal/categories", "", "", nil); !errors.Is(err, service.ErrActorRequired) {
-		t.Fatalf("RawProxy err = %v", err)
+	unsigned := service.NewCommerceClient(upstream.URL, nil)
+	if _, err := unsigned.Do(ctx, service.ProductRequest{Method: http.MethodGet, Path: "/stats", Permission: "commerce:stats.read", Actor: testActor}); !errors.Is(err, service.ErrProductUnavailable) {
+		t.Fatalf("no key: err = %v", err)
 	}
 	if hits != 0 {
 		t.Fatalf("upstream hit %d times", hits)
-	}
-	if _, _, err := cc.ListSellerQueue(ctx, 1, 0); err != nil || hits != 1 {
-		t.Fatalf("reads need no actor: err=%v hits=%d", err, hits)
 	}
 }
 

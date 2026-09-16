@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"net/http"
 	"strings"
 
@@ -10,82 +9,89 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// allowedCataloguePrefixes is the whole of what the authoring console may
-// reach through this proxy.
+// CatalogueRoutes is the attribute-authoring surface the console's catalogue
+// editor calls under /v1/admin/commerce/catalogue, one declared route per
+// commerce token route. It used to be a key-authenticated catch-all proxy with
+// an allowlist; explicit routes let publishing carry its own step-up, and
+// anything not listed is a plain 404 that never reaches commerce.
 //
-// An unrestricted passthrough to /v1/commerce/internal/* would quietly open a
-// second door onto seller approval and payout routes, gated by whatever this
-// group happens to require rather than by the gating those routes were given.
-// The allowlist keeps the door exactly as wide as the catalogue.
-var allowedCataloguePrefixes = map[string]struct{}{
-	"attribute-definitions": {},
-	"attribute-schema":      {},
-	"categories":            {},
+// Commerce admits every one of them — reads included — only with
+// commerce:catalogue.edit, so that is the permission here too (reads used to
+// be open to commerce:products.moderate).
+var CatalogueRoutes = []productRoute{
+	{method: http.MethodGet, path: "/attribute-definitions", operation: "catalogue.get"},
+	{method: http.MethodPost, path: "/attribute-definitions", operation: "catalogue.post"},
+	{method: http.MethodGet, path: "/attribute-definitions/:defId", operation: "catalogue.get"},
+	{method: http.MethodPatch, path: "/attribute-definitions/:defId", operation: "catalogue.patch"},
+	{method: http.MethodGet, path: "/attribute-definitions/:defId/impact", operation: "catalogue.get"},
+	{method: http.MethodGet, path: "/attribute-definitions/:defId/enum-values", operation: "catalogue.get"},
+	{method: http.MethodPost, path: "/attribute-definitions/:defId/enum-values", operation: "catalogue.post"},
+	{method: http.MethodPut, path: "/attribute-definitions/:defId/enum-values/order", operation: "catalogue.put"},
+	{method: http.MethodPatch, path: "/attribute-definitions/:defId/enum-values/:valueId", operation: "catalogue.patch"},
+	{method: http.MethodGet, path: "/categories/:categoryId/attributes", operation: "catalogue.get"},
+	{method: http.MethodPut, path: "/categories/:categoryId/attributes", operation: "catalogue.put"},
+	{method: http.MethodPost, path: "/categories", operation: "catalogue.post"},
+	{method: http.MethodPatch, path: "/categories/:categoryId", operation: "catalogue.patch"},
+	{method: http.MethodGet, path: "/attribute-schema", operation: "catalogue.get"},
+	{method: http.MethodPost, path: "/attribute-schema/publish", operation: "catalogue.publish", stepUp: true},
 }
 
-// RegisterCatalogueRoutes proxies the attribute-authoring surface, which lives
-// behind commerce-service's internal-service key.
-//
-// A browser cannot hold that key, so without this the console the founder
-// authors the taxonomy in could not call a single one of those routes. The
-// permission split matches what the actions do: reading the taxonomy is
-// moderation work (commerce:products.moderate), changing it needs
-// commerce:catalogue.edit.
-func (h *Handler) RegisterCatalogueRoutes(r *gin.Engine, cc *service.CommerceClient) {
-	proxy := func(c *gin.Context) {
-		rest := strings.TrimPrefix(c.Param("rest"), "/")
-		if rest == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
-				"NOT_FOUND", "No catalogue path given", nil)
+const cataloguePrefix = "/catalogue"
+
+// RegisterCatalogueRoutes adds the catalogue editor's routes. The audit target
+// is the resource (the first path segment) and the path below the catalogue.
+func (h *Handler) RegisterCatalogueRoutes(r *gin.Engine) {
+	p := h.commerceProduct()
+	routes := make([]productRoute, len(CatalogueRoutes))
+	for i, rt := range CatalogueRoutes {
+		rt.permission = permCatalogueEdit
+		rt.path = cataloguePrefix + rt.path
+		rt.upstream = strings.TrimPrefix(rt.path, cataloguePrefix)
+		routes[i] = rt
+	}
+	// Operations repeat across catalogue routes, so every one shares the one
+	// forwarding handler below instead of the per-operation map.
+	forward := func(c *gin.Context) {
+		rt, ok := catalogueRoute(c.Request.Method, strings.TrimPrefix(c.FullPath(), p.prefix+cataloguePrefix))
+		if !ok {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Unknown catalogue resource", nil)
 			return
 		}
-		// Defence in depth against a traversal that would climb out of the
-		// internal namespace and hit an unrelated route with the key attached.
-		if strings.Contains(rest, "..") {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
-				"INVALID_PATH", "Path traversal is not allowed", nil)
+		path, _, err := productPath(c, rt.path)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, CodeInvalidPathParam, "Invalid path parameter", nil)
 			return
 		}
+		rest := strings.TrimPrefix(path, "/")
 		head := rest
 		if i := strings.IndexByte(head, '/'); i >= 0 {
 			head = head[:i]
 		}
-		if _, ok := allowedCataloguePrefixes[head]; !ok {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound,
-				"NOT_FOUND", "Unknown catalogue resource", nil)
-			return
-		}
-
-		upstreamPath := "/v1/commerce/internal/" + rest
-		if c.Request.Method != http.MethodGet {
-			h.forwardCommerceWrite(c, commerceWrite{
-				targetType: head,
-				targetID:   rest,
-				payload: map[string]any{
-					"method": c.Request.Method,
-					"path":   upstreamPath,
-					"query":  c.Request.URL.RawQuery,
-				},
-				call: func(ctx context.Context, actorID string) ([]byte, int, error) {
-					return cc.RawProxy(ctx, c.Request.Method, upstreamPath,
-						c.Request.URL.RawQuery, actorID, c.Request.Body)
-				},
-			})
-			return
-		}
-
 		info := auditFrom(c)
 		info.targetType, info.targetID = head, rest
-		data, status, err := cc.RawProxy(c.Request.Context(), c.Request.Method,
-			upstreamPath, c.Request.URL.RawQuery, "", c.Request.Body)
-		writeUpstream(c, info, data, status, err)
+		pr := service.ProductRequest{Method: rt.method, Path: path, RawQuery: c.Request.URL.RawQuery}
+		if rt.method != http.MethodGet {
+			raw, _, err := jsonBody(c)
+			if err != nil {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, CodeInvalidBody, "The request body must be JSON", nil)
+				return
+			}
+			pr.RawBody = raw
+			info.set("method", rt.method)
+			info.set("query", c.Request.URL.RawQuery)
+		}
+		h.productCall(c, p, pr, false)
 	}
+	for _, rt := range routes {
+		h.gate.Handle(r, rt.method, p.prefix+rt.path, rt.requirement(), forward)
+	}
+}
 
-	const path = "/v1/admin/commerce/catalogue/*rest"
-	h.gate.Handle(r, http.MethodGet, path,
-		Requirement{Operation: "catalogue.get", Permission: permProductsModerate}, proxy)
-	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodPut} {
-		h.gate.Handle(r, method, path,
-			Requirement{Operation: "catalogue." + strings.ToLower(method), Permission: permCatalogueEdit}, proxy)
+func catalogueRoute(method, path string) (productRoute, bool) {
+	for _, rt := range CatalogueRoutes {
+		if rt.method == method && rt.path == path {
+			return rt, true
+		}
 	}
+	return productRoute{}, false
 }

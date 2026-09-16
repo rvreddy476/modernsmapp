@@ -35,11 +35,14 @@ externalSecret:
   - secretKey: JWT_KID_PREVIOUS
     remoteRef: jwt_kid_previous
   # Admin console Wave 2: admin-service's service-token key for product admin
-  # calls is NOT enabled yet (Dating dashboard routes answer 503; boot is not
-  # refused). Enable in this order: store admin_service_token_key (base64
-  # ed25519 seed) and admin_service_token_kid in the key vault, and the public
-  # half and kid for dating-service (caller_admin_pubkey / caller_admin_kid);
-  # enable dating-service first (its lines and SERVICE_CALLERS); then uncomment.
+  # calls is NOT enabled yet (Dating, Feast, MStore and Trust & safety
+  # dashboard routes answer 503; boot is not refused). Enable in this order:
+  #   1. store admin_service_token_key (base64 ed25519 seed) and
+  #      admin_service_token_kid in the key vault, and the public half and kid
+  #      for the products (caller_admin_pubkey / caller_admin_kid);
+  #   2. enable dating-service, commerce-service and trust-safety-service first
+  #      (their secret lines and SERVICE_CALLERS lines);
+  #   3. uncomment below. MStore then stops using the internal key.
   # - secretKey: ADMIN_SERVICE_TOKEN_KEY
   #   remoteRef: admin_service_token_key
   # - secretKey: ADMIN_SERVICE_TOKEN_KID
@@ -50,6 +53,10 @@ env:
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  FOOD_SERVICE_URL: http://food-service.atpost.svc.cluster.local:8113
+  COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: '500000'
 ingress:
   enabled: false
 pdb:

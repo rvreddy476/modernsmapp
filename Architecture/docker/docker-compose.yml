@@ -1063,6 +1063,14 @@ services:
       # capabilities that post-service verifies. See the note in post-service.
       STORY_MODERATION_HMAC_KEY: ${STORY_MODERATION_HMAC_KEY:-local_dev_story_moderation_hmac_key_change_me}
       POST_MODERATION_HMAC_KEY: ${POST_MODERATION_HMAC_KEY:-local_dev_post_moderation_hmac_key_change_me}
+      # Admin console: admin-service reaches /v1/internal/admin/trust/* only
+      # with a token scoped to the one permission it checked, naming the admin.
+      # A distinct .env name, because SERVICE_CALLERS in .env is payments'.
+      # OPS is trust-safety's AdminPermissions. Blank = no tokens accepted.
+      SERVICE_CALLERS: ${TRUST_SAFETY_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: trust_safety:stats.read,trust_safety:reports.read,trust_safety:reports.act,trust_safety:appeals.read,trust_safety:appeals.act,trust_safety:grievances.read,trust_safety:grievances.act,trust_safety:strikes.read,trust_safety:strikes.manage,trust_safety:verification.review,trust_safety:media_labels.read,trust_safety:keyword_filters.read,trust_safety:audit.read
     ports:
       - "8091:8091"
     depends_on:
@@ -1419,6 +1427,14 @@ services:
       ADMIN_SERVICE_TOKEN_KEY: ${ADMIN_SERVICE_TOKEN_KEY:-}
       ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       DATING_SERVICE_URL: http://dating-service:8112
+      # Feast, MStore and Trust & safety dashboards, same token contract. The
+      # matching public key is registered with each service below.
+      FOOD_SERVICE_URL: http://food-service:8113
+      COMMERCE_SERVICE_URL: http://commerce-service:8109
+      TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
+      # A Feast refund AT OR ABOVE this many paise needs a second approver;
+      # below it, step-up only. 500000 = ₹5,000 (founder's suggested value).
+      ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: ${ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE:-500000}
     ports:
       - "8096:8096"
     depends_on:
@@ -1589,6 +1605,14 @@ services:
       # The nickname of the pickup address registered in the Shiprocket
       # account. A booking is refused when it names no address of theirs.
       SHIPROCKET_PICKUP_LOCATION: ${SHIPROCKET_PICKUP_LOCATION:-Primary}
+      # Admin console: admin-service reaches /v1/commerce/internal/admin/* only
+      # with a token scoped to the one permission it checked, naming the admin.
+      # A distinct .env name, because SERVICE_CALLERS in .env is payments'.
+      # OPS is commerce's AdminPermissions. Blank = no tokens accepted.
+      SERVICE_CALLERS: ${COMMERCE_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: commerce:stats.read,commerce:sellers.read,commerce:seller.approve,commerce:seller.suspend,commerce:products.moderate,commerce:kyc.verify,commerce:payouts.read,commerce:cod.settle,commerce:catalogue.edit,commerce:banners.edit,commerce:jobs.read,commerce:compliance.read,commerce:compliance.sweep
     ports:
       - "8109:8109"
     depends_on:
@@ -1661,6 +1685,14 @@ services:
       # under Settings > Apps > Feast Rider (dev) > Open by default.
       FOOD_PUBLIC_BASE_URL: ${FOOD_PUBLIC_BASE_URL:-http://localhost:8080}
       FOOD_RIDER_APP_LINK_URL: ${FOOD_RIDER_APP_LINK_URL:-http://rider.feast.dev.invalid/rider/digilocker/return}
+      # Admin console: admin-service reaches /v1/food/internal/admin/* only
+      # with a token scoped to the one permission it checked, naming the admin.
+      # A distinct .env name, because SERVICE_CALLERS in .env is payments'.
+      # OPS is food's AdminPermissions. Blank = no tokens accepted.
+      SERVICE_CALLERS: ${FOOD_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: food:stats.read,food:restaurant.approve,food:restaurant.suspend,food:delivery_partner.approve,food:delivery_partner.suspend,food:documents.review,food:payout_accounts.read,food:orders.read,food:orders.cancel,food:refund.issue,food:refunds.read,food:settlement.read,food:settlement.generate,food:settlement.mark_paid,food:menu.moderate,food:reviews.moderate,food:tickets.act,food:coupons.manage,food:service_areas.manage,food:reports.read,food:fraud.read,food:audit.read
     ports:
       - "8113:8113"
     depends_on:

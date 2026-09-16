@@ -37,11 +37,17 @@ const (
 	DatingAdminPrefix = "/v1/dating/internal/admin"
 	// ServiceAuthHeader carries the token.
 	ServiceAuthHeader = "X-Service-Authorization"
+	// IdempotencyKeyHeader is forwarded verbatim when the console sends one.
+	IdempotencyKeyHeader = "Idempotency-Key"
 )
 
 // ErrProductUnavailable: the signing key is not configured, so no product
 // call can be authorised. The handler answers 503 rather than calling out.
 var ErrProductUnavailable = errors.New("admin-service has no service-token key for this product")
+
+// ErrActorRequired is returned, before any request is sent, when a product
+// call has no valid acting admin: the call would be attributed to nobody.
+var ErrActorRequired = errors.New("product admin call requires the acting admin's user id")
 
 // SignerFromEnv loads admin-service's own Ed25519 key:
 //
@@ -67,7 +73,7 @@ func SignerFromEnv(getenv func(string) string) (*servicetoken.Signer, error) {
 }
 
 // ProductClient calls one product service's token-only admin family as a
-// human admin. Feast, MStore and the rest get one each, with their audience.
+// human admin. Every product gets one, with its audience and prefix.
 type ProductClient struct {
 	baseURL    string
 	prefix     string
@@ -76,69 +82,134 @@ type ProductClient struct {
 	httpClient *http.Client
 }
 
-// NewDatingClient builds the client for dating-service. A nil signer yields a
-// client whose every call returns ErrProductUnavailable.
-func NewDatingClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+func newProductClient(baseURL, prefix, audience string, signer *servicetoken.Signer) *ProductClient {
 	return &ProductClient{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		prefix:     DatingAdminPrefix,
-		audience:   DatingAudience,
-		signer:     signer,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		prefix:   prefix,
+		audience: audience,
+		signer:   signer,
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+			// A redirect is never followed server-side: a presigned object-store
+			// URL is handed back to the console (ProductResponse.Location), and
+			// the token is never replayed to another host.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
 
-// Call performs one admin operation. permission is the permission the gate
-// checked for this route and becomes the token's only scope; actor is the
-// gate's admitted admin. path is relative to the product's admin prefix.
+// NewDatingClient builds the client for dating-service. A nil signer yields a
+// client whose every call returns ErrProductUnavailable.
+func NewDatingClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, DatingAdminPrefix, DatingAudience, signer)
+}
+
+// Audience is the audience this client signs for.
+func (p *ProductClient) Audience() string {
+	if p == nil {
+		return ""
+	}
+	return p.audience
+}
+
+// ProductRequest is one admin call. Path is relative to the product's admin
+// prefix; Permission becomes the token's only scope; Actor its act claim.
+type ProductRequest struct {
+	Method     string
+	Path       string
+	Query      url.Values
+	RawQuery   string // used when Query is empty
+	Permission string
+	Actor      string
+	// Body is JSON-encoded when non-nil; RawBody (already JSON) wins over it.
+	Body    any
+	RawBody []byte
+	// IdempotencyKey is sent as Idempotency-Key when set.
+	IdempotencyKey string
+}
+
+// ProductResponse is what the product answered. Location is set on a 3xx.
+type ProductResponse struct {
+	Status             int
+	Body               []byte
+	ContentType        string
+	ContentDisposition string
+	Location           string
+}
+
+// Call performs one admin operation with a JSON body (or none).
 func (p *ProductClient) Call(ctx context.Context, method, path string, query url.Values, permission, actor string, body any) ([]byte, int, error) {
+	resp, err := p.Do(ctx, ProductRequest{Method: method, Path: path, Query: query, Permission: permission, Actor: actor, Body: body})
+	return resp.Body, resp.Status, err
+}
+
+// Do performs one admin operation.
+func (p *ProductClient) Do(ctx context.Context, r ProductRequest) (ProductResponse, error) {
 	if p == nil || p.signer == nil {
-		return nil, 0, ErrProductUnavailable
+		return ProductResponse{}, ErrProductUnavailable
 	}
-	id, err := uuid.Parse(actor)
+	id, err := uuid.Parse(r.Actor)
 	if err != nil || id == uuid.Nil {
-		return nil, 0, ErrActorRequired
+		return ProductResponse{}, ErrActorRequired
 	}
-	if permission == "" {
-		return nil, 0, errors.New("product call without a permission")
+	if r.Permission == "" {
+		return ProductResponse{}, errors.New("product call without a permission")
 	}
-	tok, err := p.signer.Mint(p.audience, "admin-console", []string{permission}, nil, ProductTokenTTL,
+	tok, err := p.signer.Mint(p.audience, "admin-console", []string{r.Permission}, nil, ProductTokenTTL,
 		servicetoken.WithActor(id.String()))
 	if err != nil {
-		return nil, 0, fmt.Errorf("mint service token: %w", err)
+		return ProductResponse{}, fmt.Errorf("mint service token: %w", err)
 	}
 
-	target := p.baseURL + p.prefix + path
-	if len(query) > 0 {
-		target += "?" + query.Encode()
+	target := p.baseURL + p.prefix + r.Path
+	if len(r.Query) > 0 {
+		target += "?" + r.Query.Encode()
+	} else if r.RawQuery != "" {
+		target += "?" + r.RawQuery
 	}
 	var rd io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
+	hasBody := false
+	switch {
+	case r.RawBody != nil:
+		rd, hasBody = bytes.NewReader(r.RawBody), true
+	case r.Body != nil:
+		b, err := json.Marshal(r.Body)
 		if err != nil {
-			return nil, 0, fmt.Errorf("marshal: %w", err)
+			return ProductResponse{}, fmt.Errorf("marshal: %w", err)
 		}
-		rd = bytes.NewReader(b)
+		rd, hasBody = bytes.NewReader(b), true
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, rd)
+	req, err := http.NewRequestWithContext(ctx, r.Method, target, rd)
 	if err != nil {
-		return nil, 0, fmt.Errorf("new request: %w", err)
+		return ProductResponse{}, fmt.Errorf("new request: %w", err)
 	}
-	if body != nil {
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set(ServiceAuthHeader, "Bearer "+tok)
+	if r.IdempotencyKey != "" {
+		req.Header.Set(IdempotencyKeyHeader, r.IdempotencyKey)
+	}
 	if rid := trace.RequestIDFrom(ctx); rid != "" {
 		req.Header.Set(trace.HeaderRequestID, rid)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%s admin call: %w", p.audience, err)
+		return ProductResponse{}, fmt.Errorf("%s admin call: %w", p.audience, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read %s response: %w", p.audience, err)
+	out := ProductResponse{
+		Status:             resp.StatusCode,
+		Body:               data,
+		ContentType:        resp.Header.Get("Content-Type"),
+		ContentDisposition: resp.Header.Get("Content-Disposition"),
 	}
-	return data, resp.StatusCode, nil
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		out.Location = resp.Header.Get("Location")
+	}
+	if err != nil {
+		return out, fmt.Errorf("read %s response: %w", p.audience, err)
+	}
+	return out, nil
 }
