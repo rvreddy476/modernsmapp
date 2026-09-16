@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,10 @@ func main() {
 	userServiceURL := env("USER_SERVICE_URL", "http://identity-user:8110")
 	appUserURL := env("APP_USER_SERVICE_URL", "http://user-service:8082")
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	// Dating-match call grant. Default OFF: absent or unparseable means the
+	// feature is not running, and call permissions stay connection-only.
+	datingCallsEnabled := envBool("DATING_CALLS_ENABLED", false)
+	messageServiceURL := env("MESSAGE_SERVICE_URL", "")
 
 	// 3. Database
 	ctx := context.Background()
@@ -121,6 +126,21 @@ func main() {
 	graphSvc := service.New(graphStore, rdb, producer)
 	// Wire the permission resolver's privacy-settings source (spec §9.8).
 	graphSvc.WithPermissionSource(userServiceURL, internalKey)
+	// Dating-match call grant: a matched pair may place live calls without
+	// becoming a graph connection. Misconfiguration is FATAL rather than
+	// silent — a flag that is on while the URL or key is missing would leave
+	// the fact permanently false and the feature quietly dead.
+	if datingCallsEnabled {
+		provider, err := service.NewHTTPDatingMatchProvider(messageServiceURL, internalKey, nil)
+		if err != nil {
+			slog.Error("DATING_CALLS_ENABLED=true but the dating-match provider cannot be configured", "error", err)
+			os.Exit(1)
+		}
+		graphSvc.WithDatingCalls(true, provider)
+		slog.Info("graph-service: dating-match call grant enabled", "message_service_url", messageServiceURL)
+	} else {
+		slog.Info("graph-service: dating-match call grant disabled (DATING_CALLS_ENABLED not true)")
+	}
 	// Wire read-through repair of the app.users projection for close-friends.
 	graphSvc.WithUserEnsurer(userclient.New(appUserURL, internalKey))
 	graphHandler := graphHttp.New(graphSvc)
@@ -295,6 +315,22 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool reads a boolean feature flag. Anything that is not an explicit,
+// parseable true takes the fallback — a typo in a kill switch must not turn
+// a feature on.
+func envBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		slog.Warn("ignoring unparseable boolean env var; using default", "key", key, "default", fallback)
+		return fallback
+	}
+	return v
 }
 
 func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {

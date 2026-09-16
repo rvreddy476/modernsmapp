@@ -277,6 +277,9 @@ func (f *governanceFake) CreateDatingMatchConversation(context.Context, uuid.UUI
 	return uuid.Nil, false, errors.New("unused")
 }
 func (f *governanceFake) MarkConversationClosedByMatch(context.Context, uuid.UUID) error { return nil }
+func (f *governanceFake) HasOpenDatingMatch(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	return false, nil
+}
 func (f *governanceFake) GetConversationMeta(context.Context, uuid.UUID) (*postgres.ConversationMeta, error) {
 	return nil, nil
 }

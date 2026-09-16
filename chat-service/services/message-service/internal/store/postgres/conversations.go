@@ -259,6 +259,40 @@ func (s *ConversationStore) MarkConversationsClosedByPair(ctx context.Context, u
 	return err
 }
 
+// HasOpenDatingMatch reports whether an OPEN dating-match conversation
+// exists between the two users: source_app='dating', closed_at IS NULL,
+// and both sides still members (left_at IS NULL).
+//
+// This is deliberately the same row the send-path gate reads (see
+// GetConversationMeta / ErrMatchClosed and MarkConversationsClosedByPair):
+// whatever closes chat for a pair — unmatch, expiry, block, purge — closes
+// calls in the same instant, so chat and calls can never disagree.
+func (s *ConversationStore) HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
+	if userA == userB || userA == uuid.Nil || userB == uuid.Nil {
+		return false, nil
+	}
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM chat.conversations c
+		    WHERE c.source_app = 'dating'
+		      AND c.closed_at IS NULL
+		      AND EXISTS (
+		          SELECT 1 FROM chat.conversation_members ma
+		          WHERE ma.conversation_id = c.id AND ma.user_id = $1 AND ma.left_at IS NULL
+		      )
+		      AND EXISTS (
+		          SELECT 1 FROM chat.conversation_members mb
+		          WHERE mb.conversation_id = c.id AND mb.user_id = $2 AND mb.left_at IS NULL
+		      )
+		)
+	`, userA, userB).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
 // ConversationMeta holds the fields the send-path gate inspects.
 type ConversationMeta struct {
 	SourceApp string

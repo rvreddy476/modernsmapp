@@ -41,6 +41,19 @@ type Facts struct {
 	// by the graph store as a bounded EXISTS — adjacency lists never leave
 	// the service.
 	SecondDegree bool
+	// DatingMatch is true when the pair holds an OPEN dating match — the
+	// same conversation row that gates dating messages in chat-service
+	// (source_app='dating', closed_at IS NULL, neither side departed).
+	//
+	// A dating match is deliberately NOT a graph connection: it grants the
+	// live-call channel and nothing else. It does not make the pair
+	// second-degree-adjacent, does not satisfy who_can_message, and does not
+	// appear on any friends-scoped surface.
+	//
+	// It is populated only when the dating-calls feature flag is on, and it
+	// fails CLOSED: an unreachable or erroring provider yields false, which
+	// reduces the call rule to exactly its pre-flag behaviour.
+	DatingMatch bool
 }
 
 func (f Facts) mutualFollow() bool { return f.ActorFollowsTarget && f.TargetFollowsActor }
@@ -186,6 +199,23 @@ func resolveMessage(f Facts, p Privacy) Decision {
 	}
 }
 
+// resolveCall implements the "Start call" row of §4, plus the dating-match
+// grant: two people who match get chat AND live calls, and nobody else does.
+//
+//	allow = !blocked
+//	        && who_can_call != "no_one"
+//	        && (IsConnection || DatingMatch)
+//
+// Order matters and is load-bearing:
+//   - Blocked is fatal before this function is reached (top of Resolve), so a
+//     blocked pair is denied even while their match row is still open.
+//   - no_one is checked FIRST and has no dating exception. Someone who has
+//     switched calls off is not reachable by their match either; the match
+//     opens a channel, it does not overrule the callee's own setting.
+//   - The dating grant sits alongside IsConnection, never above no_one.
+//
+// DatingMatch is false whenever the feature flag is off or its provider
+// errored, so this collapses to the previous connection-only rule.
 func resolveCall(f Facts, p Privacy) Decision {
 	switch p.WhoCanCall {
 	case "no_one":
@@ -195,6 +225,9 @@ func resolveCall(f Facts, p Privacy) Decision {
 		// Phase 1; true accepted-chat state lives in chat-service.
 		if f.IsConnection {
 			return Decision{Allowed: true}
+		}
+		if f.DatingMatch {
+			return Decision{Allowed: true, Reason: "dating_match"}
 		}
 		return Decision{Allowed: false, Reason: "privacy_connections_only"}
 	default:

@@ -38,6 +38,11 @@ externalSecret:
 env:
   ENV: prod
   LOG_LEVEL: info
+  # Dating-match call grant. OFF; MESSAGE_SERVICE_URL is the open-match probe
+  # and is required whenever the flag is on (graph-service exits at startup
+  # without it). See values-prod.yaml for the full note.
+  DATING_CALLS_ENABLED: "false"
+  MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 ingress:
   enabled: false

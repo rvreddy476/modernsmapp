@@ -72,6 +72,13 @@ type Service struct {
 	// PG UPDATE inside store.CreateFollow / DeleteFollow.
 	followerCounter  *counters.Counter
 	followingCounter *counters.Counter
+
+	// Dating-match call grant (DATING_CALLS_ENABLED). datingMatches asks
+	// chat-service whether a pair holds an open match; datingCallsEnabled is
+	// the kill switch. Both nil/false means the call matrix behaves exactly
+	// as it did before the feature existed. Wired via WithDatingCalls.
+	datingCallsEnabled bool
+	datingMatches      DatingMatchProvider
 }
 
 func New(s *store.Store, rdb *redis.Client, producer *events.Producer) *Service {

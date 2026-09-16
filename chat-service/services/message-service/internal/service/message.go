@@ -80,6 +80,7 @@ type ConversationStore interface {
 	// P0-3 dating-match support.
 	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error)
 	MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error
+	HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error)
 	GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*postgres.ConversationMeta, error)
 	ReplaceLastMessage(ctx context.Context, conversationID uuid.UUID, deletedTs time.Time, preview string, senderID *uuid.UUID, ts *time.Time) error
 }
@@ -505,6 +506,24 @@ func (s *Service) CloseDatingMatchConversation(ctx context.Context, matchID uuid
 		return errors.New("match_id is required")
 	}
 	return s.convStore.MarkConversationClosedByMatch(ctx, matchID)
+}
+
+// HasOpenDatingMatch reports whether the two users currently hold an OPEN
+// dating-match conversation. graph-service calls it (internal-key gated at
+// the handler) to decide whether a matched pair may place a live call: a
+// match opens chat and calls together, and closing the match closes both.
+//
+// It reads exactly the row the send-path gate reads, so a pair that can no
+// longer message can no longer call either. Errors propagate — the caller
+// fails closed on them.
+func (s *Service) HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
+	if userA == uuid.Nil || userB == uuid.Nil {
+		return false, errors.New("two user ids are required")
+	}
+	if userA == userB {
+		return false, nil
+	}
+	return s.convStore.HasOpenDatingMatch(ctx, userA, userB)
 }
 
 // checkMessagePermission asks graph-service whether actor may DM target.

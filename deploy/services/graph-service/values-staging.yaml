@@ -56,6 +56,17 @@ env:
   # Setting this to "false" permits an unreviewed second graph writer — the
   # exact class of defect that produced the shadow graph.
   GRAPH_WRITE_SOURCE_STRICT: "true"
+  # Dating-match call grant: two people who match get chat AND live calls,
+  # without the match becoming a graph connection. OFF here — turning it on is
+  # a deliberate, separate change per environment.
+  #
+  # MESSAGE_SERVICE_URL is the open-match probe (chat-service owns that state).
+  # It is set even while the flag is off so enabling the flag is a one-line
+  # change; graph-service refuses to start with the flag on and this missing,
+  # because a silently unreachable probe means the fact is always false and the
+  # feature is dead without saying so.
+  DATING_CALLS_ENABLED: "false"
+  MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082

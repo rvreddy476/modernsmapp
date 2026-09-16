@@ -59,12 +59,23 @@ func (s *Service) permissionFacts(ctx context.Context, actorID, targetID uuid.UU
 			secondDegree = false
 		}
 	}
+	blocked := full.Blocked || actorBlockedTarget
+	// Dating-match call grant. Skipped entirely for a blocked pair (a block
+	// is fatal in the matrix anyway) and for an existing connection (the
+	// connection already grants calls), so the extra hop happens only on the
+	// path where it can change the answer. datingMatchFact fails closed: any
+	// error, any unknown answer, or the flag being off yields false.
+	datingMatch := false
+	if !blocked && !full.IsConnection {
+		datingMatch = s.datingMatchFact(ctx, actorID, targetID)
+	}
 	return permission.Facts{
-		Blocked:            full.Blocked || actorBlockedTarget,
+		Blocked:            blocked,
 		IsConnection:       full.IsConnection,
 		ActorFollowsTarget: full.Follows,
 		TargetFollowsActor: full.FollowedBy,
 		SecondDegree:       secondDegree,
+		DatingMatch:        datingMatch,
 	}, nil
 }
 

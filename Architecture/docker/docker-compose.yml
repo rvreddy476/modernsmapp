@@ -581,6 +581,14 @@ services:
       USER_SERVICE_URL: http://identity-user:8110
       # Read-through projection repair targets the app.users-owning user-service.
       APP_USER_SERVICE_URL: http://user-service:8082
+      # Dating-match call grant: a matched pair may place live calls without
+      # becoming a graph connection. The open-match probe is chat-service's
+      # internal-only endpoint, so MESSAGE_SERVICE_URL is REQUIRED whenever
+      # the flag is on — graph-service exits at startup if it is missing.
+      # Default is false everywhere else; dev runs it on so the feature is
+      # exercised on the stack the founder tests against.
+      DATING_CALLS_ENABLED: ${DATING_CALLS_ENABLED:-true}
+      MESSAGE_SERVICE_URL: http://chat-message-service:8092
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8083:8083"

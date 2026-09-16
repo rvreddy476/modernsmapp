@@ -166,6 +166,9 @@ func (s *idempotencyConvStoreStub) CreateDatingMatchConversation(ctx context.Con
 func (s *idempotencyConvStoreStub) MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error {
 	return errors.New("not implemented")
 }
+func (s *idempotencyConvStoreStub) HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
+	return false, errors.New("not implemented")
+}
 func (s *idempotencyConvStoreStub) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*postgres.ConversationMeta, error) {
 	return nil, nil
 }

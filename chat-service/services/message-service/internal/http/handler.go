@@ -38,6 +38,7 @@ type ChatService interface {
 	// P0-3 dating-match internal entry points.
 	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*service.ConversationResponse, error)
 	CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error
+	HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error)
 	ManagedAddGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
 	ManagedRemoveGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
 	ViewerMayAccessChatMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error)
@@ -133,6 +134,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// the api-gateway proxies /v1/chat (injecting the internal key on every
 	// request, anonymous ones included) but has no route to /internal/v1/chat.
 	internal.POST("/conversations/dating-match", h.CreateDatingMatchConversation)
+	// Open-match probe: graph-service asks whether a pair holds an open
+	// dating match, so a matched pair may place a live call without becoming
+	// a graph connection. Same gates, same prefix, same reasoning as above.
+	internal.POST("/dating-match/state", h.DatingMatchState)
 	managedGroups := internal.Group("/groups")
 	{
 		managedGroups.POST("/conversations", h.CreateManagedGroupConversation)
@@ -932,6 +937,69 @@ func (h *Handler) CreateDatingMatchConversation(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// DatingMatchState — POST /internal/v1/chat/dating-match/state
+// Service-only: graph-service calls it in-cluster with X-Internal-Service-Key
+// and no user identity. Body: {user_a, user_b}. Answers whether the pair holds
+// an OPEN source_app='dating' conversation (closed_at IS NULL, neither side
+// departed) — the same row that gates messages, so chat and calls agree.
+//
+// POST, not GET: user ids never belong in a query string or an access log.
+type datingMatchStateRequest struct {
+	UserA string `json:"user_a" binding:"required"`
+	UserB string `json:"user_b" binding:"required"`
+}
+
+type datingMatchStateResponse struct {
+	OpenMatch bool `json:"open_match"`
+}
+
+func (h *Handler) DatingMatchState(c *gin.Context) {
+	// Service-only. Same three gates, same order, as
+	// CreateDatingMatchConversation: key configured (fail closed), no user
+	// identity on the request, correct internal key.
+	if h.internalServiceKey == "" {
+		h.log.Warn("dating-match state: INTERNAL_SERVICE_KEY not configured; refusing request",
+			"request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MISCONFIGURED", "internal-only endpoint not configured", nil, nil)
+		return
+	}
+	if carriesUserIdentity(c) {
+		h.log.Warn("dating-match state: refused request carrying user identity",
+			"request_id", RequestIDFromContext(c), "ip", c.ClientIP())
+		api.Error(c.Writer, http.StatusForbidden, "USER_CALLER_REFUSED", "service-only endpoint; user requests are not accepted", nil, nil)
+		return
+	}
+	if c.GetHeader("X-Internal-Service-Key") != h.internalServiceKey {
+		h.log.Warn("dating-match state: bad or missing internal service key",
+			"request_id", RequestIDFromContext(c), "ip", c.ClientIP())
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		return
+	}
+
+	var body datingMatchStateRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	userA, err := uuid.Parse(body.UserA)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_a", nil, nil)
+		return
+	}
+	userB, err := uuid.Parse(body.UserB)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_b", nil, nil)
+		return
+	}
+	open, err := h.svc.HasOpenDatingMatch(c.Request.Context(), userA, userB)
+	if err != nil {
+		h.log.Warn("dating-match state lookup failed", "err", err, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to read dating match state", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, datingMatchStateResponse{OpenMatch: open}, nil)
 }
 
 func (h *Handler) SetTyping(c *gin.Context) {
