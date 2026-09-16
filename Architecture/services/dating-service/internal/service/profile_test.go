@@ -65,7 +65,7 @@ func TestProfileLifecycle_OnboardingToActive(t *testing.T) {
 	}
 
 	// Basics without interested_in: still draft, and the writer refuses.
-	intent, gender, city, first := "casual", "female", "Hyderabad", "Asha"
+	intent, gender, city, first := "casual", "woman", "Hyderabad", "Asha"
 	dob := time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC)
 	p, err := svc.UpsertProfile(ctx, user, store.UpsertProfileParams{
 		Intent: &intent, Gender: &gender, City: &city, BirthDate: &dob, FirstName: &first,

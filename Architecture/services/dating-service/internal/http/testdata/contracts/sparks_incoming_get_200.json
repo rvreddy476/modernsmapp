@@ -13,10 +13,19 @@
         "first_name": "Asha",
         "age": 30,
         "primary_photo_id": "<uuid>",
-        "primary_photo_url": "/v1/dating/photos/<uuid>/blurred",
-        "photo_state": "blurred",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "photo_state": "full",
         "verified": false,
-        "trust_tier": "phone"
+        "trust_tier": "phone",
+        "detail": {
+          "photos": [
+            {
+              "id": "<uuid>",
+              "url": "/v1/dating/photos/<uuid>/full",
+              "state": "full"
+            }
+          ]
+        }
       }
     }
   ]

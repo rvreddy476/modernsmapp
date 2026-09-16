@@ -742,12 +742,10 @@ CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
 --                                'selfie' or 'aadhaar').
 --   * blur_photos_until_match  — owner's photos return a blurred URL
 --                                for non-matched viewers. Matched
---                                viewers see the original. ON for new
---                                profiles: the DEFAULT is flipped to
---                                true further down (the ADD COLUMN
---                                below stays false so a deploy that is
---                                only now gaining the column does not
---                                backfill existing rows).
+--                                viewers see the original. OFF for new
+--                                profiles: the deck shows the photo and
+--                                enough of the profile to decide, and the
+--                                owner opts IN to the blur rather than out.
 --
 -- Lane D6: the blurred image is rendered and served by media-service
 -- (GET /v1/dating/photos/:id/blurred); the client is never trusted to
@@ -1094,11 +1092,13 @@ CREATE INDEX IF NOT EXISTS idx_dating_explain_ledger_viewer
 -- Column defaults, altered only when they differ (an ALTER takes an exclusive
 -- lock, so a no-op boot should not).
 --
--- blur_photos_until_match is 'true' here for the internal pilot: a brand new
--- profile is blurred to strangers until it matches, and the owner opts OUT
--- rather than in. Changing a DEFAULT rewrites no rows, so every profile that
--- already exists keeps the value it has — including anyone who deliberately
--- switched the blur off.
+-- blur_photos_until_match is 'false': the founder's decision is that the deck
+-- shows the photo and enough of the profile to decide, so a new profile is NOT
+-- blurred to strangers and the owner opts IN to the blur. It stays listed here
+-- rather than being dropped so a database that took the pilot's 'true' default
+-- is put back. Changing a DEFAULT rewrites no rows, so every profile that
+-- already exists keeps the value it has — in either direction, including
+-- anyone who deliberately switched the blur on.
 DO $d7$
 DECLARE
     want RECORD;
@@ -1106,7 +1106,7 @@ BEGIN
     FOR want IN
         SELECT * FROM (VALUES ('hide_last_active', 'true'),
                               ('echoes_consent', 'false'),
-                              ('blur_photos_until_match', 'true'),
+                              ('blur_photos_until_match', 'false'),
                               ('approximate_location', 'true')) AS w(col, def)
     LOOP
         IF (SELECT pg_get_expr(d.adbin, d.adrelid)
@@ -1119,6 +1119,39 @@ BEGIN
     END LOOP;
 END
 $d7$;
+
+-- ---------------------------------------------------------------------------
+-- Legacy gender vocabulary.
+--
+-- dating_profiles.gender is free text, and rows written before the
+-- woman|man|nonbinary vocabulary hold 'female' / 'male'. The deck's gender
+-- rule compares these values for EQUALITY against the other side's
+-- interested_in_gender, so a legacy row matches nobody's preference and drops
+-- out of every deck — the person is simply invisible. On dev every dating row
+-- is legacy: 11 'female' and 11 'male' profiles, and the SAME two spellings in
+-- dating_preferences.interested_in_gender.
+--
+-- So both columns are migrated. Migrating only the profiles would leave every
+-- preference pointing at a spelling that no longer exists in any profile, and
+-- the decks would go empty instead of wrong.
+--
+-- Idempotent by construction: the WHERE clause matches only the legacy
+-- spellings, so a second run updates nothing. lower(btrim(...)) also catches a
+-- stray 'Female' or a padded ' male '. Values already in the vocabulary, NULLs
+-- and 'everyone' are untouched. New writes are refused by the service
+-- (INVALID_GENDER / INVALID_INTERESTED_IN_GENDER), so this runs once and the
+-- class of row does not come back.
+-- ---------------------------------------------------------------------------
+UPDATE dating_profiles
+SET gender = CASE lower(btrim(gender)) WHEN 'female' THEN 'woman' ELSE 'man' END,
+    updated_at = now()
+WHERE lower(btrim(gender)) IN ('female', 'male');
+
+UPDATE dating_preferences
+SET interested_in_gender = CASE lower(btrim(interested_in_gender))
+                               WHEN 'female' THEN 'woman' ELSE 'man' END,
+    updated_at = now()
+WHERE lower(btrim(interested_in_gender)) IN ('female', 'male');
 
 
 -- ---------------------------------------------------------------------------

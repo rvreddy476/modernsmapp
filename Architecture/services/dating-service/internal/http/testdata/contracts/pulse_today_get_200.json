@@ -25,12 +25,21 @@
         "city": "Hyderabad",
         "distance_bucket": "lt_5_km",
         "distance_label": "\u003c 5 km",
-        "primary_photo_url": "/v1/dating/photos/<uuid>/blurred",
-        "primary_photo_blurred": true,
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "primary_photo_blurred": false,
         "tune_summary": {},
         "trust_tier": "phone",
         "last_active_bucket": "today",
-        "last_active_label": "Active today"
+        "last_active_label": "Active today",
+        "detail": {
+          "photos": [
+            {
+              "id": "<uuid>",
+              "url": "/v1/dating/photos/<uuid>/full",
+              "state": "full"
+            }
+          ]
+        }
       },
       "echoes": {
         "top_qa_answer_id": null,

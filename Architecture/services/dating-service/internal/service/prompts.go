@@ -50,6 +50,18 @@ func PromptCatalogIDs() []int {
 	return ids
 }
 
+// promptQuestion returns the catalog question for an id. The second result is
+// false for an id the catalog no longer carries, so a card can drop an answer
+// rather than render it without its question.
+func promptQuestion(id int) (string, bool) {
+	for _, item := range promptCatalog {
+		if item.ID == id {
+			return item.Question, true
+		}
+	}
+	return "", false
+}
+
 // validPromptID gates writes to known catalog ids.
 func validPromptID(id int) bool {
 	for _, item := range promptCatalog {

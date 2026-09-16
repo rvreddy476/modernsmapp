@@ -154,6 +154,40 @@ func TestPreferencesRejectAnUnknownGender(t *testing.T) {
 	}
 }
 
+// The profile's own gender enum is validated on write too, under its own
+// code. The legacy spellings setup.sql migrates are refused by name: they are
+// exactly the values that used to make a profile invisible in every deck.
+func TestProfileRejectsAnUnknownGender(t *testing.T) {
+	r, st, cleanup := setupTestRouter(t)
+	defer cleanup()
+	user := uuid.New()
+	mustSeedActiveProfile(t, st, user)
+
+	for _, bad := range []string{`"female"`, `"male"`, `"everyone"`, `"anything"`, `""`} {
+		rec := contractDo(r, http.MethodPost, "/v1/dating/profile", `{"gender":`+bad+`}`, user)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("gender %s was accepted: status %d body %s", bad, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode refusal: %v", err)
+		}
+		if body.Error.Code != "INVALID_GENDER" {
+			t.Fatalf("gender %s refused with %q, want INVALID_GENDER: %s", bad, body.Error.Code, rec.Body.String())
+		}
+	}
+	for _, good := range []string{"woman", "man", "nonbinary"} {
+		rec := contractDo(r, http.MethodPost, "/v1/dating/profile", `{"gender":"`+good+`"}`, user)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("gender %s was refused: status %d body %s", good, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 // uniqueTestPoint is a random snapped point. Seeding a test's profiles at
 // their own point makes the geohash prefilter scope that test's deck to that
 // test's own profiles, so neither another test nor an earlier run of this

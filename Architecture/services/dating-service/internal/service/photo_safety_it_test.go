@@ -541,18 +541,20 @@ func TestPhotoDelete_CallsMediaDelete(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Lane D6 — blurred-until-match is ON for new profiles (internal pilot).
+// Lane D6 — blurred-until-match is OFF for new profiles.
 //
-// The switch is dating_profiles.blur_photos_until_match, whose DEFAULT
-// setup.sql flips to true; nothing in profile creation writes it. These tests
-// run against the bootstrapped schema, so a default that regresses to false
-// fails here rather than in the deck.
+// The founder's decision: the deck shows the photo, and enough of the profile
+// to decide, before anyone matches. The switch is
+// dating_profiles.blur_photos_until_match, whose DEFAULT setup.sql asserts is
+// false; nothing in profile creation writes it. These tests run against the
+// bootstrapped schema, so a default that regresses to true fails here rather
+// than in the deck.
 // ---------------------------------------------------------------------------
 
-// A profile nobody has configured is blurred to strangers: the privacy read
-// says so, and the stranger's deck card names the blurred image route even
-// though the primary photo's own visibility is "public".
-func TestD6_NewProfileBlursPhotosUntilMatchByDefault(t *testing.T) {
+// A profile nobody has configured is NOT blurred to strangers: the privacy
+// read says so, and the stranger's deck card names the full image route for a
+// primary photo whose own visibility is "public".
+func TestD6_NewProfileDoesNotBlurPhotosByDefault(t *testing.T) {
 	svc, st, _ := newD3Svc(t)
 	ctx := context.Background()
 	viewer, ids, _ := d7Deck(t, st, 1)
@@ -563,8 +565,8 @@ func TestD6_NewProfileBlursPhotosUntilMatchByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("privacy: %v", err)
 	}
-	if !priv.BlurPhotosUntilMatch {
-		t.Fatalf("new profile privacy = %+v; want blur_photos_until_match true", priv)
+	if priv.BlurPhotosUntilMatch {
+		t.Fatalf("new profile privacy = %+v; want blur_photos_until_match false", priv)
 	}
 
 	deck, err := svc.computePulseToday(ctx, viewer)
@@ -575,49 +577,49 @@ func TestD6_NewProfileBlursPhotosUntilMatchByDefault(t *testing.T) {
 	if card == nil {
 		t.Fatalf("seeded candidate missing from the deck (%d cards)", len(deck.Data))
 	}
-	if !card.Profile.PrimaryPhotoBlurred {
-		t.Fatalf("a stranger's card for a new profile is not blurred: %+v", card.Profile)
+	if card.Profile.PrimaryPhotoBlurred {
+		t.Fatalf("a stranger's card for a new profile is blurred: %+v", card.Profile)
 	}
-	if want := "/" + PhotoVariantBlurred; !strings.HasSuffix(card.Profile.PrimaryPhotoURL, want) {
+	if want := "/" + PhotoVariantFull; !strings.HasSuffix(card.Profile.PrimaryPhotoURL, want) {
 		t.Fatalf("card photo url = %q, want the %s route", card.Profile.PrimaryPhotoURL, want)
 	}
 }
 
-// The default is a default, not a lock: the owner can switch it off and back
-// on, the privacy read reports the true value each time, and the photo route
-// follows immediately.
-func TestD6_BlurSwitchOffThenBackOnStillWorks(t *testing.T) {
+// The default is a default, not a lock: the owner can switch the blur on and
+// back off, the privacy read reports the true value each time, and the photo
+// route follows immediately.
+func TestD6_BlurSwitchOnThenBackOffStillWorks(t *testing.T) {
 	e := newPhotoEnv(t)
 	ctx := context.Background()
 	owner, stranger := uuid.New(), uuid.New()
 	photo, _ := e.seedActiveWithPrimary(t, owner) // visibility "public"
 
-	// On by default: a stranger may only have the blurred variant.
+	// Off by default: the public photo is full for a stranger.
+	if u, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantFull); err != nil || !strings.Contains(u, PhotoVariantFull) {
+		t.Fatalf("full for a stranger by default: url=%q err=%v", u, err)
+	}
+
+	// On: a stranger may only have the blurred variant.
+	on := true
+	p, err := e.st.UpdatePrivacy(ctx, owner, store.PrivacyUpdate{BlurPhotosUntilMatch: &on})
+	if err != nil || !p.BlurPhotosUntilMatch {
+		t.Fatalf("switch on: privacy=%+v err=%v", p, err)
+	}
 	if _, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantFull); !errors.Is(err, store.ErrPhotoNotFound) {
-		t.Fatalf("full for a stranger by default: err=%v, want ErrPhotoNotFound", err)
+		t.Fatalf("full after switching blur on: err=%v, want ErrPhotoNotFound", err)
 	}
 	if u, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantBlurred); err != nil || !strings.Contains(u, PhotoVariantBlurred) {
 		t.Fatalf("blurred for a stranger: url=%q err=%v", u, err)
 	}
 
-	// Off: the public photo is full for everyone again.
+	// Back off: full for everyone again.
 	off := false
-	p, err := e.st.UpdatePrivacy(ctx, owner, store.PrivacyUpdate{BlurPhotosUntilMatch: &off})
+	p, err = e.st.UpdatePrivacy(ctx, owner, store.PrivacyUpdate{BlurPhotosUntilMatch: &off})
 	if err != nil || p.BlurPhotosUntilMatch {
-		t.Fatalf("switch off: privacy=%+v err=%v", p, err)
+		t.Fatalf("switch back off: privacy=%+v err=%v", p, err)
 	}
 	if u, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantFull); err != nil || !strings.Contains(u, PhotoVariantFull) {
-		t.Fatalf("full after switching blur off: url=%q err=%v", u, err)
-	}
-
-	// Back on: blurred again.
-	on := true
-	p, err = e.st.UpdatePrivacy(ctx, owner, store.PrivacyUpdate{BlurPhotosUntilMatch: &on})
-	if err != nil || !p.BlurPhotosUntilMatch {
-		t.Fatalf("switch back on: privacy=%+v err=%v", p, err)
-	}
-	if _, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantFull); !errors.Is(err, store.ErrPhotoNotFound) {
-		t.Fatalf("full after switching blur back on: err=%v, want ErrPhotoNotFound", err)
+		t.Fatalf("full after switching blur back off: url=%q err=%v", u, err)
 	}
 }
 

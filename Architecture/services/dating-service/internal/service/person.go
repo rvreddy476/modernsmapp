@@ -38,6 +38,12 @@ type PersonCard struct {
 	// points, present only when both sides have a location. Never a number.
 	DistanceBucket string `json:"distance_bucket,omitempty"`
 	DistanceLabel  string `json:"distance_label,omitempty"`
+	// Detail is the pre-match "enough to decide" block, present only on the
+	// surfaces where the viewer is deciding about this person: the person
+	// card itself and an incoming spark. The match list, the trusted-contact
+	// list and the location-share lists stay compact — a safety surface has
+	// no business carrying somebody's bio and gallery.
+	Detail *ProfileDetail `json:"detail,omitempty"`
 }
 
 // verifiedTier reports whether a trust tier carries the verified badge.
@@ -45,10 +51,119 @@ func verifiedTier(tier string) bool {
 	return tier == "selfie" || tier == "aadhaar"
 }
 
-// buildPersonCard renders one row for one viewer. matched says whether the
-// viewer currently has an open match with this person, and viewer is the
-// viewer's own profile (nil = no distance bucket).
+// --- The pre-match detail block --------------------------------------------
+//
+// The founder's decision: a deck card shows the photo AND enough of the
+// profile to decide — the person's own description, what they are into, and
+// the rest of their photos to swipe through — then you send a spark, and only
+// an accepted spark opens chat and calls.
+//
+// What this block deliberately does NOT carry, because it stays sealed until
+// the two people match: religion, community, any other lane D9 sealed field,
+// the exact location or coordinates (distance is the lane D7 bucket, and it
+// lives on the card itself, not here), last-active when the owner hides it,
+// and the Echoes ribbon of main-app activity. Every existing guard still runs
+// first: a blocked pair either way never gets a row at all, each photo goes
+// through the lane D6 variant rule on its OWN visibility, and a blurring owner
+// blurs the whole gallery, not just the primary.
+
+// CardPhoto is one photo in a card's swipeable gallery: the dating photo id
+// and the image route for the variant THIS viewer may have. Never a media id,
+// never a storage URL — the route re-decides on every fetch.
+type CardPhoto struct {
+	ID    uuid.UUID `json:"id"`
+	URL   string    `json:"url"`
+	// State is "full" or "blurred", the lane D6 variant for this viewer.
+	State string `json:"state"`
+}
+
+// PromptAnswer is one catalog question and this person's answer to it —
+// the "what she is interested in" content. The question text is resolved from
+// the v1 catalog so the client does not have to carry it.
+type PromptAnswer struct {
+	PromptID int    `json:"prompt_id"`
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+// ProfileDetail is the pre-match block described above. Every member is
+// omitted when empty, and the whole block is omitted when a person has
+// written nothing at all.
+type ProfileDetail struct {
+	// Bio is dating_profiles.bio — the description the owner wrote.
+	Bio     string         `json:"bio,omitempty"`
+	Prompts []PromptAnswer `json:"prompts,omitempty"`
+	// Languages is dating_profiles.language_prefs. It is the only
+	// interests/tags-shaped list a dating profile stores today; the prompt
+	// answers above are where the real interests live.
+	Languages []string `json:"languages,omitempty"`
+	// Photos is the whole approved gallery, primary first, so the card can
+	// be swiped through. Each entry carries its own variant.
+	Photos []CardPhoto `json:"photos,omitempty"`
+}
+
+// cardPhotos applies the lane D6 rule to each photo with that photo's OWN
+// visibility, so a public photo and a match_only one in the same gallery get
+// the variant each deserves.
+func cardPhotos(refs []store.PhotoRef, v PhotoViewer) []CardPhoto {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]CardPhoto, 0, len(refs))
+	for _, ref := range refs {
+		variant := PhotoVariantFor(ref.Visibility, v)
+		out = append(out, CardPhoto{ID: ref.ID, URL: PhotoImagePath(ref.ID, variant), State: variant})
+	}
+	return out
+}
+
+// promptAnswers pairs each stored answer with its catalog question. An answer
+// whose prompt id is no longer in the catalog is dropped rather than shown
+// without its question.
+func promptAnswers(ps []store.Prompt) []PromptAnswer {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]PromptAnswer, 0, len(ps))
+	for _, p := range ps {
+		question, ok := promptQuestion(p.PromptID)
+		if !ok {
+			continue
+		}
+		out = append(out, PromptAnswer{PromptID: p.PromptID, Question: question, Answer: p.Answer})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// buildProfileDetail assembles the block, or nil when there is nothing in it.
+func buildProfileDetail(bio string, languages []string, prompts []store.Prompt, photos []store.PhotoRef, v PhotoViewer) *ProfileDetail {
+	d := &ProfileDetail{
+		Bio:       bio,
+		Prompts:   promptAnswers(prompts),
+		Languages: languages,
+		Photos:    cardPhotos(photos, v),
+	}
+	if d.Bio == "" && len(d.Prompts) == 0 && len(d.Languages) == 0 && len(d.Photos) == 0 {
+		return nil
+	}
+	return d
+}
+
+// buildPersonCard renders one compact row for one viewer. matched says
+// whether the viewer currently has an open match with this person, and viewer
+// is the viewer's own profile (nil = no distance bucket).
 func buildPersonCard(row *store.PersonRow, matched bool, viewer *store.Profile) *PersonCard {
+	return buildPersonCardDetail(row, matched, viewer, nil, nil, false)
+}
+
+// buildPersonCardDetail is buildPersonCard plus the pre-match detail block.
+// withDetail is the switch, so a caller that must stay compact (the match
+// list, trusted contacts, location shares) cannot grow the block by accident.
+func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Profile,
+	prompts []store.Prompt, photos []store.PhotoRef, withDetail bool) *PersonCard {
 	if row == nil {
 		return nil
 	}
@@ -56,11 +171,12 @@ func buildPersonCard(row *store.PersonRow, matched bool, viewer *store.Profile) 
 	if row.FirstName != nil {
 		first = *row.FirstName
 	}
-	variant := PhotoVariantFor(row.PrimaryPhotoVisibility, PhotoViewer{
+	photoViewer := PhotoViewer{
 		Matched:              matched,
 		OwnerSparkedViewer:   row.SparkedViewer,
 		OwnerBlursUntilMatch: row.BlurPhotosUntilMatch || row.BlurMode,
-	})
+	}
+	variant := PhotoVariantFor(row.PrimaryPhotoVisibility, photoViewer)
 	card := &PersonCard{
 		UserID:     row.UserID,
 		FirstName:  first,
@@ -79,14 +195,24 @@ func buildPersonCard(row *store.PersonRow, matched bool, viewer *store.Profile) 
 			card.DistanceBucket, card.DistanceLabel = band.Code, band.Label
 		}
 	}
+	if withDetail {
+		card.Detail = buildProfileDetail(row.Bio, row.LanguagePrefs, prompts, photos, photoViewer)
+	}
 	return card
 }
 
-// personCards builds the cards for a set of user ids as one viewer sees
-// them. Ids the viewer may not see (blocked either way, deleted, suspended)
-// are absent from the result. Best effort: a lookup error yields no cards
-// rather than failing the list the cards decorate.
+// personCards builds the compact cards for a set of user ids as one viewer
+// sees them. Ids the viewer may not see (blocked either way, deleted,
+// suspended) are absent from the result. Best effort: a lookup error yields no
+// cards rather than failing the list the cards decorate.
 func (s *Service) personCards(ctx context.Context, viewerID uuid.UUID, ids []uuid.UUID) map[uuid.UUID]*PersonCard {
+	return s.personCardsDetail(ctx, viewerID, ids, false)
+}
+
+// personCardsDetail is personCards with the pre-match detail block switched
+// on. The prompts and the galleries are fetched in one query each, so a list
+// of cards costs two more round-trips rather than two per card.
+func (s *Service) personCardsDetail(ctx context.Context, viewerID uuid.UUID, ids []uuid.UUID, withDetail bool) map[uuid.UUID]*PersonCard {
 	out := map[uuid.UUID]*PersonCard{}
 	if len(ids) == 0 {
 		return out
@@ -102,11 +228,43 @@ func (s *Service) personCards(ctx context.Context, viewerID uuid.UUID, ids []uui
 		matched = map[uuid.UUID]struct{}{}
 	}
 	viewer, _ := s.store.GetProfile(ctx, viewerID)
+
+	// Only the ids that survived the visibility query are looked up, so a
+	// blocked or deleted person's prompts and photos are never even read.
+	var prompts map[uuid.UUID][]store.Prompt
+	var photos map[uuid.UUID][]store.PhotoRef
+	if withDetail {
+		visible := make([]uuid.UUID, 0, len(rows))
+		for id := range rows {
+			visible = append(visible, id)
+		}
+		prompts, photos = s.detailFor(ctx, visible)
+	}
 	for id, row := range rows {
 		_, isMatched := matched[id]
-		out[id] = buildPersonCard(row, isMatched, viewer)
+		out[id] = buildPersonCardDetail(row, isMatched, viewer, prompts[id], photos[id], withDetail)
 	}
 	return out
+}
+
+// detailFor bulk-loads the prompt answers and the approved photo galleries
+// for a set of people. Best effort on either lookup: a card without its
+// prompts or its gallery is better than a list that fails to render.
+func (s *Service) detailFor(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID][]store.Prompt, map[uuid.UUID][]store.PhotoRef) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	prompts, err := s.store.ListPromptsForUsers(ctx, ids)
+	if err != nil {
+		slog.Warn("card prompts lookup failed", "error", err)
+		prompts = nil
+	}
+	photos, err := s.store.ListApprovedPhotosForUsers(ctx, ids)
+	if err != nil {
+		slog.Warn("card photos lookup failed", "error", err)
+		photos = nil
+	}
+	return prompts, photos
 }
 
 // ErrPersonNotVisible is the one refusal for a person card the viewer has no
@@ -199,7 +357,10 @@ func (s *Service) GetPersonCard(ctx context.Context, viewerID, targetID uuid.UUI
 		return nil, err
 	}
 	viewer, _ := s.store.GetProfile(ctx, viewerID)
-	return buildPersonCard(row, matched, viewer), nil
+	// The person card is where the viewer decides, so it carries the
+	// pre-match detail block.
+	prompts, photos := s.detailFor(ctx, []uuid.UUID{targetID})
+	return buildPersonCardDetail(row, matched, viewer, prompts[targetID], photos[targetID], true), nil
 }
 
 // MatchWithPerson is a match plus the other participant's compact card. The
@@ -241,13 +402,15 @@ func (s *Service) decorateMatches(ctx context.Context, viewerID uuid.UUID, match
 	return out
 }
 
-// decorateIncomingSparks attaches each sender's card to their spark.
+// decorateIncomingSparks attaches each sender's card to their spark. This is
+// the accept-or-ignore decision, so the sender's card carries the pre-match
+// detail block — the same thing the viewer would have seen in the deck.
 func (s *Service) decorateIncomingSparks(ctx context.Context, viewerID uuid.UUID, sparks []*store.Spark) []*SparkWithPerson {
 	ids := make([]uuid.UUID, 0, len(sparks))
 	for _, sp := range sparks {
 		ids = append(ids, sp.FromUserID)
 	}
-	cards := s.personCards(ctx, viewerID, ids)
+	cards := s.personCardsDetail(ctx, viewerID, ids, true)
 	out := make([]*SparkWithPerson, 0, len(sparks))
 	for _, sp := range sparks {
 		out = append(out, &SparkWithPerson{Spark: sp, Person: cards[sp.FromUserID]})

@@ -386,6 +386,14 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SPARK_NOTE_REFUSED", "spark notes cannot contain phone numbers, email addresses or links", nil)
 		return
 	}
+	// The profile's own gender is an enum too. Its own code, separate from
+	// the preference's, so the app knows which of the two pickers to show.
+	if errors.Is(err, service.ErrInvalidGender) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_GENDER",
+			"gender must be one of "+strings.Join(service.Genders, ", "),
+			map[string]any{"allowed": service.Genders})
+		return
+	}
 	// Preferences: the gender filter is an enum, so it gets its own code
 	// instead of the generic INVALID_REQUEST the "invalid: " fallback gives.
 	if errors.Is(err, service.ErrInvalidInterestedInGender) {

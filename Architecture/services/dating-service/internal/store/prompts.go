@@ -41,6 +41,33 @@ func (s *Store) ListPrompts(ctx context.Context, userID uuid.UUID) ([]Prompt, er
 	return out, nil
 }
 
+// ListPromptsForUsers returns each user's answered prompts keyed by user, in
+// prompt_id order. It is the bulk form of ListPrompts, so building a deck of
+// cards costs one query rather than one per candidate. Users with no answers
+// are simply absent.
+func (s *Store) ListPromptsForUsers(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID][]Prompt, error) {
+	out := make(map[uuid.UUID][]Prompt, len(userIDs))
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT id, user_id, prompt_id, answer, created_at, updated_at
+        FROM dating_prompts WHERE user_id = ANY($1::uuid[])
+        ORDER BY user_id, prompt_id ASC`, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list prompts for users: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p Prompt
+		if err := rows.Scan(&p.ID, &p.UserID, &p.PromptID, &p.Answer, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan prompt: %w", err)
+		}
+		out[p.UserID] = append(out[p.UserID], p)
+	}
+	return out, rows.Err()
+}
+
 // UpsertPrompt inserts or updates the answer for a (user, prompt_id) pair.
 func (s *Store) UpsertPrompt(ctx context.Context, userID uuid.UUID, promptID int, answer string) (*Prompt, error) {
 	row := s.db.QueryRow(ctx, `

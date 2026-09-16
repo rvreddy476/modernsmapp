@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -22,6 +24,97 @@ func personCardOf(t *testing.T, body []byte) map[string]any {
 		t.Fatalf("decode person card: %v (%s)", err, body)
 	}
 	return env.Data
+}
+
+// The pre-match projection: the deck card and the person card carry the
+// description, the prompt answers, the languages and the gallery — and
+// nothing that is meant to stay sealed until the two people match.
+//
+// This is the test the privacy projection is mutation-checked against: widen
+// ProfileDetail (or copy a profile field into it wholesale) and the key-set
+// assertion below fails.
+func TestPreMatchDetailHoldsBackSealedFields(t *testing.T) {
+	r, st, cleanup := setupTestRouter(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	lat, lng := uniqueTestPoint()
+	viewer, candidate := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{viewer, candidate} {
+		mustSeedActiveProfile(t, st, id)
+	}
+	// Pair them so the candidate is the viewer's deck, and give the candidate
+	// every field that must NOT cross: sealed religion and community (lane
+	// D9) and a real point (lane D7).
+	gender := "d10p-" + uuid.NewString()[:8]
+	bio := "Filter coffee and bad directions."
+	religion, community := "hindu", "kamma"
+	if _, err := st.UpsertProfile(ctx, candidate, store.UpsertProfileParams{
+		Gender: &gender, Bio: &bio, Religion: &religion, Community: &community,
+		Latitude: &lat, Longitude: &lng,
+	}); err != nil {
+		t.Fatalf("seed candidate: %v", err)
+	}
+	if _, err := st.UpsertProfile(ctx, viewer, store.UpsertProfileParams{Latitude: &lat, Longitude: &lng}); err != nil {
+		t.Fatalf("seed viewer location: %v", err)
+	}
+	if _, err := st.UpsertPreferences(ctx, viewer, store.UpsertPreferencesParams{InterestedInGender: &gender}); err != nil {
+		t.Fatalf("seed viewer preference: %v", err)
+	}
+	if _, err := st.UpsertPrompt(ctx, candidate, 1, "Dosa and no alarm."); err != nil {
+		t.Fatalf("seed prompt: %v", err)
+	}
+
+	// The deck first — it is also what makes the person card readable.
+	deckRec := contractDo(r, http.MethodGet, "/v1/dating/pulse/today", ``, viewer)
+	if deckRec.Code != http.StatusOK {
+		t.Fatalf("deck: status %d body %s", deckRec.Code, deckRec.Body.String())
+	}
+	cardRec := contractDo(r, http.MethodGet, "/v1/dating/people/"+candidate.String(), ``, viewer)
+	if cardRec.Code != http.StatusOK {
+		t.Fatalf("person card: status %d body %s", cardRec.Code, cardRec.Body.String())
+	}
+
+	for _, surface := range []struct {
+		name string
+		body []byte
+	}{{"deck", deckRec.Body.Bytes()}, {"person card", cardRec.Body.Bytes()}} {
+		// The founder's ask actually landed: the description crossed.
+		if !strings.Contains(string(surface.body), bio) {
+			t.Fatalf("%s does not carry the description: %s", surface.name, surface.body)
+		}
+		// And nothing that stays sealed until a match did. The sealed values
+		// are checked as bare text (they must not appear at all); the rest as
+		// JSON keys, so the Echoes ribbon's own "top_community" member — which
+		// is null here and carries no activity — is not mistaken for a leak.
+		for _, value := range []string{religion, community} {
+			if strings.Contains(string(surface.body), value) {
+				t.Fatalf("%s leaks the sealed value %q before a match: %s", surface.name, value, surface.body)
+			}
+		}
+		for _, key := range []string{"religion", "community", "latitude", "longitude",
+			"geohash", "last_active_at", "birth_date"} {
+			if strings.Contains(string(surface.body), `"`+key+`":`) {
+				t.Fatalf("%s leaks %q before a match: %s", surface.name, key, surface.body)
+			}
+		}
+	}
+
+	// The detail block is exactly the four allowed members — a projection
+	// that starts copying the profile wholesale fails here.
+	detail, ok := personCardOf(t, cardRec.Body.Bytes())["detail"].(map[string]any)
+	if !ok {
+		t.Fatalf("person card has no detail block: %s", cardRec.Body.String())
+	}
+	allowed := map[string]bool{"bio": true, "prompts": true, "languages": true, "photos": true}
+	for key := range detail {
+		if !allowed[key] {
+			t.Fatalf("detail carries an unexpected member %q: %s", key, cardRec.Body.String())
+		}
+	}
+	if detail["bio"] != bio || detail["prompts"] == nil || detail["photos"] == nil {
+		t.Fatalf("detail is missing what it should carry: %v", detail)
+	}
 }
 
 func TestPersonCardAccessRule(t *testing.T) {

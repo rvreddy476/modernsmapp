@@ -137,17 +137,17 @@ func TestBuildCard_PhotoVisibilityInTheDeck(t *testing.T) {
 			t.Fatalf("%s: a blurred card also names the full image: %s", name, raw)
 		}
 	}
-	check("match_only, stranger", svc.buildCard(deckCandidate(owner, photoID, "match_only", false), nil, nil), PhotoVariantBlurred)
-	check("match_only, matched", svc.buildCard(deckCandidate(owner, photoID, "match_only", false), nil, matched), PhotoVariantFull)
-	check("public, stranger", svc.buildCard(deckCandidate(owner, photoID, "public", false), nil, nil), PhotoVariantFull)
-	check("public + blur until match, stranger", svc.buildCard(deckCandidate(owner, photoID, "public", true), nil, nil), PhotoVariantBlurred)
-	check("public + blur until match, matched", svc.buildCard(deckCandidate(owner, photoID, "public", true), nil, matched), PhotoVariantFull)
+	check("match_only, stranger", svc.buildCard(deckCandidate(owner, photoID, "match_only", false), nil, nil, nil, nil), PhotoVariantBlurred)
+	check("match_only, matched", svc.buildCard(deckCandidate(owner, photoID, "match_only", false), nil, matched, nil, nil), PhotoVariantFull)
+	check("public, stranger", svc.buildCard(deckCandidate(owner, photoID, "public", false), nil, nil, nil, nil), PhotoVariantFull)
+	check("public + blur until match, stranger", svc.buildCard(deckCandidate(owner, photoID, "public", true), nil, nil, nil, nil), PhotoVariantBlurred)
+	check("public + blur until match, matched", svc.buildCard(deckCandidate(owner, photoID, "public", true), nil, matched, nil, nil), PhotoVariantFull)
 	sparked := deckCandidate(owner, photoID, "sparked_only", false)
-	check("sparked_only, not sparked", svc.buildCard(sparked, nil, nil), PhotoVariantBlurred)
+	check("sparked_only, not sparked", svc.buildCard(sparked, nil, nil, nil, nil), PhotoVariantBlurred)
 	sparked.Candidate.SparkedViewer = true
-	check("sparked_only, owner sparked the viewer", svc.buildCard(sparked, nil, nil), PhotoVariantFull)
+	check("sparked_only, owner sparked the viewer", svc.buildCard(sparked, nil, nil, nil, nil), PhotoVariantFull)
 
-	none := svc.buildCard(matcher.ScoredCandidate{Candidate: &store.CandidateProfile{UserID: owner}}, nil, nil)
+	none := svc.buildCard(matcher.ScoredCandidate{Candidate: &store.CandidateProfile{UserID: owner}}, nil, nil, nil, nil)
 	if none.Profile.PrimaryPhotoURL != "" {
 		t.Fatalf("no primary photo: url=%q", none.Profile.PrimaryPhotoURL)
 	}

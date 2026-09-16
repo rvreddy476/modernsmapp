@@ -191,6 +191,31 @@ func validIntent(i string) bool {
 	return false
 }
 
+// Genders is the enum accepted for a profile's own gender. It is
+// InterestedInGenders without "everyone": "everyone" is a way to say "no
+// filter", never a way to describe a person.
+//
+// The deck's gender rule compares these values for EQUALITY against the other
+// side's interested_in_gender, so a profile holding a spelling outside this
+// vocabulary — the legacy "female" / "male" rows setup.sql migrates — matches
+// nobody's preference and silently drops out of every deck. Validating on
+// write is what stops that class of row coming back.
+var Genders = []string{"woman", "man", "nonbinary"}
+
+// ErrInvalidGender: gender is not one of Genders. Stable code
+// (400 INVALID_GENDER) instead of the generic INVALID_REQUEST, so the app can
+// show the gender picker again with the allowed values from details.
+var ErrInvalidGender = errors.New("gender must be one of " + strings.Join(Genders, ", "))
+
+func validGender(g string) bool {
+	for _, v := range Genders {
+		if g == v {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) GetProfile(ctx context.Context, userID uuid.UUID) (*store.Profile, error) {
 	return s.store.GetProfile(ctx, userID)
 }
@@ -231,6 +256,9 @@ func (s *Service) GetProfile(ctx context.Context, userID uuid.UUID) (*store.Prof
 func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.UpsertProfileParams) (*store.Profile, error) {
 	if p.Intent != nil && !validIntent(*p.Intent) {
 		return nil, ErrInvalidIntent
+	}
+	if p.Gender != nil && !validGender(strings.TrimSpace(*p.Gender)) {
+		return nil, ErrInvalidGender
 	}
 	// Lane D9: religion and community need explicit consent (422
 	// CONSENT_REQUIRED), checked before anything is written.

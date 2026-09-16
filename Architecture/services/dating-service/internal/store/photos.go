@@ -65,6 +65,49 @@ func (s *Store) ListPhotos(ctx context.Context, userID uuid.UUID) ([]Photo, erro
 	return out, nil
 }
 
+// PhotoRef is one approved photo as a card renders it: the dating photo id
+// and the photo's own visibility, which the lane D6 rule turns into the
+// /full or /blurred route for one viewer. Never the media id.
+type PhotoRef struct {
+	ID         uuid.UUID
+	Visibility string
+	IsPrimary  bool
+}
+
+// ListApprovedPhotosForUsers returns each owner's APPROVED photos, keyed by
+// owner and ordered primary first then by sort_order — the order a card is
+// swiped through. Owners with no approved photo are simply absent.
+//
+// Moderation status is the gate here, exactly as in the deck's primary-photo
+// subquery: a pending or rejected photo never reaches another viewer. The
+// per-photo visibility is returned rather than applied, because the D6 rule
+// needs the viewer's side (matched / sparked / the owner's blur switch) which
+// the store does not know.
+func (s *Store) ListApprovedPhotosForUsers(ctx context.Context, ownerIDs []uuid.UUID) (map[uuid.UUID][]PhotoRef, error) {
+	out := make(map[uuid.UUID][]PhotoRef, len(ownerIDs))
+	if len(ownerIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT user_id, id, visibility, is_primary
+        FROM dating_photos
+        WHERE user_id = ANY($1::uuid[]) AND moderation_status = 'approved'
+        ORDER BY user_id, is_primary DESC, sort_order ASC, created_at ASC`, ownerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list approved photos: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var owner uuid.UUID
+		var p PhotoRef
+		if err := rows.Scan(&owner, &p.ID, &p.Visibility, &p.IsPrimary); err != nil {
+			return nil, fmt.Errorf("scan approved photo: %w", err)
+		}
+		out[owner] = append(out[owner], p)
+	}
+	return out, rows.Err()
+}
+
 // ListPhotosByStatus returns the user's photos filtered by moderation_status.
 // Used by the §P1-2 owner-only `GET /v1/dating/photos/me?status=rejected`
 // endpoint so the owner can see "Why was my photo rejected?" without

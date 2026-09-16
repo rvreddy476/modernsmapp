@@ -26,6 +26,7 @@ var d7Fixtures = []string{
 	"profile_upsert_429_location_change_rate_limited",
 	"profile_upsert_400_invalid_location",
 	"pulse_today_get_200",
+	"pulse_today_get_200_rich_card",
 	"pulse_explain_get_200",
 	"pulse_explain_404_candidate_unavailable",
 	"privacy_get_200",
@@ -182,6 +183,90 @@ func TestD7Contracts(t *testing.T) {
 			rec = contractDo(r, http.MethodGet, "/v1/dating/pulse/"+target.String()+"/explain", ``, viewer)
 			assertContract(t, rec, http.StatusNotFound, "pulse_explain_404_candidate_unavailable", labels)
 		}
+	})
+
+	// The founder's "enough to decide" card: the description, the prompt
+	// answers, the languages and a gallery to swipe through, all BEFORE a
+	// match. The gallery is deliberately mixed — a public primary, a second
+	// public photo and a match_only one — so the fixture shows the lane D6
+	// rule running per photo on that photo's own visibility rather than once
+	// for the whole person.
+	t.Run("deck_card_with_prompts_and_photos", func(t *testing.T) {
+		viewer, candidate := uuid.New(), uuid.New()
+		for _, id := range []uuid.UUID{viewer, candidate} {
+			mustSeedActiveProfile(t, st, id)
+		}
+		// A gender nobody else uses scopes the viewer's deck to this
+		// candidate, the same trick deck_and_explain uses.
+		gender := "d7r-" + uuid.NewString()[:8]
+		bio := "Filter coffee, long drives and a bad sense of direction."
+		languages := []string{"telugu", "english"}
+		if _, err := st.UpsertProfile(ctx, candidate, store.UpsertProfileParams{
+			Gender: &gender, Bio: &bio, LanguagePrefs: languages,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpsertPreferences(ctx, viewer, store.UpsertPreferencesParams{InterestedInGender: &gender}); err != nil {
+			t.Fatal(err)
+		}
+		for id, point := range map[uuid.UUID][2]float64{viewer: {17.385, 78.4867}, candidate: {17.41, 78.4867}} {
+			lat, lng := point[0], point[1]
+			if _, err := st.UpsertProfile(ctx, id, store.UpsertProfileParams{Latitude: &lat, Longitude: &lng}); err != nil {
+				t.Fatalf("location: %v", err)
+			}
+		}
+		if _, err := st.SetProfileBirthDate(ctx, candidate, time.Now().AddDate(-30, 0, -1), store.BasicsSourceIdentity); err != nil {
+			t.Fatal(err)
+		}
+		hide := false
+		if _, err := st.UpdatePrivacy(ctx, candidate, store.PrivacyUpdate{HideLastActive: &hide}); err != nil {
+			t.Fatal(err)
+		}
+		for _, qa := range []struct {
+			id     int
+			answer string
+		}{
+			{1, "Dosa, a bookshop, and absolutely no alarm."},
+			{2, "Carnatic ragas and why bridges stay up."},
+			{9, "Someone who argues with me about films."},
+		} {
+			if _, err := st.UpsertPrompt(ctx, candidate, qa.id, qa.answer); err != nil {
+				t.Fatalf("seed prompt %d: %v", qa.id, err)
+			}
+		}
+
+		// The primary from the seed, plus two more.
+		labels := map[uuid.UUID]string{viewer: "<viewer>", candidate: "<candidate>"}
+		existing, err := st.ListPhotos(ctx, candidate)
+		if err != nil || len(existing) != 1 {
+			t.Fatalf("seeded photos = %d: %v", len(existing), err)
+		}
+		labels[existing[0].ID] = "<photo-primary>"
+		for i, visibility := range []string{"public", "match_only"} {
+			photo, err := st.CreatePhoto(ctx, candidate, store.CreatePhotoParams{
+				MediaID: uuid.New(), SortOrder: i + 1, Visibility: visibility,
+			})
+			if err != nil {
+				t.Fatalf("seed photo %s: %v", visibility, err)
+			}
+			if _, err := st.SetPhotoModerationStatus(ctx, photo.ID, "approved", ""); err != nil {
+				t.Fatalf("approve photo %s: %v", visibility, err)
+			}
+			labels[photo.ID] = "<photo-" + visibility + ">"
+		}
+		// A pending photo is in nobody's gallery.
+		pending, err := st.CreatePhoto(ctx, candidate, store.CreatePhotoParams{MediaID: uuid.New(), SortOrder: 3, Visibility: "public"})
+		if err != nil {
+			t.Fatalf("seed pending photo: %v", err)
+		}
+		labels[pending.ID] = "<photo-pending>"
+
+		rec := contractDo(r, http.MethodGet, "/v1/dating/pulse/today", ``, viewer)
+		d7AssertBucketsOnly(t, "rich deck card", rec.Body.Bytes())
+		if strings.Contains(rec.Body.String(), "<photo-pending>") {
+			t.Fatalf("an unapproved photo reached the card: %s", rec.Body.String())
+		}
+		assertContract(t, rec, http.StatusOK, "pulse_today_get_200_rich_card", labels)
 	})
 
 	t.Run("privacy_get_200", func(t *testing.T) {

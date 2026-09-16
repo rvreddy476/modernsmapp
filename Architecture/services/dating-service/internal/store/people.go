@@ -2,9 +2,10 @@
 // person card (lane D10).
 //
 // It carries only what a card renders: the first name, the birth date (for
-// age), the approved primary photo's id and visibility, the photo-privacy
-// flags and the trust tier. Nothing sensitive: no religion, no community, no
-// coordinates, no last_active_at, no sealed field.
+// age), the person's own description and languages, the approved primary
+// photo's id and visibility, the photo-privacy flags and the trust tier.
+// Nothing sensitive: no religion, no community, no exact coordinates on the
+// wire, no last_active_at, no sealed field.
 package store
 
 import (
@@ -23,6 +24,11 @@ type PersonRow struct {
 	FirstName *string
 	BirthDate *time.Time
 	TrustTier string
+	// Bio is the person's own description, and LanguagePrefs the languages
+	// they listed. Both are profile text the owner wrote for other people
+	// to read, so they are shown before a match.
+	Bio           string
+	LanguagePrefs []string
 	// PrimaryPhotoID / PrimaryPhotoVisibility name the approved primary
 	// photo; never the media id.
 	PrimaryPhotoID         *uuid.UUID
@@ -48,7 +54,7 @@ func (p *PersonRow) Age() int {
 }
 
 const personSelectCols = `
-    p.user_id, p.first_name, p.birth_date, p.trust_tier,
+    p.user_id, p.first_name, p.birth_date, p.trust_tier, p.bio, p.language_prefs,
     (SELECT ph.id FROM dating_photos ph
         WHERE ph.user_id = p.user_id AND ph.is_primary = true
           AND ph.moderation_status = 'approved' LIMIT 1) AS primary_photo_id,
@@ -62,6 +68,7 @@ const personSelectCols = `
 func scanPersonRow(row pgx.Row) (*PersonRow, error) {
 	p := &PersonRow{}
 	if err := row.Scan(&p.UserID, &p.FirstName, &p.BirthDate, &p.TrustTier,
+		&p.Bio, &p.LanguagePrefs,
 		&p.PrimaryPhotoID, &p.PrimaryPhotoVisibility, &p.SparkedViewer,
 		&p.BlurPhotosUntilMatch, &p.BlurMode, &p.Latitude, &p.Longitude); err != nil {
 		return nil, err

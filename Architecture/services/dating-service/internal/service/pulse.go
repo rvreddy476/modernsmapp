@@ -49,6 +49,13 @@ type PulseProfileSummary struct {
 	// the default for new profiles. Never a timestamp.
 	LastActiveBucket string `json:"last_active_bucket,omitempty"`
 	LastActiveLabel  string `json:"last_active_label,omitempty"`
+	// Detail is the pre-match block (ProfileDetail in person.go): the
+	// candidate's own description, their prompt answers, their languages and
+	// the rest of their approved photos to swipe through. It is what the
+	// founder means by "enough to decide" before sending a spark. Religion,
+	// community, every other sealed field, the exact location and the Echoes
+	// ribbon stay out of it until the two people match.
+	Detail *ProfileDetail `json:"detail,omitempty"`
 }
 
 // PulseEchoes is the brief echoes ribbon under the card. v1 of Pulse leaves
@@ -151,7 +158,11 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 func (s *Service) cacheKey(viewerID uuid.UUID) string {
 	// v3 (lane D9): decks ranked with the old per-day recency decay are never
 	// served again; they expire on their TTL under the v2 key.
-	return fmt.Sprintf("dating:pulse:today:v3:%s", viewerID.String())
+	// v4: cards now carry the pre-match detail block (bio, prompts,
+	// languages, the whole gallery). A v3 deck has none of it, so it would
+	// render as a deck of description-less cards; it is never read back and
+	// expires on its own TTL.
+	return fmt.Sprintf("dating:pulse:today:v4:%s", viewerID.String())
 }
 
 func (s *Service) readPulseCache(ctx context.Context, viewerID uuid.UUID) *PulseResponse {
@@ -369,10 +380,20 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 		matched = map[uuid.UUID]struct{}{}
 	}
 
-	// 5. Build response.
+	// 5. Build response. The prompt answers and the photo galleries for the
+	// whole deck are loaded in one query each, after the diversity
+	// constraint has cut the list, so nothing is read for a candidate who
+	// did not make the deck.
+	deckIDs := make([]uuid.UUID, 0, len(scored))
+	for _, sc := range scored {
+		deckIDs = append(deckIDs, sc.Candidate.UserID)
+	}
+	prompts, photos := s.detailFor(ctx, deckIDs)
+
 	cards := make([]PulseCard, 0, len(scored))
 	for _, sc := range scored {
-		cards = append(cards, s.buildCard(sc, viewerProfile, matched))
+		id := sc.Candidate.UserID
+		cards = append(cards, s.buildCard(sc, viewerProfile, matched, prompts[id], photos[id]))
 	}
 	return &PulseResponse{
 		Data: cards,
@@ -398,7 +419,12 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 //
 // matchedPartners is the precomputed set of user-ids the viewer
 // currently has an active match with. Empty / nil = no matches.
-func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, matchedPartners map[uuid.UUID]struct{}) PulseCard {
+//
+// prompts and photos are this candidate's answered prompts and approved
+// gallery, bulk-loaded by the caller, and become the card's pre-match detail
+// block.
+func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, matchedPartners map[uuid.UUID]struct{},
+	prompts []store.Prompt, photos []store.PhotoRef) PulseCard {
 	c := sc.Candidate
 	first := ""
 	if c.FirstName != nil {
@@ -417,11 +443,12 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 	// viewer may have — never a media id, never a storage URL. The route
 	// re-decides on every fetch, so a cached deck cannot outlive an unmatch.
 	_, isMatched := matchedPartners[c.UserID]
-	variant := PhotoVariantFor(c.PrimaryPhotoVisibility, PhotoViewer{
+	photoViewer := PhotoViewer{
 		Matched:              isMatched,
 		OwnerSparkedViewer:   c.SparkedViewer,
 		OwnerBlursUntilMatch: c.BlurPhotosUntilMatch || c.BlurMode,
-	})
+	}
+	variant := PhotoVariantFor(c.PrimaryPhotoVisibility, photoViewer)
 	primaryURL := ""
 	if c.PrimaryPhotoID != nil {
 		primaryURL = PhotoImagePath(*c.PrimaryPhotoID, variant)
@@ -453,6 +480,10 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, m
 		band := LastActiveBucketFor(c.LastActiveAt, time.Now())
 		summary.LastActiveBucket, summary.LastActiveLabel = band.Code, band.Label
 	}
+	// The pre-match block. c.Bio and c.LanguagePrefs are the candidate's own
+	// profile text; c.Community is deliberately NOT used — it is read only
+	// for the deck's same-community cap and stays sealed until a match.
+	summary.Detail = buildProfileDetail(c.Bio, c.LanguagePrefs, prompts, photos, photoViewer)
 
 	return PulseCard{
 		CandidateID:  c.UserID,
@@ -487,13 +518,21 @@ func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, 
 		matched = map[uuid.UUID]struct{}{}
 	}
 
-	cards := make([]PulseCard, 0, len(passes))
+	cands := make([]*store.CandidateProfile, 0, len(passes))
+	ids := make([]uuid.UUID, 0, len(passes))
 	for _, p := range passes {
 		c, err := s.store.GetCandidateForViewer(ctx, viewerID, p.CandidateID)
 		if err != nil || c == nil {
 			continue
 		}
-		card := s.buildCard(matcher.ScoredCandidate{Candidate: c, Score: 0}, viewerProfile, matched)
+		cands = append(cands, c)
+		ids = append(ids, c.UserID)
+	}
+	prompts, photos := s.detailFor(ctx, ids)
+
+	cards := make([]PulseCard, 0, len(cands))
+	for _, c := range cands {
+		card := s.buildCard(matcher.ScoredCandidate{Candidate: c, Score: 0}, viewerProfile, matched, prompts[c.UserID], photos[c.UserID])
 		cards = append(cards, card)
 	}
 	return &PulseResponse{
