@@ -674,3 +674,17 @@ CREATE TABLE IF NOT EXISTS auth.account_purge_acks (
 ALTER TABLE auth.sessions
     ADD COLUMN IF NOT EXISTS auth_time TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS amr       TEXT[];
+
+-- ---------------------------------------------------------------------------
+-- Admin console sign-in on its own host (Wave 1, B3). A session is either a
+-- consumer session (every existing row, and every session the consumer login
+-- routes create) or an admin session, created ONLY by
+-- POST /v1/auth/admin-session/verify-2fa and carried ONLY in the host-only
+-- admin_* cookies. The consumer refresh/logout/step-up routes refuse an admin
+-- session and the admin-session routes refuse a consumer one, so neither
+-- credential can be turned into the other. Set server-side, never from a
+-- request field.
+-- ---------------------------------------------------------------------------
+ALTER TABLE auth.sessions
+    ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'consumer'
+        CONSTRAINT sessions_kind_check CHECK (kind IN ('consumer', 'admin'));

@@ -277,16 +277,20 @@ func main() {
 	// RSAPublic/RSAKID let the service verify the RS256 tokens it mints (nil
 	// when signing is HS256). Derived from the loaded private key, so no extra
 	// public-key env is needed for the service's own endpoints.
-	authMW := internalhttp.AuthMiddlewareWithKeys(internalhttp.JWTKeySet{
+	jwtKeys := internalhttp.JWTKeySet{
 		ActiveKID:      cfg.JWTKID,
 		ActiveSecret:   cfg.JWTSecret,
 		PreviousKID:    cfg.JWTKIDPrevious,
 		PreviousSecret: cfg.JWTSecretPrevious,
 		RSAPublic:      authSvc.AccessTokenPublicKey(),
 		RSAKID:         cfg.AccessTokenRS256KID,
-	}, rdb)
+	}
+	authMW := internalhttp.AuthMiddlewareWithKeys(jwtKeys, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
 	authHandler.RegisterRoutes(r, authMW, csrfMW)
+	// Admin console sign-in (B3): its own cookies, its own middleware (admin
+	// cookie only, sk=admin only).
+	authHandler.RegisterAdminSessionRoutes(r, internalhttp.AdminAuthMiddlewareWithKeys(jwtKeys, rdb))
 	authHandler.RegisterWebAuthnRoutes(r, authMW, csrfMW) // no-op unless built with -tags webauthn
 	authHandler.RegisterDocsRoutes(r)
 

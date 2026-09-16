@@ -40,6 +40,8 @@ type stubAuthService struct {
 	forceLogoutFn     func(ctx context.Context, actor, target uuid.UUID, reason string) (int, error)
 	holdersFn         func(permission string, exclude uuid.UUID) (int, error)
 	grantRoleFn       func(actor uuid.UUID, req service.RoleChangeRequest) error
+	// Admin console sign-in; methods in admin_login_test.go.
+	admin adminSessionStub
 }
 
 func (s *stubAuthService) RequestOTP(ctx context.Context, phone, purpose string) error {

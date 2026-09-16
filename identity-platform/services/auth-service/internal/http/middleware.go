@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/atpost/identity-auth-service/internal/service"
+	"github.com/atpost/identity-auth-service/pkg/accesstoken"
 	"github.com/atpost/identity-shared/api"
 	identitymiddleware "github.com/atpost/identity-shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,8 @@ type AccessClaims struct {
 	AMR      []string `json:"amr,omitempty"`
 	AdminMFA bool     `json:"admin_mfa"`
 	StepUpAt int64    `json:"step_up_at,omitempty"`
+	// SessionKind is `sk`: "admin" only on an admin console session.
+	SessionKind string `json:"sk,omitempty"`
 }
 
 // sessionAuth converts verified claims into the service's context value.
@@ -174,8 +177,29 @@ func AuthMiddlewareWithRevoke(jwtSecret string, rdb *redis.Client) gin.HandlerFu
 }
 
 func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
+	return authMiddlewareFor(keys, rdb, func(c *gin.Context) (string, identitymiddleware.CredentialSource) {
+		return identitymiddleware.ReadAccessToken(c, accessTokenCookieName)
+	}, false)
+}
+
+// AdminAuthMiddlewareWithKeys authenticates the admin console session routes
+// (/v1/auth/admin-session/*). Unlike the consumer middleware it reads ONLY the
+// admin_access_token cookie — never an Authorization header, never the
+// consumer access_token cookie — and accepts only a token whose sk claim says
+// admin. A consumer session therefore cannot reach these routes by any
+// transport, and CSRF is always enforced (the credential is always ambient).
+func AdminAuthMiddlewareWithKeys(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
+	return authMiddlewareFor(keys, rdb, func(c *gin.Context) (string, identitymiddleware.CredentialSource) {
+		if token, err := c.Cookie(adminAccessCookieName); err == nil && token != "" {
+			return token, identitymiddleware.CredentialCookie
+		}
+		return "", ""
+	}, true)
+}
+
+func authMiddlewareFor(keys JWTKeySet, rdb *redis.Client, read func(*gin.Context) (string, identitymiddleware.CredentialSource), adminOnly bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tokenStr, credentialSource := identitymiddleware.ReadAccessToken(c, accessTokenCookieName)
+		tokenStr, credentialSource := read(c)
 
 		if tokenStr == "" {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing access token", nil, nil)
@@ -221,6 +245,11 @@ func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
 		})
 		if err != nil || !token.Valid {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)
+			c.Abort()
+			return
+		}
+		if adminOnly && claims.SessionKind != accesstoken.SessionKindAdmin {
+			api.Error(c.Writer, http.StatusUnauthorized, CodeWrongSession, "An admin console session is required", nil, nil)
 			c.Abort()
 			return
 		}

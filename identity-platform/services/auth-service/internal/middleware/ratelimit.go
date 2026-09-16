@@ -203,22 +203,35 @@ func LoginRateLimit(rdb *redis.Client) gin.HandlerFunc {
 // collapses concurrent refreshes into one call) and far below a replay
 // storm. A request without a token falls through to the handler's 401.
 func RefreshRateLimit(rdb *redis.Client) gin.HandlerFunc {
+	return refreshRateLimit(rdb, "refresh_token", true)
+}
+
+// AdminRefreshRateLimit is RefreshRateLimit for the admin console session:
+// the token is read only from the named cookie (never a body), with the same
+// per-token budget.
+func AdminRefreshRateLimit(rdb *redis.Client, cookieName string) gin.HandlerFunc {
+	return refreshRateLimit(rdb, cookieName, false)
+}
+
+func refreshRateLimit(rdb *redis.Client, cookieName string, readBody bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if rdb == nil {
 			c.Next()
 			return
 		}
-		bodyBytes, _ := io.ReadAll(c.Request.Body)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		var req struct {
-			RefreshToken string `json:"refresh_token"`
+		token := ""
+		if readBody {
+			bodyBytes, _ := io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			var req struct {
+				RefreshToken string `json:"refresh_token"`
+			}
+			json.Unmarshal(bodyBytes, &req)
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			token = req.RefreshToken
 		}
-		json.Unmarshal(bodyBytes, &req)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		token := req.RefreshToken
 		if token == "" {
-			if cookie, err := c.Cookie("refresh_token"); err == nil {
+			if cookie, err := c.Cookie(cookieName); err == nil {
 				token = cookie
 			}
 		}

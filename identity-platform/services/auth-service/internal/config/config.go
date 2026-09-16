@@ -58,9 +58,16 @@ type Config struct {
 	JWTAudience string
 	// Production is derived from APP_ENV/ENVIRONMENT and hardens minting the
 	// same way it hardens verification: RS256 only, audience mandatory.
-	Production         bool
-	CookieDomain       string
-	CookieSecure       bool
+	Production   bool
+	CookieDomain string
+	CookieSecure bool
+	// Admin console sessions (admin_* cookies, /v1/auth/admin-session/*).
+	// AdminSessionTTL is the ABSOLUTE lifetime of an admin session: refresh
+	// rotates the token but never extends it. AdminCookieSecure defaults to
+	// true and is forced true in production; the admin cookies never take
+	// COOKIE_DOMAIN (they are host-only by construction).
+	AdminSessionTTL    time.Duration
+	AdminCookieSecure  bool
 	TrustedProxies     []string
 	InternalServiceKey string
 	TwoFAIssuer        string
@@ -184,6 +191,8 @@ func Load() *Config {
 		JWTKIDPrevious:           getEnv("JWT_KID_PREVIOUS", ""),
 		CookieDomain:             getEnv("COOKIE_DOMAIN", ""),
 		CookieSecure:             getEnvBool("COOKIE_SECURE", false),
+		AdminSessionTTL:          getEnvDuration("ADMIN_SESSION_TTL", 12*time.Hour),
+		AdminCookieSecure:        IsProductionEnv() || getEnvBool("ADMIN_COOKIE_SECURE", true),
 		TrustedProxies:           splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		InternalServiceKey:       getEnv("INTERNAL_SERVICE_KEY", ""),
 		TwoFAIssuer:              getEnv("TWOFA_ISSUER", "AtPost"),

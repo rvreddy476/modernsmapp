@@ -698,6 +698,16 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 // User-Agent header). Empty inputs are treated as "no signal" — they
 // don't trigger a denial but also don't update the stored value.
 func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgent string) (*AuthResponse, error) {
+	return s.refreshSessionOfKind(ctx, refreshToken, ip, userAgent, store.SessionKindConsumer)
+}
+
+// refreshSessionOfKind is the refresh for one session kind. A refresh token
+// of the other kind is refused with ErrWrongSessionKind and left untouched:
+// the consumer route never rotates an admin session and the admin route never
+// rotates a consumer one. An admin session additionally keeps its absolute
+// expiry and ends when its admin MFA would no longer hold (see
+// admin_login.go).
+func (s *Service) refreshSessionOfKind(ctx context.Context, refreshToken, ip, userAgent, kind string) (*AuthResponse, error) {
 	if refreshToken == "" {
 		return nil, errors.New("missing refresh token")
 	}
@@ -709,6 +719,9 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 	}
 	if sess == nil || sess.RevokedAt != nil {
 		return nil, errors.New("invalid refresh token")
+	}
+	if sessionKindOf(sess) != kind {
+		return nil, ErrWrongSessionKind
 	}
 
 	if time.Now().After(sess.ExpiresAt) {
@@ -784,11 +797,20 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		return nil, fmt.Errorf("refresh denied: account status is %q — please sign in again", user.AccountStatus)
 	}
 
+	newExpiresAt := time.Now().Add(s.cfg.RefreshTokenTTL)
+	if kind == store.SessionKindAdmin {
+		// Checked BEFORE rotation, so a session that has lost its admin
+		// footing is ended rather than handed a fresh refresh token.
+		if err := s.requireAdminFooting(ctx, user, sess); err != nil {
+			return nil, err
+		}
+		newExpiresAt = sess.ExpiresAt // absolute lifetime: refresh never extends it
+	}
+
 	newRefreshToken, err := generateOpaqueToken(32)
 	if err != nil {
 		return nil, err
 	}
-	newExpiresAt := time.Now().Add(s.cfg.RefreshTokenTTL)
 	if err := s.store.RotateSessionWithFingerprint(ctx, sess.ID, hashToken(newRefreshToken), ip, newExpiresAt, false); err != nil {
 		return nil, err
 	}

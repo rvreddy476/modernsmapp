@@ -155,11 +155,16 @@ func (s *Service) sessionClaims(ctx context.Context, user *store.User, sess *sto
 	if sess.AuthTime != nil {
 		authTime = *sess.AuthTime
 	}
+	kind := ""
+	if sess.IsAdmin() {
+		kind = accesstoken.SessionKindAdmin
+	}
 	return scopes, accesstoken.Session{
 		AuthTime: authTime,
 		AMR:      sess.AMR,
 		AdminMFA: adminMFA,
 		StepUpAt: stepUpAt,
+		Kind:     kind,
 	}
 }
 
@@ -173,10 +178,18 @@ func (s *Service) mintAccessToken(ctx context.Context, user *store.User, sess *s
 // startSession creates a session row authenticated by amr and mints its
 // first token pair. Every full-session entry point ends here.
 func (s *Service) startSession(ctx context.Context, user *store.User, deviceID, platform, ip, userAgent string, amr []string) (*AuthResponse, error) {
+	resp, _, err := s.startSessionOfKind(ctx, user, deviceID, platform, ip, userAgent, amr, store.SessionKindConsumer, s.cfg.RefreshTokenTTL)
+	return resp, err
+}
+
+// startSessionOfKind creates the session row with an explicit kind and
+// lifetime, and returns the row alongside the first token pair. Only the
+// admin console sign-in passes SessionKindAdmin.
+func (s *Service) startSessionOfKind(ctx context.Context, user *store.User, deviceID, platform, ip, userAgent string, amr []string, kind string, lifetime time.Duration) (*AuthResponse, *store.Session, error) {
 	now := time.Now()
 	refreshToken, err := generateOpaqueToken(32)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sess := &store.Session{
 		ID:           uuid.New(),
@@ -186,17 +199,19 @@ func (s *Service) startSession(ctx context.Context, user *store.User, deviceID, 
 		Platform:     platform,
 		IP:           ip,
 		UserAgent:    userAgent,
+		IsActive:     true,
 		CreatedAt:    now,
-		ExpiresAt:    now.Add(s.cfg.RefreshTokenTTL),
+		ExpiresAt:    now.Add(lifetime),
 		AuthTime:     &now,
 		AMR:          append([]string(nil), amr...),
+		Kind:         kind,
 	}
 	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	accessToken, expiresAt, err := s.mintAccessToken(ctx, user, sess, time.Time{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return &AuthResponse{
 		Tokens: TokenPair{
@@ -206,7 +221,7 @@ func (s *Service) startSession(ctx context.Context, user *store.User, deviceID, 
 		},
 		User:      user,
 		SessionID: sess.ID,
-	}, nil
+	}, sess, nil
 }
 
 // totpReplayWindow covers the ±1 step skew totp.Validate accepts.
@@ -260,6 +275,17 @@ type StepUpResponse struct {
 // becomes an admin_mfa session from here on (including across refresh).
 // The refresh token is not rotated.
 func (s *Service) StepUp(ctx context.Context, userID, sessionID uuid.UUID, code string) (*StepUpResponse, error) {
+	return s.stepUpKind(ctx, userID, sessionID, code, store.SessionKindConsumer)
+}
+
+// AdminStepUp is StepUp for an admin console session
+// (POST /v1/auth/admin-session/step-up). A consumer session is refused with
+// ErrWrongSessionKind, as an admin session is on the consumer route.
+func (s *Service) AdminStepUp(ctx context.Context, userID, sessionID uuid.UUID, code string) (*StepUpResponse, error) {
+	return s.stepUpKind(ctx, userID, sessionID, code, store.SessionKindAdmin)
+}
+
+func (s *Service) stepUpKind(ctx context.Context, userID, sessionID uuid.UUID, code, kind string) (*StepUpResponse, error) {
 	if s.throttle != nil {
 		allowed, retryAfter, err := s.throttle.Allow(ctx, "stepup_rl:"+userID.String(), stepUpAttemptLimit, stepUpAttemptWindow)
 		if err != nil {
@@ -276,6 +302,9 @@ func (s *Service) StepUp(ctx context.Context, userID, sessionID uuid.UUID, code 
 	}
 	if sess == nil || sess.UserID != userID || sess.RevokedAt != nil || !sess.IsActive || time.Now().After(sess.ExpiresAt) {
 		return nil, ErrSessionNotLive
+	}
+	if sessionKindOf(sess) != kind {
+		return nil, ErrWrongSessionKind
 	}
 	user, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {

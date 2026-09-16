@@ -308,7 +308,9 @@ func (s *Service) InvalidatePending2FASessions(ctx context.Context, userID uuid.
 		return
 	}
 	for _, token := range tokens {
-		_ = s.rdb.Del(ctx, pendingSessionPrefix+token).Err()
+		// The index also holds pending ADMIN console sign-ins (admin_login.go),
+		// which live under their own prefix; a token exists under at most one.
+		_ = s.rdb.Del(ctx, pendingSessionPrefix+token, adminPendingPrefix+token).Err()
 	}
 	_ = s.rdb.Del(ctx, idxKey).Err()
 	if len(tokens) > 0 {

@@ -85,7 +85,18 @@ type Claims struct {
 	// on this session. Only the token that step-up returns carries it; refresh
 	// drops it. Valid for StepUpValidity.
 	StepUpAt int64 `json:"step_up_at,omitempty"`
+	// SessionKind is `sk`: "admin" only on a session created by the admin
+	// console sign-in (POST /v1/auth/admin-session/verify-2fa), whose tokens
+	// live only in the host-only admin_* cookies. Absent on every consumer
+	// session. Additive: verifiers that do not know it ignore it. The gateway
+	// should require sk=admin (and the admin_access_token cookie) on /v1/admin
+	// traffic, so a consumer session that happens to carry admin_mfa=true
+	// cannot drive the console.
+	SessionKind string `json:"sk,omitempty"`
 }
+
+// SessionKindAdmin is the `sk` value of an admin console session.
+const SessionKindAdmin = "admin"
 
 // AdminSessionMaxTTL caps the access-token lifetime of a token that carries
 // admin_mfa=true, whatever the consumer ACCESS_TOKEN_TTL is.
@@ -117,6 +128,8 @@ type Session struct {
 	AMR      []string
 	AdminMFA bool
 	StepUpAt time.Time
+	// Kind is the `sk` claim; "" for consumer sessions.
+	Kind string
 }
 
 // Config is the minting configuration.
@@ -186,6 +199,9 @@ func MintSession(cfg Config, signingKey *rsa.PrivateKey, userID, sessionID uuid.
 		Scopes:    scopes,
 		TokenType: AccessTokenType,
 		AdminMFA:  sess.AdminMFA,
+	}
+	if sess.Kind == SessionKindAdmin {
+		claims.SessionKind = SessionKindAdmin
 	}
 	if !sess.AuthTime.IsZero() {
 		claims.AuthTime = sess.AuthTime.Unix()

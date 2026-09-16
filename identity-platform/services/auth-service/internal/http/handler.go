@@ -76,6 +76,13 @@ type AuthService interface {
 	StepUp(ctx context.Context, userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error)
 	ForceLogout(ctx context.Context, actorID, targetID uuid.UUID, reason string) (int, error)
 	CountOtherHolders(ctx context.Context, permission string, excludeUserID uuid.UUID) (int, error)
+	// Admin console sign-in on its own host (B3); see admin_login.go.
+	AdminLogin(ctx context.Context, identifier, password, ip, userAgent string) (*service.AdminLoginChallenge, error)
+	AdminVerify2FA(ctx context.Context, pendingToken, code string) (*service.AuthResponse, error)
+	AdminRefreshSession(ctx context.Context, refreshToken, ip, userAgent string) (*service.AuthResponse, error)
+	AdminLogout(ctx context.Context, refreshToken string) error
+	AdminStepUp(ctx context.Context, userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error)
+	AdminSessionStatusFor(ctx context.Context, userID, sessionID uuid.UUID) (*service.AdminSessionStatus, error)
 	// Service-to-service ecosystem role management. Guarded at the route by
 	// RequireInternalServiceKey and constrained in the service layer to the
 	// four ecosystem roles — a service can never mint admin or superadmin.

@@ -97,6 +97,10 @@ func (h *Handler) writeStepUpErr(c *gin.Context, err error) {
 		api.Error(c.Writer, http.StatusForbidden, CodeMFANotEnrolled, "enrol an authenticator app first (POST /v1/auth/2fa/setup)", nil, nil)
 	case errors.Is(err, service.ErrSessionNotLive):
 		api.Error(c.Writer, http.StatusUnauthorized, "SESSION_REVOKED", "Session has been revoked", nil, nil)
+	case errors.Is(err, service.ErrWrongSessionKind):
+		// An admin console session on the consumer route (use
+		// POST /v1/auth/admin-session/step-up).
+		api.Error(c.Writer, http.StatusUnauthorized, CodeWrongSession, "this session cannot be used here", nil, nil)
 	default:
 		h.log.Error("step-up failed", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)

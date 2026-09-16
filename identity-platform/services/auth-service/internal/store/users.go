@@ -62,7 +62,20 @@ type Session struct {
 	AuthTime *time.Time `json:"-"`
 	// AMR is how this session authenticated (amr claim), e.g. ["pwd","otp"].
 	AMR []string `json:"-"`
+	// Kind is SessionKindConsumer or SessionKindAdmin (auth.sessions.kind).
+	// Empty is stored as consumer. Only the admin-session sign-in sets admin.
+	Kind string `json:"kind"`
 }
+
+// Session kinds. An admin session lives only in the admin console's
+// host-only admin_* cookies; see internal/service/admin_login.go.
+const (
+	SessionKindConsumer = "consumer"
+	SessionKindAdmin    = "admin"
+)
+
+// IsAdmin reports whether this is an admin-console session.
+func (s *Session) IsAdmin() bool { return s != nil && s.Kind == SessionKindAdmin }
 
 // AnomalyFlagged returns the persisted anomaly flag. Lowercase field
 // keeps the JSON shape stable (we don't want to leak the flag to API
@@ -370,10 +383,14 @@ func (s *Store) DeleteOTP(ctx context.Context, id uuid.UUID) error {
 // --- auth.sessions ---
 
 func (s *Store) CreateSession(ctx context.Context, sess *Session) error {
+	kind := sess.Kind
+	if kind == "" {
+		kind = SessionKindConsumer
+	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO auth.sessions (session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, auth_time, amr)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8, $9, $10, $11)
-	`, sess.ID, sess.UserID, sess.RefreshToken, sess.DeviceID, sess.Platform, sess.IP, sess.UserAgent, sess.CreatedAt, sess.ExpiresAt, sess.AuthTime, sess.AMR)
+		INSERT INTO auth.sessions (session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, auth_time, amr, kind)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8, $9, $10, $11, $12)
+	`, sess.ID, sess.UserID, sess.RefreshToken, sess.DeviceID, sess.Platform, sess.IP, sess.UserAgent, sess.CreatedAt, sess.ExpiresAt, sess.AuthTime, sess.AMR, kind)
 	return err
 }
 
@@ -386,7 +403,7 @@ func scanSession(row pgx.Row) (*Session, error) {
 		&sess.DeviceID, &sess.Platform, &sess.IP, &sess.UserAgent,
 		&sess.IsActive, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt,
 		&familyID, &sess.anomalyFlagged, &sess.LastRefreshAt, &lastRefreshIP,
-		&sess.AuthTime, &sess.AMR,
+		&sess.AuthTime, &sess.AMR, &sess.Kind,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -401,7 +418,7 @@ func scanSession(row pgx.Row) (*Session, error) {
 	return &sess, nil
 }
 
-const allSessionCols = `session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, revoked_at, family_id, anomaly_flagged, last_refresh_at, last_refresh_ip, auth_time, amr`
+const allSessionCols = `session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, revoked_at, family_id, anomaly_flagged, last_refresh_at, last_refresh_ip, auth_time, amr, kind`
 
 func (s *Store) GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*Session, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+allSessionCols+` FROM auth.sessions WHERE refresh_token_hash = $1`, refreshTokenHash)
@@ -435,7 +452,7 @@ func (s *Store) ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]Ses
 			&sess.DeviceID, &sess.Platform, &sess.IP, &sess.UserAgent,
 			&sess.IsActive, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt,
 			&familyID, &sess.anomalyFlagged, &sess.LastRefreshAt, &lastRefreshIP,
-			&sess.AuthTime, &sess.AMR,
+			&sess.AuthTime, &sess.AMR, &sess.Kind,
 		); err != nil {
 			return nil, err
 		}
