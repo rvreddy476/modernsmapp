@@ -76,12 +76,22 @@ func buildDatingReportGrievance(in DatingReportGrievanceInput, now time.Time) (*
 	}, nil
 }
 
+// DatingServiceActor is the audit actor for grievances dating-service opens
+// through the service-only link route. No human is involved, so the change
+// is recorded as this named service.
+const DatingServiceActor = "dating-service"
+
 // LinkDatingReportGrievance opens (or returns the existing) grievance for a
-// dating report. Idempotent on the report id.
-func (s *Service) LinkDatingReportGrievance(ctx context.Context, in DatingReportGrievanceInput) (*postgres.Grievance, bool, error) {
+// dating report. Idempotent on the report id. A new grievance is audited as
+// created by dating-service in the same transaction.
+func (s *Service) LinkDatingReportGrievance(ctx context.Context, in DatingReportGrievanceInput, requestID string) (*postgres.Grievance, bool, error) {
 	g, err := buildDatingReportGrievance(in, time.Now())
 	if err != nil {
 		return nil, false, err
 	}
-	return s.store.UpsertDatingReportGrievance(ctx, g, in.ReportID)
+	return s.store.UpsertDatingReportGrievance(ctx, g, in.ReportID, postgres.AuditMeta{
+		Actor:     postgres.ServiceActor(DatingServiceActor),
+		Reason:    "dating report " + in.ReportID.String(),
+		RequestID: requestID,
+	})
 }

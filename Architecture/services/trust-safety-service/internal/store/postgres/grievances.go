@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -96,19 +98,121 @@ func (s *ReportStore) queryGrievances(ctx context.Context, query string, args ..
 	return out, rows.Err()
 }
 
-// UpdateGrievance applies an officer's verdict. acknowledged_at and
-// resolved_at are stamped on the first transition into those states.
-func (s *ReportStore) UpdateGrievance(ctx context.Context, id uuid.UUID, status, notes string, assignedTo *uuid.UUID) (*Grievance, error) {
-	return scanGrievance(s.db.QueryRow(ctx, `
-		UPDATE trust.grievances
-		SET status = $2,
-		    resolution_notes = $3,
-		    assigned_to = $4,
-		    acknowledged_at = CASE WHEN acknowledged_at IS NULL AND $2 <> 'open'
-		                           THEN NOW() ELSE acknowledged_at END,
-		    resolved_at = CASE WHEN $2 IN ('resolved', 'rejected')
-		                       THEN NOW() ELSE resolved_at END,
-		    updated_at = NOW()
-		WHERE id = $1
-		RETURNING `+grievanceCols, id, status, notes, assignedTo))
+// ErrNoChange is returned when a grievance update would change nothing.
+var ErrNoChange = errors.New("the update changes nothing")
+
+// GrievanceUpdate is one officer change to a grievance. Empty Status keeps
+// the status, nil Notes keeps the notes, nil AssignedTo keeps the officer.
+type GrievanceUpdate struct {
+	Status     string
+	Notes      *string
+	AssignedTo *uuid.UUID
+	// Allow checks a status transition; nil allows any.
+	Allow func(from, to string) bool
+}
+
+func grievanceTerminal(status string) bool {
+	return status == "resolved" || status == "rejected"
+}
+
+// UpdateGrievance locks the grievance, applies the change and writes its
+// audit row (including the from/to officer) in one transaction.
+// acknowledged_at and resolved_at are stamped on the first transition into
+// those states. A resolved or rejected grievance is not changed.
+func (s *ReportStore) UpdateGrievance(ctx context.Context, id uuid.UUID, up GrievanceUpdate, meta AuditMeta) (*Grievance, error) {
+	if err := meta.Actor.Validate(); err != nil {
+		return nil, err
+	}
+	var out *Grievance
+	err := withTx(ctx, s.db.Begin, func(tx pgx.Tx) error {
+		var prevStatus, prevNotes string
+		var prevAssignee *uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT status, assigned_to, resolution_notes
+			FROM trust.grievances WHERE id = $1 FOR UPDATE
+		`, id).Scan(&prevStatus, &prevAssignee, &prevNotes); err != nil {
+			return err
+		}
+		if grievanceTerminal(prevStatus) {
+			return fmt.Errorf("%w: grievance is %s", ErrInvalidTransition, prevStatus)
+		}
+		newStatus := prevStatus
+		if up.Status != "" {
+			if up.Allow != nil && !up.Allow(prevStatus, up.Status) {
+				return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, prevStatus, up.Status)
+			}
+			newStatus = up.Status
+		}
+		newAssignee := prevAssignee
+		if up.AssignedTo != nil {
+			a := *up.AssignedTo
+			newAssignee = &a
+		}
+		newNotes := prevNotes
+		if up.Notes != nil {
+			newNotes = *up.Notes
+		}
+		assigneeChanged := !sameUUID(prevAssignee, newAssignee)
+		if up.Status == "" && !assigneeChanged && newNotes == prevNotes {
+			return ErrNoChange
+		}
+		g, err := scanGrievance(tx.QueryRow(ctx, `
+			UPDATE trust.grievances
+			SET status = $2,
+			    resolution_notes = $3,
+			    assigned_to = $4,
+			    acknowledged_at = CASE WHEN acknowledged_at IS NULL AND $2 <> 'open'
+			                           THEN NOW() ELSE acknowledged_at END,
+			    resolved_at = CASE WHEN $2 IN ('resolved', 'rejected')
+			                       THEN NOW() ELSE resolved_at END,
+			    updated_at = NOW()
+			WHERE id = $1
+			RETURNING `+grievanceCols, id, newStatus, newNotes, newAssignee))
+		if err != nil {
+			return err
+		}
+		action := "grievance.noted"
+		switch {
+		case up.Status != "":
+			action = "grievance." + up.Status
+		case assigneeChanged:
+			action = "grievance.assigned"
+		}
+		if err := insertAudit(ctx, tx, meta, auditChange{
+			Action:         action,
+			TargetType:     AuditTargetGrievance,
+			TargetID:       id,
+			PrevStatus:     prevStatus,
+			NewStatus:      g.Status,
+			PrevAssignee:   prevAssignee,
+			NewAssignee:    g.AssignedTo,
+			PrevResolution: prevNotes,
+			NewResolution:  g.ResolutionNotes,
+		}); err != nil {
+			return err
+		}
+		out = g
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func sameUUID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// ListOverdueGrievances is the 15-day breach queue: grievances past due_at
+// that are still open or acknowledged, most overdue first.
+func (s *ReportStore) ListOverdueGrievances(ctx context.Context, limit, offset int) ([]Grievance, error) {
+	return s.queryGrievances(ctx, `
+		SELECT `+grievanceCols+` FROM trust.grievances
+		WHERE status IN ('open', 'acknowledged') AND due_at < NOW()
+		ORDER BY due_at ASC, id ASC LIMIT $1 OFFSET $2
+	`, limit, offset)
 }

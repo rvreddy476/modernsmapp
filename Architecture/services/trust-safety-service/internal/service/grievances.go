@@ -77,23 +77,48 @@ func (s *Service) ListMyGrievances(ctx context.Context, userID uuid.UUID, limit,
 	return s.store.ListGrievancesByUser(ctx, userID, limit, offset)
 }
 
-// UpdateGrievance applies an officer's verdict, enforcing the status
-// state machine.
-func (s *Service) UpdateGrievance(ctx context.Context, id uuid.UUID, newStatus, notes string, assignedTo *uuid.UUID) (*postgres.Grievance, error) {
-	current, err := s.store.GetGrievance(ctx, id)
-	if err != nil {
+// ListOverdueGrievances is the 15-day breach queue: unresolved grievances
+// past due_at, most overdue first.
+func (s *Service) ListOverdueGrievances(ctx context.Context, limit, offset int) ([]postgres.Grievance, error) {
+	return s.store.ListOverdueGrievances(ctx, limit, offset)
+}
+
+// GrievanceHistory returns every audited change to a grievance, oldest
+// first: who filed or changed it, status, officer hand-overs and notes.
+func (s *Service) GrievanceHistory(ctx context.Context, id uuid.UUID) ([]postgres.AuditEntry, error) {
+	return s.store.ListAudit(ctx, postgres.AuditTargetGrievance, id)
+}
+
+// GrievanceChange is one officer change: a new status, new notes, a new
+// assigned officer, or any combination. Empty/nil fields are kept.
+type GrievanceChange struct {
+	Status     string
+	Notes      *string
+	AssignedTo *uuid.UUID
+}
+
+// UpdateGrievance applies an officer's change, enforcing the status state
+// machine. The update and its audit row share one transaction.
+func (s *Service) UpdateGrievance(ctx context.Context, id uuid.UUID, change GrievanceChange, meta postgres.AuditMeta) (*postgres.Grievance, error) {
+	if err := meta.Actor.Validate(); err != nil {
 		return nil, err
 	}
-	allowed := validGrievanceTransitions[current.Status]
-	ok := false
-	for _, a := range allowed {
-		if a == newStatus {
-			ok = true
-			break
+	if change.Status != "" {
+		if _, known := validGrievanceTransitions[change.Status]; !known {
+			return nil, fmt.Errorf("invalid status: %s", change.Status)
 		}
 	}
-	if !ok {
-		return nil, fmt.Errorf("invalid status transition: %s -> %s", current.Status, newStatus)
-	}
-	return s.store.UpdateGrievance(ctx, id, newStatus, notes, assignedTo)
+	return s.store.UpdateGrievance(ctx, id, postgres.GrievanceUpdate{
+		Status:     change.Status,
+		Notes:      change.Notes,
+		AssignedTo: change.AssignedTo,
+		Allow: func(from, to string) bool {
+			for _, a := range validGrievanceTransitions[from] {
+				if a == to {
+					return true
+				}
+			}
+			return false
+		},
+	}, meta)
 }

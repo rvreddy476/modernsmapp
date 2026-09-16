@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -154,23 +156,54 @@ func (s *ReportStore) GetReport(ctx context.Context, reportID uuid.UUID) (*Repor
 	return &r, nil
 }
 
-func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, status string, assignedTo *uuid.UUID, resolutionNotes string) (*Report, error) {
-	query := `
-        UPDATE trust.reports
-        SET status = $2,
-            assigned_to = $3,
-            resolved_at = CASE WHEN $2 IN ('resolved', 'dismissed') THEN NOW() ELSE resolved_at END,
-            resolution_notes = $4,
-            updated_at = NOW()
-        WHERE id = $1
-        RETURNING id, reporter_id, entity_type, entity_id, reason, details, status,
-                  assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
-    `
+// UpdateReport locks the report, checks allow(current status), applies the
+// change and writes its audit row in one transaction. An audit failure
+// rolls the change back.
+func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, allow func(current string) bool, status string, assignedTo *uuid.UUID, resolutionNotes string, meta AuditMeta) (*Report, error) {
+	if err := meta.Actor.Validate(); err != nil {
+		return nil, err
+	}
 	var r Report
-	err := s.db.QueryRow(ctx, query, reportID, status, assignedTo, resolutionNotes).Scan(
-		&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
-		&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
-	)
+	err := withTx(ctx, s.db.Begin, func(tx pgx.Tx) error {
+		var prevStatus, prevNotes string
+		var prevAssignee *uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT status, assigned_to, COALESCE(resolution_notes, '')
+			FROM trust.reports WHERE id = $1 FOR UPDATE
+		`, reportID).Scan(&prevStatus, &prevAssignee, &prevNotes); err != nil {
+			return err
+		}
+		if allow != nil && !allow(prevStatus) {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, prevStatus, status)
+		}
+		if err := tx.QueryRow(ctx, `
+			UPDATE trust.reports
+			SET status = $2,
+			    assigned_to = $3,
+			    resolved_at = CASE WHEN $2 IN ('resolved', 'dismissed') THEN NOW() ELSE resolved_at END,
+			    resolution_notes = $4,
+			    updated_at = NOW()
+			WHERE id = $1
+			RETURNING id, reporter_id, entity_type, entity_id, reason, details, status,
+			          assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at
+		`, reportID, status, assignedTo, resolutionNotes).Scan(
+			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return err
+		}
+		return insertAudit(ctx, tx, meta, auditChange{
+			Action:         "report." + status,
+			TargetType:     AuditTargetReport,
+			TargetID:       reportID,
+			PrevStatus:     prevStatus,
+			NewStatus:      r.Status,
+			PrevAssignee:   prevAssignee,
+			NewAssignee:    r.AssignedTo,
+			PrevResolution: prevNotes,
+			NewResolution:  r.ResolutionNotes,
+		})
+	})
 	if err != nil {
 		return nil, err
 	}

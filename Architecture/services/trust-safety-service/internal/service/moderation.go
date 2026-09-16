@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/atpost/shared/events"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -159,32 +161,39 @@ func (s *Service) GetReport(ctx context.Context, reportIDStr string) (*postgres.
 	return s.store.GetReport(ctx, reportID)
 }
 
-func (s *Service) UpdateReport(ctx context.Context, actorID, reportIDStr, newStatus string, assignedTo *uuid.UUID, resolutionNotes string) (*postgres.Report, error) {
+// ErrActorRequired: a change with no verified human or named service actor.
+var ErrActorRequired = postgres.ErrActorRequired
+
+// UpdateReport applies an admin's report change. The transition check, the
+// update and the audit row share one transaction; the Kafka event is
+// published only after commit and stays best-effort.
+func (s *Service) UpdateReport(ctx context.Context, meta postgres.AuditMeta, reportIDStr, newStatus string, assignedTo *uuid.UUID, resolutionNotes string) (*postgres.Report, error) {
+	if err := meta.Actor.Validate(); err != nil {
+		return nil, err
+	}
 	reportID, err := uuid.Parse(reportIDStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid report ID")
 	}
 
-	current, err := s.store.GetReport(ctx, reportID)
-	if err != nil {
-		return nil, fmt.Errorf("report not found: %w", err)
-	}
-
-	allowed := validTransitions[current.Status]
-	valid := false
-	for _, st := range allowed {
-		if st == newStatus {
-			valid = true
-			break
+	allow := func(current string) bool {
+		for _, st := range validTransitions[current] {
+			if st == newStatus {
+				return true
+			}
 		}
+		return false
 	}
-	if !valid {
-		return nil, fmt.Errorf("invalid transition from %s to %s", current.Status, newStatus)
-	}
-
-	report, err := s.store.UpdateReport(ctx, reportID, newStatus, assignedTo, resolutionNotes)
+	report, err := s.store.UpdateReport(ctx, reportID, allow, newStatus, assignedTo, resolutionNotes, meta)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("report not found: %w", err)
+		}
 		return nil, err
+	}
+	actorID := meta.Actor.Service
+	if meta.Actor.UserID != uuid.Nil {
+		actorID = meta.Actor.UserID.String()
 	}
 
 	// Publish event for terminal statuses

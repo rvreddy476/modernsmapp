@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,7 +28,25 @@ func openM7TrustDB(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(context.Background(), database.SetupSQL); err != nil {
+	// Integration tests only ever run on a scratch database ending in _test.
+	if name := pool.Config().ConnConfig.Database; !strings.HasSuffix(name, "_test") {
+		pool.Close()
+		t.Fatalf("refusing to run against database %q: name must end in _test", name)
+	}
+	// Test packages run in parallel against the same scratch database:
+	// apply the schema in one transaction under an advisory lock so their
+	// DDL never interleaves.
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(), `SELECT pg_advisory_xact_lock(7710010)`); err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), database.SetupSQL); err != nil {
 		pool.Close()
 		t.Fatalf("apply real setup.sql: %v", err)
 	}
@@ -35,17 +54,24 @@ func openM7TrustDB(t *testing.T) *pgxpool.Pool {
 		"migrations/002_case_workflow.sql",
 		"migrations/004_trust_extras.sql",
 		"migrations/005_report_categories.sql",
+		"migrations/007_grievances.sql",
 		"migrations/008_launch_report_and_appeal_integrity.sql",
+		"migrations/009_dating_report_grievances.sql",
+		"migrations/010_admin_audit.sql",
 	} {
 		raw, readErr := database.Migrations.ReadFile(name)
 		if readErr != nil {
 			pool.Close()
 			t.Fatal(readErr)
 		}
-		if _, execErr := pool.Exec(context.Background(), string(raw)); execErr != nil {
+		if _, execErr := tx.Exec(context.Background(), string(raw)); execErr != nil {
 			pool.Close()
 			t.Fatalf("apply real %s: %v", name, execErr)
 		}
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		pool.Close()
+		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
@@ -188,7 +214,7 @@ func TestAppealOwnershipDedupAndRetryAfterCanonicalSuccess(t *testing.T) {
 	if _, err := pool.Exec(ctx, `CREATE TRIGGER m7_fail_appeal_update BEFORE UPDATE ON trust.content_appeals FOR EACH ROW EXECUTE FUNCTION trust.m7_fail_appeal_update()`); err != nil {
 		t.Fatal(err)
 	}
-	reviewer := uuid.New()
+	reviewer := postgres.AuditMeta{Actor: postgres.UserActor(uuid.New())}
 	if err := svc.ReviewAppeal(ctx, appeal.ID, "overturned", "restored", reviewer); err == nil {
 		t.Fatal("injected appeal update failure succeeded")
 	}

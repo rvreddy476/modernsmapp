@@ -75,7 +75,7 @@ func (h *Handler) LinkDatingReportGrievance(c *gin.Context) {
 		Reason:     req.Reason,
 		Details:    req.Details,
 		ReportedAt: req.ReportedAt,
-	})
+	}, requestIDOf(c))
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidDatingReport) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)

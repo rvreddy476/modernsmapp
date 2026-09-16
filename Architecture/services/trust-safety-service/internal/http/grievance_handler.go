@@ -4,8 +4,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/shared/api"
+	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -92,7 +94,19 @@ func (h *Handler) ListGrievances(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
 			return
 		}
-		list, err = h.svc.ListGrievances(c.Request.Context(), c.Query("status"), limit, offset)
+		switch c.Query("overdue") {
+		case "true":
+			if c.Query("status") != "" {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "overdue cannot be combined with status", nil)
+				return
+			}
+			list, err = h.svc.ListOverdueGrievances(c.Request.Context(), limit, offset)
+		case "", "false":
+			list, err = h.svc.ListGrievances(c.Request.Context(), c.Query("status"), limit, offset)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "overdue must be true or false", nil)
+			return
+		}
 	}
 	if err != nil {
 		slog.Error("ListGrievances error", "error", err)
@@ -106,19 +120,23 @@ func (h *Handler) ListGrievances(c *gin.Context) {
 }
 
 type updateGrievanceRequest struct {
-	Status          string `json:"status" binding:"required,oneof=acknowledged resolved rejected"`
-	ResolutionNotes string `json:"resolution_notes"`
+	Status          string  `json:"status" binding:"omitempty,oneof=acknowledged resolved rejected"`
+	ResolutionNotes *string `json:"resolution_notes"`
+	// AssignedTo hands the grievance to another officer. When omitted on a
+	// status change, the acting officer becomes the assignee.
+	AssignedTo *string `json:"assigned_to"`
 }
 
-// UpdateGrievance records an officer's verdict on a grievance.
+// UpdateGrievance records an officer's verdict and/or assignment. Every
+// change writes one audit row (who, from/to status and officer, notes).
 func (h *Handler) UpdateGrievance(c *gin.Context) {
-	officerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
+		return
+	}
+	meta, ok := adminAuditMeta(c, "")
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, codeActorRequired, "A verified admin user is required", nil)
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -131,10 +149,56 @@ func (h *Handler) UpdateGrievance(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	g, err := h.svc.UpdateGrievance(c.Request.Context(), id, req.Status, req.ResolutionNotes, &officerID)
+	change := service.GrievanceChange{Status: req.Status, Notes: req.ResolutionNotes}
+	if req.AssignedTo != nil {
+		assignee, err := uuid.Parse(strings.TrimSpace(*req.AssignedTo))
+		if err != nil || assignee == uuid.Nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid assigned_to", nil)
+			return
+		}
+		change.AssignedTo = &assignee
+	} else if req.Status != "" {
+		officer := meta.Actor.UserID
+		change.AssignedTo = &officer
+	}
+	if change.Status == "" && change.AssignedTo == nil && change.Notes == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "status, assigned_to or resolution_notes is required", nil)
+		return
+	}
+	if req.ResolutionNotes != nil {
+		meta.Reason = *req.ResolutionNotes
+	}
+	g, err := h.svc.UpdateGrievance(c.Request.Context(), id, change, meta)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		writeAuditedChangeError(c, "UpdateGrievance", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, g, nil)
+}
+
+// GetGrievanceHistory — GET /v1/grievances/:id/history. Admin scope only.
+// Returns every audited change to the grievance in order, including each
+// officer assignment (prev_assignee -> new_assignee, who, when).
+func (h *Handler) GetGrievanceHistory(c *gin.Context) {
+	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid grievance ID", nil)
+		return
+	}
+	g, err := h.svc.GetGrievance(c.Request.Context(), id)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Grievance not found", nil)
+		return
+	}
+	history, err := h.svc.GrievanceHistory(c.Request.Context(), id)
+	if err != nil {
+		slog.Error("GrievanceHistory error", "error", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load grievance history", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"grievance": g, "items": history}, nil)
 }

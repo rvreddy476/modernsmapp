@@ -90,9 +90,9 @@ func (h *Handler) ReviewAppeal(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
-	reviewerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid reviewer ID", nil)
+	meta, ok := adminAuditMeta(c, "")
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, codeActorRequired, "A verified admin user is required", nil)
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -105,9 +105,9 @@ func (h *Handler) ReviewAppeal(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	if err := h.svc.ReviewAppeal(c.Request.Context(), id, req.Status, req.Note, reviewerID); err != nil {
-		slog.Error("ReviewAppeal", "err", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+	meta.Reason = req.Note
+	if err := h.svc.ReviewAppeal(c.Request.Context(), id, req.Status, req.Note, meta); err != nil {
+		writeAuditedChangeError(c, "ReviewAppeal", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)

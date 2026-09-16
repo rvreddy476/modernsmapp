@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // hasScope reports whether the space-separated scopes string contains the exact target scope.
@@ -97,10 +98,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// IT Rules 2021 grievance redressal.
 	grievances := r.Group("/v1/grievances")
 	{
-		grievances.POST("", h.FileGrievance)        // any user lodges a grievance
-		grievances.GET("", h.ListGrievances)        // ?mine=true: own; else officer queue
-		grievances.GET("/:id", h.GetGrievance)      // complainant or officer
-		grievances.PATCH("/:id", h.UpdateGrievance) // officer verdict
+		grievances.POST("", h.FileGrievance)                  // any user lodges a grievance
+		grievances.GET("", h.ListGrievances)                  // ?mine=true: own; else officer queue (?status=, ?overdue=true)
+		grievances.GET("/:id", h.GetGrievance)                // complainant or officer
+		grievances.GET("/:id/history", h.GetGrievanceHistory) // admin: full audited history
+		grievances.PATCH("/:id", h.UpdateGrievance)           // officer verdict and/or assignment
 	}
 }
 
@@ -232,9 +234,10 @@ func (h *Handler) UpdateReport(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
-	actorID := c.GetHeader("X-User-Id")
-	if actorID == "" {
-		actorID = "system-admin"
+	meta, ok := adminAuditMeta(c, "")
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, codeActorRequired, "A verified admin user is required", nil)
+		return
 	}
 	reportID := c.Param("id")
 	if _, err := uuid.Parse(reportID); err != nil {
@@ -249,15 +252,36 @@ func (h *Handler) UpdateReport(c *gin.Context) {
 	var assignedTo *uuid.UUID
 	if req.AssignedTo != nil {
 		id, err := uuid.Parse(*req.AssignedTo)
-		if err == nil {
-			assignedTo = &id
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid assigned_to", nil)
+			return
 		}
+		assignedTo = &id
 	}
-	report, err := h.svc.UpdateReport(c.Request.Context(), actorID, reportID, req.Status, assignedTo, req.ResolutionNotes)
+	meta.Reason = req.ResolutionNotes
+	report, err := h.svc.UpdateReport(c.Request.Context(), meta, reportID, req.Status, assignedTo, req.ResolutionNotes)
 	if err != nil {
-		slog.Error("UpdateReport error", "error", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		writeAuditedChangeError(c, "UpdateReport", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, report, nil)
+}
+
+// writeAuditedChangeError maps an audited report/appeal/grievance change
+// failure to a response.
+func writeAuditedChangeError(c *gin.Context, op string, err error) {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, postgres.ErrActorRequired):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, codeActorRequired, "A verified admin user is required", nil)
+	case errors.Is(err, pgx.ErrNoRows):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", "Not found", nil)
+	case errors.Is(err, postgres.ErrInvalidTransition):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_TRANSITION", err.Error(), nil)
+	case errors.Is(err, postgres.ErrNoChange):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "NO_CHANGE", err.Error(), nil)
+	default:
+		slog.Error(op+" error", "error", err)
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+	}
 }

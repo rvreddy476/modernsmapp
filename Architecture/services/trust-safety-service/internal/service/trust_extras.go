@@ -70,7 +70,14 @@ func (s *Service) SubmitAppeal(ctx context.Context, userID uuid.UUID, contentTyp
 	return appeal, nil
 }
 
-func (s *Service) ReviewAppeal(ctx context.Context, id uuid.UUID, status, note string, reviewerID uuid.UUID) error {
+// ReviewAppeal applies a human reviewer's decision. The appeal update and
+// its audit row share one transaction.
+func (s *Service) ReviewAppeal(ctx context.Context, id uuid.UUID, status, note string, meta postgres.AuditMeta) error {
+	// Appeals are decided by people: a service actor is not a reviewer.
+	if meta.Actor.UserID == uuid.Nil || meta.Actor.Validate() != nil {
+		return ErrActorRequired
+	}
+	reviewerID := meta.Actor.UserID
 	if s.extras == nil || s.postModeration == nil {
 		return errors.New("appeals are unavailable")
 	}
@@ -111,7 +118,7 @@ func (s *Service) ReviewAppeal(ctx context.Context, id uuid.UUID, status, note s
 			return fmt.Errorf("canonical post overturn failed: %w", err)
 		}
 	}
-	changed, err := s.extras.TransitionAppeal(ctx, id, from, status, note, &reviewerID)
+	changed, err := s.extras.TransitionAppeal(ctx, id, from, status, note, meta)
 	if err != nil {
 		return err
 	}

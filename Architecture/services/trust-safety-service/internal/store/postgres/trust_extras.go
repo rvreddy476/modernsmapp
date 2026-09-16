@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -189,16 +190,73 @@ func (s *TrustExtrasStore) ListUserAppeals(ctx context.Context, userID uuid.UUID
 	return appeals, nil
 }
 
-func (s *TrustExtrasStore) TransitionAppeal(ctx context.Context, id uuid.UUID, from []string, status, note string, reviewerID *uuid.UUID) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE trust.content_appeals
-		SET status = $2,
-		    resolution_note = NULLIF($3, ''),
-		    reviewed_by = $4,
-		    resolved_at = CASE WHEN $2 IN ('upheld','overturned','expired') THEN NOW() ELSE resolved_at END
-		WHERE id = $1 AND status = ANY($5)
-	`, id, status, note, reviewerID, from)
-	return tag.RowsAffected() == 1, err
+// TransitionAppeal moves an appeal whose status is in from to status and
+// writes the audit row in the same transaction. It reports false (and
+// writes nothing) when the appeal is missing or not in an allowed state.
+// The reviewer is the human actor in meta.
+func (s *TrustExtrasStore) TransitionAppeal(ctx context.Context, id uuid.UUID, from []string, status, note string, meta AuditMeta) (bool, error) {
+	if err := meta.Actor.Validate(); err != nil {
+		return false, err
+	}
+	var reviewer *uuid.UUID
+	if meta.Actor.UserID != uuid.Nil {
+		rid := meta.Actor.UserID
+		reviewer = &rid
+	}
+	changed := false
+	err := withTx(ctx, s.db.Begin, func(tx pgx.Tx) error {
+		var prevStatus, prevNote string
+		var prevReviewer *uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT status, reviewed_by, COALESCE(resolution_note, '')
+			FROM trust.content_appeals WHERE id = $1 FOR UPDATE
+		`, id).Scan(&prevStatus, &prevReviewer, &prevNote)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		allowed := false
+		for _, f := range from {
+			if f == prevStatus {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE trust.content_appeals
+			SET status = $2,
+			    resolution_note = NULLIF($3, ''),
+			    reviewed_by = $4,
+			    resolved_at = CASE WHEN $2 IN ('upheld','overturned','expired') THEN NOW() ELSE resolved_at END
+			WHERE id = $1
+		`, id, status, note, reviewer); err != nil {
+			return err
+		}
+		if err := insertAudit(ctx, tx, meta, auditChange{
+			Action:         "appeal." + status,
+			TargetType:     AuditTargetAppeal,
+			TargetID:       id,
+			PrevStatus:     prevStatus,
+			NewStatus:      status,
+			PrevAssignee:   prevReviewer,
+			NewAssignee:    reviewer,
+			PrevResolution: prevNote,
+			NewResolution:  note,
+		}); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return changed, nil
 }
 
 // HasOpenAppeal checks if an open appeal already exists for the same user+content.
