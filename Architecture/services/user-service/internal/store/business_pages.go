@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // BusinessPage represents a business listing page.
@@ -278,6 +279,17 @@ func (s *Store) UpdatePageStatus(ctx context.Context, pageID uuid.UUID, to strin
 	}
 	defer tx.Rollback(ctx)
 
+	if err := applyPageStatus(ctx, tx, pageID, to, actorID, reason); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// applyPageStatus writes one lifecycle transition and its side effects inside
+// the caller's transaction. Shared by UpdatePageStatus (owner submit) and
+// AdminSetPageStatus (audited admin decisions, page_admin.go).
+func applyPageStatus(ctx context.Context, tx pgx.Tx, pageID uuid.UUID, to string, actorID uuid.UUID, reason string) error {
+	var err error
 	switch to {
 	case "pending_review":
 		_, err = tx.Exec(ctx,
@@ -314,10 +326,7 @@ func (s *Store) UpdatePageStatus(ctx context.Context, pageID uuid.UUID, to strin
 	default:
 		return fmt.Errorf("UNSUPPORTED_STATUS")
 	}
-	if err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return err
 }
 
 // GetPageReviews returns reviews for a business page with pagination.

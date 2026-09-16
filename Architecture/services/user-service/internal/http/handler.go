@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/shared/api"
 	"github.com/atpost/shared/httpclient"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/presence"
 	"github.com/atpost/user-service/internal/service"
@@ -40,6 +41,13 @@ type Handler struct {
 	// pageAdmins is the platform-admin allowlist for page lifecycle actions
 	// (approve/reject/suspend/disable + doc review), from PAGES_ADMIN_USER_IDS.
 	pageAdmins map[string]bool
+	// pageAdmin backs every platform page decision (legacy and admin-service
+	// token paths) with its audit row. It is store in production; tests
+	// substitute a fake. See admin_token.go.
+	pageAdmin pageAdminStore
+	// adminVerifier admits admin-service tokens (audience "social") to the
+	// token-only family /v1/users/internal/admin. Nil admits none.
+	adminVerifier *servicetoken.Verifier
 }
 
 func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *Handler {
@@ -49,6 +57,9 @@ func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *
 	}
 	h := &Handler{svc: svc, users: svc, store: st, graphURL: graphURL, presenceStore: presenceStore}
 	h.graphClient = httpclient.NewWithBreaker(5*time.Second, "user->graph")
+	if st != nil {
+		h.pageAdmin = st
+	}
 	h.pageAdmins = map[string]bool{}
 	for _, id := range strings.Split(os.Getenv("PAGES_ADMIN_USER_IDS"), ",") {
 		if id = strings.TrimSpace(id); id != "" {
@@ -176,6 +187,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal.GET("/channels/by-owner/:userId", h.GetChannelByOwner)
 	internal.GET("/channels/:channelId/subscriber-ids", h.ListSubscriberIDs)
 	internal.GET("/users/:userId/subscribed-owner-ids", h.ListSubscribedOwners)
+
+	// Admin console (admin-service tokens only): outside the /internal key
+	// group, refused at the edge by the gateway's internal-path rule, and
+	// judged ONLY by the token. See admin_token.go.
+	h.registerAdminTokenRoutes(r.Group(InternalAdminPrefix))
 
 	v1 := r.Group("/v1/users")
 	{

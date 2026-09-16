@@ -240,6 +240,17 @@ func main() {
 		userHandler.WithServiceAuth(serviceCallers)
 		slog.Info("user-service: service-token callers registered for private profile reads", "callers", serviceCallers.Callers())
 	}
+	// Admin console: /v1/users/internal/admin/* admits only admin-service
+	// tokens for audience "social", from the same SERVICE_CALLERS registry.
+	adminCallers, err := http.AdminServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("refusing to start: invalid SERVICE_CALLERS for the admin family", "error", err)
+		os.Exit(1)
+	}
+	userHandler.WithAdminServiceAuth(adminCallers)
+	if adminCallers == nil {
+		slog.Warn("user-service: no SERVICE_CALLERS — /v1/users/internal/admin/* answers 401 (legacy PAGES_ADMIN_USER_IDS routes unaffected)")
+	}
 
 	// 8. Kafka Consumer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()

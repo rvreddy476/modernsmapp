@@ -150,11 +150,19 @@ func (h *Handler) profileFor(c *gin.Context, u *store.User) *store.User {
 // fields. A named caller with a missing key or an empty operation list is a
 // configuration error, never "allow everything".
 func ServiceCallersFromEnv(getenv func(string) string) (*servicetoken.Verifier, error) {
+	return serviceCallersForAudience(getenv, AudienceUserService)
+}
+
+// serviceCallersForAudience builds a verifier for one audience from the
+// SERVICE_CALLERS registry. A servicetoken.Verifier checks a single audience,
+// so each audience this service accepts gets its own verifier over the same
+// registered keys and operation lists (see AdminServiceCallersFromEnv).
+func serviceCallersForAudience(getenv func(string) string, audience string) (*servicetoken.Verifier, error) {
 	raw := strings.TrimSpace(getenv("SERVICE_CALLERS"))
 	if raw == "" {
 		return nil, nil
 	}
-	v := servicetoken.NewVerifier(AudienceUserService)
+	v := servicetoken.NewVerifier(audience)
 	for _, name := range strings.Split(raw, ",") {
 		name = strings.TrimSpace(name)
 		if name == "" {

@@ -627,56 +627,60 @@ func (h *Handler) SubmitPageForReview(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": pages.StatusPendingReview}, nil)
 }
 
-// adminTransition is the shared body for the four admin lifecycle endpoints.
-func (h *Handler) adminTransition(c *gin.Context, to string, reasonRequired bool) {
+// legacyPageAdmin admits a PAGES_ADMIN_USER_IDS caller and returns their id.
+// This path never reads a service token (admin-service uses
+// /v1/users/internal/admin, admin_token.go).
+func (h *Handler) legacyPageAdmin(c *gin.Context) (uuid.UUID, bool) {
 	if !h.isPageAdmin(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "forbidden", "Platform admin only", nil)
+		return uuid.Nil, false
+	}
+	adminID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil || adminID == uuid.Nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "forbidden", "Platform admin only", nil)
+		return uuid.Nil, false
+	}
+	return adminID, true
+}
+
+// adminTransition is the shared body for the four legacy admin lifecycle
+// endpoints. The decision and its page_admin_audit row commit together.
+func (h *Handler) adminTransition(c *gin.Context, action, to string, reasonRequired bool) {
+	adminID, ok := h.legacyPageAdmin(c)
+	if !ok {
 		return
 	}
-	adminID, _ := uuid.Parse(c.GetHeader("X-User-Id"))
-	p, err := h.svc.GetBusinessPage(c.Request.Context(), c.Param("id"), nil)
-	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "not_found", "Page not found", nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	p, ok := h.loadAdminPage(c, c.Param("id"), false)
+	if !ok {
 		return
 	}
-	var reason string
-	if reasonRequired {
-		var body struct {
-			Reason string `json:"reason"`
-		}
-		_ = c.ShouldBindJSON(&body)
-		if strings.TrimSpace(body.Reason) == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "validation_error", "reason is required", nil)
-			return
-		}
-		reason = body.Reason
-	}
-	if !pages.CanTransition(p.Status, to) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "conflict", "Illegal status transition", nil)
+	reason := requestReason(c)
+	if reasonRequired && reason == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "validation_error", "reason is required", nil)
 		return
 	}
-	if err := h.svc.UpdatePageStatus(c.Request.Context(), p.ID, adminID, to, reason); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": to}, nil)
+	h.decidePage(c, p, action, to, adminID, store.ViaPagesAllowlist, reason)
 }
 
 // ApprovePage — POST /v1/pages/:id/approve (admin; spec §6.4).
-func (h *Handler) ApprovePage(c *gin.Context) { h.adminTransition(c, pages.StatusApproved, false) }
+func (h *Handler) ApprovePage(c *gin.Context) {
+	h.adminTransition(c, store.PageActionApprove, pages.StatusApproved, false)
+}
 
 // RejectPage — POST /v1/pages/:id/reject (admin; spec §6.5, reason required).
-func (h *Handler) RejectPage(c *gin.Context) { h.adminTransition(c, pages.StatusRejected, true) }
+func (h *Handler) RejectPage(c *gin.Context) {
+	h.adminTransition(c, store.PageActionReject, pages.StatusRejected, true)
+}
 
 // SuspendPage — POST /v1/pages/:id/suspend (admin; spec §6.6, reason required).
-func (h *Handler) SuspendPage(c *gin.Context) { h.adminTransition(c, pages.StatusSuspended, true) }
+func (h *Handler) SuspendPage(c *gin.Context) {
+	h.adminTransition(c, store.PageActionSuspend, pages.StatusSuspended, true)
+}
 
 // DisablePage — POST /v1/pages/:id/disable (admin; spec §6.7, terminal).
-func (h *Handler) DisablePage(c *gin.Context) { h.adminTransition(c, pages.StatusDisabled, false) }
+func (h *Handler) DisablePage(c *gin.Context) {
+	h.adminTransition(c, store.PageActionDisable, pages.StatusDisabled, false)
+}
 
 // --- Page verification documents (spec §6.15, §6.16) ---
 
@@ -714,37 +718,23 @@ func (h *Handler) AddPageDocument(c *gin.Context) {
 
 // ReviewPageDocument — POST /v1/pages/:id/documents/:docId/:action (admin).
 func (h *Handler) ReviewPageDocument(c *gin.Context) {
-	if !h.isPageAdmin(c) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "forbidden", "Platform admin only", nil)
+	adminID, ok := h.legacyPageAdmin(c)
+	if !ok {
 		return
 	}
-	adminID, _ := uuid.Parse(c.GetHeader("X-User-Id"))
 	docID, err := uuid.Parse(c.Param("docId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "validation_error", "Invalid document ID", nil)
 		return
 	}
 	action := c.Param("action")
-	status := "approved"
-	if action == "reject" {
-		status = "rejected"
-	} else if action != "approve" {
+	if action != "approve" && action != "reject" {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "validation_error", "action must be approve or reject", nil)
 		return
 	}
-	var body struct {
-		Reason string `json:"reason"`
-	}
-	_ = c.ShouldBindJSON(&body)
-	if err := h.svc.SetPageDocStatus(c.Request.Context(), docID, adminID, status, body.Reason); err != nil {
-		if errors.Is(err, store.ErrPageNotFound) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "not_found", "Document not found", nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": status}, nil)
+	// The legacy route never tied :id to the document (:id may be a handle),
+	// so uuid.Nil keeps that; the audit row records the document's real page.
+	h.decideDocument(c, uuid.Nil, docID, action == "approve", adminID, store.ViaPagesAllowlist, requestReason(c))
 }
 
 // ListPageDocuments — GET /v1/pages/:id/documents (owner/admin).
