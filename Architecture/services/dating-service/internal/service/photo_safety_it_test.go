@@ -539,3 +539,104 @@ func TestPhotoDelete_CallsMediaDelete(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+// ---------------------------------------------------------------------------
+// Lane D6 — blurred-until-match is ON for new profiles (internal pilot).
+//
+// The switch is dating_profiles.blur_photos_until_match, whose DEFAULT
+// setup.sql flips to true; nothing in profile creation writes it. These tests
+// run against the bootstrapped schema, so a default that regresses to false
+// fails here rather than in the deck.
+// ---------------------------------------------------------------------------
+
+// A profile nobody has configured is blurred to strangers: the privacy read
+// says so, and the stranger's deck card names the blurred image route even
+// though the primary photo's own visibility is "public".
+func TestD6_NewProfileBlursPhotosUntilMatchByDefault(t *testing.T) {
+	svc, st, _ := newD3Svc(t)
+	ctx := context.Background()
+	viewer, ids, _ := d7Deck(t, st, 1)
+	candidate := ids[0]
+
+	// GET /v1/dating/privacy reads this column; nobody has written it.
+	priv, err := st.GetPrivacy(ctx, candidate)
+	if err != nil {
+		t.Fatalf("privacy: %v", err)
+	}
+	if !priv.BlurPhotosUntilMatch {
+		t.Fatalf("new profile privacy = %+v; want blur_photos_until_match true", priv)
+	}
+
+	deck, err := svc.computePulseToday(ctx, viewer)
+	if err != nil {
+		t.Fatalf("deck: %v", err)
+	}
+	card := d7Card(deck, candidate)
+	if card == nil {
+		t.Fatalf("seeded candidate missing from the deck (%d cards)", len(deck.Data))
+	}
+	if !card.Profile.PrimaryPhotoBlurred {
+		t.Fatalf("a stranger's card for a new profile is not blurred: %+v", card.Profile)
+	}
+	if want := "/" + PhotoVariantBlurred; !strings.HasSuffix(card.Profile.PrimaryPhotoURL, want) {
+		t.Fatalf("card photo url = %q, want the %s route", card.Profile.PrimaryPhotoURL, want)
+	}
+}
+
+// The default is a default, not a lock: the owner can switch it off and back
+// on, the privacy read reports the true value each time, and the photo route
+// follows immediately.
+func TestD6_BlurSwitchOffThenBackOnStillWorks(t *testing.T) {
+	e := newPhotoEnv(t)
+	ctx := context.Background()
+	owner, stranger := uuid.New(), uuid.New()
+	photo, _ := e.seedActiveWithPrimary(t, owner) // visibility "public"
+
+	// On by default: a stranger may only have the blurred variant.
+	if _, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantFull); !errors.Is(err, store.ErrPhotoNotFound) {
+		t.Fatalf("full for a stranger by default: err=%v, want ErrPhotoNotFound", err)
+	}
+	if u, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantBlurred); err != nil || !strings.Contains(u, PhotoVariantBlurred) {
+		t.Fatalf("blurred for a stranger: url=%q err=%v", u, err)
+	}
+
+	// Off: the public photo is full for everyone again.
+	off := false
+	p, err := e.st.UpdatePrivacy(ctx, owner, store.PrivacyUpdate{BlurPhotosUntilMatch: &off})
+	if err != nil || p.BlurPhotosUntilMatch {
+		t.Fatalf("switch off: privacy=%+v err=%v", p, err)
+	}
+	if u, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantFull); err != nil || !strings.Contains(u, PhotoVariantFull) {
+		t.Fatalf("full after switching blur off: url=%q err=%v", u, err)
+	}
+
+	// Back on: blurred again.
+	on := true
+	p, err = e.st.UpdatePrivacy(ctx, owner, store.PrivacyUpdate{BlurPhotosUntilMatch: &on})
+	if err != nil || !p.BlurPhotosUntilMatch {
+		t.Fatalf("switch back on: privacy=%+v err=%v", p, err)
+	}
+	if _, err := e.svc.PhotoImageURL(ctx, stranger, photo.ID, PhotoVariantFull); !errors.Is(err, store.ErrPhotoNotFound) {
+		t.Fatalf("full after switching blur back on: err=%v, want ErrPhotoNotFound", err)
+	}
+}
+
+// Whatever the switch says, a matched viewer sees the original.
+func TestD6_MatchedViewerGetsFullWithBlurOnOrOff(t *testing.T) {
+	e := newPhotoEnv(t)
+	ctx := context.Background()
+	owner, partner := uuid.New(), uuid.New()
+	photo, _ := e.seedActiveWithPrimary(t, owner)
+	seedActiveProfile(t, e.st, partner)
+	d3Match(t, e.svc, owner, partner)
+
+	for _, blur := range []bool{true, false} {
+		if _, err := e.st.UpdatePrivacy(ctx, owner, store.PrivacyUpdate{BlurPhotosUntilMatch: &blur}); err != nil {
+			t.Fatalf("set blur=%v: %v", blur, err)
+		}
+		u, err := e.svc.PhotoImageURL(ctx, partner, photo.ID, PhotoVariantFull)
+		if err != nil || !strings.Contains(u, PhotoVariantFull) {
+			t.Fatalf("matched viewer with blur=%v: url=%q err=%v", blur, u, err)
+		}
+	}
+}

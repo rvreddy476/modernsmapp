@@ -742,7 +742,12 @@ CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
 --                                'selfie' or 'aadhaar').
 --   * blur_photos_until_match  — owner's photos return a blurred URL
 --                                for non-matched viewers. Matched
---                                viewers see the original.
+--                                viewers see the original. ON for new
+--                                profiles: the DEFAULT is flipped to
+--                                true further down (the ADD COLUMN
+--                                below stays false so a deploy that is
+--                                only now gaining the column does not
+--                                backfill existing rows).
 --
 -- Lane D6: the blurred image is rendered and served by media-service
 -- (GET /v1/dating/photos/:id/blurred); the client is never trusted to
@@ -1088,6 +1093,12 @@ CREATE INDEX IF NOT EXISTS idx_dating_explain_ledger_viewer
 
 -- Column defaults, altered only when they differ (an ALTER takes an exclusive
 -- lock, so a no-op boot should not).
+--
+-- blur_photos_until_match is 'true' here for the internal pilot: a brand new
+-- profile is blurred to strangers until it matches, and the owner opts OUT
+-- rather than in. Changing a DEFAULT rewrites no rows, so every profile that
+-- already exists keeps the value it has — including anyone who deliberately
+-- switched the blur off.
 DO $d7$
 DECLARE
     want RECORD;
@@ -1095,6 +1106,7 @@ BEGIN
     FOR want IN
         SELECT * FROM (VALUES ('hide_last_active', 'true'),
                               ('echoes_consent', 'false'),
+                              ('blur_photos_until_match', 'true'),
                               ('approximate_location', 'true')) AS w(col, def)
     LOOP
         IF (SELECT pg_get_expr(d.adbin, d.adrelid)

@@ -291,7 +291,7 @@ class DatingContractFixtureTest {
             assertThat(card.matchReasons).hasSize(3)
             assertThat(card.profile.firstName).isEqualTo("Asha")
             assertThat(card.profile.distanceBucket).isEqualTo("lt_5_km")
-            assertThat(card.profile.primaryPhotoUrl).isEqualTo("/v1/dating/photos/<uuid>/full")
+            assertThat(card.profile.primaryPhotoUrl).isEqualTo("/v1/dating/photos/<uuid>/blurred")
             assertThat(card.profile.tuneSummary).isEmpty()
             assertThat(card.echoes?.topReelId).isNull()
         },
@@ -386,7 +386,7 @@ class DatingContractFixtureTest {
             assertThat(person.userId).isEqualTo(spark.fromUserId)
             assertThat(person.firstName).isEqualTo("Asha")
             assertThat(person.age).isEqualTo(30)
-            assertThat(person.photoState).isEqualTo("full")
+            assertThat(person.photoState).isEqualTo("blurred")
         },
         "stash_get_200.json" to data(listSerializer(StashDto.serializer())) {
             assertThat(it.single().candidateId).isEqualTo("<candidate>")
