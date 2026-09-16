@@ -1,10 +1,11 @@
 // Compact person cards (lane D10).
 //
 // A match, an incoming spark and the person card all render the same small
-// object: who this is (first name, age), one photo the viewer is allowed to
-// see, and whether they carry a verified badge. It never carries religion,
-// community, an exact location, last-active when the person hides it, or any
-// D9-sealed field; the distance is the lane D7 bucket only.
+// object: who this is (first name, age, city, what they are here for), one
+// photo the viewer is allowed to see, and whether they carry a verified
+// badge. It never carries religion, community, an exact location, last-active
+// when the person hides it, or any D9-sealed field; the distance and the
+// last-active are lane D7 buckets only.
 package service
 
 import (
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -38,6 +40,16 @@ type PersonCard struct {
 	// points, present only when both sides have a location. Never a number.
 	DistanceBucket string `json:"distance_bucket,omitempty"`
 	DistanceLabel  string `json:"distance_label,omitempty"`
+	// City is the coarse city string the profile stores, and Intent what
+	// this person is here for — the same two the deck card shows. City is a
+	// name only: no coordinates, no geohash, no exact distance.
+	City   string `json:"city,omitempty"`
+	Intent string `json:"intent,omitempty"`
+	// LastActiveBucket (today | this_week | a_while_ago) and LastActiveLabel
+	// are the lane D7 last-active bucket. BOTH are omitted when the owner
+	// hides last active — the default for a new profile. Never a timestamp.
+	LastActiveBucket string `json:"last_active_bucket,omitempty"`
+	LastActiveLabel  string `json:"last_active_label,omitempty"`
 	// Detail is the pre-match "enough to decide" block, present only on the
 	// surfaces where the viewer is deciding about this person: the person
 	// card itself and an incoming spark. The match list, the trusted-contact
@@ -177,6 +189,10 @@ func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Pro
 		OwnerBlursUntilMatch: row.BlurPhotosUntilMatch || row.BlurMode,
 	}
 	variant := PhotoVariantFor(row.PrimaryPhotoVisibility, photoViewer)
+	city := ""
+	if row.City != nil {
+		city = *row.City
+	}
 	card := &PersonCard{
 		UserID:     row.UserID,
 		FirstName:  first,
@@ -184,6 +200,15 @@ func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Pro
 		PhotoState: variant,
 		Verified:   verifiedTier(row.TrustTier),
 		TrustTier:  row.TrustTier,
+		City:       city,
+		Intent:     row.Intent,
+	}
+	// Lane D7: the owner's hide_last_active wins. When they hide it the card
+	// carries neither the bucket nor the label — exactly as the deck card
+	// does it — and the timestamp itself never crosses either way.
+	if !row.HideLastActive {
+		band := LastActiveBucketFor(row.LastActiveAt, time.Now())
+		card.LastActiveBucket, card.LastActiveLabel = band.Code, band.Label
 	}
 	if row.PrimaryPhotoID != nil {
 		id := *row.PrimaryPhotoID

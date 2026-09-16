@@ -100,9 +100,30 @@ func TestPreMatchDetailHoldsBackSealedFields(t *testing.T) {
 		}
 	}
 
+	// The card's own member set is pinned too, so a field can only be added
+	// to it by editing this list on purpose. city, intent, last_active_bucket
+	// and last_active_label were added deliberately: all three are coarse
+	// (a city name, an intent, a bucket code), never a coordinate and never a
+	// timestamp.
+	card := personCardOf(t, cardRec.Body.Bytes())
+	allowedCard := map[string]bool{
+		"user_id": true, "first_name": true, "age": true,
+		"primary_photo_id": true, "primary_photo_url": true, "photo_state": true,
+		"verified": true, "trust_tier": true,
+		"distance_bucket": true, "distance_label": true,
+		"city": true, "intent": true,
+		"last_active_bucket": true, "last_active_label": true,
+		"detail": true,
+	}
+	for key := range card {
+		if !allowedCard[key] {
+			t.Fatalf("person card carries an unexpected member %q: %s", key, cardRec.Body.String())
+		}
+	}
+
 	// The detail block is exactly the four allowed members — a projection
 	// that starts copying the profile wholesale fails here.
-	detail, ok := personCardOf(t, cardRec.Body.Bytes())["detail"].(map[string]any)
+	detail, ok := card["detail"].(map[string]any)
 	if !ok {
 		t.Fatalf("person card has no detail block: %s", cardRec.Body.String())
 	}
@@ -248,5 +269,122 @@ func TestMatchesAndSparksCarryPerson(t *testing.T) {
 	}
 	if len(sparks.Data) != 1 || sparks.Data[0].Person == nil || sparks.Data[0].Person.UserID != sparker {
 		t.Fatalf("incoming sparks carry no person: %s", rec.Body.String())
+	}
+}
+
+// The card's coarse context: city, intent and the lane D7 last-active BUCKET.
+// A person decides on this screen before sending a spark, so it shows the same
+// context the deck card does — and no more: a city name, not a point; a bucket
+// code, not a timestamp.
+func TestPersonCardCarriesCityIntentAndLastActiveBucket(t *testing.T) {
+	r, st, cleanup := setupTestRouter(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	viewer, partner := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{viewer, partner} {
+		mustSeedActiveProfile(t, st, id)
+	}
+	// The seed hides last active (the default for a new profile), so this
+	// person opts back in — the only way the bucket is ever shown.
+	show := false
+	if _, err := st.UpdatePrivacy(ctx, partner, store.PrivacyUpdate{HideLastActive: &show}); err != nil {
+		t.Fatalf("show last active: %v", err)
+	}
+	matchID, _, err := st.CreateOrGetOpenMatch(ctx, viewer, partner, nil)
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if err := st.MarkMatchActive(ctx, matchID, uuid.New()); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	rec := contractDo(r, http.MethodGet, "/v1/dating/people/"+partner.String(), ``, viewer)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("person card: status %d body %s", rec.Code, rec.Body.String())
+	}
+	card := personCardOf(t, rec.Body.Bytes())
+	if card["city"] != "Hyderabad" {
+		t.Fatalf("card city = %v, want Hyderabad: %s", card["city"], rec.Body.String())
+	}
+	if card["intent"] != "casual" {
+		t.Fatalf("card intent = %v, want casual: %s", card["intent"], rec.Body.String())
+	}
+	// The profile was written moments ago, so the bucket is today.
+	if card["last_active_bucket"] != "today" {
+		t.Fatalf("card last_active_bucket = %v, want today: %s", card["last_active_bucket"], rec.Body.String())
+	}
+	if label, _ := card["last_active_label"].(string); label == "" {
+		t.Fatalf("card carries a bucket with no label: %s", rec.Body.String())
+	}
+	// A bucket, never the time itself, and never a coordinate.
+	for _, key := range []string{"last_active_at", "latitude", "longitude", "geohash"} {
+		if strings.Contains(rec.Body.String(), `"`+key+`":`) {
+			t.Fatalf("person card leaks %q: %s", key, rec.Body.String())
+		}
+	}
+}
+
+// The owner's hide_last_active wins on EVERY surface that embeds the card,
+// not just the one it was implemented on. The city and the intent still cross
+// — hiding last active hides last active, nothing else.
+func TestPersonCardHiddenLastActiveOmittedOnEverySurface(t *testing.T) {
+	r, st, cleanup := setupTestRouter(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	viewer, partner, sparker := uuid.New(), uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{viewer, partner, sparker} {
+		mustSeedActiveProfile(t, st, id)
+	}
+	// Both of them keep the default: last active hidden. Set it explicitly so
+	// the test does not silently depend on the column default.
+	hide := true
+	for _, id := range []uuid.UUID{partner, sparker} {
+		if _, err := st.UpdatePrivacy(ctx, id, store.PrivacyUpdate{HideLastActive: &hide}); err != nil {
+			t.Fatalf("hide last active: %v", err)
+		}
+	}
+	matchID, _, err := st.CreateOrGetOpenMatch(ctx, viewer, partner, nil)
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if err := st.MarkMatchActive(ctx, matchID, uuid.New()); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if _, err := st.CreateSpark(ctx, sparker, viewer, "prompt", "p1", ""); err != nil {
+		t.Fatalf("seed spark: %v", err)
+	}
+	// A trusted contact needs the current match, which viewer and partner have.
+	if rec := contractDo(r, http.MethodPut, "/v1/dating/safety/trusted-contacts/"+partner.String(),
+		`{"share_location_on_panic":true}`, viewer); rec.Code != http.StatusOK {
+		t.Fatalf("trusted contact: status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	for _, surface := range []struct{ name, path string }{
+		{"person card", "/v1/dating/people/" + partner.String()},
+		{"person card (sparker)", "/v1/dating/people/" + sparker.String()},
+		{"match list", "/v1/dating/matches"},
+		{"match detail", "/v1/dating/matches/" + matchID.String()},
+		{"incoming sparks", "/v1/dating/sparks/incoming"},
+		{"trusted contacts", "/v1/dating/safety/trusted-contacts"},
+	} {
+		rec := contractDo(r, http.MethodGet, surface.path, ``, viewer)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d body %s", surface.name, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, key := range []string{"last_active_bucket", "last_active_label", "last_active_at"} {
+			if strings.Contains(body, `"`+key+`":`) {
+				t.Fatalf("%s carries %q though the owner hides last active: %s", surface.name, key, body)
+			}
+		}
+		// The rest of the card is still there, so this is a suppression and
+		// not an empty response that would pass the check above by accident.
+		for _, key := range []string{"city", "intent"} {
+			if !strings.Contains(body, `"`+key+`":`) {
+				t.Fatalf("%s lost %q: %s", surface.name, key, body)
+			}
+		}
 	}
 }

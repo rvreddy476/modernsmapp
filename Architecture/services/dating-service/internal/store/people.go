@@ -3,9 +3,11 @@
 //
 // It carries only what a card renders: the first name, the birth date (for
 // age), the person's own description and languages, the approved primary
-// photo's id and visibility, the photo-privacy flags and the trust tier.
-// Nothing sensitive: no religion, no community, no exact coordinates on the
-// wire, no last_active_at, no sealed field.
+// photo's id and visibility, the photo-privacy flags, the trust tier, the
+// intent and city, and the last-active time WITH the owner's hide flag so the
+// service can bucket it. Nothing sensitive: no religion, no community, no
+// exact coordinates on the wire, no last_active_at on the wire, no sealed
+// field.
 package store
 
 import (
@@ -43,6 +45,17 @@ type PersonRow struct {
 	// compute a distance bucket. Never serialised by the service layer.
 	Latitude  *float64
 	Longitude *float64
+	// Intent and City are the coarse context the deck card already shows:
+	// what this person is here for, and the city string the profile stores.
+	// City is the city name only — never a coordinate, never a geohash.
+	Intent string
+	City   *string
+	// LastActiveAt / HideLastActive feed the lane D7 last-active BUCKET.
+	// LastActiveAt is never serialised: when HideLastActive is false the
+	// service turns it into today | this_week | a_while_ago, and when it is
+	// true the card carries neither bucket nor label.
+	LastActiveAt   time.Time
+	HideLastActive bool
 }
 
 // Age returns whole years, or 0 when no birth date is known.
@@ -63,14 +76,16 @@ const personSelectCols = `
           AND ph.moderation_status = 'approved' LIMIT 1), 'public') AS primary_photo_visibility,
     EXISTS (SELECT 1 FROM dating_sparks sv
         WHERE sv.from_user_id = p.user_id AND sv.to_user_id = $1::uuid) AS sparked_viewer,
-    p.blur_photos_until_match, p.blur_mode, p.latitude, p.longitude`
+    p.blur_photos_until_match, p.blur_mode, p.latitude, p.longitude,
+    p.intent, p.city, p.last_active_at, p.hide_last_active`
 
 func scanPersonRow(row pgx.Row) (*PersonRow, error) {
 	p := &PersonRow{}
 	if err := row.Scan(&p.UserID, &p.FirstName, &p.BirthDate, &p.TrustTier,
 		&p.Bio, &p.LanguagePrefs,
 		&p.PrimaryPhotoID, &p.PrimaryPhotoVisibility, &p.SparkedViewer,
-		&p.BlurPhotosUntilMatch, &p.BlurMode, &p.Latitude, &p.Longitude); err != nil {
+		&p.BlurPhotosUntilMatch, &p.BlurMode, &p.Latitude, &p.Longitude,
+		&p.Intent, &p.City, &p.LastActiveAt, &p.HideLastActive); err != nil {
 		return nil, err
 	}
 	return p, nil

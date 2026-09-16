@@ -8,6 +8,8 @@
     "photo_state": "full",
     "verified": false,
     "trust_tier": "phone",
+    "city": "Hyderabad",
+    "intent": "casual",
     "detail": {
       "photos": [
         {
