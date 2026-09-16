@@ -159,14 +159,7 @@ func connectRedisForRateLimit(redisAddr string) *redis.Client {
 	if strings.TrimSpace(redisAddr) == "" {
 		return nil
 	}
-	rdb := redis.NewClient(&redis.Options{
-		Addr:         redisAddr,
-		Username:     envOrEmpty("REDIS_USERNAME"),
-		Password:     envOrEmpty("REDIS_PASSWORD"),
-		PoolSize:     20,
-		MinIdleConns: 5,
-		PoolTimeout:  10 * time.Second,
-	})
+	rdb := newRedisClient(redisAddr)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
@@ -175,6 +168,20 @@ func connectRedisForRateLimit(redisAddr string) *redis.Client {
 		return nil
 	}
 	return rdb
+}
+
+// newRedisClient builds the gateway's Redis client without contacting Redis.
+// The session revocation check keeps an unpinged client when Redis is down at
+// boot, so privileged requests fail closed until it answers.
+func newRedisClient(redisAddr string) *redis.Client {
+	return redis.NewClient(&redis.Options{
+		Addr:         redisAddr,
+		Username:     envOrEmpty("REDIS_USERNAME"),
+		Password:     envOrEmpty("REDIS_PASSWORD"),
+		PoolSize:     20,
+		MinIdleConns: 5,
+		PoolTimeout:  10 * time.Second,
+	})
 }
 
 // envOrEmpty is a small wrapper so this file doesn't drag in viper / a

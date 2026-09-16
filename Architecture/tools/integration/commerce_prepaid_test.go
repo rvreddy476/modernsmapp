@@ -28,7 +28,7 @@ import (
 //	Customer: POST …/payment/confirm gateway=stub → 204, order paid/confirmed
 //	Customer: POST …/payment/confirm again → 204, no-op
 //	Customer: PATCH /v1/payments/intents/:id/status → 404 (route gone);
-//	          PATCH /v1/payments/internal/… → 403 (gateway admin gate)
+//	          PATCH /v1/payments/internal/… → 404 (service-only, refused at the edge)
 //
 // then the WEBHOOK path on a second order:
 //
@@ -184,14 +184,14 @@ func TestE2E_Commerce_PrepaidStub(t *testing.T) {
 	if env := customer.MustDo(t, ctx, "PATCH", "/v1/payments/intents/"+intentID+"/status", patch); env.Status != 404 {
 		t.Fatalf("PATCH /intents/:id/status via user route: want 404, got %d", env.Status)
 	}
-	if env := customer.MustDo(t, ctx, "PATCH", "/v1/payments/internal/intents/"+intentID+"/status", patch); env.Status != 403 {
-		t.Fatalf("PATCH /internal/… with user JWT: want 403 (gateway admin gate), got %d", env.Status)
+	if env := customer.MustDo(t, ctx, "PATCH", "/v1/payments/internal/intents/"+intentID+"/status", patch); env.Status != 404 {
+		t.Fatalf("PATCH /internal/… with user JWT: want 404 (service-only), got %d", env.Status)
 	}
 	if env := customer.MustDo(t, ctx, "POST", "/v1/payments/internal/intents/"+intentID+"/verify", map[string]any{
-		"razorpay_order_id": providerRef, "razorpay_payment_id": "x", "razorpay_signature": "x"}); env.Status != 403 {
-		t.Fatalf("POST /internal/…/verify with user JWT: want 403, got %d", env.Status)
+		"razorpay_order_id": providerRef, "razorpay_payment_id": "x", "razorpay_signature": "x"}); env.Status != 404 {
+		t.Fatalf("POST /internal/…/verify with user JWT: want 404, got %d", env.Status)
 	}
-	t.Log("user JWT cannot reach status PATCH / verify (404 on old path, 403 on /internal)")
+	t.Log("user JWT cannot reach status PATCH / verify (404 on the old path and on /internal)")
 
 	// ── Path 2: Razorpay webhook → outbox → Kafka → consumer ──────
 	orderID2, amountMinor2 := checkoutPrepaid("webhook-path")

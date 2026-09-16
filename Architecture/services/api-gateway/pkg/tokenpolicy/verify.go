@@ -82,6 +82,10 @@ type Identity struct {
 	UserID   string
 	Scopes   string
 	DeviceID string
+	// SessionID is the `sid` claim: the auth-service session this token was
+	// minted for, which the gateway looks up in the revocation set. Empty only
+	// outside production, where legacy tokens without a sid still verify.
+	SessionID string
 }
 
 // Error is a verification failure. The message is deliberately not returned to
@@ -159,7 +163,12 @@ func Verify(tokenStr string, keys KeySet, policy Policy, now time.Time) (Identit
 	if userID == "" {
 		userID = claims.UserID
 	}
-	return Identity{UserID: userID, Scopes: claims.Scopes, DeviceID: claims.DeviceID}, nil
+	return Identity{
+		UserID:    userID,
+		Scopes:    claims.Scopes,
+		DeviceID:  claims.DeviceID,
+		SessionID: strings.TrimSpace(claims.Sid),
+	}, nil
 }
 
 // ParseRSAPublicKeyPEM accepts a PKIX ("BEGIN PUBLIC KEY") or PKCS1

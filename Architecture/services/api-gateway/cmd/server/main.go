@@ -26,7 +26,9 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/atpost/api-gateway/pkg/edgeheaders"
+	"github.com/atpost/api-gateway/pkg/internalroutes"
 	"github.com/atpost/api-gateway/pkg/routepolicy"
+	"github.com/atpost/api-gateway/pkg/sessionrevocation"
 	"github.com/atpost/api-gateway/pkg/tokenpolicy"
 )
 
@@ -103,10 +105,250 @@ func main() {
 		"issuers", len(tokenPolicy.AllowedIssuers),
 		"query_token_paths", len(tokenPolicy.QueryTokenPaths))
 
-	routeDefs := []struct {
-		prefix string
-		target string
-	}{
+	routeDefs := routeDefinitions()
+
+	// LB-1: refuse to start if a service-authority upstream is in the table.
+	// A code review that notices someone re-adding `{"/v1/payments", …}` has
+	// already failed once here, so the check is executable instead.
+	{
+		guard := make([]routepolicy.Route, 0, len(routeDefs))
+		prefixes := make([]string, 0, len(routeDefs))
+		for _, rd := range routeDefs {
+			guard = append(guard, routepolicy.Route{Prefix: rd.prefix, Target: rd.target})
+			prefixes = append(prefixes, rd.prefix)
+		}
+		if err := routepolicy.GuardRouteTable(guard); err != nil {
+			log.Fatalf("%v", err)
+		}
+		// A3: every route must decide whether its upstream gets the internal
+		// key. See pkg/internalroutes StampPolicy.
+		if err := internalroutes.GuardStampPolicy(prefixes); err != nil {
+			log.Fatalf("%v", err)
+		}
+	}
+
+	internalKey := env("INTERNAL_SERVICE_KEY", "")
+	if internalKey == "" {
+		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
+	}
+
+	var routes []route
+	for _, rd := range routeDefs {
+		target, err := url.Parse(rd.target)
+		if err != nil {
+			log.Fatalf("invalid target URL %q: %v", rd.target, err)
+		}
+		routes = append(routes, newRoute(rd.prefix, target, internalKey))
+		log.Printf("  %s -> %s (internal key: %t)", rd.prefix, rd.target, internalroutes.ShouldStamp(rd.prefix))
+	}
+
+	// Prometheus metrics endpoint. promhttp serves the default registry
+	// which all shared/o11y/metrics constructors register against, so
+	// scraping /metrics on the gateway also exposes its own HTTP-side
+	// counters once we wrap upstream calls.
+	promHandler := promhttp.Handler()
+	reviewerPublicEnabled := strings.EqualFold(env("REVIEWER_PUBLIC_ENABLED", "false"), "true")
+	// Built products with no working client on any platform keep their public
+	// prefixes closed until a client exists: unreviewed surface is attack
+	// surface. The services keep running because other services call them
+	// internally. See docs/adr/adr-dormant-products.md.
+	dormantProducts, dormantErr := dormantProductsFromEnv(os.Getenv, tokenPolicy.Production)
+	if dormantErr != nil {
+		slog.Error("refusing to start: invalid dormant-product pilot allowlist", "error", dormantErr)
+		os.Exit(1)
+	}
+
+	coreHandler := newCoreHandler(routes, promHandler, reviewerPublicEnabled, dormantProducts)
+
+	// H5 — Redis-backed rate limiter so per-IP / per-user limits hold
+	// across the whole gateway fleet, not just per-pod. The in-memory
+	// limiter still runs in front of this and acts as a fast-path
+	// short-circuit + the dev fallback when REDIS_ADDR isn't set.
+	redisAddr := env("REDIS_ADDR", "")
+	rateRDB := connectRedisForRateLimit(redisAddr)
+
+	// A2 — session revocation. Reuses the rate limiter's Redis client. When
+	// that client could not be pinged at boot a separate, unpinged client is
+	// kept anyway: admin requests then fail closed until Redis answers,
+	// instead of the check being silently switched off for the process's life.
+	var revocationChecker sessionrevocation.Checker
+	switch {
+	case rateRDB != nil:
+		revocationChecker = sessionrevocation.RedisChecker{RDB: rateRDB}
+		slog.Info("session revocation check enabled")
+	case strings.TrimSpace(redisAddr) != "":
+		revocationChecker = sessionrevocation.RedisChecker{RDB: newRedisClient(redisAddr)}
+		slog.Warn("session revocation check enabled but redis is not answering yet: admin requests fail closed until it does")
+	case tokenPolicy.Production:
+		slog.Error("refusing to start: REDIS_ADDR is required in production so revoked sessions are refused")
+		os.Exit(1)
+	default:
+		slog.Warn("session revocation check DISABLED: REDIS_ADDR not set (allowed outside production only)")
+	}
+	// Limits are environment-configurable for capacity tuning.
+	//
+	// The DEFAULTS ARE THE PRODUCTION VALUES, unchanged: an environment that
+	// sets nothing behaves exactly as before.
+	//
+	// A NOTE ON WHAT THESE DID NOT DO. They were added during C-CLB-PROOF-1, on
+	// the assumption that this limiter was rejecting most of a 50-concurrent
+	// same-key write burst. It was not: 50 requests fit comfortably under
+	// 100/IP and 60/user per second. The actual blocker was post-service's
+	// MAX_POSTS_PER_HOUR (20). These knobs are kept because per-environment
+	// capacity tuning is legitimate, but they were not what unblocked that
+	// proof — see the closure verdict §7.
+	//
+	// Any positive value is accepted, so a deployment typo can effectively
+	// remove abuse protection. Bounding these, and alerting on non-default
+	// production values, is tracked as operational hardening debt.
+	ipLimit := envInt("RATE_LIMIT_IP_PER_SEC", 100)
+	userLimit := envInt("RATE_LIMIT_USER_PER_SEC", 60)
+	var rateLimitHandler func(http.Handler) http.Handler
+	if rateRDB != nil {
+		rl := newRedisRateLimiter(rateRDB, ipLimit, userLimit, time.Second)
+		rateLimitHandler = func(next http.Handler) http.Handler {
+			return rateLimitMiddleware(redisRateLimitMiddleware(rl, next))
+		}
+		slog.Info("rate limiter: redis-backed (fleet-wide) enabled",
+			"ip_per_sec", ipLimit, "user_per_sec", userLimit)
+	} else {
+		rateLimitHandler = rateLimitMiddleware
+		slog.Info("rate limiter: in-memory only (per-pod)")
+	}
+
+	// CORS middleware is outermost so headers are present on ALL responses (including 401/429).
+	// Phase F3.5 — otelhttp wraps the chain inside CORS so a server span
+	// is opened on every request. The span name is just the method;
+	// downstream services produce the more specific route names.
+	tracedCore := otelhttp.NewHandler(
+		edgeChain(jwtKeys, tokenPolicy, rateLimitHandler, revocationChecker, coreHandler),
+		"api-gateway",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
+	handler := corsMiddleware(allowedOrigins, tracedCore)
+
+	// Add a recovery middleware wrapper
+	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				if abortErr, ok := err.(error); ok && errors.Is(abortErr, http.ErrAbortHandler) {
+					// ReverseProxy uses ErrAbortHandler to stop streaming handlers when
+					// the client disconnects. That is not an application error and we
+					// must not overwrite an already-started SSE response with a 500.
+					return
+				}
+				slog.Error("panic recovered", "error", err, "path", r.URL.Path)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"error":"internal server error"}`))
+			}
+		}()
+		handler.ServeHTTP(w, r)
+	})
+
+	log.Printf("API Gateway listening on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, recoveryHandler))
+}
+
+// edgeChain is the per-request middleware order, kept in one function so
+// the tests exercise exactly what main wires:
+//
+//	request id → strip + verify token → rate limit
+//	  → refuse /internal/ (any scope, 404) → session revocation → core
+//
+// The internal-path refusal runs before the revocation lookup so a refused
+// path costs no Redis read. There is deliberately no layer that stamps the
+// internal key here: that happens per route, in newRoute, and only for
+// upstreams internalroutes.StampPolicy names.
+func edgeChain(keys jwtKeySet, policy tokenpolicy.Policy, rateLimit func(http.Handler) http.Handler, checker sessionrevocation.Checker, core http.Handler) http.Handler {
+	return requestIDMiddleware(
+		jwtExtractMiddleware(keys, policy,
+			rateLimit(
+				internalroutes.Middleware(
+					sessionrevocation.Middleware(checker, core)))))
+}
+
+// newRoute builds the reverse proxy for one route prefix. The Director sets
+// the internal key only when the prefix's upstream still needs it on user
+// traffic, and removes any copy otherwise.
+func newRoute(prefix string, target *url.URL, internalKey string) route {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	stamp := internalroutes.ShouldStamp(prefix)
+	// Phase F3.5 — wrap the default Director so every upstream
+	// request carries the W3C traceparent header derived from the
+	// active server span. The outer handler is wrapped in
+	// otelhttp.NewHandler below, which establishes the span; here
+	// we just propagate it forward.
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		internalroutes.ApplyKey(req, stamp, internalKey)
+		otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
+	}
+	// Otel transport on the proxy gives us a client span per
+	// upstream call so Jaeger shows the gateway→upstream hop.
+	proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
+	return route{prefix: prefix, target: target, proxy: proxy}
+}
+
+// newCoreHandler serves probes, metrics and the launch gates, then proxies by
+// route prefix.
+func newCoreHandler(routes []route, promHandler http.Handler, reviewerPublicEnabled bool, dormantProducts []dormantProduct) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleProbe(w, r, len(routes)) {
+			return
+		}
+		// Prometheus scrape endpoint.
+		if r.URL.Path == "/metrics" && promHandler != nil {
+			promHandler.ServeHTTP(w, r)
+			return
+		}
+		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
+			return
+		}
+		if serveDormantProductGate(w, r, dormantProducts) {
+			return
+		}
+
+		// LB-1 backstop, and the only control for a forbidden path that sits
+		// UNDER a legitimately proxied prefix.
+		//
+		// For payments the route table is the control and this is the belt:
+		// it catches a path reaching a payments upstream some other way — a
+		// future catch-all, a rewrite, a default target. For
+		// /v1/auth/internal there is no route to remove, because /v1/auth is
+		// proxied and must stay proxied; this check IS the control.
+		//
+		// 404 rather than 403: an edge client should not be able to confirm
+		// the endpoint exists.
+		if routepolicy.IsForbidden(r.URL.Path) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))
+			return
+		}
+
+		// Route matching — longest prefix wins (routes are pre-sorted)
+		for _, rt := range routes {
+			if r.URL.Path == rt.prefix || strings.HasPrefix(r.URL.Path, rt.prefix+"/") {
+				rt.proxy.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		http.NotFound(w, r)
+	})
+}
+
+type routeDef struct {
+	prefix string
+	target string
+}
+
+// routeDefinitions is the gateway's route table, in match order.
+func routeDefinitions() []routeDef {
+	return []routeDef{
 		// Longest prefixes first for correct matching
 		{"/v1/admin/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8117")},
 		{"/v1/auth", env("AUTH_SERVICE_URL", "http://identity-auth:8081")},
@@ -276,183 +518,6 @@ func main() {
 		// Commerce service (full e-commerce rebuild)
 		{"/v1/commerce", env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")},
 	}
-
-	// LB-1: refuse to start if a service-authority upstream is in the table.
-	// A code review that notices someone re-adding `{"/v1/payments", …}` has
-	// already failed once here, so the check is executable instead.
-	{
-		guard := make([]routepolicy.Route, 0, len(routeDefs))
-		for _, rd := range routeDefs {
-			guard = append(guard, routepolicy.Route{Prefix: rd.prefix, Target: rd.target})
-		}
-		if err := routepolicy.GuardRouteTable(guard); err != nil {
-			log.Fatalf("%v", err)
-		}
-	}
-
-	var routes []route
-	for _, rd := range routeDefs {
-		target, err := url.Parse(rd.target)
-		if err != nil {
-			log.Fatalf("invalid target URL %q: %v", rd.target, err)
-		}
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		// Phase F3.5 — wrap the default Director so every upstream
-		// request carries the W3C traceparent header derived from the
-		// active server span. The outer handler is wrapped in
-		// otelhttp.NewHandler below, which establishes the span; here
-		// we just propagate it forward.
-		originalDirector := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			originalDirector(req)
-			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-		}
-		// Otel transport on the proxy gives us a client span per
-		// upstream call so Jaeger shows the gateway→upstream hop.
-		proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
-		routes = append(routes, route{
-			prefix: rd.prefix,
-			target: target,
-			proxy:  proxy,
-		})
-		log.Printf("  %s -> %s", rd.prefix, rd.target)
-	}
-
-	// Prometheus metrics endpoint. promhttp serves the default registry
-	// which all shared/o11y/metrics constructors register against, so
-	// scraping /metrics on the gateway also exposes its own HTTP-side
-	// counters once we wrap upstream calls.
-	promHandler := promhttp.Handler()
-	reviewerPublicEnabled := strings.EqualFold(env("REVIEWER_PUBLIC_ENABLED", "false"), "true")
-	// Built products with no working client on any platform keep their public
-	// prefixes closed until a client exists: unreviewed surface is attack
-	// surface. The services keep running because other services call them
-	// internally. See docs/adr/adr-dormant-products.md.
-	dormantProducts, dormantErr := dormantProductsFromEnv(os.Getenv, tokenPolicy.Production)
-	if dormantErr != nil {
-		slog.Error("refusing to start: invalid dormant-product pilot allowlist", "error", dormantErr)
-		os.Exit(1)
-	}
-
-	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if handleProbe(w, r, len(routes)) {
-			return
-		}
-		// Prometheus scrape endpoint.
-		if r.URL.Path == "/metrics" {
-			promHandler.ServeHTTP(w, r)
-			return
-		}
-		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
-			return
-		}
-		if serveDormantProductGate(w, r, dormantProducts) {
-			return
-		}
-
-		// LB-1 backstop, and the only control for a forbidden path that sits
-		// UNDER a legitimately proxied prefix.
-		//
-		// For payments the route table is the control and this is the belt:
-		// it catches a path reaching a payments upstream some other way — a
-		// future catch-all, a rewrite, a default target. For
-		// /v1/auth/internal there is no route to remove, because /v1/auth is
-		// proxied and must stay proxied; this check IS the control.
-		//
-		// 404 rather than 403: an edge client should not be able to confirm
-		// the endpoint exists.
-		if routepolicy.IsForbidden(r.URL.Path) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))
-			return
-		}
-
-		// Route matching — longest prefix wins (routes are pre-sorted)
-		for _, rt := range routes {
-			if r.URL.Path == rt.prefix || strings.HasPrefix(r.URL.Path, rt.prefix+"/") {
-				rt.proxy.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		http.NotFound(w, r)
-	})
-
-	internalKey := env("INTERNAL_SERVICE_KEY", "")
-	if internalKey == "" {
-		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
-	}
-
-	// H5 — Redis-backed rate limiter so per-IP / per-user limits hold
-	// across the whole gateway fleet, not just per-pod. The in-memory
-	// limiter still runs in front of this and acts as a fast-path
-	// short-circuit + the dev fallback when REDIS_ADDR isn't set.
-	rateRDB := connectRedisForRateLimit(env("REDIS_ADDR", ""))
-	// Limits are environment-configurable for capacity tuning.
-	//
-	// The DEFAULTS ARE THE PRODUCTION VALUES, unchanged: an environment that
-	// sets nothing behaves exactly as before.
-	//
-	// A NOTE ON WHAT THESE DID NOT DO. They were added during C-CLB-PROOF-1, on
-	// the assumption that this limiter was rejecting most of a 50-concurrent
-	// same-key write burst. It was not: 50 requests fit comfortably under
-	// 100/IP and 60/user per second. The actual blocker was post-service's
-	// MAX_POSTS_PER_HOUR (20). These knobs are kept because per-environment
-	// capacity tuning is legitimate, but they were not what unblocked that
-	// proof — see the closure verdict §7.
-	//
-	// Any positive value is accepted, so a deployment typo can effectively
-	// remove abuse protection. Bounding these, and alerting on non-default
-	// production values, is tracked as operational hardening debt.
-	ipLimit := envInt("RATE_LIMIT_IP_PER_SEC", 100)
-	userLimit := envInt("RATE_LIMIT_USER_PER_SEC", 60)
-	var rateLimitHandler func(http.Handler) http.Handler
-	if rateRDB != nil {
-		rl := newRedisRateLimiter(rateRDB, ipLimit, userLimit, time.Second)
-		rateLimitHandler = func(next http.Handler) http.Handler {
-			return rateLimitMiddleware(redisRateLimitMiddleware(rl, next))
-		}
-		slog.Info("rate limiter: redis-backed (fleet-wide) enabled",
-			"ip_per_sec", ipLimit, "user_per_sec", userLimit)
-	} else {
-		rateLimitHandler = rateLimitMiddleware
-		slog.Info("rate limiter: in-memory only (per-pod)")
-	}
-
-	// CORS middleware is outermost so headers are present on ALL responses (including 401/429).
-	// Phase F3.5 — otelhttp wraps the chain inside CORS so a server span
-	// is opened on every request. The span name is just the method;
-	// downstream services produce the more specific route names.
-	tracedCore := otelhttp.NewHandler(
-		requestIDMiddleware(jwtExtractMiddleware(jwtKeys, tokenPolicy, rateLimitHandler(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
-		"api-gateway",
-		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
-			return r.Method + " " + r.URL.Path
-		}),
-	)
-	handler := corsMiddleware(allowedOrigins, tracedCore)
-
-	// Add a recovery middleware wrapper
-	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				if abortErr, ok := err.(error); ok && errors.Is(abortErr, http.ErrAbortHandler) {
-					// ReverseProxy uses ErrAbortHandler to stop streaming handlers when
-					// the client disconnects. That is not an application error and we
-					// must not overwrite an already-started SSE response with a 500.
-					return
-				}
-				slog.Error("panic recovered", "error", err, "path", r.URL.Path)
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error":"internal server error"}`))
-			}
-		}()
-		handler.ServeHTTP(w, r)
-	})
-
-	log.Printf("API Gateway listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, recoveryHandler))
 }
 
 func serveReviewerLaunchGate(w http.ResponseWriter, r *http.Request, enabled bool) bool {
@@ -634,12 +699,18 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 			next.ServeHTTP(w, r)
 			return
 		}
-		userID, scopes, deviceID, err := verifyJWT(token, keys, policy)
+		identity, err := tokenpolicy.Verify(token, keys.toKeySet(), policy, time.Now())
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"Invalid or expired token"}}`))
 			return
+		}
+		userID, scopes, deviceID := identity.UserID, identity.Scopes, identity.DeviceID
+		if identity.SessionID != "" {
+			// A2: the revocation check reads the sid from the context, which
+			// only this line can set.
+			r = r.WithContext(sessionrevocation.WithSessionID(r.Context(), identity.SessionID))
 		}
 		if userID != "" {
 			r.Header.Set("X-User-Id", userID)
@@ -776,49 +847,11 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// injectInternalKeyMiddleware sets the X-Internal-Service-Key header on every
-// proxied request so that backend services can verify the request came from
-// the gateway. When secret is empty, the header is not set.
-func injectInternalKeyMiddleware(secret string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if secret != "" {
-			r.Header.Set("X-Internal-Service-Key", secret)
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// requireAdminForInternalPaths is the gate the gateway sits in front of
-// any `/v1/<domain>/internal/*` route. These paths exist for admin /
-// moderator surfaces (admin queues, payout settlement, etc.) and are
-// authenticated by the downstream service on the X-Internal-Service-Key
-// header that the gateway injects. Without an explicit scope check
-// here, the internal-key injection would effectively turn every
-// internal endpoint into a public one — any logged-in user could hit it
-// and the downstream would accept because the gateway vouched.
-//
-// Policy: scopes claim on the JWT must contain "admin" or "moderator".
-// Tokens minted by the regular login flow don't include these scopes;
-// admin-service issues them only after a verified role lookup. Missing
-// or absent scope → 403.
-//
-// commerce TODO Blocker #3.
-func requireAdminForInternalPaths(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/internal/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		scopes := r.Header.Get("X-Scopes")
-		if !scopeAllows(scopes, "admin") && !scopeAllows(scopes, "moderator") && !scopeAllows(scopes, "superadmin") {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"admin scope required for internal endpoints"}}`))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
+// The internal key is no longer stamped by a chain-wide middleware, and
+// `/internal/` paths are no longer admitted for admin or moderator scopes.
+// Both moved to pkg/internalroutes (admin console plan, Wave 0 A3): every
+// internal path is refused at the edge, and the key is set per route only for
+// upstreams whose user-facing routes still require it. See newRoute.
 
 // scopeAllows checks whether a space-separated scopes list contains
 // the named scope. Empty list → never allowed.

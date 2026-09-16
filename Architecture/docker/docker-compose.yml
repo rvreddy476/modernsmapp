@@ -273,6 +273,9 @@ services:
       # Leave these UNSET in production until bounds and alerting exist.
       RATE_LIMIT_IP_PER_SEC: "${RATE_LIMIT_IP_PER_SEC:-100}"
       RATE_LIMIT_USER_PER_SEC: "${RATE_LIMIT_USER_PER_SEC:-60}"
+      # Session revocation (sess_revoked:<sid>, written by identity-auth) and the
+      # rate limiter share this client; without it revocation is off in dev.
+      REDIS_ADDR: redis:6379
       HTTP_PORT: "8080"
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens

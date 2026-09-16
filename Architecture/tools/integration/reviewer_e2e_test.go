@@ -38,10 +38,10 @@ func TestE2E_Reviewer_OptInAndKYCGate(t *testing.T) {
 	}
 }
 
-// TestE2E_Reviewer_AdminEnqueue exercises the admin/internal enqueue path
-// through the gateway (which admin-gates /internal/ via the token scope and
-// injects the internal-service key). A successful enqueue means the gateway gate
-// + reviewer-service intake are wired.
+// TestE2E_Reviewer_AdminEnqueue guards the edge boundary for the reviewer
+// intake: /internal/ routes are service-only, so the gateway refuses them from
+// the edge with 404 whatever the token carries, admin included. Enqueue is
+// reached in-cluster by the services that produce review work.
 func TestE2E_Reviewer_AdminEnqueue(t *testing.T) {
 	SkipIfNotIntegration(t)
 	urls := LoadServiceURLs()
@@ -51,20 +51,22 @@ func TestE2E_Reviewer_AdminEnqueue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	admin.MustOK(t, ctx, "POST", "/v1/reviewer/internal/enqueue", map[string]any{
+	if env := admin.MustDo(t, ctx, "POST", "/v1/reviewer/internal/enqueue", map[string]any{
 		"content_id":      uuid.NewString(),
 		"creator_id":      uuid.NewString(),
 		"content_type":    "flick",
 		"languages":       []string{"en"},
 		"content_seconds": 30,
-	})
+	}); env.Status != 404 {
+		t.Errorf("admin on /internal/ enqueue from the edge: want 404, got %d", env.Status)
+	}
 
-	// A non-admin must NOT reach the internal enqueue (gateway strips scopes).
+	// A plain user is refused the same way.
 	normal := NewHTTPClient(urls.APIGateway, uuid.New())
 	env := normal.MustDo(t, ctx, "POST", "/v1/reviewer/internal/enqueue", map[string]any{
 		"content_id": uuid.NewString(), "creator_id": uuid.NewString(),
 	})
-	if env.Status != 403 {
-		t.Errorf("non-admin on /internal/ enqueue: want 403, got %d", env.Status)
+	if env.Status != 404 {
+		t.Errorf("non-admin on /internal/ enqueue from the edge: want 404, got %d", env.Status)
 	}
 }
