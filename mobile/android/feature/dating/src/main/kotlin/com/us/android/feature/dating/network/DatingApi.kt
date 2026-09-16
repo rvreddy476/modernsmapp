@@ -93,8 +93,19 @@ interface DatingApi {
     @POST("v1/dating/verification/selfie/challenge")
     suspend fun selfieChallenge(): Response<ApiEnvelope<SelfieChallengeDto>>
 
+    /** 409 MEDIA_NOT_READY while the clip is still processing — the attempt is NOT spent. */
     @POST("v1/dating/verification/selfie")
     suspend fun submitSelfie(@Body body: SelfieSubmitRequest): Response<ApiEnvelope<SelfieResultDto>>
+
+    /** Where the face check stands: state, attempts left today, and the next step. */
+    @GET("v1/dating/verification/status")
+    suspend fun verificationStatus(): Response<ApiEnvelope<VerificationStatusDto>>
+
+    // People
+
+    /** The compact card. 404 without a match, a live incoming spark or deck membership. */
+    @GET("v1/dating/people/{userId}")
+    suspend fun person(@Path("userId") userId: String): Response<ApiEnvelope<DatingPersonDto>>
 
     // Pulse
 
@@ -118,6 +129,10 @@ interface DatingApi {
 
     @POST("v1/dating/sparks/{id}/decline")
     suspend fun declineSpark(@Path("id") id: String): Response<ApiEnvelope<SparkDeclineDto>>
+
+    /** Accepts an incoming spark: sparks back through the normal path. Idempotent; 404 once declined. */
+    @POST("v1/dating/sparks/{id}/accept")
+    suspend fun acceptSpark(@Path("id") id: String): Response<ApiEnvelope<SparkCreatedDto>>
 
     // Stash
 
@@ -147,6 +162,14 @@ interface DatingApi {
     @POST("v1/dating/safety/block")
     suspend fun block(@Body body: BlockRequest): Response<ApiEnvelope<BlockedDto>>
 
+    /** Who I have blocked. */
+    @GET("v1/dating/blocks")
+    suspend fun blocks(): Response<ApiEnvelope<BlocksDto>>
+
+    /** Lifts a block. Idempotent, and restores NOTHING: no match, no spark, no conversation. */
+    @DELETE("v1/dating/blocks/{userId}")
+    suspend fun unblock(@Path("userId") userId: String): Response<ApiEnvelope<UnblockedDto>>
+
     /** 201; the reporter automatically blocks the target (`blocked: true`). */
     @POST("v1/dating/safety/report")
     suspend fun report(@Body body: ReportRequest): Response<ApiEnvelope<ReportResultDto>>
@@ -168,6 +191,14 @@ interface DatingApi {
 
     @POST("v1/dating/safety/share-location")
     suspend fun shareLocation(@Body body: ShareLocationRequest): Response<ApiEnvelope<ShareLocationDto>>
+
+    /** My own live shares, so Stop works in a process that did not start them. No coordinates. */
+    @GET("v1/dating/safety/share-location")
+    suspend fun myLocationShares(): Response<ApiEnvelope<MyLocationSharesDto>>
+
+    /** Shares sent TO me. No coordinates: those come from [sharedLocation]. */
+    @GET("v1/dating/safety/shared-locations")
+    suspend fun sharedWithMe(): Response<ApiEnvelope<SharedWithMeDto>>
 
     @DELETE("v1/dating/safety/share-location/{id}")
     suspend fun stopShare(@Path("id") id: String): Response<ApiEnvelope<StopShareDto>>

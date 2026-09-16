@@ -5,14 +5,25 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.feature.dating.data.DatingError
 import com.us.android.feature.dating.network.AllowedDetailsDto
+import com.us.android.feature.dating.network.BlockedDto
+import com.us.android.feature.dating.network.BlocksDto
+import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.ConsentRequiredDetailsDto
 import com.us.android.feature.dating.network.ConsentsDto
+import com.us.android.feature.dating.network.DataExportDto
 import com.us.android.feature.dating.network.DatingErrorEnvelopeDto
+import com.us.android.feature.dating.network.DatingPersonDto
+import com.us.android.feature.dating.network.DatingPhotoDto
+import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.ExplainDto
 import com.us.android.feature.dating.network.LocationRateLimitDetailsDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.MovedDetailsDto
+import com.us.android.feature.dating.network.MyLocationSharesDto
+import com.us.android.feature.dating.network.PanicDto
 import com.us.android.feature.dating.network.PassDto
+import com.us.android.feature.dating.network.PreferencesDto
+import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PremiumCatalogueDto
 import com.us.android.feature.dating.network.PremiumMeDto
 import com.us.android.feature.dating.network.PremiumPaymentDto
@@ -21,8 +32,24 @@ import com.us.android.feature.dating.network.PremiumPurchaseResultDto
 import com.us.android.feature.dating.network.PrivacyDto
 import com.us.android.feature.dating.network.PulseTodayDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
+import com.us.android.feature.dating.network.ReportResultDto
+import com.us.android.feature.dating.network.SelfieChallengeDto
+import com.us.android.feature.dating.network.SelfieResultDto
+import com.us.android.feature.dating.network.ShareLocationDto
+import com.us.android.feature.dating.network.SharedLocationDto
+import com.us.android.feature.dating.network.SharedWithMeDto
+import com.us.android.feature.dating.network.SparkCreatedDto
 import com.us.android.feature.dating.network.SparkDeclineDto
+import com.us.android.feature.dating.network.SparkDto
+import com.us.android.feature.dating.network.StashDto
+import com.us.android.feature.dating.network.StopShareDto
+import com.us.android.feature.dating.network.TrustedContactDto
+import com.us.android.feature.dating.network.TrustedContactsDto
+import com.us.android.feature.dating.network.VerificationStatusDto
 import com.us.android.feature.dating.premium.toReading
+import com.us.android.feature.dating.safety.MAX_TRUSTED_CONTACTS
+import com.us.android.feature.dating.selfie.SelfieOutcomes
+import com.us.android.feature.dating.selfie.SelfieState
 import com.us.android.core.payments.PaymentStatusReading
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
@@ -51,6 +78,15 @@ class DatingContractFixtureTest {
     private val contractsDir = File("src/test/resources/contracts")
 
     private val parsers: Map<String, (name: String, raw: String) -> Unit> = mapOf(
+        "block_post_200.json" to data(BlockedDto.serializer()) {
+            assertThat(it.blocked).isTrue()
+        },
+        "blocks_get_200.json" to data(BlocksDto.serializer()) {
+            val blocked = it.items.single()
+            assertThat(blocked.firstName).isEqualTo("Asha")
+            assertThat(blocked.age).isEqualTo(30)
+            assertThat(blocked.blockedAt).isNotEmpty()
+        },
         "consents_get_200.json" to data(ConsentsDto.serializer()) {
             assertThat(it.currentPolicyVersion).isEqualTo("v1.0-2026-04-29")
             assertThat(it.consents.map { c -> c.consentType })
@@ -66,12 +102,70 @@ class DatingContractFixtureTest {
             assertThat(refusedCode(error)).isEqualTo("INVALID_CONSENT_TYPE")
             assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed).hasSize(4)
         },
+        "data_export_me_get_200.json" to data(listSerializer(DataExportDto.serializer())) {
+            assertThat(it.single().status).isEqualTo("pending")
+        },
+        "data_export_post_202.json" to data(DataExportDto.serializer()) {
+            assertThat(it.status).isEqualTo("pending")
+            assertThat(it.downloadUrl).isNull()
+        },
+        "match_close_post_200.json" to data(ClosedDto.serializer()) {
+            assertThat(it.closed).isTrue()
+        },
+        "match_get_200.json" to data(MatchDto.serializer()) {
+            assertThat(it.sparkTarget?.targetKind).isEqualTo("prompt")
+            val person = checkNotNull(it.person)
+            assertThat(person.firstName).isEqualTo("Asha")
+            assertThat(person.age).isEqualTo(30)
+            assertThat(person.photoState).isEqualTo("full")
+            // Absent unless BOTH sides have a location.
+            assertThat(person.distanceBucket).isNull()
+        },
         "matches_get_200.json" to data(listSerializer(MatchDto.serializer())) {
             val match = it.single()
             assertThat(match.status).isEqualTo("matched")
             assertThat(match.conversationId).isEqualTo("<conversation>")
             assertThat(match.sparkTarget?.targetKind).isEqualTo("photo")
             assertThat(match.sparkTarget?.targetRef).isEqualTo("0")
+            val person = checkNotNull(match.person)
+            assertThat(person.userId).isEqualTo("<user_b>")
+            assertThat(person.firstName).isEqualTo("Asha")
+            assertThat(person.age).isEqualTo(30)
+            assertThat(person.primaryPhotoUrl).isEqualTo("/v1/dating/photos/<uuid>/full")
+            assertThat(person.photoState).isEqualTo("full")
+            assertThat(person.verified).isFalse()
+        },
+        "panic_post_200.json" to data(PanicDto.serializer()) {
+            assertThat(it.recorded).isTrue()
+            assertThat(it.status).isEqualTo("open")
+            assertThat(it.deduplicated).isFalse()
+        },
+        "person_get_200.json" to data(DatingPersonDto.serializer()) {
+            assertThat(it.firstName).isEqualTo("Asha")
+            assertThat(it.age).isEqualTo(30)
+            assertThat(it.photoState).isEqualTo("full")
+            assertThat(it.trustTier).isEqualTo("phone")
+            assertThat(it.verified).isFalse()
+        },
+        "photos_get_200.json" to data(listSerializer(DatingPhotoDto.serializer())) {
+            // [] rather than null now.
+            assertThat(it).isEmpty()
+        },
+        "photos_post_201.json" to data(DatingPhotoDto.serializer()) {
+            assertThat(it.isPrimary).isTrue()
+            assertThat(it.moderationStatus).isEqualTo("approved")
+            assertThat(it.visibility).isEqualTo("public")
+        },
+        "preferences_get_200.json" to data(PreferencesDto.serializer()) {
+            assertThat(it.interestedInGender).isEqualTo("everyone")
+            assertThat(it.distanceKm).isEqualTo(25)
+            assertThat(it.minAge).isNull()
+        },
+        "preferences_put_200.json" to data(PreferencesDto.serializer()) {
+            assertThat(it.interestedInGender).isEqualTo("everyone")
+            assertThat(it.minAge).isEqualTo(25)
+            assertThat(it.maxAge).isEqualTo(35)
+            assertThat(it.intentFilter).containsExactly("casual")
         },
         "premium_catalogue_get_200.json" to data(PremiumCatalogueDto.serializer()) {
             assertThat(it.products.map { p -> p.id }).containsExactly("pass_30d", "pass_90d", "pass_365d", "boost").inOrder()
@@ -129,6 +223,19 @@ class DatingContractFixtureTest {
             assertThat(it.approximateLocation).isTrue()
             assertThat(it.echoesConsent).isFalse()
         },
+        "profile_get_200.json" to data(DatingProfileDto.serializer()) {
+            assertThat(it.firstName).isEqualTo("Asha")
+            assertThat(it.profileStatus).isEqualTo("active")
+            assertThat(it.trustTier).isEqualTo("phone")
+            // Identity owns both; the app never sends them.
+            assertThat(it.dobSource).isEqualTo("identity")
+            assertThat(it.firstNameSource).isEqualTo("identity")
+        },
+        "profile_upsert_200.json" to data(DatingProfileDto.serializer()) {
+            assertThat(it.bio).isEqualTo("Filter coffee and long walks.")
+            assertThat(it.city).isEqualTo("Hyderabad")
+            assertThat(it.country).isEqualTo("India")
+        },
         "profile_upsert_400_invalid_location.json" to error { error, _ ->
             assertThat(refusedCode(error)).isEqualTo("INVALID_LOCATION")
         },
@@ -145,6 +252,14 @@ class DatingContractFixtureTest {
             assertThat(limits.maxChangesPerDay).isEqualTo(10)
             assertThat(limits.windowHours).isEqualTo(24)
         },
+        "prompts_get_200.json" to data(listSerializer(PromptAnswerDto.serializer())) {
+            // [] rather than null now.
+            assertThat(it).isEmpty()
+        },
+        "prompts_put_200.json" to data(PromptAnswerDto.serializer()) {
+            assertThat(it.promptId).isEqualTo(1)
+            assertThat(it.answer).isEqualTo("Ask me about filter coffee.")
+        },
         "pulse_explain_404_candidate_unavailable.json" to error { error, _ ->
             // A dating-service 404 carries meta: it is a refusal, NOT the pilot gate.
             assertThat(refusedCode(error)).isEqualTo("CANDIDATE_UNAVAILABLE")
@@ -159,11 +274,13 @@ class DatingContractFixtureTest {
             assertThat(it.candidateId).isEqualTo("<candidate>")
         },
         "pulse_today_get_200.json" to { _, raw ->
-            // NOT enveloped: data + meta{generated_at,size} at the top level.
+            // {data, meta{generated_at,size,cohort_gated,request_id}}; cohort_gated
+            // ALSO stays at the top level (omitted when false) for the shipped app.
             val today = strict.decodeFromString(PulseTodayDto.serializer(), raw)
             val card = today.data.single()
             assertThat(today.meta?.size).isEqualTo(1)
-            assertThat(today.cohortGated).isFalse()
+            assertThat(today.meta?.cohortGated).isFalse()
+            assertThat(today.gated).isFalse()
             assertThat(card.matchReasons).hasSize(3)
             assertThat(card.profile.firstName).isEqualTo("Asha")
             assertThat(card.profile.distanceBucket).isEqualTo("lt_5_km")
@@ -171,8 +288,68 @@ class DatingContractFixtureTest {
             assertThat(card.profile.tuneSummary).isEmpty()
             assertThat(card.echoes?.topReelId).isNull()
         },
+        "report_post_201.json" to data(ReportResultDto.serializer()) {
+            assertThat(it.reason).isEqualTo("harassment")
+            assertThat(it.status).isEqualTo("submitted")
+            // Reporting always blocks the target for the reporter.
+            assertThat(it.autoBlocked).isTrue()
+            assertThat(it.blocked).isTrue()
+            assertThat(it.reporterAnonymised).isFalse()
+        },
         "selfie_challenge_422_consent_required.json" to error { error, _ ->
             assertThat(error).isEqualTo(DatingError.ConsentRequired("biometric_selfie", "v1.0-2026-04-29"))
+        },
+        "selfie_challenge_post_200.json" to data(SelfieChallengeDto.serializer()) {
+            assertThat(it.instruction).isEqualTo("blink_twice")
+            assertThat(it.maxDurationMs).isEqualTo(4_000)
+            // The recorder must stay inside the server's cap.
+            assertThat(SelfieOutcomes.recordMillis(it.maxDurationMs) + SelfieOutcomes.RECORD_WATCHDOG_MS)
+                .isAtMost(SelfieOutcomes.MAX_CLIP_MS.toLong())
+        },
+        "selfie_post_200_not_enough_blinks.json" to data(SelfieResultDto.serializer()) {
+            assertThat(it.reason).isEqualTo("NOT_ENOUGH_BLINKS")
+            assertThat(SelfieOutcomes.fromResult(it)).isEqualTo(
+                SelfieState.Retry("NOT_ENOUGH_BLINKS", SelfieOutcomes.copyFor("NOT_ENOUGH_BLINKS"), 4),
+            )
+        },
+        "selfie_post_200_passed.json" to data(SelfieResultDto.serializer()) {
+            assertThat(it.passed).isTrue()
+            assertThat(it.trustTier).isEqualTo("selfie")
+            assertThat(SelfieOutcomes.fromResult(it)).isEqualTo(SelfieState.Passed)
+        },
+        "selfie_post_200_review.json" to data(SelfieResultDto.serializer()) {
+            assertThat(it.status).isEqualTo("pending_review")
+            assertThat(SelfieOutcomes.fromResult(it)).isEqualTo(SelfieState.InReview)
+        },
+        "share_location_delete_200.json" to data(StopShareDto.serializer()) {
+            assertThat(it.stopped).isTrue()
+            assertThat(it.shareId).isEqualTo("<share>")
+        },
+        "share_location_get_200.json" to data(MyLocationSharesDto.serializer()) {
+            val share = it.items.single()
+            assertThat(share.shareId).isEqualTo("<share>")
+            assertThat(share.recipientKind).isEqualTo("trusted_contact")
+            assertThat(share.recipient?.firstName).isEqualTo("Asha")
+        },
+        "share_location_post_200.json" to data(ShareLocationDto.serializer()) {
+            assertThat(it.recipientKind).isEqualTo("trusted_contact")
+            assertThat(it.expiresAt).isNotEmpty()
+        },
+        "shared_location_get_200.json" to data(SharedLocationDto.serializer()) {
+            // The ONLY share shape that carries coordinates.
+            assertThat(it.latitude).isEqualTo(17.44)
+            assertThat(it.longitude).isEqualTo(78.39)
+            assertThat(it.stoppedAt).isNull()
+        },
+        "shared_locations_get_200.json" to data(SharedWithMeDto.serializer()) {
+            val share = it.items.single()
+            assertThat(share.shareId).isEqualTo("<share>")
+            assertThat(share.person?.firstName).isEqualTo("Asha")
+        },
+        "spark_accept_post_201.json" to data(SparkCreatedDto.serializer()) {
+            assertThat(it.matched).isTrue()
+            assertThat(it.matchId).isEqualTo("<uuid>")
+            assertThat(it.spark?.targetKind).isEqualTo("photo")
         },
         "spark_create_404_candidate_unavailable.json" to error { error, _ ->
             assertThat(refusedCode(error)).isEqualTo("CANDIDATE_UNAVAILABLE")
@@ -181,9 +358,46 @@ class DatingContractFixtureTest {
             assertThat(refusedCode(error)).isEqualTo("SPARK_RATE_LIMITED")
             assertThat(details(error, RateLimitDetailsDto.serializer(), name)).isEqualTo(RateLimitDetailsDto(50, 24))
         },
+        "spark_create_post_201_matched.json" to data(SparkCreatedDto.serializer()) {
+            assertThat(it.matched).isTrue()
+            assertThat(it.matchId).isEqualTo("<uuid>")
+            assertThat(it.spark?.targetKind).isEqualTo("prompt")
+        },
         "spark_decline_post_200.json" to data(SparkDeclineDto.serializer()) {
             assertThat(it.declined).isTrue()
             assertThat(it.sparkId).isEqualTo("<spark>")
+        },
+        "sparks_incoming_get_200.json" to data(listSerializer(SparkDto.serializer())) {
+            val spark = it.single()
+            assertThat(spark.note).isEqualTo("Loved your answer")
+            val person = checkNotNull(spark.person)
+            assertThat(person.userId).isEqualTo(spark.fromUserId)
+            assertThat(person.firstName).isEqualTo("Asha")
+            assertThat(person.age).isEqualTo(30)
+            assertThat(person.photoState).isEqualTo("full")
+        },
+        "stash_get_200.json" to data(listSerializer(StashDto.serializer())) {
+            assertThat(it.single().candidateId).isEqualTo("<candidate>")
+        },
+        "stash_post_201.json" to data(StashDto.serializer()) {
+            assertThat(it.candidateId).isEqualTo("<candidate>")
+            assertThat(it.expiresAt).isNotEmpty()
+        },
+        "trusted_contact_put_200.json" to data(TrustedContactDto.serializer()) {
+            assertThat(it.shareLocationOnPanic).isTrue()
+        },
+        "trusted_contacts_get_200.json" to data(TrustedContactsDto.serializer()) {
+            assertThat(it.max).isEqualTo(MAX_TRUSTED_CONTACTS)
+            assertThat(it.items.single().contactId).isEqualTo("<contact>")
+        },
+        "verification_status_get_200.json" to data(VerificationStatusDto.serializer()) {
+            assertThat(it.selfie.state).isEqualTo("passed")
+            assertThat(it.selfie.attemptsLeftToday).isEqualTo(4)
+            assertThat(it.selfie.attemptsPerDay).isEqualTo(5)
+            assertThat(it.selfie.windowHours).isEqualTo(24)
+            assertThat(it.verified).isTrue()
+            assertThat(it.trustTier).isEqualTo("selfie")
+            assertThat(it.nextStep).isEqualTo("none")
         },
     )
 

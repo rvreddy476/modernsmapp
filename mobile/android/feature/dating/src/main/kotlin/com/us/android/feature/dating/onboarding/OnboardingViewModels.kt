@@ -21,6 +21,7 @@ import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.PreferencesDto
 import com.us.android.feature.dating.network.PreferencesRequest
 import com.us.android.feature.dating.network.UpsertProfileRequest
+import com.us.android.feature.dating.ui.errorMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -206,12 +207,13 @@ class OnboardingViewModel @Inject constructor(
             )
             when (val result = repository.updatePreferences(request)) {
                 is DatingResult.Success -> _state.update { it.copy(saving = false, savedCount = it.savedCount + 1) }
-                is DatingResult.Failure -> _state.update { it.copy(saving = false, message = DatingCopy.message(result.error)) }
+                is DatingResult.Failure -> _state.update { it.copy(saving = false, message = preferencesFailure(result.error)) }
             }
         }
     }
 
     // ── Location: rationale, then the system prompt, then one fix ───────────
+
 
     /** Returns what the screen must do next. */
     fun onUseMyLocation(): LocationEffect {
@@ -290,5 +292,20 @@ class OnboardingViewModel @Inject constructor(
         const val MAX_AGE = 120
         const val MIN_DISTANCE_KM = 1
         const val MAX_DISTANCE_KM = 500
+
+        /**
+         * The server validates `interested_in_gender` against
+         * `woman | man | nonbinary | everyone` and refuses anything else with a
+         * 400 INVALID_REQUEST — the generic code, so it is read HERE, where the
+         * only field that can be invalid is the one the person just chose.
+         */
+        fun preferencesFailure(error: DatingError): UsMessage =
+            if ((error as? DatingError.Refused)?.status == HTTP_BAD_REQUEST) {
+                errorMessage("That choice isn't available any more. Pick who you want to see and try again.")
+            } else {
+                DatingCopy.message(error)
+            }
+
+        private const val HTTP_BAD_REQUEST = 400
     }
 }

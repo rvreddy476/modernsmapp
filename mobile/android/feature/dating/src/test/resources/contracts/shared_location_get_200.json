@@ -1,0 +1,12 @@
+{
+  "data": {
+    "share_id": "<share>",
+    "user_id": "<user>",
+    "recipient_id": "<contact>",
+    "recipient_kind": "trusted_contact",
+    "latitude": 17.44,
+    "longitude": 78.39,
+    "expires_at": "<timestamp>",
+    "created_at": "<timestamp>"
+  }
+}

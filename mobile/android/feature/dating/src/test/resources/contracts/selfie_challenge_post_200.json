@@ -1,0 +1,8 @@
+{
+  "data": {
+    "challenge_id": "<uuid>",
+    "instruction": "blink_twice",
+    "max_duration_ms": 4000,
+    "expires_at": "<timestamp>"
+  }
+}

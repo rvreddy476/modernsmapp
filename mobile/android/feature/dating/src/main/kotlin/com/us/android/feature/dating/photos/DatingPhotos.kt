@@ -13,6 +13,7 @@ import com.us.android.core.media.upload.PROCESSING_REJECTED
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.core.media.upload.SUBTYPE_GENERAL
 import com.us.android.core.network.ApiConfig
+import com.us.android.feature.dating.network.DatingPersonDto
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -48,6 +49,24 @@ object PhotoRules {
     /** The path a viewer loads for [serverPath]: blurred unless [matched]. Null when the path is not a dating photo. */
     fun viewerPath(serverPath: String?, matched: Boolean): String? =
         photoIdOf(serverPath)?.let { pathFor(it, variantFor(matched)) }
+
+    /**
+     * The variant a person card's `photo_state` allows.
+     *
+     * The server has already applied the D6 rule, so the app obeys it and never
+     * upgrades a card to the full image. It FAILS CLOSED: only the exact word
+     * `full` gives the full variant, so a blank, unknown or future state is
+     * blurred rather than exposed.
+     */
+    fun variantForState(photoState: String?): PhotoVariant =
+        if (photoState?.trim() == STATE_FULL) PhotoVariant.FULL else PhotoVariant.BLURRED
+
+    /** The path a viewer loads for a person card. Null when there is no usable photo path. */
+    fun statePath(serverPath: String?, photoState: String?): String? =
+        photoIdOf(serverPath)?.let { pathFor(it, variantForState(photoState)) }
+
+    const val STATE_FULL = "full"
+    const val STATE_BLURRED = "blurred"
 }
 
 /** Resolves the gateway-relative photo paths against the API base URL. */
@@ -57,6 +76,10 @@ class DatingPhotoUrls @Inject constructor(private val config: ApiConfig) {
     /** Someone else's photo: blurred unless [matched]. */
     fun forViewer(serverPath: String?, matched: Boolean): String? =
         PhotoRules.viewerPath(serverPath, matched)?.let(::absolute)
+
+    /** A person card's photo, in the variant its `photo_state` allows. */
+    fun forPerson(person: DatingPersonDto?): String? =
+        PhotoRules.statePath(person?.primaryPhotoUrl, person?.photoState)?.let(::absolute)
 
     /** The person's own photo, always the full variant. */
     fun own(photoId: String): String = absolute(PhotoRules.pathFor(photoId, PhotoVariant.FULL))

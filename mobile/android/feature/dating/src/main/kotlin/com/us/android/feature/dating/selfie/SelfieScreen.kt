@@ -91,6 +91,19 @@ fun SelfieScreen(
                     )
                 }
                 SelfieState.Checking -> LoadingPane(label = "Checking…")
+                is SelfieState.StillProcessing -> MessagePane(
+                    title = "Still processing",
+                    body = SelfieOutcomes.MEDIA_NOT_READY_COPY,
+                    icon = UsIcons.Clock,
+                    primaryLabel = "Try again",
+                    // The same clip, the same challenge: this costs no attempt.
+                    onPrimary = viewModel::resubmit,
+                    extra = {
+                        SelfieOutcomes.attemptsLine(s.attemptsLeft)?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textDim, modifier = Modifier.padding(top = UsTheme.spacing.m))
+                        }
+                    },
+                )
                 SelfieState.Passed -> MessagePane(
                     title = "You're verified",
                     body = "Thanks. Your profile can now be seen by people nearby.",
@@ -231,6 +244,10 @@ private fun RecordStep(state: SelfieState.Ready, onRecorded: (java.io.File) -> U
         }
         state.note?.let { InfoNote(it, tone = Tone.Warning) }
         InfoNote("Good light, your whole face in the frame, and only you.")
+        // From GET /verification/status, so it is right on the first attempt too.
+        SelfieOutcomes.attemptsLine(state.attemptsLeft)?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textDim)
+        }
         UsButton(
             text = if (recording) "Recording…" else "Record 4 seconds",
             enabled = recorder != null && !recording,

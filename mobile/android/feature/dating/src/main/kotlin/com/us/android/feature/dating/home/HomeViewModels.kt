@@ -111,8 +111,9 @@ class PulseViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = repository.pulseToday()) {
                 is DatingResult.Success -> {
-                    session.remember(result.value.data.map { it.profile })
-                    list.gated.value = result.value.cohortGated
+                    // cohort_gated lives in meta now, and at the top level on the
+                    // older shape; PulseTodayDto.gated reads whichever says yes.
+                    list.gated.value = result.value.gated
                     list.failure.value = null
                     list.rows.value = result.value.data
                 }
@@ -132,10 +133,12 @@ class PulseViewModel @Inject constructor(
     fun spark(userId: String, note: String? = null) = act(userId) {
         when (val result = repository.spark(userId, note)) {
             is DatingResult.Success -> {
+                // The name comes from the card being sparked, which is on screen.
+                val name = list.rows.value?.firstOrNull { it.profile.userId == userId }?.profile?.firstName.orEmpty()
                 list.drop(userId)
                 val created = result.value
                 if (created.matched && created.matchId != null) {
-                    _celebration.value = MatchCelebration(created.matchId, session.person(userId)?.firstName.orEmpty())
+                    _celebration.value = MatchCelebration(created.matchId, name)
                 } else {
                     _message.value = successMessage("Spark sent.")
                 }
@@ -217,11 +220,15 @@ data class IncomingSparkUi(
     val sparkId: String,
     val fromUserId: String,
     val name: String?,
+    val age: Int?,
+    /** A bucket label, or null when the server sent no bucket. Never a number. */
+    val distance: String?,
+    val verified: Boolean,
     val photoUrl: String?,
     val note: String?,
 )
 
-/** Incoming sparks. Accepting is a spark back at the sender: there is no accept route. */
+/** Incoming sparks: accept (through the accept route) or decline. */
 @HiltViewModel
 class SparksViewModel @Inject constructor(
     private val repository: DatingRepository,
@@ -265,9 +272,10 @@ class SparksViewModel @Inject constructor(
         _celebration.value = null
     }
 
+    /** Accepts BY SPARK ID, so the server pairs it with the spark that was sent. */
     fun accept(spark: IncomingSparkUi) {
         viewModelScope.launch {
-            when (val result = repository.spark(spark.fromUserId)) {
+            when (val result = repository.acceptSpark(spark.sparkId)) {
                 is DatingResult.Success -> {
                     list.drop(spark.fromUserId)
                     val created = result.value
@@ -275,7 +283,10 @@ class SparksViewModel @Inject constructor(
                     if (_celebration.value == null) _message.value = successMessage("Spark sent back. Your match will appear soon.")
                 }
                 is DatingResult.Failure -> {
-                    if (result.error.code == "CANDIDATE_UNAVAILABLE") list.drop(spark.fromUserId)
+                    // Gone either way: already declined (404) or the person left.
+                    val gone = result.error.code == "CANDIDATE_UNAVAILABLE" ||
+                        (result.error as? DatingError.Refused)?.status == HTTP_NOT_FOUND
+                    if (gone) list.drop(spark.fromUserId)
                     _message.value = DatingCopy.message(result.error)
                 }
             }
@@ -309,15 +320,19 @@ class SparksViewModel @Inject constructor(
         }
     }
 
-    private fun SparkDto.toUi(): IncomingSparkUi {
-        val person = session.person(fromUserId)
-        return IncomingSparkUi(
-            sparkId = id,
-            fromUserId = fromUserId,
-            name = person?.firstName?.takeIf { it.isNotBlank() },
-            photoUrl = urls.forViewer(person?.photoPath, matched = false),
-            note = note?.takeIf { it.isNotBlank() },
-        )
+    private fun SparkDto.toUi(): IncomingSparkUi = IncomingSparkUi(
+        sparkId = id,
+        fromUserId = fromUserId,
+        name = person?.firstName?.takeIf { it.isNotBlank() },
+        age = person?.age?.takeIf { it > 0 },
+        distance = DistanceBucket.labelFor(person?.distanceBucket),
+        verified = person?.verified == true,
+        photoUrl = urls.forPerson(person),
+        note = note?.takeIf { it.isNotBlank() },
+    )
+
+    private companion object {
+        const val HTTP_NOT_FOUND = 404
     }
 }
 
@@ -325,11 +340,29 @@ data class MatchUi(
     val matchId: String,
     val otherUserId: String,
     val name: String?,
-    /** Matched: the FULL photo. */
+    val age: Int?,
+    /** A bucket label, or null when the server sent no bucket. Never a number. */
+    val distance: String?,
+    val verified: Boolean,
+    /** The variant the card's `photo_state` allows — never upgraded by the app. */
     val photoUrl: String?,
     val status: String,
     val conversationId: String?,
     val expiresAt: String?,
+)
+
+/** One match row, from the person the SERVER resolved for this viewer. */
+private fun MatchDto.toUi(other: String, urls: DatingPhotoUrls) = MatchUi(
+    matchId = id,
+    otherUserId = other,
+    name = person?.firstName?.takeIf { it.isNotBlank() },
+    age = person?.age?.takeIf { it > 0 },
+    distance = DistanceBucket.labelFor(person?.distanceBucket),
+    verified = person?.verified == true,
+    photoUrl = urls.forPerson(person),
+    status = status,
+    conversationId = conversationId,
+    expiresAt = expiresAt,
 )
 
 /** The matches list. Closed matches are not shown; blocked people are filtered through the session. */
@@ -340,7 +373,9 @@ class MatchesViewModel @Inject constructor(
     private val urls: DatingPhotoUrls,
 ) : ViewModel() {
 
-    private val list = RemovableList<MatchDto> { session.otherOf(it.userA, it.userB) }
+    // The server names the other person on every row now; otherOf is the
+    // fallback for a row that somehow carries no card.
+    private val list = RemovableList<MatchDto> { it.person?.userId ?: session.otherOf(it.userA, it.userB) }
 
     val state: StateFlow<ListState<MatchUi>> =
         list.state(session) { it.toUi() }.stateIn(viewModelScope, SharingStarted.Eagerly, ListState.Loading)
@@ -361,18 +396,7 @@ class MatchesViewModel @Inject constructor(
         }
     }
 
-    private fun MatchDto.toUi(): MatchUi = session.otherOf(userA, userB).let { other ->
-        val person = session.person(other)
-        MatchUi(
-            matchId = id,
-            otherUserId = other,
-            name = person?.firstName?.takeIf { it.isNotBlank() },
-            photoUrl = urls.forViewer(person?.photoPath, matched = true),
-            status = status,
-            conversationId = conversationId,
-            expiresAt = expiresAt,
-        )
-    }
+    private fun MatchDto.toUi(): MatchUi = toUi(person?.userId ?: session.otherOf(userA, userB), urls)
 
     companion object {
         const val STATUS_CLOSED = "closed"
@@ -473,21 +497,12 @@ class MatchDetailViewModel @Inject constructor(
         when (val result = repository.match(matchId)) {
             is DatingResult.Success -> {
                 val dto = result.value
-                val other = session.otherOf(dto.userA, dto.userB)
+                val other = dto.person?.userId ?: session.otherOf(dto.userA, dto.userB)
                 if (dto.status == MatchesViewModel.STATUS_CLOSED || session.isRemoved(other)) {
                     _state.value = MatchDetailState.Gone("This match has ended.")
                     return
                 }
-                val person = session.person(other)
-                val ui = MatchUi(
-                    matchId = dto.id,
-                    otherUserId = other,
-                    name = person?.firstName?.takeIf { it.isNotBlank() },
-                    photoUrl = urls.forViewer(person?.photoPath, matched = true),
-                    status = dto.status,
-                    conversationId = dto.conversationId,
-                    expiresAt = dto.expiresAt,
-                )
+                val ui = dto.toUi(other, urls)
                 _state.value = MatchDetailState.Loaded(ui)
                 if (openChatOnLoad && ui.conversationId != null) {
                     openChatOnLoad = false

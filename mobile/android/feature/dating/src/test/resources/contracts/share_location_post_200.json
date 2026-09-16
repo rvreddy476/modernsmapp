@@ -1,0 +1,8 @@
+{
+  "data": {
+    "share_id": "<uuid>",
+    "recipient_id": "<contact>",
+    "recipient_kind": "trusted_contact",
+    "expires_at": "<timestamp>"
+  }
+}

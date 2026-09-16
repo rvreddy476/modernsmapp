@@ -3,6 +3,8 @@ package com.us.android.feature.dating
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.dating.network.SelfieResultDto
+import com.us.android.feature.dating.network.SelfieStatusDto
+import com.us.android.feature.dating.network.VerificationStatusDto
 import com.us.android.feature.dating.photos.UploadOutcome
 import com.us.android.feature.dating.selfie.SelfieOutcomes
 import com.us.android.feature.dating.selfie.SelfieState
@@ -152,5 +154,103 @@ class SelfieFlowTest {
         assertThat(SelfieOutcomes.recordMillis(10_000)).isLessThan(4_000L)
         assertThat(SelfieOutcomes.recordMillis(0)).isLessThan(4_000L)
         assertThat(SelfieOutcomes.recordMillis(3_000)).isLessThan(3_000L)
+    }
+
+    // ── MEDIA_NOT_READY (409) ───────────────────────────────────────────────
+
+    @Test
+    fun `MEDIA_NOT_READY shows the retry state and does not count an attempt`() = runTest {
+        api.verificationResponse = {
+            ok(VerificationStatusDto(selfie = SelfieStatusDto(state = "none", attemptsLeftToday = 5, attemptsPerDay = 5), nextStep = "submit_selfie"))
+        }
+        api.selfieResponse = { refused(409, SelfieOutcomes.CODE_MEDIA_NOT_READY) }
+        val model = vm(ConsentType.BIOMETRIC_SELFIE)
+        val ready = model.state.value as SelfieState.Ready
+
+        model.onRecorded(clip)
+
+        val waiting = model.state.value as SelfieState.StillProcessing
+        // The same challenge and the same clip: nothing was spent.
+        assertThat(waiting.challengeId).isEqualTo(ready.challengeId)
+        assertThat(waiting.mediaId).isEqualTo("video-media-1")
+        assertThat(waiting.attemptsLeft).isEqualTo(5)
+        assertThat(SelfieOutcomes.MEDIA_NOT_READY_COPY).contains("still processing")
+        // No new challenge was asked for, so no attempt was burned.
+        assertThat(api.calls.count { it == "challenge" }).isEqualTo(1)
+    }
+
+    @Test
+    fun `retrying after MEDIA_NOT_READY resends the same clip and can pass`() = runTest {
+        api.selfieResponse = { refused(409, SelfieOutcomes.CODE_MEDIA_NOT_READY) }
+        val model = vm(ConsentType.BIOMETRIC_SELFIE)
+        model.onRecorded(clip)
+        assertThat(model.state.value).isInstanceOf(SelfieState.StillProcessing::class.java)
+
+        // Media has finished processing by the time they tap Try again.
+        api.selfieResponse = { ok(SelfieResultDto(status = "passed", passed = true, attemptsRemaining = 5)) }
+        model.resubmit()
+
+        assertThat(model.state.value).isEqualTo(SelfieState.Passed)
+        // One recording, two submissions of the SAME media id, one challenge.
+        assertThat(uploads).hasSize(1)
+        assertThat(api.selfieSubmissions.map { it.videoMediaId }).containsExactly("video-media-1", "video-media-1")
+        assertThat(api.selfieSubmissions.map { it.challengeId }.distinct()).hasSize(1)
+        assertThat(api.calls.count { it == "challenge" }).isEqualTo(1)
+    }
+
+    // ── GET /verification/status ────────────────────────────────────────────
+
+    @Test
+    fun `a passed check is read from the status, without asking for a challenge`() = runTest {
+        api.verificationResponse = {
+            ok(VerificationStatusDto(selfie = SelfieStatusDto(state = "passed"), verified = true, trustTier = "selfie", nextStep = "none"))
+        }
+        val model = vm(ConsentType.BIOMETRIC_SELFIE)
+
+        assertThat(model.state.value).isEqualTo(SelfieState.Passed)
+        assertThat(api.calls).contains("verification")
+        assertThat(api.calls).doesNotContain("challenge")
+    }
+
+    @Test
+    fun `a review in progress is read from the status`() = runTest {
+        api.verificationResponse = {
+            ok(VerificationStatusDto(selfie = SelfieStatusDto(state = "review"), nextStep = "wait_for_review"))
+        }
+
+        assertThat(vm(ConsentType.BIOMETRIC_SELFIE).state.value).isEqualTo(SelfieState.InReview)
+    }
+
+    @Test
+    fun `no attempts left today is read from the status, not inferred`() = runTest {
+        api.verificationResponse = {
+            ok(VerificationStatusDto(selfie = SelfieStatusDto(state = "failed", attemptsLeftToday = 0, attemptsPerDay = 5, windowHours = 24), nextStep = "retry_tomorrow"))
+        }
+        val model = vm(ConsentType.BIOMETRIC_SELFIE)
+
+        assertThat(model.state.value).isEqualTo(SelfieState.LimitReached)
+        assertThat(api.calls).doesNotContain("challenge")
+    }
+
+    @Test
+    fun `attempts left today come from the status on the very first attempt`() = runTest {
+        api.verificationResponse = {
+            ok(VerificationStatusDto(selfie = SelfieStatusDto(state = "failed", attemptsLeftToday = 3, attemptsPerDay = 5), nextStep = "submit_selfie"))
+        }
+        val model = vm(ConsentType.BIOMETRIC_SELFIE)
+
+        val ready = model.state.value as SelfieState.Ready
+        assertThat(ready.attemptsLeft).isEqualTo(3)
+        assertThat(SelfieOutcomes.attemptsLine(ready.attemptsLeft)).isEqualTo("3 attempts left today")
+    }
+
+    @Test
+    fun `a status that cannot be read still lets the person record`() = runTest {
+        api.verificationResponse = { refused(503, "UNAVAILABLE") }
+        val model = vm(ConsentType.BIOMETRIC_SELFIE)
+
+        // The check is not blocked by a status read that failed.
+        assertThat(model.state.value).isInstanceOf(SelfieState.Ready::class.java)
+        assertThat(api.calls).contains("challenge")
     }
 }

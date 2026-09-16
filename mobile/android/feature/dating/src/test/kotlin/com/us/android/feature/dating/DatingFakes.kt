@@ -13,6 +13,8 @@ import com.us.android.feature.dating.location.Coordinates
 import com.us.android.feature.dating.location.CurrentLocationSource
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
+import com.us.android.feature.dating.network.BlockedPersonDto
+import com.us.android.feature.dating.network.BlocksDto
 import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.ConsentRequest
 import com.us.android.feature.dating.network.ConsentStateDto
@@ -20,11 +22,14 @@ import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.DataExportDto
 import com.us.android.feature.dating.network.DatingApi
+import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.DeleteProfileRequest
 import com.us.android.feature.dating.network.ExplainDto
 import com.us.android.feature.dating.network.MatchDto
+import com.us.android.feature.dating.network.MyLocationShareDto
+import com.us.android.feature.dating.network.MyLocationSharesDto
 import com.us.android.feature.dating.network.PanicDto
 import com.us.android.feature.dating.network.PanicRequest
 import com.us.android.feature.dating.network.PassDto
@@ -50,10 +55,13 @@ import com.us.android.feature.dating.network.ReportRequest
 import com.us.android.feature.dating.network.ReportResultDto
 import com.us.android.feature.dating.network.SelfieChallengeDto
 import com.us.android.feature.dating.network.SelfieResultDto
+import com.us.android.feature.dating.network.SelfieStatusDto
 import com.us.android.feature.dating.network.SelfieSubmitRequest
 import com.us.android.feature.dating.network.ShareLocationDto
 import com.us.android.feature.dating.network.ShareLocationRequest
 import com.us.android.feature.dating.network.SharedLocationDto
+import com.us.android.feature.dating.network.SharedWithMeDto
+import com.us.android.feature.dating.network.SharedWithMeItemDto
 import com.us.android.feature.dating.network.SparkCreatedDto
 import com.us.android.feature.dating.network.SparkDeclineDto
 import com.us.android.feature.dating.network.SparkDto
@@ -67,6 +75,8 @@ import com.us.android.feature.dating.network.TrustedContactRequest
 import com.us.android.feature.dating.network.TrustedContactsDto
 import com.us.android.feature.dating.network.UpdatePhotoRequest
 import com.us.android.feature.dating.network.UpsertProfileRequest
+import com.us.android.feature.dating.network.UnblockedDto
+import com.us.android.feature.dating.network.VerificationStatusDto
 import kotlinx.serialization.KSerializer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody
@@ -137,9 +147,32 @@ fun card(userId: String, bucket: String? = "lt_5_km", label: String? = "< 5 km")
     ),
 )
 
-fun match(id: String, other: String) = MatchDto(id = id, userA = ME, userB = other, status = "matched", conversationId = "conv-$id")
+/** The compact card the server now sends inline on matches and incoming sparks. */
+fun person(
+    userId: String,
+    name: String = "Person $userId",
+    age: Int = 30,
+    photoState: String = "full",
+    bucket: String? = "lt_5_km",
+    verified: Boolean = true,
+) = DatingPersonDto(
+    userId = userId,
+    firstName = name,
+    age = age,
+    primaryPhotoId = "photo-$userId",
+    primaryPhotoUrl = "/v1/dating/photos/photo-$userId/$photoState",
+    photoState = photoState,
+    verified = verified,
+    trustTier = if (verified) "selfie" else "phone",
+    distanceBucket = bucket,
+    distanceLabel = bucket?.let { "server label" },
+)
 
-fun spark(id: String, from: String) = SparkDto(id = id, fromUserId = from, toUserId = ME, targetKind = "photo", targetRef = "0")
+fun match(id: String, other: String, card: DatingPersonDto? = person(other)) =
+    MatchDto(id = id, userA = ME, userB = other, status = "matched", conversationId = "conv-$id", person = card)
+
+fun spark(id: String, from: String, card: DatingPersonDto? = person(from)) =
+    SparkDto(id = id, fromUserId = from, toUserId = ME, targetKind = "photo", targetRef = "0", person = card)
 
 fun consents(vararg granted: ConsentType) = ConsentsDto(
     currentPolicyVersion = "v1.0-2026-04-29",
@@ -157,17 +190,40 @@ class FakeDatingApi : DatingApi {
     var consentsResponse: (() -> Response<ApiEnvelope<ConsentsDto>>)? = null
     var profileResponse: () -> Response<ApiEnvelope<DatingProfileDto>> = { ok(com.us.android.feature.dating.profile()) }
     var preferences = PreferencesDto(userId = ME, interestedInGender = "man", distanceKm = 25)
+    val preferenceWrites = mutableListOf<PreferencesRequest>()
+    var preferencesWriteResponse: ((PreferencesRequest) -> Response<ApiEnvelope<PreferencesDto>>)? = null
     val upserts = mutableListOf<UpsertProfileRequest>()
     var upsertResponse: (UpsertProfileRequest) -> Response<ApiEnvelope<DatingProfileDto>> = { ok(com.us.android.feature.dating.profile("draft")) }
 
     var pulse: List<PulseCardDto> = emptyList()
+
+    /** Overrides the whole `/pulse/today` body, for the envelope's two shapes. */
+    var pulseResponse: (() -> Response<PulseTodayDto>)? = null
+
     var incoming: List<SparkDto> = emptyList()
     var matches: List<MatchDto> = emptyList()
     val sparks = mutableListOf<SparkRequest>()
     var sparkResponse: (SparkRequest) -> Response<ApiEnvelope<SparkCreatedDto>> = { ok(SparkCreatedDto()) }
     val passes = mutableListOf<String>()
     val declines = mutableListOf<String>()
+    val accepts = mutableListOf<String>()
+    var acceptResponse: (String) -> Response<ApiEnvelope<SparkCreatedDto>> = { ok(SparkCreatedDto()) }
+
+    /** The compact cards `GET /people/:userId` can serve, by user id. */
+    var people: Map<String, DatingPersonDto> = emptyMap()
+
     val blocks = mutableListOf<String>()
+    val unblocks = mutableListOf<String>()
+    var blocked: List<BlockedPersonDto> = emptyList()
+
+    var myShares: List<MyLocationShareDto> = emptyList()
+    var sharedWithMe: List<SharedWithMeItemDto> = emptyList()
+    val stops = mutableListOf<String>()
+    var stopShareResponse: ((String) -> Response<ApiEnvelope<StopShareDto>>)? = null
+
+    var verificationResponse: () -> Response<ApiEnvelope<VerificationStatusDto>> =
+        { ok(VerificationStatusDto(selfie = SelfieStatusDto(state = "none", attemptsLeftToday = 5, attemptsPerDay = 5, windowHours = 24), nextStep = "submit_selfie")) }
+
     var blockResponse: () -> Response<ApiEnvelope<BlockedDto>> = { ok(BlockedDto(blocked = true)) }
     val reports = mutableListOf<ReportRequest>()
     var reportResponse: (ReportRequest) -> Response<ApiEnvelope<ReportResultDto>> =
@@ -230,7 +286,11 @@ class FakeDatingApi : DatingApi {
         return ok(preferences)
     }
 
-    override suspend fun updatePreferences(body: PreferencesRequest) = ok(preferences.copy(interestedInGender = body.interestedInGender))
+    override suspend fun updatePreferences(body: PreferencesRequest): Response<ApiEnvelope<PreferencesDto>> {
+        calls += "preferences:write"
+        preferenceWrites += body
+        return preferencesWriteResponse?.invoke(body) ?: ok(preferences.copy(interestedInGender = body.interestedInGender))
+    }
 
     override suspend fun myPhotos(): Response<ApiEnvelope<List<DatingPhotoDto>>> = ok(emptyList())
 
@@ -261,7 +321,7 @@ class FakeDatingApi : DatingApi {
 
     override suspend fun pulseToday(): Response<PulseTodayDto> {
         calls += "pulse"
-        return Response.success(PulseTodayDto(data = pulse))
+        return pulseResponse?.invoke() ?: Response.success(PulseTodayDto(data = pulse))
     }
 
     override suspend fun explain(targetUserId: String) = ok(ExplainDto())
@@ -285,6 +345,34 @@ class FakeDatingApi : DatingApi {
     override suspend fun declineSpark(id: String): Response<ApiEnvelope<SparkDeclineDto>> {
         declines += id
         return ok(SparkDeclineDto(declined = true, sparkId = id))
+    }
+
+    override suspend fun acceptSpark(id: String): Response<ApiEnvelope<SparkCreatedDto>> {
+        calls += "accept"
+        accepts += id
+        return acceptResponse(id)
+    }
+
+    override suspend fun person(userId: String): Response<ApiEnvelope<DatingPersonDto>> {
+        calls += "person"
+        return people[userId]?.let { ok(it) } ?: refused(404, "NOT_FOUND")
+    }
+
+    override suspend fun verificationStatus(): Response<ApiEnvelope<VerificationStatusDto>> {
+        calls += "verification"
+        return verificationResponse()
+    }
+
+    override suspend fun blocks(): Response<ApiEnvelope<BlocksDto>> {
+        calls += "blocks"
+        return ok(BlocksDto(items = blocked))
+    }
+
+    override suspend fun unblock(userId: String): Response<ApiEnvelope<UnblockedDto>> {
+        unblocks += userId
+        val had = blocked.any { it.userId == userId }
+        blocked = blocked.filterNot { it.userId == userId }
+        return ok(UnblockedDto(unblocked = true, removed = had))
     }
 
     override suspend fun stash(body: StashRequest) = ok(StashDto(userId = ME, candidateId = body.candidateId))
@@ -321,10 +409,35 @@ class FakeDatingApi : DatingApi {
 
     override suspend fun removeTrustedContact(contactId: String) = ok(RemovedDto(removed = true))
 
-    override suspend fun shareLocation(body: ShareLocationRequest) =
-        ok(ShareLocationDto(shareId = "share-1", recipientId = body.recipientId, recipientKind = "match", expiresAt = "later"))
+    override suspend fun shareLocation(body: ShareLocationRequest): Response<ApiEnvelope<ShareLocationDto>> {
+        calls += "share"
+        val id = "share-${myShares.size + 1}"
+        myShares = myShares + MyLocationShareDto(
+            shareId = id,
+            userId = ME,
+            recipientId = body.recipientId,
+            recipientKind = "match",
+            expiresAt = "later",
+            recipient = people[body.recipientId],
+        )
+        return ok(ShareLocationDto(shareId = id, recipientId = body.recipientId, recipientKind = "match", expiresAt = "later"))
+    }
 
-    override suspend fun stopShare(id: String) = ok(StopShareDto(stopped = true, shareId = id))
+    override suspend fun myLocationShares(): Response<ApiEnvelope<MyLocationSharesDto>> {
+        calls += "my-shares"
+        return ok(MyLocationSharesDto(items = myShares))
+    }
+
+    override suspend fun sharedWithMe(): Response<ApiEnvelope<SharedWithMeDto>> {
+        calls += "shared-with-me"
+        return ok(SharedWithMeDto(items = sharedWithMe))
+    }
+
+    override suspend fun stopShare(id: String): Response<ApiEnvelope<StopShareDto>> {
+        stops += id
+        myShares = myShares.filterNot { it.shareId == id }
+        return stopShareResponse?.invoke(id) ?: ok(StopShareDto(stopped = true, shareId = id))
+    }
 
     override suspend fun sharedLocation(id: String) = ok(SharedLocationDto(shareId = id, latitude = 17.4, longitude = 78.4))
 

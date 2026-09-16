@@ -1,0 +1,14 @@
+{
+  "data": {
+    "match_id": "<uuid>",
+    "matched": true,
+    "spark": {
+      "id": "<uuid>",
+      "from_user_id": "<sender>",
+      "to_user_id": "<recipient>",
+      "target_kind": "prompt",
+      "target_ref": "p2",
+      "created_at": "<timestamp>"
+    }
+  }
+}

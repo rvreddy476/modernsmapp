@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.feature.dating.DatingCopy
 import com.us.android.feature.dating.DatingSession
+import com.us.android.feature.dating.data.DatingError
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.data.valueOrNull
@@ -28,22 +29,11 @@ import javax.inject.Singleton
 
 data class PersonOption(val userId: String, val name: String)
 
+/** A share I am sending, as the SERVER lists it, so Stop works after a restart. */
 data class ActiveShare(val shareId: String, val recipientId: String, val recipientName: String, val expiresAt: String)
 
-/**
- * The live location shares started in this process. dating-service has no
- * route that lists a sharer's active shares (backend gap), so this is the only
- * place the Stop control can come from.
- */
-@Singleton
-class LiveShares @Inject constructor() {
-    private val _shares = MutableStateFlow<List<ActiveShare>>(emptyList())
-    val shares: StateFlow<List<ActiveShare>> = _shares.asStateFlow()
-
-    fun add(share: ActiveShare) = _shares.update { it + share }
-
-    fun remove(shareId: String) = _shares.update { list -> list.filterNot { it.shareId == shareId } }
-}
+/** A share someone is sending to ME. Opened by [shareId]; it carries no coordinates. */
+data class SharedWithMe(val shareId: String, val sharerName: String, val expiresAt: String)
 
 data class PanicUi(val incidentId: String, val repeated: Boolean)
 
@@ -55,7 +45,10 @@ data class SafetyUiState(
     val candidates: List<PersonOption> = emptyList(),
     /** Who a live location can go to: trusted contacts and matches. */
     val recipients: List<PersonOption> = emptyList(),
+    /** Live shares I am sending, from the server. */
     val shares: List<ActiveShare> = emptyList(),
+    /** Live shares sent to me. */
+    val sharedWithMe: List<SharedWithMe> = emptyList(),
     val panic: PanicUi? = null,
     val panicBusy: Boolean = false,
     val location: LocationStep = LocationStep.Idle,
@@ -80,7 +73,6 @@ class SafetyViewModel @Inject constructor(
     private val repository: DatingRepository,
     private val session: DatingSession,
     private val locationSource: CurrentLocationSource,
-    private val liveShares: LiveShares,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SafetyUiState())
@@ -89,9 +81,11 @@ class SafetyViewModel @Inject constructor(
     private val permissionFlow = LocationPermissionFlow()
     private var pendingShare: Pair<String, Int>? = null
 
+    /** First names for the people in this screen's lists, from the match rows. */
+    private var names: Map<String, String> = emptyMap()
+
     init {
         refresh()
-        viewModelScope.launch { liveShares.shares.collect { shares -> _state.update { it.copy(shares = shares) } } }
     }
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
@@ -106,9 +100,13 @@ class SafetyViewModel @Inject constructor(
                     return@launch
                 }
             }
-            val matches = repository.matches().valueOrNull().orEmpty()
-                .filterNot { it.status == "closed" }
-                .map { session.otherOf(it.userA, it.userB) }
+            val matchRows = repository.matches().valueOrNull().orEmpty().filterNot { it.status == "closed" }
+            // Every match row names the other person now, so a trusted contact
+            // and a share recipient can be shown by name rather than "Your match".
+            names = matchRows.mapNotNull { row -> row.person?.takeIf { it.firstName.isNotBlank() } }
+                .associate { it.userId to it.firstName }
+            val matches = matchRows
+                .map { it.person?.userId ?: session.otherOf(it.userA, it.userB) }
                 .filterNot { it in removed }
                 .distinct()
             val contacts = contactsDto.items.map { it.contactId }.filterNot { it in removed }
@@ -121,7 +119,31 @@ class SafetyViewModel @Inject constructor(
                     recipients = (contacts + matches).distinct().map(::option),
                 )
             }
+            loadShares()
         }
+    }
+
+    /** The shares I am sending and the ones sent to me, both from the server. */
+    private suspend fun loadShares() {
+        val mine = repository.myLocationShares().valueOrNull()?.items.orEmpty().map { share ->
+            ActiveShare(
+                shareId = share.shareId,
+                recipientId = share.recipientId,
+                recipientName = share.recipient?.firstName?.takeIf { it.isNotBlank() }
+                    ?: names[share.recipientId] ?: DEFAULT_PERSON,
+                expiresAt = share.expiresAt,
+            )
+        }
+        val toMe = repository.sharedWithMe().valueOrNull()?.items.orEmpty()
+            .filterNot { session.isRemoved(it.person?.userId ?: it.userId) }
+            .map { share ->
+                SharedWithMe(
+                    shareId = share.shareId,
+                    sharerName = share.person?.firstName?.takeIf { it.isNotBlank() } ?: DEFAULT_PERSON,
+                    expiresAt = share.expiresAt,
+                )
+            }
+        _state.update { it.copy(shares = mine, sharedWithMe = toMe) }
     }
 
     /**
@@ -192,14 +214,13 @@ class SafetyViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = repository.stopShare(shareId)) {
                 is DatingResult.Success -> {
-                    liveShares.remove(shareId)
                     _state.update { it.copy(message = successMessage("Stopped sharing your location.")) }
+                    loadShares()
                 }
                 is DatingResult.Failure -> {
-                    // A share that already ended is gone either way.
-                    if ((result.error as? com.us.android.feature.dating.data.DatingError.Refused)?.status == HTTP_NOT_FOUND) {
-                        liveShares.remove(shareId)
-                    }
+                    // A share that already ended is gone either way: re-read rather
+                    // than leave a Stop button for something the server has dropped.
+                    if ((result.error as? DatingError.Refused)?.status == HTTP_NOT_FOUND) loadShares()
                     _state.update { it.copy(message = DatingCopy.message(result.error)) }
                 }
             }
@@ -221,22 +242,22 @@ class SafetyViewModel @Inject constructor(
             when (val result = repository.shareLocation(request)) {
                 is DatingResult.Success -> {
                     pendingShare = null
-                    val share = result.value
-                    liveShares.add(ActiveShare(share.shareId, share.recipientId, option(share.recipientId).name, share.expiresAt))
                     _state.update { it.copy(sharing = false, message = successMessage("Sharing your location for $minutes minutes.")) }
+                    loadShares()
                 }
                 is DatingResult.Failure -> _state.update { it.copy(sharing = false, message = DatingCopy.message(result.error)) }
             }
         }
     }
 
-    private fun option(userId: String) = PersonOption(userId, session.person(userId)?.firstName?.takeIf { it.isNotBlank() } ?: "Your match")
+    private fun option(userId: String) = PersonOption(userId, names[userId]?.takeIf { it.isNotBlank() } ?: DEFAULT_PERSON)
 
     private fun syncLocation() = _state.update { it.copy(location = permissionFlow.step) }
 
     private companion object {
         const val MAX_SHARE_MINUTES = 120
         const val HTTP_NOT_FOUND = 404
+        const val DEFAULT_PERSON = "Your match"
     }
 }
 

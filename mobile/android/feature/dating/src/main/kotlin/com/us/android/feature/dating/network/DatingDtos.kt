@@ -18,6 +18,35 @@ import kotlinx.serialization.json.JsonElement
  * screen does date arithmetic the server has not already done.
  */
 
+// ── People (the compact person card) ────────────────────────────────────────
+
+/**
+ * Who someone is, in the only shape the server hands out about another person:
+ * `GET /people/:userId`, and inline on matches, match detail and incoming sparks.
+ *
+ * [photoState] is the server's D6 verdict — `full` or `blurred`. The app renders
+ * the variant it names and NEVER upgrades a blurred card to the full image;
+ * anything the app does not recognise is treated as blurred (PhotoRules).
+ *
+ * [distanceBucket] / [distanceLabel] are present only when both sides have a
+ * location, and only the BUCKET code is ever rendered (DistanceBucket).
+ */
+@Serializable
+data class DatingPersonDto(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("first_name") val firstName: String = "",
+    val age: Int = 0,
+    @SerialName("primary_photo_id") val primaryPhotoId: String? = null,
+    @SerialName("primary_photo_url") val primaryPhotoUrl: String? = null,
+    /** full | blurred */
+    @SerialName("photo_state") val photoState: String = "",
+    val verified: Boolean = false,
+    @SerialName("trust_tier") val trustTier: String = "",
+    @SerialName("distance_bucket") val distanceBucket: String? = null,
+    /** The server's own label. Never rendered: the app maps the bucket code itself. */
+    @SerialName("distance_label") val distanceLabel: String? = null,
+)
+
 // ── Consent (D9) ────────────────────────────────────────────────────────────
 
 @Serializable
@@ -229,20 +258,54 @@ data class SelfieResultDto(
     @SerialName("attempts_remaining") val attemptsRemaining: Int = 0,
 )
 
+/**
+ * `GET /verification/status` — where the face check stands, from the SERVER
+ * rather than inferred from the last verdict the app happened to see.
+ */
+@Serializable
+data class VerificationStatusDto(
+    val selfie: SelfieStatusDto = SelfieStatusDto(),
+    @SerialName("trust_tier") val trustTier: String = "",
+    val verified: Boolean = false,
+    @SerialName("profile_status") val profileStatus: String = "",
+    /** submit_selfie | wait_for_review | retry_tomorrow | none */
+    @SerialName("next_step") val nextStep: String = "",
+)
+
+@Serializable
+data class SelfieStatusDto(
+    /** none | pending | review | passed | failed */
+    val state: String = "",
+    @SerialName("attempts_left_today") val attemptsLeftToday: Int = 0,
+    @SerialName("attempts_per_day") val attemptsPerDay: Int = 0,
+    @SerialName("window_hours") val windowHours: Int = 0,
+)
+
 // ── Pulse (D3/D7; fixtures: pulse_today, pulse_explain, pulse_pass) ─────────
 
-/** `GET /pulse/today` is NOT wrapped in the platform envelope. */
+/**
+ * `GET /pulse/today` — `{data, meta}` with `cohort_gated` in [PulseMetaDto].
+ *
+ * The server ALSO keeps `cohort_gated` at the top level (omitted when false)
+ * for the shipped app, and the older shape carried it only there, so [gated]
+ * reads whichever of the two says yes. Nothing else reads the raw fields.
+ */
 @Serializable
 data class PulseTodayDto(
     val data: List<PulseCardDto> = emptyList(),
     val meta: PulseMetaDto? = null,
     @SerialName("cohort_gated") val cohortGated: Boolean = false,
-)
+) {
+    /** Pulse is closed for this cohort: an empty deck that is NOT "all caught up". */
+    val gated: Boolean get() = cohortGated || meta?.cohortGated == true
+}
 
 @Serializable
 data class PulseMetaDto(
     @SerialName("generated_at") val generatedAt: String = "",
     val size: Int = 0,
+    @SerialName("cohort_gated") val cohortGated: Boolean = false,
+    @SerialName("request_id") val requestId: String? = null,
 )
 
 @Serializable
@@ -324,9 +387,11 @@ data class SparkDto(
     @SerialName("target_ref") val targetRef: String = "",
     val note: String? = null,
     @SerialName("created_at") val createdAt: String = "",
+    /** The SENDER, on `GET /sparks/incoming`. Absent on a spark the app just created. */
+    val person: DatingPersonDto? = null,
 )
 
-/** No fixture. `match_id` and `matched` are present only when a mutual match formed. */
+/** `match_id` and `matched` are present only when a mutual match formed. */
 @Serializable
 data class SparkCreatedDto(
     val spark: SparkDto? = null,
@@ -373,6 +438,8 @@ data class MatchDto(
     @SerialName("last_message_at") val lastMessageAt: String? = null,
     @SerialName("expires_at") val expiresAt: String? = null,
     @SerialName("closed_by") val closedBy: String? = null,
+    /** The OTHER participant, as the server resolved them for this viewer. */
+    val person: DatingPersonDto? = null,
 )
 
 @Serializable
@@ -391,6 +458,25 @@ data class BlockRequest(@SerialName("target_user_id") val targetUserId: String)
 
 @Serializable
 data class BlockedDto(val blocked: Boolean = false)
+
+/** `GET /blocks` — who I have blocked. A compact person with NO photo. */
+@Serializable
+data class BlocksDto(val items: List<BlockedPersonDto> = emptyList())
+
+@Serializable
+data class BlockedPersonDto(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("first_name") val firstName: String = "",
+    val age: Int = 0,
+    @SerialName("blocked_at") val blockedAt: String = "",
+)
+
+/** `DELETE /blocks/:userId` — idempotent; `removed` is false when there was nothing to lift. */
+@Serializable
+data class UnblockedDto(
+    val unblocked: Boolean = false,
+    val removed: Boolean = false,
+)
 
 @Serializable
 data class ReportRequest(
@@ -411,10 +497,15 @@ data class ReportEvidenceDto(
 @Serializable
 data class ReportResultDto(
     val id: String = "",
+    @SerialName("reporter_id") val reporterId: String = "",
     @SerialName("target_id") val targetId: String = "",
+    val category: String = "",
     val reason: String = "",
+    val details: String? = null,
     val status: String = "",
+    val evidence: ReportEvidenceDto? = null,
     @SerialName("auto_blocked") val autoBlocked: Boolean = false,
+    @SerialName("reporter_anonymised") val reporterAnonymised: Boolean = false,
     val blocked: Boolean = false,
     @SerialName("created_at") val createdAt: String = "",
 )
@@ -473,6 +564,44 @@ data class StopShareDto(
     val stopped: Boolean = false,
     @SerialName("share_id") val shareId: String = "",
     @SerialName("stopped_at") val stoppedAt: String = "",
+)
+
+/**
+ * `GET /safety/share-location` — the shares I am sending, so Stop survives a
+ * restart. NO coordinates: this is the sharer's own list, not a location read.
+ */
+@Serializable
+data class MyLocationSharesDto(val items: List<MyLocationShareDto> = emptyList())
+
+@Serializable
+data class MyLocationShareDto(
+    @SerialName("share_id") val shareId: String = "",
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("recipient_id") val recipientId: String = "",
+    @SerialName("recipient_kind") val recipientKind: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
+    @SerialName("created_at") val createdAt: String = "",
+    /** Who it goes to. Absent when the server cannot resolve a card. */
+    val recipient: DatingPersonDto? = null,
+)
+
+/**
+ * `GET /safety/shared-locations` — shares sent TO me. Also carries no
+ * coordinates: those come from the single read by `share_id`.
+ */
+@Serializable
+data class SharedWithMeDto(val items: List<SharedWithMeItemDto> = emptyList())
+
+@Serializable
+data class SharedWithMeItemDto(
+    @SerialName("share_id") val shareId: String = "",
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("recipient_id") val recipientId: String = "",
+    @SerialName("recipient_kind") val recipientKind: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
+    @SerialName("created_at") val createdAt: String = "",
+    /** The SHARER. */
+    val person: DatingPersonDto? = null,
 )
 
 @Serializable

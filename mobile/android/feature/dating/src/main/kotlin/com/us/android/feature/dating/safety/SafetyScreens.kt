@@ -47,11 +47,15 @@ import com.us.android.feature.dating.ui.Tone
 import com.us.android.feature.dating.ui.listPadding
 import com.us.android.feature.dating.ui.toneColor
 
-/** The safety centre. [shareWith] preselects a live-share recipient (opened from a match). */
+/**
+ * The safety centre. [shareWith] preselects a live-share recipient (opened from
+ * a match); [onOpenSharedLocation] opens a location someone is sharing with me.
+ */
 @Composable
 fun SafetyScreen(
     shareWith: String?,
     onBack: () -> Unit,
+    onOpenSharedLocation: (shareId: String) -> Unit,
     viewModel: SafetyViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -153,6 +157,27 @@ fun SafetyScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Sharing with ${share.recipientName}", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textPrimary, modifier = Modifier.weight(1f))
                             TextButton(onClick = { viewModel.stopShare(share.shareId) }) { Text("Stop", color = UsTheme.extended.statusDanger) }
+                        }
+                    }
+                }
+            }
+
+            if (state.sharedWithMe.isNotEmpty()) {
+                item { SectionLabel("Shared with you") }
+                item {
+                    DatingCard {
+                        state.sharedWithMe.forEach { share ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${share.sharerName} is sharing their location",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = UsTheme.extended.textPrimary,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = { onOpenSharedLocation(share.shareId) }) {
+                                    Text("View", color = UsTheme.extended.accentSolid)
+                                }
+                            }
                         }
                     }
                 }

@@ -1,0 +1,10 @@
+{
+  "data": [
+    {
+      "id": "<uuid>",
+      "user_id": "<user>",
+      "requested_at": "<timestamp>",
+      "status": "pending"
+    }
+  ]
+}

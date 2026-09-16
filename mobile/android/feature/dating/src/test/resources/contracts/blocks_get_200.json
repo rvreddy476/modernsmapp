@@ -1,0 +1,12 @@
+{
+  "data": {
+    "items": [
+      {
+        "user_id": "<target>",
+        "first_name": "Asha",
+        "age": 30,
+        "blocked_at": "<timestamp>"
+      }
+    ]
+  }
+}

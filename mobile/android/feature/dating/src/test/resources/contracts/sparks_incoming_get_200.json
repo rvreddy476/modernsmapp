@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "id": "<uuid>",
+      "from_user_id": "<recipient>",
+      "to_user_id": "<sender>",
+      "target_kind": "prompt",
+      "target_ref": "p1",
+      "note": "Loved your answer",
+      "created_at": "<timestamp>",
+      "person": {
+        "user_id": "<recipient>",
+        "first_name": "Asha",
+        "age": 30,
+        "primary_photo_id": "<uuid>",
+        "primary_photo_url": "/v1/dating/photos/<uuid>/full",
+        "photo_state": "full",
+        "verified": false,
+        "trust_tier": "phone"
+      }
+    }
+  ]
+}

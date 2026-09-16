@@ -12,6 +12,7 @@ import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.data.code
 import com.us.android.feature.dating.network.SelfieChallengeDto
 import com.us.android.feature.dating.network.SelfieResultDto
+import com.us.android.feature.dating.network.VerificationStatusDto
 import com.us.android.feature.dating.photos.UploadOutcome
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,11 +33,29 @@ sealed interface SelfieState {
     data object ConsentDeclined : SelfieState
 
     /** A live challenge: record a clip of at most [recordMillis] while blinking twice. */
-    data class Ready(val challengeId: String, val recordMillis: Long, val note: String? = null) : SelfieState
+    data class Ready(
+        val challengeId: String,
+        val recordMillis: Long,
+        val note: String? = null,
+        /** From `GET /verification/status`, not inferred from the last verdict. */
+        val attemptsLeft: Int? = null,
+    ) : SelfieState
 
     data class Uploading(val progress: Float) : SelfieState
 
     data object Checking : SelfieState
+
+    /**
+     * The clip is uploaded but media-service has not finished with it
+     * (409 MEDIA_NOT_READY). The server refuses BEFORE spending an attempt, and
+     * the challenge is still live, so the SAME clip can simply be sent again.
+     */
+    data class StillProcessing(
+        val challengeId: String,
+        val mediaId: String,
+        val recordMillis: Long,
+        val attemptsLeft: Int? = null,
+    ) : SelfieState
 
     data object Passed : SelfieState
 
@@ -77,12 +96,28 @@ class SelfieViewModel @Inject constructor(
         start()
     }
 
+    /** Attempts left today, from the server. Null until the status has been read. */
+    private var attemptsLeft: Int? = null
+
     fun start() {
         if (ConsentGate.selfieNeedsConsent(session.consents.value)) {
             _state.value = SelfieState.NeedsConsent
             return
         }
-        requestChallenge()
+        _state.value = SelfieState.Loading
+        viewModelScope.launch {
+            // The SERVER says where the check stands — passed, in review, out of
+            // attempts — rather than the app inferring it from the last verdict
+            // this process happened to see.
+            val status = (repository.verificationStatus() as? DatingResult.Success)?.value
+            attemptsLeft = status?.selfie?.attemptsLeftToday
+            val settled = status?.let(SelfieOutcomes::fromStatus)
+            if (settled != null) {
+                _state.value = settled
+                return@launch
+            }
+            requestChallenge()
+        }
     }
 
     fun onConsentAnswered(granted: Boolean) {
@@ -112,6 +147,16 @@ class SelfieViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Sends the clip that is already uploaded again, after MEDIA_NOT_READY.
+     * No new challenge and no new recording: the attempt was never spent.
+     */
+    fun resubmit() {
+        val waiting = _state.value as? SelfieState.StillProcessing ?: return
+        _state.value = SelfieState.Checking
+        viewModelScope.launch { submit(waiting.challengeId, waiting.mediaId, waiting.recordMillis) }
+    }
+
     /** The camera finished a clip. */
     fun onRecorded(file: File) {
         val ready = _state.value as? SelfieState.Ready ?: return
@@ -126,10 +171,24 @@ class SelfieViewModel @Inject constructor(
                 }
             }
             _state.value = SelfieState.Checking
-            _state.value = when (val result = repository.submitSelfie(ready.challengeId, mediaId)) {
-                is DatingResult.Success -> SelfieOutcomes.fromResult(result.value)
-                is DatingResult.Failure -> submitFailure(result.error) ?: return@launch
+            submit(ready.challengeId, mediaId, ready.recordMillis)
+        }
+    }
+
+    private suspend fun submit(challengeId: String, mediaId: String, recordMillis: Long) {
+        when (val result = repository.submitSelfie(challengeId, mediaId)) {
+            is DatingResult.Success -> {
+                _state.value = SelfieOutcomes.fromResult(result.value)
+                attemptsLeft = result.value.attemptsRemaining
             }
+            is DatingResult.Failure ->
+                if (result.error.code == SelfieOutcomes.CODE_MEDIA_NOT_READY) {
+                    // Refused before the attempt was spent: keep the challenge
+                    // and the clip, and let them send it again in a moment.
+                    _state.value = SelfieState.StillProcessing(challengeId, mediaId, recordMillis, attemptsLeft)
+                } else {
+                    _state.value = submitFailure(result.error) ?: return
+                }
         }
     }
 
@@ -166,6 +225,7 @@ class SelfieViewModel @Inject constructor(
     private fun ready(challenge: SelfieChallengeDto): SelfieState.Ready = SelfieState.Ready(
         challengeId = challenge.challengeId,
         recordMillis = SelfieOutcomes.recordMillis(challenge.maxDurationMs),
+        attemptsLeft = attemptsLeft,
     )
 }
 
@@ -176,6 +236,22 @@ object SelfieOutcomes {
     fun recordMillis(maxDurationMs: Int): Long {
         val cap = if (maxDurationMs in 1..MAX_CLIP_MS) maxDurationMs else MAX_CLIP_MS
         return (cap - ENCODER_MARGIN_MS).coerceAtLeast(MIN_CLIP_MS).toLong()
+    }
+
+    /**
+     * What `GET /verification/status` settles on its own, or null when the
+     * person should go on and record a clip.
+     *
+     * `next_step` is the server's word for what happens next, so it decides;
+     * the selfie state is read only for the two terminal verdicts.
+     */
+    fun fromStatus(status: VerificationStatusDto): SelfieState? = when {
+        status.selfie.state == STATE_PASSED -> SelfieState.Passed
+        status.selfie.state == STATE_REVIEW || status.nextStep == NEXT_WAIT_FOR_REVIEW -> SelfieState.InReview
+        status.nextStep == NEXT_RETRY_TOMORROW -> SelfieState.LimitReached
+        // A status with attempts but no next step to take is not a verdict:
+        // fall through and ask for a challenge.
+        else -> null
     }
 
     fun fromResult(result: SelfieResultDto): SelfieState = when {
@@ -216,7 +292,17 @@ object SelfieOutcomes {
         else -> null
     }
 
+    /** 409 from `POST /verification/selfie`: the clip is still being processed. */
+    const val CODE_MEDIA_NOT_READY = "MEDIA_NOT_READY"
+
+    const val MEDIA_NOT_READY_COPY = "Your video is still processing. Try again in a moment."
+
     const val MAX_CLIP_MS = 4_000
+
+    private const val STATE_PASSED = "passed"
+    private const val STATE_REVIEW = "review"
+    private const val NEXT_WAIT_FOR_REVIEW = "wait_for_review"
+    private const val NEXT_RETRY_TOMORROW = "retry_tomorrow"
 
     /**
      * How long after the limit the recorder's own watchdog stops the clip, for

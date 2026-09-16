@@ -269,7 +269,15 @@ private fun SparksList(viewModel: SparksViewModel) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
                             DatingPhoto(url = spark.photoUrl, contentDescription = null, modifier = Modifier.size(56.dp).clip(CircleShape))
                             Column(Modifier.weight(1f)) {
-                                Text(spark.name ?: "Someone sparked you", style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                                    Text(
+                                        personLine(spark.name, spark.age) ?: "Someone sparked you",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = UsTheme.extended.textPrimary,
+                                    )
+                                    if (spark.verified) Pill("Verified", Tone.Positive)
+                                }
+                                spark.distance?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted) }
                                 spark.note?.let { Text("“$it”", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textSecondary) }
                             }
                             IconButton(onClick = { reporting = spark }) { Icon(UsIcons.Flag, contentDescription = "Report", tint = UsTheme.extended.textMuted) }
@@ -315,8 +323,19 @@ private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Un
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
                             DatingPhoto(url = match.photoUrl, contentDescription = null, modifier = Modifier.size(56.dp).clip(CircleShape))
                             Column(Modifier.weight(1f)) {
-                                Text(match.name ?: "Your match", style = MaterialTheme.typography.titleMedium, color = UsTheme.extended.textPrimary)
-                                Text(matchStatusLabel(match.status), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                                    Text(
+                                        personLine(match.name, match.age) ?: "Your match",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = UsTheme.extended.textPrimary,
+                                    )
+                                    if (match.verified) Pill("Verified", Tone.Positive)
+                                }
+                                val line = listOfNotNull(matchStatusLabel(match.status).takeIf { it.isNotBlank() }, match.distance)
+                                    .joinToString(" · ")
+                                if (line.isNotBlank()) {
+                                    Text(line, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                                }
                             }
                             Icon(UsIcons.ChevronRight, contentDescription = null, tint = UsTheme.extended.textDim)
                         }
@@ -325,6 +344,15 @@ private fun MatchesList(viewModel: MatchesViewModel, onOpenMatch: (String) -> Un
             }
         }
     }
+}
+
+/**
+ * "Asha, 30" — or just the name when the server sent no age, or null when it
+ * sent no name either, so the caller can fall back to a neutral placeholder.
+ */
+fun personLine(name: String?, age: Int?): String? {
+    val person = name?.takeIf { it.isNotBlank() } ?: return null
+    return if (age != null && age > 0) "$person, $age" else person
 }
 
 fun matchStatusLabel(status: String): String = when (status) {
@@ -370,8 +398,19 @@ fun MatchDetailScreen(
                     contentDescription = s.match.name,
                     modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(UsTheme.radii.card)),
                 )
-                Text(s.match.name ?: "Your match", style = MaterialTheme.typography.headlineSmall, color = UsTheme.extended.textPrimary)
-                Text(matchStatusLabel(s.match.status), style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                    Text(
+                        personLine(s.match.name, s.match.age) ?: "Your match",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = UsTheme.extended.textPrimary,
+                    )
+                    if (s.match.verified) Pill("Verified", Tone.Positive)
+                }
+                val detail = listOfNotNull(matchStatusLabel(s.match.status).takeIf { it.isNotBlank() }, s.match.distance)
+                    .joinToString(" · ")
+                if (detail.isNotBlank()) {
+                    Text(detail, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
+                }
                 UsButton(text = "Open chat", onClick = viewModel::openChat, modifier = Modifier.fillMaxWidth())
                 UsSecondaryButton(text = "Share my live location", onClick = { onShareLocation(s.match.otherUserId) }, modifier = Modifier.fillMaxWidth())
                 UsSecondaryButton(text = "Unmatch", onClick = { confirmUnmatch = true }, modifier = Modifier.fillMaxWidth())

@@ -27,6 +27,7 @@ import com.us.android.feature.dating.onboarding.PromptsScreen
 import com.us.android.feature.dating.onboarding.StatusPane
 import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.dating.premium.PremiumScreen
+import com.us.android.feature.dating.privacy.BlocksScreen
 import com.us.android.feature.dating.privacy.PrivacyScreen
 import com.us.android.feature.dating.safety.SafetyScreen
 import com.us.android.feature.dating.safety.SharedLocationScreen
@@ -65,6 +66,9 @@ data object DatingPremiumRoute
 
 @Serializable
 data object DatingPrivacyRoute
+
+@Serializable
+data object DatingBlocksRoute
 
 /**
  * Registers Dating.
@@ -111,7 +115,11 @@ fun NavGraphBuilder.datingScreens(
         }
 
         composable<DatingSafetyRoute> { entry ->
-            SafetyScreen(shareWith = entry.toRoute<DatingSafetyRoute>().shareWith, onBack = navController::popBackStack)
+            SafetyScreen(
+                shareWith = entry.toRoute<DatingSafetyRoute>().shareWith,
+                onBack = navController::popBackStack,
+                onOpenSharedLocation = { navController.navigate(DatingSharedLocationRoute(it)) },
+            )
         }
 
         composable<DatingSharedLocationRoute> {
@@ -127,9 +135,14 @@ fun NavGraphBuilder.datingScreens(
                 onBack = navController::popBackStack,
                 onEditPhotos = { navController.navigate(DatingPhotosRoute) },
                 onEditPrompts = { navController.navigate(DatingPromptsRoute) },
+                onOpenBlocks = { navController.navigate(DatingBlocksRoute) },
                 // The profile is gone: leave Dating entirely.
                 onDeleted = { navController.popBackStack<DatingGraph>(inclusive = true) },
             )
+        }
+
+        composable<DatingBlocksRoute> {
+            BlocksScreen(onBack = navController::popBackStack)
         }
     }
 }

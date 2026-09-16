@@ -1,0 +1,8 @@
+{
+  "data": {
+    "contact_id": "<contact>",
+    "share_location_on_panic": true,
+    "created_at": "<timestamp>",
+    "updated_at": "<timestamp>"
+  }
+}

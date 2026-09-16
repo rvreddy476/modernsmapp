@@ -2,7 +2,6 @@ package com.us.android.feature.dating
 
 import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.DatingProfileDto
-import com.us.android.feature.dating.network.PulseProfileDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -10,25 +9,15 @@ import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** What the app knows about another person: only what a Pulse card carried. */
-data class PersonSummary(
-    val userId: String,
-    val firstName: String,
-    val age: Int,
-    val city: String,
-    /** The server's gateway path for their primary photo, resolved per viewer by PhotoRules. */
-    val photoPath: String?,
-    val verified: Boolean,
-)
-
 /**
  * What Dating's screens share for the life of the process.
  *
  * ## People
  *
- * dating-service has no route that returns another user's profile: matches and
- * incoming sparks carry user ids only (backend gap). The names and photos the
- * app can show come from the Pulse cards it has already loaded, remembered here.
+ * Nothing about other people is cached here any more. Matches, match detail and
+ * incoming sparks each carry the server's own compact `person`, and
+ * `GET /people/:userId` serves the same card on demand, so a name or photo is
+ * never guessed from a deck this process happened to load.
  *
  * ## Removed people
  *
@@ -40,9 +29,6 @@ data class PersonSummary(
  */
 @Singleton
 class DatingSession @Inject constructor() {
-
-    private val _people = MutableStateFlow<Map<String, PersonSummary>>(emptyMap())
-    val people: StateFlow<Map<String, PersonSummary>> = _people.asStateFlow()
 
     private val _removed = MutableStateFlow<Set<String>>(emptySet())
     val removed: StateFlow<Set<String>> = _removed.asStateFlow()
@@ -63,28 +49,9 @@ class DatingSession @Inject constructor() {
         if (consents != null) _consents.value = consents
     }
 
-    fun remember(cards: List<PulseProfileDto>) {
-        if (cards.isEmpty()) return
-        _people.update { current ->
-            current + cards.filterNot { it.userId in _removed.value }.associate { card ->
-                card.userId to PersonSummary(
-                    userId = card.userId,
-                    firstName = card.firstName,
-                    age = card.age,
-                    city = card.city,
-                    photoPath = card.primaryPhotoUrl.takeIf { it.isNotBlank() },
-                    verified = card.trustTier == TRUST_SELFIE || card.trustTier == TRUST_AADHAAR,
-                )
-            }
-        }
-    }
-
-    fun person(userId: String?): PersonSummary? = userId?.let { _people.value[it] }
-
     /** Blocked or reported: gone from every list for the rest of the session. */
     fun removePerson(userId: String) {
         _removed.update { it + userId }
-        _people.update { it - userId }
     }
 
     fun isRemoved(userId: String?): Boolean = userId != null && userId in _removed.value
@@ -94,13 +61,7 @@ class DatingSession @Inject constructor() {
 
     /** Sign-out or profile deletion: nothing about anyone survives. */
     fun clear() {
-        _people.value = emptyMap()
         _profile.value = null
         _consents.value = null
-    }
-
-    private companion object {
-        const val TRUST_SELFIE = "selfie"
-        const val TRUST_AADHAAR = "aadhaar"
     }
 }

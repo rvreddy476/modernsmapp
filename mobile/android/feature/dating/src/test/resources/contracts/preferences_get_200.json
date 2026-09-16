@@ -1,0 +1,11 @@
+{
+  "data": {
+    "user_id": "<user>",
+    "distance_km": 25,
+    "interested_in_gender": "everyone",
+    "intent_filter": [],
+    "blur_mode_pref": false,
+    "language_filter": [],
+    "updated_at": "<timestamp>"
+  }
+}

@@ -4,16 +4,19 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
+import com.us.android.feature.dating.network.BlocksDto
 import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.ConsentRequest
 import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.DataExportDto
 import com.us.android.feature.dating.network.DatingApi
+import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.DeleteProfileRequest
 import com.us.android.feature.dating.network.ExplainDto
 import com.us.android.feature.dating.network.MatchDto
+import com.us.android.feature.dating.network.MyLocationSharesDto
 import com.us.android.feature.dating.network.PanicDto
 import com.us.android.feature.dating.network.PanicRequest
 import com.us.android.feature.dating.network.PassDto
@@ -40,6 +43,7 @@ import com.us.android.feature.dating.network.SelfieSubmitRequest
 import com.us.android.feature.dating.network.ShareLocationDto
 import com.us.android.feature.dating.network.ShareLocationRequest
 import com.us.android.feature.dating.network.SharedLocationDto
+import com.us.android.feature.dating.network.SharedWithMeDto
 import com.us.android.feature.dating.network.SparkCreatedDto
 import com.us.android.feature.dating.network.SparkDeclineDto
 import com.us.android.feature.dating.network.SparkDto
@@ -51,8 +55,10 @@ import com.us.android.feature.dating.network.StopShareDto
 import com.us.android.feature.dating.network.TrustedContactDto
 import com.us.android.feature.dating.network.TrustedContactRequest
 import com.us.android.feature.dating.network.TrustedContactsDto
+import com.us.android.feature.dating.network.UnblockedDto
 import com.us.android.feature.dating.network.UpdatePhotoRequest
 import com.us.android.feature.dating.network.UpsertProfileRequest
+import com.us.android.feature.dating.network.VerificationStatusDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import okhttp3.ResponseBody
@@ -150,10 +156,7 @@ class DatingRepository @Inject constructor(
 
     suspend fun pass(candidateId: String): DatingResult<PassDto> = call { api.pass(candidateId, PassRequest()) }
 
-    /**
-     * A spark on [toUserId]'s primary photo. Accepting an incoming spark is the
-     * same call aimed at its sender: there is no accept route.
-     */
+    /** A spark on [toUserId]'s primary photo. */
     suspend fun spark(toUserId: String, note: String? = null): DatingResult<SparkCreatedDto> =
         call {
             api.spark(
@@ -169,6 +172,22 @@ class DatingRepository @Inject constructor(
     suspend fun incomingSparks(): DatingResult<List<SparkDto>> = list { api.incomingSparks() }
 
     suspend fun declineSpark(sparkId: String): DatingResult<SparkDeclineDto> = call { api.declineSpark(sparkId) }
+
+    /** Accepts an incoming spark by its id. Idempotent server-side. */
+    suspend fun acceptSpark(sparkId: String): DatingResult<SparkCreatedDto> = call { api.acceptSpark(sparkId) }
+
+    /** Another person's card. Null when the viewer may not see them (404). */
+    suspend fun person(userId: String): DatingResult<DatingPersonDto?> = when (val result = call { api.person(userId) }) {
+        is DatingResult.Success -> result
+        is DatingResult.Failure ->
+            if ((result.error as? DatingError.Refused)?.status == HTTP_NOT_FOUND) DatingResult.Success(null) else result
+    }
+
+    suspend fun verificationStatus(): DatingResult<VerificationStatusDto> = call { api.verificationStatus() }
+
+    suspend fun blocks(): DatingResult<BlocksDto> = call { api.blocks() }
+
+    suspend fun unblock(userId: String): DatingResult<UnblockedDto> = call { api.unblock(userId) }
 
     suspend fun stash(candidateId: String): DatingResult<StashDto> = call { api.stash(StashRequest(candidateId)) }
 
@@ -195,6 +214,12 @@ class DatingRepository @Inject constructor(
 
     suspend fun shareLocation(request: ShareLocationRequest): DatingResult<ShareLocationDto> =
         call { api.shareLocation(request) }
+
+    /** The shares I am sending right now, from the server — not from this process's memory. */
+    suspend fun myLocationShares(): DatingResult<MyLocationSharesDto> = call { api.myLocationShares() }
+
+    /** Shares other people are sending to me. */
+    suspend fun sharedWithMe(): DatingResult<SharedWithMeDto> = call { api.sharedWithMe() }
 
     suspend fun stopShare(shareId: String): DatingResult<StopShareDto> = call { api.stopShare(shareId) }
 

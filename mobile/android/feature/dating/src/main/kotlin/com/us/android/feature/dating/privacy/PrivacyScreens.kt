@@ -200,11 +200,138 @@ class PrivacyViewModel @Inject constructor(
     }
 }
 
+data class BlockedPersonUi(val userId: String, val name: String, val blockedAt: String?)
+
+data class BlocksUiState(
+    val loading: Boolean = true,
+    val blocked: List<BlockedPersonUi> = emptyList(),
+    val busy: Boolean = false,
+    val message: UsMessage? = null,
+)
+
+/**
+ * Who I have blocked, and lifting a block.
+ *
+ * Unblocking RESTORES NOTHING — no match, no spark, no conversation comes back —
+ * and the screen says so before it asks, because the word "unblock" on its own
+ * reads like an undo.
+ */
+@HiltViewModel
+class BlocksViewModel @Inject constructor(
+    private val repository: DatingRepository,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(BlocksUiState())
+    val state: StateFlow<BlocksUiState> = _state.asStateFlow()
+
+    init {
+        refresh()
+    }
+
+    fun dismissMessage() = _state.update { it.copy(message = null) }
+
+    fun refresh() {
+        viewModelScope.launch {
+            when (val result = repository.blocks()) {
+                is DatingResult.Success -> _state.update {
+                    it.copy(
+                        loading = false,
+                        blocked = result.value.items.map { row ->
+                            BlockedPersonUi(
+                                userId = row.userId,
+                                name = row.firstName.takeIf { name -> name.isNotBlank() } ?: "Someone you blocked",
+                                blockedAt = displayDate(row.blockedAt),
+                            )
+                        },
+                    )
+                }
+                is DatingResult.Failure -> _state.update { it.copy(loading = false, message = DatingCopy.message(result.error)) }
+            }
+        }
+    }
+
+    fun unblock(userId: String) {
+        if (_state.value.busy) return
+        _state.update { it.copy(busy = true) }
+        viewModelScope.launch {
+            when (val result = repository.unblock(userId)) {
+                is DatingResult.Success -> {
+                    // Idempotent server-side: drop the row either way.
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            blocked = it.blocked.filterNot { row -> row.userId == userId },
+                            message = successMessage("Unblocked. Nothing that was ended has come back."),
+                        )
+                    }
+                }
+                is DatingResult.Failure -> _state.update { it.copy(busy = false, message = DatingCopy.message(result.error)) }
+            }
+        }
+    }
+}
+
+/** The blocked-people list, reached from Privacy. */
+@Composable
+fun BlocksScreen(onBack: () -> Unit, viewModel: BlocksViewModel = hiltViewModel()) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    var confirm by remember { mutableStateOf<BlockedPersonUi?>(null) }
+
+    DatingScreen(title = "Blocked people", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
+        if (state.loading) {
+            LoadingPane()
+            return@DatingScreen
+        }
+        LazyColumn(contentPadding = listPadding(padding), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+            item {
+                DatingCard {
+                    if (state.blocked.isEmpty()) {
+                        Text("You haven't blocked anyone.", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
+                    }
+                    state.blocked.forEach { person ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(person.name, style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textPrimary)
+                                person.blockedAt?.let {
+                                    Text("Blocked $it", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                                }
+                            }
+                            TextButton(onClick = { confirm = person }, enabled = !state.busy) {
+                                Text("Unblock", color = UsTheme.extended.accentSolid)
+                            }
+                        }
+                    }
+                    InfoNote(UNBLOCK_RESTORES_NOTHING)
+                }
+            }
+        }
+    }
+
+    confirm?.let { person ->
+        ConfirmDialog(
+            title = "Unblock ${person.name}?",
+            body = UNBLOCK_RESTORES_NOTHING,
+            confirmLabel = "Unblock",
+            onConfirm = {
+                viewModel.unblock(person.userId)
+                confirm = null
+            },
+            onDismiss = { confirm = null },
+        )
+    }
+}
+
+/** The one sentence that must be on screen wherever a block can be lifted. */
+const val UNBLOCK_RESTORES_NOTHING =
+    "Unblocking doesn't bring anything back: your match, chat and sparks with them stay gone. " +
+        "You'll simply be able to see each other again."
+
 @Composable
 fun PrivacyScreen(
     onBack: () -> Unit,
     onEditPhotos: () -> Unit,
     onEditPrompts: () -> Unit,
+    onOpenBlocks: () -> Unit,
     onDeleted: () -> Unit,
     viewModel: PrivacyViewModel = hiltViewModel(),
 ) {
@@ -249,6 +376,18 @@ fun PrivacyScreen(
                         viewModel.update(PrivacyUpdateRequest(blurPhotosUntilMatch = it))
                     }
                     InfoNote("Your location is always approximate. Others only see a distance range.")
+                }
+            }
+
+            item { SectionLabel("Blocked people") }
+            item {
+                DatingCard {
+                    Text(
+                        "People you've blocked can't see you, and you won't see them.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = UsTheme.extended.textMuted,
+                    )
+                    UsSecondaryButton(text = "Blocked people", onClick = onOpenBlocks, modifier = Modifier.fillMaxWidth())
                 }
             }
 

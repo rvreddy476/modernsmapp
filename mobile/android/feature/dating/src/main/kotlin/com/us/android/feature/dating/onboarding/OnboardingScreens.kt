@@ -78,6 +78,15 @@ object DatingChoices {
         UsChoice("man", "Man"),
         UsChoice("nonbinary", "Non-binary"),
     )
+
+    /**
+     * Who you want to see. The server validates this against
+     * `woman | man | nonbinary | everyone` and refuses anything else with 400,
+     * so "Everyone" is the wire value `everyone` — not an empty preference.
+     */
+    val interestedIn = genders + UsChoice(EVERYONE, "Everyone")
+
+    const val EVERYONE = "everyone"
     val distances = listOf(
         UsChoice(5, "5 km"),
         UsChoice(10, "10 km"),
@@ -305,7 +314,7 @@ private fun PreferencesStep(
     val agesValid = min != null && max != null && min >= OnboardingViewModel.MIN_AGE && max <= OnboardingViewModel.MAX_AGE && min <= max
 
     if (profile?.gender == null) InfoNote("Tell us about yourself first.")
-    UsChoiceRow(options = DatingChoices.genders, selected = interestedIn, onSelect = { interestedIn = it }, label = "Show me")
+    UsChoiceRow(options = DatingChoices.interestedIn, selected = interestedIn, onSelect = { interestedIn = it }, label = "Show me")
     Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
         UsTextField(
             value = minAge,

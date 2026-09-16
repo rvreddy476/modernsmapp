@@ -75,7 +75,7 @@ class BlockAndReportTest {
         assertThat(ids(pulse.state.value) { it.userId }).containsExactly(kind)
         assertThat(ids(sparks.state.value) { it.fromUserId }).containsExactly(kind)
         assertThat(ids(matches.state.value) { it.otherUserId }).containsExactly(kind)
-        assertThat(session.person(bad)).isNull()
+        assertThat(session.isRemoved(bad)).isTrue()
     }
 
     @Test
@@ -140,7 +140,7 @@ class BlockAndReportTest {
     }
 
     @Test
-    fun `accepting a spark is a spark back at its sender and declining calls decline`() = runTest {
+    fun `accepting a spark calls the accept route by spark id, and declining calls decline`() = runTest {
         everywhere()
         val sparks = SparksViewModel(repository, session, safety, urls)
         val items = (sparks.state.value as ListState.Items).items
@@ -148,9 +148,37 @@ class BlockAndReportTest {
         sparks.accept(items.first { it.fromUserId == kind })
         sparks.decline(items.first { it.fromUserId == bad })
 
-        assertThat(api.sparks.single().toUserId).isEqualTo(kind)
+        // The accept route, NOT a fresh spark aimed back at photo 0.
+        assertThat(api.accepts).containsExactly("spark-kind")
+        assertThat(api.sparks).isEmpty()
         assertThat(api.declines).containsExactly("spark-bad")
         assertThat((sparks.state.value as ListState.Items).items).isEmpty()
+    }
+
+    @Test
+    fun `an accepted spark that matched celebrates with the name the server sent`() = runTest {
+        everywhere()
+        api.acceptResponse = { ok(SparkCreatedDto(matchId = "match-new", matched = true)) }
+        val sparks = SparksViewModel(repository, session, safety, urls)
+        val spark = (sparks.state.value as ListState.Items).items.first { it.fromUserId == kind }
+
+        sparks.accept(spark)
+
+        assertThat(api.accepts).containsExactly("spark-kind")
+        assertThat(sparks.celebration.value?.matchId).isEqualTo("match-new")
+        assertThat(sparks.celebration.value?.name).isEqualTo("Person $kind")
+    }
+
+    @Test
+    fun `accepting a spark that was already declined drops it from the list`() = runTest {
+        everywhere()
+        api.acceptResponse = { refused(404, "NOT_FOUND") }
+        val sparks = SparksViewModel(repository, session, safety, urls)
+        val spark = (sparks.state.value as ListState.Items).items.first { it.fromUserId == kind }
+
+        sparks.accept(spark)
+
+        assertThat(ids(sparks.state.value) { it.fromUserId }).containsExactly(bad)
     }
 
     @Test

@@ -1,0 +1,14 @@
+{
+  "data": {
+    "selfie": {
+      "state": "passed",
+      "attempts_left_today": 4,
+      "attempts_per_day": 5,
+      "window_hours": 24
+    },
+    "trust_tier": "selfie",
+    "verified": true,
+    "profile_status": "active",
+    "next_step": "none"
+  }
+}

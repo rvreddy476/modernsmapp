@@ -1,0 +1,10 @@
+{
+  "data": {
+    "status": "failed",
+    "passed": false,
+    "reason": "NOT_ENOUGH_BLINKS",
+    "trust_tier": "phone",
+    "profile_status": "pending_selfie",
+    "attempts_remaining": 4
+  }
+}

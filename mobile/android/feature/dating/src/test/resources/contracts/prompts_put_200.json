@@ -1,0 +1,10 @@
+{
+  "data": {
+    "id": "<uuid>",
+    "user_id": "<user>",
+    "prompt_id": 1,
+    "answer": "Ask me about filter coffee.",
+    "created_at": "<timestamp>",
+    "updated_at": "<timestamp>"
+  }
+}
