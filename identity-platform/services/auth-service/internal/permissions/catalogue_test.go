@@ -40,6 +40,18 @@ func TestForTable(t *testing.T) {
 		{name: "dating moderator stays in dating", role: roles.Moderator, app: AppDating,
 			has:    []string{"dating:reports.act", "dating:photos.review"},
 			hasNot: []string{"dating:users.ban", "dating:panic.reveal", "food:reviews.moderate"}, noOther: true},
+		// Admin console Wave 2 — the Dating dashboard's stats, panic triage and
+		// risk queue. Support sees the counts but cannot triage; a KYC reviewer
+		// reveals panic GPS but does not triage or read risk.
+		{name: "dating moderator runs the dashboard", role: roles.Moderator, app: AppDating,
+			has:    []string{"dating:stats.read", "dating:panic.act", "dating:risk.read"},
+			hasNot: []string{"dating:users.ban", "dating:panic.reveal"}, noOther: true},
+		{name: "dating support sees counts only", role: roles.Support, app: AppDating,
+			has: []string{"dating:stats.read", "dating:reports.read"}, hasNot: []string{"dating:panic.act", "dating:risk.read", "dating:reports.act"}, noOther: true},
+		{name: "dating kyc reviewer does not triage", role: roles.KYCReviewer, app: AppDating,
+			has: []string{"dating:panic.reveal"}, hasNot: []string{"dating:stats.read", "dating:panic.act", "dating:risk.read"}, noOther: true},
+		{name: "dating admin holds the new permissions", role: roles.Admin, app: AppDating,
+			has: []string{"dating:stats.read", "dating:panic.act", "dating:risk.read", "dating:users.ban"}, noOther: true},
 		{name: "food admin", role: roles.Admin, app: AppFood,
 			has: []string{"food:restaurant.approve", "food:refund.issue", "food:audit.read"}, noOther: true},
 		{name: "commerce kyc reviewer", role: roles.KYCReviewer, app: AppCommerce,

@@ -79,13 +79,19 @@ const (
 // entries here and nowhere else.
 var catalogue = map[string][]entry{
 	AppDating: {
+		// stats.read: the dashboard's counts (no personal data).
+		p("stats.read", mod, sup),
 		p("reports.read", mod, sup),
 		p("reports.act", mod),
 		p("photos.review", mod),
 		p("selfie.review", mod, kyc),
 		p("verification.review", mod, kyc),
 		p("panic.read", mod),
+		// panic.act: acknowledge and resolve an incident (no coordinates).
+		p("panic.act", mod),
 		p("panic.reveal", kyc),
+		// risk.read: the fake-account risk queue.
+		p("risk.read", mod),
 		p("users.ban"),
 		p("audit.read", audr),
 	},
