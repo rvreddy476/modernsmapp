@@ -3,21 +3,52 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type AuditLog struct {
 	ID         uuid.UUID       `json:"id"`
 	AdminActor string          `json:"admin_actor"`
+	App        *string         `json:"app"`
 	Action     string          `json:"action"`
 	EntityType string          `json:"entity_type"`
 	EntityID   string          `json:"entity_id"`
+	Reason     *string         `json:"reason"`
+	RequestID  *string         `json:"request_id"`
+	Outcome    *string         `json:"outcome"`
+	StatusCode *int            `json:"status_code"`
 	Payload    json.RawMessage `json:"payload"`
 	CreatedAt  time.Time       `json:"created_at"`
 }
+
+// Audit outcomes. A write whose downstream answered 2xx is a success; any
+// other status, or no answer at all, is a failure.
+const (
+	AuditOutcomeSuccess = "success"
+	AuditOutcomeFailure = "failure"
+)
+
+// AdminAuditEntry is one admin write that passed through admin-service.
+type AdminAuditEntry struct {
+	Actor      string // the admin's user id
+	App        string // the owning app, e.g. "commerce"
+	Operation  string // e.g. "seller.approve"
+	TargetType string // e.g. "seller"
+	TargetID   string
+	Reason     string // empty when none was given
+	RequestID  string
+	Outcome    string // AuditOutcomeSuccess or AuditOutcomeFailure
+	StatusCode int    // downstream status; 0 when the downstream never answered
+	Payload    map[string]any
+}
+
+var ErrInvalidAuditEntry = errors.New("audit entry needs actor, app, operation, target and outcome")
 
 type Store struct {
 	db *pgxpool.Pool
@@ -27,16 +58,28 @@ func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
-// DashboardStats holds aggregate counts for the admin dashboard.
-type DashboardStats struct {
-	TotalUsers            int `json:"total_users"`
-	ActiveUsersToday      int `json:"active_users_today"`
-	TotalPosts            int `json:"total_posts"`
-	OpenReports           int `json:"open_reports"`
-	ActiveSuspensions     int `json:"active_suspensions"`
-	TakedownsLast7d       int `json:"takedowns_last_7d"`
-	NewUsersLast7d        int `json:"new_users_last_7d"`
-	ReportsResolvedLast7d int `json:"reports_resolved_last_7d"`
+// RecordAdminWrite appends one row to admin.audit_log. The table is
+// append-only (migration 002); there is no update path.
+func (s *Store) RecordAdminWrite(ctx context.Context, e AdminAuditEntry) error {
+	if e.Actor == "" || e.App == "" || e.Operation == "" || e.TargetType == "" ||
+		(e.Outcome != AuditOutcomeSuccess && e.Outcome != AuditOutcomeFailure) {
+		return ErrInvalidAuditEntry
+	}
+	var payload []byte
+	if len(e.Payload) > 0 {
+		b, err := json.Marshal(e.Payload)
+		if err != nil {
+			return err
+		}
+		payload = b
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO admin.audit_log
+			(id, admin_actor, app, action, entity_type, entity_id, reason, request_id, outcome, status_code, payload, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), $9, $10, $11, NOW())
+	`, uuid.New(), e.Actor, e.App, e.Operation, e.TargetType, e.TargetID,
+		e.Reason, e.RequestID, e.Outcome, e.StatusCode, payload)
+	return err
 }
 
 // GetAuditLogs returns paginated audit log entries ordered by most recent first.
@@ -48,7 +91,8 @@ func (s *Store) GetAuditLogs(ctx context.Context, limit, offset int) ([]AuditLog
 	}
 
 	rows, err := s.db.Query(ctx, `
-		SELECT id, admin_actor, action, entity_type, entity_id, payload, created_at
+		SELECT id, admin_actor, app, action, entity_type, entity_id, reason, request_id,
+		       outcome, status_code, payload, created_at
 		FROM admin.audit_log
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
@@ -61,65 +105,87 @@ func (s *Store) GetAuditLogs(ctx context.Context, limit, offset int) ([]AuditLog
 	var logs []AuditLog
 	for rows.Next() {
 		var l AuditLog
-		if err := rows.Scan(&l.ID, &l.AdminActor, &l.Action, &l.EntityType, &l.EntityID, &l.Payload, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.AdminActor, &l.App, &l.Action, &l.EntityType, &l.EntityID,
+			&l.Reason, &l.RequestID, &l.Outcome, &l.StatusCode, &l.Payload, &l.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		logs = append(logs, l)
 	}
-	return logs, total, nil
+	return logs, total, rows.Err()
 }
 
-// GetDashboardStats gathers aggregate counts across schemas for the admin dashboard.
+// DashboardStats holds the admin dashboard numbers.
+//
+// A nil value means the number is not available, and Unavailable carries the
+// reason under the same key. A zero is only ever a real count.
+type DashboardStats struct {
+	TotalUsers               *int64            `json:"total_users"`
+	ActiveUsersToday         *int64            `json:"active_users_today"`
+	TotalPosts               *int64            `json:"total_posts"`
+	NewUsersLast7d           *int64            `json:"new_users_last_7d"`
+	OpenReports              *int64            `json:"open_reports"`
+	ReportsResolvedLast7d    *int64            `json:"reports_resolved_last_7d"`
+	TakedownsLast7d          *int64            `json:"takedowns_last_7d"`
+	ActiveSuspensions        *int64            `json:"active_suspensions"`
+	AdminWritesLast7d        *int64            `json:"admin_writes_last_7d"`
+	AdminWriteFailuresLast7d *int64            `json:"admin_write_failures_last_7d"`
+	Unavailable              map[string]string `json:"unavailable"`
+}
+
+// Reasons a dashboard number is unavailable.
+const (
+	DashboardReasonOwnedElsewhere   = "owned_by_another_service"
+	DashboardReasonTakedownDisabled = "takedown_disabled_in_admin_service"
+	DashboardReasonQueryFailed      = "query_failed"
+)
+
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// GetDashboardStats returns the numbers admin-service can compute from its own
+// tables. Users, posts and reports live in other services' databases; they are
+// reported unavailable rather than as a zero until per-service stats exist.
 func (s *Store) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
-	stats := &DashboardStats{}
+	return dashboardStats(ctx, s.db), nil
+}
 
-	// Total users (from social schema)
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM social.users`).Scan(&stats.TotalUsers)
+func dashboardStats(ctx context.Context, q rowQuerier) *DashboardStats {
+	stats := &DashboardStats{Unavailable: map[string]string{
+		"total_users":              DashboardReasonOwnedElsewhere,
+		"active_users_today":       DashboardReasonOwnedElsewhere,
+		"total_posts":              DashboardReasonOwnedElsewhere,
+		"new_users_last_7d":        DashboardReasonOwnedElsewhere,
+		"open_reports":             DashboardReasonOwnedElsewhere,
+		"reports_resolved_last_7d": DashboardReasonOwnedElsewhere,
+		"takedowns_last_7d":        DashboardReasonTakedownDisabled,
+	}}
 
-	// Active users today (users with activity today from social.counts)
-	_ = s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM social.counts
-		WHERE updated_at >= CURRENT_DATE
-	`).Scan(&stats.ActiveUsersToday)
+	count := func(key, sql string) *int64 {
+		var n int64
+		if err := q.QueryRow(ctx, sql).Scan(&n); err != nil {
+			slog.ErrorContext(ctx, "admin dashboard count failed", "metric", key, "error", err)
+			stats.Unavailable[key] = DashboardReasonQueryFailed
+			return nil
+		}
+		return &n
+	}
 
-	// Total posts
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM social.posts`).Scan(&stats.TotalPosts)
-
-	// Open reports (from trust schema)
-	_ = s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM trust.reports WHERE status = 'open'
-	`).Scan(&stats.OpenReports)
-
-	// Active suspensions
-	_ = s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM admin.suspensions WHERE until > NOW()
-	`).Scan(&stats.ActiveSuspensions)
-
-	// Takedowns in last 7 days
-	_ = s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM admin.audit_log
-		WHERE action = 'TAKEDOWN' AND created_at >= NOW() - INTERVAL '7 days'
-	`).Scan(&stats.TakedownsLast7d)
-
-	// New users in last 7 days
-	_ = s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM social.users
-		WHERE created_at >= NOW() - INTERVAL '7 days'
-	`).Scan(&stats.NewUsersLast7d)
-
-	// Reports resolved in last 7 days
-	_ = s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM trust.reports
-		WHERE status != 'open' AND updated_at >= NOW() - INTERVAL '7 days'
-	`).Scan(&stats.ReportsResolvedLast7d)
-
-	return stats, nil
+	stats.ActiveSuspensions = count("active_suspensions",
+		`SELECT COUNT(*) FROM admin.suspensions WHERE until > NOW()`)
+	stats.AdminWritesLast7d = count("admin_writes_last_7d",
+		`SELECT COUNT(*) FROM admin.audit_log WHERE created_at >= NOW() - INTERVAL '7 days'`)
+	stats.AdminWriteFailuresLast7d = count("admin_write_failures_last_7d",
+		`SELECT COUNT(*) FROM admin.audit_log
+		 WHERE outcome = 'failure' AND created_at >= NOW() - INTERVAL '7 days'`)
+	return stats
 }
 
 // PurgeAuditLogsOlderThan deletes audit-log rows older than retentionDays
 // and returns how many were removed. CERT-In requires security logs be
 // retained for at least 180 days; the retention window is operator-tunable
-// (AUDIT_LOG_RETENTION_DAYS) and the caller must not set it below 180.
+// (AUDIT_LOG_RETENTION_DAYS) and the caller must not set it below 180. The
+// append-only trigger refuses to delete anything younger than 180 days.
 func (s *Store) PurgeAuditLogsOlderThan(ctx context.Context, retentionDays int) (int64, error) {
 	tag, err := s.db.Exec(ctx,
 		`DELETE FROM admin.audit_log WHERE created_at < NOW() - make_interval(days => $1)`,
@@ -128,23 +194,4 @@ func (s *Store) PurgeAuditLogsOlderThan(ctx context.Context, retentionDays int) 
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
-}
-
-func (s *Store) LogAction(ctx context.Context, actor, action, entityType, entityID string, payload interface{}) error {
-	pBytes, _ := json.Marshal(payload)
-
-	query := `
-		INSERT INTO admin.audit_log (id, admin_actor, action, entity_type, entity_id, payload, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`
-	_, err := s.db.Exec(ctx, query,
-		uuid.New(),
-		actor,
-		action,
-		entityType,
-		entityID,
-		pBytes,
-		time.Now(),
-	)
-	return err
 }

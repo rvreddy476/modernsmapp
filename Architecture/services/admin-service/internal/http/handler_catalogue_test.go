@@ -38,7 +38,7 @@ func catalogueRig(t *testing.T) (*gin.Engine, *struct {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := &Handler{}
+	h := &Handler{audit: &fakeRecorder{}}
 	h.RegisterCatalogueRoutes(r, service.NewCommerceClient(upstream.URL, "test-internal-key"))
 	return r, seen
 }
@@ -51,6 +51,7 @@ func callCatalogue(r *gin.Engine, method, path, scopes, body string) *httptest.R
 		rdr = strings.NewReader("")
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	req.Header.Set("X-User-Id", testActor)
 	if scopes != "" {
 		req.Header.Set("X-Scopes", scopes)
 	}

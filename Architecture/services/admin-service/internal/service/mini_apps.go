@@ -117,13 +117,3 @@ func normalizeGrantedPermissions(requested, granted []string) ([]string, error) 
 
 	return normalized, nil
 }
-
-// CreateOAuthClient registers a new OAuth client for a developer.
-func (s *Service) CreateOAuthClient(ctx context.Context, client *postgres.OAuthClient) error {
-	return s.store.CreateOAuthClient(ctx, client)
-}
-
-// GetOAuthClientByClientID returns an OAuth client by its client_id.
-func (s *Service) GetOAuthClientByClientID(ctx context.Context, clientID string) (*postgres.OAuthClient, error) {
-	return s.store.GetOAuthClientByClientID(ctx, clientID)
-}

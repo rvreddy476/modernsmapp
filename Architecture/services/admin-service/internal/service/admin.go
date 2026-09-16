@@ -99,6 +99,11 @@ func (s *Service) GetDashboard(ctx context.Context) (*postgres.DashboardStats, e
 	return s.store.GetDashboardStats(ctx)
 }
 
+// RecordAdminWrite appends one admin write to admin.audit_log.
+func (s *Service) RecordAdminWrite(ctx context.Context, entry postgres.AdminAuditEntry) error {
+	return s.store.RecordAdminWrite(ctx, entry)
+}
+
 // GetAuditLogs returns paginated audit log entries.
 func (s *Service) GetAuditLogs(ctx context.Context, limit, offset int) ([]postgres.AuditLog, int, error) {
 	return s.store.GetAuditLogs(ctx, limit, offset)

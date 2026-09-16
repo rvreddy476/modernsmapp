@@ -86,6 +86,16 @@ func main() {
 	authURL := env("AUTH_SERVICE_URL", "http://identity-auth:8081")
 	authClient := service.NewAuthClient(authURL, internalKey)
 	svc := service.NewWithDialer(store, kafkaBrokers, kafkaDialer, authClient)
+
+	// OAuth client secrets were once stored in plaintext; hash any that still
+	// are. Idempotent, so it runs on every boot.
+	if n, err := svc.HashPlaintextOAuthSecrets(ctx); err != nil {
+		slog.Error("failed to hash plaintext oauth client secrets", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("hashed plaintext oauth client secrets", "rows", n)
+	}
+
 	handler := http.New(svc)
 
 	// Commerce client for seller/product approval proxying

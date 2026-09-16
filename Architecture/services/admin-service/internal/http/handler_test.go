@@ -24,7 +24,7 @@ type stubAdminService struct {
 	createMiniAppFn        func(ctx context.Context, app *postgres.MiniApp) error
 	updateMiniAppStatusFn  func(ctx context.Context, id uuid.UUID, status string) error
 	uninstallAppFn         func(ctx context.Context, appID, userID uuid.UUID) error
-	createOAuthClientFn    func(ctx context.Context, client *postgres.OAuthClient) error
+	createOAuthClientFn    func(ctx context.Context, client *postgres.OAuthClient, secret string) error
 	getOAuthClientByIDFn   func(ctx context.Context, clientID string) (*postgres.OAuthClient, error)
 	requestDataExportFn    func(ctx context.Context, userID uuid.UUID) (*postgres.DataExportRequest, error)
 	getDataExportStatusFn  func(ctx context.Context, id, userID uuid.UUID) (*postgres.DataExportRequest, error)
@@ -156,11 +156,11 @@ func (s *stubAdminService) CreateMiniAppSession(ctx context.Context, appID, user
 	return s.createMiniAppSessionFn(ctx, appID, userID)
 }
 
-func (s *stubAdminService) CreateOAuthClient(ctx context.Context, client *postgres.OAuthClient) error {
+func (s *stubAdminService) CreateOAuthClient(ctx context.Context, client *postgres.OAuthClient, secret string) error {
 	if s.createOAuthClientFn == nil {
 		return nil
 	}
-	return s.createOAuthClientFn(ctx, client)
+	return s.createOAuthClientFn(ctx, client, secret)
 }
 
 func (s *stubAdminService) GetOAuthClientByClientID(ctx context.Context, clientID string) (*postgres.OAuthClient, error) {
@@ -400,4 +400,8 @@ type serviceErr string
 
 func (e serviceErr) Error() string {
 	return string(e)
+}
+
+func (s *stubAdminService) RecordAdminWrite(ctx context.Context, entry postgres.AdminAuditEntry) error {
+	return nil
 }

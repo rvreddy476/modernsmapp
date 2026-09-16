@@ -221,6 +221,54 @@ func (s *Store) CreateOAuthClient(ctx context.Context, client *OAuthClient) erro
 	).Scan(&client.IsActive, &client.CreatedAt)
 }
 
+// HashPlaintextOAuthSecrets rewrites every oauth_clients row whose
+// client_secret_hash still holds a plaintext secret (anything isHash rejects)
+// into hash(secret), and returns how many rows it rewrote.
+//
+// It is idempotent: hashed rows are skipped, and each UPDATE is conditioned on
+// the old value so a concurrent run cannot hash a hash.
+func (s *Store) HashPlaintextOAuthSecrets(ctx context.Context, isHash func(string) bool, hash func(string) (string, error)) (int, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, client_secret_hash FROM oauth_clients`)
+	if err != nil {
+		return 0, err
+	}
+	type pending struct {
+		id     uuid.UUID
+		secret string
+	}
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.id, &p.secret); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if !isHash(p.secret) {
+			todo = append(todo, p)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	n := 0
+	for _, p := range todo {
+		hashed, err := hash(p.secret)
+		if err != nil {
+			return n, err
+		}
+		tag, err := s.db.Exec(ctx,
+			`UPDATE oauth_clients SET client_secret_hash = $1 WHERE id = $2 AND client_secret_hash = $3`,
+			hashed, p.id, p.secret)
+		if err != nil {
+			return n, err
+		}
+		n += int(tag.RowsAffected())
+	}
+	return n, nil
+}
+
 // GetOAuthClientByClientID returns an OAuth client by its client_id string.
 func (s *Store) GetOAuthClientByClientID(ctx context.Context, clientID string) (*OAuthClient, error) {
 	var c OAuthClient

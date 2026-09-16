@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -56,8 +57,27 @@ func (h *Handler) RegisterCatalogueRoutes(r *gin.Engine, cc *service.CommerceCli
 			return
 		}
 
+		upstreamPath := "/v1/commerce/internal/" + rest
+		if c.Request.Method != http.MethodGet {
+			h.forwardCommerceWrite(c, commerceWrite{
+				operation:  "catalogue." + strings.ToLower(c.Request.Method),
+				targetType: head,
+				targetID:   rest,
+				payload: map[string]any{
+					"method": c.Request.Method,
+					"path":   upstreamPath,
+					"query":  c.Request.URL.RawQuery,
+				},
+				call: func(ctx context.Context, actorID string) ([]byte, int, error) {
+					return cc.RawProxy(ctx, c.Request.Method, upstreamPath,
+						c.Request.URL.RawQuery, actorID, c.Request.Body)
+				},
+			})
+			return
+		}
+
 		data, status, err := cc.RawProxy(c.Request.Context(), c.Request.Method,
-			"/v1/commerce/internal/"+rest, c.Request.URL.RawQuery, c.Request.Body)
+			upstreamPath, c.Request.URL.RawQuery, "", c.Request.Body)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway,
 				"UPSTREAM_ERROR", err.Error(), nil)

@@ -34,8 +34,9 @@ type adminService interface {
 	UninstallApp(ctx context.Context, appID, userID uuid.UUID) error
 	GetUserInstalledApps(ctx context.Context, userID uuid.UUID) ([]postgres.MiniApp, error)
 	CreateMiniAppSession(ctx context.Context, appID, userID uuid.UUID) (*service.MiniAppSession, error)
-	CreateOAuthClient(ctx context.Context, client *postgres.OAuthClient) error
+	CreateOAuthClient(ctx context.Context, client *postgres.OAuthClient, secret string) error
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (*postgres.OAuthClient, error)
+	auditRecorder
 }
 
 // hasScope reports whether the space-separated scopes string contains the exact target scope.
@@ -65,11 +66,12 @@ func requireAnyScope(c *gin.Context, scopes ...string) bool {
 }
 
 type Handler struct {
-	svc adminService
+	svc   adminService
+	audit auditRecorder
 }
 
 func New(svc adminService) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, audit: svc}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -609,12 +611,11 @@ func (h *Handler) CreateOAuthClient(c *gin.Context) {
 	}
 
 	client := &postgres.OAuthClient{
-		DeveloperID:      developerID,
-		Name:             req.Name,
-		ClientID:         req.ClientID,
-		ClientSecretHash: req.ClientSecret, // In production: hash this
-		RedirectURIs:     req.RedirectURIs,
-		Scopes:           req.Scopes,
+		DeveloperID:  developerID,
+		Name:         req.Name,
+		ClientID:     req.ClientID,
+		RedirectURIs: req.RedirectURIs,
+		Scopes:       req.Scopes,
 	}
 	if client.RedirectURIs == nil {
 		client.RedirectURIs = []string{}
@@ -623,12 +624,14 @@ func (h *Handler) CreateOAuthClient(c *gin.Context) {
 		client.Scopes = []string{}
 	}
 
-	if err := h.svc.CreateOAuthClient(c.Request.Context(), client); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	// The service stores only an argon2id hash of the secret.
+	if err := h.svc.CreateOAuthClient(c.Request.Context(), client, req.ClientSecret); err != nil {
+		slog.ErrorContext(c.Request.Context(), "create oauth client failed", "error", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create OAuth client", nil)
 		return
 	}
 
-	// Return without secret hash
+	// Never echo the hash back.
 	client.ClientSecretHash = ""
 	api.JSON(c.Writer, http.StatusCreated, client, nil)
 }
@@ -665,11 +668,11 @@ func (h *Handler) OAuthAuthorize(c *gin.Context) {
 	}, nil)
 }
 
-// OAuthToken is a stub for the token exchange endpoint.
+// OAuthToken is the token exchange endpoint. It used to answer every request
+// with a fixed fake bearer token; until a real authorization-code exchange
+// exists (verifying the client secret by hash, the code, PKCE and redirect
+// URI), it refuses rather than issue anything.
 func (h *Handler) OAuthToken(c *gin.Context) {
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
-		"token_type":   "Bearer",
-		"access_token": "stub_token_exchange_not_implemented",
-		"expires_in":   3600,
-	}, nil)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotImplemented,
+		"OAUTH_TOKEN_NOT_IMPLEMENTED", "OAuth token exchange is not implemented", nil)
 }
