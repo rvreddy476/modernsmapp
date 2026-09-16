@@ -60,7 +60,7 @@ func TestCreateItemReview_UpdatesAggregateAtomically(t *testing.T) {
 	}
 
 	// Hide the first review — aggregate must drop back to (1, 2.00).
-	if err := s.HideItemReview(ctx, r1.ID); err != nil {
+	if err := s.HideItemReview(ctx, uuid.New(), r1.ID); err != nil {
 		t.Fatalf("hide review: %v", err)
 	}
 	avg, count = readAggregate(t, s, menuItemID)

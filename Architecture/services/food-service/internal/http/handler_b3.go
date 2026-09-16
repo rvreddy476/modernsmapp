@@ -10,11 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Wave 1 B3 routes and helpers.
-
-func (h *Handler) registerB3Routes(admin *gin.RouterGroup) {
-	admin.GET("/payout-accounts", h.AdminListPayoutAccounts)
-}
+// Wave 1 B3 helpers. The admin payout-account route is in admin_token.go.
 
 // locationOwnedKeys are the restaurant fields PUT .../location owns. The
 // generic PATCH refuses any of them (FOOD_USE_LOCATION_ROUTE).

@@ -209,12 +209,17 @@ func (s *Store) ListRefundsForAdmin(ctx context.Context, status string, limit in
 
 // SetTicketStatus is the admin/moderator transition. resolved_at is
 // stamped when status moves to 'resolved' or 'closed'.
-func (s *Store) SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error {
+func (s *Store) SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UUID, status string) error {
 	allowed := map[string]bool{"open": true, "in_progress": true, "resolved": true, "closed": true, "cancelled": true}
 	if !allowed[status] {
 		return fmt.Errorf("invalid ticket status: %s", status)
 	}
-	tag, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE food.support_tickets
 		SET status = $2::food.ticket_status,
 			resolved_at = CASE
@@ -229,7 +234,12 @@ func (s *Store) SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status 
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	return nil
+	if err := writeAdminAudit(ctx, tx, adminID, "ticket.status", "support_ticket", &ticketID, map[string]any{
+		"status": status,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // CreateRefundRequest inserts a customer-requested refund. The admin
@@ -258,7 +268,12 @@ func (s *Store) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, s
 	if status != "approved" && status != "rejected" {
 		return fmt.Errorf("invalid refund decision: %s", status)
 	}
-	tag, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE food.refund_requests
 		SET status = $2::food.refund_status,
 			decided_by = $3,
@@ -272,7 +287,12 @@ func (s *Store) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, s
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	return nil
+	if err := writeAdminAudit(ctx, tx, adminID, "refund_request.decide", "refund_request", &refundID, map[string]any{
+		"status": status, "reason": reason,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // MarkRefundProcessed is called by the payments worker once the actual

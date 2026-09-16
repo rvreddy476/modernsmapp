@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // MenuItemReport mirrors a row in food.menu_item_reports.
@@ -126,14 +127,23 @@ func (s *Store) ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID,
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE food.menu_items
 		SET moderation_status = $2::food.moderation_status,
 			moderation_reason = NULLIF($3, ''),
 			moderated_at = NOW(),
 			moderated_by = $4
 		WHERE id = $1
-	`, itemID, status, reason, adminID); err != nil {
+	`, itemID, status, reason, adminID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	if err := writeAdminAudit(ctx, tx, adminID, "menu_item.moderate", "menu_item", &itemID, map[string]any{
+		"status": status, "reason": reason,
+	}); err != nil {
 		return err
 	}
 	if status == "approved" || status == "rejected" {

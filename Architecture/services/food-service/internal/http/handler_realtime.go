@@ -77,6 +77,10 @@ func (h *Handler) IssueRealtimeToken(c *gin.Context) {
 // requireUser extracts the X-User-Id. Mirrors the helper used by the
 // other handler files; kept private to avoid polluting handler.go.
 func (h *Handler) requireUser(c *gin.Context) (uuid.UUID, bool) {
+	// Same rule as currentUserID: an admitted admin-service token's actor wins.
+	if actor, ok := tokenActor(c); ok {
+		return actor, true
+	}
 	raw := c.GetHeader("X-User-Id")
 	id, err := uuid.Parse(raw)
 	if err != nil {

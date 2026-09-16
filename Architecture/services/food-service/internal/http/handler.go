@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,9 @@ type Handler struct {
 	// devDigiLockerRoutes registers the mock provider's authorize route
 	// (handler_rider_kyc.go); only ever true in local/dev with the mock.
 	devDigiLockerRoutes bool
+	// verifier admits admin-service tokens on the admin routes
+	// (admin_token.go); nil accepts none.
+	verifier *servicetoken.Verifier
 }
 
 func New(svc *service.Service) *Handler {
@@ -36,11 +40,16 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Token-only admin family for admin-service, registered on the engine
+	// OUTSIDE the internal-key group: the key is no evidence of who is
+	// calling, the admin-service token is (admin_token.go).
+	h.registerAdminRoutes(r.Group(InternalAdminPrefix), h.requireAdminToken)
+	r.GET(InternalAdminPrefix+"/stats", h.requireAdminToken(PermStatsRead), h.GetAdminStats)
 
 	v1 := r.Group("/v1/food")
+	if h.internalKey != "" {
+		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	{
 		v1.GET("/home", h.Home)
 		v1.GET("/cuisines", h.ListCuisines)
@@ -159,60 +168,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			delivery.GET("/history", h.GetDeliveryHistory)
 		}
 
-		admin := v1.Group("/admin", h.requireAdminScope())
-		{
-			admin.GET("/dashboard", h.AdminDashboard)
-			admin.GET("/moderation/queue", h.AdminListPendingModeration)
-			admin.POST("/moderation/menu-items/:itemId", h.AdminModerateMenuItem)
-			admin.GET("/support/tickets", h.AdminListTickets)
-			admin.POST("/support/tickets/:ticketId/status", h.AdminSetTicketStatus)
-			admin.GET("/refunds", h.AdminListRefunds)
-			admin.POST("/refunds/:refundId/decide", h.AdminDecideRefund)
-			admin.DELETE("/item-reviews/:reviewId", h.AdminHideItemReview)
-			admin.GET("/reports/restaurant-sla", h.AdminRestaurantSLAReport)
-			admin.GET("/reports/delivery-sla", h.AdminDeliverySLAReport)
-			admin.GET("/reports/payment-recon", h.AdminPaymentReconReport)
-			admin.GET("/reports/refunds", h.AdminRefundsReport)
-			admin.GET("/reports/coupon-abuse", h.AdminCouponAbuseReport)
-			admin.GET("/reports/compliance", h.AdminComplianceReport)
-			admin.GET("/fraud/top", h.AdminTopFraudUsers)
-			admin.POST("/settlements/files", h.AdminGenerateSettlementFile)
-			admin.GET("/settlements/files", h.AdminListSettlementFiles)
-			admin.GET("/settlements/files/:id/download", h.AdminDownloadSettlementFile)
-			admin.GET("/restaurants/pending", h.AdminPendingRestaurants)
-			admin.POST("/restaurants/:restaurantId/approve", h.AdminApproveRestaurant)
-			admin.POST("/restaurants/:restaurantId/reject", h.AdminRejectRestaurant)
-			admin.PATCH("/restaurants/:restaurantId/status", h.AdminSetRestaurantStatus)
-			admin.GET("/delivery-partners/pending", h.AdminPendingDeliveryPartners)
-			admin.POST("/delivery-partners/:partnerId/approve", h.AdminApproveDeliveryPartner)
-			admin.POST("/delivery-partners/:partnerId/reject", h.AdminRejectDeliveryPartner)
-			admin.PATCH("/delivery-partners/:partnerId/status", h.AdminSetDeliveryPartnerStatus)
-			admin.GET("/orders", h.AdminListOrders)
-			admin.GET("/orders/:orderId", h.AdminGetOrder)
-			admin.POST("/orders/:orderId/cancel", h.AdminCancelOrder)
-			admin.POST("/orders/:orderId/refund", h.AdminRefundOrder)
-			admin.GET("/coupons", h.AdminListCoupons)
-			admin.POST("/coupons", h.AdminCreateCoupon)
-			admin.PATCH("/coupons/:couponId", h.AdminUpdateCoupon)
-			admin.GET("/service-areas", h.AdminListServiceAreas)
-			admin.POST("/service-areas", h.AdminCreateServiceArea)
-			admin.PATCH("/service-areas/:areaId", h.AdminUpdateServiceArea)
-			admin.POST("/settlements/generate", h.AdminGenerateSettlements)
-			admin.GET("/settlements/restaurants", h.AdminListRestaurantSettlements)
-			admin.POST("/settlements/restaurants/:settlementId/mark-paid", h.AdminMarkRestaurantSettlementPaid)
-			admin.GET("/settlements/delivery-partners", h.AdminListDeliverySettlements)
-			admin.POST("/settlements/delivery-partners/:settlementId/mark-paid", h.AdminMarkDeliverySettlementPaid)
-			admin.GET("/audit-logs", h.AdminAuditLogs)
-			admin.GET("/reports/orders", h.AdminOrderReport)
-			admin.GET("/reports/revenue", h.AdminRevenueReport)
-		}
+		// LEGACY admin routes: X-User-Id + admin/superadmin scope, or an
+		// admin-service token judged alone (requireAdmin). Each names its
+		// permission; the table is in admin_token.go.
+		h.registerAdminRoutes(v1.Group("/admin"), h.requireAdmin)
 
 		// Wave 1 B1/B2: onboarding, FSSAI, payout accounts. See handler_onboarding.go.
-		h.registerOnboardingRoutes(partner, delivery, admin)
-		// Wave 1 B3: admin payout-account review. See handler_b3.go.
-		h.registerB3Routes(admin)
+		h.registerOnboardingRoutes(partner, delivery)
 		// Wave 1 B4: delivery-partner verification. See handler_rider_kyc.go.
-		h.registerRiderKYCRoutes(v1, delivery, admin)
+		h.registerRiderKYCRoutes(v1, delivery)
 		// Lane B8: Kitchen read-backs, readiness, menu extras. See handler_b8.go.
 		h.registerB8Routes(partner)
 	}
@@ -1734,6 +1698,9 @@ func (h *Handler) AdminSetRestaurantStatus(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	if !adminMay(c, RestaurantStatusPermission(body.Status)) {
+		return
+	}
 	if err := h.svc.AdminSetRestaurantStatus(c.Request.Context(), adminID, restaurantID, body.Status, body.Reason); err != nil {
 		if errors.Is(err, postgres.ErrFSSAIRequired) {
 			writeOnboardingError(c, err)
@@ -1804,6 +1771,9 @@ func (h *Handler) AdminSetDeliveryPartnerStatus(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if !adminMay(c, DeliveryPartnerStatusPermission(body.Status)) {
 		return
 	}
 	if err := h.svc.AdminSetDeliveryPartnerStatus(c.Request.Context(), adminID, partnerID, body.Status, body.Reason); err != nil {
@@ -2169,6 +2139,11 @@ func parseUUIDParam(c *gin.Context, name string) (uuid.UUID, bool) {
 }
 
 func (h *Handler) currentUserID(c *gin.Context) (uuid.UUID, bool) {
+	// An admitted admin-service token names the actor; X-User-Id is then
+	// ignored, whatever it says.
+	if actor, ok := tokenActor(c); ok {
+		return actor, true
+	}
 	raw := c.GetHeader("X-User-Id")
 	if raw == "" {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)

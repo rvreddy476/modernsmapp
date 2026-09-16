@@ -355,7 +355,22 @@ func main() {
 	// admin queue can triage high-risk customers.
 	go svc.StartFraudScoreWorker(outboxCtx)
 
-	handler := foodhttp.New(svc).WithInternalKey(internalKey).
+	// Service-token verifier for the admin family (/v1/food/internal/admin/*):
+	// SERVICE_CALLERS=admin-service plus SERVICE_CALLER_ADMIN_SERVICE_{KID,PUBKEY,OPS}.
+	// Unset: no token is accepted and that family answers 401. A named caller
+	// with a missing key or empty ops refuses to start.
+	serviceVerifier, err := foodhttp.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("food-service: SERVICE_CALLERS", "error", err)
+		os.Exit(1)
+	}
+	if serviceVerifier == nil {
+		slog.Warn("food-service: SERVICE_CALLERS not set — admin-service tokens are refused; /v1/food/internal/admin answers 401")
+	} else {
+		slog.Info("food-service: service-token callers registered", "callers", serviceVerifier.Callers())
+	}
+
+	handler := foodhttp.New(svc).WithInternalKey(internalKey).WithServiceAuth(serviceVerifier).
 		WithDigiLockerDevRoutes(os.Getenv("ENV"), dlSettings.Mock())
 
 	gin.SetMode(gin.ReleaseMode)

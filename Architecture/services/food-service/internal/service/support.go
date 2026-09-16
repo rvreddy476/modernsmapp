@@ -67,8 +67,8 @@ func (s *Service) AdminListRefunds(ctx context.Context, status string, limit int
 }
 
 // SetTicketStatus is the admin transition.
-func (s *Service) SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error {
-	if err := s.store.SetTicketStatus(ctx, ticketID, status); err != nil {
+func (s *Service) SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UUID, status string) error {
+	if err := s.store.SetTicketStatus(ctx, adminID, ticketID, status); err != nil {
 		return err
 	}
 	s.publishRealtime(ctx, "food.ticket."+ticketID.String(), "food.ticket.status_changed", map[string]any{

@@ -29,13 +29,10 @@ func (h *Handler) WithDigiLockerDevRoutes(env string, mock bool) *Handler {
 	return h
 }
 
-func (h *Handler) registerRiderKYCRoutes(v1, delivery, admin *gin.RouterGroup) {
+func (h *Handler) registerRiderKYCRoutes(v1, delivery *gin.RouterGroup) {
 	delivery.POST("/kyc/digilocker/start", h.StartDigiLocker)
 	delivery.POST("/kyc/digilocker/callback", h.CompleteDigiLocker)
 	delivery.GET("/kyc/status", h.GetDeliveryKYCStatus)
-
-	admin.GET("/delivery-partners/:partnerId/kyc", h.AdminGetDeliveryPartnerKYC)
-	admin.POST("/delivery-partners/:partnerId/documents/:docId/decide", h.AdminDecideDeliveryPartnerDocument)
 
 	v1.GET("/public/digilocker/return", h.DigiLockerReturn)
 	if h.devDigiLockerRoutes {

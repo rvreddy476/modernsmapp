@@ -147,7 +147,7 @@ func (s *Store) ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit
 // avg_rating / rating_count cannot drift after a hide (the bug this
 // replaces: the old version deleted the row but left the stale
 // aggregate on the PDP).
-func (s *Store) HideItemReview(ctx context.Context, reviewID uuid.UUID) error {
+func (s *Store) HideItemReview(ctx context.Context, adminID, reviewID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -175,6 +175,11 @@ func (s *Store) HideItemReview(ctx context.Context, reviewID uuid.UUID) error {
 		) sub
 		WHERE id = $1
 	`, menuItemID); err != nil {
+		return err
+	}
+	if err := writeAdminAudit(ctx, tx, adminID, "item_review.hide", "item_review", &reviewID, map[string]any{
+		"menu_item_id": menuItemID.String(), "hidden": true,
+	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

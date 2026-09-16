@@ -78,12 +78,16 @@ func (h *Handler) ListItemReviews(c *gin.Context) {
 
 // AdminHideItemReview — DELETE /v1/food/admin/item-reviews/:reviewId
 func (h *Handler) AdminHideItemReview(c *gin.Context) {
+	adminID, ok := h.requireUser(c)
+	if !ok {
+		return
+	}
 	rid, err := uuid.Parse(c.Param("reviewId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REVIEW_ID", err.Error(), nil)
 		return
 	}
-	if err := h.svc.HideItemReview(c.Request.Context(), rid); err != nil {
+	if err := h.svc.HideItemReview(c.Request.Context(), adminID, rid); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "HIDE_REVIEW_FAILED", err.Error(), nil)
 		return
 	}

@@ -1081,6 +1081,11 @@ func (s *Store) AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UUID
 	}); err != nil {
 		return nil, err
 	}
+	if err := writeAdminAudit(ctx, tx, adminID, "order.cancel", "order", &orderID, map[string]any{
+		"from_status": fromStatus, "to_status": string(orderstate.CancelledByAdmin), "reason": reason,
+	}); err != nil {
+		return nil, err
+	}
 	order, err := s.getOrderTx(ctx, tx, userID, orderID, true)
 	if err != nil {
 		return nil, err
@@ -1133,8 +1138,13 @@ func (s *Store) AdminCreateCoupon(ctx context.Context, adminID uuid.UUID, input 
 	discount := number(input["discount_value"], 50)
 	minOrder := number(input["min_order_amount"], 199)
 	maxDiscount := number(input["max_discount_amount"], discount)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	var id uuid.UUID
-	if err := s.db.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.coupons (
 			code, title, coupon_type, discount_value, max_discount_amount,
 			min_order_amount, starts_at, ends_at, created_by
@@ -1142,6 +1152,15 @@ func (s *Store) AdminCreateCoupon(ctx context.Context, adminID uuid.UUID, input 
 		VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW() + INTERVAL '90 days',$7)
 		RETURNING id
 	`, strings.ToUpper(code), title, couponType, discount, maxDiscount, minOrder, adminID).Scan(&id); err != nil {
+		return nil, err
+	}
+	if err := writeAdminAudit(ctx, tx, adminID, "coupon.create", "coupon", &id, map[string]any{
+		"code": strings.ToUpper(code), "title": title, "coupon_type": couponType, "discount_value": discount,
+		"max_discount_amount": maxDiscount, "min_order_amount": minOrder,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return map[string]any{"id": id, "code": strings.ToUpper(code), "title": title}, nil
@@ -1155,7 +1174,12 @@ func (s *Store) AdminUpdateCoupon(ctx context.Context, adminID, couponID uuid.UU
 	minOrder := number(input["min_order_amount"], 199)
 	maxDiscount := number(input["max_discount_amount"], discount)
 	active := boolValue(input, "is_active", true)
-	tag, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE food.coupons
 		SET code = COALESCE(NULLIF($3, ''), code),
 			title = COALESCE(NULLIF($4, ''), title),
@@ -1172,6 +1196,15 @@ func (s *Store) AdminUpdateCoupon(ctx context.Context, adminID, couponID uuid.UU
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, pgx.ErrNoRows
+	}
+	if err := writeAdminAudit(ctx, tx, adminID, "coupon.update", "coupon", &couponID, map[string]any{
+		"code": code, "title": title, "coupon_type": couponType, "discount_value": discount,
+		"max_discount_amount": maxDiscount, "min_order_amount": minOrder, "is_active": active,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return map[string]any{"id": couponID, "code": code, "title": title, "is_active": active}, nil
 }
@@ -1211,8 +1244,13 @@ func (s *Store) AdminCreateServiceArea(ctx context.Context, adminID uuid.UUID, i
 	if name == "" || city == "" {
 		return nil, fmt.Errorf("name and city are required")
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	var id uuid.UUID
-	if err := s.db.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.service_areas (
 			name, city, state, country, postal_code, center_latitude,
 			center_longitude, radius_km, is_active, created_by
@@ -1225,13 +1263,24 @@ func (s *Store) AdminCreateServiceArea(ctx context.Context, adminID uuid.UUID, i
 		boolValue(input, "is_active", true), adminID).Scan(&id); err != nil {
 		return nil, err
 	}
+	if err := writeAdminAudit(ctx, tx, adminID, "service_area.create", "service_area", &id, serviceAreaAuditValue(input)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return map[string]any{"id": id, "name": name, "city": city}, nil
 }
 
 func (s *Store) AdminUpdateServiceArea(ctx context.Context, adminID, areaID uuid.UUID, input map[string]any) (map[string]any, error) {
 	name := stringValue(input, "name", "")
 	city := stringValue(input, "city", "")
-	tag, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE food.service_areas
 		SET name = COALESCE(NULLIF($3, ''), name),
 			city = COALESCE(NULLIF($4, ''), city),
@@ -1254,7 +1303,25 @@ func (s *Store) AdminUpdateServiceArea(ctx context.Context, adminID, areaID uuid
 	if tag.RowsAffected() == 0 {
 		return nil, pgx.ErrNoRows
 	}
+	if err := writeAdminAudit(ctx, tx, adminID, "service_area.update", "service_area", &areaID, serviceAreaAuditValue(input)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return map[string]any{"id": areaID, "name": name, "city": city}, nil
+}
+
+// serviceAreaAuditValue is the audited shape of a service-area write: the
+// fields the insert and update actually apply, after their defaults.
+func serviceAreaAuditValue(input map[string]any) map[string]any {
+	return map[string]any{
+		"name": stringValue(input, "name", ""), "city": stringValue(input, "city", ""),
+		"state": stringValue(input, "state", ""), "country": stringValue(input, "country", "India"),
+		"postal_code": stringValue(input, "postal_code", ""), "center_latitude": numberPtr(input, "center_latitude"),
+		"center_longitude": numberPtr(input, "center_longitude"), "radius_km": number(input["radius_km"], 8),
+		"is_active": boolValue(input, "is_active", true),
+	}
 }
 
 func (s *Store) AdminMarkRestaurantSettlementPaid(ctx context.Context, adminID, settlementID uuid.UUID, reference string) (map[string]any, error) {

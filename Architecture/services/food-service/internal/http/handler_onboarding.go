@@ -22,7 +22,7 @@ import (
 // Response bodies carry masked identifiers only, and no error message echoes
 // a submitted value. Golden responses: testdata/contracts/.
 
-func (h *Handler) registerOnboardingRoutes(partner, delivery, admin *gin.RouterGroup) {
+func (h *Handler) registerOnboardingRoutes(partner, delivery *gin.RouterGroup) {
 	partner.PUT("/restaurants/:restaurantId/compliance", h.PutRestaurantCompliance)
 	partner.PUT("/restaurants/:restaurantId/location", h.PutRestaurantLocation)
 	partner.PUT("/restaurants/:restaurantId/operating-hours", h.PutRestaurantOperatingHours)
@@ -34,8 +34,6 @@ func (h *Handler) registerOnboardingRoutes(partner, delivery, admin *gin.RouterG
 
 	delivery.PUT("/payout-account", h.PutDeliveryPayoutAccount)
 	delivery.GET("/payout-account", h.GetDeliveryPayoutAccount)
-
-	admin.POST("/restaurants/:restaurantId/documents/:docId/decide", h.AdminDecideRestaurantDocument)
 }
 
 // writeOnboardingError maps onboarding, PII and ownership failures to stable

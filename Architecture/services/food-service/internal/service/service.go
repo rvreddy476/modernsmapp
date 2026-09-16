@@ -103,14 +103,14 @@ type Store interface {
 	ListMyTickets(ctx context.Context, customerID uuid.UUID) ([]postgres.Ticket, error)
 	AppendTicketMessage(ctx context.Context, ticketID, authorID uuid.UUID, isAdmin bool, body string) (*postgres.TicketMessage, error)
 	GetTicketWithMessages(ctx context.Context, ticketID uuid.UUID) (*postgres.Ticket, []postgres.TicketMessage, error)
-	SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error
+	SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UUID, status string) error
 	ListTicketsForAdmin(ctx context.Context, status string, limit int) ([]postgres.Ticket, error)
 	ListRefundsForAdmin(ctx context.Context, status string, limit int) ([]postgres.RefundRequest, error)
 	CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error)
 	DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error
 	CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error)
 	ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit int) ([]postgres.ItemReview, error)
-	HideItemReview(ctx context.Context, reviewID uuid.UUID) error
+	HideItemReview(ctx context.Context, adminID, reviewID uuid.UUID) error
 	ReportRestaurantSLA(ctx context.Context, w postgres.ReportWindow) ([]postgres.RestaurantSLAReport, error)
 	ReportDeliverySLA(ctx context.Context, w postgres.ReportWindow) ([]postgres.DeliverySLAReport, error)
 	ReportPaymentRecon(ctx context.Context, w postgres.ReportWindow) ([]postgres.PaymentReconRow, error)
@@ -158,6 +158,7 @@ type Store interface {
 	DeliveryEarnings(ctx context.Context, userID uuid.UUID) (map[string]any, error)
 	DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryAssignment, error)
 	AdminDashboard(ctx context.Context) (*postgres.AdminDashboard, error)
+	AdminStats(ctx context.Context) (*postgres.AdminStats, error)
 	AdminPendingRestaurants(ctx context.Context) ([]postgres.PartnerRestaurant, error)
 	AdminApproveRestaurant(ctx context.Context, adminID, restaurantID uuid.UUID, approve bool, reason string) error
 	AdminSetRestaurantStatus(ctx context.Context, adminID, restaurantID uuid.UUID, status, reason string) error
@@ -748,8 +749,8 @@ func (s *Service) ListItemReviews(ctx context.Context, menuItemID uuid.UUID, lim
 }
 
 // HideItemReview is the admin moderation knob (hard-delete v1).
-func (s *Service) HideItemReview(ctx context.Context, reviewID uuid.UUID) error {
-	return s.store.HideItemReview(ctx, reviewID)
+func (s *Service) HideItemReview(ctx context.Context, adminID, reviewID uuid.UUID) error {
+	return s.store.HideItemReview(ctx, adminID, reviewID)
 }
 
 // AutoRejectSLAExpiredOrders is invoked by the background worker every
@@ -944,4 +945,9 @@ func take[T any](items []T, limit int) []T {
 		return items
 	}
 	return items[:limit]
+}
+
+// AdminStats is the passthrough used by GET /v1/food/internal/admin/stats.
+func (s *Service) AdminStats(ctx context.Context) (*postgres.AdminStats, error) {
+	return s.store.AdminStats(ctx)
 }

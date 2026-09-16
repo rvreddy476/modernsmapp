@@ -149,6 +149,10 @@ type AdminSetTicketStatusRequest struct {
 
 // AdminSetTicketStatus — POST /v1/food/admin/support/tickets/:ticketId/status
 func (h *Handler) AdminSetTicketStatus(c *gin.Context) {
+	adminID, ok := h.requireUser(c)
+	if !ok {
+		return
+	}
 	tid, err := uuid.Parse(c.Param("ticketId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TICKET_ID", err.Error(), nil)
@@ -159,7 +163,7 @@ func (h *Handler) AdminSetTicketStatus(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	if err := h.svc.SetTicketStatus(c.Request.Context(), tid, req.Status); err != nil {
+	if err := h.svc.SetTicketStatus(c.Request.Context(), adminID, tid, req.Status); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TICKET_STATUS_FAILED", err.Error(), nil)
 		return
 	}
