@@ -60,6 +60,12 @@ type Claims struct {
 	JTI      string   `json:"jti"`
 	Scope    []string `json:"scope"`
 	RefTypes []string `json:"ref_types"`
+	// Actor is the human user a service acts for — for example the admin on
+	// whose behalf admin-service calls a product's moderation route. It is
+	// signed like every other claim, so a verifier can attribute an action to
+	// a person without trusting a forwardable header. Optional: tokens minted
+	// without it carry no "act" member and verify exactly as before.
+	Actor string `json:"act,omitempty"`
 }
 
 // Algorithm is the only accepted signature algorithm.
@@ -123,11 +129,19 @@ func NewSignerFromBase64(issuer, kid, b64 string) (*Signer, error) {
 	}
 }
 
+// MintOption adjusts optional claims on a minted token.
+type MintOption func(*Claims)
+
+// WithActor records the human user id the calling service acts for.
+func WithActor(userID string) MintOption {
+	return func(c *Claims) { c.Actor = userID }
+}
+
 // Mint issues a token for one operation against one reference type.
 //
 // Scope and reference type are per-token, not per-key, so a call that only
 // needs to create an intent cannot be replayed to issue a refund.
-func (s *Signer) Mint(audience, subject string, scope []string, refTypes []string, ttl time.Duration) (string, error) {
+func (s *Signer) Mint(audience, subject string, scope []string, refTypes []string, ttl time.Duration, opts ...MintOption) (string, error) {
 	if audience == "" {
 		return "", fmt.Errorf("servicetoken: audience is required")
 	}
@@ -149,6 +163,11 @@ func (s *Signer) Mint(audience, subject string, scope []string, refTypes []strin
 		JTI:       base64.RawURLEncoding.EncodeToString(jti),
 		Scope:     scope,
 		RefTypes:  refTypes,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&claims)
+		}
 	}
 	hb, err := json.Marshal(Header{Alg: Algorithm, Typ: "JWT", KID: s.kid})
 	if err != nil {
@@ -236,6 +255,8 @@ type Verified struct {
 	Scope    []string
 	RefTypes []string
 	JTI      string
+	// Actor is the signed "act" claim; empty when the caller acts for no one.
+	Actor string
 }
 
 // Verify checks a token and authorizes one (operation, referenceType) pair.
@@ -322,6 +343,7 @@ func (v *Verifier) Verify(token, operation, refType string) (*Verified, error) {
 		Scope:    claims.Scope,
 		RefTypes: claims.RefTypes,
 		JTI:      claims.JTI,
+		Actor:    claims.Actor,
 	}, nil
 }
 
