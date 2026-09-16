@@ -417,6 +417,21 @@ func main() {
 	// 11. HTTP handler
 	handler := commercehttp.New(svc).WithInternalKey(internalKey).WithStubSettlement(allowStub)
 
+	// Admin console: admin-service calls /v1/commerce/internal/admin/* with a
+	// signed per-call token (internal/http/admin_token.go). A malformed
+	// caller registration refuses to start; none at all means the token
+	// family answers 401 and the legacy key routes remain the only admin path.
+	adminVerifier, err := commercehttp.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("commerce: SERVICE_CALLERS is misconfigured", "error", err)
+		os.Exit(1)
+	}
+	if adminVerifier == nil {
+		slog.Warn("commerce: SERVICE_CALLERS not set — /v1/commerce/internal/admin refuses every request " +
+			"until admin-service is registered with its public key and ops")
+	}
+	handler.WithServiceVerifier(adminVerifier)
+
 	// 11. Gin engine
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

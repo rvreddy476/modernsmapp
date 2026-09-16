@@ -85,6 +85,17 @@ func RequireGatewayTrust(key string) gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		// The admin-service token family carries its own, stronger credential
+		// (a signed per-call token; admin_token.go) and never admits the key
+		// as evidence, so the key is not required there. Every route under
+		// the prefix is token-gated; an unknown path is a plain 404.
+		// Dot segments and doubled slashes never get the exemption, so a
+		// cleaned path can never land outside the family without the key.
+		if (p == InternalAdminPrefix || strings.HasPrefix(p, InternalAdminPrefix+"/")) &&
+			!strings.Contains(p, "/.") && !strings.Contains(p, "//") {
+			c.Next()
+			return
+		}
 		// Constant time: the key is a shared secret, and a byte-by-byte
 		// comparison over a network-reachable endpoint leaks it.
 		got := []byte(c.GetHeader(InternalServiceKeyHeader))

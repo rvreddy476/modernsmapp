@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -25,6 +26,9 @@ type Handler struct {
 	// allowStubSettlement registers POST /orders/:orderId/payment/confirm.
 	// Set ONLY from PAYMENTS_ALLOW_STUB. See StubSettlementPattern.
 	allowStubSettlement bool
+	// verifier admits admin-service tokens on InternalAdminPrefix. nil
+	// refuses every token (see admin_token.go).
+	verifier *servicetoken.Verifier
 }
 
 func New(svc *service.Service) *Handler {
@@ -55,6 +59,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// "action needed" list, and the reviewer's submission history and the
 	// founder's compliance-gap queue. See handler_submissions.go.
 	h.RegisterSubmissionRoutes(r)
+	// Admin console: the token-only mirror of the admin routes for
+	// admin-service (admin_token.go). The key routes above are unchanged.
+	h.registerAdminTokenRoutes(r)
 
 	v1 := r.Group("/v1/commerce")
 

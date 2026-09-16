@@ -393,6 +393,9 @@ func (h *Handler) SubmitProduct(c *gin.Context) {
 // ─── Internal admin handlers ────────────────────────────────────
 
 func actorID(c *gin.Context) uuid.UUID {
+	if id, ok := tokenActor(c); ok {
+		return id
+	}
 	id, _ := uuid.Parse(c.GetHeader("X-User-Id"))
 	return id
 }

@@ -36,7 +36,13 @@ const CodeActorRequired = "ACTOR_REQUIRED"
 // missing, malformed or nil id is refused with 400 ACTOR_REQUIRED before
 // anything is written: these routes used to record the nil UUID as the actor
 // of seller and product decisions, which reads as an id and names nobody.
+//
+// On the admin-service token family the actor is the token's signed act and
+// no header is consulted (admin_token.go).
 func requireActor(c *gin.Context) (uuid.UUID, bool) {
+	if id, ok := tokenActor(c); ok {
+		return id, true
+	}
 	id, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil || id == uuid.Nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
