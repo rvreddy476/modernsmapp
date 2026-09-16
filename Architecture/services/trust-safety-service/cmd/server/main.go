@@ -116,6 +116,18 @@ func main() {
 		nil,
 	))
 	handler := http.New(svc)
+	// Admin console (Wave 1 — B4): admin-service calls the token-only family
+	// under http.InternalAdminPrefix with a per-call signed token. Absent
+	// SERVICE_CALLERS, that family answers 401 to everything.
+	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("service token caller configuration", "error", err)
+		os.Exit(1)
+	}
+	if serviceVerifier == nil {
+		slog.Warn("trust-safety-service: SERVICE_CALLERS not set — " + http.InternalAdminPrefix + " refuses every request")
+	}
+	handler.WithServiceAuth(serviceVerifier)
 
 	// 7b. Trust-score recompute job (spec §8.11/§10.1/§10.2) — read-only:
 	// recomputes trust_score/trust_tier in trust.user_trust_state every 6h.
@@ -191,6 +203,12 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
+	// ORDER MATTERS. Gin fixes a route's middleware chain when the route is
+	// registered, so the token-only admin family declared here is NOT behind
+	// the internal key installed on the next line: it is judged by the
+	// admin-service token alone (the gateway stamps the key on edge traffic,
+	// so the key is no evidence). Everything registered after keeps the key.
+	handler.RegisterAdminTokenRoutes(r)
 	r.Use(middleware.RequireInternalKey(env("INTERNAL_SERVICE_KEY", "")))
 
 	checker.RegisterRoutes(r)

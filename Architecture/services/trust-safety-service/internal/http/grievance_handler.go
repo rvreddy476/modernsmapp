@@ -54,10 +54,15 @@ func (h *Handler) FileGrievance(c *gin.Context) {
 
 // GetGrievance returns a grievance to its complainant or to an officer.
 func (h *Handler) GetGrievance(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
+	token := viaAdminToken(c)
+	var userID uuid.UUID
+	if !token {
+		var err error
+		userID, err = uuid.Parse(c.GetHeader("X-User-Id"))
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+			return
+		}
 	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -69,7 +74,7 @@ func (h *Handler) GetGrievance(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Grievance not found", nil)
 		return
 	}
-	if g.ComplainantID != userID && !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !token && g.ComplainantID != userID && !hasScope(c.GetHeader("X-Scopes"), "admin") {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Not your grievance", nil)
 		return
 	}
@@ -79,18 +84,24 @@ func (h *Handler) GetGrievance(c *gin.Context) {
 // ListGrievances returns the caller's own grievances (?mine=true) or, for
 // an officer, the redressal queue (optionally filtered by ?status=).
 func (h *Handler) ListGrievances(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
+	token := viaAdminToken(c)
+	var userID uuid.UUID
+	var err error
+	if !token {
+		userID, err = uuid.Parse(c.GetHeader("X-User-Id"))
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+			return
+		}
 	}
 	limit, offset := pageParams(c)
 
 	var list []postgres.Grievance
-	if c.Query("mine") == "true" {
+	// ?mine=true is a user's own list; it has no meaning on the admin token path.
+	if c.Query("mine") == "true" && !token {
 		list, err = h.svc.ListMyGrievances(c.Request.Context(), userID, limit, offset)
 	} else {
-		if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+		if !adminAllowed(c) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
 			return
 		}
@@ -130,7 +141,7 @@ type updateGrievanceRequest struct {
 // UpdateGrievance records an officer's verdict and/or assignment. Every
 // change writes one audit row (who, from/to status and officer, notes).
 func (h *Handler) UpdateGrievance(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
 		return
 	}
@@ -180,7 +191,7 @@ func (h *Handler) UpdateGrievance(c *gin.Context) {
 // Returns every audited change to the grievance in order, including each
 // officer assignment (prev_assignee -> new_assignee, who, when).
 func (h *Handler) GetGrievanceHistory(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
 		return
 	}

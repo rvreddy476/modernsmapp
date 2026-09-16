@@ -51,7 +51,8 @@ func (h *Handler) SubmitAppeal(c *gin.Context) {
 }
 
 func (h *Handler) AdminListAppeals(c *gin.Context) {
-	if c.Query("mine") == "true" {
+	// ?mine=true is a user's own list; it has no meaning on the admin token path.
+	if c.Query("mine") == "true" && !viaAdminToken(c) {
 		userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
@@ -65,7 +66,7 @@ func (h *Handler) AdminListAppeals(c *gin.Context) {
 		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": appeals}, nil)
 		return
 	}
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -86,7 +87,7 @@ type reviewAppealRequest struct {
 }
 
 func (h *Handler) ReviewAppeal(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -148,7 +149,7 @@ func (h *Handler) AddKeywordFilter(c *gin.Context) {
 	// Non-admins may only write their OWN user-scope filters. scope_id used
 	// to be caller-supplied and unvalidated, which let any authenticated
 	// caller plant filters on another user's list (or platform-wide).
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		if req.Scope != "user" || scopeID == nil || *scopeID != addedBy {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Only your own user-scope filters may be written", nil)
 			return
@@ -166,12 +167,18 @@ func (h *Handler) AddKeywordFilter(c *gin.Context) {
 func (h *Handler) GetKeywordFilters(c *gin.Context) {
 	// This endpoint used to answer with no auth at all. It now requires a
 	// caller identity, and non-admins can read only their own user scope.
-	callerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
+	// An admin-service token (admin family) is the identity and is an admin.
+	isAdmin := viaAdminToken(c)
+	var callerID uuid.UUID
+	if !isAdmin {
+		var err error
+		callerID, err = uuid.Parse(c.GetHeader("X-User-Id"))
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+			return
+		}
+		isAdmin = hasScope(c.GetHeader("X-Scopes"), "admin")
 	}
-	isAdmin := hasScope(c.GetHeader("X-Scopes"), "admin")
 
 	scope := c.Query("scope")
 	var scopeID *uuid.UUID
@@ -270,7 +277,7 @@ type addMediaLabelRequest struct {
 }
 
 func (h *Handler) AddMediaLabel(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -319,7 +326,7 @@ type issueStrikeRequest struct {
 }
 
 func (h *Handler) IssueStrike(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -357,7 +364,7 @@ func (h *Handler) IssueStrike(c *gin.Context) {
 }
 
 func (h *Handler) GetUserStrikes(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -403,7 +410,7 @@ func (h *Handler) SubmitVerificationRequest(c *gin.Context) {
 }
 
 func (h *Handler) AdminListVerificationRequests(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -424,7 +431,7 @@ type reviewVerificationRequest struct {
 }
 
 func (h *Handler) ReviewVerificationRequest(c *gin.Context) {
-	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}

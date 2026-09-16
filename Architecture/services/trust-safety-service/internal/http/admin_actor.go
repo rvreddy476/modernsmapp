@@ -13,12 +13,23 @@ import (
 // verified actor. Nothing is changed.
 const codeActorRequired = "ACTOR_REQUIRED"
 
-// adminAuditMeta builds the audit context for a human admin change. The
-// actor is the gateway-set X-User-Id; when the gateway also sent
-// X-Verified-User-Id the two must agree. There is no fallback actor: a
-// missing, malformed or nil id reports ok=false and the caller answers
-// 400 ACTOR_REQUIRED.
+// adminAuditMeta builds the audit context for a human admin change.
+//
+// On the admin-service token path the actor is the token's signed act claim
+// and nothing else: identity headers on that request are ignored.
+//
+// On the LEGACY path the actor is the gateway-set X-User-Id; when the gateway
+// also sent X-Verified-User-Id the two must agree. There is no fallback
+// actor: a missing, malformed or nil id reports ok=false and the caller
+// answers 400 ACTOR_REQUIRED.
 func adminAuditMeta(c *gin.Context, reason string) (postgres.AuditMeta, bool) {
+	if id, ok := tokenActor(c); ok {
+		return postgres.AuditMeta{
+			Actor:     postgres.UserActor(id),
+			Reason:    strings.TrimSpace(reason),
+			RequestID: requestIDOf(c),
+		}, true
+	}
 	raw := strings.TrimSpace(c.GetHeader("X-User-Id"))
 	id, err := uuid.Parse(raw)
 	if err != nil || id == uuid.Nil {

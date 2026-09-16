@@ -83,6 +83,11 @@ func (s *Service) ListOverdueGrievances(ctx context.Context, limit, offset int) 
 	return s.store.ListOverdueGrievances(ctx, limit, offset)
 }
 
+// AdminStats returns the trust & safety dashboard counts.
+func (s *Service) AdminStats(ctx context.Context) (*postgres.AdminStats, error) {
+	return s.store.AdminStats(ctx)
+}
+
 // GrievanceHistory returns every audited change to a grievance, oldest
 // first: who filed or changed it, status, officer hand-overs and notes.
 func (s *Service) GrievanceHistory(ctx context.Context, id uuid.UUID) ([]postgres.AuditEntry, error) {

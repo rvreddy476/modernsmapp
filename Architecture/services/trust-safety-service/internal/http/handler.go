@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/atpost/shared/api"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/gin-gonic/gin"
@@ -27,13 +28,18 @@ func hasScope(scopes, target string) bool {
 
 type Handler struct {
 	svc *service.Service
+	// verifier admits admin-service tokens on the InternalAdminPrefix family
+	// (admin_token.go). nil: no token is accepted.
+	verifier *servicetoken.Verifier
 }
 
 func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-func (h *Handler) RegisterRoutes(r *gin.Engine) {
+// RegisterRoutes declares the key-gated routes. The token-only admin family
+// is declared separately by RegisterAdminTokenRoutes.
+func (h *Handler) RegisterRoutes(r gin.IRouter) {
 	// Dating plan lane D8: dating-service opens a grievance per dating
 	// report. Service callers only (user identity headers are refused).
 	r.POST(DatingReportGrievancePath, h.LinkDatingReportGrievance)
@@ -151,7 +157,8 @@ func (h *Handler) FileReport(c *gin.Context) {
 
 func (h *Handler) ListReports(c *gin.Context) {
 	limit, offset := reportPagination(c)
-	if c.Query("mine") == "true" {
+	// ?mine=true is a user's own list; it has no meaning on the admin token path.
+	if c.Query("mine") == "true" && !viaAdminToken(c) {
 		userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
@@ -167,8 +174,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 		return
 	}
 
-	scopes := c.GetHeader("X-Scopes")
-	if !hasScope(scopes, "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -202,8 +208,7 @@ func reportPagination(c *gin.Context) (int, int) {
 }
 
 func (h *Handler) GetReport(c *gin.Context) {
-	scopes := c.GetHeader("X-Scopes")
-	if !hasScope(scopes, "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
@@ -229,8 +234,7 @@ type UpdateReportRequest struct {
 }
 
 func (h *Handler) UpdateReport(c *gin.Context) {
-	scopes := c.GetHeader("X-Scopes")
-	if !hasScope(scopes, "admin") {
+	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
