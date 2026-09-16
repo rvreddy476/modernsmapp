@@ -161,6 +161,13 @@ class DatingContractFixtureTest {
             assertThat(it.distanceKm).isEqualTo(25)
             assertThat(it.minAge).isNull()
         },
+        "preferences_put_400_invalid_gender.json" to error { error, name ->
+            // Its OWN code now, not a bare 400: the screen matches on this.
+            assertThat(refusedCode(error)).isEqualTo("INVALID_INTERESTED_IN_GENDER")
+            assertThat(details(error, AllowedDetailsDto.serializer(), name).allowed)
+                .containsExactly("woman", "man", "nonbinary", "everyone").inOrder()
+            assertThat(DatingCopy.forError(error)).isEqualTo(DatingCopy.INVALID_INTERESTED_IN_GENDER)
+        },
         "preferences_put_200.json" to data(PreferencesDto.serializer()) {
             assertThat(it.interestedInGender).isEqualTo("everyone")
             assertThat(it.minAge).isEqualTo(25)
@@ -321,6 +328,11 @@ class DatingContractFixtureTest {
             assertThat(it.status).isEqualTo("pending_review")
             assertThat(SelfieOutcomes.fromResult(it)).isEqualTo(SelfieState.InReview)
         },
+        "selfie_post_409_media_not_ready.json" to error { error, _ ->
+            // The clip is still processing: the attempt is NOT spent, so the
+            // screen offers the same clip again rather than a new recording.
+            assertThat(refusedCode(error)).isEqualTo(SelfieOutcomes.CODE_MEDIA_NOT_READY)
+        },
         "share_location_delete_200.json" to data(StopShareDto.serializer()) {
             assertThat(it.stopped).isTrue()
             assertThat(it.shareId).isEqualTo("<share>")
@@ -388,7 +400,20 @@ class DatingContractFixtureTest {
         },
         "trusted_contacts_get_200.json" to data(TrustedContactsDto.serializer()) {
             assertThat(it.max).isEqualTo(MAX_TRUSTED_CONTACTS)
-            assertThat(it.items.single().contactId).isEqualTo("<contact>")
+            val contact = it.items.single()
+            assertThat(contact.contactId).isEqualTo("<contact>")
+            // The contact carries its own card: no match row is consulted.
+            val person = checkNotNull(contact.person)
+            assertThat(person.userId).isEqualTo(contact.contactId)
+            assertThat(person.firstName).isEqualTo("Asha")
+            assertThat(person.age).isEqualTo(30)
+            assertThat(person.photoState).isEqualTo("full")
+        },
+        "trusted_contacts_get_200_profile_gone.json" to data(TrustedContactsDto.serializer()) {
+            // The field is always PRESENT and null when the profile was purged.
+            val contact = it.items.single()
+            assertThat(contact.contactId).isEqualTo("<contact>")
+            assertThat(contact.person).isNull()
         },
         "verification_status_get_200.json" to data(VerificationStatusDto.serializer()) {
             assertThat(it.selfie.state).isEqualTo("passed")

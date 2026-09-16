@@ -104,13 +104,26 @@ class BlocksAndPreferencesTest {
     }
 
     @Test
-    fun `a refused preference value is explained, not swallowed`() = runTest {
+    fun `an invalid gender is explained by its own code, from the server's own body`() = runTest {
+        // The golden 400, byte for byte: the code, not the bare status, decides.
+        api.preferencesWriteResponse = { refusedWithFixture(400, "preferences_put_400_invalid_gender.json") }
+        val vm = OnboardingViewModel(repository, session, FakeLocation())
+
+        vm.savePreferences(interestedIn = "everyone", minAge = 25, maxAge = 35, distanceKm = 25)
+
+        assertThat(vm.state.value.saving).isFalse()
+        assertThat(vm.state.value.message?.text).isEqualTo(DatingCopy.INVALID_INTERESTED_IN_GENDER)
+        assertThat(vm.state.value.message?.text).contains("Pick who you want to see")
+    }
+
+    @Test
+    fun `another 400 on the same call falls back rather than blaming the gender`() = runTest {
         api.preferencesWriteResponse = { refused(400, "INVALID_REQUEST") }
         val vm = OnboardingViewModel(repository, session, FakeLocation())
 
         vm.savePreferences(interestedIn = "everyone", minAge = 25, maxAge = 35, distanceKm = 25)
 
         assertThat(vm.state.value.saving).isFalse()
-        assertThat(vm.state.value.message?.text).contains("Pick who you want to see")
+        assertThat(vm.state.value.message?.text).isEqualTo(DatingCopy.GENERIC)
     }
 }

@@ -536,6 +536,12 @@ data class TrustedContactDto(
     @SerialName("share_location_on_panic") val shareLocationOnPanic: Boolean = false,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
+    /**
+     * Who the contact is, on `GET /safety/trusted-contacts`. The field is always
+     * present there and is NULL when that profile was deleted or purged — such a
+     * row still lists, unnamed, so it can be removed. Absent on the PUT.
+     */
+    val person: DatingPersonDto? = null,
 )
 
 @Serializable

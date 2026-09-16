@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "INVALID_INTERESTED_IN_GENDER",
+    "message": "interested_in_gender must be one of woman, man, nonbinary, everyone",
+    "details": {
+      "allowed": [
+        "woman",
+        "man",
+        "nonbinary",
+        "everyone"
+      ]
+    }
+  },
+  "meta": {}
+}

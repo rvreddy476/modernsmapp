@@ -1,6 +1,7 @@
 package com.us.android.feature.dating
 
 import android.app.Activity
+import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.core.payments.PaymentAttempt
@@ -77,6 +78,7 @@ import com.us.android.feature.dating.network.UpdatePhotoRequest
 import com.us.android.feature.dating.network.UpsertProfileRequest
 import com.us.android.feature.dating.network.UnblockedDto
 import com.us.android.feature.dating.network.VerificationStatusDto
+import com.us.android.feature.dating.photos.DatingPhotoUrls
 import kotlinx.serialization.KSerializer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody
@@ -173,6 +175,18 @@ fun match(id: String, other: String, card: DatingPersonDto? = person(other)) =
 
 fun spark(id: String, from: String, card: DatingPersonDto? = person(from)) =
     SparkDto(id = id, fromUserId = from, toUserId = ME, targetKind = "photo", targetRef = "0", person = card)
+
+/**
+ * A trusted contact as `GET /safety/trusted-contacts` lists it. [card] is null
+ * for a contact whose profile was deleted or purged.
+ */
+fun trustedContact(contactId: String, card: DatingPersonDto? = person(contactId)) =
+    TrustedContactDto(contactId = contactId, shareLocationOnPanic = true, person = card)
+
+/** The photo URL resolver, against a fixed base so a test can assert the whole URL. */
+fun photoUrls() = DatingPhotoUrls(
+    ApiConfig(baseUrl = "https://api.test", wsBaseUrl = "", clientVersion = "t", environment = "test", isDebug = true),
+)
 
 fun consents(vararg granted: ConsentType) = ConsentsDto(
     currentPolicyVersion = "v1.0-2026-04-29",
@@ -407,7 +421,11 @@ class FakeDatingApi : DatingApi {
 
     override suspend fun addTrustedContact(contactId: String, body: TrustedContactRequest) = ok(TrustedContactDto(contactId = contactId))
 
-    override suspend fun removeTrustedContact(contactId: String) = ok(RemovedDto(removed = true))
+    override suspend fun removeTrustedContact(contactId: String): Response<ApiEnvelope<RemovedDto>> {
+        calls += "trusted-remove:$contactId"
+        trusted = trusted.filterNot { it.contactId == contactId }
+        return ok(RemovedDto(removed = true))
+    }
 
     override suspend fun shareLocation(body: ShareLocationRequest): Response<ApiEnvelope<ShareLocationDto>> {
         calls += "share"

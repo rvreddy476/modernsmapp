@@ -4,7 +4,6 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.dating.location.LocationEffect
 import com.us.android.feature.dating.location.LocationStep
-import com.us.android.feature.dating.network.TrustedContactDto
 import com.us.android.feature.dating.privacy.PrivacyViewModel
 import com.us.android.feature.dating.safety.SafetyViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -25,7 +24,7 @@ class SafetyAndPrivacyTest {
     private val session = DatingSession().also { it.setProfile(profile()) }
 
     private fun safety(location: FakeLocation = FakeLocation()) =
-        SafetyViewModel(api.repository(), session, location)
+        SafetyViewModel(api.repository(), session, location, photoUrls())
 
     @Test
     fun `panic without location permission asks nothing and still alerts`() = runTest {
@@ -40,12 +39,52 @@ class SafetyAndPrivacyTest {
     @Test
     fun `trusted contacts come from matches, and the limit is the server's words`() = runTest {
         api.matches = listOf(match("m-1", "friend"), match("m-2", "other"))
-        api.trusted = listOf(TrustedContactDto(contactId = "friend"))
+        api.trusted = listOf(trustedContact("friend"))
         val vm = safety()
 
         assertThat(vm.state.value.contacts.map { it.userId }).containsExactly("friend")
         assertThat(vm.state.value.candidates.map { it.userId }).containsExactly("other")
         assertThat(vm.state.value.recipients.map { it.userId }).containsExactly("friend", "other")
+    }
+
+    @Test
+    fun `a trusted contact is shown by the name on its own person card`() = runTest {
+        // No match row at all: the card on the contact row is the only source.
+        api.matches = emptyList()
+        api.trusted = listOf(trustedContact("friend", person("friend", name = "Asha")))
+        val vm = safety()
+
+        val contact = vm.state.value.contacts.single()
+        assertThat(contact.userId).isEqualTo("friend")
+        assertThat(contact.name).isEqualTo("Asha")
+        assertThat(contact.photoUrl).isEqualTo("https://api.test/v1/dating/photos/photo-friend/full")
+        // The same name reaches the share-recipient chooser.
+        assertThat(vm.state.value.recipients.single().name).isEqualTo("Asha")
+    }
+
+    @Test
+    fun `a contact whose profile is gone still lists, so it can be removed`() = runTest {
+        api.trusted = listOf(trustedContact("ghost", card = null))
+        val vm = safety()
+
+        val contact = vm.state.value.contacts.single()
+        assertThat(contact.userId).isEqualTo("ghost")
+        assertThat(contact.name).isEqualTo("Your match")
+        assertThat(contact.photoUrl).isNull()
+
+        vm.removeContact("ghost")
+
+        assertThat(api.calls).contains("trusted-remove:ghost")
+    }
+
+    @Test
+    fun `a blurred contact card never renders the full photo`() = runTest {
+        api.trusted = listOf(trustedContact("friend", person("friend", photoState = "blurred")))
+        val vm = safety()
+
+        val photo = checkNotNull(vm.state.value.contacts.single().photoUrl)
+        assertThat(photo).endsWith("/blurred")
+        assertThat(photo).doesNotContain("/full")
     }
 
     @Test

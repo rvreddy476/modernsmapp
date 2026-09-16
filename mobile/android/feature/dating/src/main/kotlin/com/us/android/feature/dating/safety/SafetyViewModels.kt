@@ -14,8 +14,10 @@ import com.us.android.feature.dating.location.CurrentLocationSource
 import com.us.android.feature.dating.location.LocationEffect
 import com.us.android.feature.dating.location.LocationPermissionFlow
 import com.us.android.feature.dating.location.LocationStep
+import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.ShareLocationRequest
 import com.us.android.feature.dating.network.SharedLocationDto
+import com.us.android.feature.dating.photos.DatingPhotoUrls
 import com.us.android.feature.dating.ui.errorMessage
 import com.us.android.feature.dating.ui.successMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -27,7 +29,14 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class PersonOption(val userId: String, val name: String)
+/**
+ * Someone this screen can name: a trusted contact, a match, a share recipient.
+ *
+ * [name] is the server's `first_name` from that person's card, falling back to
+ * "Your match" when the card is null — a profile that was deleted or purged.
+ * [photoUrl] is already in the variant the card's `photo_state` allows.
+ */
+data class PersonOption(val userId: String, val name: String, val photoUrl: String? = null)
 
 /** A share I am sending, as the SERVER lists it, so Stop works after a restart. */
 data class ActiveShare(val shareId: String, val recipientId: String, val recipientName: String, val expiresAt: String)
@@ -73,6 +82,7 @@ class SafetyViewModel @Inject constructor(
     private val repository: DatingRepository,
     private val session: DatingSession,
     private val locationSource: CurrentLocationSource,
+    private val urls: DatingPhotoUrls,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SafetyUiState())
@@ -80,9 +90,6 @@ class SafetyViewModel @Inject constructor(
 
     private val permissionFlow = LocationPermissionFlow()
     private var pendingShare: Pair<String, Int>? = null
-
-    /** First names for the people in this screen's lists, from the match rows. */
-    private var names: Map<String, String> = emptyMap()
 
     init {
         refresh()
@@ -100,23 +107,27 @@ class SafetyViewModel @Inject constructor(
                     return@launch
                 }
             }
-            val matchRows = repository.matches().valueOrNull().orEmpty().filterNot { it.status == "closed" }
-            // Every match row names the other person now, so a trusted contact
-            // and a share recipient can be shown by name rather than "Your match".
-            names = matchRows.mapNotNull { row -> row.person?.takeIf { it.firstName.isNotBlank() } }
-                .associate { it.userId to it.firstName }
-            val matches = matchRows
-                .map { it.person?.userId ?: session.otherOf(it.userA, it.userB) }
-                .filterNot { it in removed }
-                .distinct()
-            val contacts = contactsDto.items.map { it.contactId }.filterNot { it in removed }
+            // Each list is named by the card the SERVER sent with the row it came
+            // from: a trusted contact carries its own `person`, so nothing here
+            // resolves a name out of the match rows any more.
+            val matches = repository.matches().valueOrNull().orEmpty()
+                .filterNot { it.status == "closed" }
+                .map { row -> option(row.person?.userId ?: session.otherOf(row.userA, row.userB), row.person) }
+                .filterNot { it.userId in removed }
+                .distinctBy { it.userId }
+            // A contact whose profile is gone has a null person: it keeps the
+            // "Your match" fallback and STAYS in the list, so it can be removed.
+            val contacts = contactsDto.items
+                .map { option(it.contactId, it.person) }
+                .filterNot { it.userId in removed }
+            val contactIds = contacts.map { it.userId }.toSet()
             _state.update {
                 it.copy(
                     loading = false,
-                    contacts = contacts.map(::option),
+                    contacts = contacts,
                     maxContacts = contactsDto.max.takeIf { max -> max > 0 } ?: MAX_TRUSTED_CONTACTS,
-                    candidates = matches.filterNot { id -> id in contacts }.map(::option),
-                    recipients = (contacts + matches).distinct().map(::option),
+                    candidates = matches.filterNot { match -> match.userId in contactIds },
+                    recipients = (contacts + matches).distinctBy { person -> person.userId },
                 )
             }
             loadShares()
@@ -129,8 +140,7 @@ class SafetyViewModel @Inject constructor(
             ActiveShare(
                 shareId = share.shareId,
                 recipientId = share.recipientId,
-                recipientName = share.recipient?.firstName?.takeIf { it.isNotBlank() }
-                    ?: names[share.recipientId] ?: DEFAULT_PERSON,
+                recipientName = share.recipient?.firstName?.takeIf { it.isNotBlank() } ?: DEFAULT_PERSON,
                 expiresAt = share.expiresAt,
             )
         }
@@ -250,7 +260,12 @@ class SafetyViewModel @Inject constructor(
         }
     }
 
-    private fun option(userId: String) = PersonOption(userId, names[userId]?.takeIf { it.isNotBlank() } ?: DEFAULT_PERSON)
+    /** [person] is the server's card for [userId]; null when that profile is gone. */
+    private fun option(userId: String, person: DatingPersonDto?) = PersonOption(
+        userId = userId,
+        name = person?.firstName?.takeIf { it.isNotBlank() } ?: DEFAULT_PERSON,
+        photoUrl = urls.forPerson(person),
+    )
 
     private fun syncLocation() = _state.update { it.copy(location = permissionFlow.step) }
 

@@ -11,7 +11,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -24,7 +26,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -38,6 +42,7 @@ import com.us.android.feature.dating.location.LocationEffect
 import com.us.android.feature.dating.location.LocationStep
 import com.us.android.feature.dating.ui.ConfirmDialog
 import com.us.android.feature.dating.ui.DatingCard
+import com.us.android.feature.dating.ui.DatingPhoto
 import com.us.android.feature.dating.ui.DatingScreen
 import com.us.android.feature.dating.ui.InfoNote
 import com.us.android.feature.dating.ui.LoadingPane
@@ -105,7 +110,8 @@ fun SafetyScreen(
                         Text("Add up to 3 people you trust. They must be a match or one of your connections.", style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
                     }
                     state.contacts.forEach { contact ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                            PersonAvatar(contact)
                             Text(contact.name, style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textPrimary, modifier = Modifier.weight(1f))
                             TextButton(onClick = { viewModel.removeContact(contact.userId) }) { Text("Remove", color = UsTheme.extended.textMuted) }
                         }
@@ -115,7 +121,8 @@ fun SafetyScreen(
                             InfoNote("When you have matches, you can add one here.")
                         }
                         state.candidates.forEach { candidate ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                                PersonAvatar(candidate)
                                 Text(candidate.name, style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary, modifier = Modifier.weight(1f))
                                 TextButton(onClick = { viewModel.addContact(candidate.userId) }) { Text("Add", color = UsTheme.extended.accentSolid) }
                             }
@@ -240,6 +247,22 @@ fun SharedLocationScreen(onBack: () -> Unit, viewModel: SharedLocationViewModel 
         }
     }
 }
+
+/**
+ * The contact's own photo, in the variant the server's card allowed — the view
+ * model has already resolved it, so a blurred card can never render full here.
+ * A person whose profile is gone has no photo and falls back to the placeholder.
+ */
+@Composable
+private fun PersonAvatar(person: PersonOption) {
+    DatingPhoto(
+        url = person.photoUrl,
+        contentDescription = person.name,
+        modifier = Modifier.size(AVATAR_SIZE).clip(CircleShape),
+    )
+}
+
+private val AVATAR_SIZE = 40.dp
 
 private fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this

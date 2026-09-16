@@ -21,7 +21,6 @@ import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.PreferencesDto
 import com.us.android.feature.dating.network.PreferencesRequest
 import com.us.android.feature.dating.network.UpsertProfileRequest
-import com.us.android.feature.dating.ui.errorMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -295,17 +294,12 @@ class OnboardingViewModel @Inject constructor(
 
         /**
          * The server validates `interested_in_gender` against
-         * `woman | man | nonbinary | everyone` and refuses anything else with a
-         * 400 INVALID_REQUEST — the generic code, so it is read HERE, where the
-         * only field that can be invalid is the one the person just chose.
+         * `woman | man | nonbinary | everyone` and now refuses anything else with
+         * its OWN code, INVALID_INTERESTED_IN_GENDER (400, `details.allowed`), so
+         * the code is matched rather than the bare status: another field's 400 on
+         * this endpoint no longer blames the gender the person just chose. The
+         * words come from the shared table; any other refusal falls back to it.
          */
-        fun preferencesFailure(error: DatingError): UsMessage =
-            if ((error as? DatingError.Refused)?.status == HTTP_BAD_REQUEST) {
-                errorMessage("That choice isn't available any more. Pick who you want to see and try again.")
-            } else {
-                DatingCopy.message(error)
-            }
-
-        private const val HTTP_BAD_REQUEST = 400
+        fun preferencesFailure(error: DatingError): UsMessage = DatingCopy.message(error)
     }
 }

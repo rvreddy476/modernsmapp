@@ -32,6 +32,7 @@ object DatingCopy {
             "IDENTITY_UNAVAILABLE" -> "We couldn't confirm your details right now. Try again in a moment."
             "PII_NOT_CONFIGURED" -> "This can't be saved right now. Try again later."
             "INVALID_LOCATION" -> "That location didn't look right. Try again, or type your city."
+            "INVALID_INTERESTED_IN_GENDER" -> INVALID_INTERESTED_IN_GENDER
             "LOCATION_CHANGE_RATE_LIMITED" -> locationRateLimited(error, json)
             "CANDIDATE_UNAVAILABLE" -> "This person isn't available any more."
             "SPARK_RATE_LIMITED" -> "You've sent a lot of sparks today. Try again tomorrow."
@@ -61,6 +62,13 @@ object DatingCopy {
     fun message(error: DatingError, json: Json? = null): UsMessage = errorMessage(forError(error, json))
 
     const val PREMIUM_UNAVAILABLE = "Premium isn't available yet"
+
+    /**
+     * `interested_in_gender` outside `woman | man | nonbinary | everyone`. The
+     * server names the field in its own code now, so the words live here rather
+     * than in the preferences screen, which used to read a bare 400.
+     */
+    const val INVALID_INTERESTED_IN_GENDER = "That choice isn't available any more. Pick who you want to see and try again."
 
     private fun locationRateLimited(error: DatingError, json: Json?): String {
         val limits = json?.let { error.detailsAs(it, LocationRateLimitDetailsDto.serializer()) }
