@@ -439,9 +439,11 @@ func (s *Service) recordCODRemittance(ctx context.Context, sh *postgres.Shipment
 // SettleCODRemittance marks a remittance row as settled — Ops calls
 // this after the seller is paid out for cash the courier collected on
 // their behalf. `payoutBatchID` is optional (uuid.Nil = standalone
-// settlement, no batch link).
-func (s *Service) SettleCODRemittance(ctx context.Context, remittanceID, payoutBatchID uuid.UUID) error {
-	return s.store.MarkCODRemittanceSettled(ctx, remittanceID, payoutBatchID)
+// settlement, no batch link). `actor` is the human who settled it; it is
+// required and recorded in commerce_admin_audit_log with the transition.
+func (s *Service) SettleCODRemittance(ctx context.Context, remittanceID, payoutBatchID, actor uuid.UUID) error {
+	_, err := s.store.SettleCODRemittanceAudited(ctx, remittanceID, payoutBatchID, actor)
+	return err
 }
 
 // ListSellerCODRemittances returns the seller's COD remittances paginated.

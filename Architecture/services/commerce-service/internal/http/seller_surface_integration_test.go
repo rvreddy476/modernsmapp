@@ -98,6 +98,11 @@ func seedSellerSurface(t *testing.T, stock int) sellerSurface {
 	return s
 }
 
+// integrationInternalKey is the internal service key the shared integration
+// engines are built with. The internal routes fail closed without a key, so
+// an engine that exercises them must carry one.
+const integrationInternalKey = "integration-test-key"
+
 func call(t *testing.T, r interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, method, path string, actor uuid.UUID, body any) *httptest.ResponseRecorder {
@@ -114,6 +119,9 @@ func call(t *testing.T, r interface {
 	if actor != uuid.Nil {
 		req.Header.Set("X-User-Id", actor.String())
 	}
+	// Engines built with WithInternalKey(integrationInternalKey) accept it on
+	// /v1/commerce/internal; an engine with a different key still refuses.
+	req.Header.Set(InternalServiceKeyHeader, integrationInternalKey)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w

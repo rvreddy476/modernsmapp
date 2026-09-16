@@ -217,15 +217,6 @@ func (s *Store) GetPrimaryPayoutAccount(ctx context.Context, sellerID uuid.UUID)
 	return &out, nil
 }
 
-// SetSellerKYCVerificationStatus records the latest KYC adapter verdict on
-// the seller row so the admin queue can show it inline.
-func (s *Store) SetSellerKYCVerificationStatus(ctx context.Context, sellerID uuid.UUID, status string) error {
-	_, err := s.db.Exec(ctx,
-		`UPDATE sellers SET verification_status=$2, updated_at=NOW() WHERE id=$1`,
-		sellerID, status)
-	return err
-}
-
 // SubmitSellerApplication sets status=submitted and records timestamp.
 func (s *Store) SubmitSellerApplication(ctx context.Context, userID uuid.UUID) error {
 	now := time.Now()

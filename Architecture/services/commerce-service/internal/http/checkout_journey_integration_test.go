@@ -99,7 +99,7 @@ func journeyEngine(t *testing.T, shippingMinor int64) *gin.Engine {
 
 	r := gin.New()
 	r.Use(FenceMiddleware())
-	h := New(svc)
+	h := New(svc).WithInternalKey(integrationInternalKey)
 	h.RegisterRoutes(r)
 	h.RegisterP0Routes(r)
 	return r

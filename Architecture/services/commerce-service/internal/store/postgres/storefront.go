@@ -674,37 +674,6 @@ func (s *Store) queryBanners(ctx context.Context, tail string, args ...any) ([]*
 	return out, rows.Err()
 }
 
-// UpsertBanner creates or replaces one banner. A zero ID means create.
-func (s *Store) UpsertBanner(ctx context.Context, b *Banner) error {
-	if b.ID == uuid.Nil {
-		b.ID = uuid.New()
-	}
-	return s.db.QueryRow(ctx, `
-		INSERT INTO commerce_banners
-		  (id, title, subtitle, image_media_id, target_type, target_id, position, active, starts_at, ends_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (id) DO UPDATE SET
-		  title=EXCLUDED.title, subtitle=EXCLUDED.subtitle,
-		  image_media_id=EXCLUDED.image_media_id,
-		  target_type=EXCLUDED.target_type, target_id=EXCLUDED.target_id,
-		  position=EXCLUDED.position, active=EXCLUDED.active,
-		  starts_at=EXCLUDED.starts_at, ends_at=EXCLUDED.ends_at,
-		  updated_at=NOW()
-		RETURNING created_at, updated_at`,
-		b.ID, b.Title, b.Subtitle, b.ImageMediaID, b.TargetType, b.TargetID,
-		b.Position, b.Active, b.StartsAt, b.EndsAt,
-	).Scan(&b.CreatedAt, &b.UpdatedAt)
-}
-
-// DeleteBanner removes one. Reports whether the row existed.
-func (s *Store) DeleteBanner(ctx context.Context, id uuid.UUID) (bool, error) {
-	tag, err := s.db.Exec(ctx, `DELETE FROM commerce_banners WHERE id=$1`, id)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
 // ─── Media access: commerce as a content authority ──────────────────────
 
 // VisibleProductMediaIDs reports which of these media ids a viewer may see

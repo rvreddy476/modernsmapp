@@ -2163,25 +2163,6 @@ func (s *Store) ListDeliveredItemsForSeller(ctx context.Context, sellerID uuid.U
 	return out, rows.Err()
 }
 
-// MarkCODRemittanceSettled flips a pending remittance to settled and stamps
-// the payout batch. Used by the Ops-side payout job when cash actually
-// transfers to the seller's bank/UPI. payoutBatchID may be uuid.Nil for a
-// standalone settlement (Ops marked it paid outside any batch); we store
-// NULL in that case so the row isn't tied to a non-existent batch.
-func (s *Store) MarkCODRemittanceSettled(ctx context.Context, remittanceID, payoutBatchID uuid.UUID) error {
-	var batchArg interface{}
-	if payoutBatchID != uuid.Nil {
-		batchArg = payoutBatchID
-	}
-	_, err := s.db.Exec(ctx, `
-		UPDATE cod_remittances
-		SET status = 'settled',
-		    settled_at = NOW(),
-		    payout_batch_id = $2
-		WHERE id = $1 AND status = 'pending'`, remittanceID, batchArg)
-	return err
-}
-
 // SetReturnRefund stamps the refund intent + status onto the return. Used
 // once payments-service accepts the refund — even if the gateway is async,
 // we record the intent ID immediately so a follow-up webhook can find it.

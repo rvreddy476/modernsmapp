@@ -21,7 +21,6 @@ import (
 	"strconv"
 
 	"github.com/atpost/shared/api"
-	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -49,9 +48,8 @@ func (h *Handler) RegisterSubmissionRoutes(r *gin.Engine) {
 
 	// ── Internal (admin-service proxies these) ──────────────
 	adm := r.Group("/v1/commerce/internal")
-	if h.internalKey != "" {
-		adm.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Fail closed: an unset key answers 503, never open. See internal_guard.go.
+	adm.Use(requireInternalKey(h.internalKey))
 	adm.GET("/products/:productId/submissions", h.AdminProductSubmissions)
 	adm.GET("/compliance-gaps", h.AdminComplianceGaps)
 	adm.POST("/compliance-gaps/sweep", h.AdminSweepComplianceGaps)

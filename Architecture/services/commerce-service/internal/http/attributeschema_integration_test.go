@@ -48,6 +48,7 @@ func doJSON(t *testing.T, r *gin.Engine, method, path string, body any, headers 
 	}
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(InternalServiceKeyHeader, integrationInternalKey)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

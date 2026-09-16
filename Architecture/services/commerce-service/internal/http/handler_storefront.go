@@ -19,7 +19,6 @@ import (
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
-	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -51,9 +50,8 @@ func (h *Handler) RegisterStorefrontRoutes(r *gin.Engine, v1 *gin.RouterGroup) {
 	// capability, not a seller one, and a seller who could write banners
 	// could put their own storefront on every shopper's home screen.
 	adm := r.Group("/v1/commerce/internal")
-	if h.internalKey != "" {
-		adm.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Fail closed: an unset key answers 503, never open. See internal_guard.go.
+	adm.Use(requireInternalKey(h.internalKey))
 	// ── Commerce as a content authority for media-service ────
 	//
 	// media-service's delivery gate refuses a protected asset unless the
@@ -99,6 +97,8 @@ func optionalUserID(c *gin.Context) uuid.UUID {
 func writeStorefrontError(c *gin.Context, err error) {
 	ctx := c.Request.Context()
 	switch {
+	case errors.Is(err, postgres.ErrActorRequired):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, CodeActorRequired, err.Error(), nil)
 	case errors.Is(err, service.ErrTooManyMedia),
 		errors.Is(err, service.ErrNoMedia),
 		errors.Is(err, service.ErrDuplicateMedia),
@@ -363,12 +363,16 @@ func (h *Handler) AdminListBanners(c *gin.Context) {
 }
 
 func (h *Handler) AdminSaveBanner(c *gin.Context) {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var in service.BannerInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	b, err := h.svc.SaveBanner(c.Request.Context(), in)
+	b, err := h.svc.SaveBanner(c.Request.Context(), in, actor)
 	if err != nil {
 		writeStorefrontError(c, err)
 		return
@@ -386,13 +390,17 @@ func (h *Handler) AdminSaveBannerByID(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var in service.BannerInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	in.ID = &id
-	b, err := h.svc.SaveBanner(c.Request.Context(), in)
+	b, err := h.svc.SaveBanner(c.Request.Context(), in, actor)
 	if err != nil {
 		writeStorefrontError(c, err)
 		return
@@ -405,7 +413,11 @@ func (h *Handler) AdminDeleteBanner(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.DeleteBanner(c.Request.Context(), id); err != nil {
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteBanner(c.Request.Context(), id, actor); err != nil {
 		writeStorefrontError(c, err)
 		return
 	}

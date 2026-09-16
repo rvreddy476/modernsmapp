@@ -64,7 +64,7 @@ func liveEngine(t *testing.T) *gin.Engine {
 	}
 	r := gin.New()
 	r.Use(FenceMiddleware())
-	h := New(service.New(postgres.New(edgePool), nil, "").WithPII(cipher))
+	h := New(service.New(postgres.New(edgePool), nil, "").WithPII(cipher)).WithInternalKey(integrationInternalKey)
 	h.RegisterRoutes(r)
 	h.RegisterP0Routes(r)
 	return r

@@ -277,7 +277,10 @@ func (s *Service) AdminListPendingPayouts(ctx context.Context, limit int) ([]*po
 // Phase 3.2: stub adapter returns format-only checks. A production deployment
 // must wire a vendor (Karza/Signzy/Hyperverge) via WithKYC before approving
 // sellers, otherwise admins are approving on signal alone.
-func (s *Service) AdminVerifySellerKYC(ctx context.Context, sellerID uuid.UUID) (*kyc.Report, error) {
+func (s *Service) AdminVerifySellerKYC(ctx context.Context, sellerID, actor uuid.UUID) (*kyc.Report, error) {
+	if actor == uuid.Nil {
+		return nil, postgres.ErrActorRequired
+	}
 	if s.kyc == nil {
 		return nil, ErrKYCNotConfigured
 	}
@@ -340,12 +343,23 @@ func (s *Service) AdminVerifySellerKYC(ctx context.Context, sellerID uuid.UUID) 
 	case rep.AllValid:
 		status = "verified"
 	}
-	if err := s.store.SetSellerKYCVerificationStatus(ctx, sellerID, status); err != nil {
-		// Verdict is the user-visible result; persistence failure is
-		// logged via the publish path below and surfaces in the report.
+	// The status write and its audit row are one transaction. If either
+	// fails the call fails: a verification_status that changed with no record
+	// of who changed it is exactly what the audit exists to prevent, so this
+	// no longer degrades to "report returned, persistence failed quietly".
+	// The audit carries the verdict only — field, status, adapter — never the
+	// PAN/GSTIN/account/UPI values or the adapter's free-text messages.
+	verdict := postgres.KYCAuditVerdict{Adapter: s.kyc.Name(), AllValid: rep.AllValid}
+	for _, ch := range rep.Checks {
+		verdict.Checks = append(verdict.Checks, postgres.KYCAuditCheck{
+			Field: ch.Field, Status: ch.Status, Source: ch.Source,
+		})
+	}
+	if err := s.store.RecordSellerKYCVerificationAudited(ctx, sellerID, actor, status, verdict); err != nil {
 		s.publish(ctx, "commerce.seller.kyc_persist_failed", map[string]any{
 			"seller_id": sellerID, "error": err.Error(),
 		})
+		return nil, fmt.Errorf("record kyc verdict: %w", err)
 	}
 	s.publish(ctx, "commerce.seller.kyc_verified", map[string]any{
 		"seller_id": sellerID, "adapter": s.kyc.Name(), "all_valid": rep.AllValid,

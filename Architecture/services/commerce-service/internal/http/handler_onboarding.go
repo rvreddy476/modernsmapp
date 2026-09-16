@@ -7,7 +7,6 @@ import (
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
-	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -29,9 +28,8 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 
 	// Internal admin routes (called by admin-service with X-Internal-Service-Key)
 	adm := r.Group("/v1/commerce/internal")
-	if h.internalKey != "" {
-		adm.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Fail closed: an unset key answers 503, never open. See internal_guard.go.
+	adm.Use(requireInternalKey(h.internalKey))
 	adm.GET("/sellers/queue", h.AdminListSellerQueue)
 	adm.GET("/sellers/:sellerId", h.AdminGetSeller)
 	adm.POST("/sellers/:sellerId/approve", h.AdminApproveSeller)
@@ -63,7 +61,7 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.POST("/products/:productId/request-changes", h.AdminRequestProductChanges)
 	// COD remittance settlement — Ops marks a remittance row as paid
 	// once the seller has been credited via the actual payout cycle.
-	// Store-level MarkCODRemittanceSettled has existed since the COD
+	// Store-level settlement has existed since the COD
 	// schema landed; the HTTP route was the missing piece.
 	adm.POST("/cod-remittances/:remittanceId/settle", h.AdminSettleCODRemittance)
 
@@ -434,9 +432,13 @@ func (h *Handler) AdminApproveSeller(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminApproveSeller(c.Request.Context(), sellerID, actorID(c), req.Notes); err != nil {
+	if err := h.svc.AdminApproveSeller(c.Request.Context(), sellerID, actor, req.Notes); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -448,9 +450,13 @@ func (h *Handler) AdminRejectSeller(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminRejectSeller(c.Request.Context(), sellerID, actorID(c), req.Reason, req.Notes); err != nil {
+	if err := h.svc.AdminRejectSeller(c.Request.Context(), sellerID, actor, req.Reason, req.Notes); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -462,9 +468,13 @@ func (h *Handler) AdminRequestSellerChanges(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminRequestSellerChanges(c.Request.Context(), sellerID, actorID(c), req.Changes, req.Notes); err != nil {
+	if err := h.svc.AdminRequestSellerChanges(c.Request.Context(), sellerID, actor, req.Changes, req.Notes); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -476,9 +486,13 @@ func (h *Handler) AdminSuspendSeller(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminSuspendSeller(c.Request.Context(), sellerID, actorID(c), req.Reason, req.Notes); err != nil {
+	if err := h.svc.AdminSuspendSeller(c.Request.Context(), sellerID, actor, req.Reason, req.Notes); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -494,9 +508,13 @@ func (h *Handler) AdminUnsuspendSeller(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminUnsuspendSeller(c.Request.Context(), sellerID, actorID(c), req.Notes); err != nil {
+	if err := h.svc.AdminUnsuspendSeller(c.Request.Context(), sellerID, actor, req.Notes); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -519,9 +537,13 @@ func (h *Handler) AdminApproveProduct(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminApproveProduct(c.Request.Context(), productID, actorID(c), req.Notes); err != nil {
+	if err := h.svc.AdminApproveProduct(c.Request.Context(), productID, actor, req.Notes); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -533,9 +555,13 @@ func (h *Handler) AdminRejectProduct(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminRejectProduct(c.Request.Context(), productID, actorID(c), req.Reason); err != nil {
+	if err := h.svc.AdminRejectProduct(c.Request.Context(), productID, actor, req.Reason); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -549,9 +575,13 @@ func (h *Handler) AdminRequestProductChanges(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
-	if err := h.svc.AdminRequestProductChanges(c.Request.Context(), productID, actorID(c), req.Reason); err != nil {
+	if err := h.svc.AdminRequestProductChanges(c.Request.Context(), productID, actor, req.Reason); err != nil {
 		handleErr(c, err)
 		return
 	}
@@ -606,7 +636,11 @@ func (h *Handler) AdminVerifySellerKYC(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rep, err := h.svc.AdminVerifySellerKYC(c.Request.Context(), sellerID)
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	rep, err := h.svc.AdminVerifySellerKYC(c.Request.Context(), sellerID, actor)
 	if err != nil {
 		if err == service.ErrKYCNotConfigured {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,

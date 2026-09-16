@@ -520,6 +520,11 @@ func writeCommerceError(c *gin.Context, err error) {
 	ctx := c.Request.Context()
 	w := c.Writer
 
+	if errors.Is(err, postgres.ErrActorRequired) {
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, CodeActorRequired, err.Error(), nil)
+		return
+	}
+
 	// Out of stock carries per-line detail so the cart can grey the right
 	// rows instead of showing a generic failure.
 	var oos *postgres.OutOfStockError

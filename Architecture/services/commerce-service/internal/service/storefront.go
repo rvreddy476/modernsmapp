@@ -555,7 +555,10 @@ func (in *BannerInput) validate() error {
 
 // SaveBanner creates or updates one banner. Internal-key route only — this is
 // merchandising, not a seller capability.
-func (s *Service) SaveBanner(ctx context.Context, in BannerInput) (*postgres.Banner, error) {
+func (s *Service) SaveBanner(ctx context.Context, in BannerInput, actor uuid.UUID) (*postgres.Banner, error) {
+	if actor == uuid.Nil {
+		return nil, postgres.ErrActorRequired
+	}
 	if err := in.validate(); err != nil {
 		return nil, err
 	}
@@ -573,7 +576,7 @@ func (s *Service) SaveBanner(ctx context.Context, in BannerInput) (*postgres.Ban
 	if in.ID != nil {
 		b.ID = *in.ID
 	}
-	if err := s.store.UpsertBanner(ctx, b); err != nil {
+	if err := s.store.UpsertBannerAudited(ctx, b, actor); err != nil {
 		return nil, err
 	}
 	s.hydrateBanner(ctx, b)
@@ -609,9 +612,9 @@ func (s *Service) ListBanners(ctx context.Context) ([]*postgres.Banner, error) {
 	return out, nil
 }
 
-// DeleteBanner removes one.
-func (s *Service) DeleteBanner(ctx context.Context, id uuid.UUID) error {
-	removed, err := s.store.DeleteBanner(ctx, id)
+// DeleteBanner removes one, recording who removed it.
+func (s *Service) DeleteBanner(ctx context.Context, id, actor uuid.UUID) error {
+	removed, err := s.store.DeleteBannerAudited(ctx, id, actor)
 	if err != nil {
 		return err
 	}

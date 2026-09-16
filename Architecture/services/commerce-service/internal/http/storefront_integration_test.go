@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/atpost/commerce-service/internal/media"
@@ -671,6 +672,7 @@ func TestBannersRequireTheInternalKeyAndThenAppearOnHome(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/commerce/internal/banners", jsonBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Service-Key", "storefront-test-key")
+	req.Header.Set("X-User-Id", uuid.NewString()) // the ops admin; banner writes require an actor
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	var created struct {
@@ -815,9 +817,12 @@ func TestABannerWithAnUnopenableTargetIsRefused(t *testing.T) {
 		}))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Service-Key", "storefront-test-key")
+	req.Header.Set("X-User-Id", uuid.NewString())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status %d, want 400: %s", w.Code, w.Body.String())
+	// INVALID_BODY specifically: an ACTOR_REQUIRED 400 would pass this
+	// vacuously without ever reaching the target validation.
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "INVALID_BODY") {
+		t.Fatalf("status %d, want 400 INVALID_BODY: %s", w.Code, w.Body.String())
 	}
 }

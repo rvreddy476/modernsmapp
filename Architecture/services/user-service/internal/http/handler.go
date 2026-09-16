@@ -157,9 +157,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Service-to-service routes — gated independently of the global key so
 	// they can be locked down even while /v1/* stays gateway-facing.
 	internal := r.Group("/internal")
-	if h.internalRouteKey != "" {
-		internal.Use(sharedmiddleware.RequireInternalKey(h.internalRouteKey))
-	}
+	// Fail closed: an unset key answers 503, never open. See internal_guard.go.
+	internal.Use(requireInternalRouteKey(h.internalRouteKey))
 	// Read-through projection repair: callers (e.g. graph-service) hit this
 	// before an action that depends on app.users having the row.
 	internal.POST("/users/:userId/ensure", h.EnsureUser)

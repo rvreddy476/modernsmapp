@@ -224,7 +224,8 @@ func main() {
 	presenceStore := presence.New(rdb)
 	userHandler := http.New(userSvc, presenceStore, userStore).WithInternalRoutes(internalKey)
 	if internalKey == "" {
-		slog.Warn("user-service: INTERNAL_SERVICE_KEY not set — /internal/* routes are unauthenticated")
+		slog.Warn("user-service: INTERNAL_SERVICE_KEY not set — /internal/* routes answer 503 INTERNAL_KEY_NOT_CONFIGURED " +
+			"(projection repair, DLQ replay and subscriber fan-out are unavailable)")
 	}
 	// Private profile fields (first/last name, dob, gender) on
 	// GET /v1/users/:userId and /by-username go to the owner, or to a sibling

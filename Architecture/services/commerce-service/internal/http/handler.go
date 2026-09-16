@@ -1118,6 +1118,11 @@ func (h *Handler) AdminSettleCODRemittance(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REMITTANCE_ID", err.Error(), nil)
 		return
 	}
+	// Money: the settle and its audit row carry the human who did it.
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
 	var body struct {
 		PayoutBatchID string `json:"payout_batch_id"`
 	}
@@ -1128,7 +1133,7 @@ func (h *Handler) AdminSettleCODRemittance(c *gin.Context) {
 			payoutBatchID = id
 		}
 	}
-	if err := h.svc.SettleCODRemittance(c.Request.Context(), remittanceID, payoutBatchID); err != nil {
+	if err := h.svc.SettleCODRemittance(c.Request.Context(), remittanceID, payoutBatchID, actor); err != nil {
 		handleErr(c, err)
 		return
 	}
