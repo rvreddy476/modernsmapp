@@ -44,6 +44,8 @@ data class CardUi(
     val photoUrl: String?,
     val photoId: String?,
     val reasons: List<String>,
+    /** The pre-match block: the gallery, the bio and the prompt answers you decide on. */
+    val detail: PersonDetailUi? = null,
 )
 
 sealed interface ListState<out T> {
@@ -206,6 +208,7 @@ class PulseViewModel @Inject constructor(
         photoUrl = urls.forViewer(profile.primaryPhotoUrl, matched = false),
         photoId = PhotoRules.photoIdOf(profile.primaryPhotoUrl),
         reasons = matchReasons.map { it.summary }.filter { it.isNotBlank() },
+        detail = profile.detail.toUi(urls),
     )
 }
 
@@ -226,6 +229,8 @@ data class IncomingSparkUi(
     val verified: Boolean,
     val photoUrl: String?,
     val note: String?,
+    /** The same pre-match block the deck shows: a spark is decided on here too. */
+    val detail: PersonDetailUi? = null,
 )
 
 /** Incoming sparks: accept (through the accept route) or decline. */
@@ -329,6 +334,7 @@ class SparksViewModel @Inject constructor(
         verified = person?.verified == true,
         photoUrl = urls.forPerson(person),
         note = note?.takeIf { it.isNotBlank() },
+        detail = person?.detail.toUi(urls),
     )
 
     private companion object {

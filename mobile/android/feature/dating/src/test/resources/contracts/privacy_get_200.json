@@ -4,7 +4,7 @@
     "hide_last_active": true,
     "approximate_location": true,
     "verified_only_filter": false,
-    "blur_photos_until_match": true,
+    "blur_photos_until_match": false,
     "echoes_consent": false
   }
 }

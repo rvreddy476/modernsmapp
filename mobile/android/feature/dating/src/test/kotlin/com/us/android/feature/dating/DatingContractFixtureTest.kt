@@ -134,6 +134,8 @@ class DatingContractFixtureTest {
             assertThat(person.primaryPhotoUrl).isEqualTo("/v1/dating/photos/<uuid>/full")
             assertThat(person.photoState).isEqualTo("full")
             assertThat(person.verified).isFalse()
+            // The match list stays COMPACT: the server omits detail here on purpose.
+            assertThat(person.detail).isNull()
         },
         "panic_post_200.json" to data(PanicDto.serializer()) {
             assertThat(it.recorded).isTrue()
@@ -146,6 +148,8 @@ class DatingContractFixtureTest {
             assertThat(it.photoState).isEqualTo("full")
             assertThat(it.trustTier).isEqualTo("phone")
             assertThat(it.verified).isFalse()
+            // The person view decides too, so it carries the detail block.
+            assertThat(checkNotNull(it.detail).photos.single().state).isEqualTo("full")
         },
         "photos_get_200.json" to data(listSerializer(DatingPhotoDto.serializer())) {
             // [] rather than null now.
@@ -291,9 +295,35 @@ class DatingContractFixtureTest {
             assertThat(card.matchReasons).hasSize(3)
             assertThat(card.profile.firstName).isEqualTo("Asha")
             assertThat(card.profile.distanceBucket).isEqualTo("lt_5_km")
-            assertThat(card.profile.primaryPhotoUrl).isEqualTo("/v1/dating/photos/<uuid>/blurred")
+            // Blur-by-default is OFF now: a new profile's photo shows openly.
+            assertThat(card.profile.primaryPhotoUrl).isEqualTo("/v1/dating/photos/<uuid>/full")
             assertThat(card.profile.tuneSummary).isEmpty()
             assertThat(card.echoes?.topReelId).isNull()
+            // The detail block is additive and every member is omitted when
+            // empty: this card carries only the gallery.
+            val detail = checkNotNull(card.profile.detail)
+            assertThat(detail.bio).isEmpty()
+            assertThat(detail.prompts).isEmpty()
+            assertThat(detail.languages).isEmpty()
+            assertThat(detail.photos.single().state).isEqualTo("full")
+        },
+        "pulse_today_get_200_rich_card.json" to { _, raw ->
+            // The deck card someone actually decides on: bio, prompts,
+            // languages and the whole gallery, each photo with its OWN state.
+            val card = strict.decodeFromString(PulseTodayDto.serializer(), raw).data.single()
+            assertThat(card.profile.firstName).isEqualTo("Asha")
+            assertThat(card.profile.distanceBucket).isEqualTo("lt_5_km")
+            assertThat(card.matchReasons).hasSize(3)
+            val detail = checkNotNull(card.profile.detail)
+            assertThat(detail.bio).isEqualTo("Filter coffee, long drives and a bad sense of direction.")
+            assertThat(detail.prompts.map { p -> p.promptId }).containsExactly(1, 2, 9).inOrder()
+            assertThat(detail.prompts.first().question).isEqualTo("My ideal Sunday is...")
+            assertThat(detail.prompts.first().answer).isEqualTo("Dosa, a bookshop, and absolutely no alarm.")
+            assertThat(detail.languages).containsExactly("telugu", "english").inOrder()
+            // Primary first, and the match_only photo is blurred in the SAME gallery.
+            assertThat(detail.photos.map { p -> p.state }).containsExactly("full", "full", "blurred").inOrder()
+            assertThat(detail.photos.first().url).isEqualTo("/v1/dating/photos/<photo-primary>/full")
+            assertThat(detail.photos.last().url).isEqualTo("/v1/dating/photos/<photo-match_only>/blurred")
         },
         "report_post_201.json" to data(ReportResultDto.serializer()) {
             assertThat(it.reason).isEqualTo("harassment")
@@ -386,7 +416,10 @@ class DatingContractFixtureTest {
             assertThat(person.userId).isEqualTo(spark.fromUserId)
             assertThat(person.firstName).isEqualTo("Asha")
             assertThat(person.age).isEqualTo(30)
-            assertThat(person.photoState).isEqualTo("blurred")
+            // Blur-by-default is OFF: an unmatched spark sender shows openly.
+            assertThat(person.photoState).isEqualTo("full")
+            // A spark is decided on, so it carries the detail block too.
+            assertThat(checkNotNull(person.detail).photos.single().state).isEqualTo("full")
         },
         "stash_get_200.json" to data(listSerializer(StashDto.serializer())) {
             assertThat(it.single().candidateId).isEqualTo("<candidate>")
@@ -408,6 +441,8 @@ class DatingContractFixtureTest {
             assertThat(person.firstName).isEqualTo("Asha")
             assertThat(person.age).isEqualTo(30)
             assertThat(person.photoState).isEqualTo("full")
+            // A safety surface carries no bio and no gallery.
+            assertThat(person.detail).isNull()
         },
         "trusted_contacts_get_200_profile_gone.json" to data(TrustedContactsDto.serializer()) {
             // The field is always PRESENT and null when the profile was purged.
@@ -440,11 +475,14 @@ class DatingContractFixtureTest {
 
     @Test
     fun `every fixture also decodes with the production json`() {
-        parsers.keys.filter { statusOf(it) < 300 && it != "pulse_today_get_200.json" }.forEach { name ->
+        val pulse = setOf("pulse_today_get_200.json", "pulse_today_get_200_rich_card.json")
+        parsers.keys.filter { statusOf(it) < 300 && it !in pulse }.forEach { name ->
             val envelope = production.decodeFromString(ApiEnvelope.serializer(kotlinx.serialization.json.JsonElement.serializer()), fixture(name))
             assertThat(envelope.data).isNotNull()
         }
-        assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture("pulse_today_get_200.json")).data).hasSize(1)
+        pulse.forEach { name ->
+            assertThat(production.decodeFromString(PulseTodayDto.serializer(), fixture(name)).data).hasSize(1)
+        }
     }
 
     @Test

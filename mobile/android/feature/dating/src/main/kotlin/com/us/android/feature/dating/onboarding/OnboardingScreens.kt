@@ -163,8 +163,8 @@ private fun CreateStep(saving: Boolean, onCreate: (String) -> Unit) {
     var intent by rememberSaveable { mutableStateOf<String?>(null) }
     Text("Meet people nearby, safely.", style = MaterialTheme.typography.headlineSmall, color = UsTheme.extended.textPrimary)
     Text(
-        "Your first name and age come from your Momentum account. Photos stay blurred until you match, " +
-            "and others only ever see a distance range, never where you are.",
+        "Your first name and age come from your Momentum account. You choose whether your photos are " +
+            "blurred until you match, and others only ever see a distance range, never where you are.",
         style = MaterialTheme.typography.bodyMedium,
         color = UsTheme.extended.textMuted,
     )
@@ -386,7 +386,7 @@ fun PhotosScreen(
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
             item {
-                InfoNote("Your main photo must clearly show your face. People who haven't matched with you see it blurred.")
+                InfoNote("Your main photo must clearly show your face. Each photo's visibility is yours to set, and you can blur them all until you match.")
             }
             state.uploadProgress?.let { progress ->
                 item { LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth(), color = UsTheme.extended.accentSolid) }

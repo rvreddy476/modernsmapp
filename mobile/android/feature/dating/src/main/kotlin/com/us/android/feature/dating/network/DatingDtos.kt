@@ -45,6 +45,54 @@ data class DatingPersonDto(
     @SerialName("distance_bucket") val distanceBucket: String? = null,
     /** The server's own label. Never rendered: the app maps the bucket code itself. */
     @SerialName("distance_label") val distanceLabel: String? = null,
+    /**
+     * The pre-match "enough to decide" block, present only where the viewer is
+     * deciding about this person: `GET /people/:userId` and an incoming spark.
+     * The match list, trusted contacts and the location shares stay compact —
+     * the server omits it there, and the app never asks for or synthesises it.
+     */
+    val detail: ProfileDetailDto? = null,
+)
+
+/**
+ * What a viewer may see about someone BEFORE matching: the description they
+ * wrote, their prompt answers, their languages and their whole approved
+ * gallery. Additive — every member is omitted when empty and the whole block
+ * is omitted when a person has written nothing, so every field defaults.
+ *
+ * Still sealed until a match, and deliberately absent here: religion,
+ * community, exact location, birth date and a hidden last-active.
+ */
+@Serializable
+data class ProfileDetailDto(
+    val bio: String = "",
+    val prompts: List<DetailPromptDto> = emptyList(),
+    val languages: List<String> = emptyList(),
+    /** The whole approved gallery, primary first. Each entry carries its OWN variant. */
+    val photos: List<CardPhotoDto> = emptyList(),
+)
+
+/** One catalogue question and this person's answer; the question text is resolved server-side. */
+@Serializable
+data class DetailPromptDto(
+    @SerialName("prompt_id") val promptId: Int = 0,
+    val question: String = "",
+    val answer: String = "",
+)
+
+/**
+ * One photo in a card's swipeable gallery.
+ *
+ * [state] is this photo's OWN D6 verdict — the server applies the rule per
+ * photo, so a public photo and a match_only one in the same gallery differ.
+ * The app obeys it through PhotoRules and never upgrades a blurred entry.
+ */
+@Serializable
+data class CardPhotoDto(
+    val id: String = "",
+    val url: String = "",
+    /** full | blurred */
+    val state: String = "",
 )
 
 // ── Consent (D9) ────────────────────────────────────────────────────────────
@@ -337,6 +385,8 @@ data class PulseProfileDto(
     @SerialName("trust_tier") val trustTier: String = "",
     @SerialName("last_active_bucket") val lastActiveBucket: String? = null,
     @SerialName("last_active_label") val lastActiveLabel: String? = null,
+    /** The pre-match detail block: the deck is where someone decides to spark. */
+    val detail: ProfileDetailDto? = null,
 )
 
 @Serializable

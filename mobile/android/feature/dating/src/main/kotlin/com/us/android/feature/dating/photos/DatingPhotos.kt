@@ -13,6 +13,7 @@ import com.us.android.core.media.upload.PROCESSING_REJECTED
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.core.media.upload.SUBTYPE_GENERAL
 import com.us.android.core.network.ApiConfig
+import com.us.android.feature.dating.network.CardPhotoDto
 import com.us.android.feature.dating.network.DatingPersonDto
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
@@ -80,6 +81,16 @@ class DatingPhotoUrls @Inject constructor(private val config: ApiConfig) {
     /** A person card's photo, in the variant its `photo_state` allows. */
     fun forPerson(person: DatingPersonDto?): String? =
         PhotoRules.statePath(person?.primaryPhotoUrl, person?.photoState)?.let(::absolute)
+
+    /**
+     * One gallery photo, in the variant ITS OWN `state` allows.
+     *
+     * The server decides per photo, so a public photo and a match_only one in
+     * the same gallery differ. Same fail-closed rule as a card: only the exact
+     * word `full` gives the full image.
+     */
+    fun forGalleryPhoto(photo: CardPhotoDto?): String? =
+        PhotoRules.statePath(photo?.url, photo?.state)?.let(::absolute)
 
     /** The person's own photo, always the full variant. */
     fun own(photoId: String): String = absolute(PhotoRules.pathFor(photoId, PhotoVariant.FULL))

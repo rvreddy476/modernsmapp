@@ -19,6 +19,7 @@ import com.us.android.feature.dating.OnboardingStep
 import com.us.android.feature.dating.home.DatingHomeScreen
 import com.us.android.feature.dating.home.HomeTab
 import com.us.android.feature.dating.home.MatchDetailScreen
+import com.us.android.feature.dating.home.PersonScreen
 import com.us.android.feature.dating.onboarding.DatingRootState
 import com.us.android.feature.dating.onboarding.DatingRootViewModel
 import com.us.android.feature.dating.onboarding.DraftStepScreen
@@ -47,6 +48,10 @@ data class DatingRootRoute(val tab: String = HomeTab.PULSE.name)
 
 @Serializable
 data class DatingMatchRoute(val matchId: String, val openChat: Boolean = false)
+
+/** Someone else's card, with the pre-match detail the server allows. */
+@Serializable
+data class DatingPersonRoute(val userId: String)
 
 @Serializable
 data object DatingPhotosRoute
@@ -91,6 +96,7 @@ fun NavGraphBuilder.datingScreens(
                 initialTab = HomeTab.entries.firstOrNull { it.name == route.tab } ?: HomeTab.PULSE,
                 onBack = { navController.popBackStack<DatingGraph>(inclusive = true) },
                 onOpenMatch = { navController.navigate(DatingMatchRoute(it)) },
+                onOpenPerson = { navController.navigate(DatingPersonRoute(it)) },
                 onOpenSafety = { navController.navigate(DatingSafetyRoute()) },
                 onOpenPremium = { navController.navigate(DatingPremiumRoute) },
                 onOpenPrivacy = { navController.navigate(DatingPrivacyRoute) },
@@ -104,6 +110,10 @@ fun NavGraphBuilder.datingScreens(
                 onOpenChat = onOpenChat,
                 onShareLocation = { navController.navigate(DatingSafetyRoute(shareWith = it)) },
             )
+        }
+
+        composable<DatingPersonRoute> {
+            PersonScreen(onBack = navController::popBackStack)
         }
 
         composable<DatingPhotosRoute> {
@@ -152,6 +162,7 @@ private fun DatingRoot(
     initialTab: HomeTab,
     onBack: () -> Unit,
     onOpenMatch: (String) -> Unit,
+    onOpenPerson: (String) -> Unit,
     onOpenSafety: () -> Unit,
     onOpenPremium: () -> Unit,
     onOpenPrivacy: () -> Unit,
@@ -192,6 +203,7 @@ private fun DatingRoot(
                 initialTab = initialTab,
                 onBack = onBack,
                 onOpenMatch = onOpenMatch,
+                onOpenPerson = onOpenPerson,
                 onOpenSafety = onOpenSafety,
                 onOpenPremium = onOpenPremium,
                 onOpenSettings = onOpenPrivacy,

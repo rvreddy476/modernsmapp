@@ -48,6 +48,9 @@ import com.us.android.feature.dating.network.PrivacyUpdateRequest
 import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PromptAnswerRequest
 import com.us.android.feature.dating.network.PromptCatalogItemDto
+import com.us.android.feature.dating.network.CardPhotoDto
+import com.us.android.feature.dating.network.DetailPromptDto
+import com.us.android.feature.dating.network.ProfileDetailDto
 import com.us.android.feature.dating.network.PulseCardDto
 import com.us.android.feature.dating.network.PulseProfileDto
 import com.us.android.feature.dating.network.PulseTodayDto
@@ -135,7 +138,12 @@ fun profile(
     profileStatus = status,
 )
 
-fun card(userId: String, bucket: String? = "lt_5_km", label: String? = "< 5 km") = PulseCardDto(
+fun card(
+    userId: String,
+    bucket: String? = "lt_5_km",
+    label: String? = "< 5 km",
+    detail: ProfileDetailDto? = null,
+) = PulseCardDto(
     candidateId = userId,
     profile = PulseProfileDto(
         userId = userId,
@@ -146,8 +154,24 @@ fun card(userId: String, bucket: String? = "lt_5_km", label: String? = "< 5 km")
         distanceLabel = label,
         primaryPhotoUrl = "/v1/dating/photos/photo-$userId/full",
         trustTier = "selfie",
+        detail = detail,
     ),
 )
+
+/** One gallery photo whose url matches its own [state], the way the server sends it. */
+fun galleryPhoto(id: String, state: String) =
+    CardPhotoDto(id = id, url = "/v1/dating/photos/$id/$state", state = state)
+
+/** The pre-match detail block: the bio, prompt answers, languages and gallery. */
+fun detail(
+    bio: String = "Filter coffee and long drives.",
+    prompts: List<DetailPromptDto> = listOf(
+        DetailPromptDto(promptId = 1, question = "My ideal Sunday is...", answer = "Dosa and a bookshop."),
+        DetailPromptDto(promptId = 2, question = "I get nerdy about...", answer = "Carnatic ragas."),
+    ),
+    languages: List<String> = listOf("telugu", "english"),
+    photos: List<CardPhotoDto> = listOf(galleryPhoto("p-1", "full")),
+) = ProfileDetailDto(bio = bio, prompts = prompts, languages = languages, photos = photos)
 
 /** The compact card the server now sends inline on matches and incoming sparks. */
 fun person(
@@ -157,6 +181,7 @@ fun person(
     photoState: String = "full",
     bucket: String? = "lt_5_km",
     verified: Boolean = true,
+    detail: ProfileDetailDto? = null,
 ) = DatingPersonDto(
     userId = userId,
     firstName = name,
@@ -168,6 +193,7 @@ fun person(
     trustTier = if (verified) "selfie" else "phone",
     distanceBucket = bucket,
     distanceLabel = bucket?.let { "server label" },
+    detail = detail,
 )
 
 fun match(id: String, other: String, card: DatingPersonDto? = person(other)) =

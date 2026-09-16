@@ -1,0 +1,89 @@
+{
+  "data": [
+    {
+      "candidate_id": "<candidate>",
+      "score": 0.57,
+      "match_reasons": [
+        {
+          "kind": "tune",
+          "summary": "Compatible vibes"
+        },
+        {
+          "kind": "intent",
+          "summary": "You both want casual"
+        },
+        {
+          "kind": "recency",
+          "summary": "Recently active on AtPost"
+        }
+      ],
+      "profile": {
+        "user_id": "<candidate>",
+        "first_name": "Asha",
+        "age": 30,
+        "intent": "casual",
+        "city": "Hyderabad",
+        "distance_bucket": "lt_5_km",
+        "distance_label": "\u003c 5 km",
+        "primary_photo_url": "/v1/dating/photos/<photo-primary>/full",
+        "primary_photo_blurred": false,
+        "tune_summary": {},
+        "trust_tier": "phone",
+        "last_active_bucket": "today",
+        "last_active_label": "Active today",
+        "detail": {
+          "bio": "Filter coffee, long drives and a bad sense of direction.",
+          "prompts": [
+            {
+              "prompt_id": 1,
+              "question": "My ideal Sunday is...",
+              "answer": "Dosa, a bookshop, and absolutely no alarm."
+            },
+            {
+              "prompt_id": 2,
+              "question": "I get nerdy about...",
+              "answer": "Carnatic ragas and why bridges stay up."
+            },
+            {
+              "prompt_id": 9,
+              "question": "I'm looking for someone who...",
+              "answer": "Someone who argues with me about films."
+            }
+          ],
+          "languages": [
+            "telugu",
+            "english"
+          ],
+          "photos": [
+            {
+              "id": "<photo-primary>",
+              "url": "/v1/dating/photos/<photo-primary>/full",
+              "state": "full"
+            },
+            {
+              "id": "<photo-public>",
+              "url": "/v1/dating/photos/<photo-public>/full",
+              "state": "full"
+            },
+            {
+              "id": "<photo-match_only>",
+              "url": "/v1/dating/photos/<photo-match_only>/blurred",
+              "state": "blurred"
+            }
+          ]
+        }
+      },
+      "echoes": {
+        "top_qa_answer_id": null,
+        "top_reel_id": null,
+        "top_community": null,
+        "recent_post_id": null
+      }
+    }
+  ],
+  "meta": {
+    "generated_at": "<timestamp>",
+    "size": 1,
+    "cohort_gated": false
+  }
+}

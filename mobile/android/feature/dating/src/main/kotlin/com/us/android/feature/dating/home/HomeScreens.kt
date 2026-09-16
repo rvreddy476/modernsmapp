@@ -14,8 +14,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -62,6 +64,7 @@ fun DatingHomeScreen(
     initialTab: HomeTab,
     onBack: () -> Unit,
     onOpenMatch: (matchId: String) -> Unit,
+    onOpenPerson: (userId: String) -> Unit,
     onOpenSafety: () -> Unit,
     onOpenPremium: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -99,7 +102,7 @@ fun DatingHomeScreen(
             Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
                 when (tab) {
                     HomeTab.PULSE -> PulseDeck(pulse)
-                    HomeTab.SPARKS -> SparksList(sparks)
+                    HomeTab.SPARKS -> SparksList(sparks, onOpenPerson)
                     HomeTab.MATCHES -> MatchesList(matches, onOpenMatch)
                 }
             }
@@ -203,13 +206,24 @@ private fun PulseCard(
 ) {
     var menu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(vertical = UsTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+        // The card scrolls: the photo decides at a glance, the description and
+        // prompt answers below are what someone actually sparks on.
+        Column(
+            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
+                .aspectRatio(PHOTO_RATIO)
                 .clip(RoundedCornerShape(UsTheme.radii.card)),
         ) {
-            DatingPhoto(url = card.photoUrl, contentDescription = "${card.name}'s photo, blurred until you match", modifier = Modifier.fillMaxSize())
+            PersonGallery(
+                photos = card.detail?.gallery.orEmpty(),
+                fallbackUrl = card.photoUrl,
+                name = card.name,
+                modifier = Modifier.fillMaxSize(),
+            )
             Box(Modifier.align(Alignment.TopEnd)) {
                 IconButton(onClick = { menu = true }, modifier = Modifier.padding(6.dp).background(UsTheme.extended.bgCanvas.copy(alpha = 0.7f), CircleShape)) {
                     Icon(UsIcons.More, contentDescription = "More", tint = UsTheme.extended.textPrimary)
@@ -239,6 +253,8 @@ private fun PulseCard(
                 }
             }
         }
+            PersonDetailBody(card.detail)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), verticalAlignment = Alignment.CenterVertically) {
             UsSecondaryButton(text = "Pass", enabled = !busy, onClick = onPass, modifier = Modifier.weight(1f))
             IconButton(onClick = onStash, enabled = !busy) {
@@ -250,7 +266,7 @@ private fun PulseCard(
 }
 
 @Composable
-private fun SparksList(viewModel: SparksViewModel) {
+private fun SparksList(viewModel: SparksViewModel, onOpenPerson: (String) -> Unit) {
     LaunchedEffect(Unit) { viewModel.refresh() }
     val state by viewModel.state.collectAsStateWithLifecycle()
     var reporting by remember { mutableStateOf<IncomingSparkUi?>(null) }
@@ -265,7 +281,7 @@ private fun SparksList(viewModel: SparksViewModel) {
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 items(s.items, key = { it.sparkId }) { spark ->
-                    DatingCard {
+                    DatingCard(onClick = { onOpenPerson(spark.fromUserId) }) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
                             DatingPhoto(url = spark.photoUrl, contentDescription = null, modifier = Modifier.size(56.dp).clip(CircleShape))
                             Column(Modifier.weight(1f)) {
@@ -282,6 +298,20 @@ private fun SparksList(viewModel: SparksViewModel) {
                             }
                             IconButton(onClick = { reporting = spark }) { Icon(UsIcons.Flag, contentDescription = "Report", tint = UsTheme.extended.textMuted) }
                         }
+                        // The same pre-match detail the deck shows: decline or
+                        // spark back is a decision, so it needs the same to go on.
+                        spark.detail?.gallery?.takeIf { it.isNotEmpty() }?.let { gallery ->
+                            PersonGallery(
+                                photos = gallery,
+                                fallbackUrl = spark.photoUrl,
+                                name = spark.name,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(PHOTO_RATIO)
+                                    .clip(RoundedCornerShape(UsTheme.radii.card)),
+                            )
+                        }
+                        PersonDetailBody(spark.detail)
                         Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
                             UsSecondaryButton(text = "Decline", onClick = { viewModel.decline(spark) }, modifier = Modifier.weight(1f))
                             UsButton(text = "Spark back", onClick = { viewModel.accept(spark) }, modifier = Modifier.weight(1f))
