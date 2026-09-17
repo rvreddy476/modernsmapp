@@ -19,6 +19,7 @@ import (
 	"github.com/atpost/identity-auth-service/internal/permissions"
 	"github.com/atpost/identity-auth-service/internal/rollout"
 	"github.com/atpost/identity-auth-service/internal/service"
+	"github.com/atpost/identity-auth-service/internal/servicetoken"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,9 @@ type Handler struct {
 	// is what unit tests that do not exercise it get.
 	idempotency idempotencyStore
 	waStore     WebAuthnStore // set via SetWebAuthnStore; used only by the webauthn-tagged ceremony
+	// adminTokens verifies admin-service tokens for /v1/auth/internal/admin/*
+	// (admin_console.go). Nil: the family accepts nothing.
+	adminTokens *servicetoken.Verifier
 }
 
 // SetIdempotencyStore installs the replay store. Separate from New so tests
@@ -76,6 +80,15 @@ type AuthService interface {
 	StepUp(ctx context.Context, userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error)
 	ForceLogout(ctx context.Context, actorID, targetID uuid.UUID, reason string) (int, error)
 	CountOtherHolders(ctx context.Context, permission string, excludeUserID uuid.UUID) (int, error)
+	// Admin console Access page through admin-service (B4): the actor is the
+	// token's signed act claim; see service/admin_console.go.
+	ConsoleGrantRole(ctx context.Context, actor service.ConsoleActor, req service.RoleChangeRequest) error
+	ConsoleRevokeRole(ctx context.Context, actor service.ConsoleActor, req service.RoleChangeRequest) error
+	ConsoleForceLogout(ctx context.Context, actor service.ConsoleActor, targetID uuid.UUID, reason string) (int, error)
+	ConsoleListRoleHolders(ctx context.Context, f store.RoleHolderFilter) (service.ConsoleRoleHolders, error)
+	ConsoleListUserRoles(ctx context.Context, targetID uuid.UUID) ([]store.UserRole, error)
+	ConsoleListAudit(ctx context.Context, f store.AuditFilter) ([]store.AdminAuditEntry, error)
+	ConsoleSearchUsers(ctx context.Context, q string, limit int) ([]service.UserSearchResult, error)
 	// Admin console sign-in on its own host (B3); see admin_login.go.
 	AdminLogin(ctx context.Context, identifier, password, ip, userAgent string) (*service.AdminLoginChallenge, error)
 	AdminVerify2FA(ctx context.Context, pendingToken, code string) (*service.AuthResponse, error)
@@ -149,7 +162,20 @@ func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Cl
 	flags := rollout.New(rdb, logger, map[string]bool{
 		rollout.FlagRegisterRequireGender: cfg.RegisterRequireGender,
 	})
-	return &Handler{svc: svc, cfg: cfg, log: logger, rdb: rdb, flags: flags}
+	h := &Handler{svc: svc, cfg: cfg, log: logger, rdb: rdb, flags: flags}
+	// admin-service token verifier for the console family. A misconfigured
+	// key is fatal, like an unreadable JWT_PRIVATE_KEY_PEM: the Access page
+	// must not be silently disabled by a typo in a secret.
+	v, err := AdminServiceVerifier(cfg)
+	if err != nil {
+		logger.Error("failed to load ADMIN_SERVICE_TOKEN_PUBKEY", "err", err)
+		panic(fmt.Sprintf("invalid ADMIN_SERVICE_TOKEN_PUBKEY/KID: %v", err))
+	}
+	if v != nil {
+		logger.Info("admin-service tokens accepted on /v1/auth/internal/admin", "kid", strings.TrimSpace(cfg.AdminServiceTokenKID))
+	}
+	h.adminTokens = v
+	return h
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) {
@@ -319,6 +345,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// active, TOTP-enrolled accounts hold a permission. Service-only.
 		v1.GET("/internal/permissions/:permission/holders",
 			RequireServiceCallerNoUser(h.cfg.InternalServiceKey), h.InternalPermissionHolders)
+		// The admin console's Access page through admin-service: judged by
+		// a signed admin-service token alone. See admin_console.go.
+		h.registerConsoleRoutes(v1)
 	}
 }
 

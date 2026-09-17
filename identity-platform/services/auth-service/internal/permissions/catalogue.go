@@ -320,6 +320,10 @@ var catalogue = map[string][]entry{
 	},
 	AppPlatform: {
 		p("users.read", mod, sup),
+		// users.search: the Access page's "who do I grant to" lookup
+		// (GET /v1/auth/internal/admin/users/search): id, masked email and
+		// handle only. Same holders as users.read.
+		p("users.search", mod, sup),
 		p("users.suspend"),
 		p("sessions.revoke"),
 		p("roles.read", audr),

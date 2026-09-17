@@ -404,9 +404,23 @@ func (s *Service) changeRole(ctx context.Context, actorID uuid.UUID, req RoleCha
 		s.audit(ctx, actorID, req.TargetID, action, "denied: self-grant, "+roleChangeDetail(req), false)
 		return ErrSelfGrant
 	}
+	return s.applyRoleChange(ctx, actorID, req, revoke, action, "")
+}
+
+// applyRoleChange is the tail every authorised role change shares — the
+// session-gated path (changeRole) and the admin-service token path
+// (consoleChangeRole, admin_console.go). req is already validated and the
+// actor already authorised. detailPrefix is prepended to every audit detail
+// written here (the token path marks its rows "via=admin-service jti=…").
+//
+// Rules here: an env allowlist role cannot be revoked; a change that removes
+// or expires the last durable superadmin is refused under a row lock; the
+// row and its audit record are one transaction; sessions the change
+// reduced are marked revoked for the gateway.
+func (s *Service) applyRoleChange(ctx context.Context, actorID uuid.UUID, req RoleChangeRequest, revoke bool, action, detailPrefix string) error {
 	if revoke && req.App == "" {
 		if envVar := s.envBootstrapSource(req.TargetID, req.Role); envVar != "" {
-			s.audit(ctx, actorID, req.TargetID, action, "denied: env bootstrap role ("+envVar+"), "+roleChangeDetail(req), false)
+			s.audit(ctx, actorID, req.TargetID, action, detailPrefix+"denied: env bootstrap role ("+envVar+"), "+roleChangeDetail(req), false)
 			return &EnvBootstrapRoleError{Role: req.Role, EnvVar: envVar}
 		}
 	}
@@ -427,10 +441,10 @@ func (s *Service) changeRole(ctx context.Context, actorID uuid.UUID, req RoleCha
 		ActorID:  actorID,
 		TargetID: req.TargetID,
 		Action:   action,
-		Detail:   roleChangeDetail(req),
+		Detail:   detailPrefix + roleChangeDetail(req),
 	}, guard)
 	if errors.Is(err, ErrLastSuperadmin) {
-		s.audit(ctx, actorID, req.TargetID, action, "denied: last superadmin, "+roleChangeDetail(req), false)
+		s.audit(ctx, actorID, req.TargetID, action, detailPrefix+"denied: last superadmin, "+roleChangeDetail(req), false)
 	}
 	if err != nil {
 		return err

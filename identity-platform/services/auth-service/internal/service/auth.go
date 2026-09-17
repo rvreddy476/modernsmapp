@@ -118,6 +118,10 @@ type Store interface {
 	// a sentinel uuid on InsertAdminAudit — see store.AdminAuditEntry.
 	InsertServiceAudit(ctx context.Context, targetID uuid.UUID, service, action, detail string, allowed bool) error
 	ListAdminAudit(ctx context.Context, limit int) ([]store.AdminAuditEntry, error)
+	// Admin console Access page reads (store/admin_console.go).
+	ListRoleHolders(ctx context.Context, f store.RoleHolderFilter) ([]store.RoleHolder, error)
+	ListAdminAuditFiltered(ctx context.Context, f store.AuditFilter) ([]store.AdminAuditEntry, error)
+	SearchUsers(ctx context.Context, q string, limit int) ([]store.UserSearchHit, error)
 	// Sessions
 	CreateSession(ctx context.Context, sess *store.Session) error
 	GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*store.Session, error)

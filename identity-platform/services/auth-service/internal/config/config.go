@@ -70,9 +70,15 @@ type Config struct {
 	AdminCookieSecure  bool
 	TrustedProxies     []string
 	InternalServiceKey string
-	TwoFAIssuer        string
-	FrontendURL        string
-	OAuth              *OAuthConfig
+	// admin-service's token-signing key, PUBLIC half, for the token-only
+	// /v1/auth/internal/admin/* family (admin console Access page). Empty
+	// means the family accepts nothing; a set key with no kid, or an
+	// unreadable key, refuses to boot (internal/http admin_console.go).
+	AdminServiceTokenPubKey string
+	AdminServiceTokenKID    string
+	TwoFAIssuer             string
+	FrontendURL             string
+	OAuth                   *OAuthConfig
 	// OAuthNewAccountEnabled gates only account creation. Existing linked
 	// accounts may still sign in and verified active accounts may link a
 	// provider. Launch defaults false because OAuth does not yet collect the
@@ -195,6 +201,8 @@ func Load() *Config {
 		AdminCookieSecure:        IsProductionEnv() || getEnvBool("ADMIN_COOKIE_SECURE", true),
 		TrustedProxies:           splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		InternalServiceKey:       getEnv("INTERNAL_SERVICE_KEY", ""),
+		AdminServiceTokenPubKey:  getEnv("ADMIN_SERVICE_TOKEN_PUBKEY", ""),
+		AdminServiceTokenKID:     getEnv("ADMIN_SERVICE_TOKEN_KID", ""),
 		TwoFAIssuer:              getEnv("TWOFA_ISSUER", "AtPost"),
 		FrontendURL:              getEnv("FRONTEND_URL", "http://localhost:3000"),
 		OAuth:                    LoadOAuth(),

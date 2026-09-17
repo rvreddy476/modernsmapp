@@ -426,6 +426,15 @@ func (f *fakeAnomalyStore) InsertServiceAudit(_ context.Context, _ uuid.UUID, _,
 func (f *fakeAnomalyStore) ListAdminAudit(_ context.Context, _ int) ([]store.AdminAuditEntry, error) {
 	return nil, nil
 }
+func (f *fakeAnomalyStore) ListRoleHolders(_ context.Context, _ store.RoleHolderFilter) ([]store.RoleHolder, error) {
+	return nil, nil
+}
+func (f *fakeAnomalyStore) ListAdminAuditFiltered(_ context.Context, _ store.AuditFilter) ([]store.AdminAuditEntry, error) {
+	return nil, nil
+}
+func (f *fakeAnomalyStore) SearchUsers(_ context.Context, _ string, _ int) ([]store.UserSearchHit, error) {
+	return nil, nil
+}
 func (f *fakeAnomalyStore) CreateSession(_ context.Context, sess *store.Session) error {
 	f.sessions = append(f.sessions, storeSessionRecord{ID: sess.ID, UserID: sess.UserID})
 	return nil

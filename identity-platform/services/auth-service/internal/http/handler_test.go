@@ -42,6 +42,8 @@ type stubAuthService struct {
 	grantRoleFn       func(actor uuid.UUID, req service.RoleChangeRequest) error
 	// Admin console sign-in; methods in admin_login_test.go.
 	admin adminSessionStub
+	// Admin console token path; methods below, tests in admin_console_test.go.
+	console consoleStub
 }
 
 func (s *stubAuthService) RequestOTP(ctx context.Context, phone, purpose string) error {
@@ -130,6 +132,61 @@ func (s *stubAuthService) CountOtherHolders(_ context.Context, permission string
 		return s.holdersFn(permission, exclude)
 	}
 	return 0, nil
+}
+
+// Admin console (token path) stubs; behaviour in admin_console_test.go.
+func (s *stubAuthService) ConsoleGrantRole(_ context.Context, actor service.ConsoleActor, req service.RoleChangeRequest) error {
+	if s.console.grantFn != nil {
+		return s.console.grantFn(actor, req)
+	}
+	return nil
+}
+func (s *stubAuthService) ConsoleRevokeRole(_ context.Context, actor service.ConsoleActor, req service.RoleChangeRequest) error {
+	if s.console.revokeFn != nil {
+		return s.console.revokeFn(actor, req)
+	}
+	return nil
+}
+func (s *stubAuthService) ConsoleForceLogout(_ context.Context, actor service.ConsoleActor, target uuid.UUID, reason string) (int, error) {
+	if s.console.forceLogoutFn != nil {
+		return s.console.forceLogoutFn(actor, target, reason)
+	}
+	return 0, nil
+}
+func (s *stubAuthService) ConsoleListRoleHolders(_ context.Context, f store.RoleHolderFilter) (service.ConsoleRoleHolders, error) {
+	if s.console.holdersFn != nil {
+		return s.console.holdersFn(f)
+	}
+	return service.ConsoleRoleHolders{Holders: []store.RoleHolder{}, EnvHolders: []service.EnvRoleHolder{}}, nil
+}
+func (s *stubAuthService) ConsoleListUserRoles(_ context.Context, target uuid.UUID) ([]store.UserRole, error) {
+	if s.console.userRolesFn != nil {
+		return s.console.userRolesFn(target)
+	}
+	return []store.UserRole{}, nil
+}
+func (s *stubAuthService) ConsoleListAudit(_ context.Context, f store.AuditFilter) ([]store.AdminAuditEntry, error) {
+	if s.console.auditFn != nil {
+		return s.console.auditFn(f)
+	}
+	return []store.AdminAuditEntry{}, nil
+}
+func (s *stubAuthService) ConsoleSearchUsers(_ context.Context, q string, limit int) ([]service.UserSearchResult, error) {
+	if s.console.searchFn != nil {
+		return s.console.searchFn(q, limit)
+	}
+	return []service.UserSearchResult{}, nil
+}
+
+// consoleStub holds the token-path hooks.
+type consoleStub struct {
+	grantFn       func(actor service.ConsoleActor, req service.RoleChangeRequest) error
+	revokeFn      func(actor service.ConsoleActor, req service.RoleChangeRequest) error
+	forceLogoutFn func(actor service.ConsoleActor, target uuid.UUID, reason string) (int, error)
+	holdersFn     func(f store.RoleHolderFilter) (service.ConsoleRoleHolders, error)
+	userRolesFn   func(target uuid.UUID) ([]store.UserRole, error)
+	auditFn       func(f store.AuditFilter) ([]store.AdminAuditEntry, error)
+	searchFn      func(q string, limit int) ([]service.UserSearchResult, error)
 }
 
 // RBAC stubs

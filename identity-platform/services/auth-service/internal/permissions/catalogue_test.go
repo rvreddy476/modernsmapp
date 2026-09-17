@@ -185,6 +185,8 @@ func TestForTable(t *testing.T) {
 // console, with EXACTLY the roles (besides implicit admin and superadmin) that
 // must hold it. The strings mirror each service's AdminPermissions list.
 var consolePermissionHolders = map[string][]string{
+	"platform:users.search":             {roles.Moderator, roles.Support},
+	"platform:roles.read":               {roles.Auditor},
 	"food:stats.read":                   {roles.Finance, roles.Support},
 	"food:restaurant.suspend":           nil,
 	"food:delivery_partner.suspend":     nil,
@@ -336,7 +338,8 @@ func TestModeratorHoldsNoMoneyApp(t *testing.T) {
 func TestSupportHoldsNoWrites(t *testing.T) {
 	allowedActs := map[string]bool{"food:tickets.act": true, "rider:complaints.act": true}
 	for _, p := range mustFor(t, roles.Support, "") {
-		if strings.HasSuffix(p, ".read") || allowedActs[p] {
+		// .search is a read (platform:users.search returns id, masked email, handle).
+		if strings.HasSuffix(p, ".read") || strings.HasSuffix(p, ".search") || allowedActs[p] {
 			continue
 		}
 		t.Errorf("support holds write permission %q", p)
