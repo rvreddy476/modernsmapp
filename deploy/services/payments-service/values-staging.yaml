@@ -58,6 +58,12 @@ externalSecret:
     # and food payments down too.
     # - { secretKey: SERVICE_CALLER_DATING_SERVICE_PUBKEY, remoteRef: caller_dating_pubkey }
     # - { secretKey: SERVICE_CALLER_DATING_SERVICE_KID, remoteRef: caller_dating_kid }
+    # rider-service (Mopedu, migration 012) is NOT enabled yet. Same order as
+    # dating-service: store caller_rider_pubkey / caller_rider_kid in Secrets
+    # Manager, uncomment the two lines below, then add rider-service to
+    # SERVICE_CALLERS. Enabling first fails the secret sync and the boot refuses.
+    # - { secretKey: SERVICE_CALLER_RIDER_SERVICE_PUBKEY, remoteRef: caller_rider_pubkey }
+    # - { secretKey: SERVICE_CALLER_RIDER_SERVICE_KID, remoteRef: caller_rider_kid }
     # admin-service (admin console, /v1/payments/internal/admin/* only) is NOT
     # enabled yet: the console's Payments routes are refused (401). It holds
     # admin permissions only, no REFTYPES and no APPLICATIONS; the money routes
@@ -96,9 +102,16 @@ env:
   SERVICE_CALLER_COMMERCE_SERVICE_APPLICATIONS: 'mstore'
   SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS: 'feast'
   SERVICE_CALLER_DATING_SERVICE_APPLICATIONS: 'dating'
+  # rider-service (Mopedu, migration 012; see externalSecret above for the
+  # order). Uncomment with its secrets, then add rider-service to
+  # SERVICE_CALLERS. `mopedu` is seeded by 012.
+  # SERVICE_CALLER_RIDER_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  # SERVICE_CALLER_RIDER_SERVICE_REFTYPES: 'mopedu_ride'
+  # SERVICE_CALLER_RIDER_SERVICE_APPLICATIONS: 'mopedu'
   # admin-service (see externalSecret above for the order). SERVICE_CALLERS
   # above stays unchanged until step 3: then it becomes
-  # 'commerce-service,food-service,admin-service' (plus dating-service if enabled).
+  # 'commerce-service,food-service,admin-service' (plus dating-service and
+  # rider-service if enabled).
   # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'payments:stats.read,payments:refunds.read,payments:refund.issue,payments:intents.read,payments:reconciliation.read,payments:applications.read,payments:applications.manage,payments:audit.read'
 
   PAYMENTS_RECONCILE_INTERVAL_SEC: '60'

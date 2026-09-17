@@ -131,6 +131,7 @@ func TestDefaultRateTable_Seed(t *testing.T) {
 		CategoryPlatformFee:                      {SupplierPlatform, false, 1800, true, "998599"},
 		CategoryDeliveryFeePlatform:              {SupplierPlatform, false, 1800, true, "996813"},
 		CategoryDeliveryFeePartnerViaECO:         {SupplierDeliveryPartner, true, 1800, false, "996813"},
+		CategoryPassengerTransportViaECO:         {SupplierDriver, true, 500, false, "996412"},
 	}
 	tab := DefaultRateTable()
 	rows := tab.Rows()

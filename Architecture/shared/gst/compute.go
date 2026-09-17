@@ -47,6 +47,9 @@ type Input struct {
 	Restaurant      Party
 	Platform        Party
 	DeliveryPartner Party
+	// Driver is the ride-hailing driver (Mopedu). Only read for
+	// CategoryPassengerTransportViaECO lines.
+	Driver Party
 
 	// PlaceOfSupplyState is the two-digit GST state code the caller has
 	// determined as the place of supply. The package does not guess it.
@@ -191,6 +194,7 @@ func Compute(table *RateTable, in Input) (*Result, error) {
 	parties := map[SupplierRole]resolvedParty{}
 	for role, p := range map[SupplierRole]Party{
 		SupplierRestaurant: in.Restaurant, SupplierPlatform: in.Platform, SupplierDeliveryPartner: in.DeliveryPartner,
+		SupplierDriver: in.Driver,
 	} {
 		rp, err := resolveParty(role, p)
 		if err != nil {
@@ -225,6 +229,9 @@ func Compute(table *RateTable, in Input) (*Result, error) {
 		}
 		if row.Supplier == SupplierDeliveryPartner && liability != LiabilityECOSection95 {
 			return nil, fmt.Errorf("%w: line %d: delivery-partner supply outside s.9(5) is not modelled", ErrUnsupportedSupply, i)
+		}
+		if row.Supplier == SupplierDriver && liability != LiabilityECOSection95 {
+			return nil, fmt.Errorf("%w: line %d: driver supply outside s.9(5) is not modelled", ErrUnsupportedSupply, i)
 		}
 		liable := row.Supplier
 		if liability == LiabilityECOSection95 {

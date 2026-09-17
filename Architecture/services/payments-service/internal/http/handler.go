@@ -357,6 +357,7 @@ var legacyOwnerDomains = map[string]string{
 	servicetoken.RefOrder:         "commerce-service",
 	servicetoken.RefFoodOrder:     "food-service",
 	servicetoken.RefDatingPremium: "dating-service",
+	servicetoken.RefMopeduRide:    "rider-service",
 }
 
 func ownerDomainForReference(refType string) string {

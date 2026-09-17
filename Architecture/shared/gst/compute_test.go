@@ -373,7 +373,7 @@ func TestProperty_RandomBasketsAreExactToThePaise(t *testing.T) {
 	cats := []Category{
 		CategoryRestaurantStandalone, CategoryRestaurantSpecifiedPremises, CategoryCloudKitchenTakeaway,
 		CategoryOutdoorCatering, CategoryOutdoorCateringSpecifiedPremises, CategoryPlatformFee,
-		CategoryDeliveryFeePlatform, CategoryDeliveryFeePartnerViaECO,
+		CategoryDeliveryFeePlatform, CategoryDeliveryFeePartnerViaECO, CategoryPassengerTransportViaECO,
 	}
 
 	for iter := 0; iter < iterations; iter++ {
@@ -382,6 +382,7 @@ func TestProperty_RandomBasketsAreExactToThePaise(t *testing.T) {
 			ThroughECO:         rng.Intn(2) == 0,
 			Restaurant:         Party{GSTIN: gstinFor(states[rng.Intn(len(states))], 'F')},
 			Platform:           Party{GSTIN: gstinFor(states[rng.Intn(len(states))], 'C')},
+			Driver:             Party{StateCode: states[rng.Intn(len(states))]},
 			PlaceOfSupplyState: states[rng.Intn(len(states))],
 		}
 		if rng.Intn(2) == 0 {
@@ -393,7 +394,7 @@ func TestProperty_RandomBasketsAreExactToThePaise(t *testing.T) {
 		var restSum Paise
 		for i := 0; i < n; i++ {
 			c := cats[rng.Intn(len(cats))]
-			if c == CategoryDeliveryFeePartnerViaECO && !in.ThroughECO {
+			if (c == CategoryDeliveryFeePartnerViaECO || c == CategoryPassengerTransportViaECO) && !in.ThroughECO {
 				c = CategoryDeliveryFeePlatform
 			}
 			amt := Paise(rng.Int63n(500_000))

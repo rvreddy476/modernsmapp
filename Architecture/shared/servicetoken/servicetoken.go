@@ -389,11 +389,13 @@ const (
 )
 
 // Reference types. `order` belongs to commerce; `food_order` to food;
-// `dating_premium` (a one-off Premium pass or Boost) to dating.
+// `dating_premium` (a one-off Premium pass or Boost) to dating;
+// `mopedu_ride` (one ride's fare) to rider-service (Mopedu).
 const (
 	RefOrder         = "order"
 	RefFoodOrder     = "food_order"
 	RefDatingPremium = "dating_premium"
+	RefMopeduRide    = "mopedu_ride"
 )
 
 // AudiencePayments is the audience string payments-service accepts.

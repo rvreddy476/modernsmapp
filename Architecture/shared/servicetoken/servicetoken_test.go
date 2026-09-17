@@ -187,6 +187,97 @@ func TestDatingTokenHasNoPaymentFetch(t *testing.T) {
 	}
 }
 
+// ─── mopedu_ride ─────────────────────────────────────────────────────
+
+// The wire string is a contract with payments-service's owner map, migration
+// 012 and every stored intent; a rename would orphan them.
+func TestRefMopeduRideWireValue(t *testing.T) {
+	if RefMopeduRide != "mopedu_ride" {
+		t.Fatalf("RefMopeduRide = %q, want mopedu_ride", RefMopeduRide)
+	}
+	for _, other := range []string{RefOrder, RefFoodOrder, RefDatingPremium} {
+		if other == RefMopeduRide {
+			t.Fatalf("RefMopeduRide collides with %q", other)
+		}
+	}
+}
+
+// mopeduHarness adds rider-service, allowed only mopedu_ride, to the
+// two-caller harness.
+func mopeduHarness(t *testing.T) (*harness, *Signer) {
+	t.Helper()
+	h := newHarness(t)
+	pub, priv, err := GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := NewSignerFromBase64("rider-service", "r1", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.v.RegisterBase64("rider-service", "r1", pub,
+		[]string{OpIntentCreate, OpIntentRead, OpRefundCreate},
+		[]string{RefMopeduRide}); err != nil {
+		t.Fatal(err)
+	}
+	return h, rs
+}
+
+func TestRiderTokenIsRecognisedForMopeduRide(t *testing.T) {
+	h, rider := mopeduHarness(t)
+	for _, op := range []string{OpIntentCreate, OpIntentRead, OpRefundCreate} {
+		tok, err := rider.Mint(AudiencePayments, "mopedu", []string{op}, []string{RefMopeduRide}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.v.Verify(tok, op, RefMopeduRide)
+		if err != nil {
+			t.Fatalf("%s on mopedu_ride: %v", op, err)
+		}
+		if got.Issuer != "rider-service" {
+			t.Fatalf("issuer = %q", got.Issuer)
+		}
+	}
+}
+
+func TestRiderTokenCannotActOnOtherReferences(t *testing.T) {
+	h, rider := mopeduHarness(t)
+	for _, ref := range []string{RefOrder, RefFoodOrder, RefDatingPremium} {
+		tok, err := rider.Mint(AudiencePayments, "mopedu", []string{OpRefundCreate}, []string{ref}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.v.Verify(tok, OpRefundCreate, ref); err != ErrRefTypeDenied {
+			t.Fatalf("rider token on %s should be denied by policy, got %v", ref, err)
+		}
+	}
+}
+
+func TestOtherTokensCannotActOnMopeduRide(t *testing.T) {
+	h, _ := mopeduHarness(t)
+	for name, s := range map[string]*Signer{"commerce": h.commerce, "food": h.food} {
+		tok, err := s.Mint(AudiencePayments, name, []string{OpIntentCreate}, []string{RefMopeduRide}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.v.Verify(tok, OpIntentCreate, RefMopeduRide); err != ErrRefTypeDenied {
+			t.Fatalf("%s token on mopedu_ride should be denied by policy, got %v", name, err)
+		}
+	}
+}
+
+// rider-service does not get payments:payment.fetch.
+func TestRiderTokenHasNoPaymentFetch(t *testing.T) {
+	h, rider := mopeduHarness(t)
+	tok, err := rider.Mint(AudiencePayments, "mopedu", []string{OpPaymentFetch}, []string{RefMopeduRide}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.v.Verify(tok, OpPaymentFetch, RefMopeduRide); err != ErrScopeDenied {
+		t.Fatalf("payment.fetch should be denied by policy, got %v", err)
+	}
+}
+
 // A token minted for one operation must not be replayable as another.
 func TestScopeIsPerOperation(t *testing.T) {
 	h := newHarness(t)

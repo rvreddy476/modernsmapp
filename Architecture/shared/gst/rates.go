@@ -30,6 +30,11 @@ const (
 	CategoryDeliveryFeePlatform Category = "DELIVERY_FEE_PLATFORM"
 	// Local delivery by a delivery partner, supplied through the platform.
 	CategoryDeliveryFeePartnerViaECO Category = "DELIVERY_FEE_PARTNER_VIA_ECO"
+	// Passenger transport by motorcycle, auto-rickshaw or motor cab (Mopedu
+	// ride fare), supplied by the driver through the platform. Notified under
+	// s.9(5). The platform's own convenience fee on a ride is
+	// CategoryPlatformFee, as for food.
+	CategoryPassengerTransportViaECO Category = "PASSENGER_TRANSPORT_VIA_ECO"
 )
 
 // SupplierRole is who makes the supply (and who is liable, when not s.9(5)).
@@ -39,6 +44,9 @@ const (
 	SupplierRestaurant      SupplierRole = "RESTAURANT"
 	SupplierPlatform        SupplierRole = "PLATFORM"
 	SupplierDeliveryPartner SupplierRole = "DELIVERY_PARTNER"
+	// SupplierDriver is the ride-hailing driver (motorcycle, auto or cab)
+	// supplying passenger transport through the platform.
+	SupplierDriver SupplierRole = "DRIVER"
 )
 
 // Liability is who pays the tax to the government.
@@ -117,7 +125,7 @@ type RateTable struct {
 }
 
 func validSupplier(s SupplierRole) bool {
-	return s == SupplierRestaurant || s == SupplierPlatform || s == SupplierDeliveryPartner
+	return s == SupplierRestaurant || s == SupplierPlatform || s == SupplierDeliveryPartner || s == SupplierDriver
 }
 
 func sixDigits(s string) bool {
@@ -252,6 +260,8 @@ func DefaultRateTable() *RateTable {
 			Note: "Delivery supplied by the platform itself: local delivery service at 18%." + adviserNote},
 		{Category: CategoryDeliveryFeePartnerViaECO, Supplier: SupplierDeliveryPartner, ECOSection95: true, RateBP: 1800, ITCAvailable: false, SAC: "996813", EffectiveFrom: d, NeedsAdviserConfirmation: true,
 			Note: "Local delivery by an unregistered delivery partner through the ECO: believed notified under s.9(5) at 18% from 22 Sep 2025; registered partners not modelled." + adviserNote},
+		{Category: CategoryPassengerTransportViaECO, Supplier: SupplierDriver, ECOSection95: true, RateBP: 500, ITCAvailable: false, SAC: "996412", EffectiveFrom: d, NeedsAdviserConfirmation: true,
+			Note: "Passenger transport by motorcycle, auto-rickshaw or motor cab through the ECO (Mopedu ride fare): 5% without ITC, notified under s.9(5), so the ECO is liable; the 12%-with-ITC option for cabs is not modelled." + adviserNote},
 	}
 	t, err := NewRateTable(rows)
 	if err != nil {
