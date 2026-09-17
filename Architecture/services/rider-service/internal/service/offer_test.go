@@ -21,7 +21,7 @@ func makeApprovedPartnerWithVehicle(t *testing.T, svc *Service) (*store.Partner,
 	p, err := svc.CreatePartnerProfile(ctx, uid, CreatePartnerRequest{
 		PartnerType: "individual_driver",
 		FullName:    "Approved Test",
-		Phone:       "+919811000000",
+		Phone:       "+9198" + uid.String()[:8],
 		CityID:      &blr.ID,
 	})
 	if err != nil {
@@ -35,7 +35,7 @@ func makeApprovedPartnerWithVehicle(t *testing.T, svc *Service) (*store.Partner,
 		t.Fatalf("approve kyc: %v", err)
 	}
 	v, err := svc.Store().CreateVehicle(ctx, store.CreateVehicleInput{
-		PartnerID: p.ID, VehicleType: "auto", RegistrationNumber: "KA01AB" + uid.String()[:4],
+		PartnerID: p.ID, VehicleType: "auto", RegistrationNumber: "KA01" + uid.String()[:6],
 	})
 	if err != nil {
 		t.Fatalf("create vehicle: %v", err)
@@ -61,10 +61,22 @@ func makeApprovedPartnerWithVehicle(t *testing.T, svc *Service) (*store.Partner,
 		t.Fatalf("upsert loc: %v", err)
 	}
 	// Create a ride for this partner to be offered.
-	ride, err := svc.CreateRide(ctx, uuid.New(), CreateRideRequest{
-		PickupAddress: "P", PickupLat: 12.97, PickupLng: 77.59,
-		DropAddress: "D", DropLat: 12.93, DropLng: 77.62,
-		VehicleType: "auto", CityID: &blr.ID,
+	custID := uuid.New()
+	est, err := svc.EstimateFare(ctx, FareEstimateRequest{
+		CustomerUserID: &custID, CityID: blr.ID, VehicleType: "auto",
+		PickupLabel: "P", PickupLat: 12.9716, PickupLng: 77.5946,
+		DropLabel: "D", DropLat: 12.9352, DropLng: 77.6245,
+	})
+	if err != nil {
+		t.Fatalf("estimate: %v", err)
+	}
+	quoteID := uuid.MustParse(est.QuoteID)
+
+	ride, err := svc.CreateRide(ctx, custID, CreateRideRequest{
+		QuoteID:        &quoteID,
+		PickupAddress:  "P", PickupLat: 12.9716, PickupLng: 77.5946,
+		DropAddress:    "D", DropLat: 12.9352, DropLng: 77.6245,
+		VehicleType:    "auto", CityID: &blr.ID,
 		IdempotencyKey: "offer-test-" + uid.String(),
 	})
 	if err != nil {
@@ -96,8 +108,8 @@ func TestAcceptOffer_HappyPathReturnsOTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	if out.OTP == "" || len(out.OTP) != 4 {
-		t.Fatalf("OTP must be 4 digits; got %q", out.OTP)
+	if out.Status != "partner_assigned" {
+		t.Fatalf("expected status partner_assigned; got %q", out.Status)
 	}
 	if out.RideID != rid {
 		t.Fatalf("ride id mismatch")

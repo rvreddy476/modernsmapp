@@ -93,10 +93,33 @@ func (dc *DispatchConsumer) handleRideRequested(ctx context.Context, env *events
 	if err != nil {
 		return fmt.Errorf("invalid ride id %q: %w", payload.RideID, err)
 	}
+
+	// Transactional Inbox claim + dispatch state transition in ONE atomic tx
+	tx, err := dc.svc.Store().BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin inbox tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	claimed, err := dc.svc.Store().ClaimInboxEventTx(ctx, tx, "rider-dispatch-consumer", env.EventID, 1)
+	if err != nil {
+		return fmt.Errorf("claim inbox event: %w", err)
+	}
+	if !claimed {
+		slog.Info("rider dispatch: event already claimed in inbox", "event_id", env.EventID, "ride_id", rideID)
+		return nil
+	}
+
+	const updateQ = `UPDATE rider_rides SET status = 'searching_partner', revision = revision + 1, updated_at = NOW() WHERE id = $1 AND status = 'requested'`
+	if _, err := tx.Exec(ctx, updateQ, rideID); err != nil {
+		return fmt.Errorf("advance ride status to searching_partner: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit inbox and dispatch state: %w", err)
+	}
+
 	start := time.Now()
-	// MatchRide is idempotent: a ride already in `searching_partner`
-	// just runs the next batch, which is what we want when the same
-	// event_id slips past the dedup cache.
 	result, err := dc.svc.MatchRide(ctx, rideID, ridersvc.MatchRideOptions{})
 	if err != nil {
 		slog.Error("rider dispatch: MatchRide failed",

@@ -53,6 +53,42 @@ type RecordAuditInput struct {
 	LatencyMS      *int
 }
 
+// RecordAuditTx inserts one audit row inside an open database transaction.
+func RecordAuditTx(ctx context.Context, tx pgx.Tx, in RecordAuditInput) (*AuditLog, error) {
+	if in.AdminUserID == uuid.Nil {
+		return nil, fmt.Errorf("audit: admin_user_id required")
+	}
+	if in.Action == "" {
+		return nil, fmt.Errorf("audit: action required")
+	}
+	if in.EntityType == "" {
+		return nil, fmt.Errorf("audit: entity_type required")
+	}
+	const q = `
+        INSERT INTO rider_admin_audit_logs (
+            admin_user_id, action, entity_type, entity_id,
+            old_value, new_value, ip_address, user_agent,
+            request_path, request_method, request_body,
+            response_status, latency_ms
+        ) VALUES (
+            $1, $2, $3, $4,
+            $5, $6, $7, $8,
+            $9, $10, $11,
+            $12, $13
+        )
+        RETURNING id, admin_user_id, action, entity_type, entity_id,
+                  old_value, new_value, ip_address, user_agent,
+                  request_path, request_method, request_body,
+                  response_status, latency_ms, created_at`
+	row := tx.QueryRow(ctx, q,
+		in.AdminUserID, in.Action, in.EntityType, in.EntityID,
+		in.OldValue, in.NewValue, in.IPAddress, in.UserAgent,
+		in.RequestPath, in.RequestMethod, in.RequestBody,
+		in.ResponseStatus, in.LatencyMS,
+	)
+	return scanAudit(row)
+}
+
 // RecordAudit inserts one audit row. action + entity_type are required
 // (they're NOT NULL in the schema). Returns the inserted row.
 func (s *Store) RecordAudit(ctx context.Context, in RecordAuditInput) (*AuditLog, error) {

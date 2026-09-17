@@ -205,11 +205,11 @@ func TestAdmin_FareRuleCRUD(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	cities, _ := s.ListActiveCities(ctx)
-	if len(cities) == 0 {
-		t.Skip("no seeded cities; skipping fare-rule round-trip")
+	testCity, err := s.CreateCity(ctx, "Admin Test City "+uuid.New().String()[:8], "TestState", "India", "INR")
+	if err != nil {
+		t.Fatalf("CreateCity: %v", err)
 	}
-	cityID := cities[0].ID
+	cityID := testCity.ID
 	r, err := s.CreateFareRule(ctx, CreateFareRuleInput{
 		CityID:          cityID,
 		VehicleType:     "premium",

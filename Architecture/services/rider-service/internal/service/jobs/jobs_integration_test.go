@@ -23,6 +23,9 @@ func integrationStore(t *testing.T) (*store.Store, func()) {
 	if dsn == "" {
 		t.Skip("TEST_PG_DSN not set; skipping rider jobs integration tests")
 	}
+	if err := database.RequireTestDatabase(dsn); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -30,20 +33,42 @@ func integrationStore(t *testing.T) (*store.Store, func()) {
 	if err := database.BootstrapSchema(context.Background(), pool); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
+	_, _ = pool.Exec(context.Background(), `
+		TRUNCATE TABLE
+			rider_rides,
+			rider_ride_offers,
+			rider_vehicles,
+			rider_vehicle_documents,
+			rider_partner_subscriptions,
+			rider_subscription_payments,
+			rider_partners,
+			rider_idempotency,
+			rider_daily_revenue,
+			rider_share_tokens,
+			rider_complaints,
+			rider_safety_incidents,
+			rider_safety_actions,
+			rider_partner_locations,
+			rider_ride_payments,
+			rider_consumer_inbox,
+			rider_dispatch_attempts,
+			rider_cron_runs
+		CASCADE
+	`)
 	return store.New(pool), func() { pool.Close() }
 }
 
 // recordingPub records every published event for assertions.
 type recordingPub struct {
-	graceCalls    []events.SubscriptionGracePayload
-	expiredCalls  []events.SubscriptionGracePayload
-	renewedCalls  []events.SubscriptionRenewedPayload
-	failedCalls   []events.SubscriptionRenewalFailedPayload
-	docCalls      []events.DocumentExpiringPayload
-	fraudCalls    []events.PartnerFraudFlaggedPayload
-	revenueCalls  []events.DailyRevenueReportPayload
-	summaryCalls  []events.AdminQueueSummaryPayload
-	rideExpired   []uuid.UUID
+	graceCalls   []events.SubscriptionGracePayload
+	expiredCalls []events.SubscriptionGracePayload
+	renewedCalls []events.SubscriptionRenewedPayload
+	failedCalls  []events.SubscriptionRenewalFailedPayload
+	docCalls     []events.DocumentExpiringPayload
+	fraudCalls   []events.PartnerFraudFlaggedPayload
+	revenueCalls []events.DailyRevenueReportPayload
+	summaryCalls []events.AdminQueueSummaryPayload
+	rideExpired  []uuid.UUID
 }
 
 func (p *recordingPub) PublishSubscriptionGracePeriod(_ context.Context, payload events.SubscriptionGracePayload) error {

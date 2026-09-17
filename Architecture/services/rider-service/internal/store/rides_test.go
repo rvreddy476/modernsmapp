@@ -66,7 +66,7 @@ func TestListRidesByCustomer(t *testing.T) {
 	}
 	cust := uuid.New()
 	for i := 0; i < 3; i++ {
-		_, err := s.CreateRide(ctx, CreateRideInput{
+		r, err := s.CreateRide(ctx, CreateRideInput{
 			CustomerUserID: cust,
 			CityID:         &cs[0].ID,
 			VehicleType:    "auto",
@@ -79,6 +79,9 @@ func TestListRidesByCustomer(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("create ride %d: %v", i, err)
+		}
+		if _, err := s.db.Exec(ctx, `UPDATE rider_rides SET status = 'completed' WHERE id = $1`, r.ID); err != nil {
+			t.Fatalf("complete ride %d: %v", i, err)
 		}
 	}
 	rs, err := s.ListRidesByCustomer(ctx, cust, 10)

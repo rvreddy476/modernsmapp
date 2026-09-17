@@ -160,8 +160,9 @@ func TestShareToken_RoundTrip(t *testing.T) {
 	customer := uuid.New()
 	rid := helperCreateRideForCustomer(t, s, customer)
 	tok := "abcdef0123456789abcdef0123456789"
+	tokHash := "hash_abcdef0123456789abcdef0123456789"
 	expires := time.Now().Add(24 * time.Hour)
-	stored, err := s.CreateShareToken(ctx, tok, rid, customer, expires)
+	stored, err := s.CreateShareToken(ctx, tok, tokHash, rid, customer, expires)
 	if err != nil {
 		t.Fatalf("CreateShareToken: %v", err)
 	}
@@ -197,7 +198,8 @@ func TestShareToken_Expired(t *testing.T) {
 	customer := uuid.New()
 	rid := helperCreateRideForCustomer(t, s, customer)
 	tok := "expired00000000000000000000000a"
-	_, _ = s.CreateShareToken(ctx, tok, rid, customer, time.Now().Add(-1*time.Hour))
+	tokHash := "hash_expired00000000000000000000000a"
+	_, _ = s.CreateShareToken(ctx, tok, tokHash, rid, customer, time.Now().Add(-1*time.Hour))
 	_, err := s.LookupShareToken(ctx, tok)
 	if err == nil {
 		t.Error("expected expired error")

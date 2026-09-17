@@ -404,11 +404,7 @@ func (s *Store) ListLiveRides(ctx context.Context, limit int) ([]Ride, error) {
 		limit = 200
 	}
 	const q = `
-        SELECT id, customer_user_id, partner_id, vehicle_id, city_id, vehicle_type, status,
-               pickup_address, ST_Y(pickup_location::geometry), ST_X(pickup_location::geometry),
-               drop_address, ST_Y(drop_location::geometry), ST_X(drop_location::geometry),
-               estimated_distance_km, estimated_duration_min, estimated_fare, payment_method,
-               otp_expires_at, requested_at, created_at, updated_at
+        SELECT ` + rideSelectColumns + `
         FROM rider_rides
         WHERE status IN ('requested','searching_partner','partner_assigned','partner_arriving','arrived','otp_verified','in_progress')
         ORDER BY requested_at DESC

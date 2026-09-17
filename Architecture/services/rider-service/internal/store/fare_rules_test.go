@@ -43,6 +43,17 @@ func TestGetFareRule_AllVehicleTypes(t *testing.T) {
 	if len(cs) == 0 {
 		t.Skip("no seed cities")
 	}
+	var blr *City
+	for i := range cs {
+		if cs[i].Name == "Bengaluru" {
+			blr = &cs[i]
+			break
+		}
+	}
+	if blr == nil {
+		t.Skip("Bengaluru seed missing")
+	}
+	cityID := blr.ID
 	want := map[string]struct{ base, perKM float64 }{
 		"bike":     {15, 6},
 		"auto":     {25, 12},
@@ -52,7 +63,7 @@ func TestGetFareRule_AllVehicleTypes(t *testing.T) {
 		"premium":  {150, 25},
 	}
 	for vt, expect := range want {
-		rule, err := s.GetFareRule(ctx, cs[0].ID, vt)
+		rule, err := s.GetFareRule(ctx, cityID, vt)
 		if err != nil {
 			t.Errorf("get %s: %v", vt, err)
 			continue

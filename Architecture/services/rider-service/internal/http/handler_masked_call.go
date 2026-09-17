@@ -19,10 +19,8 @@ type InitiateMaskedCallRequest struct {
 // Returns the proxy DID the caller mobile app dials so the callee's
 // real number is never exposed.
 func (h *Handler) PostInitiateMaskedCall(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	uid, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	uid, ok := getUserID(c)
+	if !ok {
 		return
 	}
 	var req InitiateMaskedCallRequest

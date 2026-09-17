@@ -26,6 +26,7 @@ func helperCreateRideForCustomer(t *testing.T, s *Store, customerID uuid.UUID) u
 	if err != nil {
 		t.Fatalf("create ride: %v", err)
 	}
+	_, _ = s.db.Exec(ctx, `UPDATE rider_rides SET status = 'completed' WHERE id = $1`, r.ID)
 	return r.ID
 }
 

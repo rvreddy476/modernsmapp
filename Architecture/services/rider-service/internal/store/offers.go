@@ -137,7 +137,129 @@ func (s *Store) ListOffersForRide(ctx context.Context, rideID uuid.UUID) ([]Ride
 //  4. Mark every other 'sent' offer for the same ride as 'superseded'.
 //
 // Returns ErrOfferAlreadyDecided if the offer is no longer 'sent' (another
-// partner won the race / it was expired by the cron).
+// AcceptOfferAndAssignInput contains all parameters for atomic offer acceptance and ride assignment.
+type AcceptOfferAndAssignInput struct {
+	OfferID         uuid.UUID
+	PartnerID       uuid.UUID
+	PartnerUserID   uuid.UUID
+	VehicleID       *uuid.UUID
+	OTPPlain        string
+	OTPEncrypted    []byte
+	OutboxEventType string
+	OutboxPayload   []byte
+}
+
+// AcceptOfferAndAssignRideTx locks the ride aggregate first, then the offer row, accepts exactly one offer,
+// supersedes siblings, binds captain + vehicle + inverted OTP, advances revision, writes history and outbox in one atomic tx.
+func (s *Store) AcceptOfferAndAssignRideTx(ctx context.Context, in AcceptOfferAndAssignInput) (*RideOffer, *Ride, error) {
+	// Look up ride ID without row lock
+	var rideID uuid.UUID
+	const lookupQ = `SELECT ride_id FROM rider_ride_offers WHERE id = $1 AND partner_id = $2`
+	if err := s.db.QueryRow(ctx, lookupQ, in.OfferID, in.PartnerID).Scan(&rideID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, ErrOfferNotFound
+		}
+		return nil, nil, fmt.Errorf("lookup offer ride: %w", err)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Step 1: Lock ride aggregate row FIRST (Ride-First Lock Order)
+	const lockRideQ = `SELECT ` + rideSelectColumns + ` FROM rider_rides WHERE id = $1 FOR UPDATE`
+	rideRow := tx.QueryRow(ctx, lockRideQ, rideID)
+	ride, err := scanRide(rideRow)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, ErrRideNotFound
+		}
+		return nil, nil, fmt.Errorf("lock ride: %w", err)
+	}
+
+	if ride.Status != "requested" && ride.Status != "searching_partner" {
+		return nil, nil, ErrOfferAlreadyDecided
+	}
+
+	// Step 2: Lock offer row SECOND
+	const lockOfferQ = `
+        SELECT id, ride_id, partner_id, score, distance_km, expires_at, status, decided_at, created_at
+        FROM rider_ride_offers
+        WHERE id = $1 AND partner_id = $2
+        FOR UPDATE`
+	row := tx.QueryRow(ctx, lockOfferQ, in.OfferID, in.PartnerID)
+	offer, err := scanOffer(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, ErrOfferNotFound
+		}
+		return nil, nil, fmt.Errorf("lock offer: %w", err)
+	}
+	if offer.Status != "sent" || !offer.ExpiresAt.After(time.Now()) {
+		return nil, nil, ErrOfferAlreadyDecided
+	}
+
+	// 3. Mark offer accepted
+	const acceptQ = `
+        UPDATE rider_ride_offers
+        SET status = 'accepted', decided_at = NOW()
+        WHERE id = $1
+        RETURNING id, ride_id, partner_id, score, distance_km, expires_at, status, decided_at, created_at`
+	acceptedOffer, err := scanOffer(tx.QueryRow(ctx, acceptQ, in.OfferID))
+	if err != nil {
+		return nil, nil, fmt.Errorf("accept offer: %w", err)
+	}
+
+	// 4. Supersede sibling offers
+	const supersedeQ = `
+        UPDATE rider_ride_offers
+        SET status = 'superseded', decided_at = NOW()
+        WHERE ride_id = $1 AND id <> $2 AND status = 'sent'`
+	if _, err := tx.Exec(ctx, supersedeQ, offer.RideID, in.OfferID); err != nil {
+		return nil, nil, fmt.Errorf("supersede siblings: %w", err)
+	}
+
+	// 5. Update ride row with assignment, inverted OTP material, and revision increment
+	const updateRideQ = `
+        UPDATE rider_rides
+        SET partner_id = $2, vehicle_id = $3, status = 'partner_assigned',
+            assigned_at = NOW(), revision = revision + 1,
+            otp_code = $4, otp_encrypted = $5, otp_expires_at = NOW() + INTERVAL '30 minutes',
+            otp_attempts = 0, otp_locked_until = NULL, updated_at = NOW()
+        WHERE id = $1 AND revision = $6
+        RETURNING ` + rideSelectColumns
+
+	updatedRideRow := tx.QueryRow(ctx, updateRideQ, offer.RideID, in.PartnerID, in.VehicleID, in.OTPPlain, in.OTPEncrypted, ride.Revision)
+	updatedRide, err := scanRide(updatedRideRow)
+	if err != nil {
+		return nil, nil, fmt.Errorf("update ride assignment: %w", err)
+	}
+
+	// 6. Insert status history
+	const histQ = `
+        INSERT INTO rider_ride_status_history (ride_id, from_status, to_status, actor_kind, actor_user_id, reason)
+        VALUES ($1, $2, 'partner_assigned', 'partner', $3, 'offer accepted')`
+	fromStatusPtr := &ride.Status
+	if _, err := tx.Exec(ctx, histQ, offer.RideID, fromStatusPtr, in.PartnerUserID); err != nil {
+		return nil, nil, fmt.Errorf("insert history: %w", err)
+	}
+
+	// 7. Insert outbox event
+	if in.OutboxEventType != "" {
+		if err := InsertOutboxEventTx(ctx, tx, in.OutboxEventType, "ride", offer.RideID.String(), in.OutboxPayload); err != nil {
+			return nil, nil, fmt.Errorf("insert outbox: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("commit accept and assign: %w", err)
+	}
+	return acceptedOffer, updatedRide, nil
+}
+
+// AcceptOfferTx is the race-safe accept path for backward-compatible offer updates.
 func (s *Store) AcceptOfferTx(ctx context.Context, offerID, partnerID uuid.UUID) (*RideOffer, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
