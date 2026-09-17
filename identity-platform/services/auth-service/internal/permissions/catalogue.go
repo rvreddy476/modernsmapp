@@ -232,32 +232,62 @@ var catalogue = map[string][]entry{
 		p("disputes.act", fin),
 		p("audit.read", audr),
 	},
+	// Content dashboard: social, tube, qa and chat carry no money, so moderator
+	// holds the queues, stats and content takedowns (.remove, questions.merge;
+	// step-up gated in admin-service), like food menu.moderate and commerce
+	// products.moderate. Suspending or disabling a business page is an account
+	// action, like restaurant.suspend and seller.suspend: admin only. Support
+	// holds reads only.
 	AppSocial: {
+		// stats.read: content counts only (post-service and user-service).
+		p("stats.read", mod, sup),
 		p("posts.moderate", mod),
+		p("posts.remove", mod),
 		p("reels.moderate", mod),
+		p("reels.remove", mod),
 		p("comments.moderate", mod),
+		p("comments.remove", mod),
 		p("reports.act", mod),
 		p("pages.moderate", mod),
+		p("pages.suspend"),
+		p("pages.disable"),
+		// documents.review: page documents include identity proof, so KYC reviewer,
+		// never moderator, matching trust_safety verification.review.
+		p("documents.review", kyc),
 		p("users.read", mod, sup),
 		p("audit.read", audr),
 	},
 	AppTube: {
+		p("stats.read", mod, sup),
 		p("videos.moderate", mod),
+		p("videos.remove", mod),
 		p("channels.moderate", mod),
+		// comments.moderate: no service checks it; post-service gates Tube comments
+		// with social:comments.moderate / social:comments.remove.
 		p("comments.moderate", mod),
 		p("reports.act", mod),
 		p("audit.read", audr),
 	},
 	AppQA: {
-		p("questions.moderate", mod),
-		p("answers.moderate", mod),
+		p("stats.read", mod, sup),
+		p("reports.read", mod, sup),
 		p("reports.act", mod),
+		p("questions.moderate", mod),
+		// questions.merge: irreversible, so its own permission; still content work.
+		p("questions.merge", mod),
+		p("answers.moderate", mod),
+		p("comments.moderate", mod),
 		p("audit.read", audr),
 	},
 	AppChat: {
-		p("channels.moderate", mod),
-		p("groups.moderate", mod),
+		// Shared by channel-service, group-service and community-service.
+		p("stats.read", mod, sup),
+		p("reports.read", mod, sup),
 		p("reports.act", mod),
+		// channels.moderate: channel suspend and unsuspend (channel-service).
+		p("channels.moderate", mod),
+		// groups.moderate: no service checks it today.
+		p("groups.moderate", mod),
 		p("audit.read", audr),
 	},
 	AppRider: {

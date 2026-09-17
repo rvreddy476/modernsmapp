@@ -116,6 +116,28 @@ func TestForTable(t *testing.T) {
 			hasNot: []string{"payments:stats.read", "payments:reconciliation.read", "payments:applications.read", "payments:refund.issue", "payments:applications.manage"}, noOther: true},
 		{name: "monetization auditor reads audit only", role: roles.Auditor, app: AppMonetization,
 			has: []string{"monetization:audit.read"}, hasNot: []string{"monetization:stats.read", "monetization:fund.read"}, noOther: true},
+		// Admin console Wave 2 — the Content dashboard.
+		{name: "social moderator takes content down, not pages or documents", role: roles.Moderator, app: AppSocial,
+			has:    []string{"social:stats.read", "social:posts.remove", "social:reels.remove", "social:comments.remove", "social:pages.moderate"},
+			hasNot: []string{"social:pages.suspend", "social:pages.disable", "social:documents.review"}, noOther: true},
+		{name: "social kyc reviewer reviews page documents only", role: roles.KYCReviewer, app: AppSocial,
+			has: []string{"social:documents.review"}, hasNot: []string{"social:pages.moderate", "social:stats.read", "social:posts.remove"}, noOther: true},
+		{name: "social admin holds the console permissions", role: roles.Admin, app: AppSocial,
+			has: []string{"social:stats.read", "social:posts.remove", "social:pages.suspend", "social:pages.disable", "social:documents.review"}, noOther: true},
+		{name: "social support reads only", role: roles.Support, app: AppSocial,
+			has: []string{"social:stats.read", "social:users.read"}, hasNot: []string{"social:posts.moderate", "social:posts.remove", "social:pages.moderate"}, noOther: true},
+		{name: "tube moderator", role: roles.Moderator, app: AppTube,
+			has: []string{"tube:stats.read", "tube:videos.moderate", "tube:videos.remove"}, noOther: true},
+		{name: "tube support reads stats only", role: roles.Support, app: AppTube,
+			has: []string{"tube:stats.read"}, hasNot: []string{"tube:videos.moderate", "tube:videos.remove"}, noOther: true},
+		{name: "qa moderator", role: roles.Moderator, app: AppQA,
+			has: []string{"qa:stats.read", "qa:reports.read", "qa:questions.merge", "qa:comments.moderate"}, hasNot: []string{"qa:audit.read"}, noOther: true},
+		{name: "qa support reads only", role: roles.Support, app: AppQA,
+			has: []string{"qa:stats.read", "qa:reports.read"}, hasNot: []string{"qa:reports.act", "qa:questions.merge", "qa:comments.moderate"}, noOther: true},
+		{name: "chat moderator", role: roles.Moderator, app: AppChat,
+			has: []string{"chat:stats.read", "chat:reports.read", "chat:reports.act", "chat:channels.moderate"}, noOther: true},
+		{name: "chat support reads only", role: roles.Support, app: AppChat,
+			has: []string{"chat:stats.read", "chat:reports.read"}, hasNot: []string{"chat:reports.act", "chat:channels.moderate"}, noOther: true},
 		{name: "support has no money or bans", role: roles.Support, app: "",
 			has:    []string{"food:orders.read", "platform:users.read"},
 			hasNot: []string{"payments:refund.issue", "dating:users.ban", "platform:users.suspend", "commerce:kyc.reveal"}},
@@ -212,6 +234,30 @@ var consolePermissionHolders = map[string][]string{
 	"payments:refunds.read":         {roles.Finance, roles.Support},
 	"payments:refund.issue":         {roles.Finance},
 	"payments:audit.read":           {roles.Auditor},
+	// Content dashboard: post-service, user-service (pages), qa-service and
+	// channel/group/community-service AdminPermissions.
+	"social:stats.read":       {roles.Moderator, roles.Support},
+	"social:posts.remove":     {roles.Moderator},
+	"social:reels.remove":     {roles.Moderator},
+	"social:comments.remove":  {roles.Moderator},
+	"social:pages.moderate":   {roles.Moderator},
+	"social:pages.suspend":    nil,
+	"social:pages.disable":    nil,
+	"social:documents.review": {roles.KYCReviewer},
+	"social:users.read":       {roles.Moderator, roles.Support},
+	"tube:stats.read":         {roles.Moderator, roles.Support},
+	"tube:videos.remove":      {roles.Moderator},
+	"tube:channels.moderate":  {roles.Moderator},
+	"qa:stats.read":           {roles.Moderator, roles.Support},
+	"qa:reports.read":         {roles.Moderator, roles.Support},
+	"qa:reports.act":          {roles.Moderator},
+	"qa:questions.merge":      {roles.Moderator},
+	"qa:comments.moderate":    {roles.Moderator},
+	"qa:audit.read":           {roles.Auditor},
+	"chat:stats.read":         {roles.Moderator, roles.Support},
+	"chat:reports.read":       {roles.Moderator, roles.Support},
+	"chat:reports.act":        {roles.Moderator},
+	"chat:channels.moderate":  {roles.Moderator},
 }
 
 // TestConsolePermissionsExactHolders: each new permission resolves for its
@@ -253,9 +299,12 @@ func TestModeratorNeverHoldsMoneyOrReview(t *testing.T) {
 		"food:restaurant.suspend", "food:delivery_partner.suspend",
 		"trust_safety:verification.review", "commerce:compliance.sweep", "commerce:stats.read",
 		"commerce:seller.suspend", "commerce:payouts.read",
+		// Content dashboard: page suspension and disabling are account actions,
+		// page documents are identity proof.
+		"social:pages.suspend", "social:pages.disable", "social:documents.review",
 	}
 	scopes := [][]string{mustFor(t, roles.Moderator, "")}
-	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety} {
+	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety, AppSocial} {
 		scopes = append(scopes, mustFor(t, roles.Moderator, app))
 	}
 	for _, perms := range scopes {
@@ -291,6 +340,61 @@ func TestSupportHoldsNoWrites(t *testing.T) {
 			continue
 		}
 		t.Errorf("support holds write permission %q", p)
+	}
+}
+
+// contentApps are the Content dashboard's applications.
+var contentApps = []string{AppSocial, AppTube, AppQA, AppChat}
+
+// TestSupportContentReadOnly: in the content apps support holds stats, report
+// and user reads only, never a .moderate, .remove, .merge or .act, at any scope.
+func TestSupportContentReadOnly(t *testing.T) {
+	for _, app := range append([]string{""}, contentApps...) {
+		for _, p := range mustFor(t, roles.Support, app) {
+			if !contains(contentApps, appOf(p)) {
+				continue
+			}
+			if !strings.HasSuffix(p, ".read") {
+				t.Errorf("support (scope %q) holds %q", app, p)
+			}
+		}
+	}
+	if !contains(mustFor(t, roles.Support, AppSocial), "social:stats.read") {
+		t.Error("social support lacks social:stats.read")
+	}
+}
+
+// TestSocialScopedRolesStayInSocial: a role granted social alone never gains a
+// tube, qa or chat permission, and the resolver agrees.
+func TestSocialScopedRolesStayInSocial(t *testing.T) {
+	for _, role := range roles.AdminRoles() {
+		if role == roles.Superadmin {
+			continue
+		}
+		perms, err := For(role, AppSocial)
+		if errors.Is(err, ErrNoPermissionsInApp) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("For(%q,%q): %v", role, AppSocial, err)
+		}
+		for _, p := range perms {
+			if a := appOf(p); a == AppTube || a == AppQA || a == AppChat {
+				t.Errorf("%s scoped to social holds %q", role, p)
+			}
+		}
+	}
+	got := Resolve([]Grant{{Role: roles.Moderator, App: AppSocial}}, time.Now())
+	if !got.Has("social:posts.remove") {
+		t.Fatalf("social moderator lacks social:posts.remove: %+v", got)
+	}
+	for _, other := range []string{"tube:videos.remove", "tube:stats.read", "qa:questions.merge", "qa:stats.read", "chat:reports.read", "chat:stats.read"} {
+		if got.Has(other) {
+			t.Errorf("social moderator holds %q", other)
+		}
+	}
+	if len(got.Apps) != 1 {
+		t.Errorf("social moderator resolved into %d apps: %+v", len(got.Apps), got)
 	}
 }
 
