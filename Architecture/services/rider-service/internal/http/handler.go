@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -18,6 +19,11 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// verifier admits admin-service tokens on the token-only admin family
+	// (admin_token.go); nil refuses every token.
+	verifier *servicetoken.Verifier
+	// audit overrides the admin audit sink (tests); nil means the store.
+	audit middleware.AuditWriter
 }
 
 // New constructs a Handler.
@@ -129,66 +135,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		rider.GET("/share/:token", h.GetSharedRide)
 	}
 
-	// --- Admin (gated by AdminGuard + AuditAdmin middleware) -------------
+	// --- Admin (LEGACY: gated by AdminGuard + AuditAdmin middleware) -----
 	// Nested under rider so the internal-key check runs before AdminGuard.
+	// The route table is adminRoutes (admin_token.go); this family ignores
+	// the per-route permission and keeps today's all-or-nothing admin scope.
 	admin := rider.Group("/admin")
 	admin.Use(middleware.AdminGuard())
-	admin.Use(middleware.AuditAdmin(h.svc.Store()))
-	{
-		admin.GET("/dashboard", h.AdminDashboard)
-
-		admin.GET("/partners", h.AdminListPartners)
-		admin.GET("/partners/:id", h.AdminGetPartner)
-		admin.POST("/partners/:id/approve", h.AdminApprovePartner)
-		admin.POST("/partners/:id/reject", h.AdminRejectPartner)
-		admin.POST("/partners/:id/suspend", h.AdminSuspendPartner)
-		admin.POST("/partners/:id/block", h.AdminBlockPartner)
-
-		admin.GET("/documents", h.AdminListDocuments)
-		admin.POST("/documents/:id/verify", h.AdminVerifyDocument)
-		admin.POST("/documents/:id/reject", h.AdminRejectDocument)
-
-		admin.GET("/vehicles", h.AdminListVehicles)
-		admin.POST("/vehicles/:id/verify", h.AdminVerifyVehicle)
-		admin.POST("/vehicles/:id/reject", h.AdminRejectVehicle)
-
-		admin.GET("/payments", h.AdminListPayments)
-		admin.POST("/payments/:id/verify", h.AdminVerifyPayment)
-		admin.POST("/payments/:id/reject", h.AdminRejectPayment)
-
-		admin.GET("/rides", h.AdminListRides)
-		admin.GET("/rides/live", h.AdminListLiveRides)
-		admin.GET("/safety/incidents/:id/alerts", h.AdminListSafetyContactAlerts)
-		admin.POST("/rides/:id/rating/visibility", h.AdminHideRideRating)
-		admin.GET("/reports/matching-health", h.AdminMatchingHealthReport)
-		admin.GET("/reports/partner-quality", h.AdminPartnerQualityReport)
-		admin.GET("/reports/supply-demand", h.AdminSupplyDemandReport)
-		admin.GET("/reports/safety", h.AdminSafetyIncidentReport)
-		admin.GET("/reports/compliance", h.AdminPartnerComplianceReport)
-		admin.POST("/rides/:id/cancel", h.AdminCancelRide)
-
-		admin.GET("/complaints", h.AdminListComplaints)
-		admin.POST("/complaints/:id/update-status", h.AdminUpdateComplaint)
-
-		admin.GET("/safety-incidents", h.AdminListSafetyIncidents)
-		admin.POST("/safety-incidents/:id/acknowledge", h.AdminAcknowledgeIncident)
-		admin.POST("/safety-incidents/:id/resolve", h.AdminResolveIncident)
-
-		admin.POST("/cities", h.AdminCreateCity)
-		admin.PATCH("/cities/:id", h.AdminUpdateCity)
-		admin.POST("/zones", h.AdminCreateZone)
-		admin.PATCH("/zones/:id", h.AdminUpdateZone)
-		admin.POST("/fare-rules", h.AdminCreateFareRule)
-		admin.PATCH("/fare-rules/:id", h.AdminUpdateFareRule)
-
-		admin.GET("/audit-logs", h.AdminListAuditLogs)
-
-		// --- S4 reports ----------------------------------------------
-		admin.GET("/reports/revenue", h.AdminRevenueReport)
-		admin.GET("/reports/cohort-retention", h.AdminCohortRetention)
-		admin.GET("/reports/customer-cohort", h.AdminCustomerCohort)
-		admin.GET("/reports/cron-runs", h.AdminCronRuns)
+	admin.Use(middleware.AuditAdmin(h.auditWriter()))
+	for _, rt := range h.adminRoutes() {
+		admin.Handle(rt.method, rt.path, rt.handler)
 	}
+
+	// --- Admin console (admin-service tokens only) ----------------------
+	// On the engine root, outside the internal-key group: the key is neither
+	// required nor evidence there. See admin_token.go.
+	h.registerInternalAdminRoutes(r)
 }
 
 // --- helpers --------------------------------------------------------------

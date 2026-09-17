@@ -63,7 +63,7 @@ func (s *Store) AdminDashboardCounts(ctx context.Context) (*AdminDashboardCounts
 	if err := s.db.QueryRow(ctx, `SELECT COUNT(*)::int FROM rider_rides WHERE status = 'completed' AND completed_at >= date_trunc('day', NOW())`).Scan(&out.CompletedToday); err != nil {
 		return nil, fmt.Errorf("count completed today: %w", err)
 	}
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*)::int FROM rider_rides WHERE status LIKE 'cancelled_%' AND cancelled_at >= date_trunc('day', NOW())`).Scan(&out.CancelledToday); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*)::int FROM rider_rides WHERE status::text LIKE 'cancelled_%' AND cancelled_at >= date_trunc('day', NOW())`).Scan(&out.CancelledToday); err != nil {
 		return nil, fmt.Errorf("count cancelled today: %w", err)
 	}
 	if err := s.db.QueryRow(ctx, `

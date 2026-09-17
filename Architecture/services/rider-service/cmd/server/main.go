@@ -209,7 +209,23 @@ func main() {
 	// picks them up like any other ride.
 	go riderSvc.StartScheduledRideActivationWorker(dispatchCtx)
 
-	handler := riderhttp.New(riderSvc, internalKey)
+	// Service-token verifier for the admin console family
+	// (/v1/rider/internal/admin/*): SERVICE_CALLERS=admin-service plus
+	// SERVICE_CALLER_ADMIN_SERVICE_{KID,PUBKEY,OPS}. Unset: no token is
+	// accepted and that family answers 401. A named caller with a missing
+	// key or empty ops refuses to start.
+	serviceVerifier, err := riderhttp.ServiceCallersFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("rider-service: SERVICE_CALLERS", "error", err)
+		os.Exit(1)
+	}
+	if serviceVerifier == nil {
+		slog.Warn("rider-service: SERVICE_CALLERS not set — admin-service tokens are refused; /v1/rider/internal/admin answers 401")
+	} else {
+		slog.Info("rider-service: service-token callers registered", "callers", serviceVerifier.Callers())
+	}
+
+	handler := riderhttp.New(riderSvc, internalKey).WithServiceAuth(serviceVerifier)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

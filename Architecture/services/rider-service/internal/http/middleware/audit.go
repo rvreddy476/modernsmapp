@@ -266,15 +266,24 @@ func clientIP(c *gin.Context) string {
 	return host
 }
 
+// adminPrefixes are the two admin families the middleware audits: the
+// LEGACY gateway family and the token-only admin-service family.
+var adminPrefixes = []string{"/v1/rider/admin/", "/v1/rider/internal/admin/"}
+
 // deriveTargetKind is the fallback when handlers forget to set
 // audit_target_kind. Maps `/v1/rider/admin/partners/...` -> "partner",
-// `/v1/rider/admin/documents/...` -> "document", etc.
+// `/v1/rider/internal/admin/documents/...` -> "document", etc.
 func deriveTargetKind(path string) string {
-	const prefix = "/v1/rider/admin/"
-	if !strings.HasPrefix(path, prefix) {
+	tail := ""
+	for _, prefix := range adminPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			tail = strings.TrimPrefix(path, prefix)
+			break
+		}
+	}
+	if tail == "" {
 		return "rider"
 	}
-	tail := strings.TrimPrefix(path, prefix)
 	first := tail
 	if i := strings.Index(tail, "/"); i >= 0 {
 		first = tail[:i]

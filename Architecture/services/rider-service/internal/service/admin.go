@@ -317,3 +317,9 @@ func (s *Service) emitAdminAction(ctx context.Context, adminID uuid.UUID, action
 		slog.Warn("rider: publish admin.action failed", "action", action, "target", targetID, "error", perr)
 	}
 }
+
+// AdminStats returns the admin console dashboard counts (admin-service,
+// rider:stats.read).
+func (s *Service) AdminStats(ctx context.Context) (*store.AdminStats, error) {
+	return s.store.AdminStats(ctx)
+}

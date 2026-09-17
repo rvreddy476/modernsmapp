@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 
+	"github.com/atpost/rider-service/internal/http/middleware"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -14,11 +15,15 @@ type AdminHideRatingRequest struct {
 }
 
 // AdminHideRideRating — POST /v1/rider/admin/rides/:id/rating/visibility
+//
+// The actor is the admin the guard resolved (middleware.AdminUserKey: the
+// gateway's X-User-Id on the LEGACY family, the signed act claim on the
+// admin-service token family), never a header read here.
 func (h *Handler) AdminHideRideRating(c *gin.Context) {
-	raw := c.GetHeader("X-User-Id")
-	adminID, err := uuid.Parse(raw)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+	c.Set(middleware.AuditActionKey, "rating.visibility")
+	c.Set(middleware.AuditTargetKindKey, "ride")
+	adminID, ok := adminUserID(c)
+	if !ok {
 		return
 	}
 	rideID, err := uuid.Parse(c.Param("id"))

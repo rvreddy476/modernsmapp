@@ -190,9 +190,9 @@ func (s *Store) ComputeDailyRevenueRaw(ctx context.Context, dayStart, dayEnd tim
 	const rideQ = `
         SELECT COUNT(*)::int,
                COUNT(*) FILTER (WHERE status = 'completed')::int,
-               COUNT(*) FILTER (WHERE status LIKE 'cancelled_%')::int,
+               COUNT(*) FILTER (WHERE status::text LIKE 'cancelled_%')::int,
                COALESCE(SUM(final_fare_paise) FILTER (WHERE status = 'completed'), 0)::bigint,
-               COALESCE(SUM(cancellation_fee_paise) FILTER (WHERE status LIKE 'cancelled_%'), 0)::bigint
+               COALESCE(SUM(cancellation_fee_paise) FILTER (WHERE status::text LIKE 'cancelled_%'), 0)::bigint
         FROM rider_rides
         WHERE created_at >= $1 AND created_at < $2`
 	if err := s.db.QueryRow(ctx, rideQ, dayStart, dayEnd).Scan(
@@ -239,9 +239,9 @@ func (s *Store) ComputeRevenueByCityForDay(ctx context.Context, dayStart, dayEnd
         SELECT city_id,
                COUNT(*)::int,
                COUNT(*) FILTER (WHERE status = 'completed')::int,
-               COUNT(*) FILTER (WHERE status LIKE 'cancelled_%')::int,
+               COUNT(*) FILTER (WHERE status::text LIKE 'cancelled_%')::int,
                COALESCE(SUM(final_fare_paise) FILTER (WHERE status = 'completed'), 0)::bigint,
-               COALESCE(SUM(cancellation_fee_paise) FILTER (WHERE status LIKE 'cancelled_%'), 0)::bigint
+               COALESCE(SUM(cancellation_fee_paise) FILTER (WHERE status::text LIKE 'cancelled_%'), 0)::bigint
         FROM rider_rides
         WHERE city_id IS NOT NULL
           AND created_at >= $1 AND created_at < $2
