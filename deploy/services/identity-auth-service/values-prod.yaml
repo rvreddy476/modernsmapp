@@ -44,6 +44,21 @@ externalSecret:
     # RS256 access-token signing (private key). When present, auth-service signs
     # RS256; verifiers use the matching public key. Remove to stay on HS256.
     - { secretKey: JWT_PRIVATE_KEY_PEM, remoteRef: jwt_private_key_pem }
+    # Admin console Wave 1 (the Access page): admin-service calls this
+    # service's token-only /v1/auth/internal/admin/* family (roles, user
+    # search, force-logout, audit) with a 60 s token it signs per call
+    # (audience "identity", scope = the one permission, act = the admin, jti
+    # single-use). NOT enabled yet: without the key the family accepts
+    # nothing (401 SERVICE_TOKEN_CHECK_UNAVAILABLE) and boot is not refused.
+    # To enable, in this order:
+    #   1. the founder's ONE ed25519 key (admin-service values, step 1): its
+    #      PUBLIC half goes to caller_admin_pubkey and the same kid to
+    #      caller_admin_kid in this service's secret store;
+    #   2. uncomment the two lines below (a pubkey without a kid refuses boot);
+    #   3. enable admin-service's two lines (its values file) and point its
+    #      AUTH_SERVICE_URL here (already set).
+    # - { secretKey: ADMIN_SERVICE_TOKEN_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: ADMIN_SERVICE_TOKEN_KID, remoteRef: caller_admin_kid }
 
 env:
   ENV: prod

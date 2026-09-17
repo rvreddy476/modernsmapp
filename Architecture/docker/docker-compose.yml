@@ -400,6 +400,15 @@ services:
       # superadmin to have 2FA enabled. Off by default so first-superadmin
       # bootstrap isn't locked out before enrolling MFA.
       REQUIRE_MFA_FOR_PRIVILEGED: ${REQUIRE_MFA_FOR_PRIVILEGED:-false}
+      # Admin console (Wave 1, B4 — the Access page): admin-service calls
+      # /v1/auth/internal/admin/* (roles, user search, force-logout, audit)
+      # with a 60 s token it signs per call: audience "identity", scope = the
+      # one permission it checked, act = the admin, jti single-use. This is
+      # the SAME public key every product registers, from the gitignored .env
+      # (no new key). Empty = the family accepts nothing; a pubkey without a
+      # kid refuses boot, so the kid keeps the products' default.
+      ADMIN_SERVICE_TOKEN_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
     ports:
       - "8081:8081"
     # identity-auth provisions the shared identity base tables (auth.*, plus
@@ -1489,6 +1498,11 @@ services:
       # Mopedu (rider-service), same token contract; rider registers
       # admin-service through RIDER_SERVICE_CALLERS below.
       RIDER_SERVICE_URL: http://rider-service:8116
+      # Access page (Wave 1, B4): role management through identity-auth's
+      # token-only /v1/auth/internal/admin/* family, same token contract
+      # (audience "identity"), at the URL the permission lookups already use.
+      # identity-auth registers ADMIN_SERVICE_TOKEN_PUBKEY / _KID above.
+      AUTH_SERVICE_URL: http://identity-auth:8081
       # A Feast refund AT OR ABOVE this many paise needs a second approver;
       # below it, step-up only. 500000 = ₹5,000 (founder's suggested value).
       ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: ${ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE:-500000}

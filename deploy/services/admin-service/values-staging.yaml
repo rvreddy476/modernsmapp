@@ -80,6 +80,11 @@ env:
   # Mopedu (rider-service), same key: enable rider-service first (numbered
   # steps in its values file).
   RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  # Access page (Wave 1, B4): role management through identity-auth's
+  # token-only admin family, same key (audience "identity"); also the URL of
+  # the permission lookups. Enable identity-auth-service's two commented
+  # lines first (numbered steps in its values file).
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
   # A Feast or monetization refund, or a payments refund resolved as money,
   # at or above this many paise needs a second approver.
   ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: '500000'

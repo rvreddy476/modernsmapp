@@ -148,7 +148,11 @@ func main() {
 			service.NewCommunityClient(env("COMMUNITY_SERVICE_URL", "http://community-service:8107"), tokenSigner),
 		).
 		// Mopedu: rider-service.
-		WithRider(service.NewRiderClient(env("RIDER_SERVICE_URL", "http://rider-service:8116"), tokenSigner))
+		WithRider(service.NewRiderClient(env("RIDER_SERVICE_URL", "http://rider-service:8116"), tokenSigner)).
+		// Access page: identity's admin console family, at the same
+		// AUTH_SERVICE_URL the permission lookups use (audience "identity";
+		// identity registers the same public key as ADMIN_SERVICE_TOKEN_PUBKEY).
+		WithIdentity(service.NewIdentityConsoleClient(authURL, tokenSigner))
 	slog.Info("refund two-person threshold (Feast, monetization, payments)", "paise", refundThreshold)
 
 	// 7. Gin with middleware stack

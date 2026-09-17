@@ -45,7 +45,21 @@ const (
 	// (rider-service/internal/http/admin_token.go), audience "rider".
 	RiderAudience    = "rider"
 	RiderAdminPrefix = "/v1/rider/internal/admin"
+
+	// Identity (Wave 1, B4 — the Access page): auth-service's token-only
+	// admin console family (auth-service/internal/http/admin_console.go),
+	// audience "identity". Identity additionally requires a jti and refuses a
+	// replayed one, which the shared signer already satisfies: Mint draws a
+	// fresh 16-byte random jti on every call and nothing here caches tokens.
+	IdentityAudience    = "identity"
+	IdentityAdminPrefix = "/v1/auth/internal/admin"
 )
+
+// NewIdentityConsoleClient builds the client for identity's admin console
+// family (role management, user search, session revocation, audit).
+func NewIdentityConsoleClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, IdentityAdminPrefix, IdentityAudience, signer)
+}
 
 // NewRiderClient builds the client for rider-service (Mopedu).
 func NewRiderClient(baseURL string, signer *servicetoken.Signer) *ProductClient {

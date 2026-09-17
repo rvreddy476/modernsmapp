@@ -143,6 +143,8 @@ var approvalLabels = map[string]string{
 	opMonEarningReverse:      "Reverse creator fund earning",
 	opMonRefundIssue:         "Refund monetization transaction",
 	opPayRefundResolve:       "Resolve payments refund",
+	opAccessRoleGrant:        "Grant role",
+	opAccessRoleRevoke:       "Revoke role",
 }
 
 // approvalSummary is a one-line description: what, on which target, and the
@@ -166,8 +168,22 @@ func approvalSummary(a approvals.Approval) string {
 		Resolution    string `json:"resolution"`
 		ApplicationID string `json:"application_id"`
 		Query         string `json:"query"`
+		Role          string `json:"role"`
+		App           string `json:"app"`
 	}
 	_ = json.Unmarshal(a.Payload, &p)
+	if p.Role != "" && (a.Operation == opAccessRoleGrant || a.Operation == opAccessRoleRevoke) {
+		s = label + " " + p.Role
+		if p.App != "" {
+			s += " in " + p.App
+		} else {
+			s += " platform-wide"
+		}
+		if target != "" {
+			s += " for user " + target
+		}
+		return s
+	}
 	if p.AmountPaise > 0 {
 		s += " for " + formatRupees(p.AmountPaise)
 	} else if a.Operation == opFoodRefundIssue {

@@ -44,6 +44,21 @@ externalSecret:
     remoteRef: jwt_kid_previous
   - secretKey: JWT_PRIVATE_KEY_PEM
     remoteRef: jwt_private_key_pem
+  # Admin console Wave 1 (the Access page): admin-service calls this
+  # service's token-only /v1/auth/internal/admin/* family with a 60 s token
+  # it signs per call (audience "identity", jti single-use). NOT enabled
+  # yet: without the key the family accepts nothing; boot is not refused.
+  # To enable, in this order:
+  #   1. the founder's ONE ed25519 key (admin-service values, step 1): its
+  #      PUBLIC half to caller_admin_pubkey and the same kid to
+  #      caller_admin_kid in the key vault for this service;
+  #   2. uncomment the four lines below (a pubkey without a kid refuses boot);
+  #   3. enable admin-service's lines (its values file); its AUTH_SERVICE_URL
+  #      already points here.
+  # - secretKey: ADMIN_SERVICE_TOKEN_PUBKEY
+  #   remoteRef: caller_admin_pubkey
+  # - secretKey: ADMIN_SERVICE_TOKEN_KID
+  #   remoteRef: caller_admin_kid
   secretStoreName: azure-key-vault
 env:
   ENV: prod

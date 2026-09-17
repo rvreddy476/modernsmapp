@@ -92,6 +92,8 @@ type Handler struct {
 	community *service.ProductClient
 	// Mopedu: rider-service.
 	rider *service.ProductClient
+	// Access page: identity's admin console family (roles, users, sessions).
+	identity *service.ProductClient
 	// refundThresholdPaise: a Feast or monetization refund, or a payments
 	// refund resolved as money, at or above it is two-person.
 	refundThresholdPaise int64
@@ -167,6 +169,12 @@ func (h *Handler) WithRider(rc *service.ProductClient) *Handler {
 	return h
 }
 
+// WithIdentity installs the identity console client (the Access page).
+func (h *Handler) WithIdentity(ic *service.ProductClient) *Handler {
+	h.identity = ic
+	return h
+}
+
 func New(svc adminService, gate *Gate, appr *approvals.Service) *Handler {
 	return &Handler{svc: svc, gate: gate, approvals: appr, refundThresholdPaise: DefaultRefundTwoPersonThresholdPaise}
 }
@@ -190,6 +198,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterQARoutes(r)
 	h.RegisterChatRoutes(r)
 	h.RegisterRiderRoutes(r)
+	h.RegisterAccessRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err
 	}

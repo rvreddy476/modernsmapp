@@ -27,7 +27,17 @@ var navigationOrder = []struct{ app, label string }{
 	{"rider", "Mopedu"},
 	{"trust_safety", "Trust & safety"},
 	{"platform", "Platform"},
+	// Access (roles, holders, sessions) is a page of the platform, shown to
+	// anyone holding one of accessPermissions; its app name is not one
+	// identity knows, so it never collides with a permission map key.
+	{accessNavApp, "Access"},
 }
+
+// accessNavApp is the navigation entry for the Access page.
+const accessNavApp = "access"
+
+// accessPermissions are the platform permissions that open the Access page.
+var accessPermissions = []string{permPlatformRolesRead, permPlatformRolesManage, permPlatformSessionsRevoke, permPlatformUsersSearch}
 
 // MeResponse is GET /v1/admin/me.
 type MeResponse struct {
@@ -108,6 +118,12 @@ func navigation(p adminauth.Permissions) []NavigationItem {
 	}
 	if len(p.Platform) > 0 {
 		visible["platform"] = true
+	}
+	for _, perm := range accessPermissions {
+		if p.Has(perm) {
+			visible[accessNavApp] = true
+			break
+		}
 	}
 	// Payments confined to applications: a payments view held in a product app.
 	var confined []string
