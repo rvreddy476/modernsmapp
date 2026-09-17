@@ -69,6 +69,9 @@ env:
   CHANNEL_SERVICE_URL: http://channel-service.atpost.svc.cluster.local:8106
   GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
   COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
+  # Mopedu (rider-service), same key: enable rider-service first (numbered
+  # steps in its values file).
+  RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
   ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: '500000'
 ingress:
   enabled: false

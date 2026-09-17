@@ -62,6 +62,14 @@ var (
 	communityAll = groupAll
 	// socialAll is every social permission the console may hold (both products).
 	socialAll = append(append([]string{}, postAll[:9]...), pagesAll[1:]...)
+	// riderAll is rider-service's AdminPermissions (Mopedu).
+	riderAll = []string{
+		permRiderStatsRead, permRiderPartnersRead, permRiderPartnersApprove, permRiderPartnersSuspend,
+		permRiderDocumentsReview, permRiderVehiclesReview, permRiderPaymentsRead, permRiderPaymentsSettle, permRiderPaymentsReject,
+		permRiderRidesRead, permRiderRidesCancel, permRiderRatingsModerate, permRiderComplaintsAct,
+		permRiderIncidentsRead, permRiderIncidentsAct, permRiderIncidentsReveal, permRiderCitiesManage, permRiderFaresManage,
+		permRiderReportsRead, permRiderAuditRead,
+	}
 )
 
 // productHit is one call a stub product saw, with the token verified by a
@@ -142,6 +150,7 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 	monURL, payURL := stub("monetization", monAll), stub("payments", payAll)
 	postURL, pagesURL, qaURL := stub("post", postAll), stub("social", pagesAll), stub("qa", qaAll)
 	channelURL, groupURL, communityURL := stub("chat", channelAll), stub("chat", groupAll), stub("chat", communityAll)
+	riderURL := stub("rider", riderAll)
 
 	var signer *servicetoken.Signer
 	if withKey {
@@ -163,7 +172,8 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 		WithPost(service.NewPostClient(postURL, signer)).
 		WithUserPages(service.NewUserPagesClient(pagesURL, signer)).
 		WithQA(service.NewQAClient(qaURL, signer)).
-		WithChat(service.NewChannelClient(channelURL, signer), service.NewGroupClient(groupURL, signer), service.NewCommunityClient(communityURL, signer))
+		WithChat(service.NewChannelClient(channelURL, signer), service.NewGroupClient(groupURL, signer), service.NewCommunityClient(communityURL, signer)).
+		WithRider(service.NewRiderClient(riderURL, signer))
 	if err := h.RegisterAllRoutes(rg.r); err != nil {
 		t.Fatalf("route table refused: %v", err)
 	}

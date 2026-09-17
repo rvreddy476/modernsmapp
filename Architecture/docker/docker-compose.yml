@@ -1486,6 +1486,9 @@ services:
       CHANNEL_SERVICE_URL: http://channel-service:8106
       GROUP_SERVICE_URL: http://group-service:8090
       COMMUNITY_SERVICE_URL: http://community-service:8107
+      # Mopedu (rider-service), same token contract; rider registers
+      # admin-service through RIDER_SERVICE_CALLERS below.
+      RIDER_SERVICE_URL: http://rider-service:8116
       # A Feast refund AT OR ABOVE this many paise needs a second approver;
       # below it, step-up only. 500000 = ₹5,000 (founder's suggested value).
       ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: ${ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE:-500000}
@@ -1865,6 +1868,15 @@ services:
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}
       DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:-}
       DIGILOCKER_REDIRECT_URI: ${DIGILOCKER_REDIRECT_URI:-https://atpost.app/rider/aadhaar/callback}
+      # Admin console (Mopedu): /v1/rider/internal/admin/* admits only
+      # admin-service tokens (audience "rider") scoped to the one permission
+      # admin-service checked, naming the admin. OPS is rider's
+      # AdminPermissions. A distinct .env name, because SERVICE_CALLERS in
+      # .env is payments'. Blank = no tokens accepted (401).
+      SERVICE_CALLERS: ${RIDER_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: rider:stats.read,rider:partners.read,rider:partners.approve,rider:partners.suspend,rider:documents.review,rider:vehicles.review,rider:payments.read,rider:payments.settle,rider:payments.reject,rider:rides.read,rider:rides.cancel,rider:ratings.moderate,rider:complaints.act,rider:incidents.read,rider:incidents.act,rider:incidents.reveal,rider:cities.manage,rider:fares.manage,rider:reports.read,rider:audit.read
     # No host port, on purpose. rider-service authorises on X-User-Id and
     # X-Scopes, so it is reachable only through api-gateway on this network.
     # Health: docker compose exec rider-service wget -qO- http://localhost:8116/healthz

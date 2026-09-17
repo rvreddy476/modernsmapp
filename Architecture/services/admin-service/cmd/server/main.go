@@ -124,7 +124,7 @@ func main() {
 		os.Exit(1)
 	}
 	if tokenSigner == nil {
-		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE (also Monetization, Payments)")
+		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE (also Monetization, Payments, the content apps and Mopedu)")
 	}
 	refundThreshold, err := refundThresholdFromEnv(os.Getenv)
 	if err != nil {
@@ -146,7 +146,9 @@ func main() {
 			service.NewChannelClient(env("CHANNEL_SERVICE_URL", "http://channel-service:8106"), tokenSigner),
 			service.NewGroupClient(env("GROUP_SERVICE_URL", "http://group-service:8090"), tokenSigner),
 			service.NewCommunityClient(env("COMMUNITY_SERVICE_URL", "http://community-service:8107"), tokenSigner),
-		)
+		).
+		// Mopedu: rider-service.
+		WithRider(service.NewRiderClient(env("RIDER_SERVICE_URL", "http://rider-service:8116"), tokenSigner))
 	slog.Info("refund two-person threshold (Feast, monetization, payments)", "paise", refundThreshold)
 
 	// 7. Gin with middleware stack

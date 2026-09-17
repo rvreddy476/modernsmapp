@@ -90,6 +90,8 @@ type Handler struct {
 	channel   *service.ProductClient
 	group     *service.ProductClient
 	community *service.ProductClient
+	// Mopedu: rider-service.
+	rider *service.ProductClient
 	// refundThresholdPaise: a Feast or monetization refund, or a payments
 	// refund resolved as money, at or above it is two-person.
 	refundThresholdPaise int64
@@ -159,6 +161,12 @@ func (h *Handler) WithChat(channel, group, community *service.ProductClient) *Ha
 	return h
 }
 
+// WithRider installs the rider-service client (Mopedu).
+func (h *Handler) WithRider(rc *service.ProductClient) *Handler {
+	h.rider = rc
+	return h
+}
+
 func New(svc adminService, gate *Gate, appr *approvals.Service) *Handler {
 	return &Handler{svc: svc, gate: gate, approvals: appr, refundThresholdPaise: DefaultRefundTwoPersonThresholdPaise}
 }
@@ -181,6 +189,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterTubeRoutes(r)
 	h.RegisterQARoutes(r)
 	h.RegisterChatRoutes(r)
+	h.RegisterRiderRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err
 	}

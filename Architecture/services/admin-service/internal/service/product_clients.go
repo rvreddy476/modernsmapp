@@ -40,7 +40,17 @@ const (
 	ChannelAdminPrefix   = "/v1/broadcast-channels/internal/admin"
 	GroupAdminPrefix     = "/v1/groups/internal/admin"
 	CommunityAdminPrefix = "/v1/communities/internal/admin"
+
+	// Mopedu (Wave 2): rider-service's token-only admin family
+	// (rider-service/internal/http/admin_token.go), audience "rider".
+	RiderAudience    = "rider"
+	RiderAdminPrefix = "/v1/rider/internal/admin"
 )
+
+// NewRiderClient builds the client for rider-service (Mopedu).
+func NewRiderClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, RiderAdminPrefix, RiderAudience, signer)
+}
 
 // NewPostClient builds the client for post-service (Social and Tube).
 func NewPostClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
