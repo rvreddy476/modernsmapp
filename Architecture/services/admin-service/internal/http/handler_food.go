@@ -55,15 +55,16 @@ const (
 	opFoodDeliveryPartnerState = "food.delivery_partner.status"
 )
 
-// DefaultRefundTwoPersonThresholdPaise is ₹5,000: a refund of at least this
-// much needs a second approver (ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE).
-const DefaultRefundTwoPersonThresholdPaise int64 = 500000
+// Every refund is two-person (founder decision, 2026-09-17): there is no
+// amount threshold. Issuing a refund is declared twoPerson in the table, so
+// the gate needs a second holder whatever the decision reports; approving a
+// refund request is decided per request (rejecting moves no money). The
+// decisions validate the body and record the amount, when it is known, for
+// the audit row and the approval summary only.
 
-// refundNeedsTwoPerson is the threshold rule: AT OR ABOVE the threshold is
-// two-person; strictly below is step-up only.
-func refundNeedsTwoPerson(amountPaise, thresholdPaise int64) bool {
-	return amountPaise >= thresholdPaise
-}
+// ctxFoodRefundPaise carries a refund request's stored amount from the
+// decision to the handler, for the approval summary only.
+const ctxFoodRefundPaise = "admin.food.refund_paise"
 
 // FoodRoutes is the Feast route table under /v1/admin/food. Every entry
 // forwards to food's token-only family with a token scoped to its permission
@@ -91,9 +92,10 @@ var FoodRoutes = []productRoute{
 	{method: http.MethodGet, path: "/orders", operation: "food.orders.list", permission: permFoodOrdersRead},
 	{method: http.MethodGet, path: "/orders/:orderId", operation: "food.order.read", permission: permFoodOrdersRead, targetType: "food_order"},
 	{method: http.MethodPost, path: "/orders/:orderId/cancel", operation: "food.order.cancel", permission: permFoodOrdersCancel, stepUp: true, targetType: "food_order"},
-	// Step-up always; two-person at or above the refund threshold.
-	{method: http.MethodPost, path: "/orders/:orderId/refund", operation: opFoodRefundIssue, permission: permFoodRefundIssue, stepUp: true, mayTwoPerson: true, targetType: "food_order", idempotent: true},
+	// Step-up and two-person, always: every refund needs a second person.
+	{method: http.MethodPost, path: "/orders/:orderId/refund", operation: opFoodRefundIssue, permission: permFoodRefundIssue, stepUp: true, twoPerson: true, targetType: "food_order", idempotent: true},
 	{method: http.MethodGet, path: "/refunds", operation: "food.refunds.list", permission: permFoodRefundsRead},
+	// Step-up always; approving is two-person (decided per request), rejecting moves no money.
 	{method: http.MethodPost, path: "/refunds/:refundId/decide", operation: opFoodRefundDecide, permission: permFoodRefundIssue, stepUp: true, mayTwoPerson: true, targetType: "food_refund_request"},
 
 	{method: http.MethodPost, path: "/settlements/generate", operation: "food.settlements.generate", permission: permFoodSettlementGenerate, stepUp: true, idempotent: true},
@@ -150,15 +152,13 @@ type foodStatusBody struct {
 
 // RegisterFoodRoutes adds the Feast dashboard under /v1/admin/food.
 //
-//	two-person   settlement mark-paid (both kinds), always
-//	             refund issue and refund-request approval AT OR ABOVE
-//	             ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE (default ₹5,000)
+//	two-person   settlement mark-paid (both kinds), refund issue and
+//	             refund-request approval, always (no amount threshold)
 //	step-up      restaurant/rider suspension, document decisions, rider KYC,
 //	             payout accounts, order cancel, refunds, settlement generate,
 //	             settlement file create and download, coupon update
 func (h *Handler) RegisterFoodRoutes(r *gin.Engine) {
 	p := product{app: "food", label: "Feast", prefix: "/v1/admin/food", client: h.food}
-	threshold := h.refundThresholdPaise
 
 	routes := make([]productRoute, len(FoodRoutes))
 	copy(routes, FoodRoutes)
@@ -169,9 +169,9 @@ func (h *Handler) RegisterFoodRoutes(r *gin.Engine) {
 		case opFoodDeliveryPartnerState:
 			routes[i].decide = foodStatusDecision(permFoodRiderApprove, permFoodRiderSuspend)
 		case opFoodRefundIssue:
-			routes[i].decide = h.foodRefundIssueDecision(threshold)
+			routes[i].decide = foodRefundIssueDecision
 		case opFoodRefundDecide:
-			routes[i].decide = h.foodRefundDecideDecision(threshold)
+			routes[i].decide = h.foodRefundDecideDecision
 		}
 	}
 
@@ -295,89 +295,30 @@ func readRefundBody(c *gin.Context) (foodRefundBody, error) {
 	return b, nil
 }
 
-// foodRefundIssueDecision applies the threshold before anything is called.
-// A full refund (no amount) is bounded by the order total when the admin may
-// read orders; otherwise the amount is unknown and it is two-person.
-func (h *Handler) foodRefundIssueDecision(threshold int64) func(*gin.Context, adminauth.Permissions) (Decision, error) {
-	return func(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
-		if !perms.Has(permFoodRefundIssue) {
-			return Decision{}, nil // the gate refuses; nothing is looked up
-		}
-		orderID, err := uuid.Parse(c.Param("orderId"))
-		if err != nil {
-			return Decision{}, badRequest(CodeInvalidID, "Invalid order id")
-		}
-		b, err := readRefundBody(c)
-		if err != nil {
-			return Decision{}, err
-		}
-		paise, known, err := parseRefundAmount(b)
-		if err != nil {
-			return Decision{}, err
-		}
-		audit := map[string]any{"refund_threshold_paise": threshold}
-		if known {
-			audit["amount_paise"] = paise
-			return Decision{TwoPerson: refundNeedsTwoPerson(paise, threshold), Audit: audit}, nil
-		}
-		// Full refund: what remains is at most the order total.
-		bound, ok := h.foodOrderTotalPaise(c, perms, orderID)
-		if !ok {
-			audit["amount_basis"] = "unknown"
-			return Decision{TwoPerson: true, Audit: audit}, nil
-		}
-		audit["amount_basis"], audit["order_total_paise"] = "order_total", bound
-		return Decision{TwoPerson: refundNeedsTwoPerson(bound, threshold), Audit: audit}, nil
+// foodRefundIssueDecision validates the refund body before anything is
+// called and records the amount for the audit row. The route is two-person:
+// a stated amount and a full refund (no amount) are both sent for approval,
+// so the order total is never read here.
+func foodRefundIssueDecision(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
+	if !perms.Has(permFoodRefundIssue) {
+		return Decision{}, nil // the gate refuses; nothing is parsed
 	}
-}
-
-// foodOrderTotalPaise reads the order total with a token scoped to
-// food:orders.read, only when the admin holds it.
-func (h *Handler) foodOrderTotalPaise(c *gin.Context, perms adminauth.Permissions, orderID uuid.UUID) (int64, bool) {
-	if !perms.Has(permFoodOrdersRead) {
-		return 0, false
+	if _, err := uuid.Parse(c.Param("orderId")); err != nil {
+		return Decision{}, badRequest(CodeInvalidID, "Invalid order id")
 	}
-	resp, err := h.food.Do(productContext(c), service.ProductRequest{
-		Method: http.MethodGet, Path: "/orders/" + orderID.String(), Permission: permFoodOrdersRead, Actor: actorFrom(c),
-	})
-	if err != nil || resp.Status != http.StatusOK {
-		return 0, false
+	b, err := readRefundBody(c)
+	if err != nil {
+		return Decision{}, err
 	}
-	return foodOrderTotalFromDetail(resp.Body)
-}
-
-// foodOrderTotalFromDetail reads the total from food's order detail
-// (postgres.Order), where it is nested, never top level:
-//
-//	data.money.totals_paise.final_amount_paise   integer paise (preferred)
-//	data.totals.final_amount                     rupees, float (orders without the money block)
-//
-// Anything else is unknown, and the caller treats unknown as two-person.
-func foodOrderTotalFromDetail(body []byte) (int64, bool) {
-	var o struct {
-		Money *struct {
-			TotalsPaise *struct {
-				FinalAmountPaise *int64 `json:"final_amount_paise"`
-			} `json:"totals_paise"`
-		} `json:"money"`
-		Totals *struct {
-			FinalAmount *float64 `json:"final_amount"`
-		} `json:"totals"`
+	paise, known, err := parseRefundAmount(b)
+	if err != nil {
+		return Decision{}, err
 	}
-	if json.Unmarshal(envelopeData(body), &o) != nil {
-		return 0, false
+	audit := map[string]any{"amount_basis": "full_refund"}
+	if known {
+		audit["amount_basis"], audit["amount_paise"] = "stated", paise
 	}
-	if o.Money != nil && o.Money.TotalsPaise != nil && o.Money.TotalsPaise.FinalAmountPaise != nil {
-		if p := *o.Money.TotalsPaise.FinalAmountPaise; p > 0 && p <= maxRefundPaise {
-			return p, true
-		}
-	}
-	if o.Totals != nil && o.Totals.FinalAmount != nil {
-		if f := *o.Totals.FinalAmount; f > 0 && !math.IsInf(f, 0) && f*100 <= float64(maxRefundPaise) {
-			return int64(math.Round(f * 100)), true
-		}
-	}
-	return 0, false
+	return Decision{TwoPerson: true, Audit: audit}, nil
 }
 
 type refundIssuePayload struct {
@@ -470,37 +411,39 @@ func readRefundDecideBody(c *gin.Context) (foodRefundDecideBody, error) {
 	return b, nil
 }
 
-// foodRefundDecideDecision: rejecting moves no money (step-up only).
-// Approving is judged by the stored request's amount, read from food with a
-// food:refunds.read token when the admin holds it; an amount that cannot be
-// established is treated as at or above the threshold.
-func (h *Handler) foodRefundDecideDecision(threshold int64) func(*gin.Context, adminauth.Permissions) (Decision, error) {
-	return func(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
-		if !perms.Has(permFoodRefundIssue) {
-			return Decision{}, nil
-		}
-		refundID, err := uuid.Parse(c.Param("refundId"))
-		if err != nil {
-			return Decision{}, badRequest(CodeInvalidID, "Invalid refund id")
-		}
-		b, err := readRefundDecideBody(c)
-		if err != nil {
-			return Decision{}, err
-		}
-		audit := map[string]any{"status": b.Status, "refund_threshold_paise": threshold}
-		if b.Status == "rejected" {
-			return Decision{Audit: audit}, nil
-		}
-		paise, ok := h.foodRefundRequestPaise(c, perms, refundID)
-		if !ok {
-			audit["amount_basis"] = "unknown"
-			return Decision{TwoPerson: true, Audit: audit}, nil
-		}
-		audit["amount_paise"] = paise
-		return Decision{TwoPerson: refundNeedsTwoPerson(paise, threshold), Audit: audit}, nil
+// foodRefundDecideDecision: rejecting moves no money (step-up only);
+// approving is two-person, always. The stored request's amount is read from
+// food with a food:refunds.read token when the admin holds it, for the audit
+// row and the approval summary only: it never changes the decision, and when
+// it cannot be read the summary says the amount is not stated.
+func (h *Handler) foodRefundDecideDecision(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
+	if !perms.Has(permFoodRefundIssue) {
+		return Decision{}, nil
 	}
+	refundID, err := uuid.Parse(c.Param("refundId"))
+	if err != nil {
+		return Decision{}, badRequest(CodeInvalidID, "Invalid refund id")
+	}
+	b, err := readRefundDecideBody(c)
+	if err != nil {
+		return Decision{}, err
+	}
+	audit := map[string]any{"status": b.Status}
+	if b.Status == "rejected" {
+		return Decision{Audit: audit}, nil
+	}
+	if paise, ok := h.foodRefundRequestPaise(c, perms, refundID); ok {
+		audit["amount_paise"] = paise
+		c.Set(ctxFoodRefundPaise, paise)
+	} else {
+		audit["amount_basis"] = "unknown"
+	}
+	return Decision{TwoPerson: true, Audit: audit}, nil
 }
 
+// foodRefundRequestPaise is a best-effort read of the request's amount for
+// the audit row and the approval summary; ok is false when the admin may not
+// list refunds or the request is not among the ones awaiting a decision.
 func (h *Handler) foodRefundRequestPaise(c *gin.Context, perms adminauth.Permissions, refundID uuid.UUID) (int64, bool) {
 	if !perms.Has(permFoodRefundsRead) {
 		return 0, false
@@ -533,6 +476,9 @@ type refundDecidePayload struct {
 	RefundID string `json:"refund_id"`
 	Status   string `json:"status"`
 	Reason   string `json:"reason,omitempty"`
+	// AmountPaise is the request's stored amount when it could be read
+	// (approval summary only; food decides from its own record).
+	AmountPaise int64 `json:"amount_paise,omitempty"`
 }
 
 func refundDecideRequest(_ context.Context, _ string, payload json.RawMessage) (service.ProductRequest, error) {
@@ -559,6 +505,9 @@ func (h *Handler) foodRefundDecide(p product) gin.HandlerFunc {
 		}
 		b, _ := readRefundDecideBody(c) // validated by the decision
 		payload := refundDecidePayload{RefundID: refundID.String(), Status: b.Status, Reason: b.Reason}
+		if v, ok := c.Get(ctxFoodRefundPaise); ok {
+			payload.AmountPaise, _ = v.(int64)
+		}
 		h.foodRunOrSubmit(c, p, "food_refund_request", refundID.String(), b.Reason, payload, refundDecideRequest)
 	}
 }

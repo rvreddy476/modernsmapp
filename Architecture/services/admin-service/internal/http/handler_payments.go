@@ -93,8 +93,8 @@ var PaymentsRoutes = []productRoute{
 // RegisterPaymentsRoutes adds the Payments dashboard under /v1/admin/payments.
 //
 //	step-up      refund resolve (every resolution), application registry PATCH
-//	two-person   refund resolve as refunded_manually or written_off AT OR ABOVE
-//	             ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE
+//	two-person   refund resolve as refunded_manually or written_off, always
+//	             (no amount threshold); test_data moves no money
 //	confinement  every route: see paymentsScopeFor
 func (h *Handler) RegisterPaymentsRoutes(r *gin.Engine) {
 	p := product{app: paymentsAuditApp, label: "Payments", prefix: "/v1/admin/payments", client: h.payments}
@@ -105,7 +105,7 @@ func (h *Handler) RegisterPaymentsRoutes(r *gin.Engine) {
 	for i := range routes {
 		routes[i].admitsHeldAs = true
 		if routes[i].operation == opPayRefundResolve {
-			routes[i].decide = h.paymentsResolveDecision(h.refundThresholdPaise)
+			routes[i].decide = h.paymentsResolveDecision
 			special[opPayRefundResolve] = h.paymentsResolve(p)
 			continue
 		}
@@ -295,45 +295,42 @@ func readPaymentsResolveBody(c *gin.Context) (paymentsResolveBody, error) {
 }
 
 // paymentsResolveDecision decides the gate from the resolution, before any
-// resolve call: test_data is step-up only; refunded_manually and written_off
-// are two-person at or above the threshold, judged by the refund's stored
-// amount (read first, confined like the resolve); an amount that cannot be
-// established counts as at or above.
-func (h *Handler) paymentsResolveDecision(threshold int64) func(*gin.Context, adminauth.Permissions) (Decision, error) {
-	return func(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
-		s, ok, err := paymentsScopeFor(c, perms, permPayRefundIssue)
-		if err != nil || !ok {
-			return Decision{}, err // the gate refuses; nothing is looked up
-		}
-		id, err := uuid.Parse(c.Param("commandId"))
-		if err != nil {
-			return Decision{}, badRequest(CodeInvalidID, "Invalid refund command id")
-		}
-		b, err := readPaymentsResolveBody(c)
-		if err != nil {
-			return Decision{}, err
-		}
-		c.Set(ctxPaymentsApp, s.application)
-		audit := scopeAudit(s)
-		audit["resolution"] = b.Resolution
-		if b.Resolution == resolutionTestData {
-			return Decision{HeldAs: s.heldAs, Audit: audit}, nil
-		}
-		audit["refund_threshold_paise"] = threshold
-		paise, known := h.paymentsRefundPaise(c, perms, s, id)
-		if !known {
-			audit["amount_basis"] = "unknown"
-			return Decision{HeldAs: s.heldAs, TwoPerson: true, Audit: audit}, nil
-		}
+// resolve call: test_data moves no money and is step-up only; refunded_manually
+// and written_off are two-person, always. The refund's stored amount is read
+// first (confined like the resolve) for the audit row and the approval summary
+// only: a read that fails never changes the decision.
+func (h *Handler) paymentsResolveDecision(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
+	s, ok, err := paymentsScopeFor(c, perms, permPayRefundIssue)
+	if err != nil || !ok {
+		return Decision{}, err // the gate refuses; nothing is looked up
+	}
+	id, err := uuid.Parse(c.Param("commandId"))
+	if err != nil {
+		return Decision{}, badRequest(CodeInvalidID, "Invalid refund command id")
+	}
+	b, err := readPaymentsResolveBody(c)
+	if err != nil {
+		return Decision{}, err
+	}
+	c.Set(ctxPaymentsApp, s.application)
+	audit := scopeAudit(s)
+	audit["resolution"] = b.Resolution
+	if b.Resolution == resolutionTestData {
+		return Decision{HeldAs: s.heldAs, Audit: audit}, nil
+	}
+	if paise, known := h.paymentsRefundPaise(c, perms, s, id); known {
 		c.Set(ctxPaymentsPaise, paise)
 		audit["amount_paise"] = paise
-		return Decision{HeldAs: s.heldAs, TwoPerson: refundNeedsTwoPerson(paise, threshold), Audit: audit}, nil
+	} else {
+		audit["amount_basis"] = "unknown"
 	}
+	return Decision{HeldAs: s.heldAs, TwoPerson: true, Audit: audit}, nil
 }
 
-// paymentsRefundPaise reads the refund command's amount with a
-// payments:refunds.read token, only when the admin may read it in the same
-// scope (the payments permission, or the confined one for the same app).
+// paymentsRefundPaise is a best-effort read of the refund command's amount
+// (audit row and approval summary only) with a payments:refunds.read token,
+// only when the admin may read it in the same scope (the payments permission,
+// or the confined one for the same app).
 func (h *Handler) paymentsRefundPaise(c *gin.Context, perms adminauth.Permissions, s paymentsScope, id uuid.UUID) (int64, bool) {
 	mayRead := perms.Has(permPayRefundsRead)
 	if s.heldAs != "" {
@@ -365,7 +362,8 @@ type paymentsResolvePayload struct {
 	Resolution    string `json:"resolution"`
 	Note          string `json:"note"`
 	ApplicationID string `json:"application_id,omitempty"`
-	// AmountPaise is the amount the threshold was judged on (summary only).
+	// AmountPaise is the refund's stored amount when it could be read
+	// (approval summary only; payments resolves from its own record).
 	AmountPaise int64 `json:"amount_paise,omitempty"`
 }
 

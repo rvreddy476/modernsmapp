@@ -23,7 +23,7 @@ func qaCase(rt productRoute) string {
 }
 
 func TestQARoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(QARoutes) != 12 {
 		t.Fatalf("QARoutes has %d entries, want 12", len(QARoutes))
 	}
@@ -35,7 +35,7 @@ func TestQARoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 }
 
 func TestQARoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range QARoutes {
 		if rt.stepUp != (rt.operation == "qa.question.merge") {
 			t.Fatalf("%s declares step-up=%v", rt.operation, rt.stepUp)
@@ -47,7 +47,7 @@ func TestQARoutes_StepUp(t *testing.T) {
 // Every Q&A write needs a reason; a write without one is refused before
 // qa-service is called and audited as denied. Reads need none.
 func TestQAWrites_ReasonRequiredBeforeTheCall(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, qaAll...)
 	long := make([]byte, maxReasonLength+1)

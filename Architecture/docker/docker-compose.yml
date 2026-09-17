@@ -1503,9 +1503,6 @@ services:
       # (audience "identity"), at the URL the permission lookups already use.
       # identity-auth registers ADMIN_SERVICE_TOKEN_PUBKEY / _KID above.
       AUTH_SERVICE_URL: http://identity-auth:8081
-      # A Feast refund AT OR ABOVE this many paise needs a second approver;
-      # below it, step-up only. 500000 = ₹5,000 (founder's suggested value).
-      ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: ${ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE:-500000}
     ports:
       - "8096:8096"
     depends_on:

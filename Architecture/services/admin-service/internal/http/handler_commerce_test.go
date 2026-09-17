@@ -22,7 +22,7 @@ func commerceCase(rt productRoute) string {
 }
 
 func TestCommerceRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(CommerceRoutes) != 23 {
 		t.Fatalf("CommerceRoutes has %d entries, want 23", len(CommerceRoutes))
 	}
@@ -44,7 +44,7 @@ func TestCommerceRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 }
 
 func TestCommerceRoutes_StepUpAndTwoPerson(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range CommerceRoutes {
 		stepUpCase(t, rg, commercePrefix, commerceAll, rt, commerceCase(rt), rt.stepUp)
 	}
@@ -72,7 +72,7 @@ func TestCommerceRoutes_StepUpAndTwoPerson(t *testing.T) {
 // The console (apps/admin/src/hooks/useAdminCommerce.ts) reads these paths and
 // shapes; switching commerce to the token family must not change them.
 func TestCommerceConsolePathsAndShapesAreUnchanged(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, c := range []struct{ method, path string }{
 		{http.MethodGet, "/sellers/queue"}, {http.MethodGet, "/products/queue"}, {http.MethodGet, "/payouts/pending"},
 		{http.MethodPost, "/sellers/:sellerId/approve"}, {http.MethodPost, "/sellers/:sellerId/reject"},

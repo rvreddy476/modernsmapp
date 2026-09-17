@@ -85,9 +85,6 @@ env:
   # the permission lookups. Enable identity-auth-service's two commented
   # lines first (numbered steps in its values file).
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
-  # A Feast or monetization refund, or a payments refund resolved as money,
-  # at or above this many paise needs a second approver.
-  ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: '500000'
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

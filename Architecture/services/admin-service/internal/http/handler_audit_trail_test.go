@@ -199,8 +199,8 @@ func TestApprovalSummaries(t *testing.T) {
 	}{
 		{approvals.Approval{Operation: opCODSettle, TargetID: "7b0c6c1e-0f3a"}, "Settle COD remittance 7b0c6c1e"},
 		{approvals.Approval{Operation: opFoodRestaurantMarkPaid, TargetID: "abc"}, "Mark restaurant settlement paid abc"},
-		{approvals.Approval{Operation: opFoodRefundIssue, TargetID: "o1", Payload: json.RawMessage(`{}`)}, "Refund Feast order o1 (full refund)"},
-		{approvals.Approval{Operation: opFoodRefundDecide, TargetID: "r1", Payload: json.RawMessage(`{"status":"approved"}`)}, "Decide Feast refund request r1 (approved)"},
+		{approvals.Approval{Operation: opFoodRefundIssue, TargetID: "o1", Payload: json.RawMessage(`{}`)}, "Refund Feast order o1 (full refund, amount not stated)"},
+		{approvals.Approval{Operation: opFoodRefundDecide, TargetID: "r1", Payload: json.RawMessage(`{"status":"approved"}`)}, "Decide Feast refund request r1 (approved), amount not stated"},
 		{approvals.Approval{Operation: "payments.refund.issue", TargetID: "x"}, "payments refund issue x"},
 		{approvals.Approval{Operation: opFoodRefundIssue, Payload: json.RawMessage(`{"amount_paise":500000}`)}, "Refund Feast order for ₹5,000.00"},
 		{approvals.Approval{Operation: opFoodRefundIssue, Payload: json.RawMessage(`{"amount_paise":99}`)}, "Refund Feast order for ₹0.99"},

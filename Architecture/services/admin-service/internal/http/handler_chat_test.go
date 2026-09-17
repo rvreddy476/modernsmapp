@@ -32,7 +32,7 @@ var chatTables = []struct {
 }
 
 func TestChatRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(ChatChannelRoutes) != 5 || len(ChatGroupRoutes) != 3 || len(ChatCommunityRoutes) != 3 {
 		t.Fatalf("chat tables %d/%d/%d, want 5/3/3", len(ChatChannelRoutes), len(ChatGroupRoutes), len(ChatCommunityRoutes))
 	}
@@ -50,7 +50,7 @@ func TestChatRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 // Channel suspend and unsuspend need a step-up; report reads and decisions
 // do not.
 func TestChatRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, tb := range chatTables {
 		for _, rt := range tb.routes {
 			want := rt.operation == "chat.channel.suspend" || rt.operation == "chat.channel.unsuspend"
@@ -65,7 +65,7 @@ func TestChatRoutes_StepUp(t *testing.T) {
 // Each chat product is reached at its own service: a group report decision
 // goes to group-service's prefix, never to channel-service's.
 func TestChatRoutes_EachProductAtItsOwnService(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, channelAll...)
 	id := uuid.NewString()
@@ -86,7 +86,7 @@ func TestChatRoutes_EachProductAtItsOwnService(t *testing.T) {
 // Chat stats merge the three services; one that fails is unavailable, the
 // other two still shown; none answering is 503.
 func TestChatStats_MergedAndAFailedSourceIsUnavailableNotZero(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permChatStatsRead)
 	for _, p := range []string{service.ChannelAdminPrefix, service.GroupAdminPrefix, service.CommunityAdminPrefix} {

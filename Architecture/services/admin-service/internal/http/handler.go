@@ -94,9 +94,6 @@ type Handler struct {
 	rider *service.ProductClient
 	// Access page: identity's admin console family (roles, users, sessions).
 	identity *service.ProductClient
-	// refundThresholdPaise: a Feast or monetization refund, or a payments
-	// refund resolved as money, at or above it is two-person.
-	refundThresholdPaise int64
 }
 
 // WithMonetization installs the Monetization client.
@@ -117,13 +114,9 @@ func (h *Handler) WithDating(dc *service.ProductClient) *Handler {
 	return h
 }
 
-// WithFood installs the Feast client and the refund two-person threshold
-// (paise; <= 0 means DefaultRefundTwoPersonThresholdPaise).
-func (h *Handler) WithFood(fc *service.ProductClient, refundThresholdPaise int64) *Handler {
+// WithFood installs the Feast client.
+func (h *Handler) WithFood(fc *service.ProductClient) *Handler {
 	h.food = fc
-	if refundThresholdPaise > 0 {
-		h.refundThresholdPaise = refundThresholdPaise
-	}
 	return h
 }
 
@@ -176,7 +169,7 @@ func (h *Handler) WithIdentity(ic *service.ProductClient) *Handler {
 }
 
 func New(svc adminService, gate *Gate, appr *approvals.Service) *Handler {
-	return &Handler{svc: svc, gate: gate, approvals: appr, refundThresholdPaise: DefaultRefundTwoPersonThresholdPaise}
+	return &Handler{svc: svc, gate: gate, approvals: appr}
 }
 
 // RegisterAllRoutes registers every route and refuses a table with an

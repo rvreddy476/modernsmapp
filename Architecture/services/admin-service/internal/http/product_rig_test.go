@@ -100,7 +100,7 @@ type productsRig struct {
 	respondHit map[string]func(w http.ResponseWriter, r *http.Request, hit productHit)
 }
 
-func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsRig {
+func newProductsRig(t *testing.T, withKey bool) *productsRig {
 	t.Helper()
 	pub, priv, err := servicetoken.GenerateKeypair()
 	if err != nil {
@@ -167,7 +167,7 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 	rg.r.Use(middleware.RequestID())
 	rg.gate = NewGate(rg.perms, rg.rec, true)
 	h := New(&stubAdminService{}, rg.gate, approvals.NewService(rg.store, rg.holders))
-	h.WithFood(service.NewFoodClient(foodURL, signer), thresholdPaise).
+	h.WithFood(service.NewFoodClient(foodURL, signer)).
 		WithCommerce(service.NewCommerceClient(commerceURL, signer)).
 		WithTrustSafety(service.NewTrustSafetyClient(trustURL, signer)).
 		WithMonetization(service.NewMonetizationClient(monURL, signer)).

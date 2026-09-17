@@ -84,8 +84,8 @@ var MonetizationRoutes = []productRoute{
 
 	{method: http.MethodGet, path: "/disputes", operation: "monetization.disputes.list", permission: permMonDisputesRead},
 	{method: http.MethodPatch, path: "/disputes/:id", operation: "monetization.dispute.act", permission: permMonDisputesAct, stepUp: true, targetType: "monetization_dispute"},
-	// Step-up always; two-person at or above the refund threshold.
-	{method: http.MethodPost, path: "/refunds", operation: opMonRefundIssue, permission: permMonRefundIssue, stepUp: true, mayTwoPerson: true, targetType: "monetization_transaction"},
+	// Step-up and two-person, always: every refund needs a second person.
+	{method: http.MethodPost, path: "/refunds", operation: opMonRefundIssue, permission: permMonRefundIssue, stepUp: true, twoPerson: true, targetType: "monetization_transaction"},
 
 	{method: http.MethodGet, path: "/payout-requests", operation: "monetization.payout_requests.list", permission: permMonPayoutsRead},
 	{method: http.MethodGet, path: "/audit-logs", operation: "monetization.audit.list", permission: permMonAuditRead},
@@ -95,8 +95,8 @@ var MonetizationRoutes = []productRoute{
 // /v1/admin/monetization.
 //
 //	two-person   creator-fund rates, quality bands, budgets, settle,
-//	             settle-period (all and per creator), earning reversal, always;
-//	             refunds AT OR ABOVE ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE
+//	             settle-period (all and per creator), earning reversal and
+//	             refunds, always (no amount threshold)
 //	step-up      every write: fraud decisions, wallet freeze/unfreeze/rebuild,
 //	             creator suspend/unsuspend, disputes, refunds, and the above
 //
@@ -113,7 +113,7 @@ func (h *Handler) RegisterMonetizationRoutes(r *gin.Engine) {
 	special := map[string]gin.HandlerFunc{}
 	for i := range routes {
 		if routes[i].operation == opMonRefundIssue {
-			routes[i].decide = monetizationRefundDecision(h.refundThresholdPaise)
+			routes[i].decide = monetizationRefundDecision
 		}
 		rt := routes[i]
 		if rt.twoPerson || rt.mayTwoPerson {
@@ -184,28 +184,23 @@ func notLaunchedErrorBody() []byte {
 	return b
 }
 
-// --- refunds (threshold decided from the body, before any call) ---
+// --- refunds (validated from the body, before any call; always two-person) ---
 
 // monetizationRefundDecision reads amount_paise (monetization requires it)
-// and applies the threshold: AT OR ABOVE is two-person.
-func monetizationRefundDecision(threshold int64) func(*gin.Context, adminauth.Permissions) (Decision, error) {
-	return func(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
-		if !perms.Has(permMonRefundIssue) {
-			return Decision{}, nil // the gate refuses
-		}
-		raw, _, err := jsonBody(c)
-		if err != nil || len(raw) == 0 {
-			return Decision{}, badRequest(CodeInvalidBody, "The request body must be JSON with transaction_id, amount_paise and reason")
-		}
-		paise, _, err := monetizationRefundBody(raw)
-		if err != nil {
-			return Decision{}, err
-		}
-		return Decision{
-			TwoPerson: refundNeedsTwoPerson(paise, threshold),
-			Audit:     map[string]any{"amount_paise": paise, "refund_threshold_paise": threshold},
-		}, nil
+// for the audit row and the approval summary. Every refund is two-person.
+func monetizationRefundDecision(c *gin.Context, perms adminauth.Permissions) (Decision, error) {
+	if !perms.Has(permMonRefundIssue) {
+		return Decision{}, nil // the gate refuses
 	}
+	raw, _, err := jsonBody(c)
+	if err != nil || len(raw) == 0 {
+		return Decision{}, badRequest(CodeInvalidBody, "The request body must be JSON with transaction_id, amount_paise and reason")
+	}
+	paise, _, err := monetizationRefundBody(raw)
+	if err != nil {
+		return Decision{}, err
+	}
+	return Decision{TwoPerson: true, Audit: map[string]any{"amount_paise": paise}}, nil
 }
 
 func monetizationRefundBody(raw []byte) (paise int64, transactionID string, err error) {

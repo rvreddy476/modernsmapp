@@ -46,7 +46,7 @@ var riderStepUp = map[string]bool{
 }
 
 func TestRiderRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(RiderRoutes) != 43 {
 		t.Fatalf("RiderRoutes has %d entries, want 43 (rider's 42 admin routes plus /stats)", len(RiderRoutes))
 	}
@@ -69,7 +69,7 @@ func TestRiderRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 }
 
 func TestRiderRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	found := map[string]bool{}
 	for _, rt := range RiderRoutes {
 		want := riderStepUp[rt.operation]
@@ -91,7 +91,7 @@ func TestRiderRoutes_StepUp(t *testing.T) {
 // The document queue is a KYC reveal: without a fresh step-up it is refused
 // before rider is called, and the refusal is audited.
 func TestRiderDocuments_ListIsAStepUpRead(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permRiderDocumentsReview)
 	w := rg.do(http.MethodGet, riderPrefix+"/documents", "", actor, false)
@@ -115,7 +115,7 @@ func TestRiderDocuments_ListIsAStepUpRead(t *testing.T) {
 // Feast admin with every food permission is refused on each Mopedu route
 // before rider-service is called, and each refusal is audited as denied.
 func TestRiderRoutes_OtherAppsPermissionsAreRefused(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	feast := uuid.NewString()
 	rg.perms.grant(feast, foodAll...)
 	for _, rt := range RiderRoutes {
@@ -135,7 +135,7 @@ func TestRiderRoutes_OtherAppsPermissionsAreRefused(t *testing.T) {
 
 // Stats are rider's own /stats, forwarded with rider:stats.read.
 func TestRiderStats_ForwardedFromRider(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permRiderStatsRead)
 	rg.on(http.MethodGet, service.RiderAdminPrefix+"/stats", func(w http.ResponseWriter, _ *http.Request) {
@@ -155,7 +155,7 @@ func TestRiderStats_ForwardedFromRider(t *testing.T) {
 
 // Without the signing key every Mopedu route answers 503 and is audited.
 func TestRiderRoutes_NoKeyIs503(t *testing.T) {
-	rg := newProductsRig(t, false, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, false)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permRiderRidesRead)
 	w := rg.do(http.MethodGet, riderPrefix+"/rides", "", actor, false)
@@ -169,7 +169,7 @@ func TestRiderRoutes_NoKeyIs503(t *testing.T) {
 
 // Mopedu appears in /me only for a holder of a rider permission.
 func TestMe_MopeduOnlyWithARiderPermission(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for name, tc := range map[string]struct {
 		perms []string
 		want  bool

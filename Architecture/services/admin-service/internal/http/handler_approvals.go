@@ -147,8 +147,15 @@ var approvalLabels = map[string]string{
 	opAccessRoleRevoke:       "Revoke role",
 }
 
+// refundOperations move money out: their summary states the amount when the
+// stored request carries one and says so when it does not.
+var refundOperations = map[string]bool{
+	opFoodRefundIssue: true, opFoodRefundDecide: true, opMonRefundIssue: true, opPayRefundResolve: true,
+}
+
 // approvalSummary is a one-line description: what, on which target, and the
-// amount or decision when the stored request carries one. Ids only.
+// amount or decision when the stored request carries one (a refund without
+// one says "amount not stated"). Ids only.
 func approvalSummary(a approvals.Approval) string {
 	label, ok := approvalLabels[a.Operation]
 	if !ok {
@@ -184,10 +191,11 @@ func approvalSummary(a approvals.Approval) string {
 		}
 		return s
 	}
-	if p.AmountPaise > 0 {
+	switch {
+	case p.AmountPaise > 0:
 		s += " for " + formatRupees(p.AmountPaise)
-	} else if a.Operation == opFoodRefundIssue {
-		s += " (full refund)"
+	case a.Operation == opFoodRefundIssue:
+		s += " (full refund, amount not stated)"
 	}
 	if p.Status != "" {
 		s += " (" + p.Status + ")"
@@ -207,6 +215,9 @@ func approvalSummary(a approvals.Approval) string {
 				}
 			}
 		}
+	}
+	if p.AmountPaise == 0 && a.Operation != opFoodRefundIssue && refundOperations[a.Operation] {
+		s += ", amount not stated"
 	}
 	return s
 }

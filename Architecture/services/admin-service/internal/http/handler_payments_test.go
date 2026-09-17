@@ -58,7 +58,7 @@ func queryApp(h productHit) (string, bool) {
 }
 
 func TestPaymentsRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(PaymentsRoutes) != 11 {
 		t.Fatalf("PaymentsRoutes has %d entries, want 11", len(PaymentsRoutes))
 	}
@@ -70,7 +70,7 @@ func TestPaymentsRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 }
 
 func TestPaymentsRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	want := map[string]bool{opPayRefundResolve: true, "payments.application.update": true}
 	for _, rt := range PaymentsRoutes {
 		if rt.stepUp != want[rt.operation] {
@@ -91,17 +91,19 @@ func TestPaymentsResolve_GateFollowsTheResolution_DecidedBeforeTheCall(t *testin
 		wantCall   bool
 	}{
 		{"test_data moves no money: step-up only", "test_data", 900000, true, true, http.StatusOK, true},
+		{"test_data of one paisa: still step-up only", "test_data", 1, true, true, http.StatusOK, true},
 		{"test_data without step-up", "test_data", 900000, true, false, http.StatusForbidden, false},
-		{"written_off above threshold", "written_off", 900000, true, true, http.StatusAccepted, false},
-		{"refunded_manually above threshold", "refunded_manually", 900000, true, true, http.StatusAccepted, false},
-		{"refunded_manually below threshold", "refunded_manually", 100, true, true, http.StatusOK, true},
-		{"written_off below threshold without step-up", "written_off", 100, true, false, http.StatusForbidden, false},
-		{"amount unknown counts as above", "written_off", 100, false, true, http.StatusAccepted, false},
+		{"written_off is two-person", "written_off", 900000, true, true, http.StatusAccepted, false},
+		{"refunded_manually is two-person", "refunded_manually", 900000, true, true, http.StatusAccepted, false},
+		{"refunded_manually of one paisa is two-person", "refunded_manually", 1, true, true, http.StatusAccepted, false},
+		{"written_off of one paisa is two-person", "written_off", 1, true, true, http.StatusAccepted, false},
+		{"written_off without step-up", "written_off", 100, true, false, http.StatusForbidden, false},
+		{"amount unknown is two-person too", "written_off", 100, false, true, http.StatusAccepted, false},
 		{"unknown resolution", "refund_it", 100, true, true, http.StatusBadRequest, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rg := newProductsRig(t, true, 500000)
+			rg := newProductsRig(t, true)
 			rg.holders.n = 1
 			actor := uuid.NewString()
 			rg.perms.grant(actor, permPayRefundIssue)
@@ -128,34 +130,49 @@ func TestPaymentsResolve_GateFollowsTheResolution_DecidedBeforeTheCall(t *testin
 	}
 }
 
-func TestPaymentsResolve_ThresholdBoundary(t *testing.T) {
+// The approval summary states the refund's stored amount when the requester
+// may read it, and says the amount is not stated otherwise.
+func TestPaymentsResolve_SummaryStatesTheAmountWhenReadable(t *testing.T) {
 	for _, tc := range []struct {
-		paise     int64
-		twoPerson bool
-	}{{499999, false}, {500000, true}, {500001, true}} {
-		rg := newProductsRig(t, true, 500000)
+		canRead bool
+		paise   int64
+		summary string
+	}{
+		{true, 1, "₹0.01"},
+		{true, 499999, "₹4,999.99"},
+		{true, 500000, "₹5,000.00"},
+		{false, 499999, "amount not stated"},
+	} {
+		rg := newProductsRig(t, true)
 		rg.holders.n = 1
 		actor := uuid.NewString()
-		rg.perms.grant(actor, permPayRefundIssue, permPayRefundsRead)
+		rg.perms.grant(actor, permPayRefundIssue)
+		if tc.canRead {
+			rg.perms.grant(actor, permPayRefundsRead)
+		}
 		id := uuid.NewString()
 		refundAmount(rg, id, tc.paise)
 		w := rg.do(http.MethodPost, payPrefix+"/refunds/"+id+"/resolve", `{"resolution":"refunded_manually","note":"paid by NEFT"}`, actor, true)
-		_, resolves := resolveHits(rg.takeHits())
+		reads, resolves := resolveHits(rg.takeHits())
 		audit := rg.takeAudit()
-		if tc.twoPerson {
-			if w.Code != http.StatusAccepted || len(resolves) != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending {
-				t.Fatalf("%d: want pending, got %d %s", tc.paise, w.Code, w.Body.String())
-			}
-			continue
+		if w.Code != http.StatusAccepted || len(resolves) != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending {
+			t.Fatalf("%d read=%v: want pending, got %d %s", tc.paise, tc.canRead, w.Code, w.Body.String())
 		}
-		if w.Code != http.StatusOK || len(resolves) != 1 || len(rg.store.rows) != 0 {
-			t.Fatalf("%d: want direct resolve, got %d %s", tc.paise, w.Code, w.Body.String())
+		if tc.canRead != (len(reads) == 1) {
+			t.Fatalf("%d read=%v: amount reads = %d", tc.paise, tc.canRead, len(reads))
+		}
+		if _, ok := audit[0].Payload["refund_threshold_paise"]; ok {
+			t.Fatalf("audit still carries a threshold: %+v", audit[0].Payload)
+		}
+		a := decodeApproval(t, w)
+		if !strings.Contains(a.Summary, tc.summary) || !strings.Contains(a.Summary, "refunded manually") {
+			t.Fatalf("%d read=%v: summary %q", tc.paise, tc.canRead, a.Summary)
 		}
 	}
 }
 
 func TestPaymentsResolve_ConfinedRequester_SecondHolderExecutesOnceInTheSameApplication(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	rg.holders.n = 1
 	requester, approver, outsider := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	issueFeast := confinedPaymentsPermission("food", permPayRefundIssue)
@@ -207,7 +224,7 @@ func TestPaymentsResolve_ConfinedRequester_SecondHolderExecutesOnceInTheSameAppl
 }
 
 func TestPaymentsConfinement_AppScopedAdminAlwaysSendsTheirApplication(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	for _, rt := range PaymentsRoutes {
 		t.Run(rt.operation, func(t *testing.T) {
 			feast := uuid.NewString()
@@ -241,7 +258,7 @@ func TestPaymentsConfinement_AppScopedAdminAlwaysSendsTheirApplication(t *testin
 }
 
 func TestPaymentsConfinement_ClientApplicationIDNeverWidens(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	const path = payPrefix + "/refunds/needs-attention"
 	feast := uuid.NewString()
 	rg.perms.grant(feast, confinedPaymentsPermission("food", permPayRefundsRead))
@@ -299,7 +316,7 @@ func TestPaymentsConfinement_ClientApplicationIDNeverWidens(t *testing.T) {
 }
 
 func TestPaymentsConfinement_PlatformAdminMayOmitOrNarrow(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	admin := uuid.NewString()
 	// A platform-wide grant resolves to both the payments permission and every
 	// app's permissions; the payments one decides: unconfined.
@@ -324,7 +341,7 @@ func TestPaymentsConfinement_PlatformAdminMayOmitOrNarrow(t *testing.T) {
 }
 
 func TestMe_MoneyNavigation(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	type nav struct {
 		App          string   `json:"app"`
 		Applications []string `json:"applications"`

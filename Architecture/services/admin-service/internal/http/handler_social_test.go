@@ -36,7 +36,7 @@ func contentCase(rt productRoute) string {
 }
 
 func TestSocialRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(SocialContentRoutes) != 21 || len(SocialPagesRoutes) != 10 {
 		t.Fatalf("SocialContentRoutes=%d SocialPagesRoutes=%d, want 21 and 10", len(SocialContentRoutes), len(SocialPagesRoutes))
 	}
@@ -58,7 +58,7 @@ func TestSocialRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 // A read admitted under moderate or remove is scoped to the one the admin
 // holds, never to one they lack.
 func TestSocialAlternativeReads_ScopeToTheHeldPermission(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range SocialContentRoutes {
 		for _, alt := range rt.alternatives {
 			actor := uuid.NewString()
@@ -74,7 +74,7 @@ func TestSocialAlternativeReads_ScopeToTheHeldPermission(t *testing.T) {
 }
 
 func TestSocialRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range SocialContentRoutes {
 		if rt.operation == opSocialStats {
 			continue
@@ -99,7 +99,7 @@ func TestSocialRoutes_StepUp(t *testing.T) {
 // anything else signs the kind's .moderate. Decided before post-service is
 // called.
 func TestContentTakedown_KindAndActionChooseTheScope(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, postAll...)
 	decision := func(action string) string {
@@ -195,7 +195,7 @@ func TestContentTakedown_KindAndActionChooseTheScope(t *testing.T) {
 // same takedown from the Tube route (tube:videos.remove). admin-service
 // records the refusal on its audit row.
 func TestContentKind_PostServiceReChecksTheStoredKind(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, postAll...)
 	postID := uuid.NewString()
@@ -235,7 +235,7 @@ func TestContentKind_PostServiceReChecksTheStoredKind(t *testing.T) {
 }
 
 func TestSocialReviewQueue_KindIsFixedByTheRoute(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, postAll...)
 	for _, c := range []struct{ prefix, seg, kind string }{
@@ -258,7 +258,7 @@ func TestSocialReviewQueue_KindIsFixedByTheRoute(t *testing.T) {
 }
 
 func TestSocialComment_StatusChoosesTheScope(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permSocialCommentsModerate, permSocialCommentsRemove)
 	for _, c := range []struct {
@@ -318,7 +318,7 @@ func merged(t *testing.T, w *httptest.ResponseRecorder) MergedStats {
 // Social stats are post-service's and user-service's, side by side. A source
 // that fails is shown as unavailable with the reason — never as zeros.
 func TestSocialStats_MergedAndAFailedSourceIsUnavailableNotZero(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permSocialStatsRead)
 	rg.on(http.MethodGet, service.PostAdminPrefix+"/stats", func(w http.ResponseWriter, _ *http.Request) {
@@ -410,7 +410,7 @@ func TestSocialStats_MergedAndAFailedSourceIsUnavailableNotZero(t *testing.T) {
 }
 
 func TestSocialStats_NoKeyIsUnavailableOnEveryPart(t *testing.T) {
-	rg := newProductsRig(t, false, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, false)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permSocialStatsRead, permChatStatsRead)
 	for _, path := range []string{socialPrefix + "/stats", chatPrefix + "/stats"} {
@@ -433,7 +433,7 @@ func TestSocialStats_NoKeyIsUnavailableOnEveryPart(t *testing.T) {
 }
 
 func TestMe_ContentNavigationOnlyWithAPermissionInThatApp(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	apps := []string{"social", "tube", "qa", "chat"}
 	cases := map[string]struct {
 		perm string

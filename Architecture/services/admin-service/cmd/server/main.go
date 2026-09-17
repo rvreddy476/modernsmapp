@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -126,13 +125,11 @@ func main() {
 	if tokenSigner == nil {
 		slog.Warn("ADMIN_SERVICE_TOKEN_KEY not set: product admin routes (Dating, Feast, MStore, Trust & safety) answer 503 PRODUCT_UNAVAILABLE (also Monetization, Payments, the content apps and Mopedu)")
 	}
-	refundThreshold, err := refundThresholdFromEnv(os.Getenv)
-	if err != nil {
-		slog.Error("invalid refund two-person threshold", "error", err)
-		os.Exit(1)
+	if msg, stale := staleRefundThresholdWarning(os.Getenv); stale {
+		slog.Warn(msg)
 	}
 	handler.WithDating(service.NewDatingClient(env("DATING_SERVICE_URL", "http://dating-service:8112"), tokenSigner)).
-		WithFood(service.NewFoodClient(env("FOOD_SERVICE_URL", "http://food-service:8113"), tokenSigner), refundThreshold).
+		WithFood(service.NewFoodClient(env("FOOD_SERVICE_URL", "http://food-service:8113"), tokenSigner)).
 		WithCommerce(service.NewCommerceClient(env("COMMERCE_SERVICE_URL", "http://commerce-service:8109"), tokenSigner)).
 		WithTrustSafety(service.NewTrustSafetyClient(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"), tokenSigner)).
 		WithMonetization(service.NewMonetizationClient(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"), tokenSigner)).
@@ -153,7 +150,7 @@ func main() {
 		// AUTH_SERVICE_URL the permission lookups use (audience "identity";
 		// identity registers the same public key as ADMIN_SERVICE_TOKEN_PUBKEY).
 		WithIdentity(service.NewIdentityConsoleClient(authURL, tokenSigner))
-	slog.Info("refund two-person threshold (Feast, monetization, payments)", "paise", refundThreshold)
+	slog.Info("every refund is two-person (Feast, monetization, payments): no amount threshold")
 
 	// 7. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
@@ -185,19 +182,15 @@ func main() {
 	}
 }
 
-// refundThresholdFromEnv reads ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: a
-// Feast refund at or above it needs a second approver. Unset means ₹5,000;
-// anything but a positive whole number of paise refuses boot.
-func refundThresholdFromEnv(getenv func(string) string) (int64, error) {
-	v := strings.TrimSpace(getenv("ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE"))
-	if v == "" {
-		return http.DefaultRefundTwoPersonThresholdPaise, nil
+// staleRefundThresholdWarning reports ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE
+// still being set. Since 2026-09-17 every refund is two-person and the value
+// is not read: a stale deployment value is logged once at boot, never obeyed
+// and never a reason to refuse boot.
+func staleRefundThresholdWarning(getenv func(string) string) (string, bool) {
+	if strings.TrimSpace(getenv("ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE")) == "" {
+		return "", false
 	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE must be a positive whole number of paise")
-	}
-	return n, nil
+	return "ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE is set but no longer read: every refund is two-person regardless of amount; remove it from the deployment", true
 }
 
 func env(key, fallback string) string {

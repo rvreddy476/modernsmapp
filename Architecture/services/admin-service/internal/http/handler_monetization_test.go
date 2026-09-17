@@ -33,7 +33,7 @@ func monCase(rt productRoute) string {
 }
 
 func TestMonetizationRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(MonetizationRoutes) != 23 {
 		t.Fatalf("MonetizationRoutes has %d entries, want 23", len(MonetizationRoutes))
 	}
@@ -46,7 +46,7 @@ func TestMonetizationRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T
 }
 
 func TestMonetizationRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range MonetizationRoutes {
 		// Every write is step-up; no read is.
 		want := rt.method != http.MethodGet
@@ -57,11 +57,11 @@ func TestMonetizationRoutes_StepUp(t *testing.T) {
 	}
 }
 
-func TestMonetizationFundChanges_AreAlwaysTwoPerson_ExecutedOnceBySecondHolder(t *testing.T) {
+func TestMonetizationMoneyMoves_AreAlwaysTwoPerson_ExecutedOnceBySecondHolder(t *testing.T) {
 	always := map[string]string{
 		opMonRatesSet: permMonFundRates, opMonBandsSet: permMonFundRates, opMonBudgetSet: permMonFundBudget,
 		opMonSettleDay: permMonFundSettle, opMonSettlePeriod: permMonFundSettle, opMonSettleCreator: permMonFundSettle,
-		opMonEarningReverse: permMonFundReverse,
+		opMonEarningReverse: permMonFundReverse, opMonRefundIssue: permMonRefundIssue,
 	}
 	seen := 0
 	for _, rt := range MonetizationRoutes {
@@ -77,7 +77,7 @@ func TestMonetizationFundChanges_AreAlwaysTwoPerson_ExecutedOnceBySecondHolder(t
 			t.Fatalf("%s: twoPerson=%v stepUp=%v permission=%s", rt.operation, rt.twoPerson, rt.stepUp, rt.permission)
 		}
 		t.Run(rt.operation, func(t *testing.T) {
-			rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+			rg := newProductsRig(t, true)
 			rg.holders.n = 1
 			requester, approver := uuid.NewString(), uuid.NewString()
 			rg.perms.grant(requester, perm)
@@ -139,50 +139,41 @@ func TestMonetizationFundChanges_AreAlwaysTwoPerson_ExecutedOnceBySecondHolder(t
 	}
 }
 
-func TestMonetizationRefund_ThresholdBoundary(t *testing.T) {
-	const threshold = 500000
-	for _, tc := range []struct {
-		paise     string
-		twoPerson bool
-	}{
-		{"499999", false},
-		{"500000", true}, // AT the threshold: two-person
-		{"500001", true},
+// Every refund is two-person, from one paisa up; the summary states the amount.
+func TestMonetizationRefund_IsAlwaysTwoPerson(t *testing.T) {
+	for _, tc := range []struct{ paise, summary string }{
+		{"1", "₹0.01"},
+		{"499999", "₹4,999.99"},
+		{"500000", "₹5,000.00"},
 	} {
-		rg := newProductsRig(t, true, threshold)
+		rg := newProductsRig(t, true)
 		rg.holders.n = 1
 		actor := uuid.NewString()
 		rg.perms.grant(actor, permMonRefundIssue)
 		txn := uuid.NewString()
 		body := `{"transaction_id":"` + txn + `","amount_paise":` + tc.paise + `,"reason":"double charge"}`
+		if w := rg.do(http.MethodPost, monPrefix+"/refunds", body, actor, false); !hasCode(w, adminauth.CodeStepUpRequired) {
+			t.Fatalf("%s without step-up: %d", tc.paise, w.Code)
+		}
+		rg.takeAudit()
 		w := rg.do(http.MethodPost, monPrefix+"/refunds", body, actor, true)
 		hits := rg.takeHits()
 		audit := rg.takeAudit()
-		if tc.twoPerson {
-			if w.Code != http.StatusAccepted || len(hits) != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending {
-				t.Fatalf("%s: want pending, got %d %s hits=%d audit=%+v", tc.paise, w.Code, w.Body.String(), len(hits), audit)
-			}
-			a := decodeApproval(t, w)
-			if a.TargetID != txn || !strings.Contains(a.Summary, "Refund monetization transaction") {
-				t.Fatalf("%s: approval %+v", tc.paise, a)
-			}
-			continue
+		if w.Code != http.StatusAccepted || len(hits) != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending {
+			t.Fatalf("%s: want pending, got %d %s hits=%d audit=%+v", tc.paise, w.Code, w.Body.String(), len(hits), audit)
 		}
-		if w.Code != http.StatusOK || len(hits) != 1 || hits[0].path != service.MonetizationAdminPrefix+"/refunds" ||
-			!strings.Contains(hits[0].body, `"amount_paise":`+tc.paise) || len(rg.store.rows) != 0 {
-			t.Fatalf("%s: want direct refund, got %d %s hits=%+v", tc.paise, w.Code, w.Body.String(), hits)
+		if _, ok := audit[0].Payload["refund_threshold_paise"]; ok || audit[0].Payload["amount_paise"] == nil {
+			t.Fatalf("%s: audit payload %+v", tc.paise, audit[0].Payload)
 		}
-		if len(audit) != 1 || audit[0].Payload["refund_threshold_paise"] != int64(threshold) {
-			t.Fatalf("%s: audit %+v", tc.paise, audit)
-		}
-		if w := rg.do(http.MethodPost, monPrefix+"/refunds", body, actor, false); !hasCode(w, adminauth.CodeStepUpRequired) {
-			t.Fatalf("%s without step-up: %d", tc.paise, w.Code)
+		a := decodeApproval(t, w)
+		if a.TargetID != txn || !strings.Contains(a.Summary, "Refund monetization transaction") || !strings.Contains(a.Summary, tc.summary) {
+			t.Fatalf("%s: approval %+v", tc.paise, a)
 		}
 	}
 }
 
 func TestMonetizationRefund_BadBodiesAreRefusedBeforeMonetization(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permMonRefundIssue)
 	for _, body := range []string{
@@ -202,7 +193,7 @@ func TestMonetizationRefund_BadBodiesAreRefusedBeforeMonetization(t *testing.T) 
 }
 
 func TestMonetizationNotLaunched_IsSurfacedAsAState(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	notLaunched := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)

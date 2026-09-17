@@ -42,7 +42,7 @@ var accessStepUp = map[string]bool{opAccessRoleGrant: true, opAccessRoleRevoke: 
 // signs a token for audience "identity" scoped to that permission, acting as
 // the admin, with one audit row per call.
 func TestAccessRoutes_EachRequiresItsPermission_AndSignsForIdentity(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(AccessRoutes) != 8 {
 		t.Fatalf("AccessRoutes has %d entries, want 8 (identity's 7 console routes plus the catalogue)", len(AccessRoutes))
 	}
@@ -67,7 +67,7 @@ func TestAccessRoutes_EachRequiresItsPermission_AndSignsForIdentity(t *testing.T
 // The token's audience is identity and its jti is fresh on every call, so
 // identity's single-use check never sees the same jti twice.
 func TestAccessRoutes_TokenAudienceActorScope_AndFreshJTIPerCall(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permPlatformRolesRead)
 	for i := 0; i < 2; i++ {
@@ -98,7 +98,7 @@ func TestAccessRoutes_TokenAudienceActorScope_AndFreshJTIPerCall(t *testing.T) {
 
 // Every write is step-up; every read is not.
 func TestAccessRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range AccessRoutes {
 		want := accessStepUp[rt.operation]
 		if rt.stepUp != want {
@@ -114,7 +114,7 @@ func TestAccessRoutes_StepUp(t *testing.T) {
 // A non-superadmin role change is step-up only: it forwards at once, as
 // sent, and never asks identity for a second holder.
 func TestAccessGrant_OtherRolesAreStepUpOnly(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	rg.holders.n = 1
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permPlatformRolesManage)
@@ -168,7 +168,7 @@ func TestAccessGrantSuperadmin_PendingWithASecondHolder_ExecutedByApprover(t *te
 			map[string]string{"reason": "stepped down"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+			rg := newProductsRig(t, true)
 			rg.holders.n = 1
 			rg.perms.grant(adminA, permPlatformRolesManage)
 			rg.perms.grant(adminB, permPlatformRolesManage)
@@ -234,7 +234,7 @@ func TestAccessGrantSuperadmin_PendingWithASecondHolder_ExecutedByApprover(t *te
 // sole-holder path runs at once, as the requester, and says so in the audit
 // row.
 func TestAccessGrantSuperadmin_SoleHolderExecutesAndIsRecorded(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	rg.holders.n = 0
 	rg.perms.grant(adminA, permPlatformRolesManage)
 	w := rg.do(http.MethodPost, accessGrantPath, superGrantBody, adminA, true)
@@ -265,7 +265,7 @@ func TestAccessGrantSuperadmin_SoleHolderExecutesAndIsRecorded(t *testing.T) {
 
 // Identity's own refusals reach the console unchanged: status and code.
 func TestAccessRoutes_IdentityErrorCodesPassThrough(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permPlatformRolesManage, permPlatformSessionsRevoke)
 	for code, status := range map[string]int{
@@ -292,7 +292,7 @@ func TestAccessRoutes_IdentityErrorCodesPassThrough(t *testing.T) {
 
 // Without the signing key every Access route answers 503 and is audited.
 func TestAccessRoutes_NoKeyIs503(t *testing.T) {
-	rg := newProductsRig(t, false, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, false)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permPlatformRolesRead)
 	w := rg.do(http.MethodGet, accessPrefix+"/roles", "", actor, false)
@@ -308,7 +308,7 @@ func TestAccessRoutes_NoKeyIs503(t *testing.T) {
 // platform:roles.read, is not forwarded, and names every role, app and the
 // role → permissions map; superadmin is platform-only.
 func TestAccessCatalogue_FromTheMirror(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	other := uuid.NewString()
 	rg.perms.grant(other, permPlatformRolesManage, permPlatformUsersSearch)
 	if w := rg.do(http.MethodGet, accessPrefix+"/catalogue", "", other, false); w.Code != http.StatusForbidden || !hasCode(w, CodePermissionDenied) {
@@ -358,7 +358,7 @@ func TestAccessCatalogue_FromTheMirror(t *testing.T) {
 // Every permission a console route declares is in the mirror, so the page can
 // only offer roles whose grants actually open something here.
 func TestCatalogue_CoversEveryDeclaredPermission(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	var missing []string
 	for _, ri := range rg.r.Routes() {
 		req, ok := rg.gate.Requirement(ri.Method, ri.Path)
@@ -377,7 +377,7 @@ func TestCatalogue_CoversEveryDeclaredPermission(t *testing.T) {
 // Access appears in /me for a holder of any platform:roles.* /
 // sessions.revoke / users.search permission, and for nobody else.
 func TestMe_AccessOnlyWithAnAccessPermission(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for name, tc := range map[string]struct {
 		perms []string
 		want  bool

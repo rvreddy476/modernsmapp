@@ -39,7 +39,7 @@ func foodCase(rt productRoute) (string, []reqOpt) {
 }
 
 func TestFoodRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(FoodRoutes) != 49 {
 		t.Fatalf("FoodRoutes has %d entries, want 49", len(FoodRoutes))
 	}
@@ -53,7 +53,7 @@ func TestFoodRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 }
 
 func TestFoodRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	decidedStepUp := map[string]bool{opFoodRestaurantStatus: true, opFoodDeliveryPartnerState: true} // SUSPENDED bodies
 	for _, rt := range FoodRoutes {
 		body, opts := foodCase(rt)
@@ -79,7 +79,7 @@ func TestFoodRoutes_StepUp(t *testing.T) {
 }
 
 func TestFoodStatus_PermissionAndStepUpFollowTheRequestedStatus(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	approver, suspender := uuid.NewString(), uuid.NewString()
 	rg.perms.grant(approver, permFoodRestaurantApprove)
 	rg.perms.grant(suspender, permFoodRestaurantSuspend)
@@ -124,49 +124,69 @@ func refundPath() (string, string) {
 	return foodPrefix + "/orders/" + id + "/refund", id
 }
 
-func TestFoodRefund_ThresholdBoundary(t *testing.T) {
-	const threshold = 500000
-	cases := []struct {
-		body      string
-		twoPerson bool
+// Every refund is two-person, whatever the amount: a tiny refund is stored
+// as a pending approval, never executed on the first admin's step-up alone.
+func TestFoodRefund_EveryAmountIsTwoPerson(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		summary string
 	}{
-		{`{"amount_paise":499999,"reason":"r"}`, false},
-		{`{"amount_paise":500000,"reason":"r"}`, true}, // AT the threshold: two-person
-		{`{"amount_paise":500001,"reason":"r"}`, true},
-		{`{"amount":4999.99,"reason":"r"}`, false},
-		{`{"amount":5000,"reason":"r"}`, true},
-		{`{"amount":5000,"amount_paise":500000,"reason":"r"}`, true},
-	}
-	for _, tc := range cases {
-		rg := newProductsRig(t, true, threshold)
+		{`{"amount_paise":1,"reason":"r"}`, "₹0.01"},
+		{`{"amount":0.01,"reason":"r"}`, "₹0.01"},
+		{`{"amount_paise":100,"reason":"r"}`, "₹1.00"},
+		{`{"amount":4999.99,"reason":"r"}`, "₹4,999.99"},
+		{`{"amount_paise":500000,"reason":"r"}`, "₹5,000.00"},
+		{`{"amount":5000,"amount_paise":500000,"reason":"r"}`, "₹5,000.00"},
+	} {
+		rg := newProductsRig(t, true)
 		rg.holders.n = 1
 		actor := uuid.NewString()
-		rg.perms.grant(actor, permFoodRefundIssue)
-		path, _ := refundPath()
+		rg.perms.grant(actor, permFoodRefundIssue, permFoodOrdersRead)
+		path, orderID := refundPath()
+		// Step-up is still required first.
+		if w := rg.do(http.MethodPost, path, tc.body, actor, false, withIdempotency("k-0")); !hasCode(w, adminauth.CodeStepUpRequired) {
+			t.Fatalf("%s without step-up: %d %s", tc.body, w.Code, w.Body.String())
+		}
+		rg.takeAudit()
 		w := rg.do(http.MethodPost, path, tc.body, actor, true, withIdempotency("k-1"))
 		hits := rg.takeHits()
 		audit := rg.takeAudit()
-		if tc.twoPerson {
-			if w.Code != http.StatusAccepted || len(hits) != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending {
-				t.Fatalf("%s: want pending approval, got %d %s hits=%d audit=%+v", tc.body, w.Code, w.Body.String(), len(hits), audit)
-			}
-			continue
+		if w.Code != http.StatusAccepted || len(hits) != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending {
+			t.Fatalf("%s: want pending approval, got %d %s hits=%d audit=%+v", tc.body, w.Code, w.Body.String(), len(hits), audit)
 		}
-		if w.Code != http.StatusOK || len(hits) != 1 || hits[0].idempotencyKey != "k-1" || len(rg.store.rows) != 0 {
-			t.Fatalf("%s: want direct refund, got %d %s hits=%+v", tc.body, w.Code, w.Body.String(), hits)
+		if _, ok := audit[0].Payload["refund_threshold_paise"]; ok || audit[0].Payload["amount_basis"] != "stated" {
+			t.Fatalf("%s: audit payload %+v", tc.body, audit[0].Payload)
 		}
-		if !strings.Contains(hits[0].body, `"amount":4999.99`) {
-			t.Fatalf("%s: food body %s", tc.body, hits[0].body)
-		}
-		// Below the threshold a step-up is still required.
-		if w := rg.do(http.MethodPost, path, tc.body, actor, false, withIdempotency("k-2")); !hasCode(w, adminauth.CodeStepUpRequired) {
-			t.Fatalf("%s without step-up: %d", tc.body, w.Code)
+		a := decodeApproval(t, w)
+		if a.TargetID != orderID || a.Status != approvals.StatusPending || !strings.Contains(a.Summary, tc.summary) {
+			t.Fatalf("%s: approval %+v, want the summary to state %s", tc.body, a, tc.summary)
 		}
 	}
 }
 
+// When identity reports no other TOTP-enrolled holder, the sole holder's
+// refund executes at once and the audit row says so.
+func TestFoodRefund_SoleHolderExecutesAndIsRecorded(t *testing.T) {
+	rg := newProductsRig(t, true)
+	rg.holders.n = 0
+	actor := uuid.NewString()
+	rg.perms.grant(actor, permFoodRefundIssue)
+	path, orderID := refundPath()
+	w := rg.do(http.MethodPost, path, `{"amount_paise":1,"reason":"r"}`, actor, true, withIdempotency("k-sole"))
+	hits := rg.takeHits()
+	audit := rg.takeAudit()
+	if w.Code != http.StatusOK || len(hits) != 1 || hits[0].path != service.FoodAdminPrefix+"/orders/"+orderID+"/refund" ||
+		hits[0].idempotencyKey != "k-sole" || !strings.Contains(hits[0].body, `"amount":0.01`) {
+		t.Fatalf("sole holder: %d %s hits=%+v", w.Code, w.Body.String(), hits)
+	}
+	if len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomeSuccess || audit[0].Payload["approval"] != "sole_holder" ||
+		rg.holders.lastPerm != permFoodRefundIssue || rg.holders.lastExclude != actor {
+		t.Fatalf("sole-holder audit %+v (holders asked for %q excluding %q)", audit, rg.holders.lastPerm, rg.holders.lastExclude)
+	}
+}
+
 func TestFoodRefund_BadAmountsAndMissingKeyAreRefusedBeforeFood(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permFoodRefundIssue)
 	path, _ := refundPath()
@@ -184,61 +204,41 @@ func TestFoodRefund_BadAmountsAndMissingKeyAreRefusedBeforeFood(t *testing.T) {
 	}
 }
 
-func TestFoodRefund_FullRefundIsBoundedByTheOrderTotalOrTwoPerson(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		readOrder bool
-		total     string
-		twoPerson bool
-	}{
-		// food's order detail (postgres.Order): the total is nested.
-		{"no orders.read: amount unknown", false, foodOrderDetail(20000, 200), true},
-		{"small order: step-up only", true, foodOrderDetail(20000, 200), false},
-		{"order just below the threshold", true, foodOrderDetail(499999, 4999.99), false},
-		{"order at the threshold", true, foodOrderDetail(500000, 5000), true},
-		{"order above the threshold", true, foodOrderDetail(900000, 9000), true},
-		{"no money block: rupee totals below", true, `{"data":{"id":"x","totals":{"item_subtotal":4000,"final_amount":4999.5}}}`, false},
-		{"no money block: rupee totals at", true, `{"data":{"id":"x","totals":{"final_amount":5000}}}`, true},
-		// The paise block wins over the rupee totals when both are present.
-		{"paise block wins", true, `{"data":{"totals":{"final_amount":1},"money":{"totals_paise":{"final_amount_paise":600000}}}}`, true},
-		{"order unreadable", true, `{"data":{}}`, true},
-		{"zero totals unreadable", true, `{"data":{"totals":{"final_amount":0},"money":{"totals_paise":{"final_amount_paise":0}}}}`, true},
-		{"not JSON", true, `<html>`, true},
-		// A total only at the top level is not food's shape: unknown.
-		{"top-level total is not read", true, `{"data":{"final_amount_paise":20000,"final_amount":200}}`, true},
+// A full refund (no amount) is two-person like any other; the order total is
+// never read, so a readable or unreadable order makes no difference and the
+// summary says the amount is not stated.
+func TestFoodRefund_FullRefundIsTwoPerson_TheOrderTotalIsNeverRead(t *testing.T) {
+	for _, tc := range []struct{ name, detail string }{
+		{"small readable order", foodOrderDetail(20000, 200)},
+		{"large readable order", foodOrderDetail(900000, 9000)},
+		{"order unreadable", `{"data":{}}`},
+		{"not JSON", `<html>`},
 	} {
-		rg := newProductsRig(t, true, 500000)
+		rg := newProductsRig(t, true)
 		rg.holders.n = 1
 		actor := uuid.NewString()
-		rg.perms.grant(actor, permFoodRefundIssue)
-		if tc.readOrder {
-			rg.perms.grant(actor, permFoodOrdersRead)
-		}
+		rg.perms.grant(actor, permFoodRefundIssue, permFoodOrdersRead)
 		path, orderID := refundPath()
 		rg.on(http.MethodGet, service.FoodAdminPrefix+"/orders/"+orderID, func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(tc.total))
+			_, _ = w.Write([]byte(tc.detail))
 		})
 		w := rg.do(http.MethodPost, path, `{"reason":"whole order"}`, actor, true, withIdempotency("k"))
-		hits := rg.takeHits()
-		var refunds int
-		for _, h := range hits {
-			if h.method == http.MethodPost {
-				refunds++
-				if strings.Contains(h.body, "amount") {
-					t.Fatalf("%s: a full refund sent an amount: %s", tc.name, h.body)
-				}
-			} else if h.verified.Scope[0] != permFoodOrdersRead {
-				t.Fatalf("%s: lookup scope %v", tc.name, h.verified.Scope)
-			}
+		if hits := rg.takeHits(); len(hits) != 0 {
+			t.Fatalf("%s: a full refund touched food before approval: %+v", tc.name, hits)
 		}
-		if tc.twoPerson != (w.Code == http.StatusAccepted) || (tc.twoPerson && refunds != 0) || (!tc.twoPerson && refunds != 1) {
-			t.Fatalf("%s: status %d refunds %d %s", tc.name, w.Code, refunds, w.Body.String())
+		audit := rg.takeAudit()
+		if w.Code != http.StatusAccepted || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending || audit[0].Payload["amount_basis"] != "full_refund" {
+			t.Fatalf("%s: status %d %s audit=%+v", tc.name, w.Code, w.Body.String(), audit)
+		}
+		a := decodeApproval(t, w)
+		if !strings.Contains(a.Summary, "full refund") || !strings.Contains(a.Summary, "amount not stated") || strings.Contains(a.Summary, "₹") {
+			t.Fatalf("%s: summary %q", tc.name, a.Summary)
 		}
 	}
 }
 
 func TestFoodRefund_SecondHolderExecutesTheStoredRefundOnce(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	rg.holders.n = 1
 	requester, approver := uuid.NewString(), uuid.NewString()
 	rg.perms.grant(requester, permFoodRefundIssue)
@@ -276,7 +276,10 @@ func TestFoodRefund_SecondHolderExecutesTheStoredRefundOnce(t *testing.T) {
 	}
 }
 
-func TestFoodRefundDecide_RejectIsStepUpOnly_ApproveFollowsTheStoredAmount(t *testing.T) {
+// Rejecting a refund request moves no money: step-up only. Approving one is
+// two-person whatever the amount; the stored amount, when it can be listed,
+// appears in the approval summary and otherwise the summary says so.
+func TestFoodRefundDecide_RejectIsStepUpOnly_ApproveIsAlwaysTwoPerson(t *testing.T) {
 	listing := func(id string, amount float64) string {
 		return fmt.Sprintf(`{"data":{"refunds":[{"id":"%s","amount":%v,"status":"requested"},{"id":"%s","amount":1}]}}`, id, amount, uuid.NewString())
 	}
@@ -285,13 +288,16 @@ func TestFoodRefundDecide_RejectIsStepUpOnly_ApproveFollowsTheStoredAmount(t *te
 		canList    bool
 		amount     float64
 		twoPerson  bool
+		summary    string
 	}{
-		{"reject", `{"status":"rejected"}`, false, 900000, false},
-		{"approve below", `{"status":"APPROVED"}`, true, 4999.99, false},
-		{"approve at", `{"status":"approved","reason":"verified"}`, true, 5000, true},
-		{"approve unknown amount", `{"status":"approved","reason":"verified"}`, false, 1, true},
+		{"reject", `{"status":"rejected"}`, false, 900000, false, ""},
+		{"reject with listing rights", `{"status":"REJECTED","reason":"not eligible"}`, true, 1, false, ""},
+		{"approve one paisa", `{"status":"APPROVED","reason":"verified"}`, true, 0.01, true, "₹0.01"},
+		{"approve below the old threshold", `{"status":"approved","reason":"verified"}`, true, 4999.99, true, "₹4,999.99"},
+		{"approve at the old threshold", `{"status":"approved","reason":"verified"}`, true, 5000, true, "₹5,000.00"},
+		{"approve unknown amount", `{"status":"approved","reason":"verified"}`, false, 1, true, "amount not stated"},
 	} {
-		rg := newProductsRig(t, true, 500000)
+		rg := newProductsRig(t, true)
 		rg.holders.n = 1
 		actor := uuid.NewString()
 		rg.perms.grant(actor, permFoodRefundIssue)
@@ -307,24 +313,38 @@ func TestFoodRefundDecide_RejectIsStepUpOnly_ApproveFollowsTheStoredAmount(t *te
 			t.Fatalf("%s without step-up: %d %s", tc.name, w.Code, w.Body.String())
 		}
 		rg.takeHits()
+		rg.takeAudit()
 		w := rg.do(http.MethodPost, path, tc.body, actor, true)
-		var decides []productHit
+		var decides, reads int
 		for _, h := range rg.takeHits() {
 			if h.method == http.MethodPost {
-				decides = append(decides, h)
+				decides++
+			} else if h.verified.Scope[0] == permFoodRefundsRead {
+				reads++
 			}
 		}
-		if tc.twoPerson {
-			if w.Code != http.StatusAccepted || len(decides) != 0 {
-				t.Fatalf("%s: want pending, got %d decides=%d %s", tc.name, w.Code, len(decides), w.Body.String())
+		audit := rg.takeAudit()
+		if !tc.twoPerson {
+			if w.Code != http.StatusOK || decides != 1 || reads != 0 || len(rg.store.rows) != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomeSuccess {
+				t.Fatalf("%s: want a direct reject, got %d decides=%d reads=%d %s", tc.name, w.Code, decides, reads, w.Body.String())
 			}
 			continue
 		}
-		if w.Code != http.StatusOK || len(decides) != 1 || strings.Contains(decides[0].body, "APPROVED") {
-			t.Fatalf("%s: %d decides=%+v", tc.name, w.Code, decides)
+		if w.Code != http.StatusAccepted || decides != 0 || len(audit) != 1 || audit[0].Outcome != postgres.AuditOutcomePending {
+			t.Fatalf("%s: want pending, got %d decides=%d %s", tc.name, w.Code, decides, w.Body.String())
+		}
+		if _, ok := audit[0].Payload["refund_threshold_paise"]; ok {
+			t.Fatalf("%s: audit still carries a threshold: %+v", tc.name, audit[0].Payload)
+		}
+		if tc.canList != (reads == 1) {
+			t.Fatalf("%s: amount reads = %d with listing rights %v", tc.name, reads, tc.canList)
+		}
+		a := decodeApproval(t, w)
+		if a.TargetID != refundID || !strings.Contains(a.Summary, tc.summary) || !strings.Contains(a.Summary, "(approved)") {
+			t.Fatalf("%s: approval %+v, want the summary to carry %q", tc.name, a, tc.summary)
 		}
 	}
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permFoodRefundIssue)
 	if w := rg.do(http.MethodPost, foodPrefix+"/refunds/"+uuid.NewString()+"/decide", `{"status":"maybe"}`, actor, true); w.Code != http.StatusBadRequest {
@@ -337,7 +357,7 @@ func TestFoodMarkPaid_IsAlwaysTwoPerson(t *testing.T) {
 		{"/settlements/restaurants/", "/settlements/restaurants/"},
 		{"/settlements/delivery-partners/", "/settlements/delivery-partners/"},
 	} {
-		rg := newProductsRig(t, true, 500000)
+		rg := newProductsRig(t, true)
 		rg.holders.n = 1
 		requester, approver := uuid.NewString(), uuid.NewString()
 		rg.perms.grant(requester, permFoodSettlementMarkPaid)
@@ -366,7 +386,7 @@ func TestFoodMarkPaid_IsAlwaysTwoPerson(t *testing.T) {
 }
 
 func TestFoodSettlementDownload_RedirectIsHandedBackNotFollowed(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permFoodSettlementRead)
 	fileID := uuid.NewString()
@@ -413,7 +433,7 @@ func TestFoodSettlementDownload_RedirectIsHandedBackNotFollowed(t *testing.T) {
 }
 
 func TestFoodSettlementGenerate_ForwardsTheIdempotencyKey(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permFoodSettlementGenerate)
 	body := `{"period_start":"2026-09-01","period_end":"2026-09-07"}`
@@ -428,7 +448,7 @@ func TestFoodSettlementGenerate_ForwardsTheIdempotencyKey(t *testing.T) {
 }
 
 func TestProductRoutes_NoKeyIs503AndAudited(t *testing.T) {
-	rg := newProductsRig(t, false, 500000)
+	rg := newProductsRig(t, false)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, permFoodStatsRead, permCommerceStatsRead, permTrustStatsRead)
 	for _, path := range []string{foodPrefix + "/stats", "/v1/admin/commerce/stats", "/v1/admin/trust/stats"} {
@@ -446,7 +466,7 @@ func TestProductRoutes_NoKeyIs503AndAudited(t *testing.T) {
 }
 
 func TestMe_ProductNavigationOnlyWithAPermissionInThatApp(t *testing.T) {
-	rg := newProductsRig(t, true, 500000)
+	rg := newProductsRig(t, true)
 	cases := map[string]struct {
 		perms []string
 		want  map[string]bool

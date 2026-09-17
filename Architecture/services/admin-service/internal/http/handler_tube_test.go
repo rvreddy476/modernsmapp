@@ -13,7 +13,7 @@ import (
 var tubeAll = []string{permTubeStatsRead, permTubeVideosModerate, permTubeVideosRemove, permTubeChannelsModerate, permTubeReportsAct}
 
 func TestTubeRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(TubeRoutes) != 12 {
 		t.Fatalf("TubeRoutes has %d entries, want 12", len(TubeRoutes))
 	}
@@ -25,7 +25,7 @@ func TestTubeRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 }
 
 func TestTubeAlternativeReads_ScopeToTheHeldPermission(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range TubeRoutes {
 		for _, alt := range rt.alternatives {
 			actor := uuid.NewString()
@@ -43,7 +43,7 @@ func TestTubeAlternativeReads_ScopeToTheHeldPermission(t *testing.T) {
 // No Tube route needs a step-up on its declaration; a video takedown is
 // decided from the body (TestContentTakedown_KindAndActionChooseTheScope).
 func TestTubeRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range TubeRoutes {
 		if rt.stepUp {
 			t.Fatalf("%s declares step-up", rt.operation)
@@ -55,7 +55,7 @@ func TestTubeRoutes_StepUp(t *testing.T) {
 // A Social permission never reaches a Tube route and the other way round:
 // the same post-service, two apps.
 func TestTubeAndSocial_PermissionsDoNotCross(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	social := uuid.NewString()
 	rg.perms.grant(social, postAll[:9]...)
 	tube := uuid.NewString()

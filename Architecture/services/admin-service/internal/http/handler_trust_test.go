@@ -26,7 +26,7 @@ func trustCase(rt productRoute) string {
 }
 
 func TestTrustRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	if len(TrustRoutes) != 14 {
 		t.Fatalf("TrustRoutes has %d entries, want 14", len(TrustRoutes))
 	}
@@ -40,7 +40,7 @@ func TestTrustRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 // A read trust-safety admits under several permissions is scoped to the one
 // the admin actually holds, never to one they lack.
 func TestTrustAlternativeReads_ScopeToTheHeldPermission(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range TrustRoutes {
 		for _, alt := range rt.alternatives {
 			actor := uuid.NewString()
@@ -56,7 +56,7 @@ func TestTrustAlternativeReads_ScopeToTheHeldPermission(t *testing.T) {
 }
 
 func TestTrustOutcomeGates_DecidedBeforeTheProxyCall(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	actor := uuid.NewString()
 	rg.perms.grant(actor, trustAll...)
 	for _, c := range []struct {
@@ -111,7 +111,7 @@ func TestTrustOutcomeGates_DecidedBeforeTheProxyCall(t *testing.T) {
 }
 
 func TestTrustRoutes_StepUp(t *testing.T) {
-	rg := newProductsRig(t, true, DefaultRefundTwoPersonThresholdPaise)
+	rg := newProductsRig(t, true)
 	for _, rt := range TrustRoutes {
 		stepUpCase(t, rg, trustPrefix, trustAll, rt, trustCase(rt), rt.operation == "trust.verification_requests.list")
 	}
