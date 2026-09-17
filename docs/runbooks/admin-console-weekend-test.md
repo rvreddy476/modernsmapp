@@ -277,6 +277,12 @@ console lives under `/admin`; on its own host later it will be at the root.)
 10. **Access — grant, check, revoke.** This needs the second account from
     step 2, item 4 (2FA enrolled).
 
+    Your role plan maps onto the console like this: you hold **superadmin**;
+    an **Account admin** for one app is role **admin** with that app chosen
+    as the scope; a **Finance admin** is role **finance** (refunds,
+    settlements, payouts, fund rates). Two-person approval for money switches
+    on by itself once a second finance admin with 2FA exists.
+
     1. **Access** → search the account (type the start of its email or
        handle, or paste its user id) → grant role **moderator**, app
        **dating**, with a reason. This is a role change, so it asks for a
@@ -415,12 +421,12 @@ These are yours to do; none of them is code.
       `curl -sI http://admin.cleestudio.com/` → `301` to https;
       `curl -sI https://app.cleestudio.com/admin` → `307` to
       `https://admin.cleestudio.com/` (needs the shell's `ADMIN_HOST_URL`).
-6. **Two decisions still open:**
-   - whether Money **reads** (fraud reviews, disputes, payout queue) are shown
-     during the beta while writes stay off;
-   - the refund amount above which a second approver is required. The code
-     ships with **₹5,000** (`ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE=500000`);
-     say if you want another number.
+6. **Decided on 17 September:**
+   - Money **reads** are shown during the beta; only the money actions stay
+     off until launch.
+   - **Every refund goes to a second approver**, whatever the amount. While
+     you are the only finance admin it runs on your own and the record says
+     so.
 7. **Name people when ready:** a second finance admin (switches on
    two-person approval), per-app moderators, and the grievance officer.
    Nobody else gets access until then.
