@@ -27,6 +27,8 @@ env:
   API_GATEWAY_URL: http://api-gateway.atpost.svc.cluster.local:8080
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
   NEXT_PUBLIC_API_BASE_URL: ''
+  # /admin on this host redirects to the admin console's own host (307).
+  ADMIN_HOST_URL: https://admin.cleestudio.com
 ingress:
   enabled: true
   className: nginx

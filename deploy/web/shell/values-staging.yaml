@@ -23,6 +23,8 @@ env:
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
   # Browser axios base = this zone's basePath (Multi-Zones edge routes it here):
   NEXT_PUBLIC_API_BASE_URL: ""
+  # /admin on this host redirects to the admin console's own host (307).
+  ADMIN_HOST_URL: https://admin.staging.cleestudio.com
 ingress:
   enabled: true
   className: alb
