@@ -364,10 +364,57 @@ These are yours to do; none of them is code.
    (at least 32 bytes, never rotated casually), `dating_pii_keys`
    (`v1:<base64 32-byte key>`) and `dating_pii_lookup_salt` (at least 16
    random bytes), plus `dating_service_token_key` / `_kid`.
-5. **DNS and TLS for the admin host** — `admin.cleestudio.com` is the
-   suggestion. The console is built for its own host with
-   `ADMIN_BASE_PATH=` (empty) so it serves at the root, and its cookies are
-   host-only, Secure and SameSite=Strict.
+5. **DNS and TLS for the admin host** — decided 2026-09-17:
+   **`admin.cleestudio.com`** (staging: **`admin.staging.cleestudio.com`**,
+   named after `app.staging.cleestudio.com`). `deploy/web/admin/values-prod.yaml`
+   and `values-staging.yaml` (plus the generated `values-azure-*.yaml`) now
+   carry those hosts at the root; the image is built with `ADMIN_BASE_PATH=/`
+   (atpost-web `build-push.yml`); cookies are host-only, Secure,
+   SameSite=Strict; the shell answers `app.cleestudio.com/admin` with a 307 to
+   the new host once its env has `ADMIN_HOST_URL=https://admin.cleestudio.com`
+   (`deploy/web/shell/values-*.yaml` — one line, still to add). The public
+   `cleestudio.com` zone is at **Cloudflare** (`infra/terraform/modules/dns/main.tf`);
+   the terraform ACM wildcard only covers `*.aws.cleestudio.com`, so the cert
+   below is a separate one. Do these in order, per environment:
+   1. **Certificate (AWS, before DNS).** ACM, region `ap-south-1` → *Request
+      public certificate* → domain `admin.cleestudio.com` (or add it as a SAN
+      to the certificate already carrying `app.cleestudio.com`; a
+      `*.cleestudio.com` wildcard also covers it) → validation **DNS**. ACM
+      shows one record: type `CNAME`, name `_<hash>.admin.cleestudio.com`,
+      target `_<hash>.acm-validations.aws.`. Add it in Cloudflare as
+      **DNS only (grey cloud)**, wait for *Issued*, then paste the ARN into
+      `alb.ingress.kubernetes.io/certificate-arn` in
+      `deploy/web/admin/values-prod.yaml` (it replaces `CHANGEME`). Staging:
+      same for `admin.staging.cleestudio.com` in `values-staging.yaml`.
+   2. **Deploy the admin zone** (ArgoCD sync) so the shared ALB
+      (`atpost-web-prod` / `atpost-web-staging`) gains the host rule and the
+      cert. Read the ALB name — it is the record target:
+      `kubectl -n atpost get ingress web-admin -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'`
+      (every web zone shares that ALB, so `web-shell` prints the same value).
+   3. **DNS record (AWS).** Cloudflare, zone `cleestudio.com`: type `CNAME`,
+      name `admin`, target = the ALB hostname from step 2
+      (`k8s-atpost-….ap-south-1.elb.amazonaws.com`), TTL Auto. Proxy status:
+      match what `app` uses today; if `app` is proxied (orange cloud), proxy
+      `admin` too with SSL mode **Full (strict)** — the ACM cert on the ALB is
+      required either way. Staging: name `admin.staging`, target = the
+      staging ALB hostname.
+   4. **Azure instead (only if that cloud is live).** TLS terminates at Front
+      Door; there is no per-ingress cert. In profile `atpost-prod-fd`
+      (`infra/azure/modules/frontdoor`) add a **custom domain**
+      `admin.cleestudio.com` with a Front Door-managed certificate, attach it
+      to `default-route` and to the WAF security policy — the terraform module
+      declares only the default `*.azurefd.net` domain, so this is a portal/CLI
+      step or a new `azurerm_cdn_frontdoor_custom_domain` resource. Front Door
+      then shows a `_dnsauth.admin` TXT to add in Cloudflare. Record: type
+      `CNAME`, name `admin`, target = the `frontdoor_endpoint` terraform
+      output (`atpost-prod-<id>.z01.azurefd.net`), DNS only. If the Azure DNS
+      zone is used instead, add `admin` to `edge_cname_records` in the env
+      tfvars.
+   5. **Verify.** `curl -sI https://admin.cleestudio.com/api/health` → `200`
+      with `strict-transport-security: max-age=63072000; includeSubDomains; preload`;
+      `curl -sI http://admin.cleestudio.com/` → `301` to https;
+      `curl -sI https://app.cleestudio.com/admin` → `307` to
+      `https://admin.cleestudio.com/` (needs the shell's `ADMIN_HOST_URL`).
 6. **Two decisions still open:**
    - whether Money **reads** (fraud reviews, disputes, payout queue) are shown
      during the beta while writes stay off;

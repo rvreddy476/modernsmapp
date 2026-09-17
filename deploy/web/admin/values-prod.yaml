@@ -1,4 +1,13 @@
-# web zone "admin" (/admin) — prod. Reuses charts/atpost-service.
+# web zone "admin" — prod. Reuses charts/atpost-service.
+#
+# Founder decision 2026-09-17: the admin console lives on its OWN host,
+# admin.cleestudio.com, at the root (no /admin prefix). The image is built
+# with ADMIN_BASE_PATH=/ (atpost-web .github/workflows/build-push.yml), it
+# sets its own strict CSP + HSTS + host-only admin_* cookies, and the
+# browser only ever talks to this host (its /api/proxy reaches the gateway
+# in-cluster). It is deliberately NOT reachable at app.cleestudio.com/admin
+# any more: the shell zone answers that path with a redirect here when its
+# ADMIN_HOST_URL env is set.
 service:
   name: web-admin
   port: 3000            # Next standalone listens on 3000
@@ -21,24 +30,32 @@ env:
   # Server-side proxy/refresh targets (cluster-internal):
   API_GATEWAY_URL: http://api-gateway.atpost.svc.cluster.local:8080
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
-  # Browser axios base = this zone's basePath (Multi-Zones edge routes it here):
-  NEXT_PUBLIC_API_BASE_URL: "/admin"
+  # Own host, served at the root: the browser axios base is "" (same origin,
+  # /v1 → /api/proxy). Baked at build time from ADMIN_BASE_PATH=/; kept here
+  # so the runtime value can never disagree with the bundle.
+  NEXT_PUBLIC_API_BASE_URL: ""
 ingress:
   enabled: true
   className: alb
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/group.name: atpost-web-prod   # all zones share ONE ALB
+    alb.ingress.kubernetes.io/group.name: atpost-web-prod   # all zones share ONE ALB; this one is a host rule
     alb.ingress.kubernetes.io/group.order: "10"          # shell (/) is the catch-all, evaluated last
+    # HTTPS only + 301 for any http:// — required for the console's HSTS
+    # header (max-age two years, includeSubDomains, preload) to be honoured.
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
-    alb.ingress.kubernetes.io/healthcheck-path: /admin
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health   # the root page redirects to sign-in, which an ALB would count as unhealthy
+    # Same TLS mechanism as every other zone: an ACM certificate on the shared
+    # ALB. The cert MUST list admin.cleestudio.com as a SAN (or be a
+    # *.cleestudio.com wildcard); the ALB serves it by SNI next to the
+    # app.cleestudio.com cert. See docs/runbooks/admin-console-weekend-test.md §8.
     alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/CHANGEME
   hosts:
-    - host: app.cleestudio.com
+    - host: admin.cleestudio.com
       paths:
-        - { path: /admin, pathType: Prefix }
+        - { path: /, pathType: Prefix }
 pdb:
   enabled: true
   minAvailable: 1
