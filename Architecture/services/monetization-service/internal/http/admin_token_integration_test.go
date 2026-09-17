@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,12 @@ type adminIT struct {
 
 func newAdminIT(t *testing.T) *adminIT {
 	t.Helper()
+	return newAdminITWrites(t, true)
+}
+
+// newAdminITWrites is newAdminIT with MONETIZATION_WRITES_ENABLED chosen.
+func newAdminITWrites(t *testing.T, writesEnabled bool) *adminIT {
+	t.Helper()
 	dsn := requireTestDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -55,7 +62,7 @@ func newAdminIT(t *testing.T) *adminIT {
 	New(service.New(pgstore.New(pool), nil)).
 		WithInternalKey(adminTestInternalKey).
 		WithServiceAuth(rg.v).
-		WithWritesEnabled(true).
+		WithWritesEnabled(writesEnabled).
 		RegisterRoutes(r)
 	it := &adminIT{adminTokenRig: rg, ctx: ctx, pool: pool, r: r}
 	t.Cleanup(func() {
@@ -451,4 +458,167 @@ func TestAdminTokenIntegration_Stats(t *testing.T) {
 	if after.GeneratedAt.IsZero() {
 		t.Fatal("generated_at unset")
 	}
+}
+
+// MONETIZATION_WRITES_ENABLED=false (founder decision 2026-09-17: admins may
+// view everything in the beta): every read of the token family answers 200
+// with the seeded rows, every write still answers 503
+// MONETIZATION_NOT_LAUNCHED and leaves no audit row, and the legacy admin
+// reads stay closed.
+func TestAdminTokenIntegration_ReadsServedWhileWritesDisabled(t *testing.T) {
+	it := newAdminITWrites(t, false)
+	creator := uuid.New()
+	txnID := uuid.New()
+	earningID := uuid.New()
+	reviewID := uuid.New()
+	disputeID := uuid.New()
+	payoutID := uuid.New()
+	rateID := uuid.New()
+	region := testRegion()
+	period := "2092-03"
+	t.Cleanup(func() {
+		ctx := it.ctx
+		_, _ = it.pool.Exec(ctx, `DELETE FROM payout_requests WHERE user_id = $1`, creator)
+		_, _ = it.pool.Exec(ctx, `DELETE FROM disputes WHERE user_id = $1`, creator)
+		_, _ = it.pool.Exec(ctx, `DELETE FROM transactions WHERE wallet_id = $1`, creator)
+		_, _ = it.pool.Exec(ctx, `DELETE FROM fraud_reviews WHERE creator_id = $1`, creator)
+		_, _ = it.pool.Exec(ctx, `DELETE FROM creator_fund_earnings WHERE creator_id = $1`, creator)
+		_, _ = it.pool.Exec(ctx, `DELETE FROM creator_fund_budgets WHERE region_code = $1`, region)
+		_, _ = it.pool.Exec(ctx, `DELETE FROM monetization_rpm_rates WHERE region_code = $1`, region)
+		_, _ = it.pool.Exec(ctx, `DELETE FROM creator_ledger WHERE user_id = $1`, creator)
+	})
+	it.exec(t, `INSERT INTO creator_ledger (user_id, balance) VALUES ($1, 1000)`, creator)
+	it.exec(t, `INSERT INTO transactions (id, wallet_id, type, amount, currency, status) VALUES ($1, $2, 'subscription_payment', 5000, 'INR', 'completed')`, txnID, creator)
+	it.exec(t, `INSERT INTO disputes (id, user_id, transaction_id, reason, status) VALUES ($1, $2, $3, 'test', 'open')`, disputeID, creator, txnID)
+	it.exec(t, `INSERT INTO fraud_reviews (id, creator_id, review_type, status) VALUES ($1, $2, 'manual', 'pending')`, reviewID, creator)
+	it.exec(t, `INSERT INTO creator_fund_earnings (id, creator_id, day_bucket, content_type, region_code, status, credited) VALUES ($1, $2, '2092-03-02', 'flick', $3, 'settled', false)`, earningID, creator, region)
+	it.exec(t, `INSERT INTO payout_requests (id, user_id, amount, status) VALUES ($1, $2, 12345, 'held')`, payoutID, creator)
+	it.exec(t, `INSERT INTO creator_fund_budgets (period_key, region_code, cap_paise) VALUES ($1, $2, 777)`, period, region)
+	it.exec(t, `INSERT INTO monetization_rpm_rates (id, content_type, region_code, rpm_paise, effective_from) VALUES ($1, 'flick', $2, 4200, '2000-01-01')`, rateID, region)
+	// An audit row for the log to find; cleanup deletes by performer.
+	it.exec(t, `INSERT INTO monetization_audit_log (table_name, operation, performer_id, new_data) VALUES ('creator_ledger', 'seed_for_read_test', $1, '{}')`, it.actor)
+
+	// Every read: 200, and the seeded row is in the answer.
+	find := func(t *testing.T, body json.RawMessage, key, want string) bool {
+		t.Helper()
+		var rows []map[string]any
+		if err := json.Unmarshal(body, &rows); err != nil {
+			var one map[string]any
+			if err := json.Unmarshal(body, &one); err != nil {
+				t.Fatalf("decode: %v body=%s", err, body)
+			}
+			rows = []map[string]any{one}
+			// A wrapped list, e.g. {"budgets":[...],"cadence":"monthly"}.
+			for _, v := range one {
+				if list, ok := v.([]any); ok {
+					for _, e := range list {
+						if m, ok := e.(map[string]any); ok {
+							rows = append(rows, m)
+						}
+					}
+				}
+			}
+		}
+		for _, r := range rows {
+			if fmt.Sprint(r[key]) == want {
+				return true
+			}
+		}
+		return false
+	}
+	reads := []struct{ perm, path, key, want string }{
+		{PermStatsRead, "/stats", "generated_at", ""},
+		{PermFraudReview, "/fraud-reviews?limit=500", "id", reviewID.String()},
+		{PermFundRead, "/creator-fund/rates", "region_code", region},
+		{PermFundRead, "/creator-fund/earnings/" + earningID.String(), "id", earningID.String()},
+		{PermFundRead, "/creator-fund/budgets", "region_code", region},
+		{PermDisputesRead, "/disputes?limit=500", "id", disputeID.String()},
+		{PermPayoutsRead, "/payout-requests?status=held&limit=500", "id", payoutID.String()},
+		{PermAuditRead, "/audit-logs?performer_id=" + it.actor.String(), "operation", "seed_for_read_test"},
+	}
+	for _, rd := range reads {
+		code, body := it.call(t, it.actor, rd.perm, http.MethodGet, rd.path, ``)
+		if code != http.StatusOK {
+			t.Fatalf("GET %s with writes disabled: status=%d body=%s, want 200", rd.path, code, body)
+		}
+		if rd.want == "" {
+			var one map[string]any
+			if err := json.Unmarshal(body, &one); err != nil || one[rd.key] == nil {
+				t.Fatalf("GET %s: no %s in %s", rd.path, rd.key, body)
+			}
+			continue
+		}
+		if !find(t, body, rd.key, rd.want) {
+			t.Fatalf("GET %s: seeded %s=%s not in %s", rd.path, rd.key, rd.want, body)
+		}
+	}
+	if n := len(it.adminRoutesRead()); n != len(reads) {
+		t.Fatalf("table has %d reads, this test covers %d", n, len(reads))
+	}
+
+	// Every write: 503 MONETIZATION_NOT_LAUNCHED, no audit row.
+	before := len(it.auditRows(t, it.actor))
+	writes := 0
+	for _, rt := range it.adminRoutes() {
+		if rt.read {
+			continue
+		}
+		writes++
+		path := rt.path
+		for _, rep := range [][2]string{{":userId", creator.String()}, {":id", earningID.String()}} {
+			path = replaceAll(path, rep[0], rep[1])
+		}
+		code, body := it.call(t, it.actor, rt.perm, rt.method, path, `{"reason":"x","status":"resolved_denied","transaction_id":"`+txnID.String()+`","amount_paise":1}`)
+		if code != http.StatusServiceUnavailable || !containsCode(body, "MONETIZATION_NOT_LAUNCHED") {
+			t.Fatalf("%s %s with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", rt.method, rt.path, code, body)
+		}
+	}
+	if writes != 15 {
+		t.Fatalf("checked %d writes, want 15", writes)
+	}
+	if after := len(it.auditRows(t, it.actor)); after != before {
+		t.Fatalf("writes with writes disabled left %d audit rows", after-before)
+	}
+
+	// Legacy admin reads stay closed in the beta.
+	w := adminServe(it.r, http.MethodGet, "/v1/monetization/admin/creator-fund/budgets", ``, legacyAdmin(it.actor, "admin"))
+	if w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "MONETIZATION_NOT_LAUNCHED" {
+		t.Fatalf("legacy GET budgets with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", w.Code, w.Body.String())
+	}
+}
+
+// adminRoutes / adminRoutesRead expose the table to the test through the
+// handler the rig registered.
+func (it *adminIT) adminRoutes() []adminRoute {
+	return New(nil).adminRoutes()
+}
+
+func (it *adminIT) adminRoutesRead() []adminRoute {
+	var out []adminRoute
+	for _, rt := range it.adminRoutes() {
+		if rt.read {
+			out = append(out, rt)
+		}
+	}
+	return out
+}
+
+func replaceAll(s, old, repl string) string {
+	for {
+		i := strings.Index(s, old)
+		if i < 0 {
+			return s
+		}
+		s = s[:i] + repl + s[i+len(old):]
+	}
+}
+
+func containsCode(body json.RawMessage, code string) bool {
+	var env struct {
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &env)
+	return env.Error != nil && env.Error.Code == code
 }

@@ -439,32 +439,105 @@ func (rg *adminTokenRig) allPermsToken(t *testing.T) string {
 	return rg.mint(t, rg.admin, AudienceMonetization, AdminPermissions, rg.actor.String())
 }
 
-// MONETIZATION_WRITES_ENABLED=false: every route of the family — reads,
-// stats and writes alike, as on the legacy admin family — answers 503
-// MONETIZATION_NOT_LAUNCHED to a fully-permitted token, before its handler.
-func TestAdminToken_WritesDisabledRefusesEveryRoute(t *testing.T) {
+// The table declares what is a read, and only a GET may be one: a write
+// marked read would be served in the beta, and a GET left unmarked would
+// blank a dashboard. Both directions are pinned here, and the registrar
+// refuses to boot a non-GET read.
+func TestAdminToken_ReadsAreExactlyTheGets(t *testing.T) {
+	rg := newAdminTokenRig(t)
+	h := rg.handler()
+	reads, writes := 0, 0
+	for _, rt := range h.adminRoutes() {
+		if rt.read != (rt.method == http.MethodGet) {
+			t.Fatalf("%s %s: read=%t, want %t", rt.method, rt.path, rt.read, rt.method == http.MethodGet)
+		}
+		if rt.read {
+			reads++
+		} else {
+			writes++
+		}
+	}
+	if reads != 8 || writes != 15 {
+		t.Fatalf("table has %d reads and %d writes, want 8 and 15 — update this test with the route table", reads, writes)
+	}
+	// The registrar's guard: a GET read and a POST write pass, a POST marked
+	// read panics.
+	(adminRoute{method: http.MethodGet, path: "/ok", read: true}).validate()
+	(adminRoute{method: http.MethodPost, path: "/ok", read: false}).validate()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a POST marked read passed validate")
+		}
+	}()
+	(adminRoute{method: http.MethodPost, path: "/bad", read: true}).validate()
+}
+
+// MONETIZATION_WRITES_ENABLED=false (founder decision 2026-09-17): every
+// read of the family is served to a permitted token, every write answers
+// 503 MONETIZATION_NOT_LAUNCHED before its handler, and the legacy admin
+// family keeps refusing its reads exactly as before.
+func TestAdminToken_WritesDisabledServesReadsRefusesWrites(t *testing.T) {
 	rg := newAdminTokenRig(t)
 	h := New(nil).WithInternalKey(adminTestInternalKey).WithServiceAuth(rg.v).WithWritesEnabled(false)
 	r := probeRouter(h, PermFundReverse, true)
+	// A read probe on the exact token chain: admitted, and it names the actor.
+	r.Handle(http.MethodGet, probePath, h.tokenChain(adminRoute{
+		method: http.MethodGet, path: "/probe", perm: PermFundRead, maintenanceOpen: true, read: true,
+		handler: func(c *gin.Context) {
+			a, ok := adminActor(c)
+			if !ok {
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"actor": a.ID.String(), "via": a.Via})
+		},
+	})...)
 	tok := rg.allPermsToken(t)
-	n := 0
+
+	readByKey := map[string]bool{}
+	for _, rt := range h.adminRoutes() {
+		readByKey[rt.method+" "+InternalAdminPrefix+rt.path] = rt.read
+	}
+	reads, writes := 0, 0
 	for _, ri := range r.Routes() {
-		if !strings.HasPrefix(ri.Path, InternalAdminPrefix+"/") {
+		if !strings.HasPrefix(ri.Path, InternalAdminPrefix+"/") || ri.Path == probePath {
 			continue
 		}
-		n++
 		w := adminServe(r, ri.Method, uuidParams(ri.Path), `{"reason":"x"}`, bearer(tok))
+		if readByKey[ri.Method+" "+ri.Path] {
+			reads++
+			// No service behind the handler: reaching it panics and
+			// gin.Recovery answers 500. Any 503 means the boundary refused.
+			if w.Code == http.StatusServiceUnavailable || errorCode(t, w) == "MONETIZATION_NOT_LAUNCHED" {
+				t.Fatalf("read %s %s with writes disabled: status=%d body=%s, want served", ri.Method, ri.Path, w.Code, w.Body.String())
+			}
+			continue
+		}
+		writes++
 		if w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "MONETIZATION_NOT_LAUNCHED" {
-			t.Fatalf("%s %s with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", ri.Method, ri.Path, w.Code, w.Body.String())
+			t.Fatalf("write %s %s with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", ri.Method, ri.Path, w.Code, w.Body.String())
 		}
 	}
-	if n != len(adminRoutePermissions())+1 {
-		t.Fatalf("checked %d routes, want %d", n, len(adminRoutePermissions())+1)
+	if reads != 8 || writes != 15 {
+		t.Fatalf("checked %d reads and %d writes, want 8 and 15", reads, writes)
 	}
-	// Authentication still comes first: no token is 401, not a hint about
-	// the run mode.
-	if w := adminServe(r, http.MethodPost, probePath, `{}`, nil); w.Code != http.StatusUnauthorized {
-		t.Fatalf("no token with writes disabled: status=%d, want 401", w.Code)
+	w := adminServe(r, http.MethodGet, probePath, ``, bearer(tok))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), rg.actor.String()) {
+		t.Fatalf("read probe with writes disabled: status=%d body=%s, want 200 naming the actor", w.Code, w.Body.String())
+	}
+	// The write probe on the same chain is still refused.
+	if w := adminServe(r, http.MethodPost, probePath, `{}`, bearer(tok)); w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "MONETIZATION_NOT_LAUNCHED" {
+		t.Fatalf("write probe with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", w.Code, w.Body.String())
+	}
+	// Authentication still comes first: no token is 401 on a read too, not a
+	// hint about the run mode and not the data.
+	if w := adminServe(r, http.MethodGet, probePath, ``, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("no token on a read with writes disabled: status=%d, want 401", w.Code)
+	}
+	// The legacy admin family is unchanged: its reads stay closed in the beta.
+	for _, p := range []string{"/v1/monetization/admin/fraud-reviews", "/v1/monetization/admin/creator-fund/budgets", "/v1/monetization/admin/creator-fund/rates"} {
+		if w := adminServe(r, http.MethodGet, p, ``, legacyAdmin(rg.actor, "admin")); w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "MONETIZATION_NOT_LAUNCHED" {
+			t.Fatalf("legacy GET %s with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", p, w.Code, w.Body.String())
+		}
 	}
 }
 

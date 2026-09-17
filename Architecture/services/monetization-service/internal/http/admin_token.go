@@ -20,12 +20,16 @@
 //
 // The token is authentication, not a way around the launch boundary. Every
 // route in the family is judged, after the token, by the same flags as the
-// legacy /v1/monetization/admin routes (tokenBoundary): with
-// MONETIZATION_WRITES_ENABLED off every route answers 503
-// MONETIZATION_NOT_LAUNCHED, and in MONETIZATION_MAINTENANCE only the admin
-// corrections are open — refunds and dispute updates, which are not
-// corrections, answer 503 MAINTENANCE exactly as their legacy routes do. No
-// route in the family moves money out: payout requests are read-only here.
+// legacy /v1/monetization/admin routes (tokenBoundary), with one founder
+// decision (2026-09-17) layered on for the console: while money actions are
+// switched off for the beta, admins may still VIEW everything. So with
+// MONETIZATION_WRITES_ENABLED off the routes the table declares as reads
+// (adminRoute.read) are served and every write answers 503
+// MONETIZATION_NOT_LAUNCHED; the legacy admin routes keep refusing their
+// reads too. In MONETIZATION_MAINTENANCE only the admin corrections and the
+// reads are open — refunds and dispute updates, which are not corrections,
+// answer 503 MAINTENANCE exactly as their legacy routes do. No route in the
+// family moves money out: payout requests are read-only here.
 package http
 
 import (
@@ -193,11 +197,14 @@ func (h *Handler) authorizeAdminToken(c *gin.Context, perm string) bool {
 // tokenBoundary applies the launch boundary to one token-family route, after
 // the token has been verified. It is the same line the legacy admin routes
 // are held to (launchBoundary); the token changes who may call, never
-// whether the flags allow the call.
-func (h *Handler) tokenBoundary(maintenanceOpen bool) gin.HandlerFunc {
+// whether the flags allow the call — except that a route the table declares
+// a read (rt.read) is served while writes are off, so the console can show
+// the creator fund during the beta. Maintenance is judged first and only by
+// rt.maintenanceOpen, as before.
+func (h *Handler) tokenBoundary(rt adminRoute) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if h.maintenance {
-			if maintenanceOpen {
+			if rt.maintenanceOpen {
 				c.Next()
 				return
 			}
@@ -209,7 +216,7 @@ func (h *Handler) tokenBoundary(maintenanceOpen bool) gin.HandlerFunc {
 			})
 			return
 		}
-		if h.writesEnabled {
+		if h.writesEnabled || rt.read {
 			c.Next()
 			return
 		}
@@ -231,56 +238,75 @@ type adminRoute struct {
 	// operator's corrections) and for admin reads; false for refunds and
 	// dispute updates, whose legacy routes maintenance closes.
 	maintenanceOpen bool
-	handler         gin.HandlerFunc
+	// read: the route only reads. Declared here, per route, so the launch
+	// boundary never has to sniff the HTTP method: a read is served while
+	// MONETIZATION_WRITES_ENABLED is off (founder decision 2026-09-17, admins
+	// may view everything in the beta); anything not marked is a write and
+	// answers 503 MONETIZATION_NOT_LAUNCHED. Only a GET may be marked;
+	// registerTokenAdminRoutes refuses to boot otherwise.
+	read    bool
+	handler gin.HandlerFunc
 }
 
 // adminRoutes is the token family: every existing monetization admin
 // operation, plus the dashboard's reads, each with its permission.
+// Columns: method, path, permission, maintenanceOpen, read, handler.
 func (h *Handler) adminRoutes() []adminRoute {
 	return []adminRoute{
-		{http.MethodGet, "/stats", PermStatsRead, true, h.GetAdminStats},
+		{http.MethodGet, "/stats", PermStatsRead, true, true, h.GetAdminStats},
 
 		// Fraud reviews.
-		{http.MethodGet, "/fraud-reviews", PermFraudReview, true, h.ListPendingFraudReviews},
-		{http.MethodPatch, "/fraud-reviews/:id", PermFraudReview, true, h.ResolveFraudReviewAdmin},
+		{http.MethodGet, "/fraud-reviews", PermFraudReview, true, true, h.ListPendingFraudReviews},
+		{http.MethodPatch, "/fraud-reviews/:id", PermFraudReview, true, false, h.ResolveFraudReviewAdmin},
 
 		// Wallet (creator ledger).
-		{http.MethodPost, "/wallet/:userId/freeze", PermWalletFreeze, true, h.FreezeWallet},
-		{http.MethodPost, "/wallet/:userId/unfreeze", PermWalletUnfreeze, true, h.UnfreezeWallet},
-		{http.MethodPost, "/wallet/:userId/rebuild", PermWalletRebuild, true, h.RebuildWallet},
+		{http.MethodPost, "/wallet/:userId/freeze", PermWalletFreeze, true, false, h.FreezeWallet},
+		{http.MethodPost, "/wallet/:userId/unfreeze", PermWalletUnfreeze, true, false, h.UnfreezeWallet},
+		{http.MethodPost, "/wallet/:userId/rebuild", PermWalletRebuild, true, false, h.RebuildWallet},
 
 		// Creator fund.
-		{http.MethodGet, "/creator-fund/rates", PermFundRead, true, h.ListCreatorFundRatesAdmin},
-		{http.MethodPut, "/creator-fund/rates", PermFundRates, true, h.SetCreatorFundRate},
-		{http.MethodPut, "/creator-fund/quality-bands", PermFundRates, true, h.SetCreatorFundQualityBand},
-		{http.MethodPost, "/creator-fund/:userId/suspend", PermCreatorsSuspend, true, h.SuspendCreatorFund},
-		{http.MethodPost, "/creator-fund/:userId/unsuspend", PermCreatorsSuspend, true, h.UnsuspendCreatorFund},
-		{http.MethodPost, "/creator-fund/settle", PermFundSettle, true, h.ForceAccrueCreatorFundDay},
-		{http.MethodPost, "/creator-fund/settle-period", PermFundSettle, true, h.SettleCreatorFundPeriod},
-		{http.MethodPost, "/creator-fund/:userId/settle-period", PermFundSettle, true, h.SettleCreatorFundPeriodForCreator},
-		{http.MethodPost, "/creator-fund/earnings/:id/reverse", PermFundReverse, true, h.ReverseCreatorFundEarning},
-		{http.MethodGet, "/creator-fund/earnings/:id", PermFundRead, true, h.GetCreatorFundEarningAdmin},
-		{http.MethodGet, "/creator-fund/budgets", PermFundRead, true, h.ListCreatorFundBudgets},
-		{http.MethodPut, "/creator-fund/budgets", PermFundBudget, true, h.SetCreatorFundBudget},
+		{http.MethodGet, "/creator-fund/rates", PermFundRead, true, true, h.ListCreatorFundRatesAdmin},
+		{http.MethodPut, "/creator-fund/rates", PermFundRates, true, false, h.SetCreatorFundRate},
+		{http.MethodPut, "/creator-fund/quality-bands", PermFundRates, true, false, h.SetCreatorFundQualityBand},
+		{http.MethodPost, "/creator-fund/:userId/suspend", PermCreatorsSuspend, true, false, h.SuspendCreatorFund},
+		{http.MethodPost, "/creator-fund/:userId/unsuspend", PermCreatorsSuspend, true, false, h.UnsuspendCreatorFund},
+		{http.MethodPost, "/creator-fund/settle", PermFundSettle, true, false, h.ForceAccrueCreatorFundDay},
+		{http.MethodPost, "/creator-fund/settle-period", PermFundSettle, true, false, h.SettleCreatorFundPeriod},
+		{http.MethodPost, "/creator-fund/:userId/settle-period", PermFundSettle, true, false, h.SettleCreatorFundPeriodForCreator},
+		{http.MethodPost, "/creator-fund/earnings/:id/reverse", PermFundReverse, true, false, h.ReverseCreatorFundEarning},
+		{http.MethodGet, "/creator-fund/earnings/:id", PermFundRead, true, true, h.GetCreatorFundEarningAdmin},
+		{http.MethodGet, "/creator-fund/budgets", PermFundRead, true, true, h.ListCreatorFundBudgets},
+		{http.MethodPut, "/creator-fund/budgets", PermFundBudget, true, false, h.SetCreatorFundBudget},
 
 		// Disputes and refunds. Not corrections: closed in maintenance.
-		{http.MethodGet, "/disputes", PermDisputesRead, true, h.ListOpenDisputesAdmin},
-		{http.MethodPatch, "/disputes/:id", PermDisputesAct, false, h.ResolveDisputeAdmin},
-		{http.MethodPost, "/refunds", PermRefundIssue, false, h.ProcessRefund},
+		{http.MethodGet, "/disputes", PermDisputesRead, true, true, h.ListOpenDisputesAdmin},
+		{http.MethodPatch, "/disputes/:id", PermDisputesAct, false, false, h.ResolveDisputeAdmin},
+		{http.MethodPost, "/refunds", PermRefundIssue, false, false, h.ProcessRefund},
 
 		// Payout queue (read-only; payouts stay off) and the audit trail.
-		{http.MethodGet, "/payout-requests", PermPayoutsRead, true, h.ListPayoutRequestsAdmin},
-		{http.MethodGet, "/audit-logs", PermAuditRead, true, h.ListAuditLogAdmin},
+		{http.MethodGet, "/payout-requests", PermPayoutsRead, true, true, h.ListPayoutRequestsAdmin},
+		{http.MethodGet, "/audit-logs", PermAuditRead, true, true, h.ListAuditLogAdmin},
 	}
 }
 
 // registerTokenAdminRoutes mounts the token family on the engine, outside
 // the internal-key group. Chain per route: mark the token path → verify the
 // token for the route's permission → the launch boundary → the handler.
+// A route marked read that is not a GET is a table mistake that would open
+// a write in the beta; refuse to boot rather than serve it.
 func (h *Handler) registerTokenAdminRoutes(r *gin.Engine) {
 	g := r.Group(InternalAdminPrefix)
 	for _, rt := range h.adminRoutes() {
+		rt.validate()
 		g.Handle(rt.method, rt.path, h.tokenChain(rt)...)
+	}
+}
+
+// validate panics on a table entry the boundary must never see: a route
+// marked read that is not a GET.
+func (rt adminRoute) validate() {
+	if rt.read && rt.method != http.MethodGet {
+		panic("monetization: admin route " + rt.method + " " + rt.path + " is marked read but is not a GET")
 	}
 }
 
@@ -290,7 +316,7 @@ func (h *Handler) tokenChain(rt adminRoute) []gin.HandlerFunc {
 		c.Set(ctxTokenPath, true)
 		c.Next()
 	}
-	return []gin.HandlerFunc{markTokenPath, h.requireAdminToken(rt.perm), h.tokenBoundary(rt.maintenanceOpen), rt.handler}
+	return []gin.HandlerFunc{markTokenPath, h.requireAdminToken(rt.perm), h.tokenBoundary(rt), rt.handler}
 }
 
 // adminActor is the acting admin for an audited write: the token's act on
