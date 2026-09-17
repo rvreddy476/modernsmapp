@@ -45,6 +45,23 @@ var (
 		permPayStatsRead, permPayRefundsRead, permPayRefundIssue, permPayIntentsRead, permPayReconciliationRead,
 		permPayApplicationsRead, permPayApplicationsManage, permPayAuditRead,
 	}
+	// Content apps: post-service's AdminPermissions (Social and Tube in one
+	// list), user-service's pages, qa-service's, and the three chat services'.
+	postAll = []string{
+		permSocialStatsRead, permSocialPostsModerate, permSocialPostsRemove, permSocialReelsModerate, permSocialReelsRemove,
+		permSocialCommentsModerate, permSocialCommentsRemove, permSocialReportsAct, permSocialUsersRead,
+		permTubeStatsRead, permTubeVideosModerate, permTubeVideosRemove, permTubeChannelsModerate, permTubeReportsAct,
+	}
+	pagesAll = []string{permSocialStatsRead, permSocialPagesModerate, permSocialPagesSuspend, permSocialPagesDisable, permSocialDocumentsReview}
+	qaAll    = []string{
+		permQAStatsRead, permQAReportsRead, permQAReportsAct, permQAQuestionsModerate, permQAQuestionsMerge,
+		permQAAnswersModerate, permQACommentsModerate, permQAAuditRead,
+	}
+	channelAll   = []string{permChatStatsRead, permChatReportsRead, permChatReportsAct, permChatChannelsModerate}
+	groupAll     = []string{permChatStatsRead, permChatReportsRead, permChatReportsAct}
+	communityAll = groupAll
+	// socialAll is every social permission the console may hold (both products).
+	socialAll = append(append([]string{}, postAll[:9]...), pagesAll[1:]...)
 )
 
 // productHit is one call a stub product saw, with the token verified by a
@@ -68,6 +85,9 @@ type productsRig struct {
 	mu      sync.Mutex
 	hits    []productHit
 	respond map[string]func(w http.ResponseWriter, r *http.Request) // "METHOD /path"
+	// respondHit is respond with the verified token in hand, for stubs that
+	// judge the scope the way the product does (post-service's kind check).
+	respondHit map[string]func(w http.ResponseWriter, r *http.Request, hit productHit)
 }
 
 func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsRig {
@@ -79,6 +99,7 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 	rg := &productsRig{
 		rec: &fakeRecorder{}, perms: &fakePerms{byUser: map[string]adminauth.Permissions{}},
 		holders: &fakeHolders{}, store: newMemStore(), respond: map[string]func(http.ResponseWriter, *http.Request){},
+		respondHit: map[string]func(http.ResponseWriter, *http.Request, productHit){},
 	}
 	stub := func(aud string, perms []string) string {
 		v := servicetoken.NewVerifier(aud)
@@ -88,17 +109,23 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			b, _ := io.ReadAll(r.Body)
 			verified, verr := v.Verify(strings.TrimPrefix(r.Header.Get("X-Service-Authorization"), "Bearer "), "", "")
-			rg.mu.Lock()
-			rg.hits = append(rg.hits, productHit{
+			hit := productHit{
 				aud: aud, method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: string(b),
 				idempotencyKey: r.Header.Get("Idempotency-Key"), requestID: r.Header.Get("X-Request-Id"),
 				userHdr: r.Header.Get("X-User-Id"), keyHdr: r.Header.Get("X-Internal-Service-Key"),
 				verified: verified, verifyErr: verr,
-			})
+			}
+			rg.mu.Lock()
+			rg.hits = append(rg.hits, hit)
 			custom := rg.respond[r.Method+" "+r.URL.Path]
+			customHit := rg.respondHit[r.Method+" "+r.URL.Path]
 			rg.mu.Unlock()
 			if verr != nil {
 				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if customHit != nil {
+				customHit(w, r, hit)
 				return
 			}
 			if custom != nil {
@@ -113,6 +140,8 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 	}
 	foodURL, commerceURL, trustURL := stub("food", foodAll), stub("commerce", commerceAll), stub("trust_safety", trustAll)
 	monURL, payURL := stub("monetization", monAll), stub("payments", payAll)
+	postURL, pagesURL, qaURL := stub("post", postAll), stub("social", pagesAll), stub("qa", qaAll)
+	channelURL, groupURL, communityURL := stub("chat", channelAll), stub("chat", groupAll), stub("chat", communityAll)
 
 	var signer *servicetoken.Signer
 	if withKey {
@@ -130,7 +159,11 @@ func newProductsRig(t *testing.T, withKey bool, thresholdPaise int64) *productsR
 		WithCommerce(service.NewCommerceClient(commerceURL, signer)).
 		WithTrustSafety(service.NewTrustSafetyClient(trustURL, signer)).
 		WithMonetization(service.NewMonetizationClient(monURL, signer)).
-		WithPayments(service.NewPaymentsClient(payURL, signer))
+		WithPayments(service.NewPaymentsClient(payURL, signer)).
+		WithPost(service.NewPostClient(postURL, signer)).
+		WithUserPages(service.NewUserPagesClient(pagesURL, signer)).
+		WithQA(service.NewQAClient(qaURL, signer)).
+		WithChat(service.NewChannelClient(channelURL, signer), service.NewGroupClient(groupURL, signer), service.NewCommunityClient(communityURL, signer))
 	if err := h.RegisterAllRoutes(rg.r); err != nil {
 		t.Fatalf("route table refused: %v", err)
 	}
@@ -178,6 +211,14 @@ func (rg *productsRig) on(method, path string, fn func(w http.ResponseWriter, r 
 	rg.mu.Lock()
 	defer rg.mu.Unlock()
 	rg.respond[method+" "+path] = fn
+}
+
+// onHit is on with the verified token: the stub can refuse a scope the way
+// the product would.
+func (rg *productsRig) onHit(method, path string, fn func(w http.ResponseWriter, r *http.Request, hit productHit)) {
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
+	rg.respondHit[method+" "+path] = fn
 }
 
 // fill replaces every :param in a route path with a fresh uuid, returning the

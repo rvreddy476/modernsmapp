@@ -21,7 +21,57 @@ const (
 	// (OPS = its admin permissions, no REFTYPES).
 	PaymentsAudience    = "payments"
 	PaymentsAdminPrefix = "/v1/payments/internal/admin"
+
+	// Content apps (Wave 2 — Social, Tube, Q&A, Chat). post-service serves
+	// both Social (posts, reels, comments, reports, creators) and Tube (videos,
+	// channels, series); business pages live in the app user-service, whose
+	// admin family verifies audience "social". The three chat services all
+	// verify audience "chat" but live at their own URLs and prefixes.
+	PostAudience    = "post"
+	PostAdminPrefix = "/v1/posts/internal/admin"
+
+	QAAudience    = "qa"
+	QAAdminPrefix = "/v1/qa/internal/admin"
+
+	UserPagesAudience    = "social"
+	UserPagesAdminPrefix = "/v1/users/internal/admin"
+
+	ChatAudience         = "chat"
+	ChannelAdminPrefix   = "/v1/broadcast-channels/internal/admin"
+	GroupAdminPrefix     = "/v1/groups/internal/admin"
+	CommunityAdminPrefix = "/v1/communities/internal/admin"
 )
+
+// NewPostClient builds the client for post-service (Social and Tube).
+func NewPostClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, PostAdminPrefix, PostAudience, signer)
+}
+
+// NewQAClient builds the client for qa-service.
+func NewQAClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, QAAdminPrefix, QAAudience, signer)
+}
+
+// NewUserPagesClient builds the client for user-service's business pages
+// family (audience "social", alongside its private-profile callers).
+func NewUserPagesClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, UserPagesAdminPrefix, UserPagesAudience, signer)
+}
+
+// NewChannelClient builds the client for channel-service (broadcast channels).
+func NewChannelClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, ChannelAdminPrefix, ChatAudience, signer)
+}
+
+// NewGroupClient builds the client for group-service.
+func NewGroupClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, GroupAdminPrefix, ChatAudience, signer)
+}
+
+// NewCommunityClient builds the client for community-service.
+func NewCommunityClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, CommunityAdminPrefix, ChatAudience, signer)
+}
 
 // NewMonetizationClient builds the client for monetization-service.
 func NewMonetizationClient(baseURL string, signer *servicetoken.Signer) *ProductClient {

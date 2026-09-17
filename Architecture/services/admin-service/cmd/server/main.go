@@ -136,7 +136,17 @@ func main() {
 		WithCommerce(service.NewCommerceClient(env("COMMERCE_SERVICE_URL", "http://commerce-service:8109"), tokenSigner)).
 		WithTrustSafety(service.NewTrustSafetyClient(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091"), tokenSigner)).
 		WithMonetization(service.NewMonetizationClient(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"), tokenSigner)).
-		WithPayments(service.NewPaymentsClient(env("PAYMENTS_SERVICE_URL", "http://payments-service:8102"), tokenSigner))
+		WithPayments(service.NewPaymentsClient(env("PAYMENTS_SERVICE_URL", "http://payments-service:8102"), tokenSigner)).
+		// Content apps: Social and Tube (post-service), business pages
+		// (user-service), Q&A, and Chat (channel, group, community).
+		WithPost(service.NewPostClient(env("POST_SERVICE_URL", "http://post-service:8084"), tokenSigner)).
+		WithUserPages(service.NewUserPagesClient(env("USER_SERVICE_URL", "http://user-service:8082"), tokenSigner)).
+		WithQA(service.NewQAClient(env("QA_SERVICE_URL", "http://qa-service:8108"), tokenSigner)).
+		WithChat(
+			service.NewChannelClient(env("CHANNEL_SERVICE_URL", "http://channel-service:8106"), tokenSigner),
+			service.NewGroupClient(env("GROUP_SERVICE_URL", "http://group-service:8090"), tokenSigner),
+			service.NewCommunityClient(env("COMMUNITY_SERVICE_URL", "http://community-service:8107"), tokenSigner),
+		)
 	slog.Info("refund two-person threshold (Feast, monetization, payments)", "paise", refundThreshold)
 
 	// 7. Gin with middleware stack

@@ -551,6 +551,20 @@ services:
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       PROFILE_SERVICE_URL: http://identity-profile:8098
       PAGES_ADMIN_USER_IDS: ${PAGES_ADMIN_USER_IDS:-c52b44aa-c75f-4843-98fa-2225041a5e00}
+      # Admin console (business pages): /v1/users/internal/admin/* admits only
+      # admin-service tokens for audience "social". The SAME SERVICE_CALLERS
+      # registry also admits private-profile readers (audience "user-service",
+      # users:profile.read_private): list every caller in USER_SERVICE_CALLERS,
+      # comma-separated (e.g. chat-service,admin-service), and give each its
+      # own SERVICE_CALLER_<NAME>_{KID,PUBKEY,OPS} lines here — a listed caller
+      # without its key or ops refuses boot. No private-profile caller is
+      # registered in compose today, so the list starts as admin-service alone;
+      # APPEND to it, never replace it. A distinct .env name, because
+      # SERVICE_CALLERS in .env is payments'.
+      SERVICE_CALLERS: ${USER_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: social:stats.read,social:pages.moderate,social:pages.suspend,social:pages.disable,social:documents.review
     ports:
       - "8082:8082"
     depends_on:
@@ -639,6 +653,14 @@ services:
       # unset (previously defaulted to the literal "dev_secret_change_me").
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Admin console (Chat: group reports): /v1/groups/internal/admin/*
+      # admits only admin-service tokens (audience "chat"). OPS is
+      # group-service's AdminPermissions. A distinct .env name, because
+      # SERVICE_CALLERS in .env is payments'.
+      SERVICE_CALLERS: ${GROUP_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: chat:stats.read,chat:reports.read,chat:reports.act
     ports:
       - "8090:8090"
     depends_on:
@@ -698,6 +720,14 @@ services:
       # the local contract stack must allow already-scanned fixtures to flow.
       REVIEW_ALL_VIDEOS: ${REVIEW_ALL_VIDEOS:-false}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Admin console (Social and Tube): /v1/posts/internal/admin/* admits only
+      # admin-service tokens (audience "post"). OPS is post-service's
+      # AdminPermissions. A distinct .env name, because SERVICE_CALLERS in
+      # .env is payments'.
+      SERVICE_CALLERS: ${POST_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: social:stats.read,social:posts.moderate,social:posts.remove,social:reels.moderate,social:reels.remove,social:comments.moderate,social:comments.remove,social:reports.act,social:users.read,tube:stats.read,tube:videos.moderate,tube:videos.remove,tube:channels.moderate,tube:reports.act
       # Required for the internal media-access authority to answer at all.
       #
       # Story visibility is a relationship question, so story_policy.go needs a
@@ -1446,6 +1476,16 @@ services:
       FOOD_SERVICE_URL: http://food-service:8113
       COMMERCE_SERVICE_URL: http://commerce-service:8109
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
+      # Content apps (Social and Tube on post-service, business pages on the
+      # app user-service, Q&A, and Chat on channel, group and community), same
+      # token contract. Each registers admin-service through its own
+      # <NAME>_SERVICE_CALLERS below.
+      POST_SERVICE_URL: http://post-service:8084
+      USER_SERVICE_URL: http://user-service:8082
+      QA_SERVICE_URL: http://qa-service:8108
+      CHANNEL_SERVICE_URL: http://channel-service:8106
+      GROUP_SERVICE_URL: http://group-service:8090
+      COMMUNITY_SERVICE_URL: http://community-service:8107
       # A Feast refund AT OR ABOVE this many paise needs a second approver;
       # below it, step-up only. 500000 = ₹5,000 (founder's suggested value).
       ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: ${ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE:-500000}
@@ -2006,6 +2046,14 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Admin console (Chat: channel reports and suspension):
+      # /v1/broadcast-channels/internal/admin/* admits only admin-service
+      # tokens (audience "chat"). OPS is channel-service's AdminPermissions.
+      # A distinct .env name, because SERVICE_CALLERS in .env is payments'.
+      SERVICE_CALLERS: ${CHANNEL_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: chat:stats.read,chat:reports.read,chat:reports.act,chat:channels.moderate
     ports:
       - "8106:8106"
     depends_on:
@@ -2032,6 +2080,14 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Admin console (Chat: community reports): /v1/communities/internal/admin/*
+      # admits only admin-service tokens (audience "chat"). OPS is
+      # community-service's AdminPermissions. A distinct .env name, because
+      # SERVICE_CALLERS in .env is payments'.
+      SERVICE_CALLERS: ${COMMUNITY_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: chat:stats.read,chat:reports.read,chat:reports.act
     ports:
       - "8107:8107"
     depends_on:
@@ -2058,6 +2114,13 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Admin console (Q&A): /v1/qa/internal/admin/* admits only admin-service
+      # tokens (audience "qa"). OPS is qa-service's AdminPermissions. A
+      # distinct .env name, because SERVICE_CALLERS in .env is payments'.
+      SERVICE_CALLERS: ${QA_SERVICE_CALLERS:-}
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: qa:stats.read,qa:reports.read,qa:reports.act,qa:questions.moderate,qa:questions.merge,qa:answers.moderate,qa:comments.moderate,qa:audit.read
     ports:
       - "8108:8108"
     depends_on:

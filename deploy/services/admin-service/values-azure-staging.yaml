@@ -51,6 +51,15 @@ env:
   # payments-service first (numbered steps in their values files).
   MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
   PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  # Content apps (Social and Tube on post-service, business pages on
+  # user-service, Q&A, and Chat on channel, group and community), same key:
+  # enable each product first (numbered steps in its values file).
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  QA_SERVICE_URL: http://qa-service.atpost.svc.cluster.local:8108
+  CHANNEL_SERVICE_URL: http://channel-service.atpost.svc.cluster.local:8106
+  GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
+  COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
   ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: '500000'
 ingress:
   enabled: false

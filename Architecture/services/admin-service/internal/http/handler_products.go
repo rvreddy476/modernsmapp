@@ -199,7 +199,7 @@ func (h *Handler) forwardProduct(p product, rt productRoute) gin.HandlerFunc {
 				return
 			}
 			pr.RawBody = raw
-			info.reason = stringField(fields, "reason", "note", "notes", "resolution_notes")
+			info.reason = stringField(fields, "reason", "note", "notes", "resolution_notes", "review_note")
 		}
 		key, ok := idempotencyKey(c, rt.idempotent)
 		if !ok {

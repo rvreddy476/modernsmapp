@@ -25,10 +25,27 @@ externalSecret:
     remoteRef: jwt_secret
   - secretKey: JWT_KID
     remoteRef: jwt_kid
+    # Admin console: community-service verifies admin-service's service tokens on
+    # /v1/communities/internal/admin/*. NOT enabled yet: without it the console's
+    # Chat communities routes are refused (401). To enable, in this order:
+    #   1. the founder generates admin-service's ed25519 key (one key for
+    #      every product): the private half (base64 32-byte seed) and kid go
+    #      to admin-service's secret store (admin_service_token_key /
+    #      admin_service_token_kid); the public half and the same kid go here
+    #      as caller_admin_pubkey / caller_admin_kid;
+    #   2. uncomment the two lines below AND the SERVICE_CALLERS lines under env;
+    #   3. enable admin-service's two lines (its values file).
+    # Setting SERVICE_CALLERS before the key exists refuses boot.
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
+    # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
   secretStoreName: azure-key-vault
 env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Admin console (see externalSecret above for the order): uncomment
+  # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
+  # SERVICE_CALLERS: 'admin-service'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'chat:stats.read,chat:reports.read,chat:reports.act'
 ingress:
   enabled: false

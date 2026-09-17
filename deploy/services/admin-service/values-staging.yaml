@@ -43,8 +43,9 @@ externalSecret:
     #      32-byte seed) goes to admin_service_token_key and its kid to
     #      admin_service_token_kid here; the public half and the same kid go
     #      to each product as caller_admin_pubkey / caller_admin_kid
-    #      (dating-service, commerce-service, trust-safety-service; and
-    #      food-service once it has deploy values);
+    #      (dating-service, commerce-service, trust-safety-service, post-service,
+    #      user-service, qa-service, channel-service, group-service,
+    #      community-service; and food-service once it has deploy values);
     #   2. enable each product first (its values file: two secret lines and
     #      the SERVICE_CALLERS lines);
     #   3. uncomment the two lines below.
@@ -68,6 +69,14 @@ env:
   # payments-service first (numbered steps in their values files).
   MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
   PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  # Content apps (Social and Tube on post-service above, business pages on
+  # user-service, Q&A, and Chat on channel, group and community), same key:
+  # enable each product first (numbered steps in its values file).
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  QA_SERVICE_URL: http://qa-service.atpost.svc.cluster.local:8108
+  CHANNEL_SERVICE_URL: http://channel-service.atpost.svc.cluster.local:8106
+  GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
+  COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
   # A Feast or monetization refund, or a payments refund resolved as money,
   # at or above this many paise needs a second approver.
   ADMIN_REFUND_TWO_PERSON_THRESHOLD_PAISE: '500000'

@@ -82,6 +82,14 @@ type Handler struct {
 	// Money: monetization and payments.
 	monetization *service.ProductClient
 	payments     *service.ProductClient
+	// Content apps: post-service (Social and Tube), qa-service, user-service
+	// business pages (Social), and the three chat services.
+	post      *service.ProductClient
+	qa        *service.ProductClient
+	pages     *service.ProductClient
+	channel   *service.ProductClient
+	group     *service.ProductClient
+	community *service.ProductClient
 	// refundThresholdPaise: a Feast or monetization refund, or a payments
 	// refund resolved as money, at or above it is two-person.
 	refundThresholdPaise int64
@@ -127,6 +135,30 @@ func (h *Handler) WithTrustSafety(tc *service.ProductClient) *Handler {
 	return h
 }
 
+// WithPost installs the post-service client (Social and Tube).
+func (h *Handler) WithPost(pc *service.ProductClient) *Handler {
+	h.post = pc
+	return h
+}
+
+// WithQA installs the qa-service client.
+func (h *Handler) WithQA(qc *service.ProductClient) *Handler {
+	h.qa = qc
+	return h
+}
+
+// WithUserPages installs the user-service business pages client.
+func (h *Handler) WithUserPages(uc *service.ProductClient) *Handler {
+	h.pages = uc
+	return h
+}
+
+// WithChat installs the three chat clients: channel, group and community.
+func (h *Handler) WithChat(channel, group, community *service.ProductClient) *Handler {
+	h.channel, h.group, h.community = channel, group, community
+	return h
+}
+
 func New(svc adminService, gate *Gate, appr *approvals.Service) *Handler {
 	return &Handler{svc: svc, gate: gate, approvals: appr, refundThresholdPaise: DefaultRefundTwoPersonThresholdPaise}
 }
@@ -145,6 +177,10 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterTrustRoutes(r)
 	h.RegisterMonetizationRoutes(r)
 	h.RegisterPaymentsRoutes(r)
+	h.RegisterSocialRoutes(r)
+	h.RegisterTubeRoutes(r)
+	h.RegisterQARoutes(r)
+	h.RegisterChatRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err
 	}
