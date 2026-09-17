@@ -290,16 +290,45 @@ var catalogue = map[string][]entry{
 		p("groups.moderate", mod),
 		p("audit.read", audr),
 	},
+	// Mopedu dashboard (rider-service admin_token.go AdminPermissions).
+	// Moderator holds the partner and ride queues and safety triage, never
+	// money, suspensions or the trusted-contact reveal; support holds reads
+	// plus its existing complaints.act; finance holds the subscription
+	// payments and the reports.
 	AppRider: {
+		// stats.read includes today's verified subscription revenue (paise):
+		// finance and support, not moderator, matching food and commerce.
+		p("stats.read", fin, sup),
+		p("partners.read", mod, sup),
 		p("partners.approve"),
+		// partners.suspend: suspend and block, an account action like
+		// restaurant.suspend and seller.suspend: admin only.
+		p("partners.suspend"),
 		p("documents.review", kyc),
+		// kyc.reveal: no rider route checks it; the document queue
+		// (documents.review) is the step-up read.
 		p("kyc.reveal", kyc),
-		p("rides.read", mod, fin, sup),
-		p("complaints.act", mod, sup),
-		p("incidents.read", mod),
-		p("incidents.reveal", kyc),
+		// vehicles.review: registration and insurance documents, the same
+		// onboarding-compliance queue as documents.review: KYC reviewer.
+		p("vehicles.review", kyc),
+		p("payments.read", fin, sup),
 		p("payments.settle", fin),
+		// payments.reject settles nothing but is still a payment decision.
+		p("payments.reject", fin),
+		p("rides.read", mod, fin, sup),
+		p("rides.cancel"),
+		p("ratings.moderate", mod),
+		p("complaints.act", mod, sup),
+		p("incidents.read", mod, sup),
+		// incidents.act: acknowledge and resolve (no contact numbers).
+		p("incidents.act", mod),
+		// incidents.reveal: trusted contacts' phone numbers, like dating panic.reveal.
+		p("incidents.reveal", kyc),
+		p("cities.manage"),
 		p("fares.manage"),
+		// reports.read includes the revenue report, so it is money: finance,
+		// never moderator, like food.
+		p("reports.read", fin),
 		p("audit.read", audr),
 	},
 	AppTrustSafety: {

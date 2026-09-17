@@ -138,6 +138,25 @@ func TestForTable(t *testing.T) {
 			has: []string{"chat:stats.read", "chat:reports.read", "chat:reports.act", "chat:channels.moderate"}, noOther: true},
 		{name: "chat support reads only", role: roles.Support, app: AppChat,
 			has: []string{"chat:stats.read", "chat:reports.read"}, hasNot: []string{"chat:reports.act", "chat:channels.moderate"}, noOther: true},
+		// Admin console Wave 2 — the Mopedu dashboard.
+		{name: "rider moderator triages, sees no money or suspensions", role: roles.Moderator, app: AppRider,
+			has: []string{"rider:partners.read", "rider:rides.read", "rider:incidents.read", "rider:incidents.act", "rider:ratings.moderate", "rider:complaints.act"},
+			hasNot: []string{"rider:stats.read", "rider:reports.read", "rider:partners.suspend", "rider:partners.approve", "rider:rides.cancel",
+				"rider:payments.read", "rider:payments.settle", "rider:payments.reject", "rider:incidents.reveal", "rider:vehicles.review",
+				"rider:documents.review", "rider:cities.manage", "rider:fares.manage"}, noOther: true},
+		{name: "rider support reads plus complaints", role: roles.Support, app: AppRider,
+			has: []string{"rider:stats.read", "rider:partners.read", "rider:rides.read", "rider:incidents.read", "rider:payments.read", "rider:complaints.act"},
+			hasNot: []string{"rider:incidents.act", "rider:ratings.moderate", "rider:payments.settle", "rider:payments.reject", "rider:reports.read",
+				"rider:partners.suspend", "rider:rides.cancel", "rider:incidents.reveal"}, noOther: true},
+		{name: "rider finance runs subscription payments and reports", role: roles.Finance, app: AppRider,
+			has:    []string{"rider:stats.read", "rider:payments.read", "rider:payments.settle", "rider:payments.reject", "rider:reports.read", "rider:rides.read"},
+			hasNot: []string{"rider:partners.read", "rider:partners.suspend", "rider:rides.cancel", "rider:incidents.read", "rider:fares.manage"}, noOther: true},
+		{name: "rider kyc reviewer reviews documents and vehicles", role: roles.KYCReviewer, app: AppRider,
+			has:    []string{"rider:documents.review", "rider:vehicles.review", "rider:kyc.reveal", "rider:incidents.reveal"},
+			hasNot: []string{"rider:stats.read", "rider:partners.read", "rider:partners.approve", "rider:incidents.read", "rider:payments.read"}, noOther: true},
+		{name: "rider admin holds the console permissions", role: roles.Admin, app: AppRider,
+			has: []string{"rider:stats.read", "rider:partners.suspend", "rider:vehicles.review", "rider:payments.reject", "rider:rides.cancel",
+				"rider:ratings.moderate", "rider:incidents.act", "rider:incidents.reveal", "rider:cities.manage", "rider:reports.read"}, noOther: true},
 		{name: "support has no money or bans", role: roles.Support, app: "",
 			has:    []string{"food:orders.read", "platform:users.read"},
 			hasNot: []string{"payments:refund.issue", "dating:users.ban", "platform:users.suspend", "commerce:kyc.reveal"}},
@@ -181,9 +200,10 @@ func TestForTable(t *testing.T) {
 }
 
 // consolePermissionHolders is every permission the food, commerce,
-// trust-safety, monetization and payments admin token routes check that the catalogue gained for the admin
-// console, with EXACTLY the roles (besides implicit admin and superadmin) that
-// must hold it. The strings mirror each service's AdminPermissions list.
+// trust-safety, monetization, payments, content and rider admin token routes
+// check that the catalogue gained for the admin console, with EXACTLY the
+// roles (besides implicit admin and superadmin) that must hold it. The
+// strings mirror each service's AdminPermissions list.
 var consolePermissionHolders = map[string][]string{
 	"platform:users.search":             {roles.Moderator, roles.Support},
 	"platform:roles.read":               {roles.Auditor},
@@ -260,6 +280,27 @@ var consolePermissionHolders = map[string][]string{
 	"chat:reports.read":       {roles.Moderator, roles.Support},
 	"chat:reports.act":        {roles.Moderator},
 	"chat:channels.moderate":  {roles.Moderator},
+	// Mopedu dashboard: rider-service AdminPermissions, the whole list.
+	"rider:stats.read":       {roles.Finance, roles.Support},
+	"rider:partners.read":    {roles.Moderator, roles.Support},
+	"rider:partners.approve": nil,
+	"rider:partners.suspend": nil,
+	"rider:documents.review": {roles.KYCReviewer},
+	"rider:vehicles.review":  {roles.KYCReviewer},
+	"rider:payments.read":    {roles.Finance, roles.Support},
+	"rider:payments.settle":  {roles.Finance},
+	"rider:payments.reject":  {roles.Finance},
+	"rider:rides.read":       {roles.Moderator, roles.Finance, roles.Support},
+	"rider:rides.cancel":     nil,
+	"rider:ratings.moderate": {roles.Moderator},
+	"rider:complaints.act":   {roles.Moderator, roles.Support},
+	"rider:incidents.read":   {roles.Moderator, roles.Support},
+	"rider:incidents.act":    {roles.Moderator},
+	"rider:incidents.reveal": {roles.KYCReviewer},
+	"rider:cities.manage":    nil,
+	"rider:fares.manage":     nil,
+	"rider:reports.read":     {roles.Finance},
+	"rider:audit.read":       {roles.Auditor},
 }
 
 // TestConsolePermissionsExactHolders: each new permission resolves for its
@@ -304,9 +345,15 @@ func TestModeratorNeverHoldsMoneyOrReview(t *testing.T) {
 		// Content dashboard: page suspension and disabling are account actions,
 		// page documents are identity proof.
 		"social:pages.suspend", "social:pages.disable", "social:documents.review",
+		// Mopedu dashboard: stats and reports carry revenue, payments are money,
+		// suspend/block and ride cancellation are account actions, the reveal is
+		// trusted contacts' phone numbers, vehicles and documents are compliance.
+		"rider:stats.read", "rider:reports.read", "rider:payments.read", "rider:payments.settle", "rider:payments.reject",
+		"rider:partners.suspend", "rider:partners.approve", "rider:rides.cancel", "rider:incidents.reveal",
+		"rider:vehicles.review", "rider:documents.review", "rider:kyc.reveal", "rider:cities.manage", "rider:fares.manage",
 	}
 	scopes := [][]string{mustFor(t, roles.Moderator, "")}
-	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety, AppSocial} {
+	for _, app := range []string{AppFood, AppCommerce, AppTrustSafety, AppSocial, AppRider} {
 		scopes = append(scopes, mustFor(t, roles.Moderator, app))
 	}
 	for _, perms := range scopes {
@@ -398,6 +445,45 @@ func TestSocialScopedRolesStayInSocial(t *testing.T) {
 	}
 	if len(got.Apps) != 1 {
 		t.Errorf("social moderator resolved into %d apps: %+v", len(got.Apps), got)
+	}
+}
+
+// TestRiderScopedRolesStayInRider: a role granted rider alone never gains
+// another app's permission, and the resolver agrees. Support's rider grant is
+// reads plus complaints.act and nothing else.
+func TestRiderScopedRolesStayInRider(t *testing.T) {
+	for _, role := range roles.AdminRoles() {
+		if role == roles.Superadmin {
+			continue
+		}
+		perms, err := For(role, AppRider)
+		if errors.Is(err, ErrNoPermissionsInApp) {
+			t.Errorf("%s holds nothing in rider", role)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("For(%q,%q): %v", role, AppRider, err)
+		}
+		for _, p := range perms {
+			if appOf(p) != AppRider {
+				t.Errorf("%s scoped to rider holds %q", role, p)
+			}
+			if role == roles.Support && !strings.HasSuffix(p, ".read") && p != "rider:complaints.act" {
+				t.Errorf("rider support holds write permission %q", p)
+			}
+		}
+	}
+	got := Resolve([]Grant{{Role: roles.Moderator, App: AppRider}}, time.Now())
+	if !got.Has("rider:incidents.act") {
+		t.Fatalf("rider moderator lacks rider:incidents.act: %+v", got)
+	}
+	for _, other := range []string{"food:orders.read", "dating:panic.act", "social:posts.remove", "trust_safety:stats.read", "platform:users.read"} {
+		if got.Has(other) {
+			t.Errorf("rider moderator holds %q", other)
+		}
+	}
+	if len(got.Apps) != 1 || len(got.Platform) != 0 {
+		t.Errorf("rider moderator resolved into %d apps, %d platform: %+v", len(got.Apps), len(got.Platform), got)
 	}
 }
 
