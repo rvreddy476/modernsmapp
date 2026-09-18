@@ -220,6 +220,14 @@ func categoryForEvent(eventType string) prefCategory {
 		return catFoodOrders
 	case "food_order_new", "food_delivery_offer":
 		return catAlwaysOn
+	// Mopedu (ride_push.go): the customer's ride progress and payment are
+	// operational — a captain at the kerb is not a like — and the captain's
+	// pushes never consult Momentum preferences at all. Only the in-app half
+	// (the inbox row) is ever resolved for them, and it is not category-gated.
+	case RideTypeAssigned, RideTypeArriving, RideTypeArrived, RideTypeStarted,
+		RideTypeCompleted, RideTypeCancelled, RideTypePaymentPaid,
+		CaptainTypeOffer, CaptainTypePaymentReceived:
+		return catAlwaysOn
 	// Calls are time-critical: a missed-call notice the user asked the app
 	// not to show would hide that a human tried to reach them. Only the
 	// master push toggle and quiet hours apply — never a category toggle.

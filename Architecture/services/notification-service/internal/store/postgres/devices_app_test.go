@@ -16,12 +16,15 @@ func TestDeviceApp_OmittedMeansMomentum(t *testing.T) {
 	if NormalizeDeviceApp("") != AppMomentum {
 		t.Fatal("an omitted app must register for Momentum (every pre-Feast client)")
 	}
-	for _, app := range []string{AppMomentum, AppFeastKitchen, AppFeastRider} {
+	for _, app := range []string{AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain} {
 		if !ValidDeviceApp(app) || NormalizeDeviceApp(app) != app {
 			t.Fatalf("%q rejected or rewritten", app)
 		}
 	}
-	for _, app := range []string{"", "feast", "MOMENTUM", "kitchen"} {
+	if AppMopeduCaptain != "mopedu_captain" {
+		t.Fatalf("captain app = %q; the Mopedu Captain app registers as mopedu_captain (PushApp.MOPEDU_CAPTAIN)", AppMopeduCaptain)
+	}
+	for _, app := range []string{"", "feast", "MOMENTUM", "kitchen", "captain", "mopedu"} {
 		if ValidDeviceApp(app) {
 			t.Fatalf("%q accepted", app)
 		}
@@ -78,6 +81,9 @@ func TestDevicesIntegration_PushTargetsAreScopedToTheirApp(t *testing.T) {
 	if _, err := store.RegisterDevice(ctx, user, "android", "rider-"+suffix, AppFeastRider); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.RegisterDevice(ctx, user, "android", "captain-"+suffix, AppMopeduCaptain); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.RegisterDevice(ctx, user, "android", "bogus-"+suffix, "feast"); err == nil {
 		t.Fatal("unknown app registered")
 	}
@@ -89,7 +95,11 @@ func TestDevicesIntegration_PushTargetsAreScopedToTheirApp(t *testing.T) {
 	if len(general) != 1 || general[0].PushToken != "momentum-"+suffix || general[0].App != AppMomentum {
 		t.Fatalf("general (Momentum) push targets = %+v", general)
 	}
-	for app, token := range map[string]string{AppFeastKitchen: "kitchen-" + suffix, AppFeastRider: "rider-" + suffix} {
+	for app, token := range map[string]string{
+		AppFeastKitchen:  "kitchen-" + suffix,
+		AppFeastRider:    "rider-" + suffix,
+		AppMopeduCaptain: "captain-" + suffix,
+	} {
 		got, err := store.GetUserDevicesForApp(ctx, user, app)
 		if err != nil {
 			t.Fatal(err)

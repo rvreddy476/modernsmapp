@@ -19,12 +19,16 @@ const (
 	AppFeastKitchen = "feast_kitchen"
 	// AppFeastRider is the delivery-partner app.
 	AppFeastRider = "feast_rider"
+	// AppMopeduCaptain is the Mopedu Captain (driver) app (migration 009,
+	// 2026-09-18). Ride offers and payment notices go here; the customer's
+	// ride updates go to Momentum, which hosts the Mopedu customer flow.
+	AppMopeduCaptain = "mopedu_captain"
 )
 
 // ValidDeviceApp reports whether app is a known install target.
 func ValidDeviceApp(app string) bool {
 	switch app {
-	case AppMomentum, AppFeastKitchen, AppFeastRider:
+	case AppMomentum, AppFeastKitchen, AppFeastRider, AppMopeduCaptain:
 		return true
 	}
 	return false
@@ -45,7 +49,7 @@ type UserDevice struct {
 	UserID    uuid.UUID `json:"user_id"`
 	Platform  string    `json:"platform"` // ios, android, web
 	PushToken string    `json:"push_token"`
-	App       string    `json:"app"` // momentum, feast_kitchen, feast_rider
+	App       string    `json:"app"` // momentum, feast_kitchen, feast_rider, mopedu_captain
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -120,8 +124,8 @@ func (s *Store) DeactivateDeviceTokens(ctx context.Context, userID uuid.UUID) er
 }
 
 // GetUserDevices returns the user's active MOMENTUM devices — the target of
-// every social, chat, call and upload push. Feast Kitchen and Feast Rider
-// installs are reached only through GetUserDevicesForApp.
+// every social, chat, call and upload push. Feast Kitchen, Feast Rider and
+// Mopedu Captain installs are reached only through GetUserDevicesForApp.
 func (s *Store) GetUserDevices(ctx context.Context, userID uuid.UUID) ([]UserDevice, error) {
 	return s.GetUserDevicesForApp(ctx, userID, AppMomentum)
 }

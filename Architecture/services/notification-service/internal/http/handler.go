@@ -279,8 +279,9 @@ type RegisterDeviceRequest struct {
 	PushToken string `json:"push_token" binding:"required"`
 	// App is the installed app the token was minted by. Omitted = momentum,
 	// which is what every client registered before Feast Kitchen and Feast
-	// Rider existed (migration 007).
-	App string `json:"app" binding:"omitempty,oneof=momentum feast_kitchen feast_rider"`
+	// Rider existed (migration 007). mopedu_captain is the Mopedu Captain
+	// app (migration 009); the Mopedu customer flow registers as momentum.
+	App string `json:"app" binding:"omitempty,oneof=momentum feast_kitchen feast_rider mopedu_captain"`
 }
 
 func (h *Handler) RegisterDevice(c *gin.Context) {

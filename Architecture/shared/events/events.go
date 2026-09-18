@@ -498,6 +498,12 @@ const (
 	EventRiderPartnerFraudFlagged       = "rider.partner.fraud_flagged"
 	EventRiderDailyRevenueReport        = "rider.daily.revenue_report"
 	EventRiderAdminQueueSummary         = "rider.admin.queue_summary"
+
+	// Mopedu payments lane (2026-09-18): the customer's ride payment was
+	// confirmed (UPI, card, cash marked collected). notification-service turns
+	// it into the customer's "ride.payment.paid" push and the captain's
+	// "payment received" notice. Payload: RiderRidePaymentPaidPayload.
+	EventRiderRidePaymentPaid = "rider.ride.payment_paid"
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -1884,3 +1890,22 @@ const (
 	// pending follow requests on a private→public flip.
 	UserSettingsChanged = "user.settings_changed"
 )
+
+// RiderRidePaymentPaidPayload is the payload of EventRiderRidePaymentPaid.
+//
+// Both recipients ride on the event: notification-service never reads
+// rider-service's tables. CustomerUserID is the customer's Momentum push
+// recipient. PartnerUserID is the captain's USER id (rider_partners.user_id,
+// what the Mopedu Captain app registered its push device under) — it is NOT
+// PartnerID (rider_partners.id), which reaches no device. AmountPaise is the
+// amount actually paid, in paise; Method is the rider-service payment method
+// (upi, card, cash, wallet).
+type RiderRidePaymentPaidPayload struct {
+	RideID         string    `json:"ride_id"`
+	CustomerUserID string    `json:"customer_user_id"`
+	PartnerID      string    `json:"partner_id"`
+	PartnerUserID  string    `json:"partner_user_id,omitempty"`
+	AmountPaise    int64     `json:"amount_paise"`
+	Method         string    `json:"method"`
+	PaidAt         time.Time `json:"paid_at"`
+}

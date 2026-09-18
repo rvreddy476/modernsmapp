@@ -53,6 +53,10 @@ type Consumer struct {
 	// datingSafety pages responders and trusted contacts for dating panics
 	// (Dating plan lane D8, dating_safety.go). Nil: panics log at ERROR.
 	datingSafety datingSafetyDeps
+	// ridePush delivers Mopedu pushes per app (rider_consumer.go); the
+	// service implements it and tests pass a fake. Nil: ride events log at
+	// ERROR and are claimed.
+	ridePush ridePushDeliverer
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -84,12 +88,17 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		MaxBytes: 10e6, // 10MB
 		Dialer:   dialer,
 	})
-	return &Consumer{
+	c := &Consumer{
 		reader:    reader,
 		service:   svc,
 		likeAgg:   make(map[string]*likeAggEntry),
 		friendReq: make(map[string]*friendReqEntry),
 	}
+	if svc != nil {
+		// Guarded: a nil *Service stored in the interface would be non-nil.
+		c.ridePush = svc
+	}
+	return c
 }
 
 // Start runs the consumer with a bounded worker pool. Audit CR1:

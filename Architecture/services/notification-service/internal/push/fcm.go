@@ -84,24 +84,34 @@ var callPushTypes = map[string]bool{
 // Pusher interface.
 const AndroidChannelDataKey = "android_channel_id"
 
-// highPriorityTypes are operational Feast pushes that must wake a Dozing
-// device: a kitchen that sees a new order late loses it to the accept SLA, and
-// a job offer expires in seconds. They keep the notification block — the
-// system renders them on the app's channel — unlike ringing calls.
+// AndroidTTLDataKey is a transport-only data key: BuildFCMMessage lifts its
+// value (an FCM duration such as "20s") into android.ttl and strips it from
+// data. A ride offer that FCM would otherwise hold for its default four
+// weeks must instead be dropped once the offer has expired — a captain woken
+// by a stale offer wastes a tap, and the matcher has long moved on.
+const AndroidTTLDataKey = "android_ttl"
+
+// highPriorityTypes are operational pushes that must wake a Dozing device: a
+// kitchen that sees a new order late loses it to the accept SLA, a job or
+// ride offer expires in seconds, and a captain who has arrived is waiting at
+// the kerb. They keep the notification block — the system renders them on
+// the app's channel — unlike ringing calls.
 var highPriorityTypes = map[string]bool{
 	"food_order_new":      true,
 	"food_delivery_offer": true,
+	"captain.offer":       true, // Mopedu Captain, channel captain_offer
+	"ride.arrived":        true, // Mopedu customer, channel ride_updates
 }
 
 // BuildFCMMessage shapes one FCM v1 `message` object. Exported (and pure) so
 // the calling contract is pinned by tests without an FCM round trip.
 func BuildFCMMessage(token, title, body string, data map[string]string) map[string]interface{} {
-	channelID := ""
-	if ch, ok := data[AndroidChannelDataKey]; ok {
-		channelID = ch
+	channelID, hasChannel := data[AndroidChannelDataKey]
+	ttl, hasTTL := data[AndroidTTLDataKey]
+	if hasChannel || hasTTL {
 		stripped := make(map[string]string, len(data))
 		for k, v := range data {
-			if k != AndroidChannelDataKey {
+			if k != AndroidChannelDataKey && k != AndroidTTLDataKey {
 				stripped[k] = v
 			}
 		}
@@ -114,6 +124,9 @@ func BuildFCMMessage(token, title, body string, data map[string]string) map[stri
 	}
 	if channelID != "" {
 		android["notification"] = map[string]string{"channel_id": channelID}
+	}
+	if ttl != "" {
+		android["ttl"] = ttl
 	}
 	if ck, ok := data["collapse_key"]; ok && ck != "" {
 		// FCM collapse_key: the latest notification replaces older ones
