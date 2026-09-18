@@ -32,6 +32,9 @@ import (
 // PaymentsClient is the part of *payments.Client the service uses.
 type PaymentsClient interface {
 	CreateIntent(ctx context.Context, in payments.CreateIntentInput) (*payments.Intent, error)
+	// CreateSubscriptionIntent opens a captain subscription checkout
+	// (reference type mopedu_subscription).
+	CreateSubscriptionIntent(ctx context.Context, in payments.CreateIntentInput) (*payments.Intent, error)
 	VerifyCallback(ctx context.Context, intentID uuid.UUID, in payments.CallbackRequest) (*payments.CallbackVerdict, error)
 	Refund(ctx context.Context, intentID uuid.UUID, amountMinor int64, reason, idempotencyKey string) (*payments.RefundAccepted, error)
 }
@@ -471,8 +474,24 @@ func (s *Service) ListRidePaymentsAdmin(ctx context.Context, f store.RidePayment
 // signed capture marked a ride payment or an outstanding fee paid, the
 // rider.ride.payment_paid Kafka event notification-service pushes from.
 func (s *Service) OnRidePaymentApplied(ctx context.Context, a payments.Applied) {
+	if a.Target == payments.TargetSubscription {
+		s.onSubscriptionPaymentApplied(ctx, a)
+		return
+	}
 	if a.RideID == uuid.Nil {
 		return
+	}
+	switch a.Decision.Effect {
+	case payments.EffectRefundDuplicate:
+		// Rule (b): the store filed the refund of the second capture in the
+		// event's transaction; send it to payments now.
+		s.sendDuplicateCaptureRefund(ctx, a.RefundID)
+	case payments.EffectSettleOutstanding:
+		// Rule (c): a cancellation fee paid directly is checked against the
+		// ride's cancellation facts as soon as it is settled.
+		if _, err := s.EvaluateCancellationFeeRefund(ctx, a.TargetID); err != nil {
+			slog.Warn("rider: cancellation-fee refund evaluation failed", "outstanding_id", a.TargetID, "error", err)
+		}
 	}
 	frame := map[string]any{"ride_id": a.RideID, "target": a.Target, "target_id": a.TargetID, "status": a.Status, "outcome": string(a.Decision.Outcome)}
 	paid := events.RidePaymentPaidPayload{RideID: a.RideID.String(), CustomerUserID: a.CustomerID.String(), PaidAt: s.now()}

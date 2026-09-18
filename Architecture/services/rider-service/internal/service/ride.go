@@ -963,6 +963,13 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
+	// Rule (a): a cancellation that is not the customer's refunds an online
+	// payment the customer already made, by rule, never by a human.
+	if by != "customer" {
+		if _, rerr := s.autoRefundOnCancel(ctx, rideID, by); rerr != nil {
+			slog.Error("rider: captain-cancel refund failed", "ride_id", rideID, "by", by, "error", rerr)
+		}
+	}
 	cancelledBy := ""
 	if actorRef != nil {
 		cancelledBy = actorRef.String()

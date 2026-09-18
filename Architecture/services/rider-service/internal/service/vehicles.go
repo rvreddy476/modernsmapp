@@ -74,6 +74,13 @@ func (s *Service) AddVehicle(ctx context.Context, userID, partnerID uuid.UUID, r
 	if perr := s.producer.PublishPartnerVehicleAdded(ctx, partnerID, v.ID, v.VehicleType, v.RegistrationNumber); perr != nil {
 		slog.Warn("rider: publish vehicle.added failed", "vehicle_id", v.ID, "error", perr)
 	}
+	// The RC is pulled from DigiLocker (verified automatically) when the
+	// partner's Aadhaar assertion exists; otherwise the vehicle waits for
+	// an uploaded RC and the admin review.
+	s.evaluateApprovalQuietly(ctx, partnerID)
+	if fresh, err := s.store.GetVehicle(ctx, v.ID); err == nil {
+		return fresh, nil
+	}
 	return v, nil
 }
 
@@ -126,5 +133,6 @@ func (s *Service) SubmitVehicleDocument(ctx context.Context, userID, vehicleID u
 	if err != nil {
 		return nil, fmt.Errorf("create vehicle document: %w", err)
 	}
+	s.evaluateApprovalQuietly(ctx, p.ID)
 	return doc, nil
 }

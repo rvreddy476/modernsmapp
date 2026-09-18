@@ -64,6 +64,7 @@ func RunSubscriptionExpiryChecker(ctx context.Context, st *store.Store, pub Subs
 	}
 	now := time.Now().UTC()
 	sent := 0
+	userIDs := partnerUserIDs(ctx, st, subs)
 	for i := range subs {
 		s := &subs[i]
 		// Pick the tightest bucket the row falls into.
@@ -97,6 +98,7 @@ func RunSubscriptionExpiryChecker(ctx context.Context, st *store.Store, pub Subs
 		payload := events.SubscriptionGracePayload{
 			SubscriptionID: s.ID.String(),
 			PartnerID:      s.PartnerID.String(),
+			PartnerUserID:  userIDs[s.PartnerID],
 			PlanID:         s.PlanID.String(),
 			ExpiresAt:      s.ExpiresAt,
 			OccurredAt:     time.Now().UTC(),
@@ -128,6 +130,7 @@ func RunGracePeriodTransition(ctx context.Context, st *store.Store, pub Subscrip
 	if err != nil {
 		return len(flippedToGrace), fmt.Errorf("flip to expired: %w", err)
 	}
+	userIDs := partnerUserIDs(ctx, st, append(append([]store.PartnerSubscription{}, flippedToGrace...), flippedToExpired...))
 	for i := range flippedToGrace {
 		s := &flippedToGrace[i]
 		var graceEnds time.Time
@@ -137,6 +140,7 @@ func RunGracePeriodTransition(ctx context.Context, st *store.Store, pub Subscrip
 		payload := events.SubscriptionGracePayload{
 			SubscriptionID: s.ID.String(),
 			PartnerID:      s.PartnerID.String(),
+			PartnerUserID:  userIDs[s.PartnerID],
 			PlanID:         s.PlanID.String(),
 			ExpiresAt:      s.ExpiresAt,
 			GraceEndsAt:    graceEnds,
@@ -160,6 +164,7 @@ func RunGracePeriodTransition(ctx context.Context, st *store.Store, pub Subscrip
 		payload := events.SubscriptionGracePayload{
 			SubscriptionID: s.ID.String(),
 			PartnerID:      s.PartnerID.String(),
+			PartnerUserID:  userIDs[s.PartnerID],
 			PlanID:         s.PlanID.String(),
 			ExpiresAt:      s.ExpiresAt,
 			GraceEndsAt:    graceEnds,
@@ -228,6 +233,7 @@ func RunSubscriptionAutoRenewal(ctx context.Context, st *store.Store, w wallet.C
 			payload := events.SubscriptionRenewalFailedPayload{
 				SubscriptionID: s.ID.String(),
 				PartnerID:      s.PartnerID.String(),
+				PartnerUserID:  partner.UserID.String(),
 				PlanID:         s.PlanID.String(),
 				AmountPaise:    amountPaise,
 				FailureCount:   newCount,
@@ -259,6 +265,7 @@ func RunSubscriptionAutoRenewal(ctx context.Context, st *store.Store, w wallet.C
 		payload := events.SubscriptionRenewedPayload{
 			SubscriptionID: s.ID.String(),
 			PartnerID:      s.PartnerID.String(),
+			PartnerUserID:  partner.UserID.String(),
 			PlanID:         s.PlanID.String(),
 			AmountPaise:    amountPaise,
 			NewExpiresAt:   newExpiry,

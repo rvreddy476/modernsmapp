@@ -20,11 +20,21 @@ import (
 // fakePayments is a payments-service that echoes intents (one id per
 // idempotency key), verifies every callback and accepts every refund.
 type fakePayments struct {
-	intents   map[string]uuid.UUID
-	created   []payments.CreateIntentInput
-	refunds   []string
-	verdict   payments.CallbackVerdict
-	refundErr error
+	intents    map[string]uuid.UUID
+	created    []payments.CreateIntentInput
+	subCreated []payments.CreateIntentInput
+	refunds    []string
+	// refundCalls records every Refund command (intent, amount, reason).
+	refundCalls []fakeRefundCall
+	verdict     payments.CallbackVerdict
+	refundErr   error
+}
+
+type fakeRefundCall struct {
+	IntentID    uuid.UUID
+	AmountMinor int64
+	Reason      string
+	Key         string
 }
 
 func newFakePayments() *fakePayments {
@@ -45,6 +55,22 @@ func (f *fakePayments) CreateIntent(_ context.Context, in payments.CreateIntentI
 	}, nil
 }
 
+// CreateSubscriptionIntent echoes a mopedu_subscription intent (one id per
+// idempotency key), recorded in subCreated.
+func (f *fakePayments) CreateSubscriptionIntent(_ context.Context, in payments.CreateIntentInput) (*payments.Intent, error) {
+	f.subCreated = append(f.subCreated, in)
+	id, ok := f.intents[in.IdempotencyKey]
+	if !ok {
+		id = uuid.New()
+		f.intents[in.IdempotencyKey] = id
+	}
+	return &payments.Intent{
+		ID: id, Status: "pending", AmountMinor: in.AmountMinor, Currency: "INR", Method: in.Method, ProviderRef: "order_" + id.String()[:8],
+		ReferenceType: payments.RefTypeMopeduSubscription, ReferenceID: in.ReferenceID, PayerID: in.PayerID,
+		ClientSession: map[string]string{"provider": "razorpay", "order_id": "order_" + id.String()[:8], "key_id": "rzp_test_pub"},
+	}, nil
+}
+
 func (f *fakePayments) VerifyCallback(_ context.Context, intentID uuid.UUID, in payments.CallbackRequest) (*payments.CallbackVerdict, error) {
 	v := f.verdict
 	v.Verified, v.Advisory, v.AmountMinor = true, true, in.ExpectedAmountMinor
@@ -56,6 +82,7 @@ func (f *fakePayments) Refund(_ context.Context, intentID uuid.UUID, amountMinor
 		return nil, f.refundErr
 	}
 	f.refunds = append(f.refunds, key)
+	f.refundCalls = append(f.refundCalls, fakeRefundCall{IntentID: intentID, AmountMinor: amountMinor, Reason: reason, Key: key})
 	return &payments.RefundAccepted{CommandID: uuid.New(), IntentID: intentID, AmountMinor: amountMinor, Status: "requested"}, nil
 }
 

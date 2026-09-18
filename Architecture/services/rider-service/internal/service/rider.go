@@ -21,6 +21,7 @@ import (
 	"github.com/atpost/rider-service/internal/routing"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
+	sharedevents "github.com/atpost/shared/events"
 	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
@@ -51,6 +52,11 @@ type Service struct {
 	// allows an intent without a checkout session (the stub gateway).
 	payments         PaymentsClient
 	paymentsLocalEnv bool
+	// faceCompare is media-service's face comparer for the selfie check
+	// (approval.go); nil leaves every selfie pending review.
+	// selfieMinSimilarity is MOPEDU_SELFIE_MIN_SIMILARITY.
+	faceCompare         FaceComparer
+	selfieMinSimilarity float64
 	// now is the clock fare windows are evaluated against (tests pin it).
 	now func() time.Time
 }
@@ -98,7 +104,10 @@ type EventPublisher interface {
 	PublishPartnerVehicleAdded(ctx context.Context, partnerID, vehicleID uuid.UUID, vehicleType, registration string) error
 	PublishSubscriptionPaymentSubmitted(ctx context.Context, paymentID, partnerID, planID uuid.UUID, amount float64, currency, method string) error
 	PublishSubscriptionPaymentVerified(ctx context.Context, paymentID, partnerID, planID uuid.UUID, amount float64, currency, method string) error
-	PublishSubscriptionActivated(ctx context.Context, subscriptionID, partnerID, planID uuid.UUID, status string, startsAt, expiresAt time.Time) error
+	PublishSubscriptionActivated(ctx context.Context, subscriptionID, partnerID, partnerUserID, planID uuid.UUID, status string, startsAt, expiresAt time.Time) error
+	// Launch safety: the automatic approval evaluator left the partner
+	// waiting on a manually uploaded document (once per pending-set change).
+	PublishPartnerUnderReview(ctx context.Context, payload sharedevents.RiderPartnerUnderReviewPayload) error
 	PublishRideRequested(ctx context.Context, rideID, customerID uuid.UUID, vehicleType, cityID string) error
 
 	// S2: ride lifecycle + offer + partner online/offline.
@@ -128,7 +137,7 @@ type EventPublisher interface {
 	PublishComplaintUpdated(ctx context.Context, payload events.ComplaintPayload, adminID uuid.UUID) error
 	PublishShareTokenCreated(ctx context.Context, payload events.ShareTokenCreatedPayload) error
 	PublishAdminAction(ctx context.Context, payload events.AdminActionPayload) error
-	PublishPartnerStatusChange(ctx context.Context, eventType string, partnerID uuid.UUID, status, reason string, actorID uuid.UUID) error
+	PublishPartnerStatusChange(ctx context.Context, eventType string, partnerID, partnerUserID uuid.UUID, status, reason string, actorID uuid.UUID) error
 
 	// S4: background-job events.
 	PublishSubscriptionGracePeriod(ctx context.Context, payload events.SubscriptionGracePayload) error
@@ -159,7 +168,10 @@ func (noopPublisher) PublishSubscriptionPaymentSubmitted(_ context.Context, _, _
 func (noopPublisher) PublishSubscriptionPaymentVerified(_ context.Context, _, _, _ uuid.UUID, _ float64, _, _ string) error {
 	return nil
 }
-func (noopPublisher) PublishSubscriptionActivated(_ context.Context, _, _, _ uuid.UUID, _ string, _, _ time.Time) error {
+func (noopPublisher) PublishSubscriptionActivated(_ context.Context, _, _, _, _ uuid.UUID, _ string, _, _ time.Time) error {
+	return nil
+}
+func (noopPublisher) PublishPartnerUnderReview(_ context.Context, _ sharedevents.RiderPartnerUnderReviewPayload) error {
 	return nil
 }
 func (noopPublisher) PublishRideRequested(_ context.Context, _, _ uuid.UUID, _, _ string) error {
@@ -231,7 +243,7 @@ func (noopPublisher) PublishShareTokenCreated(_ context.Context, _ events.ShareT
 func (noopPublisher) PublishAdminAction(_ context.Context, _ events.AdminActionPayload) error {
 	return nil
 }
-func (noopPublisher) PublishPartnerStatusChange(_ context.Context, _ string, _ uuid.UUID, _, _ string, _ uuid.UUID) error {
+func (noopPublisher) PublishPartnerStatusChange(_ context.Context, _ string, _, _ uuid.UUID, _, _ string, _ uuid.UUID) error {
 	return nil
 }
 func (noopPublisher) PublishSubscriptionGracePeriod(_ context.Context, _ events.SubscriptionGracePayload) error {

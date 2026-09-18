@@ -458,6 +458,7 @@ const (
 	EventRiderPartnerVehicleApproved       = "rider.partner.vehicle_approved"
 	EventRiderPartnerVehicleRejected       = "rider.partner.vehicle_rejected"
 	EventRiderPartnerApproved              = "rider.partner.approved"
+	EventRiderPartnerUnderReview           = "rider.partner.under_review" // 2026-09-18 launch safety; payload RiderPartnerUnderReviewPayload
 	EventRiderPartnerSuspended             = "rider.partner.suspended"
 	EventRiderPartnerBlocked               = "rider.partner.blocked"
 	EventRiderPartnerOnline                = "rider.partner.online"
@@ -1890,6 +1891,18 @@ const (
 	// pending follow requests on a private→public flip.
 	UserSettingsChanged = "user.settings_changed"
 )
+
+// RiderPartnerUnderReviewPayload is the payload of
+// EventRiderPartnerUnderReview. PartnerUserID is the captain's USER id
+// (rider_partners.user_id), the push recipient; PartnerID is
+// rider_partners.id. Pending lists the document kinds still waiting for a
+// human review (e.g. driving_license, profile_photo, vehicle_rc).
+type RiderPartnerUnderReviewPayload struct {
+	PartnerID     string    `json:"partner_id"`
+	PartnerUserID string    `json:"partner_user_id"`
+	Pending       []string  `json:"pending"`
+	OccurredAt    time.Time `json:"occurred_at"`
+}
 
 // RiderRidePaymentPaidPayload is the payload of EventRiderRidePaymentPaid.
 //

@@ -288,11 +288,11 @@ func TestSubscribe_Idempotency_SameKeyReturnsSamePayment(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	plan, _ := svc.Store().GetPlanByCode(context.Background(), "basic_199")
-	first, err := svc.Subscribe(context.Background(), uid, plan.ID, "manual", "idem-aaa")
+	first, err := svc.Subscribe(context.Background(), uid, plan.ID, "wallet", "idem-aaa")
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	second, err := svc.Subscribe(context.Background(), uid, plan.ID, "manual", "idem-aaa")
+	second, err := svc.Subscribe(context.Background(), uid, plan.ID, "wallet", "idem-aaa")
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -316,18 +316,17 @@ func TestSubscribe_ManualPath_StaysPending(t *testing.T) {
 		Phone:       "+919900099102",
 	})
 	plan, _ := svc.Store().GetPlanByCode(context.Background(), "plus_299")
+	// Launch safety: "manual" (a proof an admin verifies) is no longer a
+	// payment method; nothing is written and the wallet is not touched.
 	res, err := svc.Subscribe(context.Background(), uid, plan.ID, "manual", "idem-manual-001")
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	if res.Status != "pending" {
-		t.Fatalf("status: %s, want pending", res.Status)
-	}
-	if res.SubscriptionID != nil {
-		t.Fatalf("manual path should not activate a subscription")
+	if err == nil || !contains(err.Error(), "invalid:") {
+		t.Fatalf("manual accepted: %+v %v", res, err)
 	}
 	if len(walletMock.Debits()) != 0 {
 		t.Fatalf("manual path must not hit the wallet")
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM rider_subscription_payments WHERE payment_method = 'manual'`); n != 0 {
+		t.Fatalf("manual payment rows = %d", n)
 	}
 }
 
@@ -341,15 +340,16 @@ func TestSubscribe_UPIPath_ReturnsIntent(t *testing.T) {
 		Phone:       "+919900099103",
 	})
 	plan, _ := svc.Store().GetPlanByCode(context.Background(), "basic_199")
-	res, err := svc.Subscribe(context.Background(), uid, plan.ID, "upi", "idem-upi-001")
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
+	// Launch safety: upi / card are paid through the payments-service
+	// checkout; the legacy route points there and writes nothing.
+	for _, m := range []string{"upi", "card"} {
+		res, err := svc.Subscribe(context.Background(), uid, plan.ID, m, "idem-"+m+"-001")
+		if err == nil || !contains(err.Error(), "/subscriptions/checkout") {
+			t.Fatalf("%s accepted on the legacy route: %+v %v", m, res, err)
+		}
 	}
-	if res.Status != "pending" {
-		t.Fatalf("upi status: %s, want pending", res.Status)
-	}
-	if !contains(res.UPIIntentURL, "upi://pay?") {
-		t.Fatalf("upi intent missing: %s", res.UPIIntentURL)
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM rider_subscription_payments WHERE payment_method IN ('upi','card')`); n != 0 {
+		t.Fatalf("legacy online payment rows = %d", n)
 	}
 }
 

@@ -132,10 +132,24 @@ Expect a summary ending in `Warnings 0`, with `Captains created=4`, coupon
 `created; validate: valid`, `Weekend window created; 1 row(s)` and `4 of 4
 seeded captains approved`. Re-running is safe (everything reads `reused` /
 `existing`). What it made: call_b as an approved captain with an auto and an
-active `basic_199` subscription; three synthetic captains (two autos, one
-bike) online near MG Road; coupon `WELCOME50`; the fare window "Weekend test
-peak" (Sat–Sun 09:00–21:00, x1.15). Details:
+active free-trial subscription (`trial_7d`); three synthetic captains (two
+autos, one bike) online near MG Road; coupon `WELCOME50`; the fare window
+"Weekend test peak" (Sat–Sun 09:00–21:00, x1.15). Details:
 `Architecture/services/rider-service/scripts/README.md`.
+
+**No admin touched a captain.** Onboarding is automatic on the dev stack:
+the DigiLocker mock (`DIGILOCKER_MODE=mock`) returns the Aadhaar, the
+driving licence and the vehicle RC as issuer-verified, the face-compare mock
+(`MOPEDU_FACE_COMPARE_MODE=mock`) matches the selfie with the licence photo,
+and rider-service approves the partner the moment all four are verified
+(audit rows under the fixed system actor, the `rider.partner.approved`
+event, the identity role intent). The subscription is the free trial, taken
+with one tap through `POST /v1/rider/subscriptions/checkout` — no payment
+proof, no admin verify (that route now answers `410`). The only thing that
+still waits for a human is a document a captain uploads by hand (a DL or RC
+photo instead of DigiLocker): it sits in the admin document queue, the
+captain sees `under_review` with the document named, and the approval
+completes itself the moment the admin verifies it.
 
 **Open a second Git Bash window and leave this running for the whole
 session** — the stale-GPS worker takes a captain offline 90 s after its last
@@ -429,7 +443,84 @@ Koramangala 4th Block (12.9352, 77.6245), vehicle **auto**.
       `refunded_paise` equal to the amount — that is the path to expect in
       production.
 
-11. **Pushes — which lands where.**
+11. **Captain subscription paid in the app (UPI).** call_b's seeded
+    subscription is the free trial. Captain phone: Subscription → choose
+    **Basic ₹199** → UPI → the Razorpay test sheet opens (close it on dev).
+    Command alternative:
+
+    ```bash
+    mz POST /v1/rider/subscriptions/checkout $CALL_B '{"plan_code":"basic_199","method":"upi"}'
+    mz GET /v1/rider/subscriptions/me/payment $CALL_B
+    ```
+
+    Expect `200` with `"status":"pending_payment"`, a `subscription_id`, an
+    `intent_id`, `"amount_paise":19900` and a `client_session` with an
+    `order_id` starting `order_`; the payment status answers
+    `"status":"confirming"`. Nothing is active yet — `GET
+    /v1/rider/subscriptions/me` still shows the trial. Now the **same
+    payments test step as the ride payment (step 7)**, reading the order and
+    amount from the subscription row instead:
+
+    ```bash
+    read -r ORDER AMT < <(docker exec atpost_stack-postgres-1 psql -U postgres -d app -tAc "select provider_reference||' '||amount_paise from rider_partner_subscriptions where partner_id=(select id from rider_partners where user_id='$CALL_B') and payment_status='confirming' order by created_at desc limit 1")
+    ```
+
+    then the `BODY=` / `SIG=` / `curl` lines of step 7 unchanged. Expect
+    `webhook: 200`, and within about 10 seconds
+    `mz GET /v1/rider/subscriptions/me/payment $CALL_B` answers
+    `"status":"paid"` with an `expires_at`, and
+    `mz GET /v1/rider/subscriptions/me $CALL_B` shows `basic_199`
+    `"status":"active"` — activated by the signed `payment.succeeded` event
+    alone. Because a trial was running, the new period **starts where the
+    trial ends** (`starts_at` = the trial's `expires_at`), never today; the
+    trial row is marked `cancelled` with reason `superseded_by_renewal`.
+    The captain phone gets the "subscription activated" push. A second
+    checkout of the same plan while it is confirming re-opens the same
+    intent (idempotent). The old proof route answers `410
+    SUBSCRIPTION_PROOF_GONE`; the console's "verify payment" refuses any
+    subscription that has an intent.
+
+12. **Captain onboarding approves itself.** Sign a fresh captain up in the
+    Mopedu Captain app (a third test account, or `--reset` call_b first):
+    create the profile → "Verify with DigiLocker" (the mock accepts any
+    code) → add the vehicle → take the selfie. Watch the onboarding screen:
+    Aadhaar and licence are verified the moment the DigiLocker callback
+    returns, the vehicle the moment it is added (RC from DigiLocker), the
+    selfie a second after upload (face compare), and the status flips to
+    **Approved** with no admin action. Command alternative for the state:
+
+    ```bash
+    mz GET /v1/rider/partners/me/onboarding $CALL_B
+    ```
+
+    Expect `"status":"approved"` with empty `pending` and `missing`. To see
+    the one human fallback: upload a licence photo by hand instead
+    (`POST /v1/rider/partners/me/documents` with `document_type
+    driving_license` and no DigiLocker) — the status reads `under_review`
+    with `"pending":["driving_license"]`, the captain phone gets the "under
+    review" notice once, the document appears in **Mopedu → Partners →
+    Documents** in the console, and verifying it there approves the partner
+    immediately (no separate approve click).
+
+13. **Automatic refund: the captain cancels a paid ride.** Book a UPI ride
+    as call_a, accept as call_b, pay it (steps 6–7: on dev the capture is
+    simulated, which is enough for the rule), then cancel it **from the
+    captain phone** (Cancel → any reason). Command alternative:
+
+    ```bash
+    mz POST /v1/rider/rides/$RIDE/cancel $CALL_B '{"reason":"vehicle breakdown","expected_revision":<rev>}'
+    mz GET /v1/rider/rides/$RIDE/receipt $CALL_A
+    ```
+
+    Expect the receipt's `refunds` to hold one entry for the full amount
+    with `"reason":"captain_cancel"` and `"status":"accepted"` — filed by
+    rule the moment the captain cancelled, requested by the system actor,
+    with no admin approval. (As in step 10, a simulated capture makes
+    Razorpay refuse the money movement, so it stays `accepted`; a real test
+    payment ends `refunded`.) A customer's own cancellation, or a cash ride,
+    never files one. The SQL check is 9.8.
+
+14. **Pushes — which lands where.**
 
     | Moment | call_a phone (Momentum) | call_b phone (Mopedu Captain) |
     |---|---|---|
@@ -441,7 +532,10 @@ Koramangala 4th Block (12.9352, 77.6245), vehicle **auto**.
     | customer cancels | Ride cancelled | Ride cancelled |
     | captain cancels | Ride cancelled — book again | — |
     | UPI payment settles (step 7) | payment paid | **Payment received ₹x** (captain earnings channel) |
-    | partner approved | — | welcome push (only if the app was already registered; the seed approves before that, so expect none) |
+    | partner approved (automatic, step 12) | — | welcome / approved push (only if the app was already registered; the seed approves before that, so expect none) |
+    | a hand-uploaded document waits for an admin (step 12) | — | **Under review** notice, once per change of the pending set |
+    | subscription paid (step 11) | — | **Subscription activated** (the same event the trial sends) |
+    | captain cancels a paid ride (step 13) | Ride cancelled — refund on its way | — |
 
     A push that does not arrive while the app is in the foreground is
     normal on Android (the in-app screen updates instead); background the
@@ -556,6 +650,61 @@ Each block prints one line per row. Replace `<ride id>` where shown.
    partner_arriving → arrived → otp_verified → in_progress → completed`,
    then a `completed → completed` row "cash collected and confirmed" for a
    cash ride.
+
+8. **Automatic onboarding, subscription checkout and rule refunds** (launch
+   safety). Documents and vehicles with who verified them — every seeded
+   row reads `digilocker|auto` (or `upload|auto` for the selfie); a
+   hand-uploaded document reads `upload|` with status `pending` until an
+   admin id appears:
+
+   ```bash
+   docker exec -i atpost_stack-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d app -tAf -' <<'SQL'
+   select p.full_name, d.document_type, d.status, d.source, coalesce(d.verified_by_actor,''), coalesce(d.auto_check_detail,''), d.verified_at
+   from rider_partner_documents d join rider_partners p on p.id = d.partner_id order by d.created_at desc limit 12;
+   select v.registration_number, v.status, coalesce(v.verified_by_actor,''), coalesce(rc.source,''), coalesce(rc.status::text,'') as rc_status
+   from rider_vehicles v left join rider_vehicle_documents rc on rc.vehicle_id = v.id and rc.document_type = 'vehicle_rc' order by v.created_at desc limit 6;
+   select action, entity_type, new_value->>'reason' as reason, created_at from rider_admin_audit_logs
+   where admin_user_id = uuid_generate_v5('6ba7b811-9dad-11d1-80b4-00c04fd430c8'::uuid, 'https://momentum.app/actor/mopedu-system') order by created_at desc limit 12;
+   SQL
+   ```
+
+   Expect `aadhaar|approved|digilocker|auto`, `driving_license|approved|digilocker|auto`
+   and `profile_photo|approved|upload|auto|face_compare similarity 96.0 ...`
+   per captain, every vehicle `approved|auto|digilocker|approved`, and audit
+   rows `document.auto_verify` (reason `digilocker` / `face_compare`),
+   `vehicle.auto_verify` and `partner.auto_approve` under the system actor
+   (if `uuid_generate_v5` is missing, filter on `new_value->>'actor' =
+   'system'` instead). Subscriptions after step 11:
+
+   ```bash
+   docker exec -i atpost_stack-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d app -tAf -' <<'SQL'
+   select pl.code, s.status, coalesce(s.payment_status,'legacy'), s.amount_paise, s.intent_id, s.starts_at, s.expires_at, s.renews_subscription_id, coalesce(s.cancellation_reason,'')
+   from rider_partner_subscriptions s join rider_subscription_plans pl on pl.id = s.plan_id
+   where s.partner_id = (select id from rider_partners where user_id = '66668bc2-a3f6-40a5-9cdd-c998dcf72f29') order by s.created_at;
+   select event_type, reference_id, amount_minor, outcome, applied_at from rider_payment_inbox where outcome like 'subscription%' order by applied_at desc limit 5;
+   SQL
+   ```
+
+   Expect the trial row `trial_7d|cancelled|legacy|0|...|superseded_by_renewal:<id>`
+   and `basic_199|active|paid|19900|<intent>|<trial expires_at>|<+30 days>|<trial id>|`,
+   plus one inbox row `payment.succeeded|<subscription id>|19900|subscription_activated`.
+   Before the webhook the row reads `pending_payment|confirming`; a
+   wrong-amount capture leaves it there and adds a
+   `rider_payment_reconciliation` row with `subscription_id` set. Rule
+   refunds after step 13 (and any duplicate capture):
+
+   ```bash
+   docker exec -i atpost_stack-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d app -tAf -' <<'SQL'
+   select ride_id, rule_code, amount_paise, status, requested_by, payment_id, outstanding_id, intent_id, created_at
+   from rider_ride_refunds where rule_code <> 'discretionary' order by created_at desc limit 5;
+   select ride_id, canonical_status, terminal_reason from rider_payment_reconciliation where canonical_status = 'duplicate_capture' order by created_at desc limit 3;
+   SQL
+   ```
+
+   Expect `<ride>|captain_cancel|<full amount>|accepted|<system actor uuid>|<payment id>||<intent>`
+   with `requested_by` the same system actor as the audit rows (never an
+   admin id); a `duplicate_capture` row appears only if payments-service
+   ever captured the same ride twice.
 
 ## 10. What is not in this build — not bugs
 

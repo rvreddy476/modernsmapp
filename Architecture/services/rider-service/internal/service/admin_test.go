@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/atpost/rider-service/internal/events"
+	sharedevents "github.com/atpost/shared/events"
 	"github.com/google/uuid"
 )
 
@@ -45,7 +46,7 @@ func (r *recordingPublisher) PublishSubscriptionPaymentSubmitted(ctx context.Con
 func (r *recordingPublisher) PublishSubscriptionPaymentVerified(ctx context.Context, paymentID, partnerID, planID uuid.UUID, amount float64, currency, method string) error {
 	return nil
 }
-func (r *recordingPublisher) PublishSubscriptionActivated(ctx context.Context, subscriptionID, partnerID, planID uuid.UUID, status string, startsAt, expiresAt time.Time) error {
+func (r *recordingPublisher) PublishSubscriptionActivated(ctx context.Context, subscriptionID, partnerID, partnerUserID, planID uuid.UUID, status string, startsAt, expiresAt time.Time) error {
 	return nil
 }
 func (r *recordingPublisher) PublishRideRequested(ctx context.Context, rideID, customerID uuid.UUID, vehicleType, cityID string) error {
@@ -142,7 +143,13 @@ func (r *recordingPublisher) PublishAdminAction(_ context.Context, p events.Admi
 	r.mu.Unlock()
 	return nil
 }
-func (r *recordingPublisher) PublishPartnerStatusChange(_ context.Context, eventType string, _ uuid.UUID, _, _ string, _ uuid.UUID) error {
+func (r *recordingPublisher) PublishPartnerStatusChange(_ context.Context, eventType string, _, _ uuid.UUID, _, _ string, _ uuid.UUID) error {
+	return r.recordPartnerStatus(eventType)
+}
+func (r *recordingPublisher) PublishPartnerUnderReview(_ context.Context, _ sharedevents.RiderPartnerUnderReviewPayload) error {
+	return nil
+}
+func (r *recordingPublisher) recordPartnerStatus(eventType string) error {
 	r.mu.Lock()
 	r.partnerStatus = append(r.partnerStatus, eventType)
 	r.mu.Unlock()

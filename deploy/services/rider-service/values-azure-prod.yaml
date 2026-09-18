@@ -86,6 +86,12 @@ env:
   # Payments lane (see externalSecret above): unused until
   # RIDER_SERVICE_TOKEN_KEY / _KID are set.
   PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  # Launch safety: selfie face compare through media-service.
+  # MEDIA_SERVICE_URL is REQUIRED in production (boot refused without it);
+  # "mock" is refused here.
+  MOPEDU_FACE_COMPARE_MODE: http
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  MOPEDU_SELFIE_MIN_SIMILARITY: "80"
   # Admin console (see externalSecret above for the order): uncomment
   # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID. OPS is rider's
   # AdminPermissions (rider-service/internal/http/admin_token.go).

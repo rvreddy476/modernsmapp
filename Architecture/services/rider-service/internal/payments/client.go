@@ -37,8 +37,12 @@ const (
 	// ApplicationID is the payments application every Mopedu intent and
 	// refund belongs to (payments migration 012).
 	ApplicationID = "mopedu"
-	// RefTypeMopeduRide is the payments reference type rider owns.
+	// RefTypeMopeduRide is the payments reference type rider owns for rides
+	// and outstanding fees.
 	RefTypeMopeduRide = servicetoken.RefMopeduRide
+	// RefTypeMopeduSubscription is the reference type for captain
+	// subscription checkouts (reference id = the subscription row id).
+	RefTypeMopeduSubscription = servicetoken.RefMopeduSubscription
 	// CurrencyINR is the only currency Mopedu prices in.
 	CurrencyINR = "INR"
 	// DefaultPaymentsURL matches the compose service name.
@@ -69,9 +73,12 @@ var (
 	ErrNotConfigured = errors.New("RIDER_SERVICE_TOKEN_KEY and RIDER_SERVICE_TOKEN_KID are required for online ride payments")
 )
 
-// Client talks to payments-service.
+// Client talks to payments-service. The shared client is bound to ONE
+// reference type (its token names it), so rides and subscriptions each get
+// their own binding over the same key.
 type Client struct {
 	c       *paymentsclient.Client
+	sub     *paymentsclient.Client
 	payeeID uuid.UUID
 }
 
@@ -84,20 +91,27 @@ func NewTokenClient(baseURL, kid, signingKeyB64 string, payeeID uuid.UUID) (*Cli
 	if payeeID == uuid.Nil {
 		payeeID = DefaultPayeeID
 	}
-	c, err := paymentsclient.New(paymentsclient.Config{
-		BaseURL:               baseURL,
-		Service:               serviceName,
-		ReferenceType:         RefTypeMopeduRide,
-		Auth:                  paymentsclient.Auth{TokenKey: strings.TrimSpace(signingKeyB64), TokenKID: strings.TrimSpace(kid)},
-		MaxResponseBytes:      maxResponseBytes,
-		ValidateMethod:        paymentmethod.Validate,
-		VerifyReferenceEcho:   true,
-		RequirePositiveRefund: true,
-	})
+	bind := func(refType string) (*paymentsclient.Client, error) {
+		return paymentsclient.New(paymentsclient.Config{
+			BaseURL:               baseURL,
+			Service:               serviceName,
+			ReferenceType:         refType,
+			Auth:                  paymentsclient.Auth{TokenKey: strings.TrimSpace(signingKeyB64), TokenKID: strings.TrimSpace(kid)},
+			MaxResponseBytes:      maxResponseBytes,
+			ValidateMethod:        paymentmethod.Validate,
+			VerifyReferenceEcho:   true,
+			RequirePositiveRefund: true,
+		})
+	}
+	c, err := bind(RefTypeMopeduRide)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{c: c, payeeID: payeeID}, nil
+	sub, err := bind(RefTypeMopeduSubscription)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{c: c, sub: sub, payeeID: payeeID}, nil
 }
 
 // ClientFromEnv builds the client from PAYMENTS_SERVICE_URL,
@@ -182,10 +196,36 @@ func OutstandingIntentKey(outstandingID uuid.UUID, method string) string {
 	return "outstanding:" + outstandingID.String() + ":" + method
 }
 
+// SubscriptionIntentKey is the deterministic key for a subscription checkout
+// row and method: "subscription:<id>:<method>".
+func SubscriptionIntentKey(subscriptionID uuid.UUID, method string) string {
+	return "subscription:" + subscriptionID.String() + ":" + method
+}
+
 // RefundKey is the deterministic key for one rider_ride_refunds row, so an
 // ambiguous timeout followed by a retry produces one refund at the PSP.
 func RefundKey(refundID uuid.UUID) string {
 	return "refund:" + refundID.String()
+}
+
+// CreateSubscriptionIntent opens a captain subscription payment (reference
+// type mopedu_subscription, reference id = the subscription row). The payer
+// is the captain's user id; the amount is the plan price in paise.
+func (c *Client) CreateSubscriptionIntent(ctx context.Context, in CreateIntentInput) (*Intent, error) {
+	out, err := c.sub.CreateIntent(ctx, paymentsclient.CreateIntentRequest{
+		ApplicationID:  ApplicationID,
+		ReferenceID:    in.ReferenceID,
+		PayerID:        in.PayerID,
+		PayeeID:        c.payeeID,
+		AmountMinor:    in.AmountMinor,
+		Currency:       CurrencyINR,
+		Method:         in.Method,
+		IdempotencyKey: in.IdempotencyKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return intentFrom(out), nil
 }
 
 // CreateIntent opens a payment. The shared client refuses a non-positive

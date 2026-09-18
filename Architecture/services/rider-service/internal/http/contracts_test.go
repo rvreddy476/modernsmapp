@@ -182,7 +182,7 @@ func TestContract_RefundListRow(t *testing.T) {
 	providerRef := "cmd_7b2e4d6f"
 	rows := []store.RideRefund{{
 		ID: uuid.MustParse("8d1c2b3a-4f5e-4a6b-9c8d-7e6f5a4b3c2d"), RideID: fixtureRideID,
-		PaymentID: uuid.MustParse("5e4d3c2b-1a0f-4e9d-8c7b-6a5f4e3d2c1b"), IntentID: fixtureIntentID,
+		PaymentID: ptrUUID(uuid.MustParse("5e4d3c2b-1a0f-4e9d-8c7b-6a5f4e3d2c1b")), IntentID: fixtureIntentID, RuleCode: "discretionary",
 		AmountPaise: 5000, Reason: "captain ended the ride early", Status: "refunded",
 		RequestedBy: uuid.MustParse("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"), ProviderReference: &providerRef,
 		CreatedAt: time.Date(2026, 9, 18, 6, 10, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 18, 6, 12, 45, 0, time.UTC),
@@ -212,3 +212,6 @@ func TestContract_CouponValidateError(t *testing.T) {
 	}
 	assertFixture(t, "coupon_validate_error.json", w.Body.Bytes())
 }
+
+// ptrUUID is a pointer to a fixture id.
+func ptrUUID(id uuid.UUID) *uuid.UUID { return &id }

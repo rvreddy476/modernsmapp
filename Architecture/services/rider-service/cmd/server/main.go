@@ -178,6 +178,19 @@ func main() {
 	riderSvc.SetRedis(rdb)
 	riderSvc.SetOTPCrypto(otpCrypto)
 
+	// Launch safety: the captain's selfie is compared server-side with the
+	// DigiLocker licence photo through media-service (MEDIA_SERVICE_URL,
+	// required in production; MOPEDU_FACE_COMPARE_MODE=mock is dev only;
+	// MOPEDU_SELFIE_MIN_SIMILARITY default 80). Below the threshold or with
+	// media-service unavailable the selfie stays pending review.
+	faceComparer, selfieMin, err := service.FaceCompareFromEnv(os.Getenv, production, internalKey)
+	if err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
+	riderSvc.SetFaceComparer(faceComparer, selfieMin)
+	slog.Info("rider-service: selfie face compare wired", "mode", env(service.EnvFaceCompareMode, "http"), "min_similarity", selfieMin)
+
 	// Online ride payments (upi / card) go through payments-service
 	// (application mopedu, reference type mopedu_ride) with rider's service
 	// token. Without RIDER_SERVICE_TOKEN_KEY / KID the intent routes answer

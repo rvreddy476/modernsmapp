@@ -33,7 +33,7 @@ func (s *Store) CreateVehicle(ctx context.Context, in CreateVehicleInput) (*Vehi
 	const q = `
         INSERT INTO rider_vehicles (partner_id, vehicle_type, registration_number, brand, model, color, manufacture_year, seat_count, fuel_type, is_ev, status, is_active)
         VALUES ($1, $2::rider_vehicle_type, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', TRUE)
-        RETURNING id, partner_id, vehicle_type, registration_number, brand, model, color, manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at`
+        RETURNING id, partner_id, vehicle_type, registration_number, brand, model, color, manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at, verified_by_actor, verified_at`
 	row := s.db.QueryRow(ctx, q, in.PartnerID, in.VehicleType, in.RegistrationNumber, in.Brand, in.Model, in.Color, in.ManufactureYear, in.SeatCount, in.FuelType, in.IsEV)
 	return scanVehicle(row)
 }
@@ -41,7 +41,7 @@ func (s *Store) CreateVehicle(ctx context.Context, in CreateVehicleInput) (*Vehi
 // GetVehicle returns the vehicle by id.
 func (s *Store) GetVehicle(ctx context.Context, id uuid.UUID) (*Vehicle, error) {
 	const q = `
-        SELECT id, partner_id, vehicle_type, registration_number, brand, model, color, manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at
+        SELECT id, partner_id, vehicle_type, registration_number, brand, model, color, manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at, verified_by_actor, verified_at
         FROM rider_vehicles
         WHERE id = $1 AND deleted_at IS NULL`
 	row := s.db.QueryRow(ctx, q, id)
@@ -58,7 +58,7 @@ func (s *Store) GetVehicle(ctx context.Context, id uuid.UUID) (*Vehicle, error) 
 // ListVehiclesByPartner returns the partner's vehicles.
 func (s *Store) ListVehiclesByPartner(ctx context.Context, partnerID uuid.UUID) ([]Vehicle, error) {
 	const q = `
-        SELECT id, partner_id, vehicle_type, registration_number, brand, model, color, manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at
+        SELECT id, partner_id, vehicle_type, registration_number, brand, model, color, manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at, verified_by_actor, verified_at
         FROM rider_vehicles
         WHERE partner_id = $1 AND deleted_at IS NULL
         ORDER BY created_at DESC`
@@ -80,7 +80,7 @@ func (s *Store) ListVehiclesByPartner(ctx context.Context, partnerID uuid.UUID) 
 
 func scanVehicle(row pgx.Row) (*Vehicle, error) {
 	var v Vehicle
-	if err := row.Scan(&v.ID, &v.PartnerID, &v.VehicleType, &v.RegistrationNumber, &v.Brand, &v.Model, &v.Color, &v.ManufactureYear, &v.SeatCount, &v.FuelType, &v.IsEV, &v.Status, &v.IsActive, &v.CreatedAt, &v.UpdatedAt); err != nil {
+	if err := row.Scan(&v.ID, &v.PartnerID, &v.VehicleType, &v.RegistrationNumber, &v.Brand, &v.Model, &v.Color, &v.ManufactureYear, &v.SeatCount, &v.FuelType, &v.IsEV, &v.Status, &v.IsActive, &v.CreatedAt, &v.UpdatedAt, &v.VerifiedByActor, &v.VerifiedAt); err != nil {
 		return nil, err
 	}
 	return &v, nil

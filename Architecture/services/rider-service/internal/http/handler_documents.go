@@ -7,6 +7,7 @@ import (
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // submitDocumentRequest — body for POST /v1/rider/partners/me/documents.
@@ -15,6 +16,9 @@ type submitDocumentRequest struct {
 	DocumentNumber *string `json:"document_number,omitempty"`
 	FileURL        string  `json:"file_url"`
 	ExpiresAt      *string `json:"expires_at,omitempty"` // RFC3339
+	// MediaID is the media-service id of the upload; the selfie
+	// (profile_photo) needs it for the server-side face check.
+	MediaID *uuid.UUID `json:"media_id,omitempty"`
 }
 
 // PostMyDocument — POST /v1/rider/partners/me/documents.
@@ -47,8 +51,13 @@ func (h *Handler) PostMyDocument(c *gin.Context) {
 		DocumentNumber: body.DocumentNumber,
 		FileURL:        body.FileURL,
 		ExpiresAt:      expiresAt,
+		MediaID:        body.MediaID,
 	})
 	if err != nil {
+		// SELFIE_MEDIA_REQUIRED (400): a profile_photo without media_id.
+		if respondPaymentError(c, err) {
+			return
+		}
 		respondServiceError(c, err, http.StatusInternalServerError, "DOCUMENT_SUBMIT_FAILED")
 		return
 	}

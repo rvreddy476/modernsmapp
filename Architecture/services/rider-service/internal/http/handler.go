@@ -137,8 +137,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			// --- Subscription -------------------------------------------------
 			protected.GET("/subscriptions/plans", h.GetPlans)
 			protected.POST("/subscriptions/subscribe", h.PostSubscribe)
+			// Launch safety: the subscription is paid in the app through
+			// payments-service and activated only by the signed capture;
+			// the proof route answers 410.
+			protected.POST("/subscriptions/checkout", h.PostSubscriptionCheckout)
+			protected.GET("/subscriptions/me/payment", h.GetMySubscriptionPayment)
 			protected.POST("/subscriptions/payment-proof", h.PostPaymentProof)
 			protected.GET("/subscriptions/me", h.GetMySubscription)
+			// Approval state with the documents still waiting for a human.
+			protected.GET("/partners/me/onboarding", h.GetMyOnboarding)
 
 			// --- S3 customer safety + complaints -----------------------------
 			protected.POST("/rides/:id/sos", h.PostSOS)

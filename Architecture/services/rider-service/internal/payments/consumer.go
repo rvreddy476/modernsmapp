@@ -135,15 +135,16 @@ func (c *Consumer) OnRefunded(ctx context.Context, env *events.EventEnvelope, ev
 
 func (c *Consumer) apply(ctx context.Context, env *events.EventEnvelope, p fields) error {
 	// Commerce's, food's and dating's payments share this topic. Only
-	// mopedu_ride references concern rider.
-	if p.referenceType != RefTypeMopeduRide {
+	// mopedu_ride (rides, outstanding fees) and mopedu_subscription (captain
+	// checkouts) references concern rider.
+	if p.referenceType != RefTypeMopeduRide && p.referenceType != RefTypeMopeduSubscription {
 		return nil
 	}
 	// ForApplication already dropped another application. An event that
 	// does not state one predates payments stamping it, and so cannot be
 	// Mopedu's.
 	if strings.TrimSpace(p.applicationID) == "" {
-		slog.Warn("rider: mopedu_ride payment event states no application; ignored",
+		slog.Warn("rider: mopedu payment event states no application; ignored",
 			"event_type", env.EventType, "event_id", env.EventID, "reference_id", p.referenceID)
 		return nil
 	}
@@ -157,22 +158,23 @@ func (c *Consumer) apply(ctx context.Context, env *events.EventEnvelope, p field
 	}
 	referenceID, err := uuid.Parse(p.referenceID)
 	if err != nil {
-		slog.Error("rider: payment event has an unparseable mopedu_ride reference",
+		slog.Error("rider: payment event has an unparseable mopedu reference",
 			"event_id", env.EventID, "reference_id", p.referenceID)
 		return sharedkafka.Permanent(fmt.Errorf("unprocessable payment event %s", env.EventID))
 	}
 	payer, _ := uuid.Parse(p.payerID) // uuid.Nil when absent; Decide refuses a nil payer on capture
 
 	ev := Event{
-		EventID:     env.EventID,
-		EventType:   env.EventType,
-		IntentID:    p.intentID,
-		ReferenceID: referenceID,
-		PayerID:     payer,
-		AmountMinor: p.amountMinor,
-		Currency:    p.currency,
-		Status:      p.status,
-		ProviderRef: p.providerRef,
+		EventID:       env.EventID,
+		EventType:     env.EventType,
+		IntentID:      p.intentID,
+		ReferenceType: p.referenceType,
+		ReferenceID:   referenceID,
+		PayerID:       payer,
+		AmountMinor:   p.amountMinor,
+		Currency:      p.currency,
+		Status:        p.status,
+		ProviderRef:   p.providerRef,
 	}
 	applied, err := c.store.ApplyRidePaymentEvent(ctx, ev)
 	if err != nil {

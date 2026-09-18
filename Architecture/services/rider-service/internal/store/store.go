@@ -99,6 +99,18 @@ type PartnerDocument struct {
 	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// Source is digilocker (fetched by rider-service, verified automatically)
+	// or upload (the partner's file, reviewed by an admin). VerifiedByActor
+	// is "auto" or the admin's user id. MediaID is the media-service id of
+	// the file (the selfie); PhotoMediaID the DigiLocker document's photo
+	// (the DL photo the selfie is compared with). AutoCheckDetail says why
+	// an automatic check left the document pending.
+	Source          string     `json:"source"`
+	VerifiedByActor *string    `json:"verified_by_actor,omitempty"`
+	VerifiedAt      *time.Time `json:"verified_at,omitempty"`
+	MediaID         *uuid.UUID `json:"media_id,omitempty"`
+	PhotoMediaID    *uuid.UUID `json:"photo_media_id,omitempty"`
+	AutoCheckDetail *string    `json:"auto_check_detail,omitempty"`
 }
 
 // AadhaarVerification mirrors a row in rider_partner_aadhaar_verifications.
@@ -130,6 +142,9 @@ type Vehicle struct {
 	IsActive           bool      `json:"is_active"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+	// VerifiedByActor is "auto" (RC from DigiLocker) or the admin's user id.
+	VerifiedByActor *string    `json:"verified_by_actor,omitempty"`
+	VerifiedAt      *time.Time `json:"verified_at,omitempty"`
 }
 
 // VehicleDocument is one row in rider_vehicle_documents.
@@ -144,6 +159,10 @@ type VehicleDocument struct {
 	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// Source / VerifiedByActor as on PartnerDocument.
+	Source          string     `json:"source"`
+	VerifiedByActor *string    `json:"verified_by_actor,omitempty"`
+	VerifiedAt      *time.Time `json:"verified_at,omitempty"`
 }
 
 // SubscriptionPlan is one row in rider_subscription_plans.
@@ -180,6 +199,17 @@ type PartnerSubscription struct {
 	CancelledAt   *time.Time `json:"cancelled_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+	// Checkout through payments-service (migration 005): the bound intent,
+	// the plan price in paise, and payment_status pending | confirming | paid
+	// | failed (NULL for legacy proof / wallet rows). Only the consumer's
+	// signed events write paid / failed. RenewsSubscriptionID names the
+	// active row a renewal extends from.
+	IntentID             *uuid.UUID `json:"intent_id,omitempty"`
+	IntentMethod         *string    `json:"intent_method,omitempty"`
+	AmountPaise          int64      `json:"amount_paise"`
+	PaymentStatus        *string    `json:"payment_status,omitempty"`
+	PaidAt               *time.Time `json:"paid_at,omitempty"`
+	RenewsSubscriptionID *uuid.UUID `json:"renews_subscription_id,omitempty"`
 }
 
 // SubscriptionPayment is one row in rider_subscription_payments.
@@ -424,14 +454,20 @@ type RidePayment struct {
 // an online ride payment. status moves requested -> accepted (payments
 // took the command) -> refunded (payment.refunded applied) | failed.
 type RideRefund struct {
-	ID                uuid.UUID  `json:"id"`
-	RideID            uuid.UUID  `json:"ride_id"`
-	PaymentID         uuid.UUID  `json:"payment_id"`
-	IntentID          uuid.UUID  `json:"intent_id"`
-	AmountPaise       int64      `json:"amount_paise"`
-	Reason            string     `json:"reason"`
-	Status            string     `json:"status"`
+	ID     uuid.UUID `json:"id"`
+	RideID uuid.UUID `json:"ride_id"`
+	// PaymentID is the ride payment refunded; nil for a refund of an
+	// outstanding fee paid directly (OutstandingID then set).
+	PaymentID     *uuid.UUID `json:"payment_id,omitempty"`
+	OutstandingID *uuid.UUID `json:"outstanding_id,omitempty"`
+	IntentID      uuid.UUID  `json:"intent_id"`
+	AmountPaise   int64      `json:"amount_paise"`
+	Reason        string     `json:"reason"`
+	Status        string     `json:"status"`
+	// RequestedBy is the signed admin, or payments.SystemActorID for a rule
+	// refund; RuleCode says which rule (discretionary for an admin's).
 	RequestedBy       uuid.UUID  `json:"requested_by"`
+	RuleCode          string     `json:"rule_code"`
 	ProviderReference *string    `json:"provider_reference,omitempty"`
 	FailureReason     *string    `json:"failure_reason,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`

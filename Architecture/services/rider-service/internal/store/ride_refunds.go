@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Refund statuses (rider_ride_refunds.status).
@@ -31,25 +32,27 @@ var (
 	ErrRefundExceedsRemaining = errors.New("ride_refund: amount exceeds the remaining refundable amount")
 )
 
-const rideRefundColumns = `id, ride_id, payment_id, intent_id, amount_paise, reason, status, requested_by, provider_reference, failure_reason, created_at, updated_at`
+const rideRefundColumns = `id, ride_id, payment_id, outstanding_id, intent_id, amount_paise, reason, status, requested_by, rule_code, provider_reference, failure_reason, created_at, updated_at`
 
 func scanRideRefund(row pgx.Row) (*RideRefund, error) {
 	var r RideRefund
-	if err := row.Scan(&r.ID, &r.RideID, &r.PaymentID, &r.IntentID, &r.AmountPaise, &r.Reason, &r.Status, &r.RequestedBy,
-		&r.ProviderReference, &r.FailureReason, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.RideID, &r.PaymentID, &r.OutstandingID, &r.IntentID, &r.AmountPaise, &r.Reason, &r.Status, &r.RequestedBy,
+		&r.RuleCode, &r.ProviderReference, &r.FailureReason, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &r, nil
 }
 
-// CreateRideRefundInput is the admin refund request. AmountPaise 0 means
-// the full remaining amount.
+// CreateRideRefundInput is the refund request: an admin's (RuleCode empty =
+// discretionary) or a rule's (RuleCode payments.RuleX, RequestedBy the
+// system actor). AmountPaise 0 means the full remaining amount.
 type CreateRideRefundInput struct {
 	ID          uuid.UUID
 	RideID      uuid.UUID
 	AmountPaise int64
 	Reason      string
 	RequestedBy uuid.UUID
+	RuleCode    string
 }
 
 // CreateRideRefund inserts a `requested` refund for the ride's latest
@@ -97,14 +100,87 @@ func (s *Store) CreateRideRefund(ctx context.Context, in CreateRideRefundInput) 
 	if id == uuid.Nil {
 		id = uuid.New()
 	}
+	rule := in.RuleCode
+	if rule == "" {
+		rule = "discretionary"
+	}
 	r, err := scanRideRefund(tx.QueryRow(ctx, `
-        INSERT INTO rider_ride_refunds (id, ride_id, payment_id, intent_id, amount_paise, reason, requested_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING `+rideRefundColumns, id, p.RideID, p.ID, *p.IntentID, amount, in.Reason, in.RequestedBy))
+        INSERT INTO rider_ride_refunds (id, ride_id, payment_id, intent_id, amount_paise, reason, requested_by, rule_code)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING `+rideRefundColumns, id, p.RideID, p.ID, *p.IntentID, amount, in.Reason, in.RequestedBy, rule))
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, p, ErrRuleRefundExists
+		}
 		return nil, p, fmt.Errorf("create ride refund: %w", err)
 	}
 	return r, p, tx.Commit(ctx)
+}
+
+// ErrRuleRefundExists: the rule already filed its refund for this target
+// (ux_rider_ride_refunds_rule_*); a re-evaluation is a no-op.
+var ErrRuleRefundExists = errors.New("ride_refund: this rule already refunded the target")
+
+// isUniqueViolation reports SQLSTATE 23505.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// CreateOutstandingRefundInput files rule (c): the refund of a cancellation
+// fee the customer paid directly (settled_intent_id).
+type CreateOutstandingRefundInput struct {
+	OutstandingID uuid.UUID
+	Reason        string
+	RequestedBy   uuid.UUID
+	RuleCode      string
+}
+
+// CreateOutstandingRefund inserts a `requested` refund of a settled,
+// directly paid outstanding fee, with the row locked. ErrRefundNotRefundable
+// when the fee is not settled by an intent; ErrRuleRefundExists when the
+// rule already filed one.
+func (s *Store) CreateOutstandingRefund(ctx context.Context, in CreateOutstandingRefundInput) (*RideRefund, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	o, err := scanOutstanding(tx.QueryRow(ctx, `SELECT `+outstandingColumns+` FROM rider_customer_outstanding WHERE id = $1 FOR UPDATE`, in.OutstandingID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOutstandingNotFound
+		}
+		return nil, fmt.Errorf("lock outstanding: %w", err)
+	}
+	if o.Status != OutstandingSettled || o.SettledIntentID == nil {
+		return nil, ErrRefundNotRefundable
+	}
+	rule := in.RuleCode
+	if rule == "" {
+		rule = "discretionary"
+	}
+	r, err := scanRideRefund(tx.QueryRow(ctx, `
+        INSERT INTO rider_ride_refunds (ride_id, outstanding_id, intent_id, amount_paise, reason, requested_by, rule_code)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING `+rideRefundColumns, o.RideID, o.ID, *o.SettledIntentID, o.AmountPaise, in.Reason, in.RequestedBy, rule))
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrRuleRefundExists
+		}
+		return nil, fmt.Errorf("create outstanding refund: %w", err)
+	}
+	return r, tx.Commit(ctx)
+}
+
+// SumInFlightRefunds is the sum of requested/accepted refunds of a payment
+// row (rule (a) subtracts it from what is left to refund).
+func (s *Store) SumInFlightRefunds(ctx context.Context, paymentID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `
+        SELECT COALESCE(SUM(amount_paise), 0) FROM rider_ride_refunds
+        WHERE payment_id = $1 AND status IN ('requested','accepted')`, paymentID).Scan(&n)
+	return n, err
 }
 
 // MarkRideRefundAccepted records that payments-service took the refund

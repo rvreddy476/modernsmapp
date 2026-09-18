@@ -58,6 +58,22 @@ func (h *Handler) GetMyPartner(c *gin.Context) {
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, p)
 }
 
+// GetMyOnboarding — GET /v1/rider/partners/me/onboarding. The partner's
+// approval state: approved | under_review (the documents in `pending` wait
+// for a human) | incomplete (`missing`) | blocked.
+func (h *Handler) GetMyOnboarding(c *gin.Context) {
+	uid, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.OnboardingStatusFor(c.Request.Context(), uid)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "ONBOARDING_FETCH_FAILED")
+		return
+	}
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, out)
+}
+
 // patchPartnerRequest is the partial-update body for PATCH /partners/me.
 type patchPartnerRequest struct {
 	FullName        *string    `json:"full_name,omitempty"`

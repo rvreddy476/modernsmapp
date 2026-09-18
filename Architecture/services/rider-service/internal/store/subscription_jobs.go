@@ -29,7 +29,8 @@ func (s *Store) ListExpiringSubscriptions(ctx context.Context, within time.Durat
 	}
 	const q = `
         SELECT id, partner_id, plan_id, status, starts_at, expires_at, grace_ends_at,
-               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at
+               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at,
+               intent_id, intent_method, amount_paise, payment_status, paid_at, renews_subscription_id
         FROM rider_partner_subscriptions
         WHERE status = 'active'
           AND expires_at <= NOW() + ($1::int * INTERVAL '1 second')
@@ -71,7 +72,8 @@ func (s *Store) FlipToGracePeriod(ctx context.Context) ([]PartnerSubscription, e
           AND s.expires_at <= NOW()
         RETURNING s.id, s.partner_id, s.plan_id, s.status, s.starts_at, s.expires_at,
                   s.grace_ends_at, s.leads_used, s.fair_use_used, s.auto_renew,
-                  s.cancelled_at, s.created_at, s.updated_at`
+                  s.cancelled_at, s.created_at, s.updated_at,
+                  s.intent_id, s.intent_method, s.amount_paise, s.payment_status, s.paid_at, s.renews_subscription_id`
 	rows, err := s.db.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("flip to grace period: %w", err)
@@ -99,7 +101,8 @@ func (s *Store) FlipToExpired(ctx context.Context) ([]PartnerSubscription, error
           AND grace_ends_at IS NOT NULL
           AND grace_ends_at <= NOW()
         RETURNING id, partner_id, plan_id, status, starts_at, expires_at, grace_ends_at,
-                  leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at`
+                  leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at,
+               intent_id, intent_method, amount_paise, payment_status, paid_at, renews_subscription_id`
 	rows, err := s.db.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("flip to expired: %w", err)
@@ -129,7 +132,8 @@ func (s *Store) ListAutoRenewCandidates(ctx context.Context, within, cooldown ti
 	}
 	const q = `
         SELECT id, partner_id, plan_id, status, starts_at, expires_at, grace_ends_at,
-               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at
+               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at,
+               intent_id, intent_method, amount_paise, payment_status, paid_at, renews_subscription_id
         FROM rider_partner_subscriptions
         WHERE auto_renew = TRUE
           AND status IN ('active','grace_period')

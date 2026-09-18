@@ -12,9 +12,10 @@ import (
 
 // Outstanding statuses.
 const (
-	OutstandingPending = "pending"
-	OutstandingSettled = "settled"
-	OutstandingWaived  = "waived"
+	OutstandingPending  = "pending"
+	OutstandingSettled  = "settled"
+	OutstandingWaived   = "waived"
+	OutstandingRefunded = "refunded"
 )
 
 // ErrOutstandingNotFound is returned when a row does not exist or is no

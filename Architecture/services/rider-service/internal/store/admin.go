@@ -186,7 +186,7 @@ func (s *Store) ListPartnerDocumentsByStatus(ctx context.Context, status string,
 	}
 	q := `
         SELECT id, partner_id, document_type, document_number, file_url, status,
-               rejection_reason, expires_at, created_at, updated_at
+               rejection_reason, expires_at, created_at, updated_at, source, verified_by_actor, verified_at, media_id, photo_media_id, auto_check_detail
         FROM rider_partner_documents
         WHERE ($1::text IS NULL OR status = $1::rider_verification_status)
         ORDER BY created_at DESC
@@ -203,7 +203,7 @@ func (s *Store) ListPartnerDocumentsByStatus(ctx context.Context, status string,
 	var out []PartnerDocument
 	for rows.Next() {
 		var d PartnerDocument
-		if err := rows.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt, &d.Source, &d.VerifiedByActor, &d.VerifiedAt, &d.MediaID, &d.PhotoMediaID, &d.AutoCheckDetail); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -215,12 +215,12 @@ func (s *Store) ListPartnerDocumentsByStatus(ctx context.Context, status string,
 func (s *Store) GetPartnerDocument(ctx context.Context, id uuid.UUID) (*PartnerDocument, error) {
 	const q = `
         SELECT id, partner_id, document_type, document_number, file_url, status,
-               rejection_reason, expires_at, created_at, updated_at
+               rejection_reason, expires_at, created_at, updated_at, source, verified_by_actor, verified_at, media_id, photo_media_id, auto_check_detail
         FROM rider_partner_documents
         WHERE id = $1`
 	var d PartnerDocument
 	row := s.db.QueryRow(ctx, q, id)
-	if err := row.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt, &d.Source, &d.VerifiedByActor, &d.VerifiedAt, &d.MediaID, &d.PhotoMediaID, &d.AutoCheckDetail); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrDocumentNotFound
 		}
@@ -239,10 +239,10 @@ func (s *Store) SetPartnerDocumentStatus(ctx context.Context, id uuid.UUID, stat
             updated_at       = NOW()
         WHERE id = $1
         RETURNING id, partner_id, document_type, document_number, file_url, status,
-                  rejection_reason, expires_at, created_at, updated_at`
+                  rejection_reason, expires_at, created_at, updated_at, source, verified_by_actor, verified_at, media_id, photo_media_id, auto_check_detail`
 	var d PartnerDocument
 	row := s.db.QueryRow(ctx, q, id, status, reason)
-	if err := row.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt, &d.Source, &d.VerifiedByActor, &d.VerifiedAt, &d.MediaID, &d.PhotoMediaID, &d.AutoCheckDetail); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrDocumentNotFound
 		}
@@ -263,7 +263,7 @@ func (s *Store) ListVehiclesByStatus(ctx context.Context, status string, limit, 
 	}
 	q := `
         SELECT id, partner_id, vehicle_type, registration_number, brand, model, color,
-               manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at
+               manufacture_year, seat_count, fuel_type, is_ev, status, is_active, created_at, updated_at, verified_by_actor, verified_at
         FROM rider_vehicles
         WHERE ($1::text IS NULL OR status = $1::rider_verification_status)
         ORDER BY created_at DESC
@@ -280,7 +280,7 @@ func (s *Store) ListVehiclesByStatus(ctx context.Context, status string, limit, 
 	var out []Vehicle
 	for rows.Next() {
 		var v Vehicle
-		if err := rows.Scan(&v.ID, &v.PartnerID, &v.VehicleType, &v.RegistrationNumber, &v.Brand, &v.Model, &v.Color, &v.ManufactureYear, &v.SeatCount, &v.FuelType, &v.IsEV, &v.Status, &v.IsActive, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.PartnerID, &v.VehicleType, &v.RegistrationNumber, &v.Brand, &v.Model, &v.Color, &v.ManufactureYear, &v.SeatCount, &v.FuelType, &v.IsEV, &v.Status, &v.IsActive, &v.CreatedAt, &v.UpdatedAt, &v.VerifiedByActor, &v.VerifiedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

@@ -20,14 +20,17 @@ func TestBuildUPIIntent_HasRequiredFields(t *testing.T) {
 	}
 }
 
+// Launch safety: the legacy Subscribe route takes the wallet only. "manual"
+// (a proof an admin verified) is gone, and upi / card go through the
+// payments-service checkout.
 func TestAllowedPaymentMethods_Coverage(t *testing.T) {
-	for _, m := range []string{"wallet", "upi", "manual"} {
-		if !allowedPaymentMethods[m] {
-			t.Errorf("expected %q to be allowed", m)
-		}
+	if !allowedPaymentMethods["wallet"] {
+		t.Errorf("expected wallet to be allowed")
 	}
-	if allowedPaymentMethods["cheque"] {
-		t.Errorf("cheque should not be allowed")
+	for _, m := range []string{"manual", "upi", "card", "cheque"} {
+		if allowedPaymentMethods[m] {
+			t.Errorf("%q must not be accepted on the legacy subscribe route", m)
+		}
 	}
 }
 

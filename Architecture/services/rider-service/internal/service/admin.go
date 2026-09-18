@@ -66,11 +66,22 @@ func (s *Service) ApprovePartner(ctx context.Context, partnerID, adminID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerApproved, partnerID, "approved", "", adminID); perr != nil {
+	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerApproved, partnerID, p.UserID, "approved", "", adminID); perr != nil {
 		slog.Warn("rider: publish partner.approved failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.approve", "partner", partnerID, "")
 	return p, nil
+}
+
+// partnerUserIDOf resolves the captain's user id for a partner-facing event
+// (uuid.Nil when the partner cannot be read; the event still carries
+// partner_id and notification-service warns on the fallback).
+func (s *Service) partnerUserIDOf(ctx context.Context, partnerID uuid.UUID) uuid.UUID {
+	p, err := s.store.GetPartner(ctx, partnerID)
+	if err != nil || p == nil {
+		return uuid.Nil
+	}
+	return p.UserID
 }
 
 // RejectPartner sets status=rejected and stores the admin reason.
@@ -84,7 +95,7 @@ func (s *Service) RejectPartner(ctx context.Context, partnerID, adminID uuid.UUI
 		}
 		return err
 	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerKYCRejected, partnerID, "rejected", reason, adminID); perr != nil {
+	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerKYCRejected, partnerID, s.partnerUserIDOf(ctx, partnerID), "rejected", reason, adminID); perr != nil {
 		slog.Warn("rider: publish partner.rejected failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.reject", "partner", partnerID, reason)
@@ -102,7 +113,7 @@ func (s *Service) SuspendPartner(ctx context.Context, partnerID, adminID uuid.UU
 		}
 		return err
 	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerSuspended, partnerID, "suspended", reason, adminID); perr != nil {
+	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerSuspended, partnerID, s.partnerUserIDOf(ctx, partnerID), "suspended", reason, adminID); perr != nil {
 		slog.Warn("rider: publish partner.suspended failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.suspend", "partner", partnerID, reason)
@@ -120,7 +131,7 @@ func (s *Service) BlockPartner(ctx context.Context, partnerID, adminID uuid.UUID
 		}
 		return err
 	}
-	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerBlocked, partnerID, "blocked", reason, adminID); perr != nil {
+	if perr := s.producer.PublishPartnerStatusChange(ctx, sharedevents.EventRiderPartnerBlocked, partnerID, s.partnerUserIDOf(ctx, partnerID), "blocked", reason, adminID); perr != nil {
 		slog.Warn("rider: publish partner.blocked failed", "partner_id", partnerID, "error", perr)
 	}
 	s.emitAdminAction(ctx, adminID, "partner.block", "partner", partnerID, reason)
@@ -134,9 +145,11 @@ func (s *Service) ListPartnerDocumentsForAdmin(ctx context.Context, status strin
 	return s.store.ListPartnerDocumentsByStatus(ctx, status, limit, offset)
 }
 
-// VerifyDocument moves a document to status=approved.
+// VerifyDocument moves a document to status=approved (the one human
+// fallback for an uploaded document) and re-runs the approval evaluator, so
+// the partner is approved the moment the last required document is.
 func (s *Service) VerifyDocument(ctx context.Context, docID, adminID uuid.UUID) (*store.PartnerDocument, error) {
-	d, err := s.store.SetPartnerDocumentStatus(ctx, docID, "approved", nil)
+	d, err := s.store.SetPartnerDocumentStatusBy(ctx, docID, "approved", nil, adminID)
 	if err != nil {
 		if errors.Is(err, store.ErrDocumentNotFound) {
 			return nil, fmt.Errorf("not_found: document")
@@ -144,6 +157,7 @@ func (s *Service) VerifyDocument(ctx context.Context, docID, adminID uuid.UUID) 
 		return nil, err
 	}
 	s.emitAdminAction(ctx, adminID, "document.verify", "document", docID, "")
+	s.evaluateApprovalQuietly(ctx, d.PartnerID)
 	return d, nil
 }
 
@@ -153,7 +167,7 @@ func (s *Service) RejectDocument(ctx context.Context, docID, adminID uuid.UUID, 
 	if r == "" {
 		return nil, fmt.Errorf("invalid: reason required")
 	}
-	d, err := s.store.SetPartnerDocumentStatus(ctx, docID, "rejected", &r)
+	d, err := s.store.SetPartnerDocumentStatusBy(ctx, docID, "rejected", &r, adminID)
 	if err != nil {
 		if errors.Is(err, store.ErrDocumentNotFound) {
 			return nil, fmt.Errorf("not_found: document")
@@ -161,6 +175,7 @@ func (s *Service) RejectDocument(ctx context.Context, docID, adminID uuid.UUID, 
 		return nil, err
 	}
 	s.emitAdminAction(ctx, adminID, "document.reject", "document", docID, r)
+	s.evaluateApprovalQuietly(ctx, d.PartnerID)
 	return d, nil
 }
 
@@ -171,15 +186,19 @@ func (s *Service) ListVehiclesForAdmin(ctx context.Context, status string, limit
 	return s.store.ListVehiclesByStatus(ctx, status, limit, offset)
 }
 
-// VerifyVehicle moves a vehicle to status=approved.
+// VerifyVehicle moves a vehicle to status=approved (the human fallback for
+// an uploaded RC) and re-runs the approval evaluator.
 func (s *Service) VerifyVehicle(ctx context.Context, vehicleID, adminID uuid.UUID) error {
-	if err := s.store.SetVehicleStatus(ctx, vehicleID, "approved"); err != nil {
+	if err := s.store.SetVehicleStatusBy(ctx, vehicleID, "approved", adminID); err != nil {
 		if errors.Is(err, store.ErrVehicleNotFoundAdmin) {
 			return fmt.Errorf("not_found: vehicle")
 		}
 		return err
 	}
 	s.emitAdminAction(ctx, adminID, "vehicle.verify", "vehicle", vehicleID, "")
+	if v, err := s.store.GetVehicle(ctx, vehicleID); err == nil {
+		s.evaluateApprovalQuietly(ctx, v.PartnerID)
+	}
 	return nil
 }
 
@@ -189,7 +208,7 @@ func (s *Service) RejectVehicle(ctx context.Context, vehicleID, adminID uuid.UUI
 	if r == "" {
 		return fmt.Errorf("invalid: reason required")
 	}
-	if err := s.store.SetVehicleStatus(ctx, vehicleID, "rejected"); err != nil {
+	if err := s.store.SetVehicleStatusBy(ctx, vehicleID, "rejected", adminID); err != nil {
 		if errors.Is(err, store.ErrVehicleNotFoundAdmin) {
 			return fmt.Errorf("not_found: vehicle")
 		}
@@ -210,6 +229,9 @@ func (s *Service) ListSubscriptionPaymentsForAdmin(ctx context.Context, status s
 // Reuses the shared activateSubscriptionWithPlan path so wallet + admin
 // activations land identically in the database.
 func (s *Service) VerifySubscriptionPayment(ctx context.Context, paymentID, adminID uuid.UUID) (*store.PartnerSubscription, error) {
+	if err := s.refuseCheckoutSubscription(ctx, paymentID); err != nil {
+		return nil, err
+	}
 	sub, err := s.ActivateSubscription(ctx, paymentID, adminID)
 	if err != nil {
 		return nil, err
@@ -218,11 +240,41 @@ func (s *Service) VerifySubscriptionPayment(ctx context.Context, paymentID, admi
 	return sub, nil
 }
 
+// refuseCheckoutSubscription keeps the legacy verify / reject routes to the
+// legacy proof rows: a subscription that has a payments intent is settled
+// only by the signed payment event, never by an admin.
+func (s *Service) refuseCheckoutSubscription(ctx context.Context, paymentID uuid.UUID) error {
+	pay, err := s.store.GetSubscriptionPayment(ctx, paymentID)
+	if err != nil {
+		if errors.Is(err, store.ErrPaymentNotFound) {
+			return fmt.Errorf("not_found: payment")
+		}
+		return err
+	}
+	if pay.SubscriptionID == nil {
+		return nil
+	}
+	sub, err := s.store.GetSubscription(ctx, *pay.SubscriptionID)
+	if err != nil {
+		if errors.Is(err, store.ErrSubscriptionNotFound) {
+			return nil
+		}
+		return err
+	}
+	if sub.IntentID != nil || sub.PaymentStatus != nil {
+		return fmt.Errorf("invalid: this subscription is paid through payments-service; only the signed payment event settles it")
+	}
+	return nil
+}
+
 // RejectSubscriptionPayment marks a payment failed.
 func (s *Service) RejectSubscriptionPayment(ctx context.Context, paymentID, adminID uuid.UUID, reason string) error {
 	r := strings.TrimSpace(reason)
 	if r == "" {
 		return fmt.Errorf("invalid: reason required")
+	}
+	if err := s.refuseCheckoutSubscription(ctx, paymentID); err != nil {
+		return err
 	}
 	pay, err := s.store.GetSubscriptionPayment(ctx, paymentID)
 	if err != nil {

@@ -108,6 +108,29 @@ func (s *Store) GetPartnerByUserID(ctx context.Context, userID uuid.UUID) (*Part
 	return p, nil
 }
 
+// PartnerUserIDs maps partner ids to their captain USER ids (the push
+// recipient every partner-facing event must carry as partner_user_id).
+// Unknown or deleted partners are absent from the map.
+func (s *Store) PartnerUserIDs(ctx context.Context, partnerIDs []uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {
+	out := make(map[uuid.UUID]uuid.UUID, len(partnerIDs))
+	if len(partnerIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT id, user_id FROM rider_partners WHERE id = ANY($1) AND deleted_at IS NULL`, partnerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("partner user ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, userID uuid.UUID
+		if err := rows.Scan(&id, &userID); err != nil {
+			return nil, err
+		}
+		out[id] = userID
+	}
+	return out, rows.Err()
+}
+
 // UpdatePartnerProfileInput allows partial updates from PATCH /partners/me.
 // Nil fields are skipped.
 type UpdatePartnerProfileInput struct {

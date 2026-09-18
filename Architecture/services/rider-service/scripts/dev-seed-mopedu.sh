@@ -16,12 +16,15 @@
 #   --reset --dry-run  show what --reset would delete; change nothing
 #
 # What it seeds (Bengaluru, the city row migration 001 keeps):
-#   * call_b becomes a Mopedu captain: partner row (individual_driver), an
-#     auto vehicle, driving licence + profile photo documents verified, the
-#     vehicle verified, the partner approved (legacy admin routes with
-#     X-Scopes admin, like dating's seeder does for approvals), and a
-#     basic_199 subscription paid "manual" and verified by admin (active).
-#     Going online and the location pings are the captain phone's job.
+#   * call_b becomes a Mopedu captain with NO admin step (launch safety):
+#     partner row (individual_driver); Aadhaar through the DigiLocker MOCK
+#     (start + callback), which also records the Aadhaar and driving-licence
+#     documents as verified; an auto vehicle whose RC the mock returns
+#     (vehicle verified); a selfie (profile_photo with a media_id) the mock
+#     face compare verifies; the partner is approved automatically; and the
+#     free trial (trial_7d) taken through POST /subscriptions/checkout — no
+#     proof, no admin verify. Going online and the location pings are the
+#     captain phone's job.
 #   * three synthetic captains (name-based UUIDv5 user ids, NO identity rows)
 #     with the same onboarding, set online near MG Road with a location ping,
 #     so dispatch finds someone even when call_b is offline. Two drive an
@@ -34,9 +37,8 @@
 #
 # SQL-ONLY STEPS (no service route exists for them; dev only):
 #   [sql-read]   ids the routes do not expose by name: the Bengaluru city id,
-#                the basic_199 plan id, the seeded coupon / window ids, the
-#                pending document / vehicle / payment ids of a partner from
-#                an interrupted earlier run.
+#                the trial plan id, the seeded coupon / window ids, partner
+#                ids by user id.
 #   [sql-reset]  --reset deletes by deterministic id: there is no DELETE
 #                route for partners, coupons or fare windows (deactivate is
 #                not removal). Redemptions of the seeded coupon go with it.
@@ -73,7 +75,7 @@ NS_DNS=6ba7b810-9dad-11d1-80b4-00c04fd430c8
 SEED_DOMAIN=mopedu-dev-seed.momentum.local
 
 CITY_NAME=Bengaluru
-PLAN_CODE=basic_199
+PLAN_CODE=trial_7d   # the free trial, once per partner, through /subscriptions/checkout
 COUPON_CODE=WELCOME50
 WINDOW_NAME="Weekend test peak"
 WINDOW_DAYS=96        # Sat=32 + Sun=64 (Mon=1 ... Sun=64)
@@ -82,11 +84,11 @@ WINDOW_END=1260       # 21:00 local
 WINDOW_BPS=11500      # x1.15
 WINDOW_PRIORITY=20    # above the seeded Night (5) and peak (10) windows
 
-# call_b's captain profile. Synthetic golden document numbers (ZZ series).
+# call_b's captain profile. Synthetic registration numbers (ZZ series); the
+# licence number comes from the DigiLocker mock.
 CALL_B_NAME="Mopedu Test Captain"
 CALL_B_PHONE=+919000000102
 CALL_B_REG=KA01ZZ0102
-DL_NUMBER=KA0120200000001
 KEEP_ONLINE_EVERY=30
 
 # slug|full name|phone|vehicle type|registration|lat|lng  (near MG Road)
@@ -136,6 +138,11 @@ HAS_KEY=$(docker exec "$RIDER_C" sh -c '[ -n "$INTERNAL_SERVICE_KEY" ] && echo y
 [ "$HAS_KEY" = yes ] || die "rider-service has no INTERNAL_SERVICE_KEY"
 DIGILOCKER=$(docker exec "$RIDER_C" printenv DIGILOCKER_MODE 2>/dev/null || true)
 [ "${DIGILOCKER:-mock}" = mock ] || die "refusing: rider-service DIGILOCKER_MODE is '$DIGILOCKER', expected mock"
+# The selfie is verified by the face-compare MOCK on the dev stack; against a
+# real media-service the seeded media ids do not exist and every captain
+# would wait for a human.
+FACE_MODE=$(docker exec "$RIDER_C" printenv MOPEDU_FACE_COMPARE_MODE 2>/dev/null || true)
+[ "${FACE_MODE:-}" = mock ] || die "refusing: rider-service MOPEDU_FACE_COMPARE_MODE is '${FACE_MODE:-unset}', expected mock (dev compose sets it)"
 COUPONS_ON=$(docker exec "$RIDER_C" printenv MOPEDU_COUPONS_ENABLED 2>/dev/null || true)
 PII_SET=$(docker exec "$RIDER_C" sh -c '[ -n "$RIDER_PII_KEYS" ] && echo yes || echo no' 2>/dev/null || echo no)
 
@@ -233,7 +240,7 @@ ALL=(call_b "${SYNTH[@]}")
 
 id_names=(python.org "$SEED_DOMAIN/admin")
 for slug in "${SYNTH[@]}"; do id_names+=("$SEED_DOMAIN/user/$slug"); done
-for slug in "${ALL[@]}"; do id_names+=("$SEED_DOMAIN/subscribe/$slug"); done
+for slug in "${ALL[@]}"; do id_names+=("$SEED_DOMAIN/subscribe/$slug" "$SEED_DOMAIN/selfie/$slug"); done
 compute_ids "${id_names[@]}"
 [ "${IDS[python.org]}" = 886313e1-3b8a-5372-9b90-0c9aee199e5d ] || die "UUIDv5 self-check failed"
 for slug in "${SYNTH[@]}"; do UID_OF[$slug]=${IDS[$SEED_DOMAIN/user/$slug]}; done
@@ -407,69 +414,76 @@ seed_captain() {
     suspended|blocked|rejected) die "$slug is ${PSTATUS[$slug]}; fix it in the console or --reset first" ;;
   esac
 
-  # Documents (pending on upload; verified through the legacy admin route).
+  # Aadhaar through the DigiLocker mock: the callback records the Aadhaar
+  # and driving-licence documents as verified (source digilocker, verified
+  # by "auto"). No upload, no admin.
   rider GET /v1/rider/partners/me/documents "$uid" ''
   check 200 || fail "list documents ($slug)"
-  if [[ $BODY != *'"document_type":"driving_license"'* ]]; then
-    rider POST /v1/rider/partners/me/documents "$uid" "{\"document_type\":\"driving_license\",\"document_number\":\"$DL_NUMBER\",\"file_url\":\"https://dev-seed.invalid/mopedu/$slug/dl.jpg\",\"expires_at\":\"2030-12-31T00:00:00Z\"}"
-    check 201 200 || fail "upload driving licence ($slug)"
-    DOCS=$((DOCS + 1))
+  if [[ $BODY != *'"document_type":"aadhaar"'* ]]; then
+    rider POST /v1/rider/partners/me/aadhaar/start "$uid" '{}'
+    check 200 || fail "aadhaar start ($slug)"
+    local state; jget state "$BODY" state
+    [ -n "$state" ] || die "aadhaar start returned no state ($slug)"
+    rider POST /v1/rider/partners/me/aadhaar/callback "$uid" "{\"code\":\"dev-seed-$slug\",\"state\":\"$state\"}"
+    check 200 || fail "aadhaar callback ($slug)"
+    DOCS=$((DOCS + 2))
+    log "aadhaar + driving licence verified through the DigiLocker mock"
   fi
-  if [[ $BODY != *'"document_type":"profile_photo"'* ]]; then
-    rider POST /v1/rider/partners/me/documents "$uid" "{\"document_type\":\"profile_photo\",\"file_url\":\"https://dev-seed.invalid/mopedu/$slug/photo.jpg\"}"
-    check 201 200 || fail "upload profile photo ($slug)"
-    DOCS=$((DOCS + 1))
-  fi
-  sqlv ids "SELECT string_agg(id::text, ' ') FROM rider_partner_documents WHERE partner_id = '$pid' AND status = 'pending';"
-  for id in $ids; do
-    rider POST "/v1/rider/admin/documents/$id/verify" "$SEED_ADMIN" '' admin
-    check 200 || fail "admin verify document $id ($slug)"
-  done
-  [ -z "$ids" ] || log "documents verified: $(printf '%s\n' $ids | wc -l | tr -d ' ')"
 
-  # Vehicle (pending on create; verified through the legacy admin route).
+  # Vehicle: the RC is pulled from DigiLocker (mock) on creation, so the
+  # vehicle is approved with no admin step.
   rider GET /v1/rider/partners/me/vehicles "$uid" ''
   check 200 || fail "list vehicles ($slug)"
   if [[ $BODY != *"\"registration_number\":\"${REG[$slug]}\""* ]]; then
     rider POST /v1/rider/partners/me/vehicles "$uid" "{\"vehicle_type\":\"${VTYPE[$slug]}\",\"registration_number\":\"${REG[$slug]}\",\"brand\":\"Bajaj\",\"model\":\"Dev seed\",\"color\":\"Yellow\",\"manufacture_year\":2022,\"fuel_type\":\"cng\"}"
     check 201 200 || fail "add vehicle ($slug)"
     VEHICLES=$((VEHICLES + 1))
+    local vst; jget vst "$BODY" status
+    [ "$vst" = approved ] || warn "vehicle ${REG[$slug]} is '$vst' (expected approved: RC from the DigiLocker mock)"
   fi
-  sqlv ids "SELECT string_agg(id::text, ' ') FROM rider_vehicles WHERE partner_id = '$pid' AND status = 'pending' AND deleted_at IS NULL;"
-  for id in $ids; do
-    rider POST "/v1/rider/admin/vehicles/$id/verify" "$SEED_ADMIN" '' admin
-    check 200 || fail "admin verify vehicle $id ($slug)"
-    log "vehicle ${REG[$slug]} verified"
-  done
 
-  # Subscription: basic_199 paid "manual", verified by admin -> active.
+  # Selfie: an upload with a media_id; the face-compare mock verifies it
+  # against the licence photo and the evaluator approves the partner.
+  rider GET /v1/rider/partners/me/documents "$uid" ''
+  check 200 || fail "list documents ($slug)"
+  if [[ $BODY != *'"document_type":"profile_photo"'* ]]; then
+    local media=${IDS[$SEED_DOMAIN/selfie/$slug]}
+    rider POST /v1/rider/partners/me/documents "$uid" "{\"document_type\":\"profile_photo\",\"file_url\":\"media://$media\",\"media_id\":\"$media\"}"
+    check 201 200 || fail "upload selfie ($slug)"
+    DOCS=$((DOCS + 1))
+  fi
+
+  # Approval is automatic once Aadhaar, DL, selfie and one RC are verified.
+  # The ONLY human fallback is a manually uploaded document; the seed never
+  # uploads one, so anything but approved here is a bug to report.
+  load_partner "$slug"
+  rider GET /v1/rider/partners/me/onboarding "$uid" ''
+  check 200 || fail "onboarding status ($slug)"
+  local ob; jget ob "$BODY" status
+  if [ "${PSTATUS[$slug]}" = approved ] && [ "${KYC[$slug]}" = approved ]; then
+    APPROVED=$((APPROVED + 1))
+  else
+    die "$slug ended ${PSTATUS[$slug]}/${KYC[$slug]} (onboarding '$ob': $BODY); expected automatic approval"
+  fi
+  log "partner approved automatically (onboarding $ob)"
+
+  # Subscription: the free trial through the checkout route (once per
+  # partner, ever). No proof, no admin verify.
   rider GET /v1/rider/subscriptions/me "$uid" ''
   if check 404; then
-    rider POST /v1/rider/subscriptions/subscribe "$uid" "{\"plan_id\":\"$PLAN_ID\",\"payment_method\":\"manual\",\"idempotency_key\":\"${IDS[$SEED_DOMAIN/subscribe/$slug]}\"}"
-    check 200 201 || fail "subscribe $PLAN_CODE ($slug)"
-    sqlv ids "SELECT string_agg(id::text, ' ') FROM rider_subscription_payments WHERE partner_id = '$pid' AND status IN ('pending','submitted');"
-    for id in $ids; do
-      rider POST "/v1/rider/admin/payments/$id/verify" "$SEED_ADMIN" '' admin
-      check 200 || fail "admin verify subscription payment $id ($slug)"
-    done
-    rider GET /v1/rider/subscriptions/me "$uid" ''
-    check 200 || fail "subscription not active after verification ($slug)"
-    SUBS=$((SUBS + 1))
-    local st; jget st "$BODY" status
-    log "subscription $PLAN_CODE $st"
+    rider POST /v1/rider/subscriptions/checkout "$uid" "{\"plan_code\":\"$PLAN_CODE\"}"
+    if check 200; then
+      SUBS=$((SUBS + 1))
+      local st; jget st "$BODY" status
+      log "subscription $PLAN_CODE $st (checkout, no admin)"
+    elif check 409; then
+      warn "$slug already used the free trial and has no active subscription; pay a plan from the captain app (UPI test step) or --reset"
+    else
+      fail "checkout $PLAN_CODE ($slug)"
+    fi
   else
     check 200 || fail "get subscription ($slug)"
   fi
-
-  # Approval (status approved + kyc approved; writes the identity role intent).
-  if [ "${PSTATUS[$slug]}" != approved ] || [ "${KYC[$slug]}" != approved ]; then
-    rider POST "/v1/rider/admin/partners/$pid/approve" "$SEED_ADMIN" '' admin
-    check 200 || fail "admin approve partner ($slug)"
-    load_partner "$slug"
-    APPROVED=$((APPROVED + 1))
-  fi
-  [ "${PSTATUS[$slug]}" = approved ] && [ "${KYC[$slug]}" = approved ] || die "$slug ended ${PSTATUS[$slug]}/${KYC[$slug]}, expected approved/approved"
-  log "partner approved, kyc approved"
 }
 
 # ping SLUG — online + one location fix (Postgres mirror + Redis GEO).

@@ -622,8 +622,8 @@ func (c *Consumer) handleRiderComplaintRaised(ctx context.Context, raw json.RawM
 
 // eventRiderPartnerUnderReview is matched by its string: shared/events has no
 // constant for it yet (payload {partner_id, partner_user_id, pending
-// []string}). When EventRiderPartnerUnderReview lands there, switch to it.
-const eventRiderPartnerUnderReview = "rider.partner.under_review"
+// []string}); shared/events now defines the constant.
+const eventRiderPartnerUnderReview = events.EventRiderPartnerUnderReview
 
 // riderCaptainAccountPayload is the union of rider-service's partner-status
 // and subscription payloads, decoded to the fields the copy may use: never

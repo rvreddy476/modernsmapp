@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/atpost/rider-service/internal/store"
@@ -20,12 +20,16 @@ import (
 const SubscribeOperation = "subscribe"
 
 // allowedPaymentMethods covers the values rider_subscription_payments.payment_method
-// is expected to take in v1.
+// takes on the legacy Subscribe route: the wallet only. "manual" (a proof
+// upload verified by an admin) is gone; upi / card go through
+// CheckoutSubscription and payments-service.
 var allowedPaymentMethods = map[string]bool{
 	"wallet": true,
-	"upi":    true,
-	"manual": true,
 }
+
+// ErrProofRouteGone answers the retired payment-proof route.
+var ErrProofRouteGone = payErr(http.StatusGone, CodeSubscriptionProofGone,
+	"payment proofs are no longer accepted; pay in the app through POST /v1/rider/subscriptions/checkout")
 
 // SubscribeResult is the response shape from Subscribe.
 type SubscribeResult struct {
@@ -81,8 +85,11 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, planID uuid.U
 	if planID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: plan_id required")
 	}
-	if !allowedPaymentMethods[paymentMethod] {
-		return nil, fmt.Errorf("invalid: payment_method must be wallet, upi, or manual")
+	switch {
+	case paymentMethod == "upi" || paymentMethod == "card":
+		return nil, fmt.Errorf("invalid: pay by %s through POST /v1/rider/subscriptions/checkout", paymentMethod)
+	case !allowedPaymentMethods[paymentMethod]:
+		return nil, fmt.Errorf("invalid: payment_method must be wallet (upi and card go through /subscriptions/checkout)")
 	}
 	if idempotencyKey == "" {
 		return nil, fmt.Errorf("invalid: idempotency_key required")
@@ -149,12 +156,22 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, planID uuid.U
 
 	switch paymentMethod {
 	case "wallet":
-		// For zero-cost trial plans, skip the wallet hop and activate.
+		// A zero-cost (trial) plan skips the wallet and activates instantly,
+		// once per partner ever (rider_partners.trial_used_at).
 		if amountPaise == 0 {
-			sub, activateErr := s.activateSubscriptionWithPlan(ctx, partner, plan, payment.ID, nil)
+			sub, activateErr := s.store.ActivateTrialSubscription(ctx, partner.ID, plan.ID, s.now(), plan.BillingPeriodDays)
 			if activateErr != nil {
 				_ = s.store.MarkPaymentFailed(ctx, payment.ID, activateErr.Error())
+				if errors.Is(activateErr, store.ErrTrialAlreadyUsed) {
+					return nil, payErr(http.StatusConflict, CodeTrialAlreadyUsed, "the free trial can be used once; choose a paid plan")
+				}
 				return nil, activateErr
+			}
+			if _, verr := s.store.MarkPaymentVerified(ctx, payment.ID, nil, &sub.ID); verr != nil {
+				return nil, fmt.Errorf("mark payment verified: %w", verr)
+			}
+			if perr := s.producer.PublishSubscriptionActivated(ctx, sub.ID, partner.ID, partner.UserID, plan.ID, sub.Status, sub.StartsAt, sub.ExpiresAt); perr != nil {
+				slog.Warn("rider: publish subscription.activated failed", "subscription_id", sub.ID, "error", perr)
 			}
 			res.SubscriptionID = &sub.ID
 			res.Status = sub.Status
@@ -182,15 +199,6 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, planID uuid.U
 			res.Status = sub.Status
 			res.ExpiresAt = &sub.ExpiresAt
 		}
-	case "upi":
-		// Build a UPI Intent URL for the partner's UPI app to open.
-		intent := buildUPIIntent(amountPaise, payment.ID)
-		res.UPIIntentURL = intent
-		res.Status = "pending"
-	case "manual":
-		// Partner will upload proof via /payment-proof. Status remains pending
-		// until S3 admin verification.
-		res.Status = "pending"
 	}
 
 	if body, merr := json.Marshal(res); merr == nil {
@@ -202,28 +210,12 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, planID uuid.U
 // SubmitPaymentProof updates a manual / UPI payment with the proof URL the
 // partner uploaded out-of-band. Status flips to `submitted` (admin verifies
 // in S3).
-func (s *Service) SubmitPaymentProof(ctx context.Context, userID, paymentID uuid.UUID, fileURL string) (*store.SubscriptionPayment, error) {
-	if strings.TrimSpace(fileURL) == "" {
-		return nil, fmt.Errorf("invalid: file_url required")
-	}
-	pay, err := s.store.GetSubscriptionPayment(ctx, paymentID)
-	if err != nil {
-		if errors.Is(err, store.ErrPaymentNotFound) {
-			return nil, fmt.Errorf("not_found: payment")
-		}
-		return nil, err
-	}
-	partner, err := s.store.GetPartner(ctx, pay.PartnerID)
-	if err != nil {
-		return nil, err
-	}
-	if partner.UserID != userID {
-		return nil, fmt.Errorf("forbidden: payment does not belong to user")
-	}
-	if pay.Status != "pending" && pay.Status != "submitted" {
-		return nil, fmt.Errorf("invalid: payment is in terminal state %q", pay.Status)
-	}
-	return s.store.AttachPaymentProof(ctx, paymentID, fileURL)
+//
+// Retired (launch safety): a subscription is paid in the app through
+// CheckoutSubscription and settled by the signed payment event; no proof, no
+// admin. The route answers 410 with the pointer; nothing is written.
+func (s *Service) SubmitPaymentProof(_ context.Context, _, _ uuid.UUID, _ string) (*store.SubscriptionPayment, error) {
+	return nil, ErrProofRouteGone
 }
 
 // ActivateSubscription is the public hook used by admin (S3) and the wallet
@@ -277,7 +269,7 @@ func (s *Service) activateSubscriptionWithPlan(ctx context.Context, partner *sto
 	if perr := s.producer.PublishSubscriptionPaymentVerified(ctx, paymentID, partner.ID, plan.ID, plan.PriceAmount, plan.CurrencyCode, "wallet"); perr != nil {
 		slog.Warn("rider: publish payment.verified failed", "payment_id", paymentID, "error", perr)
 	}
-	if perr := s.producer.PublishSubscriptionActivated(ctx, sub.ID, partner.ID, plan.ID, sub.Status, sub.StartsAt, sub.ExpiresAt); perr != nil {
+	if perr := s.producer.PublishSubscriptionActivated(ctx, sub.ID, partner.ID, partner.UserID, plan.ID, sub.Status, sub.StartsAt, sub.ExpiresAt); perr != nil {
 		slog.Warn("rider: publish subscription.activated failed", "subscription_id", sub.ID, "error", perr)
 	}
 	return sub, nil

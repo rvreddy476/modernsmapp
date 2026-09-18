@@ -936,6 +936,192 @@ paths:
         '200':
           description: '{"city_id", "items": [{vehicle_type, requested, online, demand_bps, cap_bps}]}'
 
+  # --- Captain onboarding and subscriptions (launch safety, 2026-09-18) -----
+  # Nothing a captain does waits for a human, except a manually uploaded
+  # document (the one fallback). Documents DigiLocker returns are verified
+  # automatically; the selfie is compared server-side with the licence photo;
+  # the partner is approved the moment Aadhaar, DL, selfie and one vehicle RC
+  # are verified. The subscription is paid in the app through payments-service
+  # and activated only by the signed payment.succeeded event.
+  /v1/rider/partners/me/aadhaar/start:
+    post:
+      summary: Start the DigiLocker Aadhaar flow (PKCE state)
+      operationId: startAadhaar
+      tags: [Captain]
+      responses:
+        '200':
+          description: The DigiLocker authorize URL and the one-shot state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [digilocker_authorize_url, state]
+                properties:
+                  digilocker_authorize_url: { type: string }
+                  state: { type: string }
+  /v1/rider/partners/me/aadhaar/callback:
+    post:
+      summary: Complete the DigiLocker flow; records the Aadhaar and driving-licence documents as verified
+      operationId: completeAadhaar
+      tags: [Captain]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, state]
+              properties:
+                code: { type: string }
+                state: { type: string }
+      responses:
+        '200':
+          description: >-
+            The assertion is stored (no Aadhaar number ever). rider-service then pulls the Aadhaar and
+            DL from DigiLocker (source digilocker, verified_by_actor auto, an audit row actor system /
+            reason digilocker) and re-runs the approval evaluator. DIGILOCKER_MODE=mock (dev) returns
+            verified data for every code, so the whole path is automatic on the dev stack.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verified, issued_at]
+                properties:
+                  verified: { type: boolean }
+                  issued_at: { type: string, format: date-time }
+        '403':
+          description: state expired, invalid or not this partner's
+  /v1/rider/partners/me/documents:
+    post:
+      summary: Upload a KYC document (the human fallback; the selfie is checked server-side)
+      operationId: submitPartnerDocument
+      tags: [Captain]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerDocumentSubmit'
+      responses:
+        '201':
+          description: >-
+            The document (source upload). profile_photo (the selfie) is compared with the DigiLocker
+            licence photo through media-service: at or above MOPEDU_SELFIE_MIN_SIMILARITY (default 80)
+            it is verified automatically (verified_by_actor auto, auto_check_detail); below it, or with
+            media-service unavailable, it stays pending review — never auto-verified. Every other
+            uploaded document stays pending for an admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerDocument'
+        '400':
+          description: INVALID_REQUEST | SELFIE_MEDIA_REQUIRED (profile_photo without media_id)
+    get:
+      summary: The partner's documents
+      operationId: listPartnerDocuments
+      tags: [Captain]
+      responses:
+        '200':
+          description: Every document, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PartnerDocument'
+  /v1/rider/partners/me/onboarding:
+    get:
+      summary: Approval state with the documents still waiting for a human
+      operationId: getPartnerOnboarding
+      tags: [Captain]
+      responses:
+        '200':
+          description: approved | under_review (pending named) | incomplete (missing named) | blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingStatus'
+  /v1/rider/subscriptions/checkout:
+    post:
+      summary: Pay a subscription plan in the app (or take the free trial instantly)
+      operationId: checkoutSubscription
+      tags: [Captain]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionCheckoutRequest'
+      responses:
+        '200':
+          description: >-
+            For a paid plan: a rider_partner_subscriptions row in status pending_payment (or the open
+            one reused) and a payments-service intent (application mopedu, reference type
+            mopedu_subscription, reference id = subscription_id, amount = the plan price in paise,
+            idempotency subscription:<id>:<method>). The row activates ONLY from the signed
+            payment.succeeded event; a wrong amount / currency / payer capture is a mismatch
+            (reconciliation, nothing activated). A checkout while a period runs is a renewal: it
+            starts where the current period ends, never today. For the trial plan (price 0): status
+            trial, activated instantly, once per partner ever.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionCheckout'
+        '400':
+          description: PAYMENT_METHOD_INVALID (method must be upi or card for a paid plan)
+        '403':
+          description: PARTNER_NOT_ELIGIBLE (suspended / blocked / rejected)
+        '404':
+          description: PLAN_NOT_FOUND
+        '409':
+          description: TRIAL_ALREADY_USED | PAYMENT_NOT_PENDING (the checkout changed; refresh)
+        '503':
+          description: PAYMENTS_UNAVAILABLE | PAYMENTS_CHECKOUT_UNAVAILABLE
+  /v1/rider/subscriptions/me/payment:
+    get:
+      summary: Status of the latest subscription checkout
+      operationId: getMySubscriptionPayment
+      tags: [Captain]
+      responses:
+        '200':
+          description: Never asks payments-service; paid comes only from the applied signed event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPaymentStatus'
+        '404':
+          description: no checkout yet
+  /v1/rider/subscriptions/payment-proof:
+    post:
+      summary: Retired — payment proofs are no longer accepted
+      operationId: submitSubscriptionPaymentProof
+      deprecated: true
+      tags: [Captain]
+      responses:
+        '410':
+          description: SUBSCRIPTION_PROOF_GONE — pay in the app through POST /v1/rider/subscriptions/checkout
+  /v1/rider/subscriptions/subscribe:
+    post:
+      summary: Legacy wallet subscription (wallet only)
+      operationId: subscribeWallet
+      tags: [Captain]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id, payment_method, idempotency_key]
+              properties:
+                plan_id: { type: string, format: uuid }
+                payment_method: { type: string, enum: [wallet], description: '"manual" is gone; upi and card go through /subscriptions/checkout (400 otherwise).' }
+                idempotency_key: { type: string }
+      responses:
+        '200':
+          description: The wallet debit and activation; a trial plan activates once per partner (409 TRIAL_ALREADY_USED after).
+        '400':
+          description: INVALID_REQUEST (upi / card / manual)
+
 components:
   schemas:
     City:
@@ -1672,20 +1858,101 @@ components:
         created_at: { type: string, format: date-time }
     RideRefund:
       type: object
-      description: An admin-requested refund of an online ride payment. refunded only from the payment.refunded event.
-      required: [id, ride_id, payment_id, intent_id, amount_paise, reason, status, requested_by, created_at, updated_at]
+      description: >-
+        A refund of an online ride payment (or of a cancellation fee paid directly): an admin's
+        (rule_code discretionary) or one filed by rule with requested_by = the fixed system actor —
+        captain_cancel (the captain / admin / system cancelled a ride the customer paid online: full
+        amount), duplicate_capture (a second capture on another intent for a paid ride: the second
+        capture back, plus reconciliation), cancellation_fee (a fee paid online whose cancellation is
+        inside the free window or partner-caused). refunded only from the payment.refunded event.
+      required: [id, ride_id, intent_id, amount_paise, reason, status, requested_by, rule_code, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         ride_id: { type: string, format: uuid }
-        payment_id: { type: string, format: uuid }
+        payment_id: { type: string, format: uuid, nullable: true, description: The ride payment; absent for a refund of an outstanding fee. }
+        outstanding_id: { type: string, format: uuid, nullable: true, description: The directly paid outstanding fee refunded (rule cancellation_fee). }
         intent_id: { type: string, format: uuid }
         amount_paise: { type: integer, format: int64 }
         reason: { type: string }
         status: { type: string, enum: [requested, accepted, refunded, failed] }
-        requested_by: { type: string, format: uuid, description: The signed admin actor. }
+        requested_by: { type: string, format: uuid, description: The signed admin actor, or the fixed system actor for a rule refund. }
+        rule_code: { type: string, enum: [discretionary, captain_cancel, duplicate_capture, cancellation_fee] }
         provider_reference: { type: string }
         failure_reason: { type: string }
         created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PartnerDocumentSubmit:
+      type: object
+      required: [document_type, file_url]
+      properties:
+        document_type: { type: string, enum: [aadhaar, pan, driving_license, profile_photo, police_verification, vehicle_rc, vehicle_insurance, pollution_certificate, permit, fitness_certificate, bank_proof, other] }
+        document_number: { type: string, description: Never stored for aadhaar. }
+        file_url: { type: string, description: 'The stored file; the captain app sends media://<media_id>.' }
+        expires_at: { type: string, format: date-time }
+        media_id: { type: string, format: uuid, description: The media-service id of the upload. Required for profile_photo (the selfie the face check compares with the licence photo). }
+    PartnerDocument:
+      type: object
+      required: [id, partner_id, document_type, file_url, status, source, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        partner_id: { type: string, format: uuid }
+        document_type: { type: string }
+        document_number: { type: string }
+        file_url: { type: string }
+        status: { type: string, enum: [draft, pending, approved, rejected, expired] }
+        rejection_reason: { type: string }
+        expires_at: { type: string, format: date-time }
+        source: { type: string, enum: [digilocker, upload], description: digilocker = fetched by rider-service and verified automatically; upload = the captain's file, reviewed by an admin (the selfie is checked server-side). }
+        verified_by_actor: { type: string, description: '"auto" or the admin user id.' }
+        verified_at: { type: string, format: date-time }
+        media_id: { type: string, format: uuid }
+        photo_media_id: { type: string, format: uuid, description: The DigiLocker document's photo (the DL photo the selfie is compared with). }
+        auto_check_detail: { type: string, description: Why an automatic check verified, or left pending, the document. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    OnboardingStatus:
+      type: object
+      required: [status, partner_status, pending, missing]
+      properties:
+        status:
+          type: string
+          enum: [approved, under_review, incomplete, blocked]
+          description: under_review = a human is reviewing the documents in pending (uploaded by hand); incomplete = the documents in missing were never provided or were rejected.
+        partner_status: { type: string, enum: [draft, pending_verification, approved, rejected, suspended, blocked, inactive] }
+        pending: { type: array, items: { type: string }, description: Document kinds waiting for an admin (driving_license, profile_photo, vehicle_rc, ...). }
+        missing: { type: array, items: { type: string } }
+    SubscriptionCheckoutRequest:
+      type: object
+      required: [plan_code]
+      properties:
+        plan_code: { type: string, description: e.g. trial_7d, basic_199, plus_299 }
+        method: { type: string, enum: [upi, card], description: Required for a paid plan; ignored for the trial. }
+    SubscriptionCheckout:
+      type: object
+      required: [subscription_id, intent_id, amount_paise, currency, client_session, status]
+      properties:
+        subscription_id: { type: string, format: uuid }
+        intent_id: { type: string, format: uuid, nullable: true, description: null for the trial. }
+        amount_paise: { type: integer, format: int64 }
+        currency: { type: string, enum: [INR] }
+        client_session:
+          allOf: [{ $ref: '#/components/schemas/ClientSession' }]
+          nullable: true
+          description: null for the trial, and on local/dev with the stub gateway.
+        status: { type: string, enum: [pending_payment, trial], description: pending_payment until the signed capture activates the row. }
+        expires_at: { type: string, format: date-time, description: The trial's end (trial only). }
+    SubscriptionPaymentStatus:
+      type: object
+      required: [status, subscription_id, intent_id, amount_paise, expires_at, updated_at]
+      properties:
+        status:
+          type: string
+          enum: [pending, confirming, paid, failed]
+          description: confirming = an intent is open and no signed capture was applied; paid = the payment.succeeded event was applied (nothing else produces it); failed = the captain checks out again.
+        subscription_id: { type: string, format: uuid }
+        intent_id: { type: string, format: uuid, nullable: true }
+        amount_paise: { type: integer, format: int64 }
+        expires_at: { type: string, format: date-time, nullable: true, description: The paid period's end; null until paid. }
         updated_at: { type: string, format: date-time }
     FareWindowCreate:
       type: object

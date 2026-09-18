@@ -263,20 +263,30 @@ func (paymentInbox) Claim(ctx context.Context, tx pgx.Tx, c paymentevents.Claim)
 	return tag.RowsAffected() > 0, nil
 }
 
-// lockPaymentTarget resolves the reference: the ride's latest payment row
-// (FOR UPDATE), or the outstanding row. A ride with no payment row yet is
-// reported as Kind ride with a nil ID (found, no row to pay).
-func lockPaymentTarget(ctx context.Context, tx pgx.Tx, ref uuid.UUID) (payments.Snapshot, bool, error) {
+// lockPaymentTarget resolves the reference by type: mopedu_subscription is
+// the checkout row; mopedu_ride (or unstated) is the ride's latest payment
+// row (FOR UPDATE), or the outstanding row. A ride with no payment row yet
+// is reported as Kind ride with a nil ID (found, no row to pay).
+// RuleRefundPending is set when a rule refund in requested/accepted exists
+// for the event's intent on that target.
+func lockPaymentTarget(ctx context.Context, tx pgx.Tx, ev payments.Event) (payments.Snapshot, bool, error) {
+	ref := ev.ReferenceID
+	if ev.ReferenceType == payments.RefTypeMopeduSubscription {
+		return lockSubscriptionTarget(ctx, tx, ref)
+	}
 	snap := payments.Snapshot{Kind: payments.TargetRide, RideID: ref, Currency: payments.CurrencyINR}
 	err := tx.QueryRow(ctx, `
-        SELECT p.id, p.status, p.payment_method, p.amount_paise, p.refunded_paise, COALESCE(p.intent_id::text, ''), r.customer_user_id
+        SELECT p.id, p.status, p.payment_method, p.amount_paise, p.refunded_paise, COALESCE(p.intent_id::text, ''), r.customer_user_id,
+               EXISTS (SELECT 1 FROM rider_ride_refunds f
+                       WHERE f.payment_id = p.id AND f.rule_code <> 'discretionary'
+                         AND f.intent_id::text = $2 AND f.status IN ('requested','accepted'))
         FROM rider_ride_payments p
         JOIN rider_rides r ON r.id = p.ride_id
         WHERE p.ride_id = $1
         ORDER BY p.created_at DESC
         LIMIT 1
-        FOR UPDATE OF p`, ref,
-	).Scan(&snap.ID, &snap.Status, &snap.Method, &snap.AmountMinor, &snap.RefundedMinor, &snap.IntentID, &snap.PayerID)
+        FOR UPDATE OF p`, ref, ev.IntentID,
+	).Scan(&snap.ID, &snap.Status, &snap.Method, &snap.AmountMinor, &snap.RefundedMinor, &snap.IntentID, &snap.PayerID, &snap.RuleRefundPending)
 	if err == nil {
 		return snap, true, nil
 	}
@@ -293,10 +303,16 @@ func lockPaymentTarget(ctx context.Context, tx pgx.Tx, ref uuid.UUID) (payments.
 		return snap, false, fmt.Errorf("lock ride: %w", err)
 	}
 	snap = payments.Snapshot{Kind: payments.TargetOutstanding, ID: ref, Currency: payments.CurrencyINR}
+	// For a settled fee the intent to compare is the one that settled it
+	// (the refund event names that intent).
 	err = tx.QueryRow(ctx, `
-        SELECT ride_id, customer_user_id, amount_paise, status, COALESCE(intent_id::text, '')
-        FROM rider_customer_outstanding WHERE id = $1 FOR UPDATE`, ref,
-	).Scan(&snap.RideID, &snap.PayerID, &snap.AmountMinor, &snap.Status, &snap.IntentID)
+        SELECT o.ride_id, o.customer_user_id, o.amount_paise, o.status,
+               COALESCE(CASE WHEN o.status = 'settled' THEN o.settled_intent_id ELSE o.intent_id END::text, ''),
+               EXISTS (SELECT 1 FROM rider_ride_refunds f
+                       WHERE f.outstanding_id = o.id AND f.rule_code <> 'discretionary'
+                         AND f.intent_id::text = $2 AND f.status IN ('requested','accepted'))
+        FROM rider_customer_outstanding o WHERE o.id = $1 FOR UPDATE`, ref, ev.IntentID,
+	).Scan(&snap.RideID, &snap.PayerID, &snap.AmountMinor, &snap.Status, &snap.IntentID, &snap.RuleRefundPending)
 	if err == nil {
 		return snap, true, nil
 	}
@@ -306,16 +322,49 @@ func lockPaymentTarget(ctx context.Context, tx pgx.Tx, ref uuid.UUID) (payments.
 	return snap, false, fmt.Errorf("lock outstanding: %w", err)
 }
 
+// lockSubscriptionTarget locks the checkout row. Status is the row's
+// payment_status; the payer is the captain's user id; the amount the plan
+// price the checkout was opened for.
+func lockSubscriptionTarget(ctx context.Context, tx pgx.Tx, ref uuid.UUID) (payments.Snapshot, bool, error) {
+	snap := payments.Snapshot{Kind: payments.TargetSubscription, ID: ref, Currency: payments.CurrencyINR}
+	var status *string
+	err := tx.QueryRow(ctx, `
+        SELECT s.partner_id, p.user_id, s.amount_paise, s.payment_status, COALESCE(s.intent_id::text, '')
+        FROM rider_partner_subscriptions s
+        JOIN rider_partners p ON p.id = s.partner_id
+        WHERE s.id = $1
+        FOR UPDATE OF s`, ref,
+	).Scan(&snap.RideID, &snap.PayerID, &snap.AmountMinor, &status, &snap.IntentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return snap, false, nil
+		}
+		return snap, false, fmt.Errorf("lock subscription: %w", err)
+	}
+	// RideID carries the partner id for a subscription target (Applied
+	// copies it to PartnerID). A legacy row without a checkout has no
+	// payment_status: a capture for it is a mismatch, never an activation.
+	if status != nil {
+		snap.Status = *status
+	} else {
+		snap.Status = "legacy"
+	}
+	return snap, true, nil
+}
+
 func applyRidePaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments.Event, applied *payments.Applied) error {
-	snap, found, err := lockPaymentTarget(ctx, tx, ev.ReferenceID)
+	snap, found, err := lockPaymentTarget(ctx, tx, ev)
 	if err != nil {
 		return err
 	}
 	if !found {
-		applied.Decision = payments.Decision{Outcome: payments.OutcomeTargetNotFound, Detail: "no ride or outstanding fee " + ev.ReferenceID.String()}
+		applied.Decision = payments.Decision{Outcome: payments.OutcomeTargetNotFound, Detail: "no ride, outstanding fee or subscription " + ev.ReferenceID.String()}
 		return recordInboxOutcome(ctx, tx, ev.EventID, applied.Decision)
 	}
 	applied.Target, applied.RideID, applied.TargetID, applied.CustomerID, applied.Status = snap.Kind, snap.RideID, snap.ID, snap.PayerID, snap.Status
+	if snap.Kind == payments.TargetSubscription {
+		applied.PartnerID, applied.RideID = snap.RideID, uuid.Nil
+	}
 
 	var d payments.Decision
 	if snap.Kind == payments.TargetRide && snap.ID == uuid.Nil {
@@ -383,13 +432,85 @@ func applyRidePaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments.Event,
 			return fmt.Errorf("settle outstanding: %w", err)
 		}
 		applied.Status = payments.OutstandingSettled
+	case payments.EffectRefundDuplicate:
+		// Rule (b): the second intent's full amount goes back, filed as a
+		// rule refund the service sends to payments after commit; the paid
+		// row is untouched and a reconciliation row records the double take.
+		refundID := uuid.New()
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO rider_ride_refunds (id, ride_id, payment_id, intent_id, amount_paise, reason, requested_by, rule_code)
+            VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, $8)
+            ON CONFLICT DO NOTHING`,
+			refundID, snap.RideID, snap.ID, ev.IntentID, ev.AmountMinor, payments.RuleDuplicateCapture, payments.SystemActorID, payments.RuleDuplicateCapture); err != nil {
+			return fmt.Errorf("file duplicate-capture refund: %w", err)
+		}
+		// ON CONFLICT (the rule already filed for this intent) leaves the
+		// earlier row; report that one so the service does not refund twice.
+		if err := tx.QueryRow(ctx, `
+            SELECT id FROM rider_ride_refunds
+            WHERE payment_id = $1 AND intent_id = $2::uuid AND rule_code = $3`, snap.ID, ev.IntentID, payments.RuleDuplicateCapture,
+		).Scan(&refundID); err != nil {
+			return fmt.Errorf("read duplicate-capture refund: %w", err)
+		}
+		applied.RefundID = refundID
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO rider_payment_reconciliation (ride_id, payment_id, observed_status, canonical_status, next_retry_at, terminal_reason, updated_at)
+            VALUES ($1, $2, $3, 'duplicate_capture', NOW(), $4, NOW())`,
+			snap.RideID, snap.ID, ev.EventType+":"+ev.Status, d.Detail+"; rule refund "+refundID.String()); err != nil {
+			return fmt.Errorf("record duplicate reconciliation: %w", err)
+		}
+	case payments.EffectSettleDuplicateRefund:
+		if _, err := tx.Exec(ctx, `
+            UPDATE rider_ride_refunds
+            SET status = 'refunded', provider_reference = COALESCE(NULLIF($3, ''), provider_reference), updated_at = NOW()
+            WHERE payment_id = $1 AND intent_id = $2::uuid AND rule_code <> 'discretionary' AND status IN ('requested','accepted')`,
+			snap.ID, ev.IntentID, ev.ProviderRef); err != nil {
+			return fmt.Errorf("settle duplicate refund row: %w", err)
+		}
+	case payments.EffectRefundOutstanding:
+		if _, err := tx.Exec(ctx, `
+            UPDATE rider_customer_outstanding SET status = 'refunded', refunded_at = NOW() WHERE id = $1 AND status = 'settled'`, snap.ID); err != nil {
+			return fmt.Errorf("mark outstanding refunded: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+            UPDATE rider_ride_refunds
+            SET status = 'refunded', provider_reference = COALESCE(NULLIF($3, ''), provider_reference), updated_at = NOW()
+            WHERE outstanding_id = $1 AND intent_id = $2::uuid AND status IN ('requested','accepted')`,
+			snap.ID, ev.IntentID, ev.ProviderRef); err != nil {
+			return fmt.Errorf("settle outstanding refund row: %w", err)
+		}
+		applied.Status = payments.OutstandingRefunded
+	case payments.EffectActivateSubscription:
+		if err := activateSubscriptionTx(ctx, tx, snap.ID, ev); err != nil {
+			return err
+		}
+		applied.Status = SubscriptionActive
+	case payments.EffectMarkSubscriptionFailed:
+		reason := strings.TrimSpace(ev.Reason)
+		if reason == "" {
+			reason = "payment failed"
+		}
+		if _, err := tx.Exec(ctx, `
+            UPDATE rider_partner_subscriptions
+            SET payment_status = 'failed', payment_failure_reason = $2, updated_at = NOW()
+            WHERE id = $1`, snap.ID, reason); err != nil {
+			return fmt.Errorf("mark subscription payment failed: %w", err)
+		}
+		applied.Status = payments.SubscriptionPaymentFailed
 	}
 
 	if d.Outcome == payments.OutcomeMismatch {
-		var paymentID *uuid.UUID
+		var paymentID, rideID, subscriptionID *uuid.UUID
 		if snap.Kind == payments.TargetRide && snap.ID != uuid.Nil {
 			id := snap.ID
 			paymentID = &id
+		}
+		if snap.Kind == payments.TargetSubscription {
+			id := snap.ID
+			subscriptionID = &id
+		} else {
+			id := snap.RideID
+			rideID = &id
 		}
 		observed := ev.EventType
 		if ev.Status != "" {
@@ -397,13 +518,61 @@ func applyRidePaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments.Event,
 		}
 		detail := d.Detail
 		if _, err := tx.Exec(ctx, `
-            INSERT INTO rider_payment_reconciliation (ride_id, payment_id, observed_status, canonical_status, next_retry_at, terminal_reason, updated_at)
-            VALUES ($1, $2, $3, 'reconciliation_required', NOW(), $4, NOW())`,
-			snap.RideID, paymentID, observed, detail); err != nil {
+            INSERT INTO rider_payment_reconciliation (ride_id, subscription_id, payment_id, observed_status, canonical_status, next_retry_at, terminal_reason, updated_at)
+            VALUES ($1, $2, $3, $4, 'reconciliation_required', NOW(), $5, NOW())`,
+			rideID, subscriptionID, paymentID, observed, detail); err != nil {
 			return fmt.Errorf("record payment reconciliation: %w", err)
 		}
 	}
 	return recordInboxOutcome(ctx, tx, ev.EventID, d)
+}
+
+// activateSubscriptionTx applies the signed capture to a checkout row: paid,
+// status active, the period starting now for a first purchase, or from the
+// renewed row's expires_at (never reset) for a renewal, whose old row is
+// superseded (cancelled with a reason) so the expiry worker reminds about
+// the new period only.
+func activateSubscriptionTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, ev payments.Event) error {
+	var partnerID uuid.UUID
+	var renews *uuid.UUID
+	var days int
+	if err := tx.QueryRow(ctx, `
+        SELECT s.partner_id, s.renews_subscription_id, p.billing_period_days
+        FROM rider_partner_subscriptions s JOIN rider_subscription_plans p ON p.id = s.plan_id
+        WHERE s.id = $1`, id).Scan(&partnerID, &renews, &days); err != nil {
+		return fmt.Errorf("read checkout: %w", err)
+	}
+	start := time.Now().UTC()
+	if renews != nil {
+		var oldExpiry time.Time
+		var oldStatus string
+		err := tx.QueryRow(ctx, `
+            SELECT expires_at, status::text FROM rider_partner_subscriptions
+            WHERE id = $1 AND partner_id = $2 FOR UPDATE`, *renews, partnerID).Scan(&oldExpiry, &oldStatus)
+		switch {
+		case err == nil:
+			if oldExpiry.After(start) && (oldStatus == "active" || oldStatus == "trial" || oldStatus == "grace_period") {
+				start = oldExpiry
+			}
+			if _, err := tx.Exec(ctx, `
+                UPDATE rider_partner_subscriptions
+                SET status = 'cancelled', cancelled_at = NOW(), cancellation_reason = $2, updated_at = NOW()
+                WHERE id = $1 AND status IN ('active','trial','grace_period')`, *renews, "superseded_by_renewal:"+id.String()); err != nil {
+				return fmt.Errorf("supersede renewed subscription: %w", err)
+			}
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("read renewed subscription: %w", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+        UPDATE rider_partner_subscriptions
+        SET status = 'active', starts_at = $2, expires_at = $3, grace_ends_at = NULL, payment_status = 'paid', paid_at = NOW(),
+            payment_failure_reason = NULL, provider_reference = COALESCE(NULLIF($4, ''), provider_reference),
+            intent_id = COALESCE(intent_id, NULLIF($5, '')::uuid), updated_at = NOW()
+        WHERE id = $1`, id, start, start.AddDate(0, 0, days), ev.ProviderRef, ev.IntentID); err != nil {
+		return fmt.Errorf("activate subscription: %w", err)
+	}
+	return nil
 }
 
 func recordInboxOutcome(ctx context.Context, tx pgx.Tx, eventID string, d payments.Decision) error {

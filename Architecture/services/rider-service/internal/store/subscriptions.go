@@ -217,7 +217,8 @@ func (s *Store) CreateSubscription(ctx context.Context, in CreateSubscriptionInp
         INSERT INTO rider_partner_subscriptions (partner_id, plan_id, status, starts_at, expires_at)
         VALUES ($1, $2, $3::rider_subscription_status, $4, $5)
         RETURNING id, partner_id, plan_id, status, starts_at, expires_at, grace_ends_at,
-                  leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at`
+                  leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at,
+               intent_id, intent_method, amount_paise, payment_status, paid_at, renews_subscription_id`
 	row := s.db.QueryRow(ctx, q, in.PartnerID, in.PlanID, in.Status, in.StartsAt, in.ExpiresAt)
 	return scanSubscription(row)
 }
@@ -227,7 +228,8 @@ func (s *Store) CreateSubscription(ctx context.Context, in CreateSubscriptionInp
 func (s *Store) GetActiveSubscription(ctx context.Context, partnerID uuid.UUID) (*PartnerSubscription, error) {
 	const q = `
         SELECT id, partner_id, plan_id, status, starts_at, expires_at, grace_ends_at,
-               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at
+               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at,
+               intent_id, intent_method, amount_paise, payment_status, paid_at, renews_subscription_id
         FROM rider_partner_subscriptions
         WHERE partner_id = $1 AND status IN ('trial', 'active', 'grace_period')
         ORDER BY expires_at DESC
@@ -247,7 +249,8 @@ func (s *Store) GetActiveSubscription(ctx context.Context, partnerID uuid.UUID) 
 func (s *Store) GetSubscription(ctx context.Context, id uuid.UUID) (*PartnerSubscription, error) {
 	const q = `
         SELECT id, partner_id, plan_id, status, starts_at, expires_at, grace_ends_at,
-               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at
+               leads_used, fair_use_used, auto_renew, cancelled_at, created_at, updated_at,
+               intent_id, intent_method, amount_paise, payment_status, paid_at, renews_subscription_id
         FROM rider_partner_subscriptions
         WHERE id = $1`
 	row := s.db.QueryRow(ctx, q, id)
@@ -279,7 +282,8 @@ func scanPayment(row pgx.Row) (*SubscriptionPayment, error) {
 
 func scanSubscription(row pgx.Row) (*PartnerSubscription, error) {
 	var s PartnerSubscription
-	if err := row.Scan(&s.ID, &s.PartnerID, &s.PlanID, &s.Status, &s.StartsAt, &s.ExpiresAt, &s.GraceEndsAt, &s.LeadsUsed, &s.FairUseUsed, &s.AutoRenew, &s.CancelledAt, &s.CreatedAt, &s.UpdatedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.PartnerID, &s.PlanID, &s.Status, &s.StartsAt, &s.ExpiresAt, &s.GraceEndsAt, &s.LeadsUsed, &s.FairUseUsed, &s.AutoRenew, &s.CancelledAt, &s.CreatedAt, &s.UpdatedAt,
+		&s.IntentID, &s.IntentMethod, &s.AmountPaise, &s.PaymentStatus, &s.PaidAt, &s.RenewsSubscriptionID); err != nil {
 		return nil, err
 	}
 	return &s, nil

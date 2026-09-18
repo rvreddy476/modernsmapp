@@ -1931,6 +1931,19 @@ services:
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}
       DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:-}
       DIGILOCKER_REDIRECT_URI: ${DIGILOCKER_REDIRECT_URI:-https://atpost.app/rider/aadhaar/callback}
+      # Launch safety (2026-09-18): captain onboarding approves itself when
+      # the data is government-verified. The DigiLocker mock above returns
+      # the Aadhaar, DL and vehicle RC as verified; the selfie is compared
+      # server-side with the DL photo through media-service's internal
+      # face-compare route (the one dating uses). On the dev stack the
+      # compare is MOCKED (every selfie matches) so the whole path runs with
+      # no human; "mock" is refused in production, where MEDIA_SERVICE_URL is
+      # required (boot is refused without it). Below the threshold, or with
+      # media-service unavailable, the selfie waits for an admin — the one
+      # human fallback, along with any document a captain uploads by hand.
+      MOPEDU_FACE_COMPARE_MODE: ${MOPEDU_FACE_COMPARE_MODE:-mock}
+      MEDIA_SERVICE_URL: http://media-service:8087
+      MOPEDU_SELFIE_MIN_SIMILARITY: ${MOPEDU_SELFIE_MIN_SIMILARITY:-80}
       # Admin console (Mopedu): /v1/rider/internal/admin/* admits only
       # admin-service tokens (audience "rider") scoped to the one permission
       # admin-service checked, naming the admin. OPS is rider's

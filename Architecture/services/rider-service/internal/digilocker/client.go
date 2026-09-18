@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Assertion is the minimal post-verification payload the rest of the service
@@ -42,6 +44,41 @@ func HashDocumentType(docType string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Document types FetchDocuments can return (rider_document_type values).
+const (
+	DocAadhaar        = "aadhaar"
+	DocDrivingLicence = "driving_license"
+	DocVehicleRC      = "vehicle_rc"
+)
+
+// FetchedDocument is one government document pulled from the partner's
+// DigiLocker after the Aadhaar assertion. Its data is issuer-verified, so
+// rider-service records it as verified without a human. Aadhaar never
+// carries a Number (DPDP: the raw number stays with the partner). The DL
+// carries the photo the selfie is compared with, as a media-service id.
+type FetchedDocument struct {
+	Type   string
+	Number *string
+	// FileURL is where the fetched document image / XML is stored.
+	FileURL   string
+	ExpiresAt *time.Time
+	// PhotoMediaID is the DL photo in media-service (nil when the issuer
+	// returned none).
+	PhotoMediaID *uuid.UUID
+	// RegistrationNumber is set on a vehicle_rc.
+	RegistrationNumber string
+	// Reference is the issuer's document reference.
+	Reference string
+}
+
+// DocumentRequest names what to pull for the partner: their Aadhaar and
+// driving licence, and the RC of each listed registration number.
+type DocumentRequest struct {
+	Aadhaar              bool
+	DrivingLicence       bool
+	VehicleRegistrations []string
+}
+
 // Client is the partner-integration interface. Two implementations live in
 // this package: HTTPClient (real partner) and MockClient (deterministic).
 type Client interface {
@@ -49,6 +86,10 @@ type Client interface {
 	// Assertion. The state parameter is verified by the *caller* against
 	// the Redis-stored PKCE state — this method does not validate it.
 	ExchangeCode(ctx context.Context, code, state string) (*Assertion, error)
+	// FetchDocuments pulls the requested documents under the assertion.
+	// Documents the issuer does not hold are simply absent from the result;
+	// an error means nothing could be fetched (the upload path remains).
+	FetchDocuments(ctx context.Context, assertionRef string, req DocumentRequest) ([]FetchedDocument, error)
 }
 
 // MockClient returns deterministic Assertions for tests and local dev.
@@ -93,6 +134,38 @@ func (m *MockClient) ExchangeCode(_ context.Context, code, _ string) (*Assertion
 		DocumentType: "AADHAAR-XML",
 		IssuedAt:     time.Now().UTC(),
 	}, nil
+}
+
+// FetchDocuments returns every requested document as issuer-verified data:
+// the dev stack's whole onboarding is automatic on it. The DL photo media id
+// is deterministic per assertion so the selfie check has a stable target.
+func (m *MockClient) FetchDocuments(_ context.Context, assertionRef string, req DocumentRequest) ([]FetchedDocument, error) {
+	if assertionRef == "" {
+		return nil, fmt.Errorf("digilocker mock: assertion reference required")
+	}
+	now := time.Now().UTC()
+	var out []FetchedDocument
+	if req.Aadhaar {
+		out = append(out, FetchedDocument{Type: DocAadhaar, FileURL: "digilocker-mock://" + assertionRef + "/aadhaar.xml", Reference: assertionRef + "/aadhaar"})
+	}
+	if req.DrivingLicence {
+		num := "MOCKDL" + strings.ToUpper(strings.TrimPrefix(assertionRef, "mock-ref-"))
+		exp := now.AddDate(5, 0, 0)
+		photo := uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://momentum.app/digilocker-mock/dl-photo/"+assertionRef))
+		out = append(out, FetchedDocument{Type: DocDrivingLicence, Number: &num, FileURL: "digilocker-mock://" + assertionRef + "/dl.pdf",
+			ExpiresAt: &exp, PhotoMediaID: &photo, Reference: assertionRef + "/dl"})
+	}
+	for _, reg := range req.VehicleRegistrations {
+		reg = strings.ToUpper(strings.TrimSpace(reg))
+		if reg == "" {
+			continue
+		}
+		exp := now.AddDate(10, 0, 0)
+		num := reg
+		out = append(out, FetchedDocument{Type: DocVehicleRC, Number: &num, RegistrationNumber: reg,
+			FileURL: "digilocker-mock://" + assertionRef + "/rc/" + reg + ".pdf", ExpiresAt: &exp, Reference: assertionRef + "/rc/" + reg})
+	}
+	return out, nil
 }
 
 // HTTPClient calls a real DigiLocker partner over HTTPS. The partner returns
@@ -187,4 +260,83 @@ func (h *HTTPClient) ExchangeCode(ctx context.Context, code, state string) (*Ass
 		DocumentType: docType,
 		IssuedAt:     issued,
 	}, nil
+}
+
+type partnerFetchRequest struct {
+	Reference            string   `json:"reference"`
+	Aadhaar              bool     `json:"aadhaar"`
+	DrivingLicence       bool     `json:"driving_licence"`
+	VehicleRegistrations []string `json:"vehicle_registrations,omitempty"`
+}
+
+// partnerFetchResponse mirrors the partner's document pull body. As with the
+// exchange, aadhaar_number is deliberately not represented.
+type partnerFetchResponse struct {
+	Documents []struct {
+		Type               string  `json:"type"`
+		Number             *string `json:"number"`
+		FileURL            string  `json:"file_url"`
+		ExpiresAt          string  `json:"expires_at"`
+		PhotoMediaID       string  `json:"photo_media_id"`
+		RegistrationNumber string  `json:"registration_number"`
+		Reference          string  `json:"reference"`
+	} `json:"documents"`
+}
+
+// FetchDocuments pulls the requested documents from the partner
+// (POST /v1/documents/fetch). An Aadhaar document never returns a number.
+func (h *HTTPClient) FetchDocuments(ctx context.Context, assertionRef string, req DocumentRequest) ([]FetchedDocument, error) {
+	if h.baseURL == "" {
+		return nil, fmt.Errorf("digilocker: base_url not configured")
+	}
+	if assertionRef == "" {
+		return nil, fmt.Errorf("digilocker: assertion reference required")
+	}
+	body, err := json.Marshal(partnerFetchRequest{Reference: assertionRef, Aadhaar: req.Aadhaar, DrivingLicence: req.DrivingLicence, VehicleRegistrations: req.VehicleRegistrations})
+	if err != nil {
+		return nil, fmt.Errorf("digilocker: marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+"/v1/documents/fetch", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("digilocker: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if h.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+h.apiKey)
+	}
+	if h.sandbox {
+		httpReq.Header.Set("X-Setu-Mode", "sandbox")
+	}
+	resp, err := h.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("digilocker: partner unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("digilocker: partner returned status %d", resp.StatusCode)
+	}
+	var parsed partnerFetchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("digilocker: decode response: %w", err)
+	}
+	out := make([]FetchedDocument, 0, len(parsed.Documents))
+	for _, d := range parsed.Documents {
+		fd := FetchedDocument{Type: d.Type, FileURL: d.FileURL, RegistrationNumber: strings.ToUpper(strings.TrimSpace(d.RegistrationNumber)), Reference: d.Reference}
+		if d.Type != DocAadhaar {
+			fd.Number = d.Number
+		}
+		if d.ExpiresAt != "" {
+			if t, err := time.Parse(time.RFC3339, d.ExpiresAt); err == nil {
+				fd.ExpiresAt = &t
+			}
+		}
+		if id, err := uuid.Parse(d.PhotoMediaID); err == nil && id != uuid.Nil {
+			fd.PhotoMediaID = &id
+		}
+		switch d.Type {
+		case DocAadhaar, DocDrivingLicence, DocVehicleRC:
+			out = append(out, fd)
+		}
+	}
+	return out, nil
 }

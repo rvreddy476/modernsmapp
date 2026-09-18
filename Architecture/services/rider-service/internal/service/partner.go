@@ -130,6 +130,10 @@ type SubmitKYCDocumentRequest struct {
 	DocumentNumber *string
 	FileURL        string
 	ExpiresAt      *time.Time
+	// MediaID is the media-service id of the uploaded file. For the selfie
+	// (profile_photo) it is what the server-side face check compares with
+	// the DigiLocker licence photo; without it the selfie waits for a human.
+	MediaID *uuid.UUID
 }
 
 // allowedDocumentTypes covers the rider_document_type enum values.
@@ -163,6 +167,11 @@ func (s *Service) SubmitKYCDocument(ctx context.Context, userID, partnerID uuid.
 	if strings.TrimSpace(req.FileURL) == "" {
 		return nil, fmt.Errorf("invalid: file_url required")
 	}
+	// The selfie is checked server-side against the DigiLocker licence
+	// photo; without its media-service id there is nothing to compare.
+	if req.DocumentType == DocSelfie && (req.MediaID == nil || *req.MediaID == uuid.Nil) {
+		return nil, ErrSelfieMediaRequired
+	}
 	p, err := s.store.GetPartner(ctx, partnerID)
 	if err != nil {
 		if errors.Is(err, store.ErrPartnerNotFound) {
@@ -187,16 +196,20 @@ func (s *Service) SubmitKYCDocument(ctx context.Context, userID, partnerID uuid.
 				"partner_id", partnerID)
 		}
 	}
-	doc, err := s.store.CreatePartnerDocument(ctx, store.CreatePartnerDocumentInput{
+	doc, err := s.store.CreatePartnerDocumentWithMedia(ctx, store.CreatePartnerDocumentInput{
 		PartnerID:      partnerID,
 		DocumentType:   req.DocumentType,
 		DocumentNumber: docNumber,
 		FileURL:        req.FileURL,
 		ExpiresAt:      req.ExpiresAt,
-	})
+	}, req.MediaID)
 	if err != nil {
 		return nil, fmt.Errorf("create partner document: %w", err)
 	}
+	// An uploaded document is the one human fallback: it stays pending for
+	// admin review, except the selfie, which the evaluator compares with the
+	// DigiLocker licence photo server-side.
+	defer s.evaluateApprovalQuietly(ctx, partnerID)
 	// Move partner from `draft` to `pending_verification` on first doc.
 	if p.Status == "draft" {
 		if uerr := s.store.UpdatePartnerStatus(ctx, partnerID, "pending_verification"); uerr != nil {
@@ -323,5 +336,18 @@ func (s *Service) CompleteAadhaarFlow(ctx context.Context, userID, partnerID uui
 	if err := s.store.RecordAadhaarVerification(ctx, partnerID, assertion.Reference, docHash, assertion.IssuedAt.Unix()); err != nil {
 		return nil, fmt.Errorf("persist verification: %w", err)
 	}
+	// The assertion moves a draft partner onto the review journey; the
+	// documents DigiLocker holds (Aadhaar, DL) are recorded verified, and the
+	// evaluator approves the partner as soon as everything required is.
+	if p.Status == "draft" {
+		if uerr := s.store.UpdatePartnerStatus(ctx, partnerID, "pending_verification"); uerr != nil {
+			return nil, fmt.Errorf("update partner status: %w", uerr)
+		}
+		if uerr := s.store.UpdatePartnerKYCStatus(ctx, partnerID, "pending"); uerr != nil {
+			return nil, fmt.Errorf("update kyc status: %w", uerr)
+		}
+	}
+	s.importDigiLockerDocuments(ctx, p, assertion.Reference)
+	s.evaluateApprovalQuietly(ctx, partnerID)
 	return &AadhaarFlowResult{Verified: true, IssuedAt: assertion.IssuedAt}, nil
 }

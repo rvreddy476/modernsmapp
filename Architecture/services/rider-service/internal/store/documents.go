@@ -31,7 +31,7 @@ func (s *Store) CreatePartnerDocument(ctx context.Context, in CreatePartnerDocum
 	const q = `
         INSERT INTO rider_partner_documents (partner_id, document_type, document_number, file_url, status, expires_at)
         VALUES ($1, $2::rider_document_type, $3, $4, 'pending', $5)
-        RETURNING id, partner_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at`
+        RETURNING id, partner_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at, source, verified_by_actor, verified_at, media_id, photo_media_id, auto_check_detail`
 	row := s.db.QueryRow(ctx, q, in.PartnerID, in.DocumentType, in.DocumentNumber, in.FileURL, in.ExpiresAt)
 	return scanPartnerDoc(row)
 }
@@ -39,7 +39,7 @@ func (s *Store) CreatePartnerDocument(ctx context.Context, in CreatePartnerDocum
 // ListPartnerDocuments returns every doc the partner has uploaded.
 func (s *Store) ListPartnerDocuments(ctx context.Context, partnerID uuid.UUID) ([]PartnerDocument, error) {
 	const q = `
-        SELECT id, partner_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at
+        SELECT id, partner_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at, source, verified_by_actor, verified_at, media_id, photo_media_id, auto_check_detail
         FROM rider_partner_documents
         WHERE partner_id = $1
         ORDER BY created_at DESC`
@@ -73,7 +73,7 @@ func (s *Store) CreateVehicleDocument(ctx context.Context, in CreateVehicleDocum
 	const q = `
         INSERT INTO rider_vehicle_documents (vehicle_id, document_type, document_number, file_url, status, expires_at)
         VALUES ($1, $2::rider_document_type, $3, $4, 'pending', $5)
-        RETURNING id, vehicle_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at`
+        RETURNING id, vehicle_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at, source, verified_by_actor, verified_at`
 	row := s.db.QueryRow(ctx, q, in.VehicleID, in.DocumentType, in.DocumentNumber, in.FileURL, in.ExpiresAt)
 	return scanVehicleDoc(row)
 }
@@ -118,7 +118,7 @@ func (s *Store) CountExpiredApprovedVehicleDocs(ctx context.Context, vehicleID u
 // ListVehicleDocuments returns every doc the vehicle has uploaded.
 func (s *Store) ListVehicleDocuments(ctx context.Context, vehicleID uuid.UUID) ([]VehicleDocument, error) {
 	const q = `
-        SELECT id, vehicle_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at
+        SELECT id, vehicle_id, document_type, document_number, file_url, status, rejection_reason, expires_at, created_at, updated_at, source, verified_by_actor, verified_at
         FROM rider_vehicle_documents
         WHERE vehicle_id = $1
         ORDER BY created_at DESC`
@@ -140,7 +140,7 @@ func (s *Store) ListVehicleDocuments(ctx context.Context, vehicleID uuid.UUID) (
 
 func scanPartnerDoc(row pgx.Row) (*PartnerDocument, error) {
 	var d PartnerDocument
-	if err := row.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.PartnerID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt, &d.Source, &d.VerifiedByActor, &d.VerifiedAt, &d.MediaID, &d.PhotoMediaID, &d.AutoCheckDetail); err != nil {
 		return nil, err
 	}
 	return &d, nil
@@ -148,7 +148,7 @@ func scanPartnerDoc(row pgx.Row) (*PartnerDocument, error) {
 
 func scanVehicleDoc(row pgx.Row) (*VehicleDocument, error) {
 	var d VehicleDocument
-	if err := row.Scan(&d.ID, &d.VehicleID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.VehicleID, &d.DocumentType, &d.DocumentNumber, &d.FileURL, &d.Status, &d.RejectionReason, &d.ExpiresAt, &d.CreatedAt, &d.UpdatedAt, &d.Source, &d.VerifiedByActor, &d.VerifiedAt); err != nil {
 		return nil, err
 	}
 	return &d, nil

@@ -77,12 +77,27 @@ type PartnerVehicleAddedPayload struct {
 }
 
 // PartnerStatusChangePayload covers approved / suspended / blocked events.
+// PartnerUserID is the captain's USER id (rider_partners.user_id), the push
+// recipient notification-service addresses; PartnerID reaches no device.
 type PartnerStatusChangePayload struct {
-	PartnerID string    `json:"partner_id"`
-	Status    string    `json:"status"`
-	Reason    string    `json:"reason,omitempty"`
-	ActorID   string    `json:"actor_id,omitempty"`
-	OccurredAt time.Time `json:"occurred_at"`
+	PartnerID     string    `json:"partner_id"`
+	PartnerUserID string    `json:"partner_user_id,omitempty"`
+	Status        string    `json:"status"`
+	Reason        string    `json:"reason,omitempty"`
+	ActorID       string    `json:"actor_id,omitempty"`
+	OccurredAt    time.Time `json:"occurred_at"`
+}
+
+// PublishPartnerUnderReview emits EventRiderPartnerUnderReview: the
+// automatic approval evaluator left the partner waiting on a manually
+// uploaded document. The caller publishes it once per change of the pending
+// set, never per evaluation.
+func (p *Producer) PublishPartnerUnderReview(ctx context.Context, payload events.RiderPartnerUnderReviewPayload) error {
+	id, _ := uuid.Parse(payload.PartnerUserID)
+	if payload.OccurredAt.IsZero() {
+		payload.OccurredAt = time.Now().UTC()
+	}
+	return p.publish(ctx, events.EventRiderPartnerUnderReview, &id, payload)
 }
 
 func (p *Producer) PublishPartnerCreated(ctx context.Context, partnerID, userID uuid.UUID, partnerType, cityID string) error {
@@ -134,6 +149,7 @@ type SubscriptionPaymentPayload struct {
 type SubscriptionActivatedPayload struct {
 	SubscriptionID string    `json:"subscription_id"`
 	PartnerID      string    `json:"partner_id"`
+	PartnerUserID  string    `json:"partner_user_id,omitempty"`
 	PlanID         string    `json:"plan_id"`
 	Status         string    `json:"status"`
 	StartsAt       time.Time `json:"starts_at"`
@@ -168,11 +184,12 @@ func (p *Producer) PublishSubscriptionPaymentVerified(ctx context.Context, payme
 	})
 }
 
-func (p *Producer) PublishSubscriptionActivated(ctx context.Context, subscriptionID, partnerID, planID uuid.UUID, status string, startsAt, expiresAt time.Time) error {
-	id := partnerID
+func (p *Producer) PublishSubscriptionActivated(ctx context.Context, subscriptionID, partnerID, partnerUserID, planID uuid.UUID, status string, startsAt, expiresAt time.Time) error {
+	id := partnerUserID
 	return p.publish(ctx, events.EventRiderSubscriptionActivated, &id, SubscriptionActivatedPayload{
 		SubscriptionID: subscriptionID.String(),
 		PartnerID:      partnerID.String(),
+		PartnerUserID:  partnerUserID.String(),
 		PlanID:         planID.String(),
 		Status:         status,
 		StartsAt:       startsAt,
@@ -533,14 +550,15 @@ func (p *Producer) PublishAdminAction(ctx context.Context, payload AdminActionPa
 
 // PartnerStatusChange wraps approve / reject / suspend / block. The status
 // field carries the new partner status; reason is admin-supplied free-text.
-func (p *Producer) PublishPartnerStatusChange(ctx context.Context, eventType string, partnerID uuid.UUID, status, reason string, actorID uuid.UUID) error {
+func (p *Producer) PublishPartnerStatusChange(ctx context.Context, eventType string, partnerID, partnerUserID uuid.UUID, status, reason string, actorID uuid.UUID) error {
 	id := actorID
 	return p.publish(ctx, eventType, &id, PartnerStatusChangePayload{
-		PartnerID:  partnerID.String(),
-		Status:     status,
-		Reason:     reason,
-		ActorID:    actorID.String(),
-		OccurredAt: time.Now(),
+		PartnerID:     partnerID.String(),
+		PartnerUserID: partnerUserID.String(),
+		Status:        status,
+		Reason:        reason,
+		ActorID:       actorID.String(),
+		OccurredAt:    time.Now(),
 	})
 }
 
@@ -551,6 +569,7 @@ func (p *Producer) PublishPartnerStatusChange(ctx context.Context, eventType str
 type SubscriptionGracePayload struct {
 	SubscriptionID string    `json:"subscription_id"`
 	PartnerID      string    `json:"partner_id"`
+	PartnerUserID  string    `json:"partner_user_id,omitempty"`
 	PlanID         string    `json:"plan_id,omitempty"`
 	ExpiresAt      time.Time `json:"expires_at"`
 	GraceEndsAt    time.Time `json:"grace_ends_at"`
@@ -575,6 +594,7 @@ func (p *Producer) PublishSubscriptionExpired(ctx context.Context, payload Subsc
 type SubscriptionRenewedPayload struct {
 	SubscriptionID string    `json:"subscription_id"`
 	PartnerID      string    `json:"partner_id"`
+	PartnerUserID  string    `json:"partner_user_id,omitempty"`
 	PlanID         string    `json:"plan_id"`
 	AmountPaise    int64     `json:"amount_paise"`
 	NewExpiresAt   time.Time `json:"new_expires_at"`
@@ -591,6 +611,7 @@ func (p *Producer) PublishSubscriptionRenewed(ctx context.Context, payload Subsc
 type SubscriptionRenewalFailedPayload struct {
 	SubscriptionID string    `json:"subscription_id"`
 	PartnerID      string    `json:"partner_id"`
+	PartnerUserID  string    `json:"partner_user_id,omitempty"`
 	PlanID         string    `json:"plan_id"`
 	AmountPaise    int64     `json:"amount_paise"`
 	FailureCount   int       `json:"failure_count"`
