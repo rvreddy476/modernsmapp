@@ -211,27 +211,35 @@ func TestAdmin_FareRuleCRUD(t *testing.T) {
 	}
 	cityID := testCity.ID
 	r, err := s.CreateFareRule(ctx, CreateFareRuleInput{
-		CityID:          cityID,
-		VehicleType:     "premium",
-		BaseFare:        50,
-		PerKMFare:       18,
-		PerMinuteFare:   1,
-		MinimumFare:     100,
-		PlatformFee:     10,
+		CityID:               cityID,
+		VehicleType:          "premium",
+		BasePaise:            5000,
+		PerKMPaise:           1800,
+		PerMinutePaise:       100,
+		MinimumPaise:         10000,
+		PlatformFeePaise:     1000,
+		CancellationFeePaise: 5000,
+		WaitingFreeMinutes:   3, WaitingPerMinutePaise: 100, CancelFreeSeconds: 120,
 		NightMultiplier: 1.25,
 		PeakMultiplier:  1.5,
-		CancellationFee: 50,
 	})
 	if err != nil {
 		t.Fatalf("CreateFareRule: %v", err)
 	}
-	want := 22.0
-	upd, err := s.UpdateFareRule(ctx, r.ID, UpdateFareRuleInput{PerKMFare: &want})
+	// The legacy float view is derived from the paise.
+	if r.BasePaise != 5000 || r.BaseFare != 50 || r.PerKMFare != 18 || r.CancellationFee != 50 {
+		t.Fatalf("paise/float views disagree: %+v", r)
+	}
+	want := int64(2200)
+	upd, err := s.UpdateFareRule(ctx, r.ID, UpdateFareRuleInput{PerKMPaise: &want})
 	if err != nil {
 		t.Fatalf("UpdateFareRule: %v", err)
 	}
-	if upd.PerKMFare != want {
-		t.Errorf("per_km_fare = %v; want %v", upd.PerKMFare, want)
+	if upd.PerKMPaise != want || upd.PerKMFare != 22 {
+		t.Errorf("per_km = %d paise / %v INR; want 2200 / 22", upd.PerKMPaise, upd.PerKMFare)
+	}
+	if upd.WaitingPerMinutePaise != 100 || upd.CancelFreeSeconds != 120 || upd.WaitingFreeMinutes != 3 {
+		t.Errorf("charge columns lost on update: %+v", upd)
 	}
 }
 

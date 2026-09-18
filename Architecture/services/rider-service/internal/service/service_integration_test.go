@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/atpost/rider-service/database"
 	"github.com/atpost/rider-service/internal/store"
@@ -62,6 +63,7 @@ func newIntegrationService(t *testing.T) (*Service, *wallet.MockClient, func()) 
 	st := store.New(pool)
 	mock := wallet.NewMockClient()
 	svc := New(st, mock, Config{})
+	svc.SetOTPCrypto(testOTPCrypto(t))
 	return svc, mock, func() { pool.Close() }
 }
 
@@ -85,6 +87,9 @@ func TestEstimateFare_BLRAuto5km(t *testing.T) {
 	svc, _, cleanup := newIntegrationService(t)
 	defer cleanup()
 	blr := pickBangaloreCity(t, svc)
+	// Friday noon IST: outside every seeded fare window, so no peak/night
+	// multiplier; an empty test DB has no open requests, so no demand surge.
+	svc.SetClock(func() time.Time { return fridayNoonIST })
 	// Pickup MG Road, drop ~5km away.
 	out, err := svc.EstimateFare(context.Background(), FareEstimateRequest{
 		PickupLat:   12.9716,

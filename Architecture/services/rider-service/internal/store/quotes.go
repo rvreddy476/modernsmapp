@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -14,16 +15,9 @@ import (
 // ErrQuoteNotFound is returned when a quote snapshot is not found or expired.
 var ErrQuoteNotFound = errors.New("quote: not found")
 
-// QuoteBreakdownPaise provides itemized paise amounts.
-type QuoteBreakdownPaise struct {
-	BasePaise        int64 `json:"base_paise"`
-	DistancePaise    int64 `json:"distance_paise"`
-	TimePaise        int64 `json:"time_paise"`
-	PlatformFeePaise int64 `json:"platform_fee_paise"`
-	TaxPaise         int64 `json:"tax_paise"`
-	TollPaise        int64 `json:"toll_paise"`
-	SurgeBasisPoints int64 `json:"surge_basis_points"`
-}
+// QuoteBreakdownPaise is the itemised fare the engine produced; it is the
+// pricing.Breakdown stored verbatim on the quote and copied to the ride.
+type QuoteBreakdownPaise = pricing.Breakdown
 
 // QuoteOption is a single vehicle option in a quote snapshot.
 type QuoteOption struct {
@@ -34,6 +28,11 @@ type QuoteOption struct {
 	DurationSeconds  int                 `json:"duration_seconds"`
 	Currency         string              `json:"currency"`
 	TotalPaise       int64               `json:"total_paise"`
+	SurgeBPS         int64               `json:"surge_bps"`
+	SurgeReason      string              `json:"surge_reason"`
+	WindowName       string              `json:"window_name,omitempty"`
+	DiscountPaise    int64               `json:"discount_paise"`
+	CouponCode       string              `json:"coupon_code,omitempty"`
 	Breakdown        QuoteBreakdownPaise `json:"breakdown"`
 }
 

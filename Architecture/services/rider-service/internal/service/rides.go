@@ -11,13 +11,18 @@ import (
 	"time"
 
 	"github.com/atpost/rider-service/internal/geo"
-	"github.com/atpost/rider-service/internal/otp"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/google/uuid"
 )
 
 // CreateRideOperation is the idempotency-table operation label.
 const CreateRideOperation = "ride_create"
+
+// allowedRidePaymentMethods: cash settles with the captain; upi and card are
+// wired by the payments lane. "wallet" is NOT a ride method any more: the
+// wallet stays for partner subscriptions only, and the ride path never
+// calls the wallet client.
+var allowedRidePaymentMethods = map[string]bool{"cash": true, "upi": true, "card": true}
 
 // CreateRideRequest is the input shape for POST /v1/rider/rides.
 type CreateRideRequest struct {
@@ -108,6 +113,31 @@ func (s *Service) CreateRide(ctx context.Context, customerID uuid.UUID, req Crea
 	if method == "" {
 		method = "cash"
 	}
+	if !allowedRidePaymentMethods[method] {
+		return nil, fmt.Errorf("invalid: payment_method must be one of cash, upi, card")
+	}
+
+	// The quote locked the coupon and the outstanding fees; booking reserves
+	// them in the same transaction as the ride row.
+	var couponRes *store.CouponReservation
+	if matchedOpt.Breakdown.CouponID != "" {
+		if !s.cfg.couponsEnabled() {
+			return nil, &CouponError{Code: CouponCodeDisabled, Message: "coupons are switched off"}
+		}
+		cid, perr := uuid.Parse(matchedOpt.Breakdown.CouponID)
+		if perr != nil {
+			return nil, fmt.Errorf("invalid: quote carries a malformed coupon")
+		}
+		couponRes = &store.CouponReservation{CouponID: cid, QuoteID: quoteIDPtr, DiscountPaise: matchedOpt.Breakdown.DiscountPaise}
+	}
+	var outstandingIDs []uuid.UUID
+	for _, raw := range matchedOpt.Breakdown.OutstandingIDs {
+		id, perr := uuid.Parse(raw)
+		if perr != nil {
+			return nil, fmt.Errorf("invalid: quote carries a malformed outstanding id")
+		}
+		outstandingIDs = append(outstandingIDs, id)
+	}
 
 	// 4. Compute cryptographic SHA-256 request fingerprint
 	cityStr := ""
@@ -155,12 +185,17 @@ func (s *Service) CreateRide(ctx context.Context, customerID uuid.UUID, req Crea
 		RequestHash:     reqFingerprint,
 		OutboxEventType: "rider.ride.requested",
 		OutboxPayload:   outboxPayload,
+		Coupon:          couponRes,
+		OutstandingIDs:  outstandingIDs,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrIdempotencyMismatch) {
 			return nil, fmt.Errorf("conflict: idempotency key reused with different request parameters")
 		}
-		return nil, err
+		if errors.Is(err, store.ErrOutstandingChanged) {
+			return nil, fmt.Errorf("invalid: your pending fees changed since the quote; please request a fresh estimate")
+		}
+		return nil, mapCouponReserveError(err)
 	}
 
 	if !isReplay {
@@ -195,9 +230,12 @@ func (s *Service) GetActiveRideForCustomer(ctx context.Context, customerID uuid.
 	}
 	if r != nil {
 		if r.Status == "arrived" && len(r.OTPEncrypted) > 0 {
-			decrypted, derr := otp.DecryptOTP(r.OTPEncrypted, nil)
+			decrypted, derr := s.otpCrypto.OpenOTP(ctx, r.OTPEncrypted)
 			if derr == nil {
 				r.OTPCode = &decrypted
+			} else {
+				slog.Warn("rider: open sealed otp failed", "ride_id", r.ID, "error", derr)
+				r.OTPCode = nil
 			}
 		} else {
 			// Do not expose OTP hash or material before captain arrives at pickup

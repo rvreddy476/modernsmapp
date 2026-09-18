@@ -1,30 +1,33 @@
+// Package routing answers one question for rider-service: how far, and how
+// long, is a two-wheeler / auto ride from pickup to drop.
+//
+// The chain main.go builds is Cache(Fallback(GoogleRoutes, Haversine)), the
+// same shape as food-service/internal/routing:
+//
+//   - GoogleRoutes calls the Routes API computeRoutes (TWO_WHEELER,
+//     TRAFFIC_AWARE) with the server key in a header, under a hard timeout;
+//   - Fallback answers from Haversine whenever Google is not configured or
+//     fails in any way, logs each failure class once and counts every
+//     failure, and never fails the caller;
+//   - Cache keeps Google answers in Redis for five minutes, keyed on both
+//     endpoints rounded to about 50 m plus a five-minute time bucket.
+//
+// The service consumes the Calculator interface (CalculateRoute returning a
+// RouteResult); CalculatorFromRouter adapts the chain, and
+// DeterministicCalculator stays for tests and offline development.
 package routing
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"net/http"
-	"os"
-	"strings"
 	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/aws/aws-sdk-go-v2/config"
 )
 
 var (
-	// ErrRoutingUnconfigured is returned when production has no configured routing provider.
-	ErrRoutingUnconfigured = errors.New("routing: real AWS routing provider unconfigured in production")
 	// ErrInvalidCoordinates is returned when input coordinates are invalid.
 	ErrInvalidCoordinates = errors.New("routing: invalid coordinates")
-	// ErrRoutingFailed is returned when AWS Location Service returns error or invalid route.
-	ErrRoutingFailed = errors.New("routing: AWS Location Service calculation failed")
 )
 
 // RouteResult captures the authoritative distance and duration from the routing provider.
@@ -36,10 +39,130 @@ type RouteResult struct {
 	ProviderVersion string  `json:"provider_version"`
 }
 
-// Calculator defines the routing abstraction.
+// Calculator defines the routing abstraction the service consumes.
 type Calculator interface {
 	CalculateRoute(ctx context.Context, pickupLat, pickupLng, dropLat, dropLng float64) (*RouteResult, error)
 	ProviderVersion() string
+}
+
+// LatLng is a WGS84 coordinate in degrees.
+type LatLng struct {
+	Lat float64
+	Lng float64
+}
+
+// Valid reports whether the point is a finite coordinate on the globe.
+// (0, 0) is refused as the null-island sentinel, as validLatLng always has.
+func (p LatLng) Valid() bool {
+	if math.IsNaN(p.Lat) || math.IsNaN(p.Lng) || math.IsInf(p.Lat, 0) || math.IsInf(p.Lng, 0) {
+		return false
+	}
+	if p.Lat == 0 && p.Lng == 0 {
+		return false
+	}
+	return p.Lat >= -90 && p.Lat <= 90 && p.Lng >= -180 && p.Lng <= 180
+}
+
+// Route sources.
+const (
+	SourceGoogle    = "google"
+	SourceHaversine = "haversine"
+)
+
+// Provider versions recorded on a quote (route_version).
+const (
+	VersionGoogle        = "google-routes-v2"
+	VersionHaversine     = "haversine-v1"
+	VersionDeterministic = "deterministic-v1"
+)
+
+// Route is one leg's distance and ride time.
+type Route struct {
+	DistanceMeters int
+	Duration       time.Duration
+	Source         string
+}
+
+// Router computes a two-wheeler route between two points.
+type Router interface {
+	Route(ctx context.Context, from, to LatLng) (Route, error)
+}
+
+// Failure classes a Router error is counted and logged under.
+const (
+	FailureTimeout    = "timeout"     // the routing timeout fired
+	FailureCanceled   = "canceled"    // the caller's context ended first
+	FailureTransport  = "transport"   // connection refused, DNS, TLS, reset
+	FailureHTTPStatus = "http_status" // a non-2xx answer
+	FailureDecode     = "decode"      // a 2xx body that is not the documented shape
+	FailureEmptyRoute = "empty_route" // a 2xx body with no usable route
+	FailureRequest    = "request"     // the request could not be built (bad coordinates)
+	FailureUnknown    = "unknown"
+)
+
+// Error is a classified routing failure. Its message never carries the API
+// key: GoogleRoutes redacts it before an Error is built.
+type Error struct {
+	Class      string
+	StatusCode int
+	msg        string
+}
+
+func (e *Error) Error() string {
+	if e.StatusCode != 0 {
+		return fmt.Sprintf("routing %s (HTTP %d): %s", e.Class, e.StatusCode, e.msg)
+	}
+	return fmt.Sprintf("routing %s: %s", e.Class, e.msg)
+}
+
+// ClassOf returns the failure class of err, FailureUnknown when it carries none.
+func ClassOf(err error) string {
+	var re *Error
+	if errors.As(err, &re) && re.Class != "" {
+		return re.Class
+	}
+	return FailureUnknown
+}
+
+// --- Calculator adapters --------------------------------------------------
+
+// routerCalculator adapts a Router chain to the Calculator the service uses.
+type routerCalculator struct {
+	r Router
+}
+
+// CalculatorFromRouter wraps a Router (usually Cache(Fallback(Google,
+// Haversine))) as a Calculator. The RouteResult's ProviderVersion says which
+// source answered.
+func CalculatorFromRouter(r Router) Calculator { return &routerCalculator{r: r} }
+
+func (c *routerCalculator) ProviderVersion() string { return VersionGoogle + "|" + VersionHaversine }
+
+func (c *routerCalculator) CalculateRoute(ctx context.Context, pLat, pLng, dLat, dLng float64) (*RouteResult, error) {
+	from, to := LatLng{pLat, pLng}, LatLng{dLat, dLng}
+	if !from.Valid() || !to.Valid() {
+		return nil, ErrInvalidCoordinates
+	}
+	r, err := c.r.Route(ctx, from, to)
+	if err != nil {
+		var re *Error
+		if errors.As(err, &re) && re.Class == FailureRequest {
+			return nil, ErrInvalidCoordinates
+		}
+		return nil, err
+	}
+	version := VersionHaversine
+	if r.Source == SourceGoogle {
+		version = VersionGoogle
+	}
+	secs := int(math.Round(r.Duration.Seconds()))
+	return &RouteResult{
+		DistanceMeters:  r.DistanceMeters,
+		DurationSeconds: secs,
+		DistanceKM:      float64(r.DistanceMeters) / 1000.0,
+		DurationMin:     float64(secs) / 60.0,
+		ProviderVersion: version,
+	}, nil
 }
 
 // DeterministicCalculator is the test/dev router computing deterministic distances.
@@ -60,13 +183,13 @@ func NewDeterministicCalculator(winding, speed float64) *DeterministicCalculator
 	return &DeterministicCalculator{
 		WindingFactor: winding,
 		AverageSpeed:  speed,
-		Version:       "deterministic-v1",
+		Version:       VersionDeterministic,
 	}
 }
 
 func (d *DeterministicCalculator) ProviderVersion() string {
 	if d.Version == "" {
-		return "deterministic-v1"
+		return VersionDeterministic
 	}
 	return d.Version
 }
@@ -90,148 +213,8 @@ func (d *DeterministicCalculator) CalculateRoute(_ context.Context, pLat, pLng, 
 	}, nil
 }
 
-// AWSLocationCalculator routes via Amazon Location Service Routes API using IRSA credentials.
-type AWSLocationCalculator struct {
-	CalculatorName string
-	Region         string
-	Version        string
-	httpClient     *http.Client
-	signer         *v4.Signer
-	cfg            *aws.Config
-	isProd         bool
-}
-
-// NewAWSLocationCalculator creates an AWS Location Service route calculator.
-func NewAWSLocationCalculator(ctx context.Context, calculatorName, region string) (*AWSLocationCalculator, error) {
-	if calculatorName == "" {
-		calculatorName = strings.TrimSpace(os.Getenv("AWS_LOCATION_ROUTE_CALCULATOR_NAME"))
-	}
-	if calculatorName == "" {
-		calculatorName = strings.TrimSpace(os.Getenv("MOPEDU_ROUTING_CALCULATOR_NAME"))
-	}
-	if region == "" {
-		region = strings.TrimSpace(os.Getenv("AWS_REGION"))
-	}
-	if region == "" {
-		region = strings.TrimSpace(os.Getenv("AWS_DEFAULT_REGION"))
-	}
-	if region == "" {
-		region = "ap-south-1"
-	}
-
-	isProd := isProductionEnv()
-	if isProd && calculatorName == "" {
-		return nil, ErrRoutingUnconfigured
-	}
-
-	var awsCfg *aws.Config
-	if calculatorName != "" {
-		c, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-		if err != nil && isProd {
-			return nil, fmt.Errorf("failed to load AWS configuration for routing: %w", err)
-		}
-		awsCfg = &c
-	}
-
-	return &AWSLocationCalculator{
-		CalculatorName: calculatorName,
-		Region:         region,
-		Version:        "aws-location-routes-v1",
-		httpClient:     &http.Client{Timeout: 6 * time.Second},
-		signer:         v4.NewSigner(),
-		cfg:            awsCfg,
-		isProd:         isProd,
-	}, nil
-}
-
-func (a *AWSLocationCalculator) ProviderVersion() string {
-	if a.Version == "" {
-		return "aws-location-routes-v1"
-	}
-	return a.Version
-}
-
-// CalculateRoute calculates routes via AWS Location Service Routes API.
-func (a *AWSLocationCalculator) CalculateRoute(ctx context.Context, pLat, pLng, dLat, dLng float64) (*RouteResult, error) {
-	if !validLatLng(pLat, pLng) || !validLatLng(dLat, dLng) {
-		return nil, ErrInvalidCoordinates
-	}
-
-	if a.CalculatorName != "" && a.cfg != nil {
-		creds, err := a.cfg.Credentials.Retrieve(ctx)
-		if err == nil {
-			endpoint := fmt.Sprintf("https://routes.geo.%s.amazonaws.com/routes/v0/calculators/%s/calculate/route", a.Region, a.CalculatorName)
-			reqBody, _ := json.Marshal(map[string]any{
-				"DeparturePosition":   []float64{pLng, pLat},
-				"DestinationPosition": []float64{dLng, dLat},
-				"TravelMode":          "Car",
-				"IncludeLegGeometry":  false,
-			})
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
-			if err == nil {
-				req.Header.Set("Content-Type", "application/json")
-				h := sha256.Sum256(reqBody)
-				payloadHash := fmt.Sprintf("%x", h)
-				if err := a.signer.SignHTTP(ctx, creds, req, payloadHash, "geo", a.Region, time.Now()); err == nil {
-					resp, err := a.httpClient.Do(req)
-					if err == nil {
-						defer resp.Body.Close()
-						if resp.StatusCode == http.StatusOK {
-							var res struct {
-								Summary struct {
-									Distance        float64 `json:"Distance"`        // in Kilometers
-									DurationSeconds float64 `json:"DurationSeconds"` // in Seconds
-								} `json:"Summary"`
-							}
-							if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && res.Summary.Distance > 0 {
-								distKM := res.Summary.Distance
-								durSec := int(math.Round(res.Summary.DurationSeconds))
-								distMeters := int(math.Round(distKM * 1000.0))
-								durMin := float64(durSec) / 60.0
-								return &RouteResult{
-									DistanceMeters:  distMeters,
-									DurationSeconds: durSec,
-									DistanceKM:      distKM,
-									DurationMin:     durMin,
-									ProviderVersion: a.ProviderVersion(),
-								}, nil
-							}
-						}
-					}
-				}
-			}
-		}
-		if a.isProd {
-			return nil, ErrRoutingFailed
-		}
-	}
-
-	if a.isProd {
-		return nil, ErrRoutingUnconfigured
-	}
-
-	// Non-production fallback only when explicitly in non-prod environment
-	det := NewDeterministicCalculator(1.25, 22.0)
-	res, err := det.CalculateRoute(ctx, pLat, pLng, dLat, dLng)
-	if err != nil {
-		return nil, err
-	}
-	res.ProviderVersion = "deterministic-dev-fallback"
-	return res, nil
-}
-
-func isProductionEnv() bool {
-	for _, k := range []string{"APP_ENV", "ENVIRONMENT", "ENV"} {
-		v := strings.ToLower(strings.TrimSpace(os.Getenv(k)))
-		if v == "production" || v == "prod" || v == "staging" {
-			return true
-		}
-	}
-	return false
-}
-
 func validLatLng(lat, lng float64) bool {
-	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180 && (lat != 0 || lng != 0)
+	return LatLng{lat, lng}.Valid()
 }
 
 func haversineKM(lat1, lon1, lat2, lon2 float64) float64 {

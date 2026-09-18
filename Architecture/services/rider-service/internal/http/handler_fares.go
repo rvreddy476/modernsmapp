@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/rider-service/internal/http/middleware"
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/shared/api"
@@ -24,6 +25,10 @@ type estimateRequest struct {
 	DropPlaceID   string    `json:"drop_place_id,omitempty"`
 	VehicleType   string    `json:"vehicle_type,omitempty"`
 	CityID        uuid.UUID `json:"city_id"`
+	// CouponCode is validated and, when valid, priced into every option it
+	// covers and locked in the quote. Validation failures answer 422 with a
+	// coupon code (COUPON_INVALID, COUPON_EXPIRED, COUPON_MIN_FARE, ...).
+	CouponCode string `json:"coupon_code,omitempty"`
 }
 
 // PostEstimate — POST /v1/rider/estimate. Public or authenticated.
@@ -33,10 +38,7 @@ func (h *Handler) PostEstimate(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	var uidPtr *uuid.UUID
-	if uid, ok := getUserID(c); ok {
-		uidPtr = &uid
-	}
+	uidPtr := optionalUserID(c)
 	out, err := h.svc.EstimateFare(c.Request.Context(), service.FareEstimateRequest{
 		CustomerUserID: uidPtr,
 		PickupLat:      body.PickupLat,
@@ -49,12 +51,25 @@ func (h *Handler) PostEstimate(c *gin.Context) {
 		DropPlaceID:    body.DropPlaceID,
 		VehicleType:    body.VehicleType,
 		CityID:         body.CityID,
+		CouponCode:     body.CouponCode,
 	})
 	if err != nil {
+		if respondCouponError(c, err) {
+			return
+		}
 		respondServiceError(c, err, http.StatusInternalServerError, "FARE_ESTIMATE_FAILED")
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, out)
+}
+
+// optionalUserID reads the gateway identity when present without writing a
+// 401 (public routes that personalise when they can).
+func optionalUserID(c *gin.Context) *uuid.UUID {
+	if uid, ok := middleware.GetAuthenticatedUserID(c); ok && uid != uuid.Nil {
+		return &uid
+	}
+	return nil
 }
 
 // GetServiceability — GET /v1/rider/serviceability?lat=&lng=. Public.

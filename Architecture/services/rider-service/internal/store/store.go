@@ -45,8 +45,10 @@ type City struct {
 	CenterLat    *float64  `json:"center_lat,omitempty"`
 	CenterLng    *float64  `json:"center_lng,omitempty"`
 	RadiusKM     *float64  `json:"radius_km,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	// Timezone is the IANA zone fare windows are evaluated in (migration 003).
+	Timezone  string    `json:"timezone"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Zone is one row in rider_zones.
@@ -200,20 +202,109 @@ type SubscriptionPayment struct {
 }
 
 // FareRule is one row in rider_fare_rules.
+//
+// The *_paise columns (migration 002) are what prices a ride. The float
+// fields are the legacy admin API view and are DERIVED from the paise on
+// read (scanFareRule); a row whose paise columns are still 0 while the
+// floats are set is read as ROUND(float*100) and logged once.
+// NightMultiplier / PeakMultiplier are kept for the legacy admin PUT but no
+// longer price anything: fare windows (rider_fare_windows) do.
 type FareRule struct {
-	ID               uuid.UUID `json:"id"`
-	CityID           uuid.UUID `json:"city_id"`
-	VehicleType      string    `json:"vehicle_type"`
-	BaseFare         float64   `json:"base_fare"`
-	PerKMFare        float64   `json:"per_km_fare"`
-	PerMinuteFare    float64   `json:"per_minute_fare"`
-	MinimumFare      float64   `json:"minimum_fare"`
-	PlatformFee      float64   `json:"platform_fee"`
-	NightMultiplier  float64   `json:"night_multiplier"`
-	PeakMultiplier   float64   `json:"peak_multiplier"`
-	CancellationFee  float64   `json:"cancellation_fee"`
-	IsActive         bool      `json:"is_active"`
-	StartsAt         time.Time `json:"starts_at"`
+	ID          uuid.UUID `json:"id"`
+	CityID      uuid.UUID `json:"city_id"`
+	VehicleType string    `json:"vehicle_type"`
+
+	BasePaise             int64 `json:"base_fare_paise"`
+	PerKMPaise            int64 `json:"per_km_fare_paise"`
+	PerMinutePaise        int64 `json:"per_minute_fare_paise"`
+	MinimumPaise          int64 `json:"minimum_fare_paise"`
+	PlatformFeePaise      int64 `json:"platform_fee_paise"`
+	CancellationFeePaise  int64 `json:"cancellation_fee_paise"`
+	WaitingFreeMinutes    int   `json:"waiting_free_minutes"`
+	WaitingPerMinutePaise int64 `json:"waiting_per_minute_paise"`
+	CancelFreeSeconds     int   `json:"cancel_free_seconds"`
+
+	BaseFare        float64   `json:"base_fare"`
+	PerKMFare       float64   `json:"per_km_fare"`
+	PerMinuteFare   float64   `json:"per_minute_fare"`
+	MinimumFare     float64   `json:"minimum_fare"`
+	PlatformFee     float64   `json:"platform_fee"`
+	NightMultiplier float64   `json:"night_multiplier"`
+	PeakMultiplier  float64   `json:"peak_multiplier"`
+	CancellationFee float64   `json:"cancellation_fee"`
+	IsActive        bool      `json:"is_active"`
+	StartsAt        time.Time `json:"starts_at"`
+}
+
+// FareWindow is one row in rider_fare_windows (migration 003).
+type FareWindow struct {
+	ID            uuid.UUID  `json:"id"`
+	CityID        uuid.UUID  `json:"city_id"`
+	VehicleType   *string    `json:"vehicle_type,omitempty"`
+	Name          string     `json:"name"`
+	DaysOfWeek    int        `json:"days_of_week"`
+	StartMinute   int        `json:"start_minute"`
+	EndMinute     int        `json:"end_minute"`
+	MultiplierBPS int64      `json:"multiplier_bps"`
+	Priority      int        `json:"priority"`
+	IsActive      bool       `json:"is_active"`
+	EffectiveFrom time.Time  `json:"effective_from"`
+	EffectiveTo   *time.Time `json:"effective_to,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+// CustomerOutstanding is one row in rider_customer_outstanding: a
+// cancellation fee the customer still owes.
+type CustomerOutstanding struct {
+	ID              uuid.UUID  `json:"id"`
+	CustomerUserID  uuid.UUID  `json:"customer_user_id"`
+	RideID          uuid.UUID  `json:"ride_id"`
+	AmountPaise     int64      `json:"amount_paise"`
+	Reason          string     `json:"reason"`
+	Status          string     `json:"status"`
+	SettledByRideID *uuid.UUID `json:"settled_by_ride_id,omitempty"`
+	WaivedBy        *uuid.UUID `json:"waived_by,omitempty"`
+	WaiveReason     *string    `json:"waive_reason,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	SettledAt       *time.Time `json:"settled_at,omitempty"`
+}
+
+// Coupon is one row in rider_coupons.
+type Coupon struct {
+	ID                 uuid.UUID  `json:"id"`
+	Code               string     `json:"code"`
+	Description        string     `json:"description"`
+	DiscountType       string     `json:"discount_type"`
+	DiscountValuePaise int64      `json:"discount_value_paise"`
+	PercentBPS         int        `json:"percent_bps"`
+	MaxDiscountPaise   int64      `json:"max_discount_paise"`
+	MinFarePaise       int64      `json:"min_fare_paise"`
+	CityID             *uuid.UUID `json:"city_id,omitempty"`
+	VehicleTypes       []string   `json:"vehicle_types,omitempty"`
+	FirstRideOnly      bool       `json:"first_ride_only"`
+	PerUserLimit       int        `json:"per_user_limit"`
+	TotalLimit         int        `json:"total_limit"`
+	UsedCount          int        `json:"used_count"`
+	StartsAt           time.Time  `json:"starts_at"`
+	EndsAt             *time.Time `json:"ends_at,omitempty"`
+	IsActive           bool       `json:"is_active"`
+	CreatedBy          *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+// CouponRedemption is one row in rider_coupon_redemptions.
+type CouponRedemption struct {
+	ID             uuid.UUID  `json:"id"`
+	CouponID       uuid.UUID  `json:"coupon_id"`
+	CustomerUserID uuid.UUID  `json:"customer_user_id"`
+	RideID         uuid.UUID  `json:"ride_id"`
+	QuoteID        *uuid.UUID `json:"quote_id,omitempty"`
+	DiscountPaise  int64      `json:"discount_paise"`
+	Status         string     `json:"status"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // Ride is one row in rider_rides.

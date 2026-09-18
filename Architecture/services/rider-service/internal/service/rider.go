@@ -16,6 +16,8 @@ import (
 
 	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/events"
+	"github.com/atpost/rider-service/internal/pricing"
+	"github.com/atpost/rider-service/internal/riderpii"
 	"github.com/atpost/rider-service/internal/routing"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
@@ -39,6 +41,13 @@ type Service struct {
 	rtSigner         *realtime.TokenSigner
 	outboxQ          *outbox.Queuer
 	dbPool           *pgxpool.Pool
+	// tax prices GST on every quote and completion (pricing.GSTComputer in
+	// production; the flat table when no platform GSTIN is configured).
+	tax pricing.TaxComputer
+	// otpCrypto seals ride OTPs at rest (riderpii). nil fails closed.
+	otpCrypto *riderpii.Crypto
+	// now is the clock fare windows are evaluated against (tests pin it).
+	now func() time.Time
 }
 
 // Config tunes service-level constants.
@@ -53,6 +62,27 @@ type Config struct {
 	// AverageSpeedKMPH is used to estimate ride duration alongside the
 	// winding factor. India city averages tend to 18–25 km/h.
 	AverageSpeedKMPH float64
+	// SurgeCapBPS caps demand surge (MOPEDU_SURGE_CAP_BPS, default 5000).
+	SurgeCapBPS int64
+	// CouponsEnabled gates coupon_code on estimates (MOPEDU_COUPONS_ENABLED).
+	// Off in staging and production until the adviser confirms the GST
+	// treatment of discounts, like FOOD_COUPONS_ENABLED.
+	CouponsEnabled bool
+	// couponsFlagSet records that CouponsEnabled was set explicitly, so a
+	// zero-value Config still means "on" (the compose default).
+	CouponsFlagSet bool
+	// PlatformGSTIN is the platform's registration, the party liable under
+	// s.9(5) for the ride fare (MOPEDU_PLATFORM_GSTIN). Empty outside
+	// production falls back to the flat rider-local rate table.
+	PlatformGSTIN string
+}
+
+// couponsEnabled applies the "on unless explicitly off" default.
+func (c Config) couponsEnabled() bool {
+	if !c.CouponsFlagSet {
+		return true
+	}
+	return c.CouponsEnabled
 }
 
 // EventPublisher is the subset of *events.Producer the service needs. Stays
@@ -230,17 +260,51 @@ func New(s *store.Store, w wallet.Client, cfg Config) *Service {
 	if cfg.DefaultGracePeriodDays <= 0 {
 		cfg.DefaultGracePeriodDays = 3
 	}
-	return &Service{
+	if cfg.SurgeCapBPS <= 0 {
+		cfg.SurgeCapBPS = pricing.DefaultSurgeCapBPS
+	}
+	svc := &Service{
 		store:    s,
 		wallet:   w,
 		producer: noopPublisher{},
 		router:   routing.NewDeterministicCalculator(cfg.WindingFactor, cfg.AverageSpeedKMPH),
 		cfg:      cfg,
+		tax:      pricing.DefaultFlatRateTax(),
+		now:      func() time.Time { return time.Now().UTC() },
 	}
+	if cfg.PlatformGSTIN != "" {
+		g, err := pricing.NewGSTComputer(nil, cfg.PlatformGSTIN, "")
+		if err != nil {
+			// main.go validates the GSTIN before it gets here; a bad one in
+			// a test rig falls back loudly rather than pricing nothing.
+			slog.Error("rider: MOPEDU_PLATFORM_GSTIN rejected; using the flat rider-local tax table", "error", err)
+		} else {
+			svc.tax = g
+		}
+	}
+	return svc
 }
 
 // SetProducer swaps in a real event publisher.
 func (s *Service) SetProducer(p EventPublisher) { s.producer = p }
+
+// SetTax replaces the tax computer (tests, or a rate table override).
+func (s *Service) SetTax(t pricing.TaxComputer) {
+	if t != nil {
+		s.tax = t
+	}
+}
+
+// SetOTPCrypto wires the ride-OTP sealer. Without it offer acceptance fails
+// with riderpii.ErrNotConfigured: a ride never stores a plaintext OTP.
+func (s *Service) SetOTPCrypto(c *riderpii.Crypto) { s.otpCrypto = c }
+
+// SetClock pins the clock fare windows and cancellation windows read (tests).
+func (s *Service) SetClock(now func() time.Time) {
+	if now != nil {
+		s.now = now
+	}
+}
 
 // SetRouter swaps in a custom routing provider.
 func (s *Service) SetRouter(r routing.Calculator) { s.router = r }

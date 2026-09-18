@@ -636,6 +636,14 @@ func (h *Handler) AdminUpdateZone(c *gin.Context) {
 }
 
 // createFareRuleRequest is the body for POST /v1/rider/admin/fare-rules.
+//
+// Money: the *_paise fields are authoritative; the INR floats are the legacy
+// body and are converted with ROUND(x*100) when the paise field is absent.
+// The response carries both, the floats derived from the paise.
+//
+// night_multiplier / peak_multiplier are still accepted and stored for the
+// legacy admin UI but NO LONGER PRICE ANYTHING: peak and night pricing is
+// rider_fare_windows (migration 003), selected per city-local time.
 type createFareRuleRequest struct {
 	CityID          uuid.UUID `json:"city_id"`
 	VehicleType     string    `json:"vehicle_type"`
@@ -647,6 +655,16 @@ type createFareRuleRequest struct {
 	NightMultiplier float64   `json:"night_multiplier"`
 	PeakMultiplier  float64   `json:"peak_multiplier"`
 	CancellationFee float64   `json:"cancellation_fee"`
+
+	BasePaise             *int64 `json:"base_fare_paise,omitempty"`
+	PerKMPaise            *int64 `json:"per_km_fare_paise,omitempty"`
+	PerMinutePaise        *int64 `json:"per_minute_fare_paise,omitempty"`
+	MinimumPaise          *int64 `json:"minimum_fare_paise,omitempty"`
+	PlatformFeePaise      *int64 `json:"platform_fee_paise,omitempty"`
+	CancellationFeePaise  *int64 `json:"cancellation_fee_paise,omitempty"`
+	WaitingFreeMinutes    *int   `json:"waiting_free_minutes,omitempty"`
+	WaitingPerMinutePaise *int64 `json:"waiting_per_minute_paise,omitempty"`
+	CancelFreeSeconds     *int   `json:"cancel_free_seconds,omitempty"`
 }
 
 // AdminCreateFareRule — POST /v1/rider/admin/fare-rules.
@@ -673,6 +691,10 @@ func (h *Handler) AdminCreateFareRule(c *gin.Context) {
 		NightMultiplier: body.NightMultiplier,
 		PeakMultiplier:  body.PeakMultiplier,
 		CancellationFee: body.CancellationFee,
+
+		BasePaise: body.BasePaise, PerKMPaise: body.PerKMPaise, PerMinutePaise: body.PerMinutePaise,
+		MinimumPaise: body.MinimumPaise, PlatformFeePaise: body.PlatformFeePaise, CancellationFeePaise: body.CancellationFeePaise,
+		WaitingFreeMinutes: body.WaitingFreeMinutes, WaitingPerMinutePaise: body.WaitingPerMinutePaise, CancelFreeSeconds: body.CancelFreeSeconds,
 	})
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "FARE_RULE_CREATE_FAILED")
@@ -682,7 +704,8 @@ func (h *Handler) AdminCreateFareRule(c *gin.Context) {
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusCreated, out)
 }
 
-// updateFareRuleRequest is the PATCH body.
+// updateFareRuleRequest is the PATCH body (same money rules as create; the
+// multipliers are stored but do not price).
 type updateFareRuleRequest struct {
 	BaseFare        *float64 `json:"base_fare,omitempty"`
 	PerKMFare       *float64 `json:"per_km_fare,omitempty"`
@@ -693,6 +716,16 @@ type updateFareRuleRequest struct {
 	PeakMultiplier  *float64 `json:"peak_multiplier,omitempty"`
 	CancellationFee *float64 `json:"cancellation_fee,omitempty"`
 	IsActive        *bool    `json:"is_active,omitempty"`
+
+	BasePaise             *int64 `json:"base_fare_paise,omitempty"`
+	PerKMPaise            *int64 `json:"per_km_fare_paise,omitempty"`
+	PerMinutePaise        *int64 `json:"per_minute_fare_paise,omitempty"`
+	MinimumPaise          *int64 `json:"minimum_fare_paise,omitempty"`
+	PlatformFeePaise      *int64 `json:"platform_fee_paise,omitempty"`
+	CancellationFeePaise  *int64 `json:"cancellation_fee_paise,omitempty"`
+	WaitingFreeMinutes    *int   `json:"waiting_free_minutes,omitempty"`
+	WaitingPerMinutePaise *int64 `json:"waiting_per_minute_paise,omitempty"`
+	CancelFreeSeconds     *int   `json:"cancel_free_seconds,omitempty"`
 }
 
 // AdminUpdateFareRule — PATCH /v1/rider/admin/fare-rules/:id.
@@ -722,6 +755,10 @@ func (h *Handler) AdminUpdateFareRule(c *gin.Context) {
 		PeakMultiplier:  body.PeakMultiplier,
 		CancellationFee: body.CancellationFee,
 		IsActive:        body.IsActive,
+
+		BasePaise: body.BasePaise, PerKMPaise: body.PerKMPaise, PerMinutePaise: body.PerMinutePaise,
+		MinimumPaise: body.MinimumPaise, PlatformFeePaise: body.PlatformFeePaise, CancellationFeePaise: body.CancellationFeePaise,
+		WaitingFreeMinutes: body.WaitingFreeMinutes, WaitingPerMinutePaise: body.WaitingPerMinutePaise, CancelFreeSeconds: body.CancelFreeSeconds,
 	})
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "FARE_RULE_UPDATE_FAILED")

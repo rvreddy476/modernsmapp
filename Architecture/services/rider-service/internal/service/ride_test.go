@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/atpost/rider-service/internal/store"
+	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/google/uuid"
 )
 
@@ -51,56 +51,50 @@ func TestValidRideTransition_SameStateRejected(t *testing.T) {
 	}
 }
 
-func TestComputeCancellationFee_BeforeAssignedZero(t *testing.T) {
-	for _, status := range []string{"requested", "searching_partner", "partner_assigned"} {
-		r := &store.Ride{Status: status}
-		if got := computeCancellationFeePaise(r); got != 0 {
-			t.Errorf("status=%s: expected 0; got %d", status, got)
+// The cancellation fee is the fare rule's, owed by the customer only when
+// they (or a no-show) cancel after assignment and past the rule's free
+// window. The pure rule is pricing.CancellationFee; the service wires the
+// ride's assigned_at and the store's rule (TestCancelRide_* below and in
+// service_integration_test.go).
+func TestCancellationFee_RuleAndActors(t *testing.T) {
+	rule := pricing.FareRule{CancellationFeePaise: 1500, CancelFreeSeconds: 120}
+	now := time.Now().UTC()
+	assignedLate := now.Add(-3 * time.Minute)
+	assignedJustNow := now.Add(-30 * time.Second)
+	if got := pricing.CancellationFee(rule, "customer", nil, now); got != 0 {
+		t.Errorf("no partner assigned: expected 0; got %d", got)
+	}
+	if got := pricing.CancellationFee(rule, "customer", &assignedJustNow, now); got != 0 {
+		t.Errorf("inside the free window: expected 0; got %d", got)
+	}
+	if got := pricing.CancellationFee(rule, "customer", &assignedLate, now); got != 1500 {
+		t.Errorf("customer after the free window: expected 1500; got %d", got)
+	}
+	if got := pricing.CancellationFee(rule, pricing.CancelNoShow, &assignedLate, now); got != 1500 {
+		t.Errorf("no-show: expected 1500; got %d", got)
+	}
+	for _, by := range []string{"partner", "admin", "system"} {
+		if got := pricing.CancellationFee(rule, by, &assignedLate, now); got != 0 {
+			t.Errorf("%s cancels: expected 0; got %d", by, got)
 		}
 	}
 }
 
-func TestComputeCancellationFee_PartnerArriving(t *testing.T) {
-	r := &store.Ride{Status: "partner_arriving"}
-	if got := computeCancellationFeePaise(r); got != 1500 {
-		t.Errorf("partner_arriving: expected 1500; got %d", got)
-	}
-}
-
-func TestComputeCancellationFee_Arrived(t *testing.T) {
-	r := &store.Ride{Status: "arrived"}
-	if got := computeCancellationFeePaise(r); got != 5000 {
-		t.Errorf("arrived: expected 5000; got %d", got)
-	}
-}
-
-func TestComputeCancellationFee_InProgressProrated(t *testing.T) {
-	est := 100.0
-	r := &store.Ride{Status: "in_progress", EstimatedFare: &est}
-	if got := computeCancellationFeePaise(r); got != 1000 {
-		t.Errorf("10%% of ₹100 should be 1000 paise; got %d", got)
-	}
-	// Cap at ₹100 even when 10% exceeds.
-	bigEst := 5000.0
-	r2 := &store.Ride{Status: "in_progress", EstimatedFare: &bigEst}
-	if got := computeCancellationFeePaise(r2); got != 10000 {
-		t.Errorf("cap should be 10000; got %d", got)
-	}
-}
-
-func TestComputeCancellationFee_TerminalReturnsZero(t *testing.T) {
-	for _, status := range []string{"completed", "cancelled_by_customer", "expired", "failed"} {
-		r := &store.Ride{Status: status}
-		if got := computeCancellationFeePaise(r); got != 0 {
-			t.Errorf("terminal status %s: expected 0; got %d", status, got)
-		}
+func TestGenerateOTPAndHash_FailsClosedWithoutKeys(t *testing.T) {
+	s := &Service{}
+	if _, _, _, err := s.generateOTPAndHash(context.Background()); err == nil {
+		t.Fatal("no sealer configured must refuse to mint an OTP")
 	}
 }
 
 func TestGenerateOTPAndHash_RoundTrip(t *testing.T) {
-	plain, hash, enc, err := generateOTPAndHash()
+	s := &Service{otpCrypto: testOTPCrypto(t)}
+	plain, hash, enc, err := s.generateOTPAndHash(context.Background())
 	if err != nil {
 		t.Fatalf("generate: %v", err)
+	}
+	if opened, err := s.otpCrypto.OpenOTP(context.Background(), enc); err != nil || opened != plain {
+		t.Fatalf("sealed otp must open to the plaintext: %q %v", opened, err)
 	}
 	if len(plain) != 4 {
 		t.Fatalf("OTP must be 4 digits; got %q", plain)
@@ -119,15 +113,16 @@ func TestGenerateOTPAndHash_RoundTrip(t *testing.T) {
 }
 
 func TestGenerateOTPAndHash_DistinctEachCall(t *testing.T) {
-	a, _, _, _ := generateOTPAndHash()
-	b, _, _, _ := generateOTPAndHash()
+	s := &Service{otpCrypto: testOTPCrypto(t)}
+	a, _, _, _ := s.generateOTPAndHash(context.Background())
+	b, _, _, _ := s.generateOTPAndHash(context.Background())
 	// 1 in 10000 chance of collision; a single observation is fine.
 	if a == b {
 		t.Logf("two OTPs collided (rare but possible): %q", a)
 	}
 	// Hashes always distinct due to random salt.
-	_, ha, _, _ := generateOTPAndHash()
-	_, hb, _, _ := generateOTPAndHash()
+	_, ha, _, _ := s.generateOTPAndHash(context.Background())
+	_, hb, _, _ := s.generateOTPAndHash(context.Background())
 	if ha == hb {
 		t.Fatalf("two hashes collided — random salt missing?")
 	}

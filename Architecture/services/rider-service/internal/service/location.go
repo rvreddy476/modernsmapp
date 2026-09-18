@@ -150,6 +150,12 @@ func (s *Service) UpdateLocation(ctx context.Context, partnerUserID uuid.UUID, r
 	}); err != nil {
 		return fmt.Errorf("upsert location: %w", err)
 	}
+	// Server-tracked route: while the partner is on a ride (arrived through
+	// in_progress) every fix at most once per 5 s becomes a track point, the
+	// only distance that can ever re-price the ride at completion.
+	if _, err := s.store.AppendTrackPointForActiveRide(ctx, partner.ID, req.Lat, req.Lng, req.Speed); err != nil {
+		slog.Warn("rider: append track point failed", "partner_id", partner.ID, "error", err)
+	}
 	// Hot-path mirror in Redis. Only push when the partner is online; offline
 	// partners must not appear in matching even if they keep pinging.
 	if s.rdb != nil && partner.IsOnline {

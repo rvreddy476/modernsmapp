@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -85,15 +86,16 @@ func TestNegativeControl_IdempotencyFingerprintMismatch(t *testing.T) {
 
 // TestNegativeControl_InvertedOTP3Failures15MinLockout verifies envelope encryption, hash verification, and lockout.
 func TestNegativeControl_InvertedOTP3Failures15MinLockout(t *testing.T) {
-	plain, hash, enc, err := generateOTPAndHash()
+	svc := &Service{otpCrypto: testOTPCrypto(t)}
+	plain, hash, enc, err := svc.generateOTPAndHash(context.Background())
 	if err != nil {
 		t.Fatalf("generateOTPAndHash failed: %v", err)
 	}
 
-	// Plaintext decryption test
-	decrypted, err := otp.DecryptOTP(enc, nil)
+	// Sealed-at-rest OTP opens under the rider.ride_otp sealer.
+	decrypted, err := svc.otpCrypto.OpenOTP(context.Background(), enc)
 	if err != nil {
-		t.Fatalf("decrypt failed: %v", err)
+		t.Fatalf("open sealed otp failed: %v", err)
 	}
 	if decrypted != plain {
 		t.Fatalf("expected decrypted %s, got %s", plain, decrypted)

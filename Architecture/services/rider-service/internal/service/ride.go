@@ -18,6 +18,7 @@ import (
 	"github.com/atpost/rider-service/internal/geo"
 	"github.com/atpost/rider-service/internal/matcher"
 	"github.com/atpost/rider-service/internal/otp"
+	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -384,7 +385,7 @@ func (s *Service) AcceptOffer(ctx context.Context, partnerUserID, offerID uuid.U
 		return nil, fmt.Errorf("invalid: partner has no approved vehicle")
 	}
 
-	_, otpHash, otpEncrypted, err := generateOTPAndHash()
+	_, otpHash, otpEncrypted, err := s.generateOTPAndHash(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("generate otp: %w", err)
 	}
@@ -713,8 +714,25 @@ type CompleteRideRequest struct {
 	ExpectedRevision int
 }
 
-// CompleteRide finalizes a ride: compute final fare from rule, flag for
-// review if >1.5× estimate, insert ride_payments atomically, and transition to completed.
+// CompleteRide finalizes a ride with the upfront fare:
+//
+//	final = quoted total (locked breakdown: ride fare at the locked window /
+//	        surge, platform fee, coupon discount, previous outstanding)
+//	      + waiting charge (arrived_at -> started_at beyond the free window)
+//
+// The distance and time components are recomputed ONLY when the
+// server-tracked route (rider_ride_track_points, haversine hops, hops over
+// 50 m/s ignored) exceeds the quoted distance by more than 20% AND more than
+// 1 km; then they are re-priced from the tracked distance and the actual
+// duration at the locked surge, with the ride fare capped at twice the
+// quoted ride fare. The captain-reported final_distance_km /
+// final_duration_min are stored as telemetry and never price the ride.
+//
+// The full breakdown is persisted on the ride (fare_breakdown), the
+// payment row is inserted, the coupon redemption is applied and the
+// outstanding lines settled, all in one transaction with the transition to
+// completed. No wallet call: cash settles with the captain, upi / card are
+// the payments lane's.
 func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.UUID, req CompleteRideRequest) (*store.RidePayment, error) {
 	if req.ExpectedRevision <= 0 {
 		return nil, fmt.Errorf("invalid: expected_revision required")
@@ -744,30 +762,22 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 	if err != nil {
 		return nil, fmt.Errorf("fare rule lookup: %w", err)
 	}
-
-	basePaise := int64(math.Round(rule.BaseFare * 100))
-	perKMPaise := int64(math.Round(rule.PerKMFare * 100))
-	perMinPaise := int64(math.Round(rule.PerMinuteFare * 100))
-	platformPaise := int64(math.Round(rule.PlatformFee * 100))
-	minPaise := int64(math.Round(rule.MinimumFare * 100))
-
-	distPaise := (int64(math.Round(req.FinalDistanceKM * 1000)) * perKMPaise) / 1000
-	timePaise := (int64(req.FinalDurationMin) * 60 * perMinPaise) / 60
-	rawPaise := basePaise + distPaise + timePaise + platformPaise
-	if rawPaise < minPaise {
-		rawPaise = minPaise
+	city, err := s.store.GetCity(ctx, *ride.CityID)
+	if err != nil {
+		return nil, fmt.Errorf("city lookup: %w", err)
 	}
+	now := s.now()
 
-	mult := math.Max(rule.NightMultiplier, rule.PeakMultiplier)
-	var surgeBPS int64 = 0
-	if mult > 1.0 {
-		surgeBPS = int64(math.Round((mult - 1.0) * 10000))
+	final, tracked, err := s.finalBreakdown(ctx, ride, rule, city, now)
+	if err != nil {
+		return nil, err
 	}
-	surgePaise := (rawPaise * surgeBPS) / 10000
-	totalPaise := rawPaise + surgePaise
-	taxPaise := (totalPaise * 500) / 10000
-	finalPaise := totalPaise + taxPaise
+	finalPaise := final.TotalPaise
 	rawINR := float64(finalPaise) / 100.0
+	breakdownJSON, err := json.Marshal(final)
+	if err != nil {
+		return nil, fmt.Errorf("marshal breakdown: %w", err)
+	}
 
 	flag := false
 	if ride.EstimatedFare != nil && *ride.EstimatedFare > 0 {
@@ -806,9 +816,12 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 			const q = `
                 UPDATE rider_rides
                 SET final_distance_km = $2, final_duration_min = $3, final_fare = $4,
-                    final_fare_paise = $5, flagged_for_review = $6, completed_at = NOW()
+                    final_fare_paise = $5, flagged_for_review = $6, fare_breakdown = $7,
+                    waiting_charge_paise = $8, tracked_distance_m = $9, actual_duration_s = $10,
+                    completed_at = NOW()
                 WHERE id = $1`
-			if _, err := tx.Exec(ctx, q, rideID, req.FinalDistanceKM, req.FinalDurationMin, rawINR, finalPaise, flag); err != nil {
+			if _, err := tx.Exec(ctx, q, rideID, req.FinalDistanceKM, req.FinalDurationMin, rawINR, finalPaise, flag,
+				breakdownJSON, final.WaitingChargePaise, tracked.distanceM, tracked.durationS); err != nil {
 				return err
 			}
 
@@ -819,14 +832,21 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 				return err
 			}
 
+			// rider_idempotency(key, user_id, operation, request_hash, resource_id,
+			// response_body, created_at, expires_at); key is the primary key. The
+			// previous statement named columns the table never had, so every
+			// completion failed with 42703.
 			const idempQ = `
-                INSERT INTO rider_idempotency (idempotency_key, user_id, operation, request_hash, resource_id, response_status, expires_at)
-                VALUES ($1, $2, 'ride_complete', $3, $4, 200, NOW() + INTERVAL '24 hours')
-                ON CONFLICT (idempotency_key, user_id, operation) DO UPDATE SET resource_id = $4`
+                INSERT INTO rider_idempotency (key, user_id, operation, request_hash, resource_id, expires_at)
+                VALUES ($1, $2, 'ride_complete', $3, $4, NOW() + INTERVAL '24 hours')
+                ON CONFLICT (key) DO UPDATE SET resource_id = EXCLUDED.resource_id`
 			if _, err := tx.Exec(ctx, idempQ, req.IdempotencyKey, partnerUserID, reqFingerprint, payID); err != nil {
 				return err
 			}
-			return nil
+			if err := store.ApplyCouponByRideTx(ctx, tx, rideID); err != nil {
+				return err
+			}
+			return store.SettleOutstandingByRideTx(ctx, tx, rideID)
 		},
 	})
 	if err != nil {
@@ -847,18 +867,6 @@ func (s *Service) CompleteRide(ctx context.Context, partnerUserID, rideID uuid.U
 		PaymentMethod: method,
 		Status:        initialPayStatus,
 		CreatedAt:     time.Now().UTC(),
-	}
-
-	if method == "wallet" && s.wallet != nil && finalPaise > 0 {
-		debit, derr := s.wallet.DebitForSubscription(ctx, ride.CustomerUserID, finalPaise, pay.ID, "ride-complete-"+pay.ID.String())
-		if derr != nil {
-			slog.Warn("rider: wallet debit for ride failed", "payment_id", pay.ID, "error", derr)
-			_ = s.store.MarkRidePaymentFailed(ctx, pay.ID)
-		} else {
-			if updatedPay, err := s.store.MarkRidePaymentSucceeded(ctx, pay.ID, &debit.TransactionID, nil); err == nil {
-				pay = updatedPay
-			}
-		}
 	}
 
 	if err := s.store.IncrementPartnerCompleted(ctx, partner.ID); err != nil {
@@ -891,15 +899,16 @@ type CancelRideRequest struct {
 	ExpectedRevision int
 }
 
-// CancelRide computes the per-state cancellation fee, marks the ride
-// cancelled, debits the wallet (when a fee applies and a customer cancels),
-// and updates partner cancellation rate when a partner cancels.
+// CancelRide marks the ride cancelled, charges the customer the rule's
+// cancellation fee when THEY cancel after a partner was assigned and more
+// than the rule's free window (cancel_free_seconds) has passed since
+// assignment, releases the coupon and any reserved outstanding lines, and
+// updates the partner cancellation rate when a partner cancels.
 //
-// Fee schedule (paise):
-//   - before partner_assigned   ->  0
-//   - before arrived            ->  ₹15 (1500p)
-//   - after arrived, before in_progress -> ₹50 (5000p)
-//   - during in_progress        ->  prorated (10% of estimated fare)
+// A partner, admin or system cancellation never charges the customer. A fee
+// is recorded on the ride (cancellation_fee_paise) and on
+// rider_customer_outstanding; the next quote charges it as a line and the
+// payments lane lets it be paid directly. The wallet is never called.
 func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID, by string, req CancelRideRequest) (*store.Ride, error) {
 	if by != "customer" && by != "partner" && by != "admin" && by != "system" {
 		return nil, fmt.Errorf("invalid: by must be customer | partner | admin | system")
@@ -938,70 +947,19 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 			return nil, fmt.Errorf("forbidden: ride not assigned to this partner")
 		}
 	}
-	feePaise := computeCancellationFeePaise(ride)
 	to := "cancelled_by_" + by
 	if by == "system" {
 		to = "expired"
-	}
-	reason := req.Reason
-	r := &reason
-	if reason == "" {
-		r = nil
 	}
 	var actorRef *uuid.UUID
 	if actorUserID != uuid.Nil {
 		actorRef = &actorUserID
 	}
-
-	outboxPayload, _ := json.Marshal(map[string]interface{}{
-		"ride_id":   rideID.String(),
-		"reason":    reason,
-		"by":        by,
-		"fee_paise": feePaise,
-	})
-
-	updatedRide, err := s.store.TransitionRideAtomic(ctx, store.TransitionRideAtomicInput{
-		RideID:           rideID,
-		ExpectedRevision: expRev,
-		FromStatus:       ride.Status,
-		ToStatus:         to,
-		ActorKind:        by,
-		ActorUserID:      actorRef,
-		Reason:           r,
-		OutboxEventType:  "rider.ride.cancelled",
-		OutboxPayload:    outboxPayload,
-		Mutate: func(tx pgx.Tx, rd *store.Ride) error {
-			const cancelQ = `
-                UPDATE rider_rides
-                SET cancellation_fee_paise = $2, cancelled_by_kind = $3, cancelled_by_user_id = $4,
-                    cancellation_reason = $5, cancelled_at = NOW()
-                WHERE id = $1`
-			_, err := tx.Exec(ctx, cancelQ, rideID, feePaise, by, actorRef, reason)
-			return err
-		},
+	updatedRide, feePaise, err := s.cancelRide(ctx, ride, cancelParams{
+		by: by, feeBy: by, to: to, actorUserID: actorRef, expectedRevision: expRev, reason: req.Reason,
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrRevisionConflict) {
-			return nil, fmt.Errorf("conflict: revision conflict")
-		}
-		if errors.Is(err, store.ErrInvalidTransition) {
-			return nil, fmt.Errorf("conflict: invalid state transition")
-		}
 		return nil, err
-	}
-	if by == "partner" && ride.PartnerID != nil {
-		if err := s.store.IncrementPartnerCancelled(ctx, *ride.PartnerID); err != nil {
-			slog.Warn("rider: increment partner cancelled failed", "partner_id", *ride.PartnerID, "error", err)
-		}
-	}
-	if by == "customer" && feePaise > 0 && s.wallet != nil && ride.PartnerID != nil {
-		key := req.IdempotencyKey
-		if key == "" {
-			key = "ride-cancel-" + rideID.String()
-		}
-		if _, derr := s.wallet.DebitForSubscription(ctx, actorUserID, feePaise, rideID, key); derr != nil {
-			slog.Warn("rider: cancellation fee wallet debit failed", "ride_id", rideID, "error", derr)
-		}
 	}
 	cancelledBy := ""
 	if actorRef != nil {
@@ -1011,7 +969,7 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 		RideID:               rideID.String(),
 		CancelledByKind:      by,
 		CancelledByUserID:    cancelledBy,
-		Reason:               reason,
+		Reason:               req.Reason,
 		CancellationFeePaise: feePaise,
 		CancelledAt:          time.Now().UTC(),
 	}); perr != nil {
@@ -1020,32 +978,178 @@ func (s *Service) CancelRide(ctx context.Context, actorUserID, rideID uuid.UUID,
 	return updatedRide, nil
 }
 
-// computeCancellationFeePaise applies the fee schedule per the spec.
-//
-// Exposed via test hook below. The float64 return path is internal —
-// callers persist the int64 paise.
-func computeCancellationFeePaise(r *store.Ride) int64 {
-	switch r.Status {
-	case "requested", "searching_partner", "partner_assigned":
-		return 0
-	case "partner_arriving":
-		return 1500
-	case "arrived":
-		return 5000
-	case "otp_verified", "in_progress":
-		// Prorate at 10% of the estimated fare, capped at ₹100.
-		if r.EstimatedFare == nil {
-			return 5000
+// cancelParams is the shared cancellation core's input (CancelRide and
+// MarkRideNoShow).
+type cancelParams struct {
+	by               string     // history actor kind: customer | partner | admin | system
+	feeBy            string     // pricing actor: by, or pricing.CancelNoShow
+	to               string     // target status
+	actorUserID      *uuid.UUID // signed actor, nil for system
+	expectedRevision int
+	reason           string
+	noShowBy         *uuid.UUID // partner id when a no-show is reported
+}
+
+// cancelRide is the transactional core: fee, transition, coupon and
+// outstanding release, the fee's own breakdown on the ride, the new
+// outstanding row and the partner counter. Returns the fee charged.
+func (s *Service) cancelRide(ctx context.Context, ride *store.Ride, p cancelParams) (*store.Ride, int64, error) {
+	now := s.now()
+	var feePaise int64
+	var tax pricing.TaxComputer = s.tax
+	if ride.CityID != nil {
+		if rule, err := s.store.GetFareRule(ctx, *ride.CityID, ride.VehicleType); err == nil {
+			feePaise = pricing.CancellationFee(rule.PricingRule(), p.feeBy, ride.AssignedAt, now)
+		} else if !errors.Is(err, store.ErrFareRuleNotFound) {
+			return nil, 0, fmt.Errorf("fare rule lookup: %w", err)
 		}
-		fee := *r.EstimatedFare * 0.10
-		paise := int64(math.Round(fee * 100))
-		if paise > 10000 {
-			paise = 10000
+		if city, err := s.store.GetCity(ctx, *ride.CityID); err == nil {
+			tax = s.taxFor(city)
 		}
-		return paise
-	default:
-		return 0
 	}
+	var breakdownJSON []byte
+	if feePaise > 0 {
+		b, err := pricing.CancellationBreakdown(feePaise, tax, now)
+		if err != nil {
+			return nil, 0, fmt.Errorf("price cancellation fee: %w", err)
+		}
+		breakdownJSON, _ = json.Marshal(b)
+	}
+	reason := p.reason
+	r := &reason
+	if reason == "" {
+		r = nil
+	}
+	outboxPayload, _ := json.Marshal(map[string]interface{}{
+		"ride_id":   ride.ID.String(),
+		"reason":    reason,
+		"by":        p.by,
+		"fee_paise": feePaise,
+	})
+	updatedRide, err := s.store.TransitionRideAtomic(ctx, store.TransitionRideAtomicInput{
+		RideID:           ride.ID,
+		ExpectedRevision: p.expectedRevision,
+		FromStatus:       ride.Status,
+		ToStatus:         p.to,
+		ActorKind:        p.by,
+		ActorUserID:      p.actorUserID,
+		Reason:           r,
+		OutboxEventType:  "rider.ride.cancelled",
+		OutboxPayload:    outboxPayload,
+		Mutate: func(tx pgx.Tx, rd *store.Ride) error {
+			const cancelQ = `
+                UPDATE rider_rides
+                SET cancellation_fee_paise = $2, cancelled_by_kind = $3, cancelled_by_user_id = $4,
+                    cancellation_reason = $5, cancelled_at = NOW(),
+                    fare_breakdown = COALESCE($6::jsonb, fare_breakdown),
+                    no_show_reported_at = CASE WHEN $7::uuid IS NULL THEN no_show_reported_at ELSE NOW() END,
+                    no_show_by = COALESCE($7::uuid, no_show_by)
+                WHERE id = $1`
+			if _, err := tx.Exec(ctx, cancelQ, ride.ID, feePaise, p.by, p.actorUserID, reason, breakdownJSON, p.noShowBy); err != nil {
+				return err
+			}
+			if err := store.ReleaseCouponByRideTx(ctx, tx, ride.ID); err != nil {
+				return err
+			}
+			if err := store.ReleaseOutstandingByRideTx(ctx, tx, ride.ID); err != nil {
+				return err
+			}
+			return store.CreateOutstandingTx(ctx, tx, ride.CustomerUserID, ride.ID, feePaise, "cancellation_fee")
+		},
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrRevisionConflict) {
+			return nil, 0, fmt.Errorf("conflict: revision conflict")
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return nil, 0, fmt.Errorf("conflict: invalid state transition")
+		}
+		return nil, 0, err
+	}
+	if p.by == "partner" && ride.PartnerID != nil {
+		if err := s.store.IncrementPartnerCancelled(ctx, *ride.PartnerID); err != nil {
+			slog.Warn("rider: increment partner cancelled failed", "partner_id", *ride.PartnerID, "error", err)
+		}
+	}
+	return updatedRide, feePaise, nil
+}
+
+// trackedRoute is what completion measured.
+type trackedRoute struct {
+	distanceM *int
+	durationS *int
+}
+
+// finalBreakdown prices the completed ride from the locked quote breakdown
+// (see CompleteRide). A ride booked without a breakdown (legacy rows) is
+// priced from its estimated route with no surge.
+func (s *Service) finalBreakdown(ctx context.Context, ride *store.Ride, rule *store.FareRule, city *store.City, now time.Time) (pricing.Breakdown, trackedRoute, error) {
+	var quote pricing.Breakdown
+	if len(ride.FareBreakdown) > 0 {
+		if err := json.Unmarshal(ride.FareBreakdown, &quote); err != nil {
+			return pricing.Breakdown{}, trackedRoute{}, fmt.Errorf("decode quote breakdown: %w", err)
+		}
+	}
+	if quote.DistanceMeters == 0 && ride.EstimatedDistanceKM != nil {
+		quote.DistanceMeters = int(math.Round(*ride.EstimatedDistanceKM * 1000))
+	}
+	if quote.DurationSeconds == 0 && ride.EstimatedDurationMin != nil {
+		quote.DurationSeconds = int(math.Round(*ride.EstimatedDurationMin * 60))
+	}
+	if quote.SurgeReason == "" {
+		quote.SurgeReason = pricing.SurgeNone
+	}
+
+	var tr trackedRoute
+	waitingSeconds := 0
+	if ride.ArrivedAt != nil && ride.StartedAt != nil && ride.StartedAt.After(*ride.ArrivedAt) {
+		waitingSeconds = int(ride.StartedAt.Sub(*ride.ArrivedAt).Seconds())
+	}
+	actualDuration := quote.DurationSeconds
+	if ride.StartedAt != nil && now.After(*ride.StartedAt) {
+		actualDuration = int(now.Sub(*ride.StartedAt).Seconds())
+		tr.durationS = &actualDuration
+	}
+	points, err := s.store.ListTrackPoints(ctx, ride.ID)
+	if err != nil {
+		return pricing.Breakdown{}, trackedRoute{}, fmt.Errorf("list track points: %w", err)
+	}
+	trackedM := pricing.TrackedDistanceMeters(points)
+	if len(points) > 1 {
+		tr.distanceM = &trackedM
+	}
+
+	in := pricing.Input{
+		Rule:             rule.PricingRule(),
+		DistanceMeters:   quote.DistanceMeters,
+		DurationSeconds:  quote.DurationSeconds,
+		SurgeBPS:         quote.SurgeBasisPoints,
+		SurgeReason:      quote.SurgeReason,
+		WindowName:       quote.WindowName,
+		WaitingSeconds:   waitingSeconds,
+		OutstandingPaise: quote.OutstandingPaise,
+		OutstandingIDs:   quote.OutstandingIDs,
+		Tax:              s.taxFor(city),
+		InvoiceDate:      now,
+	}
+	if quote.CouponID != "" || quote.DiscountPaise > 0 {
+		// The discount is locked at its quoted amount (a flat coupon), so a
+		// re-priced distance never grows or shrinks it.
+		in.Coupon = &pricing.Coupon{ID: quote.CouponID, Code: quote.CouponCode, DiscountType: pricing.CouponFlat, ValuePaise: quote.DiscountPaise}
+	}
+	recomputed := false
+	if pricing.Deviates(quote.DistanceMeters, trackedM) {
+		in.DistanceMeters = trackedM
+		in.DurationSeconds = actualDuration
+		in.RideFareCapPaise = 2 * quote.RideFarePaise
+		recomputed = true
+	}
+	final, err := pricing.Compute(in)
+	if err != nil {
+		return pricing.Breakdown{}, trackedRoute{}, fmt.Errorf("price final fare: %w", err)
+	}
+	final.RecomputedFromTrack = recomputed
+	return final, tr, nil
 }
 
 // --- Rating ---------------------------------------------------------------
@@ -1153,8 +1257,11 @@ func (s *Service) loadRideForPartner(ctx context.Context, partnerUserID, rideID 
 	return ride, partner, nil
 }
 
-// generateOTPAndHash returns a 4-digit OTP + its hash + its encrypted envelope.
-func generateOTPAndHash() (plain string, hash string, encrypted []byte, err error) {
+// generateOTPAndHash returns a 4-digit OTP, its bcrypt hash (what StartRide
+// verifies) and the OTP sealed under rider.ride_otp (what the customer's
+// active-ride view opens once the captain has arrived). Without a sealer it
+// fails closed: no ride is ever assigned with a plaintext or unsealed OTP.
+func (s *Service) generateOTPAndHash(ctx context.Context) (plain string, hash string, sealed []byte, err error) {
 	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", "", nil, err
@@ -1168,11 +1275,11 @@ func generateOTPAndHash() (plain string, hash string, encrypted []byte, err erro
 	if err != nil {
 		return "", "", nil, err
 	}
-	enc, err := otp.EncryptOTP(plain, nil)
+	sealed, err = s.otpCrypto.SealOTP(ctx, plain)
 	if err != nil {
 		return "", "", nil, err
 	}
-	return plain, string(h), enc, nil
+	return plain, string(h), sealed, nil
 }
 
 // hexEncode is a tiny hex encoder so share tokens are URL-safe and the

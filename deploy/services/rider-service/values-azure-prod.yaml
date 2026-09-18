@@ -49,11 +49,30 @@ externalSecret:
   #   remoteRef: caller_admin_pubkey
   # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID
   #   remoteRef: caller_admin_kid
+  # Pricing engine secrets. BOTH are required before the next rider-service
+  # deploy: with ENV=prod the service refuses to start without them.
+  #   RIDER_PII_KEYS: ride OTPs sealed at rest (scope rider.ride_otp),
+  #     "v1:<base64 32-byte key>", the FOOD_PII_KEYS format. Never a dev key.
+  #   MOPEDU_PLATFORM_GSTIN: the platform's real e-commerce-operator GSTIN,
+  #     liable for ride-fare GST under s.9(5).
+  #   GOOGLE_MAPS_SERVER_KEY: optional; without it quotes use haversine.
+  # - secretKey: RIDER_PII_KEYS
+  #   remoteRef: rider-pii-keys
+  # - secretKey: MOPEDU_PLATFORM_GSTIN
+  #   remoteRef: mopedu-platform-gstin
+  # - secretKey: GOOGLE_MAPS_SERVER_KEY
+  #   remoteRef: google-maps-server-key
   secretStoreName: azure-key-vault
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Coupons stay off in production until the tax adviser confirms the GST
+  # treatment of a discount (the same open question as FOOD_COUPONS_ENABLED).
+  # Estimates with a coupon_code answer 422 COUPONS_DISABLED while false.
+  MOPEDU_COUPONS_ENABLED: "false"
+  # Demand surge ceiling in basis points (5000 = x1.5).
+  MOPEDU_SURGE_CAP_BPS: "5000"
   # Admin console (see externalSecret above for the order): uncomment
   # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID. OPS is rider's
   # AdminPermissions (rider-service/internal/http/admin_token.go).

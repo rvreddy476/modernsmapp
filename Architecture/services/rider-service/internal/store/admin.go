@@ -509,18 +509,25 @@ func (s *Store) UpdateZone(ctx context.Context, id uuid.UUID, in UpdateZoneInput
 	return &z, nil
 }
 
-// CreateFareRuleInput captures the input for CreateFareRule.
+// CreateFareRuleInput captures the input for CreateFareRule. Money is
+// paise; the service converts the legacy float body (ROUND(x*100)) before
+// it gets here, and the float columns are written as paise/100 so the two
+// views never disagree.
 type CreateFareRuleInput struct {
-	CityID          uuid.UUID
-	VehicleType     string
-	BaseFare        float64
-	PerKMFare       float64
-	PerMinuteFare   float64
-	MinimumFare     float64
-	PlatformFee     float64
+	CityID                uuid.UUID
+	VehicleType           string
+	BasePaise             int64
+	PerKMPaise            int64
+	PerMinutePaise        int64
+	MinimumPaise          int64
+	PlatformFeePaise      int64
+	CancellationFeePaise  int64
+	WaitingFreeMinutes    int
+	WaitingPerMinutePaise int64
+	CancelFreeSeconds     int
+	// Legacy multipliers: stored, no longer priced (fare windows replaced them).
 	NightMultiplier float64
 	PeakMultiplier  float64
-	CancellationFee float64
 }
 
 // CreateFareRule inserts a new fare rule. starts_at = now(); the active rule
@@ -528,53 +535,76 @@ type CreateFareRuleInput struct {
 func (s *Store) CreateFareRule(ctx context.Context, in CreateFareRuleInput) (*FareRule, error) {
 	const q = `
         INSERT INTO rider_fare_rules (
-            city_id, vehicle_type, base_fare, per_km_fare, per_minute_fare, minimum_fare,
-            platform_fee, night_multiplier, peak_multiplier, cancellation_fee, is_active, starts_at
+            city_id, vehicle_type,
+            base_fare, per_km_fare, per_minute_fare, minimum_fare, platform_fee, cancellation_fee,
+            night_multiplier, peak_multiplier, is_active, starts_at,
+            base_fare_paise, per_km_fare_paise, per_minute_fare_paise, minimum_fare_paise,
+            platform_fee_paise, cancellation_fee_paise,
+            waiting_free_minutes, waiting_per_minute_paise, cancel_free_seconds
         ) VALUES (
-            $1, $2::rider_vehicle_type, $3, $4, $5, $6,
-            $7, $8, $9, $10, TRUE, NOW()
+            $1, $2::rider_vehicle_type,
+            $3::bigint / 100.0, $4::bigint / 100.0, $5::bigint / 100.0, $6::bigint / 100.0, $7::bigint / 100.0, $8::bigint / 100.0,
+            $9, $10, TRUE, NOW(),
+            $3, $4, $5, $6, $7, $8,
+            $11, $12, $13
         )
-        RETURNING id, city_id, vehicle_type, base_fare, per_km_fare, per_minute_fare, minimum_fare,
-                  platform_fee, night_multiplier, peak_multiplier, cancellation_fee, is_active, starts_at`
+        RETURNING ` + fareRuleColumns
 	row := s.db.QueryRow(ctx, q,
-		in.CityID, in.VehicleType, in.BaseFare, in.PerKMFare, in.PerMinuteFare, in.MinimumFare,
-		in.PlatformFee, in.NightMultiplier, in.PeakMultiplier, in.CancellationFee,
+		in.CityID, in.VehicleType,
+		in.BasePaise, in.PerKMPaise, in.PerMinutePaise, in.MinimumPaise, in.PlatformFeePaise, in.CancellationFeePaise,
+		in.NightMultiplier, in.PeakMultiplier,
+		in.WaitingFreeMinutes, in.WaitingPerMinutePaise, in.CancelFreeSeconds,
 	)
 	return scanFareRule(row)
 }
 
-// UpdateFareRuleInput captures the patchable fields on a fare rule row.
+// UpdateFareRuleInput captures the patchable fields on a fare rule row, in
+// paise (nil = unchanged).
 type UpdateFareRuleInput struct {
-	BaseFare        *float64
-	PerKMFare       *float64
-	PerMinuteFare   *float64
-	MinimumFare     *float64
-	PlatformFee     *float64
-	NightMultiplier *float64
-	PeakMultiplier  *float64
-	CancellationFee *float64
-	IsActive        *bool
+	BasePaise             *int64
+	PerKMPaise            *int64
+	PerMinutePaise        *int64
+	MinimumPaise          *int64
+	PlatformFeePaise      *int64
+	CancellationFeePaise  *int64
+	WaitingFreeMinutes    *int
+	WaitingPerMinutePaise *int64
+	CancelFreeSeconds     *int
+	NightMultiplier       *float64
+	PeakMultiplier        *float64
+	IsActive              *bool
 }
 
-// UpdateFareRule applies a partial update.
+// UpdateFareRule applies a partial update; each float column follows its
+// paise column.
 func (s *Store) UpdateFareRule(ctx context.Context, id uuid.UUID, in UpdateFareRuleInput) (*FareRule, error) {
 	const q = `
         UPDATE rider_fare_rules SET
-            base_fare        = COALESCE($2, base_fare),
-            per_km_fare      = COALESCE($3, per_km_fare),
-            per_minute_fare  = COALESCE($4, per_minute_fare),
-            minimum_fare     = COALESCE($5, minimum_fare),
-            platform_fee     = COALESCE($6, platform_fee),
-            night_multiplier = COALESCE($7, night_multiplier),
-            peak_multiplier  = COALESCE($8, peak_multiplier),
-            cancellation_fee = COALESCE($9, cancellation_fee),
-            is_active        = COALESCE($10, is_active)
+            base_fare_paise          = COALESCE($2, base_fare_paise),
+            per_km_fare_paise        = COALESCE($3, per_km_fare_paise),
+            per_minute_fare_paise    = COALESCE($4, per_minute_fare_paise),
+            minimum_fare_paise       = COALESCE($5, minimum_fare_paise),
+            platform_fee_paise       = COALESCE($6, platform_fee_paise),
+            cancellation_fee_paise   = COALESCE($7, cancellation_fee_paise),
+            waiting_free_minutes     = COALESCE($8, waiting_free_minutes),
+            waiting_per_minute_paise = COALESCE($9, waiting_per_minute_paise),
+            cancel_free_seconds      = COALESCE($10, cancel_free_seconds),
+            night_multiplier         = COALESCE($11, night_multiplier),
+            peak_multiplier          = COALESCE($12, peak_multiplier),
+            is_active                = COALESCE($13, is_active),
+            base_fare        = COALESCE($2, base_fare_paise) / 100.0,
+            per_km_fare      = COALESCE($3, per_km_fare_paise) / 100.0,
+            per_minute_fare  = COALESCE($4, per_minute_fare_paise) / 100.0,
+            minimum_fare     = COALESCE($5, minimum_fare_paise) / 100.0,
+            platform_fee     = COALESCE($6, platform_fee_paise) / 100.0,
+            cancellation_fee = COALESCE($7, cancellation_fee_paise) / 100.0,
+            updated_at       = NOW()
         WHERE id = $1
-        RETURNING id, city_id, vehicle_type, base_fare, per_km_fare, per_minute_fare, minimum_fare,
-                  platform_fee, night_multiplier, peak_multiplier, cancellation_fee, is_active, starts_at`
+        RETURNING ` + fareRuleColumns
 	row := s.db.QueryRow(ctx, q, id,
-		in.BaseFare, in.PerKMFare, in.PerMinuteFare, in.MinimumFare,
-		in.PlatformFee, in.NightMultiplier, in.PeakMultiplier, in.CancellationFee, in.IsActive,
+		in.BasePaise, in.PerKMPaise, in.PerMinutePaise, in.MinimumPaise, in.PlatformFeePaise, in.CancellationFeePaise,
+		in.WaitingFreeMinutes, in.WaitingPerMinutePaise, in.CancelFreeSeconds,
+		in.NightMultiplier, in.PeakMultiplier, in.IsActive,
 	)
 	r, err := scanFareRule(row)
 	if err != nil {

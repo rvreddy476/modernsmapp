@@ -48,11 +48,31 @@ externalSecret:
     # Setting SERVICE_CALLERS before the key exists refuses boot.
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+    # Pricing engine secrets. BOTH are required before the next rider-service
+    # deploy: with ENV=prod the service refuses to start without them.
+    #   RIDER_PII_KEYS: ride OTPs sealed at rest (scope rider.ride_otp),
+    #     "v1:<base64 32-byte key>", the FOOD_PII_KEYS format; generate with
+    #     `openssl rand -base64 32`. Never a dev key.
+    #   MOPEDU_PLATFORM_GSTIN: the platform's real e-commerce-operator GSTIN,
+    #     liable for ride-fare GST under s.9(5).
+    #   GOOGLE_MAPS_SERVER_KEY: optional; without it quotes use the haversine
+    #     estimate. Restrict the key to the Routes API and this cluster's egress.
+    # - { secretKey: RIDER_PII_KEYS, remoteRef: rider_pii_keys }
+    # - { secretKey: MOPEDU_PLATFORM_GSTIN, remoteRef: mopedu_platform_gstin }
+    # - { secretKey: GOOGLE_MAPS_SERVER_KEY, remoteRef: google_maps_server_key }
 
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Coupons stay off in production until the tax adviser confirms the GST
+  # treatment of a discount (the ride fare is taxed net of the coupon under
+  # s.9(5); the same open question as FOOD_COUPONS_ENABLED). Estimates with
+  # a coupon_code answer 422 COUPONS_DISABLED while this is false.
+  MOPEDU_COUPONS_ENABLED: "false"
+  # Demand surge ceiling in basis points (5000 = x1.5); peak / night fare
+  # windows are database rows and are not capped by this.
+  MOPEDU_SURGE_CAP_BPS: "5000"
   # Admin console (see externalSecret above for the order): uncomment
   # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID. OPS is rider's
   # AdminPermissions (rider-service/internal/http/admin_token.go).

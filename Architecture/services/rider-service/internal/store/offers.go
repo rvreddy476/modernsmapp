@@ -341,35 +341,10 @@ func (s *Store) RejectOffer(ctx context.Context, offerID, partnerID uuid.UUID, r
 	return tx.Commit(ctx)
 }
 
-// MarkRideNoShow is called by the partner when the customer doesn't
-// appear at pickup after the configured grace window (typically 5 min).
-// It transitions the ride and bumps the matcher's no-show counters on
-// the customer side (in a future iteration this could also penalise
-// the customer's account).
-func (s *Store) MarkRideNoShow(ctx context.Context, rideID, partnerID uuid.UUID, reason string) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `
-		UPDATE rider_rides
-		SET status = 'cancelled',
-			no_show_reported_at = NOW(),
-			no_show_by = $2,
-			cancellation_reason = COALESCE(NULLIF($3, ''), 'customer_no_show')
-		WHERE id = $1
-		  AND partner_id = $2
-		  AND status IN ('partner_assigned','partner_arriving','partner_arrived')
-	`, rideID, partnerID, reason)
-	if err != nil {
-		return fmt.Errorf("mark no_show: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("ride not in a state allowing no_show")
-	}
-	return tx.Commit(ctx)
-}
+// The old MarkRideNoShow lived here. It wrote status = 'cancelled', a value
+// rider_ride_status does not have, so it never succeeded; the no-show path is
+// now service.MarkRideNoShow over TransitionRideAtomic (cancelled_by_partner,
+// reason customer_no_show) and charges the customer the cancellation fee.
 
 // ExpireStaleOffers flips every 'sent' offer past its expiry to 'expired'.
 // Returns the number of rows expired.

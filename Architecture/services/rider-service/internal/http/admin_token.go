@@ -264,6 +264,19 @@ func (h *Handler) adminRoutes() []adminRoute {
 		{post, "/fare-rules", PermFaresManage, h.AdminCreateFareRule},
 		{patch, "/fare-rules/:id", PermFaresManage, h.AdminUpdateFareRule},
 
+		// Coupons: pricing configuration, so the fare-rules permission. The
+		// redemptions list is declared before /coupons/:id so gin routes it.
+		{get, "/coupons", PermFaresManage, h.AdminListCoupons},
+		{get, "/coupons/redemptions", PermFaresManage, h.AdminListCouponRedemptions},
+		{post, "/coupons", PermFaresManage, h.AdminCreateCoupon},
+		{patch, "/coupons/:id", PermFaresManage, h.AdminUpdateCoupon},
+		{post, "/coupons/:id/deactivate", PermFaresManage, h.AdminDeactivateCoupon},
+
+		// Customer outstanding cancellation fees: reading is a payments read,
+		// waiving forgives money owed, so the settle permission.
+		{get, "/outstanding", PermPaymentsRead, h.AdminListOutstanding},
+		{post, "/outstanding/:id/waive", PermPaymentsSettle, h.AdminWaiveOutstanding},
+
 		{get, "/audit-logs", PermAuditRead, h.AdminListAuditLogs},
 
 		// S4 reports.

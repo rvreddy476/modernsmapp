@@ -7,8 +7,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +19,9 @@ import (
 	"github.com/atpost/rider-service/internal/digilocker"
 	riderevents "github.com/atpost/rider-service/internal/events"
 	riderhttp "github.com/atpost/rider-service/internal/http"
+	"github.com/atpost/rider-service/internal/pricing"
+	"github.com/atpost/rider-service/internal/riderpii"
+	"github.com/atpost/rider-service/internal/routing"
 	"github.com/atpost/rider-service/internal/runtimeenv"
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/rider-service/internal/store"
@@ -69,6 +74,42 @@ func main() {
 	slog.Info("digilocker client selected", "mode", digilockerMode, "production", production)
 
 	ctx := context.Background()
+
+	// Ride OTPs are sealed at rest under RIDER_PII_KEYS ("v1:<base64 32-byte
+	// key>[,v2:<key>]", the FOOD_PII_KEYS format). Production refuses to start
+	// without it; local/dev without it boots and offer acceptance answers
+	// OTP_SEALING_NOT_CONFIGURED, never a plaintext OTP.
+	otpCrypto, err := riderpii.FromEnv(ctx, os.Getenv)
+	if err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if !otpCrypto.Configured() {
+		slog.Warn("RIDER_PII_KEYS unset (local/dev): ride OTPs cannot be sealed, so offers cannot be accepted")
+	}
+
+	// Pricing engine environment.
+	//   MOPEDU_SURGE_CAP_BPS      demand surge ceiling in bps, default 5000.
+	//   MOPEDU_COUPONS_ENABLED    default true; "false" in staging/prod until
+	//                             the adviser confirms the GST treatment of
+	//                             discounts (like FOOD_COUPONS_ENABLED).
+	//   MOPEDU_PLATFORM_GSTIN     the platform's GSTIN, liable under s.9(5)
+	//                             for ride fares; required in production,
+	//                             validated whenever set. Unset outside
+	//                             production prices with the flat rider-local
+	//                             table (5% / 18%).
+	//   GOOGLE_MAPS_SERVER_KEY    optional; Routes API with haversine fallback.
+	//   MOPEDU_ROUTING_TIMEOUT_MS optional, default 2000.
+	svcCfg, err := pricingConfigFromEnv(os.Getenv, production)
+	if err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
+	routingCfg, err := routing.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
 	poolCfg, err := pgxpool.ParseConfig(pgDSN)
 	if err != nil {
 		slog.Error("parse db config", "error", err)
@@ -130,9 +171,24 @@ func main() {
 	walletClient := wallet.NewHTTPClient(walletURL, internalKey)
 	slog.Info("wallet client wired", "url", walletURL)
 
-	riderSvc := service.New(riderStore, walletClient, service.Config{})
+	riderSvc := service.New(riderStore, walletClient, svcCfg)
 	riderSvc.SetDigiLockerClient(dlClient)
 	riderSvc.SetRedis(rdb)
+	riderSvc.SetOTPCrypto(otpCrypto)
+
+	// Routing: Cache(Fallback(GoogleRoutes, Haversine)). No key: haversine
+	// only. Google answers are cached in Redis for five minutes.
+	var googleRoutes routing.Router
+	if routingCfg.GoogleKey != "" {
+		googleRoutes = routing.NewGoogleRoutes(routingCfg.GoogleKey, routing.GoogleOptions{Timeout: routingCfg.Timeout})
+	}
+	riderSvc.SetRouter(routing.CalculatorFromRouter(
+		routing.NewCache(rdb, routing.NewFallback(googleRoutes, routing.Haversine{}, slog.Default()), slog.Default()),
+	))
+	slog.Info("rider-service: pricing",
+		"google_routes", googleRoutes != nil, "routing_timeout", routingCfg.Timeout,
+		"surge_cap_bps", svcCfg.SurgeCapBPS, "coupons_enabled", svcCfg.CouponsEnabled,
+		"platform_gstin_configured", svcCfg.PlatformGSTIN != "", "otp_sealing", otpCrypto.Configured())
 
 	// Realtime: best-effort Pub/Sub publishes + topic-token signer.
 	// REALTIME_TOKEN_SECRET must match notification-service's verifier.
@@ -260,6 +316,39 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// pricingConfigFromEnv reads the pricing engine variables (see main).
+func pricingConfigFromEnv(getenv func(string) string, production bool) (service.Config, error) {
+	cfg := service.Config{}
+	if raw := strings.TrimSpace(getenv("MOPEDU_SURGE_CAP_BPS")); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 || n > 30000 {
+			return cfg, fmt.Errorf("MOPEDU_SURGE_CAP_BPS must be a whole number of basis points between 0 and 30000")
+		}
+		cfg.SurgeCapBPS = n
+	}
+	if raw := strings.TrimSpace(getenv("MOPEDU_COUPONS_ENABLED")); raw != "" {
+		on, err := strconv.ParseBool(raw)
+		if err != nil {
+			return cfg, fmt.Errorf("MOPEDU_COUPONS_ENABLED must be true or false")
+		}
+		cfg.CouponsEnabled, cfg.CouponsFlagSet = on, true
+	} else {
+		cfg.CouponsEnabled, cfg.CouponsFlagSet = true, true
+	}
+	raw := strings.TrimSpace(getenv("MOPEDU_PLATFORM_GSTIN"))
+	if raw == "" {
+		if production {
+			return cfg, fmt.Errorf("MOPEDU_PLATFORM_GSTIN is required in production: the platform is liable for GST on ride fares under s.9(5)")
+		}
+		return cfg, nil
+	}
+	if _, err := pricing.NewGSTComputer(nil, raw, ""); err != nil {
+		return cfg, fmt.Errorf("MOPEDU_PLATFORM_GSTIN is not a valid GSTIN")
+	}
+	cfg.PlatformGSTIN = raw
+	return cfg, nil
 }
 
 func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {

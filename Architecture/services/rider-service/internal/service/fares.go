@@ -5,12 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"strconv"
 	"time"
 
+	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 var pilotVehicleTypes = map[string]bool{
@@ -20,27 +25,37 @@ var pilotVehicleTypes = map[string]bool{
 
 // FareEstimateRequest is the input for EstimateFare.
 type FareEstimateRequest struct {
-	CustomerUserID  *uuid.UUID
-	PickupLat       float64
-	PickupLng       float64
-	PickupLabel     string
-	PickupPlaceID   string
-	DropLat         float64
-	DropLng         float64
-	DropLabel       string
-	DropPlaceID     string
-	VehicleType     string // optional; if empty estimates all pilot vehicle types (bike, auto)
-	CityID          uuid.UUID
-	SurgeMultiplier float64 // internal system use only
+	CustomerUserID *uuid.UUID
+	PickupLat      float64
+	PickupLng      float64
+	PickupLabel    string
+	PickupPlaceID  string
+	DropLat        float64
+	DropLng        float64
+	DropLabel      string
+	DropPlaceID    string
+	VehicleType    string // optional; if empty estimates all pilot vehicle types (bike, auto)
+	CityID         uuid.UUID
+	// CouponCode is validated (typed CouponError on failure) and priced into
+	// every option the coupon covers, then locked in the quote snapshot.
+	CouponCode string
 }
 
-// FareEstimateResult mirrors the API response shape.
+// FareEstimateResult mirrors the API response shape. The legacy INR floats
+// are derived from the paise and kept for older clients.
 type FareEstimateResult struct {
 	QuoteID              string              `json:"quote_id"`
 	EstimatedDistanceKM  float64             `json:"estimated_distance_km"`
 	EstimatedDurationMin float64             `json:"estimated_duration_min"`
 	FareEstimatePaise    int64               `json:"fare_estimate_paise"`
 	SurgeMultiplier      float64             `json:"surge_multiplier"`
+	SurgeBPS             int64               `json:"surge_bps"`
+	SurgeReason          string              `json:"surge_reason"`
+	WindowName           string              `json:"window_name,omitempty"`
+	DiscountPaise        int64               `json:"discount_paise"`
+	CouponCode           string              `json:"coupon_code,omitempty"`
+	OutstandingPaise     int64               `json:"outstanding_paise"`
+	TaxNote              string              `json:"tax_note"`
 	VehicleType          string              `json:"vehicle_type"`
 	ETAToPickupSeconds   int                 `json:"eta_to_pickup_seconds"`
 	BaseFareINR          float64             `json:"base_fare_inr"`
@@ -70,6 +85,7 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 	if err != nil || dropCity == nil || dropCity.ID != req.CityID {
 		return nil, fmt.Errorf("invalid: drop location is outside serviceable city area")
 	}
+	city := pickupCity
 
 	// 2. Route calculation through router provider abstraction
 	routeRes, err := s.router.CalculateRoute(ctx, req.PickupLat, req.PickupLng, req.DropLat, req.DropLng)
@@ -86,9 +102,35 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 		typesToQuote = []string{req.VehicleType}
 	}
 
+	// 4. Coupon (typed errors), outstanding fees, tax and the quote instant.
+	now := s.now()
+	var coupon *store.Coupon
+	var couponRule *pricing.Coupon
+	if req.CouponCode != "" {
+		coupon, couponRule, err = s.ValidateCoupon(ctx, req.CouponCode, req.CustomerUserID, &req.CityID, req.VehicleType)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var outstanding []store.CustomerOutstanding
+	if req.CustomerUserID != nil {
+		outstanding, err = s.store.ListPendingOutstanding(ctx, *req.CustomerUserID)
+		if err != nil {
+			return nil, fmt.Errorf("list outstanding: %w", err)
+		}
+	}
+	var outstandingPaise int64
+	var outstandingIDs []string
+	for _, o := range outstanding {
+		outstandingPaise += o.AmountPaise
+		outstandingIDs = append(outstandingIDs, o.ID.String())
+	}
+	tax := s.taxFor(city)
+
 	var options []store.QuoteOption
 	var primaryOption *store.QuoteOption
 	var primaryRule *store.FareRule
+	couponCovered, couponUnderMin := 0, 0
 
 	for _, vt := range typesToQuote {
 		rule, err := s.store.GetFareRule(ctx, req.CityID, vt)
@@ -99,33 +141,35 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 			primaryRule = rule
 		}
 
-		// Calculate surge multiplier server-side only
-		surge := math.Max(rule.NightMultiplier, rule.PeakMultiplier)
-		if surge <= 0 {
-			surge = 1.0
-		}
+		surgeBPS, surgeReason, windowName := s.surgeFor(ctx, city, vt, now)
 
-		basePaise := int64(math.Round(rule.BaseFare * 100))
-		perKMPaise := int64(math.Round(rule.PerKMFare * 100))
-		perMinPaise := int64(math.Round(rule.PerMinuteFare * 100))
-		platformPaise := int64(math.Round(rule.PlatformFee * 100))
-		minPaise := int64(math.Round(rule.MinimumFare * 100))
-
-		distPaise := (int64(routeRes.DistanceMeters) * perKMPaise) / 1000
-		timePaise := (int64(routeRes.DurationSeconds) * perMinPaise) / 60
-		rawPaise := basePaise + distPaise + timePaise + platformPaise
-		if rawPaise < minPaise {
-			rawPaise = minPaise
+		var optCoupon *pricing.Coupon
+		if couponRule != nil && couponCoversVehicle(coupon, vt) {
+			optCoupon = couponRule
 		}
-
-		surgeMult := math.Max(rule.NightMultiplier, rule.PeakMultiplier)
-		var surgeBPS int64 = 0
-		if surgeMult > 1.0 {
-			surgeBPS = int64(math.Round((surgeMult - 1.0) * 10000))
+		b, err := pricing.Compute(pricing.Input{
+			Rule:             rule.PricingRule(),
+			DistanceMeters:   routeRes.DistanceMeters,
+			DurationSeconds:  routeRes.DurationSeconds,
+			SurgeBPS:         surgeBPS,
+			SurgeReason:      surgeReason,
+			WindowName:       windowName,
+			Coupon:           optCoupon,
+			OutstandingPaise: outstandingPaise,
+			OutstandingIDs:   outstandingIDs,
+			Tax:              tax,
+			InvoiceDate:      now,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("price %s: %w", vt, err)
 		}
-		surgePaise := (rawPaise * surgeBPS) / 10000
-		totalPaise := rawPaise + surgePaise
-		taxPaise := (totalPaise * 500) / 10000 // 5% GST in BPS
+		if optCoupon != nil {
+			couponCovered++
+			if b.DiscountPaise == 0 && !optCoupon.MeetsMinFare(b.RideFarePaise) {
+				couponUnderMin++
+				b.CouponCode, b.CouponID = "", ""
+			}
+		}
 
 		opt := store.QuoteOption{
 			VehicleType:      vt,
@@ -134,16 +178,13 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 			DistanceMeters:   routeRes.DistanceMeters,
 			DurationSeconds:  routeRes.DurationSeconds,
 			Currency:         "INR",
-			TotalPaise:       totalPaise + taxPaise,
-			Breakdown: store.QuoteBreakdownPaise{
-				BasePaise:        basePaise,
-				DistancePaise:    distPaise,
-				TimePaise:        timePaise,
-				PlatformFeePaise: platformPaise,
-				TaxPaise:         taxPaise,
-				TollPaise:        0,
-				SurgeBasisPoints: surgeBPS,
-			},
+			TotalPaise:       b.TotalPaise,
+			SurgeBPS:         b.SurgeBasisPoints,
+			SurgeReason:      b.SurgeReason,
+			WindowName:       b.WindowName,
+			DiscountPaise:    b.DiscountPaise,
+			CouponCode:       b.CouponCode,
+			Breakdown:        b,
 		}
 		options = append(options, opt)
 		if primaryOption == nil || vt == req.VehicleType {
@@ -156,13 +197,16 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 	if len(options) == 0 {
 		return nil, fmt.Errorf("not_found: no fare rules available for city")
 	}
+	if couponRule != nil && couponCovered > 0 && couponUnderMin == couponCovered {
+		return nil, &CouponError{Code: CouponCodeMinFare, Message: fmt.Sprintf("the fare must be at least Rs %d for %s", couponRule.MinFarePaise/100, coupon.Code)}
+	}
 
-	// 4. Compute canonical request fingerprint covering all bound authority fields
+	// 5. Compute canonical request fingerprint covering all bound authority fields
 	custIDStr := ""
 	if req.CustomerUserID != nil {
 		custIDStr = req.CustomerUserID.String()
 	}
-	expiresAt := time.Now().UTC().Add(5 * time.Minute)
+	expiresAt := now.Add(5 * time.Minute)
 
 	canonicalQuote := struct {
 		CustomerID   string              `json:"customer_id"`
@@ -178,6 +222,7 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 		RouteVersion string              `json:"route_version"`
 		DistMeters   int                 `json:"dist_meters"`
 		DurSeconds   int                 `json:"dur_seconds"`
+		CouponCode   string              `json:"coupon_code"`
 		Options      []store.QuoteOption `json:"options"`
 		ExpiresAt    int64               `json:"expires_at"`
 	}{
@@ -194,6 +239,7 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 		RouteVersion: routeRes.ProviderVersion,
 		DistMeters:   routeRes.DistanceMeters,
 		DurSeconds:   routeRes.DurationSeconds,
+		CouponCode:   store.NormalizeCouponCode(req.CouponCode),
 		Options:      options,
 		ExpiresAt:    expiresAt.Unix(),
 	}
@@ -214,7 +260,7 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 		DropLabel:         req.DropLabel,
 		DropPlaceID:       req.DropPlaceID,
 		RouteVersion:      routeRes.ProviderVersion,
-		FarePolicyVersion: 1,
+		FarePolicyVersion: pricing.FarePolicyVersion,
 		DistanceMeters:    routeRes.DistanceMeters,
 		DurationSeconds:   routeRes.DurationSeconds,
 		Options:           options,
@@ -245,7 +291,14 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 		EstimatedDistanceKM:  round2(routeRes.DistanceKM),
 		EstimatedDurationMin: round2(routeRes.DurationMin),
 		FareEstimatePaise:    primaryOption.TotalPaise,
-		SurgeMultiplier:      1.0 + float64(primaryOption.Breakdown.SurgeBasisPoints)/10000.0,
+		SurgeMultiplier:      1.0 + float64(primaryOption.SurgeBPS)/10000.0,
+		SurgeBPS:             primaryOption.SurgeBPS,
+		SurgeReason:          primaryOption.SurgeReason,
+		WindowName:           primaryOption.WindowName,
+		DiscountPaise:        primaryOption.DiscountPaise,
+		CouponCode:           primaryOption.CouponCode,
+		OutstandingPaise:     outstandingPaise,
+		TaxNote:              pricing.TaxNote,
 		VehicleType:          primaryOption.VehicleType,
 		ETAToPickupSeconds:   primaryOption.PickupETASeconds,
 		BaseFareINR:          baseINR,
@@ -256,6 +309,72 @@ func (s *Service) EstimateFare(ctx context.Context, req FareEstimateRequest) (*F
 		Options:              options,
 		ExpiresAt:            expiresAt,
 	}, nil
+}
+
+// taxFor returns the tax computer for a city: the GST computer re-pointed at
+// the city's state as place of supply when the state is known, otherwise
+// the configured default.
+func (s *Service) taxFor(city *store.City) pricing.TaxComputer {
+	g, ok := s.tax.(*pricing.GSTComputer)
+	if !ok || city == nil || city.State == nil {
+		return s.tax
+	}
+	code, found := pricing.StateCodeForName(*city.State)
+	if !found {
+		return s.tax
+	}
+	if local, err := g.WithPlaceOfSupply(code); err == nil {
+		return local
+	}
+	return s.tax
+}
+
+// surgeFor combines the city's fare window at the local quote time with the
+// cached demand step: max of the two, never the sum.
+func (s *Service) surgeFor(ctx context.Context, city *store.City, vehicleType string, now time.Time) (bps int64, reason, windowName string) {
+	var window *pricing.Window
+	rows, err := s.store.ListFareWindows(ctx, city.ID, vehicleType)
+	if err != nil {
+		slog.Warn("rider: list fare windows failed; quoting without a window", "city_id", city.ID, "error", err)
+	} else {
+		window = pricing.SelectWindow(store.PricingWindows(rows), vehicleType, pricing.LocalTime(now, city.Timezone))
+	}
+	return pricing.EffectiveSurge(window, s.demandBPS(ctx, city.ID, vehicleType))
+}
+
+// surgeCacheTTL is how long a demand step is reused per (city, vehicle type).
+const surgeCacheTTL = 60 * time.Second
+
+func surgeCacheKey(cityID uuid.UUID, vehicleType string) string {
+	return "rider:surge:v1:" + cityID.String() + ":" + vehicleType
+}
+
+// demandBPS is the demand surge step for a (city, vehicle type), cached in
+// Redis for 60 s when a client is set. Any failure prices as no demand
+// surge: a Redis or Postgres hiccup must not inflate a fare.
+func (s *Service) demandBPS(ctx context.Context, cityID uuid.UUID, vehicleType string) int64 {
+	key := surgeCacheKey(cityID, vehicleType)
+	if s.rdb != nil {
+		if raw, err := s.rdb.Get(ctx, key).Result(); err == nil {
+			if v, perr := strconv.ParseInt(raw, 10, 64); perr == nil {
+				return v
+			}
+		} else if !errors.Is(err, redis.Nil) {
+			slog.Debug("rider: surge cache read failed", "error", err)
+		}
+	}
+	requested, online, err := s.store.DemandCounts(ctx, cityID, vehicleType)
+	if err != nil {
+		slog.Warn("rider: demand counts failed; no demand surge", "city_id", cityID, "vehicle_type", vehicleType, "error", err)
+		return 0
+	}
+	bps := pricing.DemandBPS(requested, online, s.cfg.SurgeCapBPS)
+	if s.rdb != nil {
+		if err := s.rdb.Set(ctx, key, strconv.FormatInt(bps, 10), surgeCacheTTL).Err(); err != nil {
+			slog.Debug("rider: surge cache write failed", "error", err)
+		}
+	}
+	return bps
 }
 
 // GetQuote fetches a quote snapshot by ID.

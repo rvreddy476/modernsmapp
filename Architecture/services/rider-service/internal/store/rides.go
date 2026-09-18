@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/rider-service/internal/pricing"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -68,6 +69,12 @@ type CreateRideAtomicInput struct {
 	RequestHash     string
 	OutboxEventType string
 	OutboxPayload   []byte
+	// Coupon, when set, reserves one redemption in the same transaction
+	// (limits enforced under FOR UPDATE on the coupon row).
+	Coupon *CouponReservation
+	// OutstandingIDs are the pending cancellation fees the quote charged;
+	// they are bound to the ride so completion settles exactly those.
+	OutstandingIDs []uuid.UUID
 }
 
 // CreateRideAtomic claims idempotency, enforces active-ride invariant, inserts ride, history, outbox, and idempotency in one tx.
@@ -191,6 +198,16 @@ func (s *Store) CreateRideAtomic(ctx context.Context, in CreateRideAtomicInput) 
         WHERE key = $2`
 	if _, err := tx.Exec(ctx, updateIdemQ, ride.ID, in.IdempotencyKey); err != nil {
 		return nil, false, fmt.Errorf("update idempotency: %w", err)
+	}
+
+	// 7. Lock in the coupon and the outstanding fees the quote priced.
+	if in.Coupon != nil {
+		if err := ReserveCouponTx(ctx, tx, *in.Coupon, in.RideInput.CustomerUserID, ride.ID, time.Now().UTC()); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := ReserveOutstandingTx(ctx, tx, in.OutstandingIDs, in.RideInput.CustomerUserID, ride.ID); err != nil {
+		return nil, false, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -781,22 +798,39 @@ func (s *Store) PartnerEarnings(ctx context.Context, partnerID uuid.UUID, since 
 }
 
 // RideReceipt holds immutable trip receipt data in integer paise.
+//
+// distance_meters / duration_seconds are what was PRICED (the quoted route,
+// or the server-tracked route when completion re-priced it), never the
+// captain-reported telemetry, which is reported separately.
 type RideReceipt struct {
-	RideID          uuid.UUID       `json:"ride_id"`
-	CustomerUserID  uuid.UUID       `json:"customer_user_id"`
-	PartnerID       *uuid.UUID      `json:"partner_id,omitempty"`
-	VehicleType     string          `json:"vehicle_type"`
-	Status          string          `json:"status"`
-	PickupAddress   string          `json:"pickup_address"`
-	DropAddress     string          `json:"drop_address"`
-	DistanceMeters  int             `json:"distance_meters"`
-	DurationSeconds int             `json:"duration_seconds"`
-	TotalPaise      int64           `json:"total_paise"`
-	PaymentMethod   string          `json:"payment_method"`
-	PaymentStatus   string          `json:"payment_status"`
-	FareBreakdown   json.RawMessage `json:"fare_breakdown"`
-	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
+	RideID               uuid.UUID       `json:"ride_id"`
+	CustomerUserID       uuid.UUID       `json:"customer_user_id"`
+	PartnerID            *uuid.UUID      `json:"partner_id,omitempty"`
+	VehicleType          string          `json:"vehicle_type"`
+	Status               string          `json:"status"`
+	PickupAddress        string          `json:"pickup_address"`
+	DropAddress          string          `json:"drop_address"`
+	DistanceMeters       int             `json:"distance_meters"`
+	DurationSeconds      int             `json:"duration_seconds"`
+	TotalPaise           int64           `json:"total_paise"`
+	SurgeBPS             int64           `json:"surge_bps"`
+	SurgeReason          string          `json:"surge_reason"`
+	DiscountPaise        int64           `json:"discount_paise"`
+	CouponCode           string          `json:"coupon_code,omitempty"`
+	WaitingChargePaise   int64           `json:"waiting_charge_paise"`
+	OutstandingPaise     int64           `json:"outstanding_paise"`
+	CancellationFeePaise int64           `json:"cancellation_fee_paise"`
+	TaxPaise             int64           `json:"tax_paise"`
+	TaxNote              string          `json:"tax_note"`
+	PaymentMethod        string          `json:"payment_method"`
+	PaymentStatus        string          `json:"payment_status"`
+	FareBreakdown        json.RawMessage `json:"fare_breakdown"`
+	// Telemetry: what the captain reported at completion. Never prices the ride.
+	ReportedDistanceKM  *float64   `json:"reported_distance_km,omitempty"`
+	ReportedDurationMin *float64   `json:"reported_duration_min,omitempty"`
+	TrackedDistanceM    *int       `json:"tracked_distance_m,omitempty"`
+	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
 }
 
 // GetRideReceipt fetches receipt details.
@@ -804,17 +838,19 @@ func (s *Store) GetRideReceipt(ctx context.Context, rideID uuid.UUID) (*RideRece
 	const q = `
         SELECT r.id, r.customer_user_id, r.partner_id, r.vehicle_type, r.status,
                r.pickup_address, r.drop_address,
-               COALESCE((r.final_distance_km * 1000)::int, (r.estimated_distance_km * 1000)::int, 0),
-               COALESCE((r.final_duration_min * 60)::int, (r.estimated_duration_min * 60)::int, 0),
+               COALESCE((r.estimated_distance_km * 1000)::int, 0),
+               COALESCE((r.estimated_duration_min * 60)::int, 0),
                COALESCE(r.final_fare_paise, (r.estimated_fare * 100)::bigint, 0),
+               COALESCE(r.cancellation_fee_paise, 0),
                COALESCE(r.payment_method, 'cash'),
-               CASE 
+               CASE
                    WHEN p.status IS NOT NULL THEN p.status
                    WHEN r.cash_confirmed_at IS NOT NULL THEN 'succeeded'
                    WHEN r.status = 'completed' AND r.payment_method = 'cash' THEN 'pending_collection'
                    ELSE 'pending'
                END,
                COALESCE(r.fare_breakdown, '{}'::jsonb),
+               r.final_distance_km, r.final_duration_min, r.tracked_distance_m,
                r.completed_at, r.created_at
         FROM rider_rides r
         LEFT JOIN rider_ride_payments p ON p.ride_id = r.id
@@ -825,8 +861,9 @@ func (s *Store) GetRideReceipt(ctx context.Context, rideID uuid.UUID) (*RideRece
 		&rc.RideID, &rc.CustomerUserID, &rc.PartnerID, &rc.VehicleType, &rc.Status,
 		&rc.PickupAddress, &rc.DropAddress,
 		&rc.DistanceMeters, &rc.DurationSeconds,
-		&rc.TotalPaise, &rc.PaymentMethod, &rc.PaymentStatus,
-		&rc.FareBreakdown, &rc.CompletedAt, &rc.CreatedAt,
+		&rc.TotalPaise, &rc.CancellationFeePaise, &rc.PaymentMethod, &rc.PaymentStatus,
+		&rc.FareBreakdown, &rc.ReportedDistanceKM, &rc.ReportedDurationMin, &rc.TrackedDistanceM,
+		&rc.CompletedAt, &rc.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -834,7 +871,34 @@ func (s *Store) GetRideReceipt(ctx context.Context, rideID uuid.UUID) (*RideRece
 		}
 		return nil, fmt.Errorf("get ride receipt: %w", err)
 	}
+	rc.applyBreakdown()
 	return &rc, nil
+}
+
+// applyBreakdown lifts the itemised figures out of the stored breakdown so
+// the receipt reads the same numbers the engine produced.
+func (rc *RideReceipt) applyBreakdown() {
+	var b pricing.Breakdown
+	if len(rc.FareBreakdown) == 0 || json.Unmarshal(rc.FareBreakdown, &b) != nil {
+		return
+	}
+	if b.DistanceMeters > 0 {
+		rc.DistanceMeters = b.DistanceMeters
+	}
+	if b.DurationSeconds > 0 {
+		rc.DurationSeconds = b.DurationSeconds
+	}
+	rc.SurgeBPS = b.SurgeBasisPoints
+	rc.SurgeReason = b.SurgeReason
+	rc.DiscountPaise = b.DiscountPaise
+	rc.CouponCode = b.CouponCode
+	rc.WaitingChargePaise = b.WaitingChargePaise
+	rc.OutstandingPaise = b.OutstandingPaise
+	rc.TaxPaise = b.TaxPaise
+	rc.TaxNote = b.TaxNote
+	if rc.SurgeReason == "" {
+		rc.SurgeReason = pricing.SurgeNone
+	}
 }
 
 func scanRide(row pgx.Row) (*Ride, error) {

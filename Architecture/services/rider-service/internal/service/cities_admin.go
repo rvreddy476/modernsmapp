@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/atpost/rider-service/internal/store"
@@ -110,7 +111,9 @@ func (s *Service) UpdateZone(ctx context.Context, adminID, zoneID uuid.UUID, req
 	return z, nil
 }
 
-// CreateFareRuleRequest is the input for CreateFareRule.
+// CreateFareRuleRequest is the input for CreateFareRule. Money may arrive
+// either as the legacy INR floats or as paise; a paise field wins when both
+// are given, otherwise the float is converted with ROUND(x*100).
 type CreateFareRuleRequest struct {
 	CityID          uuid.UUID
 	VehicleType     string
@@ -122,11 +125,35 @@ type CreateFareRuleRequest struct {
 	NightMultiplier float64
 	PeakMultiplier  float64
 	CancellationFee float64
+
+	BasePaise             *int64
+	PerKMPaise            *int64
+	PerMinutePaise        *int64
+	MinimumPaise          *int64
+	PlatformFeePaise      *int64
+	CancellationFeePaise  *int64
+	WaitingFreeMinutes    *int
+	WaitingPerMinutePaise *int64
+	CancelFreeSeconds     *int
+}
+
+// inrToPaise is ROUND(inr*100) for the legacy float admin bodies.
+func inrToPaise(inr float64) int64 { return int64(math.Round(inr * 100)) }
+
+func paiseOr(p *int64, inr float64) int64 {
+	if p != nil {
+		return *p
+	}
+	return inrToPaise(inr)
 }
 
 // CreateFareRule inserts a new fare-rule row. The most recent active row
 // wins per (city, vehicle_type), so this also functions as an "update" by
 // supersession — keeping the audit trail intact.
+//
+// night_multiplier / peak_multiplier are still accepted and stored for the
+// legacy admin UI but they no longer price anything: peak and night pricing
+// is rider_fare_windows (migration 003).
 func (s *Service) CreateFareRule(ctx context.Context, adminID uuid.UUID, req CreateFareRuleRequest) (*store.FareRule, error) {
 	if req.CityID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: city_id required")
@@ -134,27 +161,42 @@ func (s *Service) CreateFareRule(ctx context.Context, adminID uuid.UUID, req Cre
 	if !allowedVehicleTypes[req.VehicleType] {
 		return nil, fmt.Errorf("invalid: vehicle_type must be one of bike, auto, mini_cab, sedan, suv, premium, ev_bike, ev_car")
 	}
-	if req.BaseFare < 0 || req.PerKMFare < 0 || req.PerMinuteFare < 0 || req.MinimumFare < 0 {
-		return nil, fmt.Errorf("invalid: fare components must be non-negative")
-	}
-	if req.NightMultiplier <= 0 {
-		req.NightMultiplier = 1.0
-	}
-	if req.PeakMultiplier <= 0 {
-		req.PeakMultiplier = 1.0
-	}
-	r, err := s.store.CreateFareRule(ctx, store.CreateFareRuleInput{
-		CityID:          req.CityID,
-		VehicleType:     req.VehicleType,
-		BaseFare:        req.BaseFare,
-		PerKMFare:       req.PerKMFare,
-		PerMinuteFare:   req.PerMinuteFare,
-		MinimumFare:     req.MinimumFare,
-		PlatformFee:     req.PlatformFee,
+	in := store.CreateFareRuleInput{
+		CityID:               req.CityID,
+		VehicleType:          req.VehicleType,
+		BasePaise:            paiseOr(req.BasePaise, req.BaseFare),
+		PerKMPaise:           paiseOr(req.PerKMPaise, req.PerKMFare),
+		PerMinutePaise:       paiseOr(req.PerMinutePaise, req.PerMinuteFare),
+		MinimumPaise:         paiseOr(req.MinimumPaise, req.MinimumFare),
+		PlatformFeePaise:     paiseOr(req.PlatformFeePaise, req.PlatformFee),
+		CancellationFeePaise: paiseOr(req.CancellationFeePaise, req.CancellationFee),
+		WaitingFreeMinutes:   3, WaitingPerMinutePaise: 100, CancelFreeSeconds: 120,
 		NightMultiplier: req.NightMultiplier,
 		PeakMultiplier:  req.PeakMultiplier,
-		CancellationFee: req.CancellationFee,
-	})
+	}
+	if req.VehicleType == "auto" {
+		in.WaitingPerMinutePaise = 150
+	}
+	if req.WaitingFreeMinutes != nil {
+		in.WaitingFreeMinutes = *req.WaitingFreeMinutes
+	}
+	if req.WaitingPerMinutePaise != nil {
+		in.WaitingPerMinutePaise = *req.WaitingPerMinutePaise
+	}
+	if req.CancelFreeSeconds != nil {
+		in.CancelFreeSeconds = *req.CancelFreeSeconds
+	}
+	if in.BasePaise < 0 || in.PerKMPaise < 0 || in.PerMinutePaise < 0 || in.MinimumPaise < 0 || in.PlatformFeePaise < 0 ||
+		in.CancellationFeePaise < 0 || in.WaitingFreeMinutes < 0 || in.WaitingPerMinutePaise < 0 || in.CancelFreeSeconds < 0 {
+		return nil, fmt.Errorf("invalid: fare components must be non-negative")
+	}
+	if in.NightMultiplier <= 0 {
+		in.NightMultiplier = 1.0
+	}
+	if in.PeakMultiplier <= 0 {
+		in.PeakMultiplier = 1.0
+	}
+	r, err := s.store.CreateFareRule(ctx, in)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +204,8 @@ func (s *Service) CreateFareRule(ctx context.Context, adminID uuid.UUID, req Cre
 	return r, nil
 }
 
-// UpdateFareRuleRequest is the input for UpdateFareRule.
+// UpdateFareRuleRequest is the input for UpdateFareRule (floats are legacy;
+// a paise field wins).
 type UpdateFareRuleRequest struct {
 	BaseFare        *float64
 	PerKMFare       *float64
@@ -173,21 +216,51 @@ type UpdateFareRuleRequest struct {
 	PeakMultiplier  *float64
 	CancellationFee *float64
 	IsActive        *bool
+
+	BasePaise             *int64
+	PerKMPaise            *int64
+	PerMinutePaise        *int64
+	MinimumPaise          *int64
+	PlatformFeePaise      *int64
+	CancellationFeePaise  *int64
+	WaitingFreeMinutes    *int
+	WaitingPerMinutePaise *int64
+	CancelFreeSeconds     *int
+}
+
+func paisePtr(p *int64, inr *float64) *int64 {
+	if p != nil {
+		return p
+	}
+	if inr == nil {
+		return nil
+	}
+	v := inrToPaise(*inr)
+	return &v
 }
 
 // UpdateFareRule applies a partial update.
 func (s *Service) UpdateFareRule(ctx context.Context, adminID, ruleID uuid.UUID, req UpdateFareRuleRequest) (*store.FareRule, error) {
-	r, err := s.store.UpdateFareRule(ctx, ruleID, store.UpdateFareRuleInput{
-		BaseFare:        req.BaseFare,
-		PerKMFare:       req.PerKMFare,
-		PerMinuteFare:   req.PerMinuteFare,
-		MinimumFare:     req.MinimumFare,
-		PlatformFee:     req.PlatformFee,
-		NightMultiplier: req.NightMultiplier,
-		PeakMultiplier:  req.PeakMultiplier,
-		CancellationFee: req.CancellationFee,
-		IsActive:        req.IsActive,
-	})
+	in := store.UpdateFareRuleInput{
+		BasePaise:             paisePtr(req.BasePaise, req.BaseFare),
+		PerKMPaise:            paisePtr(req.PerKMPaise, req.PerKMFare),
+		PerMinutePaise:        paisePtr(req.PerMinutePaise, req.PerMinuteFare),
+		MinimumPaise:          paisePtr(req.MinimumPaise, req.MinimumFare),
+		PlatformFeePaise:      paisePtr(req.PlatformFeePaise, req.PlatformFee),
+		CancellationFeePaise:  paisePtr(req.CancellationFeePaise, req.CancellationFee),
+		WaitingFreeMinutes:    req.WaitingFreeMinutes,
+		WaitingPerMinutePaise: req.WaitingPerMinutePaise,
+		CancelFreeSeconds:     req.CancelFreeSeconds,
+		NightMultiplier:       req.NightMultiplier,
+		PeakMultiplier:        req.PeakMultiplier,
+		IsActive:              req.IsActive,
+	}
+	for _, p := range []*int64{in.BasePaise, in.PerKMPaise, in.PerMinutePaise, in.MinimumPaise, in.PlatformFeePaise, in.CancellationFeePaise, in.WaitingPerMinutePaise} {
+		if p != nil && *p < 0 {
+			return nil, fmt.Errorf("invalid: fare components must be non-negative")
+		}
+	}
+	r, err := s.store.UpdateFareRule(ctx, ruleID, in)
 	if err != nil {
 		return nil, err
 	}

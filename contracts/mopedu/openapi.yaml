@@ -64,11 +64,58 @@ paths:
               $ref: '#/components/schemas/EstimateRequest'
       responses:
         '200':
-          description: Quote snapshot with vehicle options
+          description: >-
+            Quote snapshot with vehicle options. Every amount is integer paise;
+            each option carries the itemised breakdown that is locked for the
+            ride (fare window / surge, coupon discount, previous cancellation
+            fees, tax lines). Golden bytes: rider-service
+            internal/http/testdata/contracts/estimate_peak_window_coupon.json.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/QuoteSnapshotResponse'
+        '422':
+          description: The coupon_code was refused (see CouponError codes)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CouponError'
+
+  /v1/rider/coupons/validate:
+    get:
+      summary: Validate a coupon code before quoting
+      operationId: validateCoupon
+      tags: [Public]
+      description: >-
+        Public; with a gateway identity the first-ride-only and per-user
+        limits are checked too. The fare-dependent minimum-fare rule is only
+        applied by the estimate. Golden bytes for the 422:
+        rider-service internal/http/testdata/contracts/coupon_validate_error.json.
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: city_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The coupon is valid for this caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CouponValidation'
+        '422':
+          description: The coupon was refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CouponError'
 
   /v1/rider/rides:
     post:
@@ -89,11 +136,25 @@ paths:
               $ref: '#/components/schemas/CreateRideRequest'
       responses:
         '201':
-          description: Ride booked successfully
+          description: >-
+            Ride booked successfully. The quote's coupon redemption is
+            reserved and its outstanding fees are bound to the ride in the
+            same transaction; the locked breakdown is copied to
+            Ride.fare_breakdown.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ride'
+        '400':
+          description: >-
+            payment_method not in cash, upi, card (wallet is not a ride
+            method), or the quote is missing / expired / for another user
+        '422':
+          description: The quote's coupon can no longer be reserved (limits raced)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CouponError'
 
   /v1/rider/rides/active:
     get:
@@ -168,7 +229,12 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Trip receipt in integer paise
+          description: >-
+            Trip receipt in integer paise. distance_meters / duration_seconds
+            are what was priced (the quoted route, or the server-tracked
+            route when completion re-priced it); the captain's report is
+            telemetry (reported_*). Golden bytes: rider-service
+            internal/http/testdata/contracts/receipt_waiting_charge.json.
           content:
             application/json:
               schema:
@@ -345,6 +411,15 @@ paths:
       summary: Complete trip and submit final telemetry
       operationId: completeRide
       tags: [Captain]
+      description: >-
+        The fare is upfront: the quote's locked total plus the waiting charge
+        (minutes beyond the free window between arrival and start) and any
+        previous cancellation fee, minus the coupon. Distance and time are
+        re-priced ONLY when the server-tracked route exceeds the quoted
+        distance by more than 20% and more than 1 km, at the locked surge,
+        with the ride fare capped at twice the quoted one.
+        final_distance_km / final_duration_min are stored as telemetry and
+        never price the ride.
       parameters:
         - name: id
           in: path
@@ -514,6 +589,101 @@ paths:
               schema:
                 $ref: '#/components/schemas/SharedRideView'
 
+  # Admin console (admin-service tokens only; the legacy /v1/rider/admin/*
+  # family serves the same handlers). Every call is audited. Permissions:
+  # coupons -> rider:fares.manage, outstanding list -> rider:payments.read,
+  # waive -> rider:payments.settle.
+  /v1/rider/internal/admin/coupons:
+    get:
+      summary: List coupons
+      operationId: adminListCoupons
+      tags: [Admin]
+      parameters:
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: '{"items": [Coupon]}'
+    post:
+      summary: Create a coupon
+      operationId: adminCreateCoupon
+      tags: [Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CouponCreate'
+      responses:
+        '201':
+          description: Coupon
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Coupon'
+  /v1/rider/internal/admin/coupons/redemptions:
+    get:
+      summary: List coupon redemptions
+      operationId: adminListCouponRedemptions
+      tags: [Admin]
+      parameters:
+        - { name: coupon_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: '{"items": [{id, coupon_id, customer_user_id, ride_id, quote_id, discount_paise, status: reserved|applied|released}]}'
+  /v1/rider/internal/admin/coupons/{id}:
+    patch:
+      summary: Update a coupon (partial)
+      operationId: adminUpdateCoupon
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Coupon
+  /v1/rider/internal/admin/coupons/{id}/deactivate:
+    post:
+      summary: Deactivate a coupon
+      operationId: adminDeactivateCoupon
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Coupon
+  /v1/rider/internal/admin/outstanding:
+    get:
+      summary: List customers' outstanding cancellation fees
+      operationId: adminListOutstanding
+      tags: [Admin]
+      parameters:
+        - { name: customer_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, settled, waived] } }
+      responses:
+        '200':
+          description: '{"items": [CustomerOutstanding]}'
+  /v1/rider/internal/admin/outstanding/{id}/waive:
+    post:
+      summary: Waive a pending cancellation fee
+      operationId: adminWaiveOutstanding
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: CustomerOutstanding with status waived
+
 components:
   schemas:
     City:
@@ -569,9 +739,42 @@ components:
         city_id:
           type: string
           format: uuid
+        coupon_code:
+          type: string
+          description: Case-insensitive. Refused with 422 CouponError.
+
+    TaxLine:
+      type: object
+      properties:
+        ref:
+          type: string
+          enum: [ride_fare, platform_fee, waiting_charge, previous_cancellation_fee, cancellation_fee]
+        category:
+          type: string
+          description: PASSENGER_TRANSPORT_VIA_ECO (5%, s.9(5), SAC 996412) or PLATFORM_FEE (18%)
+        sac:
+          type: string
+        rate_bps:
+          type: integer
+          format: int64
+        taxable_paise:
+          type: integer
+          format: int64
+        tax_paise:
+          type: integer
+          format: int64
+        gross_paise:
+          type: integer
+          format: int64
 
     QuoteBreakdownPaise:
       type: object
+      description: >-
+        The itemised fare, stored verbatim on the quote and on the ride.
+        ride_fare = base + distance + time + surge (+ minimum top-up);
+        taxable_ride_fare = ride_fare - discount; total = taxable_ride_fare
+        + platform_fee + waiting_charge + outstanding + tax. Tax lines sum to
+        tax_paise. tax_note is always "adviser confirmation pending".
       properties:
         base_paise:
           type: integer
@@ -582,18 +785,75 @@ components:
         time_paise:
           type: integer
           format: int64
+        surge_paise:
+          type: integer
+          format: int64
+        minimum_top_up_paise:
+          type: integer
+          format: int64
+        ride_fare_paise:
+          type: integer
+          format: int64
+        discount_paise:
+          type: integer
+          format: int64
+        coupon_code:
+          type: string
+        coupon_id:
+          type: string
+        taxable_ride_fare_paise:
+          type: integer
+          format: int64
         platform_fee_paise:
+          type: integer
+          format: int64
+        waiting_minutes:
+          type: integer
+        waiting_charge_paise:
+          type: integer
+          format: int64
+        outstanding_paise:
+          type: integer
+          format: int64
+          description: Previous cancellation fees charged on this ride
+        outstanding_ids:
+          type: array
+          items:
+            type: string
+        toll_paise:
           type: integer
           format: int64
         tax_paise:
           type: integer
           format: int64
-        toll_paise:
-          type: integer
-          format: int64
+        tax_lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaxLine'
+        tax_note:
+          type: string
         surge_basis_points:
           type: integer
           format: int64
+          description: Extra over the base fare, 2500 = x1.25. Window and demand never stack.
+        surge_reason:
+          type: string
+          enum: [none, peak_hours, high_demand]
+        window_name:
+          type: string
+        distance_meters:
+          type: integer
+        duration_seconds:
+          type: integer
+        total_paise:
+          type: integer
+          format: int64
+        recomputed_from_track:
+          type: boolean
+        cap_applied:
+          type: boolean
+        fare_policy_version:
+          type: integer
 
     QuoteOption:
       type: object
@@ -613,6 +873,19 @@ components:
         total_paise:
           type: integer
           format: int64
+        surge_bps:
+          type: integer
+          format: int64
+        surge_reason:
+          type: string
+          enum: [none, peak_hours, high_demand]
+        window_name:
+          type: string
+        discount_paise:
+          type: integer
+          format: int64
+        coupon_code:
+          type: string
         breakdown:
           $ref: '#/components/schemas/QuoteBreakdownPaise'
 
@@ -628,6 +901,42 @@ components:
         fare_estimate_paise:
           type: integer
           format: int64
+        surge_multiplier:
+          type: number
+          description: Legacy, 1 + surge_bps / 10000
+        surge_bps:
+          type: integer
+          format: int64
+        surge_reason:
+          type: string
+          enum: [none, peak_hours, high_demand]
+        window_name:
+          type: string
+        discount_paise:
+          type: integer
+          format: int64
+        coupon_code:
+          type: string
+        outstanding_paise:
+          type: integer
+          format: int64
+        tax_note:
+          type: string
+        vehicle_type:
+          type: string
+        eta_to_pickup_seconds:
+          type: integer
+        base_fare_inr:
+          type: number
+          description: Legacy INR views, derived from the paise
+        per_km_inr:
+          type: number
+        per_minute_inr:
+          type: number
+        minimum_fare_inr:
+          type: number
+        fare_estimate_inr:
+          type: number
         options:
           type: array
           items:
@@ -635,6 +944,159 @@ components:
         expires_at:
           type: string
           format: date-time
+
+    CouponError:
+      type: object
+      description: >-
+        Standard error envelope with a coupon code: COUPON_INVALID,
+        COUPON_EXPIRED, COUPON_MIN_FARE, COUPON_FIRST_RIDE_ONLY,
+        COUPON_USER_LIMIT_REACHED, COUPON_EXHAUSTED, COUPON_WRONG_CITY,
+        COUPON_WRONG_VEHICLE, COUPONS_DISABLED.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        meta:
+          type: object
+          properties:
+            request_id:
+              type: string
+
+    CouponCreate:
+      type: object
+      required: [code, discount_type]
+      properties:
+        code:
+          type: string
+          description: 3-32 chars, letters / digits / _ / -, stored upper-case, unique case-insensitively
+        description:
+          type: string
+        discount_type:
+          type: string
+          enum: [flat, percent]
+        discount_value_paise:
+          type: integer
+          format: int64
+        percent_bps:
+          type: integer
+        max_discount_paise:
+          type: integer
+          format: int64
+        min_fare_paise:
+          type: integer
+          format: int64
+        city_id:
+          type: string
+          format: uuid
+        vehicle_types:
+          type: array
+          items:
+            type: string
+        first_ride_only:
+          type: boolean
+        per_user_limit:
+          type: integer
+        total_limit:
+          type: integer
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        is_active:
+          type: boolean
+
+    Coupon:
+      allOf:
+        - $ref: '#/components/schemas/CouponCreate'
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            used_count:
+              type: integer
+            created_by:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    CustomerOutstanding:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_user_id:
+          type: string
+          format: uuid
+        ride_id:
+          type: string
+          format: uuid
+          description: The cancelled ride that produced the fee
+        amount_paise:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        status:
+          type: string
+          enum: [pending, settled, waived]
+        settled_by_ride_id:
+          type: string
+          format: uuid
+          description: The ride that charged (or reserved) it
+        waived_by:
+          type: string
+          format: uuid
+        waive_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        settled_at:
+          type: string
+          format: date-time
+
+    CouponValidation:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        code:
+          type: string
+        description:
+          type: string
+        discount_type:
+          type: string
+          enum: [flat, percent]
+        discount_value_paise:
+          type: integer
+          format: int64
+        percent_bps:
+          type: integer
+        max_discount_paise:
+          type: integer
+          format: int64
+        min_fare_paise:
+          type: integer
+          format: int64
+        vehicle_types:
+          type: array
+          items:
+            type: string
+        first_ride_only:
+          type: boolean
 
     CreateRideRequest:
       type: object
@@ -654,6 +1116,9 @@ components:
           format: uuid
         payment_method:
           type: string
+          enum: [cash, upi, card]
+          default: cash
+          description: wallet is not a ride payment method (partner subscriptions only)
         idempotency_key:
           type: string
 
@@ -712,11 +1177,18 @@ components:
         final_fare_paise:
           type: integer
           format: int64
+        fare_breakdown:
+          $ref: '#/components/schemas/QuoteBreakdownPaise'
+        cancellation_fee_paise:
+          type: integer
+          format: int64
+          description: Owed by the customer when they cancel (or no-show) after assignment past the rule's free window
         payment_method:
           type: string
+          enum: [cash, upi, card]
         otp:
           type: string
-          description: Plaintext OTP shown only to rider
+          description: Plaintext OTP shown only to rider once the captain has arrived (sealed at rest)
         requested_at:
           type: string
           format: date-time
@@ -746,18 +1218,55 @@ components:
           type: string
         distance_meters:
           type: integer
+          description: Priced distance (quote, or tracked route when re-priced)
         duration_seconds:
           type: integer
         total_paise:
           type: integer
           format: int64
+        surge_bps:
+          type: integer
+          format: int64
+        surge_reason:
+          type: string
+          enum: [none, peak_hours, high_demand]
+        discount_paise:
+          type: integer
+          format: int64
+        coupon_code:
+          type: string
+        waiting_charge_paise:
+          type: integer
+          format: int64
+        outstanding_paise:
+          type: integer
+          format: int64
+        cancellation_fee_paise:
+          type: integer
+          format: int64
+        tax_paise:
+          type: integer
+          format: int64
+        tax_note:
+          type: string
         payment_method:
           type: string
         payment_status:
           type: string
         fare_breakdown:
-          type: object
+          $ref: '#/components/schemas/QuoteBreakdownPaise'
+        reported_distance_km:
+          type: number
+          description: Captain telemetry, never prices the ride
+        reported_duration_min:
+          type: number
+        tracked_distance_m:
+          type: integer
+          description: Server-tracked route length (haversine hops, teleports ignored)
         completed_at:
+          type: string
+          format: date-time
+        created_at:
           type: string
           format: date-time
 

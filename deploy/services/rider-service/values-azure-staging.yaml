@@ -40,11 +40,26 @@ externalSecret:
   #   remoteRef: caller_admin_pubkey
   # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID
   #   remoteRef: caller_admin_kid
+  # Pricing engine secrets (see values-azure-prod.yaml). Staging boots
+  # without them: no RIDER_PII_KEYS means offers cannot be accepted
+  # (OTP_SEALING_NOT_CONFIGURED); no MOPEDU_PLATFORM_GSTIN means the flat
+  # rider-local rate table. Set both before a staging test session.
+  # - secretKey: RIDER_PII_KEYS
+  #   remoteRef: rider-pii-keys
+  # - secretKey: MOPEDU_PLATFORM_GSTIN
+  #   remoteRef: mopedu-platform-gstin
+  # - secretKey: GOOGLE_MAPS_SERVER_KEY
+  #   remoteRef: google-maps-server-key
   secretStoreName: azure-key-vault
 env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Coupons stay off until the tax adviser confirms the GST treatment of a
+  # discount (the same open question as FOOD_COUPONS_ENABLED).
+  MOPEDU_COUPONS_ENABLED: "false"
+  # Demand surge ceiling in basis points (5000 = x1.5).
+  MOPEDU_SURGE_CAP_BPS: "5000"
   # Admin console (see externalSecret above for the order): uncomment
   # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID. OPS is rider's
   # AdminPermissions (rider-service/internal/http/admin_token.go).

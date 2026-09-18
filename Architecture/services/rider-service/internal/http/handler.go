@@ -63,6 +63,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		rider.GET("/cities", h.GetCities)
 		rider.GET("/serviceability", h.GetServiceability)
 		rider.POST("/estimate", h.PostEstimate)
+		rider.GET("/coupons/validate", h.GetCouponValidate)
 		rider.GET("/share/:token", h.GetSharedRide)
 
 		// --- Protected Routes (gateway identity required) -----------------

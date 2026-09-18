@@ -1877,11 +1877,38 @@ services:
       KAFKA_BROKERS: redpanda:9092
       KAFKA_TOPIC: rider-events
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Partner subscriptions only. Rides never touch the wallet: cash settles
+      # with the captain, upi / card are the payments lane's.
       WALLET_SERVICE_URL: http://wallet-service:8114
       # identity-auth owns ecosystem roles; rider grants rider_partner through
       # its internal role API. See the note in commerce-service's block about
       # why this is declared rather than left to a compiled-in default.
       IDENTITY_AUTH_URL: http://identity-auth:8081
+      # Pricing engine (rider-service/internal/pricing).
+      # Ride fares are priced through shared/gst with the platform as the
+      # e-commerce operator liable under s.9(5): the same SYNTHETIC test GSTIN
+      # food-service uses (checksum-valid, never issued). Dev only; production
+      # sets the real e-commerce-operator GSTIN and refuses to start without.
+      MOPEDU_PLATFORM_GSTIN: 29ZZZPZ0000Z1Z6
+      # Demand surge ceiling in basis points (5000 = x1.5). Peak / night
+      # windows are rider_fare_windows rows and are not capped by this.
+      MOPEDU_SURGE_CAP_BPS: ${MOPEDU_SURGE_CAP_BPS:-5000}
+      # Coupons on the dev stack. Staging and production keep this "false"
+      # until the adviser confirms the GST treatment of a discount (same
+      # question as FOOD_COUPONS_ENABLED).
+      MOPEDU_COUPONS_ENABLED: ${MOPEDU_COUPONS_ENABLED:-true}
+      # Routes API (TWO_WHEELER, traffic-aware) with haversine fallback; empty
+      # means haversine only. A server key: restrict it to the Routes API and
+      # this service's egress, never ship it to a client.
+      GOOGLE_MAPS_SERVER_KEY: ${GOOGLE_MAPS_SERVER_KEY:-}
+      MOPEDU_ROUTING_TIMEOUT_MS: ${MOPEDU_ROUTING_TIMEOUT_MS:-2000}
+      # Ride OTPs are sealed at rest under scope rider.ride_otp (shared/pii),
+      # "v1:<base64 32-byte key>[,v2:<key>]" like FOOD_PII_KEYS. The dev key
+      # lives in the gitignored Architecture/docker/.env; unset, offers cannot
+      # be accepted (OTP_SEALING_NOT_CONFIGURED) rather than storing a
+      # plaintext OTP. Production refuses to start without it. Never reuse a
+      # dev key in staging or production.
+      RIDER_PII_KEYS: ${RIDER_PII_KEYS:-}
       DIGILOCKER_MODE: ${DIGILOCKER_MODE:-mock}
       DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}
       DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:-}
